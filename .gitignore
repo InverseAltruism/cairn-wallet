@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.env
+.env.*
+**/*key*.json
+**/wallet*.txt
+*.tgz
+.DS_Store
+.idea/
+.vscode/
