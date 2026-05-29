@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn — Approve</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <header><div class="brand"><img class="brandlogo" src="icons/logo-white.png" alt="" />CAIRN <span class="dim">approve</span></div></header>
+    <section id="view-locked" hidden>
+      <p class="lead">Unlock your wallet to review this request.</p>
+      <input id="unlock-pw" type="password" placeholder="password" autocomplete="current-password" />
+      <button id="btn-unlock" class="primary">Unlock</button>
+    </section>
+    <section id="view-req" hidden>
+      <p class="lead">A site is requesting:</p>
+      <div id="req" class="pending"></div>
+      <div class="actions">
+        <button id="btn-approve" class="primary">Approve</button>
+        <button id="btn-reject">Reject</button>
+      </div>
+    </section>
+    <div id="msg" class="msg"></div>
+  </div>
+  <script type="module" src="approve.js"></script>
+</body>
+</html>

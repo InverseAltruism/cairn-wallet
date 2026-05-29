@@ -8,7 +8,10 @@ import * as node from "./node.js";
 
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; rpc: string; api: string }
 
-const DEFAULT_RPC = "http://127.0.0.1:8790";
+// Default to the public Cairn RPC proxy so the wallet works on any user's machine
+// (there's no node at their localhost). Operators can point it at a local node in
+// Settings (e.g. http://127.0.0.1:7777/api/rpc or http://127.0.0.1:8790).
+const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
 const DEFAULT_API = "https://cairn-substrate.com";
 
 export class Wallet {

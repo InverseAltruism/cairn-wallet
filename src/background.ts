@@ -38,6 +38,7 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
   const p = pending.get(id);
   if (!p) return { done: false };
   pending.delete(id);
+  try { chrome.action?.setBadgeText?.({ text: pending.size ? String(pending.size) : "" }); } catch { /* no-op */ }
   if (!approve) { p.resolve({ ok: false, error: "rejected by user" }); return { done: true }; }
   try {
     const st = await wallet.status();
@@ -53,12 +54,17 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
   return { done: true };
 }
 
-// dApp request → queue for approval; badge the action so the user opens the popup.
+// dApp request → queue for approval and pop a MetaMask-style approval window.
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   return new Promise((resolve) => {
+    const wasEmpty = pending.size === 0;
     const id = `${Date.now()}-${reqSeq++}`;
     pending.set(id, { origin, method, params, resolve });
     try { chrome.action?.setBadgeText?.({ text: String(pending.size) }); } catch { /* no-op */ }
+    if (wasEmpty) {
+      try { chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }); }
+      catch { /* fall back to badge — user opens the toolbar popup */ }
+    }
   });
 }
 

@@ -1,8 +1,10 @@
 :root{
-  --bg:#0a0e14; --panel:#0f1620; --ink:#d7e6ee; --dim:#5d7686;
-  --cyan:#33e1ff; --magenta:#ff4fd8; --green:#3cf08a; --amber:#ffc14d; --red:#ff5d6c;
-  --line:#1d2a36;
+  /* monochrome terminal: white on black, faint phosphor-green for ok/live */
+  --bg:#070707; --panel:#0d0d0d; --ink:#e6e6e6; --dim:#7d7d7d;
+  --cyan:#e6e6e6; --magenta:#ffffff; --green:#6ee7a0; --amber:#c8c8c8; --red:#ff6b6b;
+  --line:#242424;
 }
+.brandlogo{height:18px;width:auto;vertical-align:-3px;margin-right:6px}
 *{box-sizing:border-box}
 body{margin:0;width:340px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);color:var(--ink)}
 #app{padding:14px}
@@ -12,10 +14,11 @@ header{display:flex;justify-content:space-between;align-items:center;margin-bott
 .dim{color:var(--dim)}
 .lead{color:var(--dim);margin:.2em 0 1em}
 input{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;outline:none}
-input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(51,225,255,.15)}
+input:focus{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.12)}
 button{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;cursor:pointer;transition:.12s}
 button:hover{border-color:var(--cyan);color:#fff}
-button.primary{background:linear-gradient(90deg,rgba(51,225,255,.16),rgba(255,79,216,.16));border-color:var(--cyan);color:#fff}
+button.primary{background:#fff;border-color:#fff;color:#000;font-weight:700}
+button.primary:hover{background:#d6d6d6;color:#000}
 button.mini{width:auto;padding:3px 8px;margin:0 0 0 6px;font-size:11px}
 .or{text-align:center;color:var(--dim);margin:10px 0}
 .addr-row,.bal-row{display:flex;align-items:center;gap:6px;margin:6px 0}

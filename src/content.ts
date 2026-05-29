@@ -14,3 +14,5 @@ window.addEventListener("message", (ev: MessageEvent) => {
     window.postMessage({ target: "cairn-inpage", id, res }, "*");
   });
 });
+
+export {};
