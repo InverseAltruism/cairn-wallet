@@ -38,28 +38,35 @@ function txToNodeJson(tx: Tx): any {
 
 export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean }
 
-async function buildSignSubmit(rpc: string, templatePath: string, extra: Record<string, unknown>, app: App, fee: number, priv: string): Promise<SubmitResult> {
-  const addr = addrFromPriv(priv);
+// Pick one confirmed UTXO that covers `need` (smallest-first; prefer non-coinbase).
+async function pickInput(rpc: string, addr: string, need: number): Promise<{ txid: string; vout: number; value: number } | null> {
   const { utxos } = await balance(rpc, addr);
-  const cand = utxos.filter((x: any) => Number(x.value) > fee && Number(x.confirmations ?? 1) >= 1 && !x.coinbase).sort((a: any, b: any) => Number(a.value) - Number(b.value));
-  const inp = cand[0] ?? utxos.find((y: any) => Number(y.value) > fee);
+  const ok = (x: any) => Number(x.value) >= need && Number(x.confirmations ?? 1) >= 1;
+  const cand = utxos.filter((x: any) => ok(x) && !x.coinbase).sort((a: any, b: any) => Number(a.value) - Number(b.value));
+  const x = cand[0] ?? utxos.filter(ok).sort((a: any, b: any) => Number(a.value) - Number(b.value))[0];
+  return x ? { txid: x.txid, vout: Number(x.vout), value: Number(x.value) } : null;
+}
+
+// Build the FULL tx locally (we set the app ourselves), sign OUR OWN codec sighash,
+// and submit. We never sign a hash a server handed us — so a malicious or MITM'd RPC
+// cannot trick the wallet into signing a different transaction; the node re-derives
+// the same sighash and would reject any tampering anyway.
+async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string): Promise<SubmitResult> {
+  const addr = addrFromPriv(priv);
+  const inp = await pickInput(rpc, addr, fee);
   if (!inp) return { ok: false, error: "no confirmed input greater than fee", sighashMatch: false };
-  const baseTx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: [{ prevTxid: inp.txid, vout: Number(inp.vout), scriptSig: "0x" }], outputs: [{ value: Number(inp.value) - fee, scriptPubkey: addr }] };
-  const tmpl = await post(rpc, templatePath, { tx: txToNodeJson(baseTx), ...extra });
-  if (!tmpl.ok || !tmpl.signing_hash || String(tmpl.signing_hash).startsWith("err")) return { ok: false, error: `template: ${tmpl.signing_hash ?? "failed"}`, sighashMatch: false };
-  const sighashMatch = codecSighash({ ...baseTx, app }).toLowerCase() === String(tmpl.signing_hash).toLowerCase();
-  const { sig64, pub33 } = signSighash(tmpl.signing_hash, priv);
-  const signedTx = tmpl.unsigned_tx;
-  signedTx.inputs[0].script_sig = bytesArr(buildScriptSig(sig64, pub33));
-  const sub = await post(rpc, "/tx/submit", { tx: signedTx });
-  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? undefined, sighashMatch };
+  const tx: Tx = { version: 1, locktime: 0, app, inputs: [{ prevTxid: inp.txid, vout: inp.vout, scriptSig: "0x" }], outputs: [{ value: inp.value - fee, scriptPubkey: addr }] };
+  const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
+  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
+  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
+  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
 }
 
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number }, priv: string): Promise<SubmitResult> {
-  return buildSignSubmit(rpc, "/tx/template/propose", { domain: p.domain, payload_hash: p.payloadHash, uri: p.uri, expires_epoch: p.expiresEpoch }, { type: "Propose", ...p }, p.fee, priv);
+  return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv);
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
-  return buildSignSubmit(rpc, "/tx/template/attest", { proposal_id: p.proposalId, score: p.score, confidence: p.confidence }, { type: "Attest", ...p }, p.fee, priv);
+  return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score, confidence: p.confidence }, p.fee, priv);
 }
 
 // Plain CSD transfer (app:None). Built + signed entirely client-side — sighash via

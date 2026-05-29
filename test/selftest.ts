@@ -5,6 +5,8 @@ import { generate, fromPriv } from "../src/core/account.js";
 import { seal, open } from "../src/core/keystore.js";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
+import { send } from "../src/core/node.js";
+import { secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex } from "@noble/hashes/utils";
 
 declare const process: { exit(code: number): void };
@@ -80,6 +82,54 @@ async function main() {
   check("import sets the matching addr", (await w2.importKey(exported, "pw2")).addr === c1.addr);
   let dupThrew = false; try { await w.create("x"); } catch { dupThrew = true; }
   check("create refuses to overwrite an existing wallet", dupThrew);
+
+  // ─── 6) BRUTAL security ──────────────────────────────────────────────────
+  // (a) keystore tamper-resistance: any change to the vault → decrypt fails
+  const PW = "s3cret-pass-phrase";
+  const v = await seal(a.privkey, PW);
+  const flip = (hex: string) => hex.slice(0, -2) + (hex.slice(-2) === "00" ? "01" : "00");
+  let ctTamper = false; try { await open({ ...v, ct: flip(v.ct) }, PW); } catch { ctTamper = true; }
+  check("keystore: tampered ciphertext rejected (GCM auth)", ctTamper);
+  let ivTamper = false; try { await open({ ...v, iv: flip(v.iv) }, PW); } catch { ivTamper = true; }
+  check("keystore: tampered IV rejected", ivTamper);
+  let saltTamper = false; try { await open({ ...v, salt: flip(v.salt) }, PW); } catch { saltTamper = true; }
+  check("keystore: tampered salt rejected (wrong key derived)", saltTamper);
+  const v2 = await seal(a.privkey, PW);
+  check("keystore: same key+pw → different vault (random salt/iv), both open", v2.ct !== v.ct && (await open(v2, PW)) === a.privkey);
+  let emptyPw = false; try { await seal(a.privkey, ""); } catch { emptyPw = true; }
+  check("keystore: empty password refused", emptyPw);
+
+  // (b) key generation/import: bulk validity + uniqueness + strict import
+  const keys = new Set<string>(); let allValid = true;
+  for (let i = 0; i < 200; i++) { const k = generate(); keys.add(k.privkey); if (!/^0x[0-9a-f]{64}$/.test(k.privkey) || fromPriv(k.privkey).addr !== k.addr) allValid = false; }
+  check("keygen: 200 keys all valid + addr-consistent", allValid);
+  check("keygen: 200 keys all unique", keys.size === 200);
+  const rej = (k: string) => { try { fromPriv(k); return false; } catch { return true; } };
+  check("import rejects zero / order / short / nonhex / empty", rej("0x" + "00".repeat(32)) && rej("0x" + "ff".repeat(32)) && rej("0xabc") && rej("0x" + "zz".repeat(32)) && rej(""));
+
+  // (c) TAMPER-EVIDENCE: the signature commits to the WHOLE tx, so a malicious RPC
+  // / MITM that alters the recipient or amount makes the signature invalid → the
+  // node rejects it. This is why routing submits through a proxy is safe.
+  const TPRIV = "0x" + "11".repeat(32);
+  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: [{ prevTxid: "0x" + "ab".repeat(32), vout: 0, scriptSig: "0x" }], outputs: [{ value: 100, scriptPubkey: "0x" + "cc".repeat(20) }] };
+  const sh = sighash(tx);
+  const sgx = signSighash(sh, TPRIV);
+  check("sig verifies for the intended tx", verifySig(sgx.sig64, sgx.pub33, sh));
+  const tamperTo: Tx = { ...tx, outputs: [{ value: 100, scriptPubkey: "0x" + "dd".repeat(20) }] };       // attacker swaps recipient
+  const tamperAmt: Tx = { ...tx, outputs: [{ value: 9_999_999, scriptPubkey: "0x" + "cc".repeat(20) }] }; // attacker inflates amount
+  check("tamper: changing recipient changes sighash", sighash(tamperTo) !== sh);
+  check("tamper: original sig is INVALID for altered recipient", !verifySig(sgx.sig64, sgx.pub33, sighash(tamperTo)));
+  check("tamper: original sig is INVALID for altered amount", !verifySig(sgx.sig64, sgx.pub33, sighash(tamperAmt)));
+
+  // (d) signatures: deterministic (RFC6979) + always LOW-S canonical
+  check("sig deterministic (same key+msg → same sig)", signSighash(sh, TPRIV).sig64 === sgx.sig64);
+  let lowSAll = true;
+  for (let i = 0; i < 40; i++) { const d = "0x" + ((i + 1).toString(16).padStart(2, "0")).repeat(32); const s = signSighash(d, TPRIV); if (secp256k1.Signature.fromCompact(s.sig64.slice(2)).hasHighS()) lowSAll = false; }
+  check("sig always LOW-S (no malleability)", lowSAll);
+
+  // (e) send input validation (no network needed for these paths)
+  check("send rejects non-address recipient", !(await send("x", { to: "0xnotanaddress", amount: 1e7, fee: 1e6 }, TPRIV)).ok);
+  check("send rejects zero amount", !(await send("x", { to: "0x" + "cc".repeat(20), amount: 0, fee: 1e6 }, TPRIV)).ok);
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
