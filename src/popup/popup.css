@@ -4,7 +4,9 @@
   --cyan:#e6e6e6; --magenta:#ffffff; --green:#6ee7a0; --amber:#c8c8c8; --red:#ff6b6b;
   --line:#242424;
 }
-.brandlogo{height:18px;width:auto;vertical-align:-3px;margin-right:6px}
+.brand{display:flex;align-items:center;gap:8px;font-size:15px}
+.brandlogo{height:30px;width:auto}
+.setuplogo{display:block;height:84px;width:auto;margin:6px auto 14px}
 *{box-sizing:border-box}
 body{margin:0;width:340px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);color:var(--ink)}
 #app{padding:14px}
