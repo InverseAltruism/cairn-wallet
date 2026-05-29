@@ -3,6 +3,8 @@
 import { serialize, txid, sighash, verifySig, hash160, signSighash, type Tx } from "../src/core/csdtx.js";
 import { generate, fromPriv } from "../src/core/account.js";
 import { seal, open } from "../src/core/keystore.js";
+import { Wallet } from "../src/core/wallet.js";
+import { memoryStore } from "../src/core/storage.js";
 import { bytesToHex } from "@noble/hashes/utils";
 
 declare const process: { exit(code: number): void };
@@ -55,6 +57,24 @@ async function main() {
   const sg = signSighash(dg, PRIV);
   check("sign→verify roundtrip", verifySig(sg.sig64, sg.pub33, dg));
   check("verify rejects tampered sig", !verifySig("0x00" + sg.sig64.slice(4), sg.pub33, dg));
+
+  // 5) Wallet brain (memory store) — lifecycle + locked-op guards
+  const w = new Wallet(memoryStore());
+  const c1 = await w.create("pw1");
+  check("wallet create → addr + unlocked", /^0x[0-9a-f]{40}$/.test(c1.addr) && (await w.status()).unlocked);
+  w.lock();
+  check("lock → locked but vault persists", !(await w.status()).unlocked && (await w.status()).hasVault);
+  let lockedThrew = false; try { await w.balance(); } catch { lockedThrew = true; }
+  check("operations throw when locked", lockedThrew);
+  check("unlock restores same addr", (await w.unlock("pw1")).addr === c1.addr);
+  let badUnlock = false; try { await w.unlock("wrong"); } catch { badUnlock = true; }
+  check("unlock rejects wrong password", badUnlock);
+  const exported = await w.exportKey("pw1");
+  check("exportKey returns privkey for matching addr", /^0x[0-9a-f]{64}$/.test(exported) && fromPriv(exported).addr === c1.addr);
+  const w2 = new Wallet(memoryStore());
+  check("import sets the matching addr", (await w2.importKey(exported, "pw2")).addr === c1.addr);
+  let dupThrew = false; try { await w.create("x"); } catch { dupThrew = true; }
+  check("create refuses to overwrite an existing wallet", dupThrew);
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

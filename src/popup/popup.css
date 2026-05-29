@@ -1,0 +1,35 @@
+:root{
+  --bg:#0a0e14; --panel:#0f1620; --ink:#d7e6ee; --dim:#5d7686;
+  --cyan:#33e1ff; --magenta:#ff4fd8; --green:#3cf08a; --amber:#ffc14d; --red:#ff5d6c;
+  --line:#1d2a36;
+}
+*{box-sizing:border-box}
+body{margin:0;width:340px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);color:var(--ink)}
+#app{padding:14px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.brand{font-weight:700;letter-spacing:.5px;color:var(--magenta)}
+.brand .dim{color:var(--cyan);font-weight:400}
+.dim{color:var(--dim)}
+.lead{color:var(--dim);margin:.2em 0 1em}
+input{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;outline:none}
+input:focus{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(51,225,255,.15)}
+button{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;cursor:pointer;transition:.12s}
+button:hover{border-color:var(--cyan);color:#fff}
+button.primary{background:linear-gradient(90deg,rgba(51,225,255,.16),rgba(255,79,216,.16));border-color:var(--cyan);color:#fff}
+button.mini{width:auto;padding:3px 8px;margin:0 0 0 6px;font-size:11px}
+.or{text-align:center;color:var(--dim);margin:10px 0}
+.addr-row,.bal-row{display:flex;align-items:center;gap:6px;margin:6px 0}
+.label{color:var(--dim);font-size:11px;min-width:58px}
+.addr{color:var(--cyan);font-size:11px;word-break:break-all;flex:1}
+.bal{color:var(--green);font-weight:700}
+.actions{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.actions .primary{grid-column:1 / -1}
+.settings{margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:7px}
+.settings label{display:block;font-size:11px;color:var(--dim);margin-bottom:6px}
+.pending{margin:10px 0;padding:10px;border:1px solid var(--amber);border-radius:7px;background:rgba(255,193,77,.06)}
+.pending .req{font-size:12px;margin-bottom:8px}
+.pending .req b{color:var(--amber)}
+.pending .row{display:flex;gap:8px}
+.msg{margin-top:10px;font-size:12px;min-height:1.2em}
+.msg.ok{color:var(--green)} .msg.err{color:var(--red)} .msg.info{color:var(--dim)}
+code{font-family:inherit}

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn Wallet</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="brand">▟▛ CAIRN <span class="dim">wallet</span></div>
+      <div id="net" class="net dim"></div>
+    </header>
+
+    <section id="view-setup" hidden>
+      <p class="lead">Create a non-custodial CSD wallet. Your key is encrypted on this device — never uploaded.</p>
+      <input id="setup-pw" type="password" placeholder="choose a password" autocomplete="new-password" />
+      <button id="btn-create" class="primary">Create new wallet</button>
+      <div class="or">— or —</div>
+      <input id="import-key" type="password" placeholder="import private key (0x…64 hex)" />
+      <input id="import-pw" type="password" placeholder="password to encrypt it" autocomplete="new-password" />
+      <button id="btn-import">Import key</button>
+    </section>
+
+    <section id="view-locked" hidden>
+      <p class="lead">Wallet locked.</p>
+      <input id="unlock-pw" type="password" placeholder="password" autocomplete="current-password" />
+      <button id="btn-unlock" class="primary">Unlock</button>
+    </section>
+
+    <section id="view-main" hidden>
+      <div class="addr-row">
+        <span class="label">address</span>
+        <code id="addr" class="addr"></code>
+        <button id="btn-copy" class="mini">copy</button>
+      </div>
+      <div class="bal-row"><span class="label">balance</span> <span id="balance" class="bal">—</span> <button id="btn-refresh" class="mini">↻</button></div>
+
+      <div id="pending" class="pending" hidden></div>
+
+      <div class="actions">
+        <button id="btn-signin" class="primary">Sign in with CSD</button>
+        <button id="btn-export">Reveal key</button>
+        <button id="btn-settings">Settings</button>
+        <button id="btn-lock">Lock</button>
+      </div>
+
+      <div id="settings" class="settings" hidden>
+        <label>Node RPC <input id="set-rpc" /></label>
+        <label>Cairn API <input id="set-api" /></label>
+        <button id="btn-save-settings" class="mini">save</button>
+      </div>
+    </section>
+
+    <div id="msg" class="msg"></div>
+  </div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
