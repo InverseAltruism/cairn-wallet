@@ -7,8 +7,6 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash } from "./csdtx.js";
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; rpc: string; api: string }
 
 // Default to the public Cairn RPC proxy so the wallet works on any user's machine
@@ -73,18 +71,37 @@ export class Wallet {
     const ph = cairnPayloadHash(content);
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
-    if (r.ok && r.txid) this.registerWhenMined(content, r.txid); // fire-and-forget
+    if (r.ok && r.txid) { await this.addPending(content, r.txid); this.flushPending(); } // durable, alarm-driven
     return r;
   }
   cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { return node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); }
 
-  private async registerWhenMined(content: unknown, txid: string) {
-    for (let i = 0; i < 40; i++) {
-      const p = await node.getProposal(this.rpc, txid);
-      if (p && p.payload_hash) { await node.registerContent(this.api, content, txid); return; }
-      await sleep(8000);
-    }
+  // Off-chain content can only be registered once the proposal tx is MINED (~30-60s).
+  // A fire-and-forget loop dies when the popup closes or the MV3 service worker is
+  // idle-killed — silently losing the content so the item shows as a hash-only
+  // placeholder. So we persist a pending queue and drain it from a background alarm
+  // (which wakes the SW), making registration survive any shutdown.
+  private async addPending(content: unknown, txid: string) {
+    const list: any[] = (await this.store.get("pendingContent")) || [];
+    if (!list.find((x) => x.txid === txid)) list.push({ content, txid, ts: Date.now() });
+    await this.store.set("pendingContent", list);
   }
+  async flushPending(): Promise<void> {
+    const list: any[] = (await this.store.get("pendingContent")) || [];
+    if (!list.length) return;
+    const keep: any[] = [];
+    for (const x of list) {
+      if (Date.now() - (x.ts || 0) > 86400000) continue;        // expire after 24h
+      try {
+        const p = await node.getProposal(this.rpc, x.txid);
+        if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later
+        await node.registerContent(this.api, x.content, x.txid); // mined: register (server self-certifies vs hash);
+        // success OR permanent rejection (hash mismatch) → drop either way (never succeeds on retry)
+      } catch { keep.push(x); }                                  // transient/network error → retry later
+    }
+    await this.store.set("pendingContent", keep);
+  }
+  hasPending(): Promise<boolean> { return this.store.get("pendingContent").then((l: any[]) => !!(l && l.length)); }
 
   // Reveal the private key — requires re-entering the password (never exposed otherwise).
   async exportKey(password: string): Promise<string> {

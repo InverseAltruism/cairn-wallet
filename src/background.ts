@@ -33,6 +33,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "reset": return wallet.reset();
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)
+    case "flushPending": return wallet.flushPending();
     default: throw new Error("unknown method: " + method);
   }
 }
@@ -86,3 +87,13 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
   })();
   return true; // async response
 });
+
+// Durable content registration: drain the pending queue at startup and on a
+// periodic alarm. Alarms wake the service worker even after MV3 has idle-killed
+// it, so a post made right before the popup closed still gets its content
+// registered once the tx mines (~30-60s) — no more hash-only placeholders.
+ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }));
+try {
+  chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
+  chrome.alarms?.onAlarm.addListener((a: any) => { if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {})); });
+} catch { /* alarms permission unavailable — startup flush still runs */ }

@@ -131,6 +131,48 @@ async function main() {
   check("send rejects non-address recipient", !(await send("x", { to: "0xnotanaddress", amount: 1e7, fee: 1e6 }, TPRIV)).ok);
   check("send rejects zero amount", !(await send("x", { to: "0x" + "cc".repeat(20), amount: 0, fee: 1e6 }, TPRIV)).ok);
 
+  // (f) DURABLE content registration — the bug that showed posts as hash-only
+  // placeholders. flushPending must: register+drop when mined, KEEP when not yet
+  // mined (so a later alarm retries), DROP on 24h expiry, and DROP (not loop
+  // forever) when mined-but-content-rejected. Drives the real node layer via a
+  // stubbed fetch (URL-routed) — no internal mocks.
+  const origFetch = (globalThis as any).fetch;
+  const fakeFetch = (mined: boolean, contentOk = true) => async (url: any) => {
+    const u = String(url);
+    if (u.includes("/proposal/")) return { ok: true, status: 200, json: async () => (mined ? { payload_hash: "0x" + "11".repeat(32) } : {}) };
+    if (u.includes("/api/content")) return { ok: true, status: 200, json: async () => ({ ok: contentOk }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  const mkWallet = async (item: any) => { const s = memoryStore(); const w = new Wallet(s); w.rpc = "http://t/rpc"; w.api = "http://t"; await s.set("pendingContent", [item]); return { w, s }; };
+  const C = { v: 1, domain: "csd:apps", title: "t", body: "b", links: [] };
+  const now = Date.now();
+  try {
+    (globalThis as any).fetch = fakeFetch(true, true);
+    let { w, s } = await mkWallet({ content: C, txid: "0xaa", ts: now });
+    await w.flushPending();
+    check("flushPending: registers + drops a MINED item", ((await s.get("pendingContent")) || []).length === 0);
+
+    (globalThis as any).fetch = fakeFetch(false);
+    ({ w, s } = await mkWallet({ content: C, txid: "0xbb", ts: now }));
+    await w.flushPending();
+    check("flushPending: KEEPS a not-yet-mined item for later retry", ((await s.get("pendingContent")) || []).length === 1);
+
+    (globalThis as any).fetch = fakeFetch(false);
+    ({ w, s } = await mkWallet({ content: C, txid: "0xcc", ts: now - 90_000_000 }));
+    await w.flushPending();
+    check("flushPending: expires items older than 24h", ((await s.get("pendingContent")) || []).length === 0);
+
+    (globalThis as any).fetch = fakeFetch(true, false); // mined but server rejects (hash mismatch)
+    ({ w, s } = await mkWallet({ content: C, txid: "0xdd", ts: now }));
+    await w.flushPending();
+    check("flushPending: drops mined-but-rejected (no infinite retry)", ((await s.get("pendingContent")) || []).length === 0);
+
+    ({ w, s } = await mkWallet({ content: C, txid: "0xee", ts: now }));
+    check("hasPending true with queued item", (await w.hasPending()) === true);
+    await s.set("pendingContent", []);
+    check("hasPending false when queue empty", (await w.hasPending()) === false);
+  } finally { (globalThis as any).fetch = origFetch; }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
