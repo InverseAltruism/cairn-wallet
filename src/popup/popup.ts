@@ -22,6 +22,9 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "unlock": return w.unlock(args[0]);
     case "lock": return w.lock();
     case "balance": return w.balance();
+    case "send": return w.send(args[0], args[1], args[2]);
+    case "cairnPost": return w.cairnPost(args[0]);
+    case "cairnSupport": return w.cairnSupport(args[0], args[1], args[2], args[3]);
     case "signin": return w.signIn();
     case "export": return w.exportKey(args[0]);
     case "setRpc": return w.setRpc(args[0]);
@@ -75,6 +78,28 @@ $("btn-signin").addEventListener("click", async () => { try { msg("signing in…
 $("btn-export").addEventListener("click", async () => { const pw = window.prompt("Re-enter your password to reveal the private key:"); if (!pw) return; try { const k = await call("export", pw); window.prompt("Private key — keep it SECRET:", k); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-settings").addEventListener("click", () => { const s = $("settings") as HTMLElement; s.hidden = !s.hidden; });
 $("btn-save-settings").addEventListener("click", async () => { await call("setRpc", val("set-rpc").trim()); await call("setApi", val("set-api").trim()); msg("settings saved", "ok"); render(); });
+
+const toggle = (id: string) => { const e = $(id) as HTMLElement; e.hidden = !e.hidden; };
+$("btn-send-t").addEventListener("click", () => toggle("send-form"));
+$("btn-post-t").addEventListener("click", () => toggle("post-form"));
+$("btn-send").addEventListener("click", async () => {
+  try {
+    const to = val("s-to").trim(); const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);
+    if (!(amt > 0)) return msg("enter an amount", "err");
+    msg("sending…"); const r = await call("send", to, amt);
+    if (r.ok) { msg("sent " + (amt / 1e8) + " CSD · " + String(r.txid).slice(0, 12) + "…", "ok"); refreshBalance(); }
+    else msg("send failed: " + (r.error || "?"), "err");
+  } catch (e: any) { msg(e.message, "err"); }
+});
+$("btn-post").addEventListener("click", async () => {
+  try {
+    const fee = Math.max(Math.round(parseFloat(val("p-fee") || "0.25") * 1e8), 25000000);
+    msg("posting…");
+    const r = await call("cairnPost", { domain: val("p-domain").trim(), title: val("p-title"), body: val("p-body"), fee });
+    if (r.ok) { msg("posted · " + String(r.txid).slice(0, 12) + "… (shows on Cairn after ~1 block)", "ok"); refreshBalance(); }
+    else msg("post failed: " + (r.error || "?"), "err");
+  } catch (e: any) { msg(e.message, "err"); }
+});
 
 render();
 if (EXT) setInterval(renderPending, 1500);

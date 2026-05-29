@@ -1,6 +1,6 @@
 // Cairn Wallet core self-tests — oracle-based (consensus golden vectors + a real
 // on-chain signature), plus keystore/account adversarial cases. No mocks of our own.
-import { serialize, txid, sighash, verifySig, hash160, signSighash, type Tx } from "../src/core/csdtx.js";
+import { serialize, txid, sighash, verifySig, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
 import { generate, fromPriv } from "../src/core/account.js";
 import { seal, open } from "../src/core/keystore.js";
 import { Wallet } from "../src/core/wallet.js";
@@ -32,6 +32,11 @@ const onchain: Tx = {
 const oSig = "0x" + ss.slice(4, 132), oPub = "0x" + ss.slice(134);
 check("real on-chain sig verifies vs recomputed sighash", verifySig(oSig, oPub, sighash(onchain)));
 check("hash160(on-chain pub) == signer addr", hash160(Uint8Array.from(oPub.slice(2).match(/../g)!.map((x) => parseInt(x, 16)))) === "0x6eda635deaa2f710213942cc97c19b7e008fc694");
+
+// 2b) Cairn content hash (must match the board/server item.ts: sorted keys, single sha256)
+check("stableStringify sorts keys (order-independent)", stableStringify({ b: 1, a: 2 }) === stableStringify({ a: 2, b: 1 }));
+const cc = { v: 1, domain: "csd:apps", title: "t", body: "b", links: [] };
+check("cairnPayloadHash is 0x+64hex and stable", /^0x[0-9a-f]{64}$/.test(cairnPayloadHash(cc)) && cairnPayloadHash(cc) === cairnPayloadHash({ links: [], body: "b", title: "t", domain: "csd:apps", v: 1 }));
 
 // 3) account keygen/import
 const a = generate();

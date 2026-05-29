@@ -23,6 +23,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "balance": return wallet.balance();
     case "propose": return wallet.propose(args[0]);
     case "attest": return wallet.attest(args[0]);
+    case "send": return wallet.send(args[0], args[1], args[2]);
+    case "cairnPost": return wallet.cairnPost(args[0]);
+    case "cairnSupport": return wallet.cairnSupport(args[0], args[1], args[2], args[3]);
     case "signin": return wallet.signIn();
     case "export": return wallet.exportKey(args[0]);
     case "setRpc": return wallet.setRpc(args[0]);

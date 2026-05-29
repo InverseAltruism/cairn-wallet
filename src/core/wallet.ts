@@ -5,6 +5,9 @@ import { generate, fromPriv, type Account } from "./account.js";
 import { seal, open, type Vault } from "./keystore.js";
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
+import { cairnPayloadHash } from "./csdtx.js";
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; rpc: string; api: string }
 
@@ -58,6 +61,30 @@ export class Wallet {
   propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number }) { return node.propose(this.rpc, p, this.must().privkey); }
   attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { return node.attest(this.rpc, p, this.must().privkey); }
   signIn() { return node.signIn(this.api, this.must().privkey); }
+
+  // Plain CSD transfer to any address. fee default 0.01 CSD.
+  send(to: string, amount: number, fee = 1_000_000) { return node.send(this.rpc, { to, amount, fee }, this.must().privkey); }
+
+  // Post a Cairn item directly: propose on-chain + register the off-chain content
+  // (the content only "takes" once the tx mines, so we register in the background).
+  async cairnPost(p: { domain: string; title: string; body?: string; links?: string[]; fee: number }) {
+    const priv = this.must().privkey;
+    const content = { v: 1, domain: p.domain, title: p.title, body: p.body ?? "", links: p.links ?? [] };
+    const ph = cairnPayloadHash(content);
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
+    const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
+    if (r.ok && r.txid) this.registerWhenMined(content, r.txid); // fire-and-forget
+    return r;
+  }
+  cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { return node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); }
+
+  private async registerWhenMined(content: unknown, txid: string) {
+    for (let i = 0; i < 40; i++) {
+      const p = await node.getProposal(this.rpc, txid);
+      if (p && p.payload_hash) { await node.registerContent(this.api, content, txid); return; }
+      await sleep(8000);
+    }
+  }
 
   // Reveal the private key — requires re-entering the password (never exposed otherwise).
   async exportKey(password: string): Promise<string> {

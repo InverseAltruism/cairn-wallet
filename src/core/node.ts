@@ -15,6 +15,9 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
 }
 
 export async function tip(rpc: string): Promise<number> { return Number((await get(rpc, "/tip")).height ?? 0); }
+export async function getProposal(rpc: string, txid: string): Promise<any | null> {
+  try { const j = await get(rpc, `/proposal/${txid}`); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
+}
 export async function balance(rpc: string, addr: string): Promise<{ confirmed: number; utxos: any[] }> {
   const j = await get(rpc, `/utxos/${addr}?available=true`);
   return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos ?? [] };
@@ -57,6 +60,33 @@ export function propose(rpc: string, p: { domain: string; payloadHash: string; u
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
   return buildSignSubmit(rpc, "/tx/template/attest", { proposal_id: p.proposalId, score: p.score, confidence: p.confidence }, { type: "Attest", ...p }, p.fee, priv);
+}
+
+// Plain CSD transfer (app:None). Built + signed entirely client-side — sighash via
+// our golden-vector-validated codec, so no node template is needed; /tx/submit
+// validates the signature against the node's own (identical) sighash.
+export async function send(rpc: string, p: { to: string; amount: number; fee: number }, priv: string): Promise<SubmitResult> {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(p.to)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false };
+  if (!(p.amount > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false };
+  const addr = addrFromPriv(priv);
+  const need = p.amount + p.fee;
+  const { utxos } = await balance(rpc, addr);
+  const cand = utxos.filter((x: any) => Number(x.value) >= need && Number(x.confirmations ?? 1) >= 1).sort((a: any, b: any) => Number(a.value) - Number(b.value));
+  const inp = cand[0];
+  if (!inp) return { ok: false, error: "no single confirmed coin covers amount + fee (consolidate first)", sighashMatch: false };
+  const change = Number(inp.value) - p.amount - p.fee;
+  const outputs = [{ value: p.amount, scriptPubkey: p.to }];
+  if (change > 0) outputs.push({ value: change, scriptPubkey: addr });
+  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: [{ prevTxid: inp.txid, vout: Number(inp.vout), scriptSig: "0x" }], outputs };
+  const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
+  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
+  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
+  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
+}
+
+// Register a Cairn item's off-chain content (hash-verified by the server).
+export function registerContent(apiBase: string, content: any, txid: string): Promise<any> {
+  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }) }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
 }
 
 // Sign in with CSD against the Cairn API: fetch nonce, sign its digest locally, verify.

@@ -66,3 +66,15 @@ export function verifySig(sig64: string, pub33: string, sighashHex: string): boo
 }
 export function buildScriptSig(sig64: string, pub33: string): string { return "0x40" + strip(sig64) + "21" + strip(pub33); }
 export function bytesArr(hex: string): number[] { return Array.from(hb(hex)); }
+
+// Cairn off-chain content commitment (matches the board/server item.ts): sorted-key
+// compact JSON, single sha256. Lets the wallet post to Cairn with the right hash.
+export function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  const o = v as Record<string, unknown>;
+  return "{" + Object.keys(o).sort().map((k) => JSON.stringify(k) + ":" + stableStringify(o[k])).join(",") + "}";
+}
+export function cairnPayloadHash(content: unknown): string {
+  return "0x" + bytesToHex(sha256(utf8ToBytes(stableStringify(content))));
+}
