@@ -16,10 +16,10 @@ consensus-proven CSD signing core (`@noble/curves` + `@noble/hashes` + WebCrypto
 - **`src/core/`** — browser-safe, framework-free, the security-critical part:
   - `csdtx.ts` — CSD consensus serialize / txid / CSD_SIG_V1 sighash + secp256k1 sign/verify.
   - `account.ts` — keygen / import (range-validated).
-  - `keystore.ts` — AES-256-GCM vault, PBKDF2-SHA256 (250k). Wrong password → decrypt fails.
-  - `node.ts` — non-custodial submit (node `/tx/template` → **local sign** → `/tx/submit`) + sign-in.
-  - `wallet.ts` — the brain (storage-injected): create/import/unlock/lock/balance/propose/attest/
-    signin/export.
+  - `keystore.ts` — AES-256-GCM vault, PBKDF2-SHA256 (600k, OWASP 2023). Wrong password → decrypt fails.
+  - `node.ts` — non-custodial submit (built + **locally signed**, then `/tx/submit`) + sign-in.
+  - `wallet.ts` — the brain (storage-injected): create/import/unlock/lock/balance/send/propose/
+    attest/post/support/signin/export, transaction history + idle auto-lock.
 - **`src/background.ts`** — service worker; owns the unlocked key; approval queue for dApp requests.
 - **`src/content.ts` + `src/inpage.ts`** — injects `window.cairn` (connect/signIn/propose/attest),
   relayed to the background and gated by user approval.
