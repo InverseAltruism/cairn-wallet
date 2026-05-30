@@ -1,0 +1,50 @@
+name: release
+
+# Build, test, and publish the extension on a version tag (e.g. `git tag v0.1.0`).
+# The zip is built by CI from the tagged source — never hand-uploaded — so its
+# provenance is verifiable: it ships with a SHA-256 and a SLSA build-provenance
+# attestation that cryptographically binds it to this commit + workflow run.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write       # create the release + upload assets
+  id-token: write       # OIDC for the provenance attestation
+  attestations: write   # write the attestation
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test            # full gate — a broken/failed build never ships
+      - run: npm run package     # deterministic zip + cairn-wallet.zip.sha256
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: cairn-wallet.zip
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            cairn-wallet.zip cairn-wallet.zip.sha256 \
+            --title "Cairn Wallet ${GITHUB_REF_NAME}" \
+            --notes "$(printf '%s\n' \
+              'Non-custodial Compute Substrate (CSD) wallet — unpacked extension.' \
+              '' \
+              '**Install:** unzip → `chrome://extensions` → enable Developer mode → Load unpacked → pick the `cairn-wallet` folder.' \
+              '' \
+              '**Verify (optional):**' \
+              '```' \
+              "sha256sum -c cairn-wallet.zip.sha256   # expected: $(cat cairn-wallet.zip.sha256)" \
+              'gh attestation verify cairn-wallet.zip --repo ${{ github.repository }}' \
+              '```' \
+              '' \
+              'Reproducible: `npm ci && npm run package` rebuilds a byte-identical zip.')"

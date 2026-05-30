@@ -9,3 +9,7 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# packaged extension (built by `npm run package` / CI release)
+cairn-wallet.zip
+cairn-wallet.zip.sha256

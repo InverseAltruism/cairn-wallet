@@ -38,15 +38,36 @@ The rest:
   relay it to the background, and gate everything behind explicit user approval.
 - `src/popup/` is the UI. It runs as an extension popup and also standalone in dev mode.
 
-## Build and load
+## Install
+
+Download the latest release zip:
+**[github.com/InverseAltruism/cairn-wallet/releases/latest](https://github.com/InverseAltruism/cairn-wallet/releases/latest)**
+
+Unzip it (you get a `cairn-wallet` folder), then in Chrome/Brave/Edge: open `chrome://extensions`,
+enable **Developer mode**, choose **Load unpacked**, and select the `cairn-wallet` folder.
+
+### Verify the download (recommended)
+
+Each release ships a `cairn-wallet.zip.sha256` and a SLSA build-provenance attestation tying the zip
+to the exact source commit and CI run:
 
 ```bash
-npm install
-npm run build          # outputs to dist/ (esbuild bundles everything, including @noble)
+sha256sum -c cairn-wallet.zip.sha256                          # checksum matches the release
+gh attestation verify cairn-wallet.zip --repo InverseAltruism/cairn-wallet   # built from this source, in CI
 ```
 
-Then in Chrome, Brave, or Edge: open `chrome://extensions`, enable Developer mode, choose Load
-unpacked, and select the `dist/` folder.
+## Build from source
+
+```bash
+npm ci                 # exact, pinned dependencies (use ci, not install)
+npm test               # full security + behavior gate
+npm run build          # outputs to dist/ (esbuild bundles everything, including @noble)
+npm run package        # deterministic cairn-wallet.zip + .sha256 (byte-identical to the release)
+```
+
+`npm run package` produces a **byte-for-byte reproducible** zip, so you can rebuild and confirm its
+SHA-256 matches the published release — no need to trust the binary. Then Load unpacked the `dist/`
+folder (or the unzipped `cairn-wallet` folder).
 
 ## Security model
 
