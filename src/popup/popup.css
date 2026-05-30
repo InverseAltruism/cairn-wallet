@@ -15,8 +15,8 @@ header{display:flex;justify-content:space-between;align-items:center;margin-bott
 .brand .dim{color:var(--cyan);font-weight:400}
 .dim{color:var(--dim)}
 .lead{color:var(--dim);margin:.2em 0 1em}
-input{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;outline:none}
-input:focus{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.12)}
+input,textarea{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;outline:none;resize:vertical}
+input:focus,textarea:focus{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.12)}
 button{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;cursor:pointer;transition:.12s}
 button:hover{border-color:var(--cyan);color:#fff}
 button.primary{background:#fff;border-color:#fff;color:#000;font-weight:700}

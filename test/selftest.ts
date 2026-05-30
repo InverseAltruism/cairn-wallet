@@ -210,6 +210,33 @@ async function main() {
     check("failed tx is NOT recorded", fr.ok === false && (await w.history()).length === 0);
   } finally { (globalThis as any).fetch = of2; }
 
+  // (h2) sealed claims (commit-reveal): salted hash committed now, preimage revealed later.
+  const of3 = (globalThis as any).fetch;
+  const sealStub = () => { let n = 0; return async (url: any) => {
+    const u = String(url);
+    if (u.includes("/tip")) return { ok: true, status: 200, json: async () => ({ height: 21000 }) };
+    if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 100e8, utxos: [COIN] }) };
+    if (u.includes("/tx/submit")) { n++; return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + String(n).padStart(64, "0") }) }; }
+    if (u.includes("/api/content")) return { ok: true, status: 200, json: async () => ({ ok: true, revealed: true }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  }; };
+  try {
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    (globalThis as any).fetch = sealStub();
+    const r1 = await w.sealClaim({ claim: "ETH > $4000 by Friday" });
+    const r2 = await w.sealClaim({ claim: "ETH > $4000 by Friday" }); // identical claim text
+    check("sealClaim returns ok + txid", r1.ok === true && /^0x/.test(String(r1.txid)) && r2.ok === true);
+    const sc = await w.sealedClaims();
+    check("sealedClaims persists both", sc.length === 2);
+    check("sealed nonce is 32-byte hex (the salt)", /^[0-9a-f]{64}$/.test(sc[0].nonce));
+    check("same claim → different nonce (unguessable before reveal)", sc[0].nonce !== sc[1].nonce);
+    check("sealClaim defaults to the csd:sealed domain", sc[0].domain === "csd:sealed");
+    const rv = await w.revealClaim(String(r1.txid));
+    check("revealClaim succeeds", rv.ok === true);
+    check("revealClaim marks the claim revealed", (await w.sealedClaims()).find((s: any) => s.txid === r1.txid)!.revealed === true);
+    check("revealClaim rejects an unknown txid", !(await w.revealClaim("0xnope")).ok);
+  } finally { (globalThis as any).fetch = of3; }
+
   // (i) idle auto-lock — wipes the in-memory key after inactivity; stays unlocked while active.
   const wl = new Wallet(memoryStore()); await wl.create("super-secret-pw");
   wl.autoLock(60_000); check("auto-lock keeps wallet unlocked while active", (await wl.status()).unlocked === true);

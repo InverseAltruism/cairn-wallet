@@ -43,11 +43,20 @@
       <div class="actions">
         <button id="btn-send-t" class="primary">Send CSD</button>
         <button id="btn-post-t">Post to Cairn</button>
+        <button id="btn-seal-t">Seal a claim</button>
         <button id="btn-activity-t">Activity</button>
         <button id="btn-signin">Sign in with CSD</button>
         <button id="btn-export">Reveal key</button>
         <button id="btn-settings">Settings</button>
         <button id="btn-lock">Lock</button>
+      </div>
+
+      <div id="seal-form" class="settings" hidden>
+        <label>Claim — kept secret until you reveal<textarea id="seal-claim" rows="2" placeholder="e.g. ETH &gt; $4000 by Friday"></textarea></label>
+        <label>Topic (domain) <input id="seal-domain" value="csd:sealed" /></label>
+        <button id="btn-seal" class="primary">Seal on-chain</button>
+        <div class="act-head" style="margin-top:10px"><span class="label">your sealed claims</span></div>
+        <div id="seal-list" class="history"></div>
       </div>
 
       <div id="activity" class="settings" hidden>

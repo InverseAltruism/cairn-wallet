@@ -6,6 +6,7 @@ import { seal, open, type Vault } from "./keystore.js";
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash } from "./csdtx.js";
+import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; rpc: string; api: string }
 
@@ -81,6 +82,40 @@ export class Wallet {
     return r;
   }
   async cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { const r = await node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); await this.maybeRecord(r, { type: "support", target: proposalId, fee }); return r; }
+
+  // ── sealed claims (commit-reveal) ────────────────────────────────────────
+  // Commit: propose a SALTED hash of the claim now (content withheld) — the
+  // on-chain tx timestamps that you knew it, without revealing what. Reveal:
+  // publish the salted preimage later; the chain proves you committed it first.
+  // The salt (nonce) is essential — without it a guessable claim could be
+  // brute-forced from its hash before reveal. The preimage is kept locally so
+  // the author can always reveal (lose it and the claim is unrevealable).
+  async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
+    const priv = this.must().privkey;
+    const domain = (p.domain && p.domain.trim()) || "csd:sealed";
+    const nonce = bytesToHex(randomBytes(32));
+    const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
+    const ph = cairnPayloadHash(content);
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
+    const fee = p.fee ?? 25_000_000; // propose min 0.25 CSD
+    const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
+    if (r.ok && r.txid) {
+      const list: any[] = (await this.store.get("sealedClaims")) || [];
+      if (!list.find((x) => x.txid === r.txid)) list.unshift({ txid: r.txid, domain, claim: p.claim, nonce, committedTs: Date.now(), revealed: false });
+      await this.store.set("sealedClaims", list.slice(0, 500));
+      await this.maybeRecord(r, { type: "seal", domain, fee });
+    }
+    return r;
+  }
+  async revealClaim(txid: string) {
+    const list: any[] = (await this.store.get("sealedClaims")) || [];
+    const rec = list.find((x) => x.txid === txid);
+    if (!rec) return { ok: false, error: "no sealed claim with that txid in this wallet" };
+    const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim: rec.claim, nonce: rec.nonce }, txid);
+    if (r && r.ok) { rec.revealed = true; await this.store.set("sealedClaims", list); }
+    return r;
+  }
+  sealedClaims(): Promise<any[]> { return this.store.get("sealedClaims").then((l: any[]) => l || []); }
 
   // ── transaction history ──────────────────────────────────────────────────
   // Every tx the wallet submits is recorded locally (newest-first, capped) so the

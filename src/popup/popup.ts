@@ -105,6 +105,35 @@ const toggle = (id: string) => { const e = $(id) as HTMLElement; e.hidden = !e.h
 $("btn-send-t").addEventListener("click", () => toggle("send-form"));
 $("btn-post-t").addEventListener("click", () => toggle("post-form"));
 $("btn-activity-t").addEventListener("click", () => { toggle("activity"); if (!($("activity") as HTMLElement).hidden) renderHistory(); });
+$("btn-seal-t").addEventListener("click", () => { toggle("seal-form"); if (!($("seal-form") as HTMLElement).hidden) renderSealed(); });
+$("btn-seal").addEventListener("click", async () => {
+  const claim = val("seal-claim").trim(); if (!claim) return msg("enter a claim to seal", "err");
+  const domain = val("seal-domain").trim() || "csd:sealed";
+  try { msg("sealing…"); const r = await call("sealClaim", { domain, claim });
+    if (r.ok) { msg("sealed on-chain ✓ — reveal it whenever you like", "ok"); (($("seal-claim")) as HTMLTextAreaElement).value = ""; renderSealed(); refreshBalance(); }
+    else msg("seal failed: " + (r.error || "?"), "err");
+  } catch (e: any) { msg(e.message, "err"); }
+});
+async function renderSealed() {
+  const list: any[] = await call("sealedClaims");
+  const el = $("seal-list");
+  if (!list.length) { el.innerHTML = `<div class="dim" style="padding:6px 0">No sealed claims yet. Seal one above; it stays secret until you reveal.</div>`; return; }
+  el.innerHTML = list.map((s) => {
+    const when = s.committedTs ? new Date(s.committedTs).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>` : `🔒 sealed`;
+    const right = s.revealed
+      ? `<a href="${explorerTx(String(s.txid))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
+      : `<button class="mini" data-reveal="${escapeHtml(String(s.txid))}">Reveal</button>`;
+    return `<div class="tx"><div class="tx-top"><span class="tx-kind">${status}</span><span class="dim">${when}</span></div>
+      <div class="tx-sub"><span class="dim">${escapeHtml(String(s.claim).slice(0, 44))}</span>${right}</div></div>`;
+  }).join("");
+  el.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", async () => {
+    const id = (b as HTMLElement).dataset.reveal!; msg("revealing…");
+    const r = await call("revealClaim", id);
+    (r && r.ok) ? msg("revealed ✓ — now public + provably committed earlier", "ok") : msg("reveal failed: " + ((r && r.error) || "?"), "err");
+    renderSealed();
+  }));
+}
 $("btn-send").addEventListener("click", async () => {
   try {
     const to = val("s-to").trim(); const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);

@@ -35,6 +35,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)
     case "flushPending": return wallet.flushPending();
     case "history": return wallet.history();
+    case "sealClaim": return wallet.sealClaim(args[0]);
+    case "revealClaim": return wallet.revealClaim(args[0]);
+    case "sealedClaims": return wallet.sealedClaims();
     default: throw new Error("unknown method: " + method);
   }
 }
