@@ -15,6 +15,11 @@ export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: stri
 const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
 const DEFAULT_API = "https://cairn-substrate.com";
 
+// Public block explorer (static MPA): /tx.html?txid= · /address.html?addr= · /proposal.html?id=
+export const EXPLORER = "https://explorer.computesubstrate.org";
+export const explorerTx = (txid: string) => `${EXPLORER}/tx.html?txid=${encodeURIComponent(txid)}`;
+export const explorerAddr = (addr: string) => `${EXPLORER}/address.html?addr=${encodeURIComponent(addr)}`;
+
 export class Wallet {
   private acct: Account | null = null;
   rpc = DEFAULT_RPC;
@@ -56,12 +61,12 @@ export class Wallet {
   private must(): Account { if (!this.acct) throw new Error("locked"); return this.acct; }
 
   balance() { const a = this.must(); return node.balance(this.rpc, a.addr); }
-  propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number }) { return node.propose(this.rpc, p, this.must().privkey); }
-  attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { return node.attest(this.rpc, p, this.must().privkey); }
+  async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number }) { const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
+  async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
   signIn() { return node.signIn(this.api, this.must().privkey); }
 
   // Plain CSD transfer to any address. fee default 0.01 CSD.
-  send(to: string, amount: number, fee = 1_000_000) { return node.send(this.rpc, { to, amount, fee }, this.must().privkey); }
+  async send(to: string, amount: number, fee = 1_000_000) { const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(r, { type: "send", to, amount, fee }); return r; }
 
   // Post a Cairn item directly: propose on-chain + register the off-chain content
   // (the content only "takes" once the tx mines, so we register in the background).
@@ -72,9 +77,34 @@ export class Wallet {
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
     if (r.ok && r.txid) { await this.addPending(content, r.txid); this.flushPending(); } // durable, alarm-driven
+    await this.maybeRecord(r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
     return r;
   }
-  cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { return node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); }
+  async cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { const r = await node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); await this.maybeRecord(r, { type: "support", target: proposalId, fee }); return r; }
+
+  // ── transaction history ──────────────────────────────────────────────────
+  // Every tx the wallet submits is recorded locally (newest-first, capped) so the
+  // user can see their activity and jump to the on-chain explorer. We only record
+  // what THIS wallet sends — it's an activity log, not a full chain index.
+  private async maybeRecord(r: { ok?: boolean; txid?: string }, meta: Record<string, unknown>) {
+    if (r && r.ok && r.txid) await this.recordTx({ txid: r.txid, ts: Date.now(), ...meta });
+  }
+  private async recordTx(entry: Record<string, unknown>) {
+    const h: any[] = (await this.store.get("txHistory")) || [];
+    if (h.find((x) => x.txid === entry.txid)) return; // idempotent
+    h.unshift(entry);
+    await this.store.set("txHistory", h.slice(0, 200));
+  }
+  history(): Promise<any[]> { return this.store.get("txHistory").then((h: any[]) => h || []); }
+
+  // ── idle auto-lock ───────────────────────────────────────────────────────
+  // The unlocked key lives only in this.acct (memory). We wipe it after a period
+  // of inactivity so an unattended/unlocked extension can't be used. touch() is
+  // called by the background worker on every user action; autoLock() is driven by
+  // a periodic alarm. (Memory-only acct is also lost whenever the SW is killed.)
+  private lastActive = Date.now();
+  touch() { this.lastActive = Date.now(); }
+  autoLock(maxIdleMs: number) { if (this.acct && Date.now() - this.lastActive > maxIdleMs) this.lock(); }
 
   // Off-chain content can only be registered once the proposal tx is MINED (~30-60s).
   // A fire-and-forget loop dies when the popup closes or the MV3 service worker is

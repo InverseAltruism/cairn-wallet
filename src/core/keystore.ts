@@ -1,12 +1,14 @@
 // Encrypted-at-rest vault. The private key is sealed with AES-256-GCM under a key
-// derived from the user's password via PBKDF2-SHA256 (250k iters). Wrong password →
-// GCM authentication fails → decrypt throws (no oracle, no partial plaintext).
+// derived from the user's password via PBKDF2-SHA256 (600k iters, per OWASP 2023).
+// Wrong password → GCM authentication fails → decrypt throws (no oracle, no partial
+// plaintext). The per-vault iteration count is stored in the vault, so raising this
+// only affects NEW vaults — existing ones still open at their original count.
 // WebCrypto (crypto.subtle) — available in both the browser and Node 22 (so it's
 // unit-tested in Node against the same code path).
 import { bytesToHex, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/utils";
 
 const SUBTLE = (globalThis.crypto as Crypto).subtle;
-const PBKDF2_ITERS = 250_000;
+const PBKDF2_ITERS = 600_000;
 // WebCrypto's BufferSource type is stricter than @noble's Uint8Array<ArrayBufferLike>;
 // the bytes are identical at runtime, so cast at the boundary.
 const bs = (u: Uint8Array): BufferSource => u as unknown as BufferSource;

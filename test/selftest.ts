@@ -3,7 +3,7 @@
 import { serialize, txid, sighash, verifySig, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
 import { generate, fromPriv } from "../src/core/account.js";
 import { seal, open } from "../src/core/keystore.js";
-import { Wallet } from "../src/core/wallet.js";
+import { Wallet, explorerTx, explorerAddr } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { send } from "../src/core/node.js";
 import { secp256k1 } from "@noble/curves/secp256k1";
@@ -172,6 +172,52 @@ async function main() {
     await s.set("pendingContent", []);
     check("hasPending false when queue empty", (await w.hasPending()) === false);
   } finally { (globalThis as any).fetch = origFetch; }
+
+  // (g) explorer deep-links — must match the real explorer routes (verified live:
+  // tx.html?txid= · address.html?addr=). These are what the wallet history links to.
+  check("explorerTx → /tx.html?txid=", explorerTx("0xdeadbeef") === "https://explorer.computesubstrate.org/tx.html?txid=0xdeadbeef");
+  check("explorerAddr → /address.html?addr=", explorerAddr("0x" + "ab".repeat(20)) === "https://explorer.computesubstrate.org/address.html?addr=0x" + "ab".repeat(20));
+
+  // (h) transaction history — records on success, newest-first, idempotent, not on
+  // failure. Drives the real send() path with a URL-routed stubbed fetch.
+  const of2 = (globalThis as any).fetch;
+  const COIN = { txid: "0x" + "cd".repeat(32), vout: 0, value: 100e8, confirmations: 10 };
+  const txStub = (submitOk: boolean, fixedTxid?: string) => { let n = 0; return async (url: any) => {
+    const u = String(url);
+    if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 100e8, utxos: [COIN] }) };
+    if (u.includes("/tx/submit")) { n++; return { ok: true, status: 200, json: async () => (submitOk ? { ok: true, txid: fixedTxid ?? ("0x" + String(n).padStart(64, "0")) } : { ok: false, err: "rejected" }) }; }
+    return { ok: false, status: 404, json: async () => ({}) };
+  }; };
+  const RCPT = "0x" + "11".repeat(20);
+  try {
+    let w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    (globalThis as any).fetch = txStub(true);
+    await w.send(RCPT, 2e8, 1e6);
+    await w.send(RCPT, 5e8, 1e6);
+    let h = await w.history();
+    check("history records 2 sends", h.length === 2);
+    check("history newest-first (last send on top)", h[0].amount === 5e8 && h[1].amount === 2e8);
+    check("history entry has type/to/txid", h[0].type === "send" && h[0].to === RCPT && /^0x/.test(h[0].txid));
+
+    w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    (globalThis as any).fetch = txStub(true, "0x" + "ff".repeat(32)); // same txid twice
+    await w.send(RCPT, 1e8, 1e6); await w.send(RCPT, 1e8, 1e6);
+    check("history idempotent on duplicate txid", (await w.history()).length === 1);
+
+    w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    (globalThis as any).fetch = txStub(false); // node rejects submit
+    const fr = await w.send(RCPT, 1e8, 1e6);
+    check("failed tx is NOT recorded", fr.ok === false && (await w.history()).length === 0);
+  } finally { (globalThis as any).fetch = of2; }
+
+  // (i) idle auto-lock — wipes the in-memory key after inactivity; stays unlocked while active.
+  const wl = new Wallet(memoryStore()); await wl.create("super-secret-pw");
+  wl.autoLock(60_000); check("auto-lock keeps wallet unlocked while active", (await wl.status()).unlocked === true);
+  wl.autoLock(-1);     check("auto-lock wipes the key once idle past threshold", (await wl.status()).unlocked === false);
+
+  // (j) keystore now uses 600k PBKDF2 iters (OWASP 2023), recorded per-vault for back-compat
+  const kv = await seal(a.privkey, "super-secret-pw");
+  check("vault records 600k PBKDF2 iterations", kv.iter === 600_000);
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

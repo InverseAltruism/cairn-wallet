@@ -34,6 +34,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)
     case "flushPending": return wallet.flushPending();
+    case "history": return wallet.history();
     default: throw new Error("unknown method: " + method);
   }
 }
@@ -76,6 +77,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
   (async () => {
     await ready;
     try {
+      wallet.touch(); // user activity → reset the idle auto-lock timer
       if (msg?.kind === "popup") { sendResponse({ ok: true, result: await runPopupMethod(msg.method, msg.args ?? []) }); return; }
       if (msg?.kind === "dapp") {
         const origin = sender?.origin || sender?.url || "unknown";
@@ -93,7 +95,12 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
 // it, so a post made right before the popup closed still gets its content
 // registered once the tx mines (~30-60s) — no more hash-only placeholders.
 ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }));
+const AUTO_LOCK_MS = 15 * 60 * 1000; // wipe the in-memory key after 15 min idle
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
-  chrome.alarms?.onAlarm.addListener((a: any) => { if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {})); });
+  chrome.alarms?.create("cairn-autolock", { periodInMinutes: 1 });
+  chrome.alarms?.onAlarm.addListener((a: any) => {
+    if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {}));
+    if (a.name === "cairn-autolock") ready.then(() => wallet.autoLock(AUTO_LOCK_MS));
+  });
 } catch { /* alarms permission unavailable — startup flush still runs */ }

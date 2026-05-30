@@ -38,3 +38,18 @@ button.mini{width:auto;padding:3px 8px;margin:0 0 0 6px;font-size:11px}
 .msg{margin-top:10px;font-size:12px;min-height:1.2em}
 .msg.ok{color:var(--green)} .msg.err{color:var(--red)} .msg.info{color:var(--dim)}
 code{font-family:inherit}
+
+/* transaction history (Activity) */
+.act-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.act-head a{color:var(--cyan);font-size:11px;text-decoration:none}
+.act-head a:hover{color:#fff;text-decoration:underline}
+.history{max-height:240px;overflow-y:auto}
+.tx{padding:8px 0;border-bottom:1px solid var(--line)}
+.tx:last-child{border-bottom:none}
+.tx-top{display:flex;justify-content:space-between;align-items:baseline}
+.tx-kind{font-weight:700;color:var(--ink)}
+.tx-amt{color:var(--green);font-weight:700}
+.tx-sub{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;margin-top:2px}
+.tx-sub a{color:var(--cyan);text-decoration:none}
+.tx-sub a:hover{color:#fff;text-decoration:underline}
+.tx-when{font-size:10px;margin-top:2px}

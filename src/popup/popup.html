@@ -43,10 +43,16 @@
       <div class="actions">
         <button id="btn-send-t" class="primary">Send CSD</button>
         <button id="btn-post-t">Post to Cairn</button>
+        <button id="btn-activity-t">Activity</button>
         <button id="btn-signin">Sign in with CSD</button>
         <button id="btn-export">Reveal key</button>
         <button id="btn-settings">Settings</button>
         <button id="btn-lock">Lock</button>
+      </div>
+
+      <div id="activity" class="settings" hidden>
+        <div class="act-head"><span class="label">recent transactions</span><a id="addr-explorer" class="mini" target="_blank" rel="noopener noreferrer">view address ↗</a></div>
+        <div id="history-list" class="history"></div>
       </div>
 
       <div id="send-form" class="settings" hidden>
