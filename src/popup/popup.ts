@@ -90,8 +90,8 @@ async function renderPending() {
 }
 async function resolve(id: string, ap: boolean) { await call("resolve", id, ap); msg(ap ? "approved" : "rejected"); renderPending(); }
 
-$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (pw.length < 10) return msg("use at least 10 characters — this password encrypts your key", "err"); await call("create", pw); msg("wallet created — back it up!", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
-$("btn-import").addEventListener("click", async () => { try { if (val("import-pw").length < 10) return msg("use at least 10 characters — this password encrypts your key", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("key imported", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("enter a password", "err"); await call("create", pw); msg("wallet created — back it up!", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-import").addEventListener("click", async () => { try { if (!val("import-pw")) return msg("enter a password to encrypt the key", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("key imported", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
 $("btn-refresh").addEventListener("click", refreshBalance);
