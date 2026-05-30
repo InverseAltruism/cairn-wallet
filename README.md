@@ -1,60 +1,82 @@
 # Cairn Wallet
 
-A **non-custodial browser wallet for Compute Substrate (CSD)** — likely the first CSD wallet.
-Hold your key locally (encrypted), sign transactions, post to Cairn, and **Sign in with CSD**
-(passwordless). Your private key never leaves the device.
+A non-custodial browser wallet for Compute Substrate (CSD), and as far as I know the first CSD wallet.
+It holds your key locally (encrypted), signs transactions, posts to Cairn, and lets you sign in to
+sites with your CSD key instead of a password. The private key never leaves your device.
 
-## Why not fork a Bitcoin wallet?
-CSD shares Bitcoin's *crypto primitives* (secp256k1, `hash160`, SHA256d, UTXO) but **not** its
-transaction format or addressing — CSD uses `bincode` serialization, the **CSD_SIG_V1** tagged-hash
-sighash, and raw 20-byte `0x` addresses (no base58check/bech32). A Bitcoin wallet's value is in
-exactly the layer we can't reuse (PSBT, address encoding, SIGHASH). So this reuses the **standard
-MV3 extension architecture** (the pattern Alby/UniSat/MetaMask share) wired to our own
-consensus-proven CSD signing core (`@noble/curves` + `@noble/hashes` + WebCrypto).
+## Why not just fork a Bitcoin wallet?
+
+CSD borrows Bitcoin's cryptographic primitives (secp256k1, `hash160`, SHA256d, a UTXO model), but
+the transaction format and addressing are different. CSD serializes with `bincode`, uses the
+`CSD_SIG_V1` tagged-hash sighash, and addresses are raw 20-byte `0x` values with no base58check or
+bech32 encoding.
+
+The parts of a Bitcoin wallet actually worth reusing (PSBT, address encoding, SIGHASH) are exactly
+the parts CSD doesn't use, so a fork would carry a lot of weight that never applies. What does carry
+over is the extension shape itself. This wallet uses the standard Manifest V3 architecture that
+Alby, UniSat, and MetaMask all share, wired to a CSD signing core built on `@noble/curves`,
+`@noble/hashes`, and WebCrypto.
 
 ## Architecture
-- **`src/core/`** — browser-safe, framework-free, the security-critical part:
-  - `csdtx.ts` — CSD consensus serialize / txid / CSD_SIG_V1 sighash + secp256k1 sign/verify.
-  - `account.ts` — keygen / import (range-validated).
-  - `keystore.ts` — AES-256-GCM vault, PBKDF2-SHA256 (600k, OWASP 2023). Wrong password → decrypt fails.
-  - `node.ts` — non-custodial submit (built + **locally signed**, then `/tx/submit`) + sign-in.
-  - `wallet.ts` — the brain (storage-injected): create/import/unlock/lock/balance/send/propose/
-    attest/post/support/signin/export, transaction history + idle auto-lock.
-- **`src/background.ts`** — service worker; owns the unlocked key; approval queue for dApp requests.
-- **`src/content.ts` + `src/inpage.ts`** — injects `window.cairn` (connect/signIn/propose/attest),
-  relayed to the background and gated by user approval.
-- **`src/popup/`** — the UI (cyberpunk). Works as an extension popup **and** standalone (dev mode).
 
-## Build & load
+`src/core/` is browser-safe, framework-free, and the security-critical part of the codebase:
+
+- `csdtx.ts`: CSD consensus serialization, txid, the `CSD_SIG_V1` sighash, and secp256k1 sign/verify.
+- `account.ts`: key generation and import, with range validation.
+- `keystore.ts`: an AES-256-GCM vault using PBKDF2-SHA256 (600k iterations, per OWASP 2023). A wrong
+  password fails to decrypt rather than returning garbage.
+- `node.ts`: non-custodial submit (the transaction is built and signed locally, then sent to
+  `/tx/submit`) plus sign-in.
+- `wallet.ts`: the orchestration layer (storage is injected): create, import, unlock, lock, balance,
+  send, propose, attest, post, support, sign-in, export, transaction history, and idle auto-lock.
+
+The rest:
+
+- `src/background.ts` is the service worker. It owns the unlocked key and the approval queue for dApp
+  requests.
+- `src/content.ts` and `src/inpage.ts` inject `window.cairn` (connect, signIn, propose, attest),
+  relay it to the background, and gate everything behind explicit user approval.
+- `src/popup/` is the UI. It runs as an extension popup and also standalone in dev mode.
+
+## Build and load
+
 ```bash
 npm install
-npm run build          # → dist/  (esbuild bundles everything, incl. @noble)
-# Chrome/Brave/Edge: chrome://extensions → enable Developer mode → Load unpacked → select dist/
+npm run build          # outputs to dist/ (esbuild bundles everything, including @noble)
 ```
 
+Then in Chrome, Brave, or Edge: open `chrome://extensions`, enable Developer mode, choose Load
+unpacked, and select the `dist/` folder.
+
 ## Security model
-- The private key is generated/imported locally and stored **only** as an AES-GCM vault encrypted
-  with your password. It is never sent to any server.
-- Signing happens locally; only the **signed** transaction goes to the CSD node's `/tx/submit`.
-- "Sign in with CSD" signs a server nonce locally; the server verifies the signature — no password,
-  no key upload.
-- dApp (`window.cairn`) requests require the wallet unlocked **and** explicit user approval.
+
+- The private key is generated or imported locally and stored only as an AES-GCM vault encrypted with
+  your password. It is never sent to any server.
+- Signing happens locally. Only the signed transaction goes to the CSD node's `/tx/submit`.
+- Sign in with CSD works by signing a server nonce locally; the server verifies the signature. There's
+  no password and no key upload.
+- `window.cairn` requests require the wallet to be unlocked and explicitly approved by the user.
 
 ## Verification
-The security-critical core is covered by oracle-based tests (`npm test`) — checks that compare against
-external ground truth, not self-referential assertions:
-- the transaction codec reproduces the CSD **consensus golden vectors**;
-- a **real on-chain signature** verifies against an independently recomputed sighash;
-- the core signs transactions the **live node accepts**;
-- keystore decryption fails on a wrong password; key generation is unique; signatures are
+
+The security-critical core is covered by oracle-based tests (`npm test`). These compare against
+external ground truth rather than asserting against themselves:
+
+- the transaction codec reproduces the CSD consensus golden vectors;
+- a real on-chain signature verifies against an independently recomputed sighash;
+- the core signs transactions the live node accepts;
+- keystore decryption fails on a wrong password, key generation is unique, and signatures are
   deterministic and low-S (non-malleable);
-- transaction history and idle auto-lock behave correctly across mined / pending / expired states.
+- transaction history and idle auto-lock behave correctly across mined, pending, and expired states.
 
 ## Configuration
-Open **Settings** in the wallet to change:
-- `Node RPC` — defaults to the public Cairn proxy (`https://cairn-substrate.com/api/rpc`); point it at
+
+Open Settings in the wallet to change:
+
+- `Node RPC`: defaults to the public Cairn proxy (`https://cairn-substrate.com/api/rpc`). Point it at
   your own node if you run one.
-- `Cairn API` — defaults to `https://cairn-substrate.com`.
+- `Cairn API`: defaults to `https://cairn-substrate.com`.
 
 ## License
+
 MIT

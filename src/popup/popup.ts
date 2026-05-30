@@ -21,6 +21,11 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "import": return w.importKey(args[0], args[1]);
     case "unlock": return w.unlock(args[0]);
     case "lock": return w.lock();
+    case "addAccount": return w.addAccount(args[0]);
+    case "importAccount": return w.importAccount(args[0], args[1]);
+    case "switchAccount": return w.switchAccount(args[0]);
+    case "renameAccount": return w.renameAccount(args[0], args[1]);
+    case "removeAccount": return w.removeAccount(args[0]);
     case "balance": return w.balance();
     case "send": return w.send(args[0], args[1], args[2]);
     case "cairnPost": return w.cairnPost(args[0]);
@@ -39,7 +44,7 @@ const $ = (id: string) => document.getElementById(id)!;
 const val = (id: string) => ($(id) as HTMLInputElement).value;
 function show(view: string) { for (const v of ["setup", "locked", "main"]) ($("view-" + v) as HTMLElement).hidden = v !== view; }
 function msg(text: string, cls = "info") { const m = $("msg"); m.textContent = text; m.className = "msg " + cls; }
-const escapeHtml = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
 async function render() {
   const st = await call("status");
@@ -47,12 +52,44 @@ async function render() {
   if (!st.hasVault) return show("setup");
   if (!st.unlocked) return show("locked");
   show("main");
+  renderAcctSelect(st.accounts || [], st.active || 0);
   $("addr").textContent = st.addr;
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerAddr(st.addr);
   (($("set-rpc") as HTMLInputElement)).value = st.rpc;
   (($("set-api") as HTMLInputElement)).value = st.api;
   refreshBalance();
   renderPending();
+  // keep open per-account panels in sync after a switch
+  if (!($("activity") as HTMLElement).hidden) renderHistory();
+  if (!($("seal-form") as HTMLElement).hidden) renderSealed();
+  if (!($("accts-panel") as HTMLElement).hidden) renderAccts();
+}
+
+const short = (a: string) => a && a.length > 14 ? a.slice(0, 8) + "…" + a.slice(-4) : a;
+function renderAcctSelect(accounts: { addr: string; label: string }[], active: number) {
+  const sel = $("acct-select") as HTMLSelectElement;
+  sel.innerHTML = accounts.map((a, i) => `<option value="${i}">${escapeHtml(a.label)} · ${escapeHtml(short(a.addr))}</option>`).join("");
+  sel.value = String(active);
+}
+async function renderAccts() {
+  const st = await call("status");
+  const el = $("accts-list");
+  el.innerHTML = (st.accounts || []).map((a: any, i: number) => `<div class="tx">
+      <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}</span>
+        <span class="row" style="gap:6px">
+          <button class="mini" data-rename="${escapeHtml(a.addr)}">rename</button>
+          ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}
+        </span></div>
+      <div class="tx-sub"><span class="dim mono">${escapeHtml(a.addr)}</span></div>
+    </div>`).join("");
+  el.querySelectorAll<HTMLElement>("[data-rename]").forEach((b) => b.onclick = async () => {
+    const label = window.prompt("New label for this account:"); if (!label) return;
+    try { await call("renameAccount", b.dataset.rename, label); renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
+  });
+  el.querySelectorAll<HTMLElement>("[data-remove]").forEach((b) => b.onclick = async () => {
+    if (!window.confirm("Remove this account from the wallet? Make sure you've backed up its key — this only forgets it locally.")) return;
+    try { await call("removeAccount", b.dataset.remove); msg("account removed"); renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
+  });
 }
 
 const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported" };
@@ -101,8 +138,23 @@ $("btn-export").addEventListener("click", async () => { const pw = window.prompt
 $("btn-settings").addEventListener("click", () => { const s = $("settings") as HTMLElement; s.hidden = !s.hidden; });
 $("btn-save-settings").addEventListener("click", async () => { await call("setRpc", val("set-rpc").trim()); await call("setApi", val("set-api").trim()); msg("settings saved", "ok"); render(); });
 
+($("acct-select") as HTMLSelectElement).addEventListener("change", async (e) => {
+  try { await call("switchAccount", Number((e.target as HTMLSelectElement).value)); msg("switched account", "ok"); render(); }
+  catch (err: any) { msg(err.message, "err"); }
+});
+$("btn-accts").addEventListener("click", () => { const p = $("accts-panel") as HTMLElement; p.hidden = !p.hidden; if (!p.hidden) renderAccts(); });
+$("btn-add-acct").addEventListener("click", async () => {
+  try { const r = await call("addAccount"); msg("added " + (r.addr ? r.addr.slice(0, 10) + "…" : "account"), "ok"); render(); }
+  catch (e: any) { msg(e.message, "err"); }
+});
+$("btn-imp-acct").addEventListener("click", async () => {
+  const key = val("imp-acct-key").trim(); if (!key) return msg("paste a private key", "err");
+  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported", "ok"); render(); }
+  catch (e: any) { msg(e.message, "err"); }
+});
+
 const toggle = (id: string) => { const e = $(id) as HTMLElement; e.hidden = !e.hidden; };
-$("btn-send-t").addEventListener("click", () => toggle("send-form"));
+$("btn-send-t").addEventListener("click", () => { toggle("send-form"); ($("send-confirm") as HTMLElement).hidden = true; });
 $("btn-post-t").addEventListener("click", () => toggle("post-form"));
 $("btn-activity-t").addEventListener("click", () => { toggle("activity"); if (!($("activity") as HTMLElement).hidden) renderHistory(); });
 $("btn-seal-t").addEventListener("click", () => { toggle("seal-form"); if (!($("seal-form") as HTMLElement).hidden) renderSealed(); });
@@ -134,13 +186,36 @@ async function renderSealed() {
     renderSealed();
   }));
 }
+// Two-step send: "Review" shows a confirmation with the FULL recipient address,
+// amount, and fee (defends against address-poisoning / clipboard-swap — the user
+// verifies exactly what will be signed), and warns on a never-seen-before recipient.
+const SEND_FEE = 1_000_000; // 0.01 CSD
 $("btn-send").addEventListener("click", async () => {
+  const to = val("s-to").trim();
+  const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return msg("enter a valid 0x… 20-byte address", "err");
+  if (!(amt > 0)) return msg("enter an amount", "err");
+  let firstTime = true;
+  try { const h: any[] = await call("history"); firstTime = !h.some((t) => t.type === "send" && String(t.to || "").toLowerCase() === to.toLowerCase()); } catch { /* no history → treat as first time */ }
+  $("c-to").textContent = to;                       // FULL address, not truncated
+  $("c-amt").textContent = (amt / 1e8) + " CSD";
+  $("c-fee").textContent = (SEND_FEE / 1e8) + " CSD";
+  ($("c-warn") as HTMLElement).hidden = !firstTime;
+  ($("send-confirm") as HTMLElement).hidden = false;
+  msg("");
+});
+$("btn-send-back").addEventListener("click", () => { ($("send-confirm") as HTMLElement).hidden = true; });
+$("btn-send-confirm").addEventListener("click", async () => {
+  const to = val("s-to").trim();
+  const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);
   try {
-    const to = val("s-to").trim(); const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);
-    if (!(amt > 0)) return msg("enter an amount", "err");
-    msg("sending…"); const r = await call("send", to, amt);
-    if (r.ok) { msg("sent " + (amt / 1e8) + " CSD · " + String(r.txid).slice(0, 12) + "…", "ok"); refreshBalance(); }
-    else msg("send failed: " + (r.error || "?"), "err");
+    msg("sending…"); const r = await call("send", to, amt, SEND_FEE);
+    if (r.ok) {
+      msg("sent " + (amt / 1e8) + " CSD · " + String(r.txid).slice(0, 12) + "…", "ok");
+      ($("send-confirm") as HTMLElement).hidden = true;
+      ($("s-to") as HTMLInputElement).value = ""; ($("s-amt") as HTMLInputElement).value = "";
+      refreshBalance();
+    } else msg("send failed: " + (r.error || "?"), "err");
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-post").addEventListener("click", async () => {

@@ -235,6 +235,24 @@ async function main() {
     check("revealClaim succeeds", rv.ok === true);
     check("revealClaim marks the claim revealed", (await w.sealedClaims()).find((s: any) => s.txid === r1.txid)!.revealed === true);
     check("revealClaim rejects an unknown txid", !(await w.revealClaim("0xnope")).ok);
+
+    // (h3) reset() must wipe ALL state, not just the key — otherwise a new wallet on
+    // the same profile would surface the prior owner's history + sealed-claim preimages.
+    const rs = memoryStore();
+    const rw = new Wallet(rs); const ra = (await rw.create("super-secret-pw")).addr;
+    (globalThis as any).fetch = sealStub();
+    await rw.send(RCPT, 1e8); await rw.sealClaim({ claim: "secret pre-reveal claim" });
+    check("pre-reset: state stored under the account's namespace",
+      (await rs.get("txHistory:" + ra)) != null && (await rs.get("sealedClaims:" + ra)) != null);
+    await rw.reset();
+    check("reset deletes the account's history key", (await rs.get("txHistory:" + ra)) == null);
+    check("reset deletes the account's sealed-claim preimages", (await rs.get("sealedClaims:" + ra)) == null);
+    check("reset wipes vault (no wallet remains)", (await rw.status()).hasVault === false);
+
+    // (h4) importKey must not silently overwrite an existing vault (mirrors create()).
+    const ig = new Wallet(memoryStore()); await ig.create("super-secret-pw");
+    let imported = false; try { await ig.importKey("0x" + "11".repeat(32), "pw"); imported = true; } catch { /* expected */ }
+    check("importKey refuses to overwrite an existing wallet", imported === false);
   } finally { (globalThis as any).fetch = of3; }
 
   // (i) idle auto-lock — wipes the in-memory key after inactivity; stays unlocked while active.

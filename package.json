@@ -7,15 +7,15 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "tsx test/selftest.ts",
+    "test": "tsx test/selftest.ts && tsx test/multiwallet.ts && tsx test/pentest.ts && tsx test/extension-boundary.ts && tsx test/poc-signin-oracle.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@noble/curves": "^1.6.0",
-    "@noble/hashes": "^1.5.0"
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.25.12",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

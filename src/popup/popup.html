@@ -31,6 +31,21 @@
     </section>
 
     <section id="view-main" hidden>
+      <div class="acct-row">
+        <select id="acct-select" class="acct-select" title="Switch account"></select>
+        <button id="btn-accts" class="mini" title="Manage accounts">accounts ▾</button>
+      </div>
+
+      <div id="accts-panel" class="settings" hidden>
+        <div class="act-head"><span class="label">your accounts</span></div>
+        <div id="accts-list" class="history"></div>
+        <button id="btn-add-acct" class="mini">+ New account</button>
+        <div class="or">— or import an existing key —</div>
+        <input id="imp-acct-key" type="password" placeholder="private key (0x…64 hex)" />
+        <input id="imp-acct-label" placeholder="label (optional)" />
+        <button id="btn-imp-acct" class="mini">Import account</button>
+      </div>
+
       <div class="addr-row">
         <span class="label">address</span>
         <code id="addr" class="addr"></code>
@@ -67,7 +82,20 @@
       <div id="send-form" class="settings" hidden>
         <label>Recipient address <input id="s-to" placeholder="0x… (20-byte addr)" /></label>
         <label>Amount (CSD) <input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" /></label>
-        <button id="btn-send" class="primary">Send</button>
+        <button id="btn-send" class="primary">Review send</button>
+
+        <div id="send-confirm" hidden>
+          <div class="confirm-box">
+            <div class="crow"><span class="label">To</span><code id="c-to" class="addr"></code></div>
+            <div class="crow"><span class="label">Amount</span><b id="c-amt" class="bal"></b></div>
+            <div class="crow"><span class="label">Fee</span><span id="c-fee"></span></div>
+            <div id="c-warn" class="warn" hidden>⚠ First time sending to this address — check every character. Payments are irreversible.</div>
+          </div>
+          <div class="row">
+            <button id="btn-send-confirm" class="primary">Confirm &amp; send</button>
+            <button id="btn-send-back">Back</button>
+          </div>
+        </div>
       </div>
 
       <div id="post-form" class="settings" hidden>

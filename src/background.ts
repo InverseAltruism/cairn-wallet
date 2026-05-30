@@ -20,6 +20,11 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "import": return wallet.importKey(args[0], args[1]);
     case "unlock": return wallet.unlock(args[0]);
     case "lock": return wallet.lock();
+    case "addAccount": return wallet.addAccount(args[0]);
+    case "importAccount": return wallet.importAccount(args[0], args[1]);
+    case "switchAccount": return wallet.switchAccount(args[0]);
+    case "renameAccount": return wallet.renameAccount(args[0], args[1]);
+    case "removeAccount": return wallet.removeAccount(args[0]);
     case "balance": return wallet.balance();
     case "propose": return wallet.propose(args[0]);
     case "attest": return wallet.attest(args[0]);

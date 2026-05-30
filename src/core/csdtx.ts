@@ -78,3 +78,13 @@ export function stableStringify(v: unknown): string {
 export function cairnPayloadHash(content: unknown): string {
   return "0x" + bytesToHex(sha256(utf8ToBytes(stableStringify(content))));
 }
+
+// "Sign in with CSD" digest — single sha256("cairn-login:"+nonce), the SAME scheme
+// the server uses (auth.ts loginDigest). The wallet derives this LOCALLY from the
+// nonce and signs only this; it never signs a 32-byte value handed to it by the
+// server. A login digest (single sha256) is structurally disjoint from a tx sighash
+// (sha256d of a tagged hash), so a malicious/MITM'd API cannot coax a spend
+// signature out of the sign-in flow.
+export function loginDigest(nonce: string): string {
+  return "0x" + bytesToHex(sha256(utf8ToBytes("cairn-login:" + nonce)));
+}

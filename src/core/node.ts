@@ -2,7 +2,7 @@
 // Browser fetch. The non-custodial flow: coin-select → node /tx/template → sign the
 // signing_hash LOCALLY → set script_sig → node /tx/submit. The private key only ever
 // lives in the wallet; nothing here sends it anywhere.
-import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, bytesArr, type App, type Tx } from "./csdtx.js";
+import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
 
 const strip = (h: string) => (h.startsWith("0x") ? h.slice(2) : h);
 
@@ -52,6 +52,7 @@ async function pickInput(rpc: string, addr: string, need: number): Promise<{ txi
 // cannot trick the wallet into signing a different transaction; the node re-derives
 // the same sighash and would reject any tampering anyway.
 async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string): Promise<SubmitResult> {
+  if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false };
   const addr = addrFromPriv(priv);
   const inp = await pickInput(rpc, addr, fee);
   if (!inp) return { ok: false, error: "no confirmed input greater than fee", sighashMatch: false };
@@ -75,6 +76,11 @@ export function attest(rpc: string, p: { proposalId: string; score: number; conf
 export async function send(rpc: string, p: { to: string; amount: number; fee: number }, priv: string): Promise<SubmitResult> {
   if (!/^0x[0-9a-fA-F]{40}$/.test(p.to)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false };
   if (!(p.amount > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false };
+  // CSD amounts are integer base units carried as JS numbers. Above 2^53 a Number
+  // silently loses precision, so the value you sign could differ from what you meant.
+  // Refuse anything outside the exactly-representable range (well above total supply).
+  if (!Number.isSafeInteger(p.amount) || !Number.isSafeInteger(p.fee) || !Number.isSafeInteger(p.amount + p.fee))
+    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
   const addr = addrFromPriv(priv);
   const need = p.amount + p.fee;
   const { utxos } = await balance(rpc, addr);
@@ -99,7 +105,10 @@ export function registerContent(apiBase: string, content: any, txid: string): Pr
 // Sign in with CSD against the Cairn API: fetch nonce, sign its digest locally, verify.
 export async function signIn(apiBase: string, priv: string): Promise<{ ok: boolean; addr?: string; session?: string; error?: string }> {
   const n = await post(apiBase, "/auth/nonce", {});
-  if (!n?.ok) return { ok: false, error: "could not get nonce" };
-  const { sig64, pub33 } = signSighash(n.digest, priv);
+  if (!n?.ok || !n.nonce) return { ok: false, error: "could not get nonce" };
+  // Derive the digest LOCALLY from the nonce — never sign the server's `digest`
+  // field. Otherwise a malicious/MITM'd API could return a tx sighash and harvest a
+  // valid spend signature from the login flow (see test/poc-signin-oracle.ts).
+  const { sig64, pub33 } = signSighash(loginDigest(String(n.nonce)), priv);
   return post(apiBase, "/auth/verify", { nonce: n.nonce, pub33, sig64 });
 }
