@@ -56,6 +56,8 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
     else if (p.method === "signin") result = await wallet.signIn();
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest(p.params);
+    else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
+    else if (p.method === "revealClaim") result = await wallet.revealClaim(p.params);
     else throw new Error("unsupported dApp method: " + p.method);
     p.resolve({ ok: true, result });
   } catch (e: any) { p.resolve({ ok: false, error: e?.message ?? String(e) }); }

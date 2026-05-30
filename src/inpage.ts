@@ -23,6 +23,11 @@
     signIn: () => req("signin"),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
+    // commit-reveal. The claim text passes through the page, but the salt (nonce)
+    // is generated in the wallet and never leaves it — so the page can't forge the
+    // commitment, and reveal can only be done by the wallet that sealed it.
+    sealClaim: (p: any) => req("sealClaim", p),
+    revealClaim: (txid: string) => req("revealClaim", txid),
   };
   window.dispatchEvent(new Event("cairn#initialized"));
 })();

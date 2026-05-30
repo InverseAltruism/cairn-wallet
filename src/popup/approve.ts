@@ -19,6 +19,8 @@ function describe(r: any): string {
   if (r.method === "signin") return "<b>Sign in with CSD</b> — prove your address (no transaction).";
   if (r.method === "propose") return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>fee: ${(Number(p.fee || 0) / 1e8)} CSD`;
   if (r.method === "attest") return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "").slice(0, 18))}…</code><br>fee: ${(Number(p.fee || 0) / 1e8)} CSD · score ${p.score}`;
+  if (r.method === "sealClaim") return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code><br>fee: ${(Number(p.fee || 25000000) / 1e8)} CSD · the salt + claim stay in your wallet`;
+  if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> — publish the preimage; it becomes public + provably committed earlier.<br>tx: <code>${escapeHtml(String(r.params || "").slice(0, 18))}…</code>`;
   return `<b>${escapeHtml(r.method)}</b>`;
 }
 
