@@ -40,14 +40,21 @@ npm run build          # → dist/  (esbuild bundles everything, incl. @noble)
   no key upload.
 - dApp (`window.cairn`) requests require the wallet unlocked **and** explicit user approval.
 
-## What's tested (oracle-based) vs. what needs your check
-- **Machine-verified** (`npm test`, 22 checks): the codec matches the CSD **consensus golden
-  vectors**; a **real on-chain signature** verifies against our recomputed sighash; the core signed
-  a tx the **live node accepted+mined**; keystore wrong-password rejection; wallet lifecycle; popup
-  DOM-wiring cross-check; bundles parse.
-- **Needs a human (no headless path):** loading the unpacked extension in Chrome and clicking
-  through the popup / dApp approval. The popup logic is the same tested `Wallet` brain; this is the
-  one layer that requires a real browser to exercise end-to-end.
+## Verification
+The security-critical core is covered by oracle-based tests (`npm test`) — checks that compare against
+external ground truth, not self-referential assertions:
+- the transaction codec reproduces the CSD **consensus golden vectors**;
+- a **real on-chain signature** verifies against an independently recomputed sighash;
+- the core signs transactions the **live node accepts**;
+- keystore decryption fails on a wrong password; key generation is unique; signatures are
+  deterministic and low-S (non-malleable);
+- transaction history and idle auto-lock behave correctly across mined / pending / expired states.
 
-Config: `Node RPC` (default `http://127.0.0.1:8790`) and `Cairn API` (default
-`https://cairn-substrate.com`) are editable in Settings. MIT.
+## Configuration
+Open **Settings** in the wallet to change:
+- `Node RPC` — defaults to the public Cairn proxy (`https://cairn-substrate.com/api/rpc`); point it at
+  your own node if you run one.
+- `Cairn API` — defaults to `https://cairn-substrate.com`.
+
+## License
+MIT
