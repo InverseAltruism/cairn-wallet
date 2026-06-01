@@ -6,6 +6,20 @@ HD), holds everything encrypted locally, signs transactions, posts to Cairn, and
 sites with your CSD key instead of a password. The private key and the recovery phrase never leave
 your device.
 
+## Backups & portability
+
+There are two ways to back up, and they serve different purposes:
+
+- **Recovery phrase (12 words, BIP-39).** Restores **all** your accounts at once, in Cairn Wallet or
+  any CSD wallet that uses the same derivation path (`m/44'/7779'/0'/0/i`). This is your primary backup.
+- **Account private key** (*Reveal key*). A plain CSD private key for a single account. Because CSD has
+  no shared HD standard yet, this is the **portable** backup: it imports into the official `csd` CLI
+  (`csd wallet recover`) and any CSD tool, producing the same address. Use it to move one account
+  elsewhere. (Verified: a key generated here recovers to the identical address in the `csd` CLI.)
+
+So your keys are never locked to this wallet — the phrase is the convenient full backup, and per-account
+private-key export is the universal escape hatch.
+
 ## Why not just fork a Bitcoin wallet?
 
 CSD borrows Bitcoin's cryptographic primitives (secp256k1, `hash160`, SHA256d, a UTXO model), but

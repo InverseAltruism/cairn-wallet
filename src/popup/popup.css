@@ -11,6 +11,9 @@
 .seed-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:10px 0}
 .seed-word{display:flex;align-items:baseline;gap:6px;padding:6px 8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:12px}
 .seed-n{color:var(--dim);font-size:10px;min-width:14px;text-align:right}
+.infobox{margin:10px 0;padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(110,231,160,.04);font-size:11px;line-height:1.5;color:var(--dim)}
+.infobox .infohead{color:var(--green);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
+.infobox code{color:var(--ink);font-size:10px}
 .ack{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);margin:10px 0}
 .ack input{width:auto;margin:0}
 button:disabled{opacity:.45;cursor:not-allowed}
