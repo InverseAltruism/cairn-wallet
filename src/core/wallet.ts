@@ -57,6 +57,10 @@ export class Wallet {
   }
   async setRpc(u: string) { this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { this.api = u; await this.store.set("api", u); }
+  // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
+  async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
+  async addRpc(u: string): Promise<void> { const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
+  async removeRpc(u: string): Promise<void> { await this.store.set("customRpcs", (await this.rpcList()).filter((x) => x !== u)); }
 
   async status(): Promise<WalletStatus> {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];

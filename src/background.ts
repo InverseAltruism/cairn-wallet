@@ -37,6 +37,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "exportMnemonic": return wallet.exportMnemonic(args[0]);
     case "setRpc": return wallet.setRpc(args[0]);
     case "setApi": return wallet.setApi(args[0]);
+    case "rpcList": return wallet.rpcList();
+    case "addRpc": return wallet.addRpc(args[0]);
+    case "removeRpc": return wallet.removeRpc(args[0]);
     case "reset": return wallet.reset();
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)

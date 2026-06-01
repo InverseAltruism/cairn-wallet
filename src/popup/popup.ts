@@ -36,6 +36,9 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "exportMnemonic": return w.exportMnemonic(args[0]);
     case "setRpc": return w.setRpc(args[0]);
     case "setApi": return w.setApi(args[0]);
+    case "rpcList": return w.rpcList();
+    case "addRpc": return w.addRpc(args[0]);
+    case "removeRpc": return w.removeRpc(args[0]);
     case "pending": return [];
     case "resolve": return { done: true };
     default: throw new Error("unknown " + method);
@@ -52,9 +55,10 @@ function busy(text: string) { const m = $("msg"); m.innerHTML = `<span class="sp
 // Brief visual confirmation on a button (e.g. copy).
 function flashBtn(id: string, label: string) { const b = $(id); const o = b.textContent; b.textContent = label; b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
 
+let currentRpc = "";
 async function render() {
   const st = await call("status");
-  $("net").textContent = (st.rpc || "").replace(/^https?:\/\//, "");
+  currentRpc = st.rpc || "";
   if (!st.hasVault) return show("setup");
   if (!st.unlocked) return show("locked");
   show("main");
@@ -63,7 +67,6 @@ async function render() {
   renderAcctSelect(st.accounts || [], st.active || 0);
   $("addr").textContent = st.addr;
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerAddr(st.addr);
-  (($("set-rpc") as HTMLInputElement)).value = st.rpc;
   (($("set-api") as HTMLInputElement)).value = st.api;
   refreshBalance();
   renderPending();
@@ -191,7 +194,6 @@ $("btn-unlock").addEventListener("click", async () => { try { await call("unlock
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
 $("btn-refresh").addEventListener("click", refreshBalance);
 $("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("addr").textContent || ""); flashBtn("btn-copy", "copied ✓"); });
-$("btn-signin").addEventListener("click", async () => { try { busy("signing in…"); const r = await call("signin"); r.ok ? msg("signed in as " + r.addr, "ok") : msg("sign-in failed: " + (r.error || "?"), "err"); } catch (e: any) { msg(e.message, "err"); } });
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
@@ -270,11 +272,45 @@ async function ensureHostAccess(urls: string[]): Promise<boolean> {
   } catch { return false; }
 }
 $("btn-save-settings").addEventListener("click", async () => {
-  const rpc = val("set-rpc").trim(), api = val("set-api").trim();
-  const granted = await ensureHostAccess([rpc, api]);
-  if (!granted) return msg("settings not saved — host access denied (the wallet can't reach a node it has no permission for)", "err");
-  await call("setRpc", rpc); await call("setApi", api); msg("settings saved", "ok"); render();
+  const api = val("set-api").trim();
+  const granted = await ensureHostAccess([api]);
+  if (!granted) return msg("not saved — host access denied (the wallet can't reach an API it has no permission for)", "err");
+  await call("setApi", api); msg("settings saved", "ok"); render();
 });
+
+// ── RPC dropdown (header) — preset + user-added nodes, switch with one click ──
+const RPC_PRESETS = [
+  { label: "Cairn proxy", url: "https://cairn-substrate.com/api/rpc" },
+  { label: "Local node", url: "http://127.0.0.1:8790" },
+];
+async function renderRpcMenu() {
+  const menu = $("rpc-menu");
+  const customs: string[] = await call("rpcList").catch(() => []);
+  const preset = (u: string) => RPC_PRESETS.find((p) => p.url === u)?.label;
+  const row = (url: string, label: string, removable: boolean) => `
+    <div class="rpc-row${url === currentRpc ? " active" : ""}">
+      <button class="rpc-pick" data-url="${escapeHtml(url)}">${url === currentRpc ? "● " : ""}<span class="rpc-label">${escapeHtml(label)}</span><span class="rpc-url">${escapeHtml(url.replace(/^https?:\/\//, ""))}</span></button>
+      ${removable ? `<button class="rpc-del mini" data-del="${escapeHtml(url)}" title="remove">×</button>` : ""}
+    </div>`;
+  const customRows = customs.filter((u) => !preset(u)).map((u) => row(u, "Custom", true)).join("");
+  menu.innerHTML = RPC_PRESETS.map((p) => row(p.url, p.label, false)).join("") + customRows
+    + `<div class="rpc-add"><input id="rpc-add-input" placeholder="https://your-node…" /><button id="rpc-add-btn" class="mini">add</button></div>`;
+  menu.querySelectorAll<HTMLElement>("[data-url]").forEach((b) => b.onclick = () => selectRpc(b.dataset.url!));
+  menu.querySelectorAll<HTMLElement>("[data-del]").forEach((b) => b.onclick = async (e) => { e.stopPropagation(); await call("removeRpc", b.dataset.del); renderRpcMenu(); });
+  ($("rpc-add-btn") as HTMLElement).onclick = async () => {
+    const u = (($("rpc-add-input") as HTMLInputElement).value || "").trim();
+    if (!/^https?:\/\/.+/.test(u)) return msg("enter a full RPC URL (http(s)://…)", "err");
+    await call("addRpc", u); await selectRpc(u);
+  };
+}
+async function selectRpc(url: string) {
+  const granted = await ensureHostAccess([url]);
+  if (!granted) return msg("RPC not switched — host access denied", "err");
+  await call("setRpc", url); ($("rpc-menu") as HTMLElement).hidden = true; msg("RPC: " + url.replace(/^https?:\/\//, ""), "ok"); render();
+}
+$("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLElement; if (m.hidden) { renderRpcMenu(); m.hidden = false; } else m.hidden = true; });
+// click-away closes the RPC menu
+document.addEventListener("click", (e) => { const m = $("rpc-menu") as HTMLElement; const w = (e.target as HTMLElement).closest(".rpc-wrap"); if (!w && !m.hidden) m.hidden = true; });
 
 ($("acct-select") as HTMLSelectElement).addEventListener("change", async (e) => {
   try { await call("switchAccount", Number((e.target as HTMLSelectElement).value)); msg("switched account", "ok"); render(); }
@@ -292,7 +328,28 @@ $("btn-imp-acct").addEventListener("click", async () => {
 });
 
 $("btn-send-t").addEventListener("click", () => { openPanel("send-form"); });
-$("btn-post-t").addEventListener("click", () => { openPanel("post-form"); });
+$("btn-post-t").addEventListener("click", () => { if (openPanel("post-form")) populateDomains(); });
+// Fill the category dropdown from the live Cairn board (/api/domains), with a
+// "+ new category…" option for open domains. Falls back to the built-in vocabulary
+// offline. Cached per popup so reopening is instant.
+let domainsCache: string[] | null = null;
+const FALLBACK_DOMAINS = ["csd:apps", "csd:features", "csd:bugs", "csd:bounties", "csd:docs", "csd:tools", "csd:integrations", "csd:signals", "csd:quests"];
+async function populateDomains() {
+  const sel = $("p-domain") as HTMLSelectElement;
+  const custom = $("p-domain-custom") as HTMLInputElement;
+  custom.hidden = true;
+  let domains = domainsCache || FALLBACK_DOMAINS;
+  if (!domainsCache) {
+    try {
+      const st = await call("status");
+      const j = await (await fetch(`${st.api}/api/domains`)).json();
+      if (j && Array.isArray(j.domains) && j.domains.length) { domains = j.domains.map((d: any) => d.key); domainsCache = domains; }
+    } catch { /* offline → fallback vocabulary */ }
+  }
+  sel.innerHTML = domains.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("") + `<option value="__custom__">+ new category…</option>`;
+  sel.value = domains.includes("csd:apps") ? "csd:apps" : domains[0];
+  sel.onchange = () => { const isCustom = sel.value === "__custom__"; custom.hidden = !isCustom; if (isCustom) custom.focus(); };
+}
 $("btn-activity-t").addEventListener("click", () => { if (openPanel("activity")) renderHistory(); });
 $("btn-seal-t").addEventListener("click", () => { if (openPanel("seal-form")) renderSealed(); });
 $("btn-seal").addEventListener("click", async () => {
@@ -376,10 +433,14 @@ $("btn-send-confirm").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-post").addEventListener("click", async () => {
+  const sel = ($("p-domain") as HTMLSelectElement).value;
+  const domain = (sel === "__custom__" ? val("p-domain-custom").trim() : sel);
+  if (!/^csd:[a-z0-9:_-]+$/i.test(domain)) return msg("pick a category or enter one like csd:tools", "err");
+  if (!val("p-title").trim()) return msg("enter a title", "err");
   try {
     const fee = Math.max(Math.round(parseFloat(val("p-fee") || "0.25") * 1e8), 25000000);
     busy("posting…");
-    const r = await call("cairnPost", { domain: val("p-domain").trim(), title: val("p-title"), body: val("p-body"), fee });
+    const r = await call("cairnPost", { domain, title: val("p-title"), body: val("p-body"), fee });
     if (r.ok) { msg("posted · " + String(r.txid).slice(0, 12) + "… (shows on Cairn after ~1 block)", "ok"); refreshBalance(); }
     else msg("post failed: " + (r.error || "?"), "err");
   } catch (e: any) { msg(e.message, "err"); }

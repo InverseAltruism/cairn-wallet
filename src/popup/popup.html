@@ -10,7 +10,10 @@
   <div id="app">
     <header>
       <div class="brand"><img class="brandlogo" src="icons/logo-white.png" alt="" />CAIRN <span class="dim">wallet</span></div>
-      <div id="net" class="net dim"></div>
+      <div class="rpc-wrap">
+        <button id="btn-rpc" class="rpcbtn" title="Switch node RPC">RPC ▾</button>
+        <div id="rpc-menu" class="rpc-menu" hidden></div>
+      </div>
     </header>
 
     <section id="view-setup" hidden>
@@ -85,7 +88,6 @@
         <button id="btn-post-t">Post to Cairn</button>
         <button id="btn-seal-t">Seal a claim</button>
         <button id="btn-activity-t">Activity</button>
-        <button id="btn-signin">Sign in with CSD</button>
         <button id="btn-phrase">Recovery phrase</button>
         <button id="btn-export">Reveal key</button>
         <button id="btn-settings">Settings</button>
@@ -126,7 +128,10 @@
       </div>
 
       <div id="post-form" class="settings" hidden>
-        <label>Category <input id="p-domain" value="csd:apps" /></label>
+        <label>Category
+          <select id="p-domain" class="acct-select" style="width:100%"></select>
+        </label>
+        <input id="p-domain-custom" placeholder="new category, e.g. csd:tools" hidden />
         <label>Title <input id="p-title" placeholder="Short, specific title" /></label>
         <label>Description <input id="p-body" placeholder="What and why" /></label>
         <label>Fee (CSD, min 0.25) <input id="p-fee" type="number" step="0.05" min="0.25" value="0.25" /></label>
@@ -158,9 +163,9 @@
       </div>
 
       <div id="settings" class="settings" hidden>
-        <label>Node RPC <input id="set-rpc" /></label>
         <label>Cairn API <input id="set-api" /></label>
         <button id="btn-save-settings" class="mini">save</button>
+        <div class="dim" style="font-size:11px;margin-top:6px">Switch the node RPC from the <b>RPC</b> menu (top right).</div>
       </div>
     </section>
 
