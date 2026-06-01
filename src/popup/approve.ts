@@ -49,8 +49,31 @@ async function render() {
     const acct = (st.accounts || [])[st.active || 0];
     const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
     $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>`
-      + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`;
+      + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
+      + `<div class="req dim" id="cost">${costLine(current)}</div>`;
+    fillBalance(current);
   }
+}
+
+// Static cost summary from the request's own params (no network).
+function costLine(r: any): string {
+  if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return "no funds move — this only shares/signs your identity.";
+  const fee = Number(r.params?.fee || (r.method === "sealClaim" ? 25000000 : 0));
+  return `cost: ${fee / 1e8} CSD network fee (paid to miners), + a tiny chain fee.`;
+}
+// Fetch the signer's balance once per request and show the projected balance-after so
+// the user sees the real impact of approving — fetched once per request id (the render
+// loop ticks every ~1.2s; we don't want to spam the node).
+let balForId: string | null = null;
+async function fillBalance(r: any) {
+  if (balForId === r.id) return; balForId = r.id;
+  try {
+    const b = await call("balance");
+    const fee = Number(r.params?.fee || (r.method === "sealClaim" ? 25000000 : 0));
+    const after = (b.confirmed - fee) / 1e8;
+    const el = document.getElementById("cost");
+    if (el) el.textContent = `${costLine(r)}  balance: ${(b.confirmed / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 })} → ~${after.toLocaleString(undefined, { maximumFractionDigits: 4 })} CSD`;
+  } catch { /* offline — leave the static cost line */ }
 }
 async function resolve(approve: boolean) { if (!current) return; await call("resolve", current.id, approve); msg(approve ? "approved" : "rejected"); render(); }
 

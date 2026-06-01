@@ -57,7 +57,7 @@ async function main() {
 
   console.log("\n=== a website (dApp channel) CANNOT invoke key-exposing / privileged methods ===");
   // Even APPROVED, these must be rejected by resolvePending's method whitelist.
-  for (const m of ["export", "send", "import", "reset", "setApi", "setRpc", "addAccount", "switchAccount", "removeAccount", "unlock", "lock", "create"]) {
+  for (const m of ["export", "exportMnemonic", "restore", "send", "import", "reset", "setApi", "setRpc", "addAccount", "switchAccount", "removeAccount", "unlock", "lock", "create"]) {
     const req = dappAsync(m, m === "send" ? ["0x" + "cc".repeat(20), 1e8] : ["x"]);
     await tick();
     const pend = (await popup("pending")).result;

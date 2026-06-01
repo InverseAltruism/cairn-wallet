@@ -13,11 +13,13 @@
   const req = (method: string, params?: any) => new Promise((resolve) => {
     const id = String(seq++);
     waiters.set(id, resolve);
-    window.postMessage({ target: "cairn-content", id, method, params }, "*");
+    // Target our OWN origin, not "*", so the relay message can never be delivered to a
+    // cross-origin iframe embedded in the page (defence in depth; we also check source).
+    window.postMessage({ target: "cairn-content", id, method, params }, window.location.origin);
   });
   (window as any).cairn = {
     isCairn: true,
-    version: "0.1.0",
+    version: "0.2.0",
     connect: () => req("connect"),
     getAddress: () => req("getAddress"),
     signIn: () => req("signin"),

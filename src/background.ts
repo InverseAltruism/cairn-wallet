@@ -17,6 +17,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
   switch (method) {
     case "status": return wallet.status();
     case "create": return wallet.create(args[0]);
+    case "restore": return wallet.restore(args[0], args[1]);
     case "import": return wallet.importKey(args[0], args[1]);
     case "unlock": return wallet.unlock(args[0]);
     case "lock": return wallet.lock();
@@ -33,6 +34,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnSupport": return wallet.cairnSupport(args[0], args[1], args[2], args[3]);
     case "signin": return wallet.signIn();
     case "export": return wallet.exportKey(args[0]);
+    case "exportMnemonic": return wallet.exportMnemonic(args[0]);
     case "setRpc": return wallet.setRpc(args[0]);
     case "setApi": return wallet.setApi(args[0]);
     case "reset": return wallet.reset();

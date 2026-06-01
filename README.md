@@ -1,8 +1,10 @@
 # Cairn Wallet
 
 A non-custodial browser wallet for Compute Substrate (CSD), and as far as I know the first CSD wallet.
-It holds your key locally (encrypted), signs transactions, posts to Cairn, and lets you sign in to
-sites with your CSD key instead of a password. The private key never leaves your device.
+It generates a 12-word recovery phrase on your device, derives your accounts from it (BIP-39/BIP-32
+HD), holds everything encrypted locally, signs transactions, posts to Cairn, and lets you sign in to
+sites with your CSD key instead of a password. The private key and the recovery phrase never leave
+your device.
 
 ## Why not just fork a Bitcoin wallet?
 
@@ -22,13 +24,17 @@ Alby, UniSat, and MetaMask all share, wired to a CSD signing core built on `@nob
 `src/core/` is browser-safe, framework-free, and the security-critical part of the codebase:
 
 - `csdtx.ts`: CSD consensus serialization, txid, the `CSD_SIG_V1` sighash, and secp256k1 sign/verify.
-- `account.ts`: key generation and import, with range validation.
+- `account.ts`: BIP-39 seed-phrase generation + BIP-32/BIP-44 HD derivation (path
+  `m/44'/7779'/0'/0/i`, the CSD coin type) and raw single-key import, with range validation. One
+  12-word phrase recovers every derived account, in order; imported keys are flagged as not
+  seed-recoverable.
 - `keystore.ts`: an AES-256-GCM vault using PBKDF2-SHA256 (600k iterations, per OWASP 2023). A wrong
   password fails to decrypt rather than returning garbage.
-- `node.ts`: non-custodial submit (the transaction is built and signed locally, then sent to
-  `/tx/submit`) plus sign-in.
-- `wallet.ts`: the orchestration layer (storage is injected): create, import, unlock, lock, balance,
-  send, propose, attest, post, support, sign-in, export, transaction history, and idle auto-lock.
+- `node.ts`: multi-input coin selection, non-custodial submit (the transaction is built and signed
+  locally, then sent to `/tx/submit`), plus sign-in.
+- `wallet.ts`: the orchestration layer (storage is injected): create (HD), restore from phrase,
+  import key, unlock, lock, balance, multi-account add/switch/rename/remove, send, propose, attest,
+  post, support, sign-in, reveal key, reveal recovery phrase, transaction history, and idle auto-lock.
 
 The rest:
 

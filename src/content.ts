@@ -8,10 +8,11 @@ s.src = chrome.runtime.getURL("inpage.js");
 s.onload = () => s.remove();
 
 window.addEventListener("message", (ev: MessageEvent) => {
-  if (ev.source !== window || (ev.data as any)?.target !== "cairn-content") return;
+  if (ev.source !== window || ev.origin !== window.location.origin || (ev.data as any)?.target !== "cairn-content") return;
   const { id, method, params } = ev.data as any;
   chrome.runtime.sendMessage({ kind: "dapp", method, params }, (res: any) => {
-    window.postMessage({ target: "cairn-inpage", id, res }, "*");
+    // Reply only to our own origin (not "*") — the inpage provider lives in the same page.
+    window.postMessage({ target: "cairn-inpage", id, res }, window.location.origin);
   });
 });
 

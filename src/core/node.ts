@@ -38,29 +38,61 @@ function txToNodeJson(tx: Tx): any {
 
 export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean }
 
-// Pick one confirmed UTXO that covers `need` (smallest-first; prefer non-coinbase).
-async function pickInput(rpc: string, addr: string, need: number): Promise<{ txid: string; vout: number; value: number } | null> {
-  const { utxos } = await balance(rpc, addr);
-  const ok = (x: any) => Number(x.value) >= need && Number(x.confirmations ?? 1) >= 1;
-  const cand = utxos.filter((x: any) => ok(x) && !x.coinbase).sort((a: any, b: any) => Number(a.value) - Number(b.value));
-  const x = cand[0] ?? utxos.filter(ok).sort((a: any, b: any) => Number(a.value) - Number(b.value))[0];
-  return x ? { txid: x.txid, vout: Number(x.vout), value: Number(x.value) } : null;
+interface SelectedInput { txid: string; vout: number; value: number }
+interface Selection { inputs: SelectedInput[]; total: number }
+
+// Greedy multi-input coin selection covering `need` (= amount + fee). Largest-first
+// so we reach the target with the fewest inputs; prefers spending mature non-coinbase
+// coins, only dipping into coinbase outputs if the spendable set can't cover `need`.
+// Returns null if even the whole confirmed balance is short. The CSD sighash blanks
+// ALL inputs (see csdtx.ts `stripped`), so one signature covers every input — and
+// since all of a wallet's inputs are from one address/key, we sign once and apply the
+// same scriptSig to each. `total` is summed in the safe-integer range (guarded below).
+export function selectInputs(utxos: any[], need: number): Selection | null {
+  const confirmed = utxos.filter((x: any) => Number(x.confirmations ?? 1) >= 1);
+  const byValDesc = (a: any, b: any) => Number(b.value) - Number(a.value);
+  const take = (pool: any[]): Selection | null => {
+    const inputs: SelectedInput[] = [];
+    let total = 0;
+    for (const x of [...pool].sort(byValDesc)) {
+      const v = Number(x.value);
+      total += v;
+      // Refuse magnitudes that lose precision (a hostile RPC can't push the running
+      // sum past 2^53 and slip a mis-signed value through) — bail before it matters.
+      if (!Number.isFinite(v) || !Number.isSafeInteger(total)) return null;
+      inputs.push({ txid: x.txid, vout: Number(x.vout), value: v });
+      if (total >= need) return { inputs, total };
+    }
+    return null;
+  };
+  // try non-coinbase only first; fall back to the full confirmed set if needed
+  return take(confirmed.filter((x: any) => !x.coinbase)) ?? take(confirmed);
 }
 
 // Build the FULL tx locally (we set the app ourselves), sign OUR OWN codec sighash,
 // and submit. We never sign a hash a server handed us — so a malicious or MITM'd RPC
 // cannot trick the wallet into signing a different transaction; the node re-derives
 // the same sighash and would reject any tampering anyway.
+// Sign every input with the one whole-tx sighash and submit. All inputs are blanked
+// in the sighash and all belong to this account's single key, so one signature is
+// reused across them. Returns sighashMatch:true because WE computed the sighash.
+async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitResult> {
+  const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
+  const scriptSig = buildScriptSig(sig64, pub33);
+  for (const i of tx.inputs) i.scriptSig = scriptSig;
+  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
+  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
+}
+
 async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string): Promise<SubmitResult> {
   if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false };
   const addr = addrFromPriv(priv);
-  const inp = await pickInput(rpc, addr, fee);
-  if (!inp) return { ok: false, error: "no confirmed input greater than fee", sighashMatch: false };
-  const tx: Tx = { version: 1, locktime: 0, app, inputs: [{ prevTxid: inp.txid, vout: inp.vout, scriptSig: "0x" }], outputs: [{ value: inp.value - fee, scriptPubkey: addr }] };
-  const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
-  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
-  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
+  const { utxos } = await balance(rpc, addr);
+  const sel = selectInputs(utxos, fee);
+  if (!sel) return { ok: false, error: "insufficient confirmed balance to cover the fee", sighashMatch: false };
+  if (!Number.isSafeInteger(sel.total)) return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
+  const tx: Tx = { version: 1, locktime: 0, app, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: sel.total - fee, scriptPubkey: addr }] };
+  return signAndSubmit(rpc, tx, priv);
 }
 
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number }, priv: string): Promise<SubmitResult> {
@@ -84,17 +116,15 @@ export async function send(rpc: string, p: { to: string; amount: number; fee: nu
   const addr = addrFromPriv(priv);
   const need = p.amount + p.fee;
   const { utxos } = await balance(rpc, addr);
-  const cand = utxos.filter((x: any) => Number(x.value) >= need && Number(x.confirmations ?? 1) >= 1).sort((a: any, b: any) => Number(a.value) - Number(b.value));
-  const inp = cand[0];
-  if (!inp) return { ok: false, error: "no single confirmed coin covers amount + fee (consolidate first)", sighashMatch: false };
-  const change = Number(inp.value) - p.amount - p.fee;
+  const sel = selectInputs(utxos, need);
+  if (!sel) return { ok: false, error: "insufficient confirmed balance for amount + fee", sighashMatch: false };
+  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need))
+    return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
+  const change = sel.total - p.amount - p.fee;
   const outputs = [{ value: p.amount, scriptPubkey: p.to }];
-  if (change > 0) outputs.push({ value: change, scriptPubkey: addr });
-  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: [{ prevTxid: inp.txid, vout: Number(inp.vout), scriptSig: "0x" }], outputs };
-  const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
-  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
-  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
+  if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self
+  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
+  return signAndSubmit(rpc, tx, priv);
 }
 
 // Register a Cairn item's off-chain content (hash-verified by the server).

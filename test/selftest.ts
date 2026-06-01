@@ -1,11 +1,11 @@
 // Cairn Wallet core self-tests — oracle-based (consensus golden vectors + a real
 // on-chain signature), plus keystore/account adversarial cases. No mocks of our own.
 import { serialize, txid, sighash, verifySig, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
-import { generate, fromPriv } from "../src/core/account.js";
+import { generate, fromPriv, newMnemonic, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";
 import { seal, open } from "../src/core/keystore.js";
 import { Wallet, explorerTx, explorerAddr } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { send } from "../src/core/node.js";
+import { send, selectInputs } from "../src/core/node.js";
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex } from "@noble/hashes/utils";
 
@@ -209,6 +209,77 @@ async function main() {
     const fr = await w.send(RCPT, 1e8, 1e6);
     check("failed tx is NOT recorded", fr.ok === false && (await w.history()).length === 0);
   } finally { (globalThis as any).fetch = of2; }
+
+  // (h1) multi-input coin selection — aggregate several coins, prefer non-coinbase,
+  // largest-first (fewest inputs), and refuse when the whole balance is short.
+  {
+    const u = (value: number, extra: any = {}) => ({ txid: "0x" + "ab".repeat(32), vout: 0, value, confirmations: 5, ...extra });
+    const sel = selectInputs([u(3e8), u(5e8), u(1e8)], 7e8);
+    check("selection aggregates multiple coins to cover need", !!sel && sel.total >= 7e8 && sel.inputs.length >= 2);
+    check("selection is largest-first (fewest inputs: 5+3 covers 7)", !!sel && sel.inputs.length === 2 && sel.total === 8e8);
+    check("selection returns null when balance is short", selectInputs([u(1e8), u(1e8)], 5e8) === null);
+    check("selection skips unconfirmed coins", selectInputs([u(10e8, { confirmations: 0 })], 1e8) === null);
+    const cb = selectInputs([u(2e8, { coinbase: true }), u(2e8)], 3e8);
+    check("selection prefers non-coinbase but falls back to coinbase when needed", !!cb && cb.total >= 3e8 && cb.inputs.length === 2);
+  }
+
+  // (h1b) BIP-39/BIP-32 HD wallet — deterministic derivation, restore round-trip,
+  // recoverable extra accounts, and password-gated phrase export.
+  {
+    // a known BIP-39 test vector → fixed seed → our path must derive deterministically
+    const VEC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    check("recognises a valid mnemonic", isValidMnemonic(VEC));
+    check("rejects an invalid mnemonic", !isValidMnemonic("not a real recovery phrase at all here ok"));
+    check("hd path is BIP-44 under CSD coin type", hdPath(0) === "m/44'/7779'/0'/0/0");
+    const a0 = deriveAccount(VEC, 0), a0b = deriveAccount(VEC, 0), a1 = deriveAccount(VEC, 1);
+    check("derivation is deterministic (same phrase+index → same addr)", a0.addr === a0b.addr);
+    check("different indices → different addresses", a0.addr !== a1.addr);
+    check("derived key is a valid CSD account (0x + 40 hex addr)", /^0x[0-9a-f]{40}$/.test(a0.addr));
+
+    // create() mints a 12-word phrase; restore() reproduces the exact same account 0
+    let w = new Wallet(memoryStore());
+    const created = await w.create("pw-correct-horse");
+    check("create returns a 12-word recovery phrase", created.mnemonic.split(" ").length === 12 && isValidMnemonic(created.mnemonic));
+    check("status reports the wallet has a recovery phrase", (await w.status()).hasMnemonic === true);
+    const r = await w.addAccount();                       // HD index 1
+    const acctAddrs = (await w.status()).accounts.map((a: any) => a.addr);
+    let w2 = new Wallet(memoryStore());
+    const restored = await w2.restore(created.mnemonic, "different-pw");
+    check("restore reproduces account 0 from the phrase", restored.addr === created.addr);
+    await w2.addAccount();                                  // re-derive index 1
+    const restoredAddrs = (await w2.status()).accounts.map((a: any) => a.addr);
+    check("added accounts are recoverable from the phrase alone", restoredAddrs[1] === acctAddrs[1] && restoredAddrs[1] === r.addr);
+    check("exportMnemonic round-trips the phrase (password-gated)", (await w.exportMnemonic("pw-correct-horse")) === created.mnemonic);
+    let threw = false; try { await w.exportMnemonic("wrong"); } catch { threw = true; }
+    check("exportMnemonic rejects a wrong password", threw);
+
+    // an imported single key has NO recovery phrase
+    let wi = new Wallet(memoryStore());
+    await wi.importKey("0x" + "11".repeat(32), "pw");
+    check("imported-key wallet reports no recovery phrase", (await wi.status()).hasMnemonic === false);
+    let threw2 = false; try { await wi.exportMnemonic("pw"); } catch { threw2 = true; }
+    check("imported-key wallet refuses exportMnemonic", threw2);
+  }
+
+  // (h1c) ADVERSARIAL: secrets never land in the cleartext "wallets" mirror, and the
+  // overflow/garbage guards in selectInputs hold (a hostile RPC can't slip a value).
+  {
+    const store = memoryStore();
+    const w = new Wallet(store);
+    const { mnemonic } = await w.create("pw-secret-x");
+    const priv = await w.exportKey("pw-secret-x");
+    const mirror = JSON.stringify(await store.get("wallets"));
+    const vault = JSON.stringify(await store.get("vault"));
+    check("cleartext 'wallets' mirror contains NO mnemonic", !mirror.includes(mnemonic.split(" ")[0]) || !mirror.includes(mnemonic));
+    check("cleartext 'wallets' mirror contains NO private key", !mirror.includes(priv.replace(/^0x/, "")));
+    check("vault is sealed (no plaintext mnemonic/priv in stored vault)", !vault.includes(mnemonic) && !vault.includes(priv.replace(/^0x/, "")));
+
+    const u = (value: any, extra: any = {}) => ({ txid: "0x" + "cd".repeat(32), vout: 0, value, confirmations: 5, ...extra });
+    check("selectInputs rejects an unsafe-magnitude UTXO value (no precision slip)", selectInputs([u(2 ** 60)], 1e8) === null);
+    check("selectInputs rejects a sum that overflows the safe-integer range", selectInputs([u(2 ** 52), u(2 ** 52)], 2 ** 53) === null);
+    check("selectInputs rejects a non-numeric UTXO value", selectInputs([u("not-a-number")], 1e8) === null);
+    check("selectInputs ignores a NaN-valued coin", selectInputs([u(NaN)], 1e8) === null);
+  }
 
   // (h2) sealed claims (commit-reveal): salted hash committed now, preimage revealed later.
   const of3 = (globalThis as any).fetch;

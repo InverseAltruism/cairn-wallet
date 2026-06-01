@@ -15,13 +15,25 @@
 
     <section id="view-setup" hidden>
       <img class="setuplogo" src="icons/logo-white.png" alt="Cairn" />
-      <p class="lead">Create a non-custodial CSD wallet. Your key is encrypted on this device — never uploaded.</p>
+      <p class="lead">Create a non-custodial CSD wallet. A 12-word recovery phrase is generated on this device and encrypted under your password — never uploaded.</p>
       <input id="setup-pw" type="password" placeholder="choose a password" autocomplete="new-password" />
       <button id="btn-create" class="primary">Create new wallet</button>
-      <div class="or">— or —</div>
+      <div class="or">— or restore from a recovery phrase —</div>
+      <textarea id="restore-phrase" rows="2" placeholder="enter your 12-word recovery phrase"></textarea>
+      <input id="restore-pw" type="password" placeholder="password to encrypt it" autocomplete="new-password" />
+      <button id="btn-restore">Restore wallet</button>
+      <div class="or">— or import a single private key —</div>
       <input id="import-key" type="password" placeholder="import private key (0x…64 hex)" />
       <input id="import-pw" type="password" placeholder="password to encrypt it" autocomplete="new-password" />
       <button id="btn-import">Import key</button>
+    </section>
+
+    <section id="view-backup" hidden>
+      <p class="lead">Write down your recovery phrase. It's the <b>only</b> way to restore this wallet — anyone with it controls your funds. We can't recover it for you.</p>
+      <div id="seed-words" class="seed-grid"></div>
+      <button id="btn-copy-seed" class="mini">copy phrase</button>
+      <label class="ack"><input id="ack-backup" type="checkbox" /> I've saved my recovery phrase somewhere safe</label>
+      <button id="btn-backup-done" class="primary" disabled>Continue</button>
     </section>
 
     <section id="view-locked" hidden>
@@ -61,6 +73,7 @@
         <button id="btn-seal-t">Seal a claim</button>
         <button id="btn-activity-t">Activity</button>
         <button id="btn-signin">Sign in with CSD</button>
+        <button id="btn-phrase">Recovery phrase</button>
         <button id="btn-export">Reveal key</button>
         <button id="btn-settings">Settings</button>
         <button id="btn-lock">Lock</button>
@@ -89,7 +102,8 @@
             <div class="crow"><span class="label">To</span><code id="c-to" class="addr"></code></div>
             <div class="crow"><span class="label">Amount</span><b id="c-amt" class="bal"></b></div>
             <div class="crow"><span class="label">Fee</span><span id="c-fee"></span></div>
-            <div id="c-warn" class="warn" hidden>⚠ First time sending to this address — check every character. Payments are irreversible.</div>
+            <div class="crow"><span class="label">Balance after</span><span id="c-after" class="dim"></span></div>
+            <div id="c-warn" class="warn" hidden></div>
           </div>
           <div class="row">
             <button id="btn-send-confirm" class="primary">Confirm &amp; send</button>
@@ -104,6 +118,18 @@
         <label>Description <input id="p-body" placeholder="What and why" /></label>
         <label>Fee (CSD, min 0.25) <input id="p-fee" type="number" step="0.05" min="0.25" value="0.25" /></label>
         <button id="btn-post" class="primary">Post on-chain</button>
+      </div>
+
+      <div id="reveal-panel" class="settings" hidden>
+        <label>Re-enter your password to reveal your private key<input id="reveal-pw" type="password" placeholder="password" autocomplete="current-password" /></label>
+        <button id="btn-reveal-go" class="mini">Reveal</button>
+        <div id="reveal-out" class="secret" hidden></div>
+        <div id="reveal-actions" class="row" style="gap:8px" hidden>
+          <button id="btn-reveal-show" class="mini">show / hide</button>
+          <button id="btn-reveal-copy" class="mini">copy</button>
+          <button id="btn-reveal-close" class="mini">done</button>
+        </div>
+        <div class="dim" style="font-size:11px;margin-top:6px">Anyone with this key controls this account. Never share or paste it into a website.</div>
       </div>
 
       <div id="settings" class="settings" hidden>

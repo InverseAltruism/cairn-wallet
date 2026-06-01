@@ -4,19 +4,24 @@
 // isolated transaction history and sealed-claim list (keyed by address) so switching
 // never leaks one account's activity or secrets into another's view.
 // Storage-injected so it runs in the service worker, a dev page, or a test.
-import { generate, fromPriv, type Account } from "./account.js";
+import { generate, fromPriv, newMnemonic, deriveAccount, isValidMnemonic, normalizeMnemonic, type Account } from "./account.js";
 import { sealNew, sealWith, openWith, deriveVaultKey, type Vault } from "./keystore.js";
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash } from "./csdtx.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
-export interface PubAcct { addr: string; label: string }
-export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string }
+export interface PubAcct { addr: string; label: string; imported?: boolean }
+export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; hasMnemonic: boolean }
 
-type Acct = Account & { label: string };
-// Encrypted-vault document (the plaintext sealed under the password).
-interface VaultDoc { v: 1; accounts: { priv: string; label: string }[]; active: number }
+// An in-memory account: its key + label, plus how it was created — `index` is its
+// BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
+// NOT recoverable from the seed phrase.
+type Acct = Account & { label: string; index?: number; imported?: boolean };
+// Encrypted-vault document (the plaintext sealed under the password). v2 adds the
+// HD seed phrase + the next free derivation index; v1 (no mnemonic) still opens.
+interface StoredAcct { priv: string; label: string; index?: number; imported?: boolean }
+interface VaultDoc { v: 1 | 2; mnemonic?: string; nextIndex?: number; accounts: StoredAcct[]; active: number }
 
 const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
 const DEFAULT_API = "https://cairn-substrate.com";
@@ -38,6 +43,10 @@ export class Wallet {
   private vaultKey: CryptoKey | null = null;
   private salt = "";
   private iter = 0;
+  // HD state (memory only, while unlocked): the seed phrase + next free derivation
+  // index. null mnemonic = a legacy/import-only wallet with no recovery phrase.
+  private mnemonic: string | null = null;
+  private nextIndex = 0;
   rpc = DEFAULT_RPC;
   api = DEFAULT_API;
   constructor(private store: Store) {}
@@ -53,39 +62,63 @@ export class Wallet {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     const active = this.accts ? this.active : (((await this.store.get("active")) as number) ?? 0);
     const addr = this.accts ? (this.accts[this.active]?.addr ?? null) : (wallets[active]?.addr ?? null);
-    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api };
+    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, hasMnemonic: !!this.mnemonic };
   }
 
-  // Persist the in-memory accounts: re-seal the vault (fresh IV, same salt+key) and
-  // mirror the public list (addresses + labels + active) in cleartext for the UI.
+  // Persist the in-memory accounts: re-seal the vault (fresh IV, same salt+key, incl.
+  // the HD seed + next index) and mirror the public list (addresses + labels + whether
+  // each is an imported non-HD key) in cleartext for the UI.
   private async persistVault() {
     if (!this.accts || !this.vaultKey) throw new Error("locked");
-    const doc: VaultDoc = { v: 1, accounts: this.accts.map((a) => ({ priv: a.privkey, label: a.label })), active: this.active };
+    const doc: VaultDoc = {
+      v: 2, mnemonic: this.mnemonic ?? undefined, nextIndex: this.nextIndex,
+      accounts: this.accts.map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })),
+      active: this.active,
+    };
     const vault = await sealWith(JSON.stringify(doc), this.vaultKey, this.salt, this.iter);
     await this.store.set("vault", vault);
-    await this.store.set("wallets", this.accts.map((a) => ({ addr: a.addr, label: a.label })));
+    await this.store.set("wallets", this.accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported })));
     await this.store.set("active", this.active);
   }
 
-  private acct(priv: string, label: string): Acct { return { ...fromPriv(priv), label }; }
+  private acct(priv: string, label: string, extra: { index?: number; imported?: boolean } = {}): Acct { return { ...fromPriv(priv), label, ...extra }; }
+
+  // Seal a brand-new vault from an in-memory state already set on `this`.
+  private async sealFresh(password: string) {
+    const doc: VaultDoc = { v: 2, mnemonic: this.mnemonic ?? undefined, nextIndex: this.nextIndex, accounts: this.accts!.map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })), active: this.active };
+    const { vault, key } = await sealNew(JSON.stringify(doc), password);
+    this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter;
+    await this.persistVault();
+  }
 
   // ── vault lifecycle ────────────────────────────────────────────────────────
-  async create(password: string): Promise<{ addr: string }> {
+  // New HD wallet: generate a 12-word seed phrase, derive account 0 from it. The
+  // phrase is returned ONCE so the UI can show it for backup; it lives encrypted in
+  // the vault and is re-shown only via exportMnemonic (password-gated).
+  async create(password: string): Promise<{ addr: string; mnemonic: string }> {
     if (await this.store.get("vault")) throw new Error("wallet already exists");
-    const a = this.acct(generate().privkey, "Account 1");
-    const doc: VaultDoc = { v: 1, accounts: [{ priv: a.privkey, label: a.label }], active: 0 };
-    const { vault, key } = await sealNew(JSON.stringify(doc), password);
-    this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter; this.accts = [a]; this.active = 0;
-    await this.persistVault();
+    const mnemonic = newMnemonic();
+    const a = { ...deriveAccount(mnemonic, 0), label: "Account 1", index: 0 } as Acct;
+    this.mnemonic = mnemonic; this.nextIndex = 1; this.accts = [a]; this.active = 0;
+    await this.sealFresh(password);
+    return { addr: a.addr, mnemonic };
+  }
+  // Restore an HD wallet from an existing seed phrase (derives account 0).
+  async restore(mnemonic: string, password: string): Promise<{ addr: string }> {
+    if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to restore");
+    if (!isValidMnemonic(mnemonic)) throw new Error("invalid recovery phrase (check the words and order)");
+    const m = normalizeMnemonic(mnemonic);
+    const a = { ...deriveAccount(m, 0), label: "Account 1", index: 0 } as Acct;
+    this.mnemonic = m; this.nextIndex = 1; this.accts = [a]; this.active = 0;
+    await this.sealFresh(password);
     return { addr: a.addr };
   }
+  // Import a single raw private key (NOT part of any seed phrase → no recovery phrase).
   async importKey(priv: string, password: string): Promise<{ addr: string }> {
     if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to replace the key");
-    const a = this.acct(priv, "Account 1"); // fromPriv validates
-    const doc: VaultDoc = { v: 1, accounts: [{ priv: a.privkey, label: a.label }], active: 0 };
-    const { vault, key } = await sealNew(JSON.stringify(doc), password);
-    this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter; this.accts = [a]; this.active = 0;
-    await this.persistVault();
+    const a = this.acct(priv, "Account 1", { imported: true }); // fromPriv validates
+    this.mnemonic = null; this.nextIndex = 0; this.accts = [a]; this.active = 0;
+    await this.sealFresh(password);
     return { addr: a.addr };
   }
 
@@ -98,13 +131,18 @@ export class Wallet {
     let parsed: VaultDoc | null = null;
     try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy */ }
     if (parsed) {
-      this.accts = parsed.accounts.map((x) => this.acct(x.priv, x.label || "Account"));
+      this.mnemonic = parsed.mnemonic ?? null;
+      this.accts = parsed.accounts.map((x) => this.acct(x.priv, x.label || "Account", { index: x.index, imported: x.imported }));
       this.active = Math.min(Math.max(0, parsed.active ?? 0), this.accts.length - 1);
+      // next free derivation index = max stored HD index + 1 (covers older v2 vaults
+      // written before nextIndex was tracked, and stays correct after removals).
+      const maxIdx = this.accts.reduce((m, a) => (a.index != null && !a.imported ? Math.max(m, a.index) : m), -1);
+      this.nextIndex = Math.max(parsed.nextIndex ?? 0, maxIdx + 1);
     } else {
-      // LEGACY single-key vault (plaintext was a raw privkey). Migrate to the
-      // multi-account format and move any global history/sealed list under this addr.
-      const a = this.acct(doc, "Account 1");
-      this.accts = [a]; this.active = 0;
+      // LEGACY single-key vault (plaintext was a raw privkey, pre-multi-account). No
+      // seed phrase exists for it → treat as an imported key. Migrate isolated data.
+      const a = this.acct(doc, "Account 1", { imported: true });
+      this.mnemonic = null; this.nextIndex = 0; this.accts = [a]; this.active = 0;
       await this.migrateLegacy(a.addr);
     }
     await this.persistVault();
@@ -120,21 +158,26 @@ export class Wallet {
     await this.store.del("addr"); // legacy single-address key
   }
 
-  lock(): void { this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; }
+  lock(): void { this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; this.mnemonic = null; this.nextIndex = 0; }
 
   // ── account management (require unlocked) ──────────────────────────────────
   private mustUnlocked(): Acct[] { if (!this.accts || !this.vaultKey) throw new Error("locked"); return this.accts; }
-  accounts(): PubAcct[] { return (this.accts ?? []).map((a) => ({ addr: a.addr, label: a.label })); }
+  accounts(): PubAcct[] { return (this.accts ?? []).map((a) => ({ addr: a.addr, label: a.label, imported: a.imported })); }
 
+  // Add an account. On an HD wallet, derive the next index from the seed phrase (so it
+  // is recoverable from the phrase alone); otherwise fall back to a fresh random key.
   async addAccount(label?: string): Promise<{ addr: string; index: number }> {
     const accts = this.mustUnlocked();
-    const a = this.acct(generate().privkey, (label && label.trim()) || `Account ${accts.length + 1}`);
+    const a = this.mnemonic
+      ? { ...deriveAccount(this.mnemonic, this.nextIndex), label: (label && label.trim()) || `Account ${accts.length + 1}`, index: this.nextIndex } as Acct
+      : this.acct(generate().privkey, (label && label.trim()) || `Account ${accts.length + 1}`, { imported: true });
+    if (this.mnemonic) this.nextIndex += 1;
     accts.push(a); this.active = accts.length - 1; await this.persistVault();
     return { addr: a.addr, index: this.active };
   }
   async importAccount(priv: string, label?: string): Promise<{ addr: string; index: number }> {
     const accts = this.mustUnlocked();
-    const a = this.acct(priv, (label && label.trim()) || `Account ${accts.length + 1}`); // fromPriv validates
+    const a = this.acct(priv, (label && label.trim()) || `Account ${accts.length + 1}`, { imported: true }); // fromPriv validates; raw key ⇒ not seed-recoverable
     if (accts.some((x) => x.addr.toLowerCase() === a.addr.toLowerCase())) throw new Error("that account is already in this wallet");
     accts.push(a); this.active = accts.length - 1; await this.persistVault();
     return { addr: a.addr, index: this.active };
@@ -270,6 +313,17 @@ export class Wallet {
     if (!parsed) return doc.startsWith("0x") ? doc : "0x" + doc; // legacy single-key vault
     const i = this.accts ? this.active : (parsed.active ?? 0);
     return parsed.accounts[Math.min(i, parsed.accounts.length - 1)].priv;
+  }
+
+  // Reveal the wallet's recovery phrase (the master backup) — password-gated. Throws
+  // for legacy/import-only wallets that have no seed phrase.
+  async exportMnemonic(password: string): Promise<string> {
+    const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
+    const doc = await openWith(v, await deriveVaultKey(password, v.salt, v.iter)); // throws "bad password"
+    let parsed: VaultDoc | null = null;
+    try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy */ }
+    if (!parsed?.mnemonic) throw new Error("this wallet has no recovery phrase (it was created from an imported key)");
+    return parsed.mnemonic;
   }
 
   // Wipe ALL wallet state — every account's vault, history, and sealed-claim
