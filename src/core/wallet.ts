@@ -95,13 +95,16 @@ export class Wallet {
   // New HD wallet: generate a 12-word seed phrase, derive account 0 from it. The
   // phrase is returned ONCE so the UI can show it for backup; it lives encrypted in
   // the vault and is re-shown only via exportMnemonic (password-gated).
-  async create(password: string): Promise<{ addr: string; mnemonic: string }> {
+  async create(password: string): Promise<{ addr: string; mnemonic: string; privkey: string }> {
     if (await this.store.get("vault")) throw new Error("wallet already exists");
     const mnemonic = newMnemonic();
     const a = { ...deriveAccount(mnemonic, 0), label: "Account 1", index: 0 } as Acct;
     this.mnemonic = mnemonic; this.nextIndex = 1; this.accts = [a]; this.active = 0;
     await this.sealFresh(password);
-    return { addr: a.addr, mnemonic };
+    // Return the account-0 private key too so the backup screen can show BOTH the
+    // recovery phrase and the (portable) private key. Same trusted SW→popup channel
+    // as the mnemonic; never crosses the dApp boundary.
+    return { addr: a.addr, mnemonic, privkey: a.privkey };
   }
   // Restore an HD wallet from an existing seed phrase (derives account 0).
   async restore(mnemonic: string, password: string): Promise<{ addr: string }> {

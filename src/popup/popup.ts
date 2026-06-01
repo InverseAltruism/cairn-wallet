@@ -79,25 +79,48 @@ function renderAcctSelect(accounts: { addr: string; label: string }[], active: n
   sel.innerHTML = accounts.map((a, i) => `<option value="${i}">${escapeHtml(a.label)} · ${escapeHtml(short(a.addr))}</option>`).join("");
   sel.value = String(active);
 }
+// per-row inline edit state (rename/remove) so we never use a browser prompt/confirm
+let acctEdit: { addr: string; mode: "rename" | "remove" } | null = null;
 async function renderAccts() {
   const st = await call("status");
   const el = $("accts-list");
-  el.innerHTML = (st.accounts || []).map((a: any, i: number) => `<div class="tx">
-      <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}</span>
-        <span class="row" style="gap:6px">
+  el.innerHTML = (st.accounts || []).map((a: any, i: number) => {
+    const editing = acctEdit && acctEdit.addr.toLowerCase() === a.addr.toLowerCase();
+    const tag = a.imported ? ` <span class="badge">imported</span>` : "";
+    let right: string;
+    if (editing && acctEdit!.mode === "rename") {
+      right = `<span class="row" style="gap:6px">
+          <input class="acct-rename-input" data-addr="${escapeHtml(a.addr)}" value="${escapeHtml(a.label)}" />
+          <button class="mini" data-save="${escapeHtml(a.addr)}">save</button>
+          <button class="mini" data-cancel="1">cancel</button></span>`;
+    } else if (editing) {
+      right = `<span class="row" style="gap:6px"><span class="dim" style="font-size:11px">remove?</span>
+          <button class="mini" data-confirm-remove="${escapeHtml(a.addr)}">yes</button>
+          <button class="mini" data-cancel="1">no</button></span>`;
+    } else {
+      right = `<span class="row" style="gap:6px">
           <button class="mini" data-rename="${escapeHtml(a.addr)}">rename</button>
-          ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}
-        </span></div>
+          ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}</span>`;
+    }
+    return `<div class="tx">
+      <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
       <div class="tx-sub"><span class="dim mono">${escapeHtml(a.addr)}</span></div>
-    </div>`).join("");
-  el.querySelectorAll<HTMLElement>("[data-rename]").forEach((b) => b.onclick = async () => {
-    const label = window.prompt("New label for this account:"); if (!label) return;
-    try { await call("renameAccount", b.dataset.rename, label); renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
+    </div>`;
+  }).join("");
+  const edit = (addr: string | undefined, mode: "rename" | "remove") => { if (addr) { acctEdit = { addr, mode }; renderAccts(); } };
+  el.querySelectorAll<HTMLElement>("[data-rename]").forEach((b) => b.onclick = () => edit(b.dataset.rename, "rename"));
+  el.querySelectorAll<HTMLElement>("[data-remove]").forEach((b) => b.onclick = () => edit(b.dataset.remove, "remove"));
+  el.querySelectorAll<HTMLElement>("[data-cancel]").forEach((b) => b.onclick = () => { acctEdit = null; renderAccts(); });
+  el.querySelectorAll<HTMLElement>("[data-save]").forEach((b) => b.onclick = async () => {
+    const inp = el.querySelector(`.acct-rename-input[data-addr="${b.dataset.save}"]`) as HTMLInputElement | null;
+    const label = inp?.value.trim(); if (!label) return msg("enter a label", "err");
+    try { await call("renameAccount", b.dataset.save, label); acctEdit = null; renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
   });
-  el.querySelectorAll<HTMLElement>("[data-remove]").forEach((b) => b.onclick = async () => {
-    if (!window.confirm("Remove this account from the wallet? Make sure you've backed up its key — this only forgets it locally.")) return;
-    try { await call("removeAccount", b.dataset.remove); msg("account removed"); renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
+  el.querySelectorAll<HTMLElement>("[data-confirm-remove]").forEach((b) => b.onclick = async () => {
+    try { await call("removeAccount", b.dataset.confirmRemove); acctEdit = null; msg("account removed", "ok"); renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
   });
+  const ri = el.querySelector(".acct-rename-input") as HTMLInputElement | null;
+  if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
 }
 
 const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported" };
@@ -142,35 +165,59 @@ async function renderPending() {
 }
 async function resolve(id: string, ap: boolean) { await call("resolve", id, ap); msg(ap ? "approved" : "rejected"); renderPending(); }
 
-// Render the 12 words into the backup screen and show it (after create / reveal).
-let backupPhrase = "";
-function showBackup(mnemonic: string) {
-  backupPhrase = mnemonic;
-  $("seed-words").innerHTML = mnemonic.split(" ").map((w, i) =>
-    `<span class="seed-word"><span class="seed-n">${i + 1}</span>${escapeHtml(w)}</span>`).join("");
+// Render the 12 words as a numbered grid.
+function seedGridHtml(mnemonic: string): string {
+  return mnemonic.split(" ").map((w, i) => `<span class="seed-word"><span class="seed-n">${i + 1}</span>${escapeHtml(w)}</span>`).join("");
+}
+// Post-create backup screen: shows BOTH the recovery phrase and this account's
+// (portable) private key, each with its own info note.
+let backupPhrase = "", backupPriv = "";
+function showBackup(mnemonic: string, privkey: string) {
+  backupPhrase = mnemonic; backupPriv = privkey;
+  $("seed-words").innerHTML = seedGridHtml(mnemonic);
+  $("backup-priv").textContent = privkey;
   ($("ack-backup") as HTMLInputElement).checked = false;
   ($("btn-backup-done") as HTMLButtonElement).disabled = true;
   show("backup");
 }
-$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("enter a password", "err"); const r = await call("create", pw); ($("setup-pw") as HTMLInputElement).value = ""; showBackup(r.mnemonic); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("enter a password", "err"); const r = await call("create", pw); ($("setup-pw") as HTMLInputElement).value = ""; showBackup(r.mnemonic, r.privkey); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase); flashBtn("btn-copy-seed", "copied ✓"); });
+$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv); flashBtn("btn-copy-priv", "copied ✓"); });
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
-$("btn-backup-done").addEventListener("click", () => { backupPhrase = ""; $("seed-words").innerHTML = ""; msg("wallet ready", "ok"); render(); });
+$("btn-backup-done").addEventListener("click", () => { backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = ""; msg("wallet ready", "ok"); render(); });
 $("btn-import").addEventListener("click", async () => { try { if (!val("import-pw")) return msg("enter a password to encrypt the key", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("key imported", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
 $("btn-refresh").addEventListener("click", refreshBalance);
 $("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("addr").textContent || ""); flashBtn("btn-copy", "copied ✓"); });
 $("btn-signin").addEventListener("click", async () => { try { busy("signing in…"); const r = await call("signin"); r.ok ? msg("signed in as " + r.addr, "ok") : msg("sign-in failed: " + (r.error || "?"), "err"); } catch (e: any) { msg(e.message, "err"); } });
-$("btn-phrase").addEventListener("click", async () => { const pw = window.prompt("Re-enter your password to reveal your recovery phrase:"); if (!pw) return; try { const m = await call("exportMnemonic", pw); showBackup(m); } catch (e: any) { msg(e.message, "err"); } });
-// In-popup private-key reveal (no window.prompt): password → masked secret box that
-// you click to reveal, copy, then dismiss (clears it from the DOM).
-let revealedKey = "";
-$("btn-export").addEventListener("click", () => {
-  const p = $("reveal-panel") as HTMLElement; p.hidden = !p.hidden;
-  ($("reveal-pw") as HTMLInputElement).value = ""; ($("reveal-out") as HTMLElement).hidden = true; ($("reveal-actions") as HTMLElement).hidden = true; revealedKey = "";
-});
+// ── accordion: at most ONE action panel open at a time ──────────────────────
+// All the collapsible panels under the main view. Opening one closes the rest;
+// clicking the same trigger again closes it. Secret panels are wiped on every switch.
+const PANELS = ["accts-panel", "send-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
+let revealedKey = "", revealedPhrase = "";
+function resetRevealPanel() {
+  revealedKey = ""; const o = $("reveal-out"); o.textContent = ""; o.classList.remove("shown"); (o as HTMLElement).hidden = true;
+  ($("reveal-actions") as HTMLElement).hidden = true; ($("reveal-pw") as HTMLInputElement).value = "";
+}
+function resetPhrasePanel() {
+  revealedPhrase = ""; const o = $("phrase-out"); o.innerHTML = ""; o.classList.remove("shown"); o.classList.add("blur"); (o as HTMLElement).hidden = true;
+  ($("phrase-actions") as HTMLElement).hidden = true; ($("phrase-pw") as HTMLInputElement).value = "";
+}
+// Show `id` and hide every other panel; returns true if it ended up OPEN. Wipes any
+// revealed secret so a key/phrase never lingers behind a now-hidden panel.
+function openPanel(id: string): boolean {
+  const willOpen = ($(id) as HTMLElement).hidden;
+  for (const p of PANELS) ($(p) as HTMLElement).hidden = true;
+  ($("send-confirm") as HTMLElement).hidden = true;
+  resetRevealPanel(); resetPhrasePanel();
+  if (willOpen) ($(id) as HTMLElement).hidden = false;
+  return willOpen;
+}
+
+// Reveal private key — in-popup panel (password → masked secret box).
+$("btn-export").addEventListener("click", () => { openPanel("reveal-panel"); });
 $("btn-reveal-go").addEventListener("click", async () => {
   const pw = val("reveal-pw"); if (!pw) return msg("enter your password", "err");
   try {
@@ -182,8 +229,23 @@ $("btn-reveal-go").addEventListener("click", async () => {
 });
 $("btn-reveal-show").addEventListener("click", () => { ($("reveal-out") as HTMLElement).classList.toggle("shown"); });
 $("btn-reveal-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedKey); flashBtn("btn-reveal-copy", "copied ✓"); });
-$("btn-reveal-close").addEventListener("click", () => { revealedKey = ""; $("reveal-out").textContent = ""; ($("reveal-panel") as HTMLElement).hidden = true; });
-$("btn-settings").addEventListener("click", () => { const s = $("settings") as HTMLElement; s.hidden = !s.hidden; });
+$("btn-reveal-close").addEventListener("click", () => { resetRevealPanel(); ($("reveal-panel") as HTMLElement).hidden = true; });
+
+// Reveal recovery phrase — in-popup panel (password → blurred 12-word grid).
+$("btn-phrase").addEventListener("click", () => { openPanel("phrase-panel"); });
+$("btn-phrase-go").addEventListener("click", async () => {
+  const pw = val("phrase-pw"); if (!pw) return msg("enter your password", "err");
+  try {
+    revealedPhrase = await call("exportMnemonic", pw);
+    const out = $("phrase-out") as HTMLElement;
+    out.innerHTML = seedGridHtml(revealedPhrase); out.classList.add("blur"); out.classList.remove("shown"); out.hidden = false;
+    ($("phrase-actions") as HTMLElement).hidden = false; ($("phrase-pw") as HTMLInputElement).value = ""; msg("");
+  } catch (e: any) { msg(e.message, "err"); }
+});
+$("btn-phrase-show").addEventListener("click", () => { const o = $("phrase-out"); o.classList.toggle("shown"); o.classList.toggle("blur"); });
+$("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase); flashBtn("btn-phrase-copy", "copied ✓"); });
+$("btn-phrase-close").addEventListener("click", () => { resetPhrasePanel(); ($("phrase-panel") as HTMLElement).hidden = true; });
+$("btn-settings").addEventListener("click", () => { openPanel("settings"); });
 // Turn an RPC/API base URL into an MV3 host-match pattern ("https://host:port/*").
 // Returns null for the URLs already in the static host_permissions (so we don't
 // pointlessly re-request) or anything unparseable.
@@ -218,7 +280,7 @@ $("btn-save-settings").addEventListener("click", async () => {
   try { await call("switchAccount", Number((e.target as HTMLSelectElement).value)); msg("switched account", "ok"); render(); }
   catch (err: any) { msg(err.message, "err"); }
 });
-$("btn-accts").addEventListener("click", () => { const p = $("accts-panel") as HTMLElement; p.hidden = !p.hidden; if (!p.hidden) renderAccts(); });
+$("btn-accts").addEventListener("click", () => { if (openPanel("accts-panel")) renderAccts(); });
 $("btn-add-acct").addEventListener("click", async () => {
   try { const r = await call("addAccount"); msg("added " + (r.addr ? r.addr.slice(0, 10) + "…" : "account"), "ok"); render(); }
   catch (e: any) { msg(e.message, "err"); }
@@ -229,11 +291,10 @@ $("btn-imp-acct").addEventListener("click", async () => {
   catch (e: any) { msg(e.message, "err"); }
 });
 
-const toggle = (id: string) => { const e = $(id) as HTMLElement; e.hidden = !e.hidden; };
-$("btn-send-t").addEventListener("click", () => { toggle("send-form"); ($("send-confirm") as HTMLElement).hidden = true; });
-$("btn-post-t").addEventListener("click", () => toggle("post-form"));
-$("btn-activity-t").addEventListener("click", () => { toggle("activity"); if (!($("activity") as HTMLElement).hidden) renderHistory(); });
-$("btn-seal-t").addEventListener("click", () => { toggle("seal-form"); if (!($("seal-form") as HTMLElement).hidden) renderSealed(); });
+$("btn-send-t").addEventListener("click", () => { openPanel("send-form"); });
+$("btn-post-t").addEventListener("click", () => { openPanel("post-form"); });
+$("btn-activity-t").addEventListener("click", () => { if (openPanel("activity")) renderHistory(); });
+$("btn-seal-t").addEventListener("click", () => { if (openPanel("seal-form")) renderSealed(); });
 $("btn-seal").addEventListener("click", async () => {
   const claim = val("seal-claim").trim(); if (!claim) return msg("enter a claim to seal", "err");
   const domain = val("seal-domain").trim() || "csd:sealed";

@@ -72,6 +72,7 @@ code{font-family:inherit}
 .acct-select:focus{border-color:#fff;outline:none}
 #btn-accts{margin:0}
 #accts-list .tx-kind{color:var(--magenta)}
+.acct-rename-input{width:118px;margin:0;padding:3px 7px;font-size:11px}
 #accts-list .row{display:flex}
 .mono{font-family:inherit}
 
@@ -112,8 +113,11 @@ button:active:not(:disabled){transform:translateY(1px)}
 .copied{color:var(--green)!important;border-color:var(--green)!important}
 
 /* in-popup secret reveal (replaces window.prompt for the private key) */
-#reveal-panel .secret{word-break:break-all;font-size:11px;color:var(--green);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;margin:6px 0;filter:blur(5px);transition:filter .15s}
-#reveal-panel .secret.shown{filter:none}
+.secret{word-break:break-all;font-size:11px;color:var(--green);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;margin:6px 0;filter:blur(5px);transition:filter .15s}
+.secret.shown{filter:none}
+.seclabel{font-size:11px;color:var(--dim);margin:12px 0 2px}
+.seed-grid.blur{filter:blur(6px);transition:filter .15s}
+.seed-grid.shown{filter:none}
 
 @media (prefers-reduced-motion: reduce){
   *{animation:none!important;transition:none!important}

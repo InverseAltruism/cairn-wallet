@@ -33,11 +33,19 @@
       <div id="seed-words" class="seed-grid"></div>
       <button id="btn-copy-seed" class="mini">copy phrase</button>
       <div class="infobox">
-        <div class="infohead">What this restores</div>
-        This 12-word phrase restores <b>all</b> your accounts in Cairn Wallet, and in any CSD wallet that uses the same derivation path (<code>m/44'/7779'/0'/0/i</code>).
-        To move a single account into another tool, also export its <b>private key</b> (<i>Reveal key</i>, on the main screen) — that's a plain CSD key that works in the <code>csd</code> CLI and any CSD wallet.
+        <div class="infohead">Recovery phrase — backs up everything</div>
+        These 12 words restore <b>all</b> your accounts in Cairn Wallet, and in any CSD wallet that uses the same derivation path (<code>m/44'/7779'/0'/0/i</code>). This is your primary backup.
       </div>
-      <label class="ack"><input id="ack-backup" type="checkbox" /> I've saved my recovery phrase somewhere safe</label>
+
+      <div class="seclabel">This account's private key</div>
+      <div id="backup-priv" class="secret shown"></div>
+      <button id="btn-copy-priv" class="mini">copy key</button>
+      <div class="infobox">
+        <div class="infohead">Private key — portable, one account</div>
+        A plain CSD key for this account only. It's the <b>portable</b> backup: import it into the <code>csd</code> CLI (<code>csd wallet recover</code>) or any CSD wallet to use this account elsewhere. (The phrase above already covers it — this is for moving a single account.)
+      </div>
+
+      <label class="ack"><input id="ack-backup" type="checkbox" /> I've saved my recovery phrase (and/or private key) somewhere safe</label>
       <button id="btn-backup-done" class="primary" disabled>Continue</button>
     </section>
 
@@ -135,6 +143,18 @@
           <button id="btn-reveal-close" class="mini">done</button>
         </div>
         <div class="dim" style="font-size:11px;margin-top:6px">Anyone with this key controls this account. Never share or paste it into a website. This key is portable — it restores this one account in the <code>csd</code> CLI or any CSD wallet. (Your recovery phrase backs up <b>all</b> accounts at once.)</div>
+      </div>
+
+      <div id="phrase-panel" class="settings" hidden>
+        <label>Re-enter your password to reveal your recovery phrase<input id="phrase-pw" type="password" placeholder="password" autocomplete="current-password" /></label>
+        <button id="btn-phrase-go" class="mini">Reveal</button>
+        <div id="phrase-out" class="seed-grid blur" hidden></div>
+        <div id="phrase-actions" class="row" style="gap:8px" hidden>
+          <button id="btn-phrase-show" class="mini">show / hide</button>
+          <button id="btn-phrase-copy" class="mini">copy</button>
+          <button id="btn-phrase-close" class="mini">done</button>
+        </div>
+        <div class="dim" style="font-size:11px;margin-top:6px">Anyone with this phrase controls <b>all</b> your accounts. It restores them in Cairn Wallet or any CSD wallet on the same path. Never share it or type it into a website.</div>
       </div>
 
       <div id="settings" class="settings" hidden>
