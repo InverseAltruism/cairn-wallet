@@ -213,7 +213,8 @@ async function main() {
   // (h1) multi-input coin selection — aggregate several coins, prefer non-coinbase,
   // largest-first (fewest inputs), and refuse when the whole balance is short.
   {
-    const u = (value: number, extra: any = {}) => ({ txid: "0x" + "ab".repeat(32), vout: 0, value, confirmations: 5, ...extra });
+    let _v1 = 0; // distinct outpoints (real UTXOs differ; selectInputs now dedups by txid:vout)
+    const u = (value: number, extra: any = {}) => ({ txid: "0x" + "ab".repeat(32), vout: _v1++, value, confirmations: 5, ...extra });
     const sel = selectInputs([u(3e8), u(5e8), u(1e8)], 7e8);
     check("selection aggregates multiple coins to cover need", !!sel && sel.total >= 7e8 && sel.inputs.length >= 2);
     check("selection is largest-first (fewest inputs: 5+3 covers 7)", !!sel && sel.inputs.length === 2 && sel.total === 8e8);
@@ -221,6 +222,11 @@ async function main() {
     check("selection skips unconfirmed coins", selectInputs([u(10e8, { confirmations: 0 })], 1e8) === null);
     const cb = selectInputs([u(2e8, { coinbase: true }), u(2e8)], 3e8);
     check("selection prefers non-coinbase but falls back to coinbase when needed", !!cb && cb.total >= 3e8 && cb.inputs.length === 2);
+    // hardening: a hostile RPC can't pad the input set with duplicate outpoints…
+    const dup = { txid: "0x" + "ee".repeat(32), vout: 0, value: 1e8, confirmations: 5 };
+    check("selection DEDUPES duplicate outpoints (3 dupes = 1 coin)", selectInputs([dup, { ...dup }, { ...dup }], 2e8) === null);
+    // …and a missing `confirmations` is treated as UNCONFIRMED (not spendable), not as 1
+    check("selection treats MISSING confirmations as unconfirmed", selectInputs([{ txid: "0x" + "ff".repeat(32), vout: 0, value: 10e8 }], 1e8) === null);
   }
 
   // (h1b) BIP-39/BIP-32 HD wallet — deterministic derivation, restore round-trip,
@@ -274,7 +280,8 @@ async function main() {
     check("cleartext 'wallets' mirror contains NO private key", !mirror.includes(priv.replace(/^0x/, "")));
     check("vault is sealed (no plaintext mnemonic/priv in stored vault)", !vault.includes(mnemonic) && !vault.includes(priv.replace(/^0x/, "")));
 
-    const u = (value: any, extra: any = {}) => ({ txid: "0x" + "cd".repeat(32), vout: 0, value, confirmations: 5, ...extra });
+    let _v2 = 0;
+    const u = (value: any, extra: any = {}) => ({ txid: "0x" + "cd".repeat(32), vout: _v2++, value, confirmations: 5, ...extra });
     check("selectInputs rejects an unsafe-magnitude UTXO value (no precision slip)", selectInputs([u(2 ** 60)], 1e8) === null);
     check("selectInputs rejects a sum that overflows the safe-integer range", selectInputs([u(2 ** 52), u(2 ** 52)], 2 ** 53) === null);
     check("selectInputs rejects a non-numeric UTXO value", selectInputs([u("not-a-number")], 1e8) === null);

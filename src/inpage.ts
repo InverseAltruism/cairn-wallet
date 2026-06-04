@@ -19,12 +19,20 @@
   });
   (window as any).cairn = {
     isCairn: true,
-    version: "0.2.3",
+    version: "0.2.4",
     connect: () => req("connect"),
     getAddress: () => req("getAddress"),
     signIn: () => req("signin"),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
+    // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which
+    // clear-signs the full recipient(s), amount(s), fee and balance-after and warns on
+    // first-time / look-alike (address-poisoning) recipients. Param is an object:
+    //   { to, amount, fee? }                         single recipient
+    //   { outputs: [{ to, value }, …], fee? }         1→many. The wallet always selects
+    // its own inputs and returns change to itself — a page can't pick UTXOs or redirect
+    // change. (Secret-key access, account management and settings stay wallet-UI-only.)
+    send: (p: any) => req("send", p),
     // commit-reveal. The claim text passes through the page, but the salt (nonce)
     // is generated in the wallet and never leaves it — so the page can't forge the
     // commitment, and reveal can only be done by the wallet that sealed it.

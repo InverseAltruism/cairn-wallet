@@ -48,8 +48,21 @@ interface Selection { inputs: SelectedInput[]; total: number }
 // ALL inputs (see csdtx.ts `stripped`), so one signature covers every input — and
 // since all of a wallet's inputs are from one address/key, we sign once and apply the
 // same scriptSig to each. `total` is summed in the safe-integer range (guarded below).
+const MAX_TX_INPUTS = 512; // consensus cap (params/mod.rs) — refuse locally with a clear error
 export function selectInputs(utxos: any[], need: number): Selection | null {
-  const confirmed = utxos.filter((x: any) => Number(x.confirmations ?? 1) >= 1);
+  // Default a missing `confirmations` to 0 (UNCONFIRMED), never 1 — a hostile/buggy RPC
+  // must not be able to make an immature/absent coin look spendable by omitting the field.
+  // Dedupe by outpoint (txid:vout) and drop non-positive values so a malicious RPC can't
+  // inflate the input count with duplicates/dust or feed a negative value into selection.
+  const seen = new Set<string>();
+  const confirmed = utxos.filter((x: any) => {
+    if (Number(x.confirmations ?? 0) < 1) return false;
+    const v = Number(x.value);
+    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return false;
+    const key = `${x.txid}:${Number(x.vout)}`;
+    if (seen.has(key)) return false; seen.add(key);
+    return true;
+  });
   const byValDesc = (a: any, b: any) => Number(b.value) - Number(a.value);
   const take = (pool: any[]): Selection | null => {
     const inputs: SelectedInput[] = [];
@@ -59,8 +72,11 @@ export function selectInputs(utxos: any[], need: number): Selection | null {
       total += v;
       // Refuse magnitudes that lose precision (a hostile RPC can't push the running
       // sum past 2^53 and slip a mis-signed value through) — bail before it matters.
-      if (!Number.isFinite(v) || !Number.isSafeInteger(total)) return null;
+      if (!Number.isSafeInteger(total)) return null;
       inputs.push({ txid: x.txid, vout: Number(x.vout), value: v });
+      // Refuse a tx that would exceed the consensus input cap (e.g. a dust-flood RPC)
+      // rather than building one the node will reject — surfaces as "insufficient" upstream.
+      if (inputs.length > MAX_TX_INPUTS) return null;
       if (total >= need) return { inputs, total };
     }
     return null;
@@ -123,6 +139,40 @@ export async function send(rpc: string, p: { to: string; amount: number; fee: nu
   const change = sel.total - p.amount - p.fee;
   const outputs = [{ value: p.amount, scriptPubkey: p.to }];
   if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self
+  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
+  return signAndSubmit(rpc, tx, priv);
+}
+
+// Multi-output transfer (app:None). Same single-key / single-signature model as
+// send(): every recipient is validated, the sum of all outputs + fee is safe-integer
+// guarded, inputs are selected INTERNALLY (never supplied by a caller/dApp), and the
+// change always returns to this account's own address. Used by the Console's send card
+// for 1→many payments; send() above is the single-recipient convenience wrapper.
+export async function sendMany(rpc: string, p: { outputs: { to: string; value: number }[]; fee: number }, priv: string): Promise<SubmitResult> {
+  const outs = Array.isArray(p.outputs) ? p.outputs : [];
+  if (outs.length < 1) return { ok: false, error: "at least one output required", sighashMatch: false };
+  if (outs.length > 500) return { ok: false, error: "too many outputs (max 500)", sighashMatch: false };
+  let sumOut = 0;
+  for (const o of outs) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false };
+    const v = Number(o.value);
+    if (!(v > 0)) return { ok: false, error: "each amount must be positive", sighashMatch: false };
+    if (!Number.isSafeInteger(v)) return { ok: false, error: "an amount exceeds the safe integer range", sighashMatch: false };
+    sumOut += v;
+    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "total outputs exceed the safe integer range", sighashMatch: false };
+  }
+  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(sumOut + p.fee))
+    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
+  const addr = addrFromPriv(priv);
+  const need = sumOut + p.fee;
+  const { utxos } = await balance(rpc, addr);
+  const sel = selectInputs(utxos, need);
+  if (!sel) return { ok: false, error: "insufficient confirmed balance for outputs + fee", sighashMatch: false };
+  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need))
+    return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
+  const change = sel.total - need;
+  const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
+  if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self, never a caller-chosen address
   const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
   return signAndSubmit(rpc, tx, priv);
 }

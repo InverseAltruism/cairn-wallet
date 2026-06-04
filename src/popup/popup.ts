@@ -162,7 +162,7 @@ async function renderPending() {
   const p = await call("pending"); const el = $("pending") as HTMLElement;
   if (!p.length) { el.hidden = true; el.innerHTML = ""; return; }
   el.hidden = false;
-  el.innerHTML = p.map((r: any) => `<div class="req"><b>${r.method}</b> from ${escapeHtml(String(r.origin))}</div><div class="row"><button data-ap="${r.id}" class="primary">Approve</button><button data-rj="${r.id}">Reject</button></div>`).join("");
+  el.innerHTML = p.map((r: any) => `<div class="req"><b>${escapeHtml(String(r.method))}</b> from ${escapeHtml(String(r.origin))}</div><div class="row"><button data-ap="${escapeHtml(String(r.id))}" class="primary">Approve</button><button data-rj="${escapeHtml(String(r.id))}">Reject</button></div>`).join("");
   el.querySelectorAll<HTMLElement>("[data-ap]").forEach((b) => b.onclick = () => resolve(b.dataset.ap!, true));
   el.querySelectorAll<HTMLElement>("[data-rj]").forEach((b) => b.onclick = () => resolve(b.dataset.rj!, false));
 }

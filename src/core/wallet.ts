@@ -227,6 +227,18 @@ export class Wallet {
   // Plain CSD transfer to any address. fee default 0.01 CSD.
   async send(to: string, amount: number, fee = 1_000_000) { const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(r, { type: "send", to, amount, fee }); return r; }
 
+  // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
+  // by node.sendMany; callers never supply UTXOs. History records the total + primary
+  // recipient (single-output sends record identically to send()).
+  async sendMany(p: { outputs: { to: string; value: number }[]; fee?: number }) {
+    const fee = p.fee ?? 1_000_000;
+    const r = await node.sendMany(this.rpc, { outputs: p.outputs, fee }, this.must().privkey);
+    const total = p.outputs.reduce((a, o) => a + Number(o.value || 0), 0);
+    const to = p.outputs.length === 1 ? p.outputs[0]!.to : `${p.outputs.length} recipients`;
+    await this.maybeRecord(r, { type: "send", to, amount: total, fee });
+    return r;
+  }
+
   // Post a Cairn item directly: propose on-chain + register the off-chain content
   // (the content only "takes" once the tx mines, so we register in the background).
   async cairnPost(p: { domain: string; title: string; body?: string; links?: string[]; fee: number }) {
