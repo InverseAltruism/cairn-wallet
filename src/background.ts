@@ -68,22 +68,45 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
     else if (p.method === "attest") result = await wallet.attest(p.params);
     else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
     else if (p.method === "revealClaim") result = await wallet.revealClaim(p.params);
+    // Plain transfer. Reachable from a dApp ONLY through this approval path (the user
+    // saw the recipient/amount/fee in the approve window). We read ONLY to/amount/fee
+    // or outputs[] — never any caller-supplied inputs/UTXOs/change address; node.send*
+    // selects inputs itself and returns change to the wallet's own address. Privileged
+    // methods (export/restore/import/reset/settings/account mgmt) stay out of this list
+    // and fall through to the throw below, so a dApp can never reach them.
+    else if (p.method === "send") {
+      const x = p.params || {};
+      result = Array.isArray(x.outputs)
+        ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee })
+        : await wallet.send(x.to, x.amount, x.fee);
+    }
     else throw new Error("unsupported dApp method: " + p.method);
     p.resolve({ ok: true, result });
   } catch (e: any) { p.resolve({ ok: false, error: e?.message ?? String(e) }); }
   return { done: true };
 }
 
+// The ONLY methods a website may invoke (must match the allowlist in resolvePending).
+// Anything else is rejected before it can enter the pending queue or reach the popup UI
+// — so an arbitrary attacker-chosen `method` string can never be rendered or queued.
+const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "propose", "attest", "sealClaim", "revealClaim", "send"]);
+
 // dApp request → queue for approval and pop a MetaMask-style approval window.
+let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
+  if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, error: "unsupported dApp method: " + String(method).slice(0, 32) });
   return new Promise((resolve) => {
     const wasEmpty = pending.size === 0;
     const id = `${Date.now()}-${reqSeq++}`;
     pending.set(id, { origin, method, params, resolve });
     try { chrome.action?.setBadgeText?.({ text: String(pending.size) }); } catch { /* no-op */ }
     if (wasEmpty) {
-      try { chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }); }
+      try { chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => { approveWinId = w?.id ?? null; }); }
       catch { /* fall back to badge — user opens the toolbar popup */ }
+    } else if (approveWinId != null) {
+      // A request queued behind one already on screen: raise + flash the popup so the user
+      // notices a NEW request rather than having it silently swap in under their cursor.
+      try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* best-effort */ }
     }
   });
 }

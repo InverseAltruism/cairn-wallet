@@ -21,10 +21,20 @@ are happy to credit you once it is resolved.
 
 A web page interacts with the wallet only through the injected `window.cairn` provider,
 relayed to the background service worker over same-origin messages. The provider exposes a
-fixed set of actions: connect, sign in, propose, attest, and sealed claims. Every request
-requires the wallet to be unlocked and an explicit approval in a separate popup window. Key
-export, account management, sending, and settings are reachable only from the wallet's own
-interface and never from a page.
+fixed set of actions: connect, sign in, propose, attest, sealed claims, and **send** (a
+plain CSD transfer). Every request requires the wallet to be unlocked and an explicit
+approval in a separate popup window.
+
+`send` moves funds to a page-supplied recipient, so the approval window **clear-signs the
+full (untruncated) recipient address(es), each amount, the total, the fee, and the
+projected balance-after**, and warns on a first-time or look-alike (address-poisoning)
+recipient. The wallet always selects its own inputs and returns change to its own address:
+a page can pass `{to, amount, fee}` or `{outputs:[…], fee}` but can never choose which
+UTXOs are spent, nor redirect the change. Key export, mnemonic/seed reveal, account
+management, RPC/API settings, and wallet reset remain reachable **only** from the wallet's
+own interface and are refused on the dApp channel even if a user approves the dialog
+(enforced by the positive method whitelist in `resolvePending`, proven by
+`test/extension-boundary.ts`).
 
 ## Supply chain
 

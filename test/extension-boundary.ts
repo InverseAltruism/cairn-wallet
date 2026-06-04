@@ -35,6 +35,18 @@ let windowsOpened = 0;
   windows: { create: () => { windowsOpened++; } },
 };
 
+// ── mock the node RPC so an approved `send` actually builds + "submits" a tx we can
+//    inspect (one confirmed UTXO worth 10 CSD; /tx/submit captures the tx). ──
+const MOCK_UTXO = { txid: "0x" + "aa".repeat(32), vout: 0, value: 1_000_000_000, confirmations: 10, coinbase: false };
+let lastSubmit: any = null;
+(globalThis as any).fetch = async (url: string, init?: any) => {
+  const u = String(url);
+  if (u.includes("/utxos/")) return { ok: true, json: async () => ({ ok: true, confirmed_balance: MOCK_UTXO.value, utxos: [MOCK_UTXO] }) };
+  if (u.includes("/tx/submit")) { lastSubmit = JSON.parse(init.body); return { ok: true, json: async () => ({ ok: true, txid: "0x" + "55".repeat(32) }) }; }
+  return { ok: true, json: async () => ({ ok: true }) };
+};
+const spkHex = (a: any) => "0x" + (a as number[]).map((b) => b.toString(16).padStart(2, "0")).join("");
+
 // popup-channel call (privileged, used only by the extension's own pages)
 const popup = (method: string, ...args: any[]) => new Promise<any>((res) => listener({ kind: "popup", method, args }, { id: "cairnwallettestid" }, res));
 // a website's request always arrives via the content-script relay as kind:"dapp"
@@ -56,18 +68,20 @@ async function main() {
   check("popup channel can export the key with the password (UI-only)", /^[0-9a-f]{64}$/.test(priv));
 
   console.log("\n=== a website (dApp channel) CANNOT invoke key-exposing / privileged methods ===");
-  // Even APPROVED, these must be rejected by resolvePending's method whitelist.
-  for (const m of ["export", "exportMnemonic", "restore", "send", "import", "reset", "setApi", "setRpc", "addAccount", "switchAccount", "removeAccount", "unlock", "lock", "create"]) {
-    const req = dappAsync(m, m === "send" ? ["0x" + "cc".repeat(20), 1e8] : ["x"]);
+  // These are not in the dApp allowlist, so queueDappRequest rejects them IMMEDIATELY —
+  // they never enter the pending queue, never open an approval window, and cannot be
+  // approved into execution. (`send` is intentionally NOT here — it is an approval-gated
+  // dApp method now; positive-control + smuggle tests below.)
+  for (const m of ["export", "exportMnemonic", "restore", "import", "reset", "setApi", "setRpc", "addAccount", "switchAccount", "removeAccount", "unlock", "lock", "create"]) {
+    const winBefore = windowsOpened;
+    const req = dappAsync(m, ["x"]);
     await tick();
     const pend = (await popup("pending")).result;
-    const mine = pend[pend.length - 1];
-    await popup("resolve", mine.id, true); // user APPROVES — should still be refused
-    await tick();
     const r = req.get();
-    const refused = r && r.ok === false;
+    const refused = r && r.ok === false && !pend.some((x: any) => x.method === m);
+    const noWindow = windowsOpened === winBefore;
     const noKey = !JSON.stringify(r ?? {}).toLowerCase().includes(priv);
-    check(`dApp '${m}' is refused even when approved, and leaks no key`, refused && noKey);
+    check(`dApp '${m}' is refused before queuing (no window, no approval path), leaks no key`, refused && noWindow && noKey);
   }
 
   console.log("\n=== the approval flow actually gates dApp requests (no silent auto-exec) ===");
@@ -85,6 +99,40 @@ async function main() {
   await popup("resolve", p[p.length - 1].id, true);
   await tick();
   check("approved dApp getAddress returns the address (and only the address)", conn.get()?.ok === true && conn.get().result.addr === addr && !JSON.stringify(conn.get()).toLowerCase().includes(priv));
+
+  console.log("\n=== dApp `send` is approval-gated, routed to wallet.send, and cannot smuggle ===");
+  const RECIP = "0x" + "cc".repeat(20);
+  const EVIL_CHANGE = "0x" + "de".repeat(20);
+  // a hostile page tries to ALSO pass its own inputs + a change address — both must be ignored
+  const sreq = dappAsync("send", { to: RECIP, amount: 100_000_000, fee: 1_000_000, inputs: [{ txid: "0x" + "ff".repeat(32), vout: 9 }], change: EVIL_CHANGE });
+  await tick();
+  check("dApp send is NOT auto-executed — it opens an approval window", sreq.done() === false);
+  let sp = (await popup("pending")).result;
+  await popup("resolve", sp[sp.length - 1].id, true); // user approves
+  await tick(); await tick();
+  const sr = sreq.get();
+  check("approved dApp send is ROUTED to wallet.send (not refused by the whitelist)", sr && sr.ok === true && !/unsupported dApp method/.test(JSON.stringify(sr)));
+  check("dApp send leaks no private key", !JSON.stringify(sr ?? {}).toLowerCase().includes(priv));
+  const outs = lastSubmit?.tx?.outputs ?? [];
+  const ins = lastSubmit?.tx?.inputs ?? [];
+  check("send used the wallet's OWN selected input (smuggled `inputs` ignored)", ins.length === 1 && spkHex(ins[0].prevout.txid) === MOCK_UTXO.txid);
+  check("send paid exactly the recipient the user approved", outs.some((o: any) => spkHex(o.script_pubkey) === RECIP && Number(o.value) === 100_000_000));
+  check("change returned to the wallet's OWN address (smuggled `change` ignored)", outs.some((o: any) => spkHex(o.script_pubkey) === addr) && !outs.some((o: any) => spkHex(o.script_pubkey) === EVIL_CHANGE));
+  check("no output value exceeds the approved spend", outs.every((o: any) => Number(o.value) <= MOCK_UTXO.value));
+
+  console.log("\n=== multi-output (1→many) send also routes + returns change to self ===");
+  lastSubmit = null;
+  const R1 = "0x" + "a1".repeat(20), R2 = "0x" + "b2".repeat(20);
+  const mreq = dappAsync("send", { outputs: [{ to: R1, value: 50_000_000 }, { to: R2, value: 30_000_000 }], fee: 1_000_000 });
+  await tick();
+  sp = (await popup("pending")).result;
+  await popup("resolve", sp[sp.length - 1].id, true);
+  await tick(); await tick();
+  const mouts = lastSubmit?.tx?.outputs ?? [];
+  check("multi-output send paid both recipients + change to self", mreq.get()?.ok === true
+    && mouts.some((o: any) => spkHex(o.script_pubkey) === R1 && Number(o.value) === 50_000_000)
+    && mouts.some((o: any) => spkHex(o.script_pubkey) === R2 && Number(o.value) === 30_000_000)
+    && mouts.some((o: any) => spkHex(o.script_pubkey) === addr));
 
   console.log("\n=== while LOCKED, an approved dApp request cannot act ===");
   await popup("lock");

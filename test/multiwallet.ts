@@ -139,9 +139,12 @@ async function main() {
     console.log("\n— dApp boundary: privileged methods are NOT reachable from a site —");
     const bg = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
     const dappBranch = bg.slice(bg.indexOf("async function resolvePending"), bg.indexOf("queueDappRequest"));
-    const forbidden = ["addAccount", "importAccount", "switchAccount", "removeAccount", "renameAccount", "wallet.send", "wallet.exportKey", "wallet.reset", "wallet.importKey"];
+    // send IS an approval-gated dApp method now (so wallet.send/sendMany may appear), but
+    // key export, account management, reset, import, and settings must NEVER be reachable.
+    const forbidden = ["addAccount", "importAccount", "switchAccount", "removeAccount", "renameAccount", "exportKey", "exportMnemonic", "wallet.reset", "importKey", "setRpc", "setApi"];
     const leaked = forbidden.filter((m) => dappBranch.includes(m));
-    check("no account-management / send / export / reset method is in the dApp resolve path", leaked.length === 0);
+    check("no account-management / export / reset / settings method is in the dApp resolve path", leaked.length === 0);
+    check("send IS wired into the dApp resolve path (approval-gated)", dappBranch.includes("wallet.send"));
     check("content script only ever sends kind:dapp (can't invoke popup methods)", readFileSync(new URL("../src/content.ts", import.meta.url), "utf8").includes('kind: "dapp"'));
   } finally { (globalThis as any).fetch = of; }
 
