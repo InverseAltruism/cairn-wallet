@@ -259,9 +259,13 @@ function originPattern(u: string): string | null {
     return `${url.protocol}//${host}/*`;
   } catch { return null; }
 }
-// Request host access for any custom RPC/API origins. MV3 blocks fetches to hosts
-// outside host_permissions, so "point at your own node" needs an optional grant —
-// requested here, inside the click (a user gesture), or Chrome rejects it silently.
+// Request host access for a custom RPC/API origin, scoped to that EXACT origin (never a
+// broad pattern). `optional_host_permissions` is deliberately narrowed to local nodes
+// (localhost / 127.0.0.1) — the default Cairn proxy is a required host_permission, so the
+// common cases need no grant. A REMOTE custom https host is not in the optional set, so
+// chrome.permissions.request rejects it (caught → false) and Settings shows "host access
+// denied: use a local node or the Cairn proxy". This keeps least-privilege (no all-https
+// grant / Web-Store red flag); remote custom RPC is a documented power-user limitation.
 async function ensureHostAccess(urls: string[]): Promise<boolean> {
   if (!EXT || !chrome.permissions?.request) return true;
   const origins = [...new Set(urls.map(originPattern).filter(Boolean) as string[])];

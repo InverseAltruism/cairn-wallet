@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts   # no dependency lifecycle scripts run in CI (supply-chain hardening)
       - run: npm test            # full gate — a broken/failed build never ships
       - run: npm run package     # deterministic zip + cairn-wallet.zip.sha256
       - name: Attest build provenance
