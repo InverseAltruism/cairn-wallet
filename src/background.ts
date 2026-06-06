@@ -42,6 +42,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "removeRpc": return wallet.removeRpc(args[0]);
     case "reset": return wallet.reset();
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
+    case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)
     case "flushPending": return wallet.flushPending();
     case "history": return wallet.history();
@@ -93,30 +94,46 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "propose", "att
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
+
+// Open (or focus) the dedicated clear-signing approval window. Used both when a request
+// first arrives and when the user clicks "Review" in the toolbar popup — so EVERY approval
+// goes through the full recipient/amount/fee/warnings disclosure, never a blind approve.
+function openApprovalWindow(): Promise<{ opened: boolean }> {
+  return new Promise((resolve) => {
+    if (!pending.size) { resolve({ opened: false }); return; }
+    if (approveWinId != null) {
+      try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }, () => resolve({ opened: true })); return; } catch { /* fall through to create */ }
+    }
+    try { chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => { approveWinId = w?.id ?? null; resolve({ opened: approveWinId != null }); }); }
+    catch { resolve({ opened: false }); }
+  });
+}
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, error: "unsupported dApp method: " + String(method).slice(0, 32) });
   return new Promise((resolve) => {
-    const wasEmpty = pending.size === 0;
     const id = `${Date.now()}-${reqSeq++}`;
     pending.set(id, { origin, method, params, resolve });
     try { chrome.action?.setBadgeText?.({ text: String(pending.size) }); } catch { /* no-op */ }
-    if (wasEmpty) {
-      try { chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => { approveWinId = w?.id ?? null; }); }
-      catch { /* fall back to badge — user opens the toolbar popup */ }
-    } else if (approveWinId != null) {
-      // A request queued behind one already on screen: raise + flash the popup so the user
-      // notices a NEW request rather than having it silently swap in under their cursor.
-      try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* best-effort */ }
-    }
+    // Raise the clear-signing window. If it can't open (rare), the request still sits in the
+    // queue + badge; the user opens the toolbar popup and clicks "Review", which calls
+    // openApprovalWindow again — approval ALWAYS routes through the disclosure window, never
+    // a blind toolbar approve.
+    openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
   });
 }
+
+// forget the approval window once it closes, so the next request (or "Review") reopens it
+try { chrome.windows?.onRemoved?.addListener((wid: number) => { if (wid === approveWinId) approveWinId = null; }); } catch { /* no-op */ }
 
 chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: any) => void) => {
   (async () => {
     await ready;
     try {
-      wallet.touch(); // user activity → reset the idle auto-lock timer
-      if (msg?.kind === "popup") { sendResponse({ ok: true, result: await runPopupMethod(msg.method, msg.args ?? []) }); return; }
+      // Reset the idle auto-lock ONLY on genuine user activity (the extension's own popup
+      // UI). dApp/page-relayed messages must NOT extend the unlock — otherwise a malicious
+      // allowed-origin page could ping every minute (even with a rejected method) to keep
+      // the wallet unlocked forever, defeating the 15-min auto-lock.
+      if (msg?.kind === "popup") { wallet.touch(); sendResponse({ ok: true, result: await runPopupMethod(msg.method, msg.args ?? []) }); return; }
       if (msg?.kind === "dapp") {
         const origin = sender?.origin || sender?.url || "unknown";
         const res = await queueDappRequest(origin, msg.method, msg.params);

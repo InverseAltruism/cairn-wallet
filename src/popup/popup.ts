@@ -162,8 +162,18 @@ async function renderPending() {
   const p = await call("pending"); const el = $("pending") as HTMLElement;
   if (!p.length) { el.hidden = true; el.innerHTML = ""; return; }
   el.hidden = false;
-  el.innerHTML = p.map((r: any) => `<div class="req"><b>${escapeHtml(String(r.method))}</b> from ${escapeHtml(String(r.origin))}</div><div class="row"><button data-ap="${escapeHtml(String(r.id))}" class="primary">Approve</button><button data-rj="${escapeHtml(String(r.id))}">Reject</button></div>`).join("");
-  el.querySelectorAll<HTMLElement>("[data-ap]").forEach((b) => b.onclick = () => resolve(b.dataset.ap!, true));
+  // The toolbar popup NEVER approves a request inline — approving a fund-moving send/propose/
+  // attest requires the full clear-signing window (recipient, amount, fee, balance-after,
+  // first-time/poisoning/large-fee warnings). "Review & approve" opens that window; Reject is
+  // safe to do blind. This keeps a single, fully-disclosed approval path.
+  const pluralReview = p.length > 1 ? `Review ${p.length} requests` : "Review & approve";
+  el.innerHTML =
+    p.map((r: any) => `<div class="req"><b>${escapeHtml(String(r.method))}</b> from ${escapeHtml(String(r.origin))}</div>`).join("") +
+    `<div class="row"><button data-review="1" class="primary">${escapeHtml(pluralReview)}</button>` +
+    p.map((r: any) => `<button data-rj="${escapeHtml(String(r.id))}">Reject ${escapeHtml(String(r.method))}</button>`).join("") +
+    `</div>`;
+  const reviewBtn = el.querySelector<HTMLElement>("[data-review]");
+  if (reviewBtn) reviewBtn.onclick = async () => { await call("openApproval"); window.close(); };
   el.querySelectorAll<HTMLElement>("[data-rj]").forEach((b) => b.onclick = () => resolve(b.dataset.rj!, false));
 }
 async function resolve(id: string, ap: boolean) { await call("resolve", id, ap); msg(ap ? "approved" : "rejected"); renderPending(); }

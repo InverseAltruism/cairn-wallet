@@ -66,7 +66,7 @@ Cairn Wallet is a non-custodial cryptocurrency wallet: it stores the user's keys
 
 **Privacy policy URL**
 ```
-https://cairn-substrate.com/wallet-privacy   (host store/PRIVACY-POLICY.md here, or any public URL)
+https://cairn-substrate.com/wallet-privacy.html   (host store/PRIVACY-POLICY.md here, or any public URL)
 ```
 
 **Permission justifications** (one per declared permission/host)
@@ -87,17 +87,22 @@ The default Compute Substrate node proxy and Cairn API. Used to read public chai
 ```
 Lets users who run their own local Compute Substrate node connect the wallet to it (localhost only). Optional; the wallet works against the default remote node without it.
 ```
-- Optional host permissions `https://*/*`, `http://localhost/*`, `http://127.0.0.1/*`
+- Optional host permissions `http://localhost/*`, `https://localhost/*`, `http://127.0.0.1/*`
 ```
-Requested only at the moment a user chooses a custom node/API URL in Settings, and only for that specific host (HTTPS, or a local node on localhost). This lets advanced users point the wallet at their own infrastructure. Not requested unless the user explicitly sets a custom endpoint; arbitrary cleartext (non-local http) hosts are intentionally not grantable.
+Requested only at the moment a user chooses a custom local node/API URL in Settings, and only for that specific localhost host. This lets advanced users point the wallet at a node they run themselves. Not requested unless the user explicitly sets a custom endpoint. (These exactly match `optional_host_permissions` in manifest.json — localhost/127.0.0.1 only; no `https://*/*` or `<all_urls>`.)
 ```
 
 **Data usage — categories collected**
 ```
-Authentication information — only the user's keys, stored encrypted on the user's own device and never transmitted.
+NONE. The wallet collects and transmits no user data. Keys are generated and stored
+encrypted ON THE USER'S DEVICE and never leave it; the only outbound traffic is a
+chain transaction or sign-in signature the user explicitly approves. Under Chrome's
+data-disclosure definition (data "collected" = transmitted off the device), nothing is
+collected — so leave ALL data categories UNCHECKED.
 ```
-(Do NOT check: web history, personal communications, location, financial/payment info,
-health, personal info — none are collected.)
+(Do NOT check ANY category — web history, personal communications, location, financial/
+payment info, health, personal info, authentication information — none are collected or
+transmitted. This matches store/CHROME-SUBMISSION.md.)
 
 **Data usage — required certifications** (check all three; they are true for this extension)
 - [x] I do not sell or transfer user data to third parties, outside of the approved use cases.

@@ -16,6 +16,12 @@ cpSync("public/manifest.json", "dist/manifest.json");
 cpSync("src/popup/popup.html", "dist/popup.html");
 cpSync("src/popup/approve.html", "dist/approve.html");
 cpSync("src/popup/popup.css", "dist/popup.css");
-import { existsSync } from "node:fs";
-if (existsSync("public/icons")) cpSync("public/icons", "dist/icons", { recursive: true });
+import { existsSync, mkdirSync as _mkdirSync } from "node:fs";
+// Ship ONLY the icons the extension actually references (the sized action icons + the popup
+// logo) — not the source master `icon.png` (62KB, unreferenced) that gen-icons.mjs derives from.
+const SHIP_ICONS = ["icon-16.png", "icon-32.png", "icon-48.png", "icon-128.png", "logo-white.png"];
+if (existsSync("public/icons")) {
+  _mkdirSync("dist/icons", { recursive: true });
+  for (const f of SHIP_ICONS) if (existsSync(`public/icons/${f}`)) cpSync(`public/icons/${f}`, `dist/icons/${f}`);
+}
 console.log("✓ built dist/ — load it unpacked in chrome://extensions (Developer mode → Load unpacked → dist/)");

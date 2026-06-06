@@ -28,23 +28,29 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: cairn-wallet.zip
+          # attest BOTH artifacts — the store-upload zip (manifest at root) AND the unpacked
+          # zip — so the package actually submitted to the Chrome Web Store keeps provenance.
+          subject-path: |
+            cairn-wallet-store.zip
+            cairn-wallet.zip
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
+            cairn-wallet-store.zip cairn-wallet-store.zip.sha256 \
             cairn-wallet.zip cairn-wallet.zip.sha256 \
             --title "Cairn Wallet ${GITHUB_REF_NAME}" \
             --notes "$(printf '%s\n' \
-              'Non-custodial Compute Substrate (CSD) wallet — unpacked extension.' \
+              'Non-custodial Compute Substrate (CSD) wallet — Chrome MV3 extension.' \
               '' \
-              '**Install:** unzip → `chrome://extensions` → enable Developer mode → Load unpacked → pick the `cairn-wallet` folder.' \
+              '**Chrome Web Store upload:** `cairn-wallet-store.zip` (manifest.json at the zip root).' \
+              '**Load unpacked (dev):** unzip `cairn-wallet.zip` → `chrome://extensions` → Developer mode → Load unpacked → pick the `cairn-wallet` folder.' \
               '' \
               '**Verify (optional):**' \
               '```' \
-              "sha256sum -c cairn-wallet.zip.sha256   # expected: $(cat cairn-wallet.zip.sha256)" \
-              'gh attestation verify cairn-wallet.zip --repo ${{ github.repository }}' \
+              "sha256sum -c cairn-wallet-store.zip.sha256   # expected: $(cat cairn-wallet-store.zip.sha256)" \
+              'gh attestation verify cairn-wallet-store.zip --repo ${{ github.repository }}' \
               '```' \
               '' \
-              'Reproducible: `npm ci && npm run package` rebuilds a byte-identical zip.')"
+              'Reproducible: `npm ci && npm run package` rebuilds byte-identical zips.')"

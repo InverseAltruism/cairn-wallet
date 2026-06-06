@@ -59,7 +59,7 @@ export function selectInputs(utxos: any[], need: number): Selection | null {
     if (Number(x.confirmations ?? 0) < 1) return false;
     const v = Number(x.value);
     if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return false;
-    const key = `${x.txid}:${Number(x.vout)}`;
+    const key = `${String(x.txid).toLowerCase()}:${Number(x.vout)}`; // case-normalize hex so a hostile RPC can't bypass dedupe with mixed case
     if (seen.has(key)) return false; seen.add(key);
     return true;
   });
