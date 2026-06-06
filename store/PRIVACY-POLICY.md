@@ -9,7 +9,7 @@ sell, or share your personal data, and your keys never leave your device.**
 
 ## Who provides this extension
 
-Cairn Wallet is published by the Cairn project (contact: <set-your-contact-email>).
+Cairn Wallet is published by the Cairn project (contact: inversealtruism@gmail.com).
 It is open source: https://github.com/InverseAltruism/cairn-wallet
 
 ## What the extension stores (locally, on your device)
@@ -75,4 +75,4 @@ changes will be noted in the extension's repository.
 
 ## Contact
 
-Questions or security reports: <set-your-contact-email>.
+Questions or security reports: inversealtruism@gmail.com.

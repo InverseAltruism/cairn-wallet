@@ -13,6 +13,10 @@ const PBKDF2_ITERS = 600_000;
 // iteration count. Defeats a stored-params downgrade attack and guards against a
 // corrupted/forged vault weakening the KDF. Legitimate vaults are ≥600k.
 const MIN_ITERS = 100_000;
+// Ceiling on OPEN: a vault (which an attacker who can write chrome.storage controls) must
+// not be able to set a huge iteration count that hangs the service worker in PBKDF2. Far
+// above any legitimate value (600k); ~50× headroom for future KDF strengthening.
+const MAX_ITERS = 30_000_000;
 // WebCrypto's BufferSource type is stricter than @noble's Uint8Array<ArrayBufferLike>;
 // the bytes are identical at runtime, so cast at the boundary.
 const bs = (u: Uint8Array): BufferSource => u as unknown as BufferSource;
@@ -32,8 +36,12 @@ async function deriveKey(password: string, salt: Uint8Array, iter: number): Prom
 // on changes (add/remove/rename) WITHOUT retaining the password. The key is bound to
 // the salt, so re-sealing keeps the same salt and only rolls the IV.
 export async function deriveVaultKey(password: string, saltHex: string, iter: number): Promise<CryptoKey> {
-  if (!Number.isInteger(iter) || iter < MIN_ITERS) throw new Error("vault KDF iteration count too low");
-  return deriveKey(password, hexToBytes(saltHex), iter);
+  // Lower floor defeats a stored-params downgrade; UPPER clamp stops an attacker who can
+  // write chrome.storage from setting iter huge (e.g. 1e12) to hang unlock/export in PBKDF2.
+  if (!Number.isInteger(iter) || iter < MIN_ITERS || iter > MAX_ITERS) throw new Error("vault KDF iteration count out of range");
+  let salt: Uint8Array;
+  try { salt = hexToBytes(saltHex); } catch { throw new Error("bad password"); } // corrupt salt → uniform error, no raw decode leak
+  return deriveKey(password, salt, iter);
 }
 
 // Encrypt with an already-derived key + existing salt, rolling a FRESH random IV

@@ -14,7 +14,7 @@ actions the build can't do); everything else is already prepared in this repo.
 
 ## 2. Host the privacy policy  (you)
 - [ ] Publish `store/PRIVACY-POLICY.md` at a public URL (e.g.
-      `https://cairn-substrate.com/wallet-privacy`). Fill in the `<set-your-contact-email>`
+      `https://cairn-substrate.com/wallet-privacy.html`). Fill in the `inversealtruism@gmail.com`
       placeholders first.
 - [ ] Put that URL in the dashboard **Privacy practices → Privacy policy** field.
 
