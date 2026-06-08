@@ -1,9 +1,9 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
-// itself when the queue is empty.
+// itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
+import { describe, debitOf, lookalikeOf, costLine, escapeHtml } from "./clearsign.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
 function call(method: string, ...args: any[]): Promise<any> {
   return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
@@ -12,67 +12,6 @@ function call(method: string, ...args: any[]): Promise<any> {
   }));
 }
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
-
-// Surface a fee in CSD and flag an unusually large one so a phishing site can't slip
-// a huge fee past a user skimming the dialog. propose min is 0.25 CSD; >5 CSD is odd.
-const FEE_WARN = 5 * 1e8;
-function feeLine(raw: number, fallback = 0): string {
-  const fee = Number(raw || fallback);
-  const warn = fee > FEE_WARN ? ` <span class="err">⚠ unusually large fee</span>` : "";
-  return `fee: ${fee / 1e8} CSD${warn}`;
-}
-
-function describe(r: any): string {
-  const p = r.params || {};
-  if (r.method === "connect" || r.method === "getAddress") return "<b>Connect</b> — share your address with this site.";
-  if (r.method === "signin") return "<b>Sign in with CSD</b> — prove your address (no transaction, no funds move).";
-  // Clear-signing: show EVERYTHING the site controls and the chain will commit —
-  // not just domain+fee. payloadHash/uri are dApp-supplied and were previously hidden.
-  if (r.method === "propose") return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee)}`
-    + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>`;
-  // score/confidence are serialized as u32 (>>>0); display the SAME value that will be
-  // signed so a negative/oversized input can't show one thing and commit another.
-  if (r.method === "attest") return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code><br>${feeLine(p.fee)} · score ${(Number(p.score) >>> 0)} · confidence ${(Number(p.confidence) >>> 0)}`;
-  if (r.method === "sealClaim") return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code><br>${feeLine(p.fee, 25000000)} · the salt + claim stay in your wallet`;
-  if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> — publish the preimage; it becomes public + provably committed earlier.<br>tx: <code>${escapeHtml(String(r.params || "").slice(0, 18))}…</code>`;
-  // Send is the only dApp method that MOVES funds to a page-chosen recipient, so we
-  // clear-sign the FULL (untruncated) recipient address(es) + each amount + total + fee.
-  // #send-warn is populated async by fillSendWarning (first-time / address-poisoning).
-  if (r.method === "send") {
-    const outs = Array.isArray(p.outputs) ? p.outputs : [{ to: p.to, value: p.amount }];
-    const total = outs.reduce((a: number, o: any) => a + Number(o.value || 0), 0);
-    // Cap rendered rows so a huge multi-output request can't scroll the fee/total/buttons
-    // out of the window; the total + count are always shown.
-    const SHOWN = 12;
-    const rows = outs.slice(0, SHOWN).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${Number(o.value || 0) / 1e8} CSD</b>`).join("<br>")
-      + (outs.length > SHOWN ? `<br><span class="dim">…and ${outs.length - SHOWN} more recipient(s)</span>` : "");
-    const totalLine = outs.length > 1 ? `<br>total: <b>${total / 1e8} CSD</b> to ${outs.length} recipients` : "";
-    return `<b>Send CSD</b><br>${rows}<br>${feeLine(p.fee, 1000000)}${totalLine}<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
-  }
-  return `<b>${escapeHtml(r.method)}</b>`;
-}
-
-// Base units that will LEAVE the wallet if this request is approved (for balance-after).
-function debitOf(r: any): number {
-  const p = r.params || {};
-  if (r.method === "send") {
-    const outs = Array.isArray(p.outputs) ? p.outputs : [{ value: p.amount }];
-    const total = outs.reduce((a: number, o: any) => a + Number(o.value || 0), 0);
-    return total + Number(p.fee || 1_000_000);
-  }
-  if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return 0;
-  return Number(p.fee || (r.method === "sealClaim" ? 25000000 : 0));
-}
-
-// Address-poisoning lookalike (ported from the in-popup send review): an attacker seeds
-// your history with an address sharing the head+tail you eyeball but differing in the
-// middle. Flag a recipient matching a previously-seen address on first 8 + last 4 hex
-// but not identical.
-function lookalikeOf(to: string, known: string[]): string | null {
-  const t = to.toLowerCase(), head = t.slice(0, 8), tail = t.slice(-4);
-  for (const k of known) { const a = k.toLowerCase(); if (a !== t && a.slice(0, 8) === head && a.slice(-4) === tail) return k; }
-  return null;
-}
 
 let current: any = null;
 let renderedId: string | null = null; // only rebuild the request view when the request changes
@@ -101,13 +40,6 @@ async function render() {
   fillSendWarning(current);
 }
 
-// Static cost summary from the request's own params (no network).
-function costLine(r: any): string {
-  if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return "no funds move — this only shares/signs your identity.";
-  if (r.method === "send") { const fee = Number(r.params?.fee || 1_000_000); const sent = debitOf(r) - fee; return `cost: ${sent / 1e8} CSD sent + ${fee / 1e8} CSD network fee.`; }
-  const fee = Number(r.params?.fee || (r.method === "sealClaim" ? 25000000 : 0));
-  return `cost: ${fee / 1e8} CSD network fee (paid to miners), + a tiny chain fee.`;
-}
 // Fetch the signer's balance once per request and show the projected balance-after so
 // the user sees the real impact of approving (render no longer rebuilds each tick, so
 // this value persists once filled).
