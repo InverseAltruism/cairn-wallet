@@ -20,10 +20,22 @@ are happy to credit you once it is resolved.
 ## dApp boundary
 
 A web page interacts with the wallet only through the injected `window.cairn` provider,
-relayed to the background service worker over same-origin messages. The provider exposes a
-fixed set of actions: connect, sign in, propose, attest, sealed claims, and **send** (a
-plain CSD transfer). Every request requires the wallet to be unlocked and an explicit
-approval in a separate popup window.
+relayed to the background service worker over same-origin messages. The provider is injected
+on all sites (like MetaMask) so any dApp can request a connection — but injection scope is
+**not** the security boundary: the content script only relays requests, exposes no keys, and
+`host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
+The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
+sealed claims, and **send** (a plain CSD transfer).
+
+**Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
+the first time an origin connects the user approves it, and the origin is recorded as a
+connected site (listed and revocable in Settings → wiped on reset). After that, that origin
+may read the address without a fresh prompt. This is the **only** silent path, and only when
+the wallet is unlocked. **Every signing / fund-moving action — signin, send, propose, attest,
+sealClaim, revealClaim — ALWAYS opens the clear-signing approval window, every time,
+regardless of connection state.** Being connected never pre-approves a signature (enforced by
+the fast-path guard in `background.ts` + the positive whitelist in `resolvePending`; proven by
+`test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15).
 
 `send` moves funds to a page-supplied recipient, so the approval window **clear-signs the
 full (untruncated) recipient address(es), each amount, the total, the fee, and the

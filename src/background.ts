@@ -13,6 +13,38 @@ const ready = wallet.init();
 const pending = new Map<string, { origin: string; method: string; params: any; resolve: (v: any) => void }>();
 let reqSeq = 0;
 
+// Per-origin "connected sites" (MetaMask model): once the user approves a `connect`
+// for an origin, that origin may READ the address (connect/getAddress) without a fresh
+// prompt. This grants ADDRESS VISIBILITY ONLY — every signing / fund-moving method
+// (signin/send/propose/attest/sealClaim/revealClaim) ALWAYS goes through the
+// clear-signing approval window, every time, regardless of connection state. Consent
+// is wiped on `reset` and revocable from the popup. Stored separately from the vault.
+const consentStore = chromeStore();
+const CONSENT_KEY = "connectedOrigins";
+type ConsentMap = Record<string, { addr: string; ts: number }>;
+async function getConsents(): Promise<ConsentMap> { return (await consentStore.get(CONSENT_KEY)) || {}; }
+async function isConsented(origin: string): Promise<boolean> {
+  if (!origin || origin === "unknown") return false;
+  return !!(await getConsents())[origin];
+}
+async function recordConsent(origin: string, addr: string): Promise<void> {
+  if (!origin || origin === "unknown") return;
+  const c = await getConsents();
+  c[origin] = { addr, ts: Date.now() };
+  await consentStore.set(CONSENT_KEY, c);
+}
+async function revokeConsent(origin: string): Promise<{ removed: boolean }> {
+  const c = await getConsents();
+  if (!c[origin]) return { removed: false };
+  delete c[origin];
+  await consentStore.set(CONSENT_KEY, c);
+  return { removed: true };
+}
+async function listConsents(): Promise<{ origin: string; addr: string; ts: number }[]> {
+  const c = await getConsents();
+  return Object.entries(c).map(([origin, v]) => ({ origin, addr: v.addr, ts: v.ts })).sort((a, b) => b.ts - a.ts);
+}
+
 async function runPopupMethod(method: string, args: any[]): Promise<any> {
   switch (method) {
     case "status": return wallet.status();
@@ -40,7 +72,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "rpcList": return wallet.rpcList();
     case "addRpc": return wallet.addRpc(args[0]);
     case "removeRpc": return wallet.removeRpc(args[0]);
-    case "reset": return wallet.reset();
+    case "reset": { await consentStore.set(CONSENT_KEY, {}); return wallet.reset(); }
+    case "connectedSites": return listConsents();
+    case "disconnectSite": return revokeConsent(args[0]);
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)
@@ -63,7 +97,13 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
     const st = await wallet.status();
     if (!st.unlocked) { p.resolve({ ok: false, error: "wallet locked" }); return { done: true }; }
     let result: any;
-    if (p.method === "connect" || p.method === "getAddress") result = { addr: st.addr };
+    if (p.method === "connect" || p.method === "getAddress") {
+      // The user explicitly approved address disclosure to this origin → remember it
+      // (connected sites). This ONLY enables silent connect/getAddress later; it never
+      // pre-approves any signing method.
+      result = { addr: st.addr };
+      await recordConsent(p.origin, st.addr);
+    }
     else if (p.method === "signin") result = await wallet.signIn();
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest(p.params);
@@ -136,6 +176,18 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
       if (msg?.kind === "popup") { wallet.touch(); sendResponse({ ok: true, result: await runPopupMethod(msg.method, msg.args ?? []) }); return; }
       if (msg?.kind === "dapp") {
         const origin = sender?.origin || sender?.url || "unknown";
+        // Fast-path for ALREADY-CONNECTED origins: connect/getAddress may resolve the
+        // address WITHOUT a fresh prompt — but ONLY when (a) the method is exactly
+        // connect/getAddress (address visibility), (b) the wallet is UNLOCKED, and
+        // (c) the origin was previously consented. This is the sole "silent" path.
+        // Every signing method falls through to queueDappRequest → approval window.
+        if (msg.method === "connect" || msg.method === "getAddress") {
+          const st = await wallet.status();
+          if (st.unlocked && (await isConsented(origin))) {
+            sendResponse({ ok: true, result: { addr: st.addr } });
+            return;
+          }
+        }
         const res = await queueDappRequest(origin, msg.method, msg.params);
         sendResponse(res); return;
       }

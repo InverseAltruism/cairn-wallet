@@ -91,6 +91,10 @@ Lets users who run their own local Compute Substrate node connect the wallet to 
 ```
 Requested only at the moment a user chooses a custom local node/API URL in Settings, and only for that specific localhost host. This lets advanced users point the wallet at a node they run themselves. Not requested unless the user explicitly sets a custom endpoint. (These exactly match `optional_host_permissions` in manifest.json — localhost/127.0.0.1 only; no `https://*/*` or `<all_urls>`.)
 ```
+- Content scripts on `https://*/*` (broad match)
+```
+Injects a tiny in-page provider (window.cairn) so any website the user visits can REQUEST to connect this wallet — the same model as MetaMask and other Web3 wallets. The content script only relays connection/signing REQUESTS to the extension; it reads no page content, sends no data, and exposes no keys. Nothing happens on any site until the user explicitly approves a connection in the wallet's own popup, and every transaction/signature is approved per-action in a separate clear-signing window. Connected sites are listed and revocable in Settings. NETWORK access is NOT broadened by this — host_permissions stays scoped to the node/proxy (localhost + cairn-substrate.com); the broad match is injection-only.
+```
 
 **Data usage — categories collected**
 ```

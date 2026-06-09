@@ -31,8 +31,15 @@ async function render() {
   const acct = (st.accounts || [])[st.active || 0];
   const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
   const queued = pend.length > 1 ? `<div class="req dim">request 1 of ${pend.length} — review each separately</div>` : "";
+  // For a connection request, tell the user exactly what approving grants: address
+  // visibility until they disconnect the site — NOT permission to move funds (every
+  // send/propose/attest still asks separately).
+  const connectNote = (current.method === "connect" || current.method === "getAddress")
+    ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings → Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
+    : "";
   $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>${queued}`
     + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
+    + connectNote
     + `<div class="req dim" id="cost">${costLine(current)}</div>`;
   msg(""); // clear any stale "approved"/"rejected" from a previous request
   armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request

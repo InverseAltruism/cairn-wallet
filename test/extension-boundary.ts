@@ -100,6 +100,49 @@ async function main() {
   await tick();
   check("approved dApp getAddress returns the address (and only the address)", conn.get()?.ok === true && conn.get().result.addr === addr && !JSON.stringify(conn.get()).toLowerCase().includes(priv));
 
+  console.log("\n=== per-origin consent (connected sites): connect goes silent after approval; SIGNING never does ===");
+  const SITE = "https://app.test";
+  // 1. first connect from a brand-new origin must prompt
+  const winBeforeC = windowsOpened;
+  const c1 = dappAsync("connect", {}, SITE);
+  await tick();
+  check("first connect from a new origin opens an approval window", windowsOpened > winBeforeC && c1.done() === false);
+  let cp = (await popup("pending")).result;
+  await popup("resolve", cp[cp.length - 1].id, true); // approve → records consent
+  await tick();
+  check("approved connect returns the address", c1.get()?.ok === true && c1.get().result.addr === addr);
+  // 2. the origin now appears in connected sites
+  const sites = (await popup("connectedSites")).result;
+  check("the origin is now listed under connected sites", Array.isArray(sites) && sites.some((s: any) => s.origin === SITE));
+  // 3. a SECOND connect/getAddress from the same origin is SILENT (no new window, resolves immediately)
+  const winBeforeC2 = windowsOpened;
+  const c2 = dappAsync("getAddress", {}, SITE);
+  await tick();
+  check("repeat getAddress from a consented origin opens NO new window (silent)", windowsOpened === winBeforeC2);
+  check("repeat getAddress resolves immediately with only the address", c2.done() === true && c2.get()?.ok === true && c2.get().result.addr === addr && !JSON.stringify(c2.get()).toLowerCase().includes(priv));
+  // 4. THE CRITICAL ASSERTION: signing from the SAME consented origin STILL prompts, every time
+  const winBeforeSign = windowsOpened;
+  const sgn = dappAsync("send", { to: "0x" + "cc".repeat(20), amount: 1_000_000, fee: 1_000_000 }, SITE);
+  await tick();
+  check("send from a CONSENTED origin STILL opens the approval window (consent never auto-approves signing)", windowsOpened > winBeforeSign && sgn.done() === false);
+  await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, false); // reject to clean up
+  await tick();
+  const winBeforeProp = windowsOpened;
+  const pr = dappAsync("propose", { domain: "csd:test", payloadHash: "0x" + "11".repeat(32), uri: "x", expiresEpoch: 1, fee: 25000000 }, SITE);
+  await tick();
+  check("propose from a consented origin STILL prompts", windowsOpened > winBeforeProp && pr.done() === false);
+  await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, false);
+  await tick();
+  // 5. revoke → the next connect prompts again
+  const rev = (await popup("disconnectSite", SITE)).result;
+  check("disconnectSite removes the origin from connected sites", rev.removed === true);
+  const winBeforeRe = windowsOpened;
+  const c3 = dappAsync("connect", {}, SITE);
+  await tick();
+  check("after revoke, connect prompts again (no longer silent)", windowsOpened > winBeforeRe && c3.done() === false);
+  await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, false);
+  await tick();
+
   console.log("\n=== dApp `send` is approval-gated, routed to wallet.send, and cannot smuggle ===");
   const RECIP = "0x" + "cc".repeat(20);
   const EVIL_CHANGE = "0x" + "de".repeat(20);
@@ -142,6 +185,14 @@ async function main() {
   await popup("resolve", p[p.length - 1].id, true);
   await tick();
   check("approved dApp request while locked is refused (wallet locked)", lockedReq.get()?.ok === false);
+
+  // "https://evil.test" was consented earlier (positive-control getAddress). Even so, a
+  // connect/getAddress while LOCKED must NOT silently fast-path — it has to queue + prompt
+  // (so a stolen/idle-locked session can't leak the address to a previously-connected site).
+  const winBeforeLk = windowsOpened;
+  const lockedConn = dappAsync("getAddress", {}, "https://evil.test");
+  await tick();
+  check("consented origin while LOCKED does NOT fast-path (queues + opens window, no silent resolve)", lockedConn.done() === false && windowsOpened > winBeforeLk);
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
