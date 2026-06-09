@@ -257,7 +257,26 @@ $("btn-phrase-go").addEventListener("click", async () => {
 $("btn-phrase-show").addEventListener("click", () => { const o = $("phrase-out"); o.classList.toggle("shown"); o.classList.toggle("blur"); });
 $("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase); flashBtn("btn-phrase-copy", "copied ✓"); });
 $("btn-phrase-close").addEventListener("click", () => { resetPhrasePanel(); ($("phrase-panel") as HTMLElement).hidden = true; });
-$("btn-settings").addEventListener("click", () => { openPanel("settings"); });
+$("btn-settings").addEventListener("click", () => { if (openPanel("settings")) renderConnectedSites(); });
+
+// Connected sites: list the origins the user has granted address-visibility to, each
+// with an instant Revoke. Revoking means that origin must prompt again on its next
+// connect(). (Signing was never silent, so revoking doesn't affect fund safety.)
+async function renderConnectedSites() {
+  const el = $("connected-sites");
+  let sites: { origin: string; addr: string; ts: number }[] = [];
+  try { sites = await call("connectedSites"); } catch { /* ignore */ }
+  if (!sites.length) { el.innerHTML = `<div class="dim" style="padding:6px 0">No connected sites yet.</div>`; return; }
+  el.innerHTML = sites.map((s) =>
+    `<div class="row" style="justify-content:space-between;align-items:center;gap:8px">`
+    + `<code class="addr" title="${escapeHtml(s.origin)}">${escapeHtml(s.origin)}</code>`
+    + `<button class="mini" data-disconnect="${escapeHtml(s.origin)}">disconnect</button></div>`
+  ).join("");
+  el.querySelectorAll<HTMLElement>("[data-disconnect]").forEach((b) => b.onclick = async () => {
+    try { await call("disconnectSite", b.dataset.disconnect); } catch { /* ignore */ }
+    renderConnectedSites();
+  });
+}
 // Turn an RPC/API base URL into an MV3 host-match pattern ("https://host:port/*").
 // Returns null for the URLs already in the static host_permissions (so we don't
 // pointlessly re-request) or anything unparseable.
