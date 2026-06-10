@@ -40,6 +40,13 @@ ok("debitOf(fillOffer, garbage) is finite", Number.isFinite(debitOf({ method: "f
 const foXss = describe({ method: "fillOffer", params: { proposalId: '"><img src=x onerror=alert(1)>', outputs: [{ to: "<script>", value: 1 }], fee: 1 } });
 ok("describe(fillOffer) escapes hostile offer id + recipient", !foXss.includes("<img") && !foXss.includes("<script>"));
 
+// propose with protocol-fee outputs (CairnX deploy / name registration) — fee clear-signed + counted
+const propFee = { method: "propose", params: { domain: "cairnx:v1", payloadHash: "0x" + "11".repeat(32), uri: '{"t":"name"}', expiresEpoch: 1, fee: 25000000, outputs: [{ to: ADDR, value: 100000000 }] } };
+const pfHtml = describe(propFee);
+ok("describe(propose+fee) shows the protocol fee recipient + amount", pfHtml.includes("protocol fee") && pfHtml.includes(ADDR) && pfHtml.includes("1 CSD"));
+ok("debitOf(propose+fee) = fee outputs + anchor fee", debitOf(propFee) === 100000000 + 25000000);
+ok("describe(propose, garbage fee output): no NaN", !describe({ method: "propose", params: { domain: "d", fee: 1, outputs: [{ to: ADDR, value: "x" }] } }).includes("NaN"));
+
 // Address-poisoning: flag a head8/tail4 twin, but not an unrelated or identical address
 const real = "0xabcd1234" + "0".repeat(28) + "beef";
 const twin = "0xabcd1234" + "9".repeat(28) + "beef"; // same head8 + tail4, different middle

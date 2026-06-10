@@ -220,7 +220,7 @@ export class Wallet {
   private addr(): string { return this.must().addr; }
 
   balance() { return node.balance(this.rpc, this.addr()); }
-  async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number }) { const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
+  async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
   async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number }) {

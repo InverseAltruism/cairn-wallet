@@ -100,19 +100,36 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
 }
 
-async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string): Promise<SubmitResult> {
+// `payouts` are optional value outputs carried in the SAME tx as the app payload (e.g. a
+// CairnX protocol fee to the treasury on a deploy / name registration). Same posture as
+// send/fillOffer: each recipient validated, sums safe-integer-guarded, inputs selected
+// internally, change ONLY to the wallet's own address; a dApp can't pick UTXOs or redirect change.
+async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string, payouts: { to: string; value: number }[] = []): Promise<SubmitResult> {
   if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false };
   const addr = addrFromPriv(priv);
+  let sumOut = 0;
+  for (const o of payouts) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false };
+    const v = Number(o.value);
+    if (!(v > 0) || !Number.isSafeInteger(v)) return { ok: false, error: "each amount must be a positive safe integer", sighashMatch: false };
+    sumOut += v;
+    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false };
+  }
   const { utxos } = await balance(rpc, addr);
-  const sel = selectInputs(utxos, fee);
-  if (!sel) return { ok: false, error: "insufficient confirmed balance to cover the fee", sighashMatch: false };
-  if (!Number.isSafeInteger(sel.total)) return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
-  const tx: Tx = { version: 1, locktime: 0, app, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: sel.total - fee, scriptPubkey: addr }] };
+  const need = sumOut + fee;
+  const sel = selectInputs(utxos, need);
+  if (!sel) return { ok: false, error: "insufficient confirmed balance for outputs + fee", sighashMatch: false };
+  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need)) return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
+  const outputs = payouts.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
+  const change = sel.total - need;
+  if (change > 0) outputs.push({ value: change, scriptPubkey: addr });
+  if (outputs.length === 0) return { ok: false, error: "tx would have no outputs", sighashMatch: false };
+  const tx: Tx = { version: 1, locktime: 0, app, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
   return signAndSubmit(rpc, tx, priv);
 }
 
-export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number }, priv: string): Promise<SubmitResult> {
-  return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv);
+export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
+  return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : []);
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
   return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score, confidence: p.confidence }, p.fee, priv);

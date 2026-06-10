@@ -27,8 +27,14 @@ export function describe(r: any): string {
   if (r.method === "signin") return "<b>Sign in with CSD</b> — prove your address (no transaction, no funds move).";
   // Clear-signing: show EVERYTHING the site controls and the chain will commit —
   // not just domain+fee. payloadHash/uri are dApp-supplied and were previously hidden.
-  if (r.method === "propose") return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee)}`
-    + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>`;
+  if (r.method === "propose") {
+    const outs = Array.isArray(p.outputs) ? p.outputs : [];
+    const feeOut = outs.length
+      ? `<br>protocol fee: ${outs.map((o: any) => `<b>${fmtCsd(o.value)}</b> → <code>${escapeHtml(String(o.to))}</code>`).join(", ")}`
+      : "";
+    return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee)}${feeOut}`
+      + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>`;
+  }
   // score/confidence are serialized as u32 (>>>0); display the SAME value that will be
   // signed so a negative/oversized input can't show one thing and commit another.
   if (r.method === "attest") return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code><br>${feeLine(p.fee)} · score ${(Number(p.score) >>> 0)} · confidence ${(Number(p.confidence) >>> 0)}`;
@@ -77,7 +83,9 @@ export function debitOf(r: any): number {
     return total + baseVal(p.fee || (r.method === "fillOffer" ? 5_000_000 : 1_000_000));
   }
   if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return 0;
-  return baseVal(p.fee || (r.method === "sealClaim" ? 25000000 : 0));
+  // a propose may carry protocol-fee outputs (CairnX deploy / name registration) → count them
+  const outs = r.method === "propose" && Array.isArray(p.outputs) ? p.outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
+  return outs + baseVal(p.fee || (r.method === "sealClaim" ? 25000000 : 0));
 }
 
 // Address-poisoning lookalike: an attacker seeds your history with an address sharing the head+tail
