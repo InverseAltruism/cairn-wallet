@@ -126,7 +126,7 @@ async function renderAccts() {
   if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
 }
 
-const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported" };
+const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Filled offer" };
 async function renderHistory() {
   const h: any[] = await call("history");
   const el = $("history-list");
@@ -134,7 +134,7 @@ async function renderHistory() {
   el.innerHTML = h.map((t) => {
     const csd = ((Number(t.amount ?? t.fee ?? 0)) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 });
     const kind = TX_LABEL[t.type] || t.type;
-    const detail = t.type === "send" ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`
+    const detail = (t.type === "send" || t.type === "fillOffer") ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`
       : t.title ? escapeHtml(String(t.title).slice(0, 28))
       : t.domain ? escapeHtml(String(t.domain))
       : t.target ? `${escapeHtml(String(t.target).slice(0, 12))}…` : "";

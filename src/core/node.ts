@@ -177,6 +177,49 @@ export async function sendMany(rpc: string, p: { outputs: { to: string; value: n
   return signAndSubmit(rpc, tx, priv);
 }
 
+// Fill an on-chain offer (CairnX-style atomic delivery-versus-payment): ONE transaction
+// that carries an Attest app payload AND payment outputs. Same trust posture as sendMany —
+// recipients validated, sums safe-integer guarded, inputs selected INTERNALLY, change only
+// ever returns to this account's own address. The attest fee floor (0.05 CSD) applies.
+export async function fillOffer(
+  rpc: string,
+  p: { proposalId: string; score: number; confidence: number; outputs: { to: string; value: number }[]; fee: number },
+  priv: string,
+): Promise<SubmitResult> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false };
+  const outs = Array.isArray(p.outputs) ? p.outputs : [];
+  if (outs.length < 1) return { ok: false, error: "at least one payment output required", sighashMatch: false };
+  if (outs.length > 100) return { ok: false, error: "too many outputs (max 100)", sighashMatch: false };
+  let sumOut = 0;
+  for (const o of outs) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false };
+    const v = Number(o.value);
+    if (!(v > 0)) return { ok: false, error: "each amount must be positive", sighashMatch: false };
+    if (!Number.isSafeInteger(v)) return { ok: false, error: "an amount exceeds the safe integer range", sighashMatch: false };
+    sumOut += v;
+    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "total outputs exceed the safe integer range", sighashMatch: false };
+  }
+  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(sumOut + p.fee))
+    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
+  const addr = addrFromPriv(priv);
+  const need = sumOut + p.fee;
+  const { utxos } = await balance(rpc, addr);
+  const sel = selectInputs(utxos, need);
+  if (!sel) return { ok: false, error: "insufficient confirmed balance for payment + fee", sighashMatch: false };
+  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need))
+    return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
+  const change = sel.total - need;
+  const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
+  if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self, never a caller-chosen address
+  const tx: Tx = {
+    version: 1, locktime: 0,
+    app: { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 },
+    inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })),
+    outputs,
+  };
+  return signAndSubmit(rpc, tx, priv);
+}
+
 // Register a Cairn item's off-chain content (hash-verified by the server).
 export function registerContent(apiBase: string, content: any, txid: string): Promise<any> {
   return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }) }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));

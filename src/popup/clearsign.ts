@@ -48,16 +48,33 @@ export function describe(r: any): string {
     const totalLine = outs.length > 1 ? `<br>total: <b>${fmtCsd(total)}</b> to ${outs.length} recipients` : "";
     return `<b>Send CSD</b><br>${rows}<br>${feeLine(p.fee, 1000000)}${totalLine}<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
   }
+  // Atomic fill (CairnX DvP): an Attest AND payment outputs in ONE tx. Funds move to a
+  // page-chosen recipient, so this clear-signs like send — full recipients + amounts +
+  // total + fee — PLUS the offer (proposal) id the attest commits to. What the user
+  // receives in return is convention-level (token semantics) and is the SITE's claim,
+  // not something the wallet can verify — so we sign only what is cryptographically true.
+  if (r.method === "fillOffer") {
+    const outs = Array.isArray(p.outputs) ? p.outputs : [];
+    const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
+    const SHOWN = 12;
+    const rows = outs.slice(0, SHOWN).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${fmtCsd(o.value)}</b>`).join("<br>")
+      + (outs.length > SHOWN ? `<br><span class="dim">…and ${outs.length - SHOWN} more recipient(s)</span>` : "");
+    const totalLine = outs.length > 1 ? `<br>total: <b>${fmtCsd(total)}</b> to ${outs.length} recipients` : "";
+    return `<b>Fill offer</b> — pay + attest in ONE atomic transaction<br>`
+      + `offer: <code>${escapeHtml(String(p.proposalId || "—"))}</code><br>${rows}<br>`
+      + `${feeLine(p.fee, 5000000)} · score ${(Number(p.score ?? 100) >>> 0)} · confidence ${(Number(p.confidence ?? 100) >>> 0)}${totalLine}`
+      + `<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
+  }
   return `<b>${escapeHtml(r.method)}</b>`;
 }
 
 // Base units that will LEAVE the wallet if this request is approved (for balance-after).
 export function debitOf(r: any): number {
   const p = r.params || {};
-  if (r.method === "send") {
+  if (r.method === "send" || r.method === "fillOffer") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [{ value: p.amount }];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    return total + baseVal(p.fee || 1_000_000);
+    return total + baseVal(p.fee || (r.method === "fillOffer" ? 5_000_000 : 1_000_000));
   }
   if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return 0;
   return baseVal(p.fee || (r.method === "sealClaim" ? 25000000 : 0));
@@ -76,6 +93,7 @@ export function lookalikeOf(to: string, known: string[]): string | null {
 export function costLine(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return "no funds move — this only shares/signs your identity.";
   if (r.method === "send") { const fee = baseVal(r.params?.fee || 1_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
+  if (r.method === "fillOffer") { const fee = baseVal(r.params?.fee || 5_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee — atomic with the fill.`; }
   const fee = baseVal(r.params?.fee || (r.method === "sealClaim" ? 25000000 : 0));
   return `cost: ${fmtCsd(fee)} network fee (paid to miners), + a tiny chain fee.`;
 }

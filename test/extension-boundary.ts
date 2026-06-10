@@ -39,10 +39,13 @@ let windowsOpened = 0;
 //    inspect (one confirmed UTXO worth 10 CSD; /tx/submit captures the tx). ──
 const MOCK_UTXO = { txid: "0x" + "aa".repeat(32), vout: 0, value: 1_000_000_000, confirmations: 10, coinbase: false };
 let lastSubmit: any = null;
+let submitN = 0;
 (globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
   if (u.includes("/utxos/")) return { ok: true, json: async () => ({ ok: true, confirmed_balance: MOCK_UTXO.value, utxos: [MOCK_UTXO] }) };
-  if (u.includes("/tx/submit")) { lastSubmit = JSON.parse(init.body); return { ok: true, json: async () => ({ ok: true, txid: "0x" + "55".repeat(32) }) }; }
+  // unique txid per submit — the wallet's history is (correctly) idempotent by txid,
+  // so a fixed mock txid would silently drop later records and mask real behavior.
+  if (u.includes("/tx/submit")) { lastSubmit = JSON.parse(init.body); const id = "0x" + (submitN++).toString(16).padStart(64, "5"); return { ok: true, json: async () => ({ ok: true, txid: id }) }; }
   return { ok: true, json: async () => ({ ok: true }) };
 };
 const spkHex = (a: any) => "0x" + (a as number[]).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -176,6 +179,34 @@ async function main() {
     && mouts.some((o: any) => spkHex(o.script_pubkey) === R1 && Number(o.value) === 50_000_000)
     && mouts.some((o: any) => spkHex(o.script_pubkey) === R2 && Number(o.value) === 30_000_000)
     && mouts.some((o: any) => spkHex(o.script_pubkey) === addr));
+
+  console.log("\n=== dApp `fillOffer` (Attest + payment, atomic DvP) is approval-gated and cannot smuggle ===");
+  lastSubmit = null;
+  const OFFER_ID = "0x" + "22".repeat(32);
+  const SELLER = "0x" + "ee".repeat(20);
+  const winBeforeFill = windowsOpened;
+  // hostile extras (inputs/change) must be ignored exactly like send
+  const freq = dappAsync("fillOffer", {
+    proposalId: OFFER_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000,
+    inputs: [{ txid: "0x" + "ff".repeat(32), vout: 9 }], change: "0x" + "de".repeat(20),
+  });
+  await tick();
+  check("dApp fillOffer ALWAYS opens the approval window (never silent)", windowsOpened > winBeforeFill && freq.done() === false);
+  sp = (await popup("pending")).result;
+  check("fillOffer request is queued with its method intact", sp[sp.length - 1].method === "fillOffer");
+  await popup("resolve", sp[sp.length - 1].id, true);
+  await tick(); await tick();
+  const fr = freq.get();
+  check("approved fillOffer is ROUTED to wallet.fillOffer (txid returned)", fr?.ok === true && !!fr.result?.txid);
+  check("fillOffer leaks no private key", !JSON.stringify(fr ?? {}).toLowerCase().includes(priv));
+  const fapp = lastSubmit?.tx?.app?.Attest;
+  check("fillOffer tx carries the Attest app referencing the offer", !!fapp && spkHex(fapp.proposal_id) === OFFER_ID && fapp.score === 100 && fapp.confidence === 100);
+  const fouts = lastSubmit?.tx?.outputs ?? [];
+  const fins = lastSubmit?.tx?.inputs ?? [];
+  check("fillOffer paid the seller exactly the approved amount IN THE SAME TX as the attest", fouts.some((o: any) => spkHex(o.script_pubkey) === SELLER && Number(o.value) === 40_000_000));
+  check("fillOffer used the wallet's OWN input (smuggled `inputs` ignored)", fins.length === 1 && spkHex(fins[0].prevout.txid) === MOCK_UTXO.txid);
+  check("fillOffer change returned only to the wallet's own address", fouts.every((o: any) => spkHex(o.script_pubkey) === SELLER || spkHex(o.script_pubkey) === addr));
+  check("fillOffer recorded in history as a fill with seller + amount", ((await popup("history")).result as any[]).some((t) => t.type === "fillOffer" && t.target === OFFER_ID && t.to === SELLER && t.amount === 40_000_000));
 
   console.log("\n=== while LOCKED, an approved dApp request cannot act ===");
   await popup("lock");

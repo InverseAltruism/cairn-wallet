@@ -121,6 +121,10 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
         ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee })
         : await wallet.send(x.to, x.amount, x.fee);
     }
+    // Atomic fill (Attest + payment in one tx — CairnX DvP). Same posture as send:
+    // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
+    // and change only ever returns to the wallet's own address.
+    else if (p.method === "fillOffer") result = await wallet.fillOffer(p.params);
     else throw new Error("unsupported dApp method: " + p.method);
     p.resolve({ ok: true, result });
   } catch (e: any) { p.resolve({ ok: false, error: e?.message ?? String(e) }); }
@@ -130,7 +134,7 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
 // Anything else is rejected before it can enter the pending queue or reach the popup UI
 // — so an arbitrary attacker-chosen `method` string can never be rendered or queued.
-const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "propose", "attest", "sealClaim", "revealClaim", "send"]);
+const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

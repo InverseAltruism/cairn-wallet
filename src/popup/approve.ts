@@ -66,12 +66,13 @@ async function fillBalance(r: any) {
 // send form). Runs once per request; the warning persists (render doesn't rebuild).
 let warnForId: string | null = null;
 async function fillSendWarning(r: any) {
-  if (r.method !== "send" || warnForId === r.id) return; warnForId = r.id;
+  // fillOffer moves funds to a dApp-chosen recipient exactly like send → same defenses.
+  if ((r.method !== "send" && r.method !== "fillOffer") || warnForId === r.id) return; warnForId = r.id;
   const p = r.params || {};
   const outs = Array.isArray(p.outputs) ? p.outputs : [{ to: p.to }];
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
-    const sentTo = (h as any[]).filter((t) => t.type === "send").map((t) => String(t.to || ""));
+    const sentTo = (h as any[]).filter((t) => t.type === "send" || t.type === "fillOffer").map((t) => String(t.to || ""));
     const known = [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))];
     const warns: string[] = [];
     for (const o of outs) {
