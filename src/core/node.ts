@@ -106,6 +106,9 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
 // internally, change ONLY to the wallet's own address; a dApp can't pick UTXOs or redirect change.
 async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string, payouts: { to: string; value: number }[] = []): Promise<SubmitResult> {
   if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false };
+  // Cap the value outputs a Propose may carry (normally one protocol-fee output). Prevents a
+  // hostile dApp from flooding the clear-signing window with hundreds of disguised payments.
+  if (payouts.length > 8) return { ok: false, error: "too many outputs on a proposal (max 8)", sighashMatch: false };
   const addr = addrFromPriv(priv);
   let sumOut = 0;
   for (const o of payouts) {

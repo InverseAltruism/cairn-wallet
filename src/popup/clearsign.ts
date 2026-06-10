@@ -28,12 +28,21 @@ export function describe(r: any): string {
   // Clear-signing: show EVERYTHING the site controls and the chain will commit —
   // not just domain+fee. payloadHash/uri are dApp-supplied and were previously hidden.
   if (r.method === "propose") {
+    // A proposal MAY carry value outputs (e.g. a CairnX protocol fee to its treasury). The wallet
+    // cannot verify a recipient is a "legit fee" — so these are shown NEUTRALLY as funds leaving
+    // the wallet, capped + truncated, with the SAME first-time/look-alike (address-poisoning)
+    // warning as Send (#send-warn, populated by approve.ts). This defeats a malicious site that
+    // tries to disguise a payout to itself as a "fee".
     const outs = Array.isArray(p.outputs) ? p.outputs : [];
-    const feeOut = outs.length
-      ? `<br>protocol fee: ${outs.map((o: any) => `<b>${fmtCsd(o.value)}</b> → <code>${escapeHtml(String(o.to))}</code>`).join(", ")}`
+    const SHOWN = 6;
+    const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
+    const rows = outs.slice(0, SHOWN).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${fmtCsd(o.value)}</b>`).join("<br>")
+      + (outs.length > SHOWN ? `<br><span class="dim">…and ${outs.length - SHOWN} more recipient(s)</span>` : "");
+    const xfer = outs.length
+      ? `<br><b>⚠ this proposal also transfers funds OUT of your wallet:</b><br>${rows}<br>total out: <b>${fmtCsd(total)}</b><div id="send-warn" class="err" style="margin-top:8px" hidden></div>`
       : "";
-    return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee)}${feeOut}`
-      + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>`;
+    return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee)}`
+      + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>${xfer}`;
   }
   // score/confidence are serialized as u32 (>>>0); display the SAME value that will be
   // signed so a negative/oversized input can't show one thing and commit another.
@@ -102,6 +111,12 @@ export function costLine(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return "no funds move — this only shares/signs your identity.";
   if (r.method === "send") { const fee = baseVal(r.params?.fee || 1_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
   if (r.method === "fillOffer") { const fee = baseVal(r.params?.fee || 5_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee — atomic with the fill.`; }
+  if (r.method === "propose") {
+    const outs = Array.isArray(r.params?.outputs) ? r.params.outputs : [];
+    const out = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
+    const fee = baseVal(r.params?.fee || 1_000_000);
+    return out ? `cost: ${fmtCsd(out)} transferred out of your wallet + ${fmtCsd(fee)} network fee.` : `cost: ${fmtCsd(fee)} network fee (paid to miners).`;
+  }
   const fee = baseVal(r.params?.fee || (r.method === "sealClaim" ? 25000000 : 0));
   return `cost: ${fmtCsd(fee)} network fee (paid to miners), + a tiny chain fee.`;
 }

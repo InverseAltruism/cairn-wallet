@@ -66,8 +66,10 @@ async function fillBalance(r: any) {
 // send form). Runs once per request; the warning persists (render doesn't rebuild).
 let warnForId: string | null = null;
 async function fillSendWarning(r: any) {
-  // fillOffer moves funds to a dApp-chosen recipient exactly like send → same defenses.
-  if ((r.method !== "send" && r.method !== "fillOffer") || warnForId === r.id) return; warnForId = r.id;
+  // send / fillOffer / propose-with-outputs all move funds to dApp-chosen recipients → same
+  // first-time / look-alike (address-poisoning) defenses. (propose outputs could be a disguised
+  // payout, so they get the warning too — they're shown neutrally as "transfers OUT" in clearsign.)
+  if ((r.method !== "send" && r.method !== "fillOffer" && r.method !== "propose") || warnForId === r.id) return; warnForId = r.id;
   const p = r.params || {};
   const outs = Array.isArray(p.outputs) ? p.outputs : [{ to: p.to }];
   try {
