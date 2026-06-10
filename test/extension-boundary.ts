@@ -208,6 +208,36 @@ async function main() {
   check("fillOffer change returned only to the wallet's own address", fouts.every((o: any) => spkHex(o.script_pubkey) === SELLER || spkHex(o.script_pubkey) === addr));
   check("fillOffer recorded in history as a fill with seller + amount", ((await popup("history")).result as any[]).some((t) => t.type === "fillOffer" && t.target === OFFER_ID && t.to === SELLER && t.amount === 40_000_000));
 
+  console.log("\n=== dApp `propose` with fee outputs (CairnX deploy/name-reg) — approval-gated, anti-smuggle, capped ===");
+  lastSubmit = null;
+  const FEE_TO = "0x" + "fa".repeat(20);
+  const winBeforeProp2 = windowsOpened;
+  const preq = dappAsync("propose", {
+    domain: "cairnx:v1", payloadHash: "0x" + "11".repeat(32), uri: '{"t":"name"}', expiresEpoch: 99, fee: 25_000_000,
+    outputs: [{ to: FEE_TO, value: 100_000_000 }],
+    inputs: [{ txid: "0x" + "ff".repeat(32), vout: 9 }], change: "0x" + "de".repeat(20), // smuggle attempt
+  });
+  await tick();
+  check("dApp propose+outputs ALWAYS opens the approval window", windowsOpened > winBeforeProp2 && preq.done() === false);
+  sp = (await popup("pending")).result;
+  await popup("resolve", sp[sp.length - 1].id, true);
+  await tick(); await tick();
+  const pr2 = preq.get();
+  check("approved propose+outputs routes to wallet.propose (txid returned)", pr2?.ok === true && !!pr2.result?.txid);
+  const pouts = lastSubmit?.tx?.outputs ?? [];
+  const pins = lastSubmit?.tx?.inputs ?? [];
+  check("propose tx pays the fee output exactly as approved", pouts.some((o: any) => spkHex(o.script_pubkey) === FEE_TO && Number(o.value) === 100_000_000));
+  check("propose used the wallet's OWN input (smuggled `inputs` ignored)", pins.length === 1 && spkHex(pins[0].prevout.txid) === MOCK_UTXO.txid);
+  check("propose change returned only to the wallet's own address (smuggled `change` ignored)", pouts.every((o: any) => spkHex(o.script_pubkey) === FEE_TO || spkHex(o.script_pubkey) === addr));
+  check("propose tx carries the Propose app (not a disguised send)", !!lastSubmit?.tx?.app?.Propose);
+  // anti-flood: too many outputs is refused at build (no silent execution)
+  const flood = dappAsync("propose", { domain: "d", payloadHash: "0x" + "11".repeat(32), uri: "x", expiresEpoch: 1, fee: 25_000_000, outputs: Array.from({ length: 20 }, () => ({ to: FEE_TO, value: 1_000_000 })) });
+  await tick();
+  sp = (await popup("pending")).result;
+  await popup("resolve", sp[sp.length - 1].id, true);
+  await tick(); await tick();
+  check("propose with >8 outputs is refused (anti-flood)", flood.get()?.ok === true && flood.get()?.result?.ok === false && /too many outputs/.test(JSON.stringify(flood.get())));
+
   console.log("\n=== while LOCKED, an approved dApp request cannot act ===");
   await popup("lock");
   const lockedReq = dappAsync("signin", {});
