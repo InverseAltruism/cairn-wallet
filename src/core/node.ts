@@ -208,7 +208,8 @@ export async function fillOffer(
 ): Promise<SubmitResult> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false };
   const outs = Array.isArray(p.outputs) ? p.outputs : [];
-  if (outs.length < 1) return { ok: false, error: "at least one payment output required", sighashMatch: false };
+  // outs MAY be empty: a CairnX v1.2 token-priced fill pays in tokens (resolver-debited,
+  // marked by confidence=1e6) and carries no CSD payment — the tx is attest + change only.
   if (outs.length > 100) return { ok: false, error: "too many outputs (max 100)", sighashMatch: false };
   let sumOut = 0;
   for (const o of outs) {
@@ -231,6 +232,7 @@ export async function fillOffer(
   const change = sel.total - need;
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self, never a caller-chosen address
+  if (outputs.length === 0) return { ok: false, error: "tx would have no outputs — add a payment or leave change", sighashMatch: false };
   const tx: Tx = {
     version: 1, locktime: 0,
     app: { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 },
