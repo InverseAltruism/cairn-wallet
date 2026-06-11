@@ -95,7 +95,9 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
   if (!approve) { p.resolve({ ok: false, error: "rejected by user" }); return { done: true }; }
   try {
     const st = await wallet.status();
-    if (!st.unlocked) { p.resolve({ ok: false, error: "wallet locked" }); return { done: true }; }
+    // unlocked implies a loaded key/address; the explicit addr check makes the invariant
+    // visible to the type system (st.addr is string|null before unlock)
+    if (!st.unlocked || !st.addr) { p.resolve({ ok: false, error: "wallet locked" }); return { done: true }; }
     let result: any;
     if (p.method === "connect" || p.method === "getAddress") {
       // The user explicitly approved address disclosure to this origin → remember it
