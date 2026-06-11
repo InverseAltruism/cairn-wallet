@@ -75,8 +75,15 @@ export function describe(r: any): string {
     const rows = outs.slice(0, SHOWN).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${fmtCsd(o.value)}</b>`).join("<br>")
       + (outs.length > SHOWN ? `<br><span class="dim">…and ${outs.length - SHOWN} more recipient(s)</span>` : "");
     const totalLine = outs.length > 1 ? `<br>total: <b>${fmtCsd(total)}</b> to ${outs.length} recipients` : "";
+    // CairnX v1.2: confidence 1 000 000 is the TOKEN-PRICED-FILL marker — approving it lets the
+    // convention debit the user's CairnX token balance (offer ask + 1% fee) with NO CSD output
+    // visible here. The wallet can't see which token/how much (resolver-level), so it must say
+    // so loudly: an outputs-free fill would otherwise clear-sign as "free".
+    const tokenFill = (Number(p.confidence ?? 100) >>> 0) === 1_000_000
+      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> — the offer's asking amount + 1% protocol fee, debited by the trading convention (not visible as outputs below). Verify the offer's price on the site/explorer before approving.`
+      : "";
     return `<b>Fill offer</b> — pay + attest in ONE atomic transaction<br>`
-      + `offer: <code>${escapeHtml(String(p.proposalId || "—"))}</code><br>${rows}<br>`
+      + `offer: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${rows}<br>`
       + `${feeLine(p.fee, 5000000)} · score ${(Number(p.score ?? 100) >>> 0)} · confidence ${(Number(p.confidence ?? 100) >>> 0)}${totalLine}`
       + `<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
   }
@@ -110,7 +117,11 @@ export function lookalikeOf(to: string, known: string[]): string | null {
 export function costLine(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return "no funds move — this only shares/signs your identity.";
   if (r.method === "send") { const fee = baseVal(r.params?.fee || 1_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
-  if (r.method === "fillOffer") { const fee = baseVal(r.params?.fee || 5_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee — atomic with the fill.`; }
+  if (r.method === "fillOffer") {
+    const fee = baseVal(r.params?.fee || 5_000_000); const sent = debitOf(r) - fee;
+    const tok = (Number(r.params?.confidence ?? 100) >>> 0) === 1_000_000 ? " PLUS tokens debited from your CairnX balance per the offer's terms" : "";
+    return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee${tok} — atomic with the fill.`;
+  }
   if (r.method === "propose") {
     const outs = Array.isArray(r.params?.outputs) ? r.params.outputs : [];
     const out = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);

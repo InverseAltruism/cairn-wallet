@@ -52,6 +52,18 @@ ok("costLine(propose+outputs) says funds transferred out", /transferred out/i.te
 ok("describe(propose with NO outputs) shows no transfer-out warning", !/transfers funds out/i.test(describe({ method: "propose", params: { domain: "d", fee: 1 } })));
 ok("describe(propose, garbage output value): no NaN", !describe({ method: "propose", params: { domain: "d", fee: 1, outputs: [{ to: ADDR, value: "x" }] } }).includes("NaN"));
 
+// v1.2 token-priced fill (confidence = 1 000 000, typically ZERO outputs): the resolver debits the
+// user's CairnX token balance, so an outputs-free fill must NEVER clear-sign as "free".
+const foTok = { method: "fillOffer", params: { proposalId: "0x" + "bb".repeat(32), score: 100, confidence: 1_000_000, outputs: [], fee: 5_000_000 } };
+const foTokHtml = describe(foTok);
+ok("describe(token fill) warns it SPENDS TOKENS from the CairnX balance", /SPENDS TOKENS/.test(foTokHtml));
+ok("describe(token fill) still shows the signed confidence value", foTokHtml.includes("confidence 1000000"));
+ok("costLine(token fill) mentions the token debit", /tokens debited/i.test(costLine(foTok)));
+ok("describe(normal CSD fill) does NOT show the token warning", !/SPENDS TOKENS/.test(foHtml));
+ok("costLine(normal CSD fill) does NOT mention token debits", !/tokens debited/i.test(costLine(fo)));
+ok("describe(confidence 999999 ≠ marker) does NOT show the token warning",
+  !/SPENDS TOKENS/.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "cc".repeat(32), confidence: 999_999, outputs: [], fee: 1 } })));
+
 // Address-poisoning: flag a head8/tail4 twin, but not an unrelated or identical address
 const real = "0xabcd1234" + "0".repeat(28) + "beef";
 const twin = "0xabcd1234" + "9".repeat(28) + "beef"; // same head8 + tail4, different middle
