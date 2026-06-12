@@ -218,6 +218,8 @@ const CAIRNX_FEE = 25_000_000; // 0.25 CSD (anchor fee, paid in CSD)
 let tsend: { ticker: string; decimals: number; available: string } | null = null;
 // the reviewed-and-frozen send: set when the confirm panel opens, signed verbatim on confirm
 let reviewed: { to: string; base: string } | null = null;
+// CSD-send reviewed snapshot (symmetry with token-send: sign exactly what was reviewed)
+let reviewedSend: { to: string; amt: number } | null = null;
 function openTokenSend(ticker: string, decimals: number, available: string) {
   tsend = { ticker, decimals, available };
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
@@ -584,18 +586,29 @@ $("btn-send").addEventListener("click", async () => {
   if (lookalike) { warnEl.innerHTML = `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — payments are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.textContent = "⚠ First time sending to this address — check every character. Payments are irreversible."; warnEl.hidden = false; }
   else warnEl.hidden = true;
+  // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
+  reviewedSend = { to, amt };
+  ($("s-to") as HTMLInputElement).disabled = true;
+  ($("s-amt") as HTMLInputElement).disabled = true;
   ($("send-confirm") as HTMLElement).hidden = false;
   msg("");
 });
-$("btn-send-back").addEventListener("click", () => { ($("send-confirm") as HTMLElement).hidden = true; });
+$("btn-send-back").addEventListener("click", () => {
+  ($("send-confirm") as HTMLElement).hidden = true;
+  reviewedSend = null;
+  ($("s-to") as HTMLInputElement).disabled = false;
+  ($("s-amt") as HTMLInputElement).disabled = false;
+});
 $("btn-send-confirm").addEventListener("click", async () => {
-  const to = val("s-to").trim();
-  const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);
+  if (!reviewedSend) return;
+  const { to, amt } = reviewedSend;
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
     if (r.ok) {
       msg("sent " + (amt / 1e8) + " CSD · " + String(r.txid).slice(0, 12) + "…", "ok");
       ($("send-confirm") as HTMLElement).hidden = true;
+      reviewedSend = null;
+      ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;
       ($("s-to") as HTMLInputElement).value = ""; ($("s-amt") as HTMLInputElement).value = "";
       refreshBalance();
     } else msg("send failed: " + (r.error || "?"), "err");

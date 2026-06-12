@@ -115,7 +115,17 @@ export function describe(r: any): string {
   }
   // score/confidence are serialized as u32 (>>>0); display the SAME value that will be
   // signed so a negative/oversized input can't show one thing and commit another.
-  if (r.method === "attest") return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code><br>${feeLine(p.fee)} · score ${(Number(p.score) >>> 0)} · confidence ${(Number(p.confidence) >>> 0)}`;
+  if (r.method === "attest") {
+    // CairnX v1.2: confidence 1 000 000 is the TOKEN-PRICED-FILL marker. A bare Attest carrying
+    // it is BYTE-IDENTICAL to a fillOffer with empty outputs (the resolver cannot tell them
+    // apart), so it can debit the user's CairnX token balance with NO visible output. Treat the
+    // reserved value the same on EITHER path — never let a dApp route a token spend through the
+    // unwarned attest method (security review HIGH-1, 2026-06-12).
+    const tokenFill = (Number(p.confidence) >>> 0) === 1_000_000
+      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + 1% protocol fee (not visible here). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.`
+      : "";
+    return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${(Number(p.score) >>> 0)} · confidence ${(Number(p.confidence) >>> 0)}`;
+  }
   if (r.method === "sealClaim") return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code><br>${feeLine(p.fee, 25000000)} · the salt + claim stay in your wallet`;
   if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> — publish the preimage; it becomes public + provably committed earlier.<br>tx: <code>${escapeHtml(String(r.params || "").slice(0, 18))}…</code>`;
   // Send is the only dApp method that MOVES funds to a page-chosen recipient, so we
@@ -196,6 +206,12 @@ export function costLine(r: any): string {
     const out = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
     const fee = baseVal(r.params?.fee || 1_000_000);
     return out ? `cost: ${fmtCsd(out)} transferred out of your wallet + ${fmtCsd(fee)} network fee.` : `cost: ${fmtCsd(fee)} network fee (paid to miners).`;
+  }
+  if (r.method === "attest") {
+    const fee = baseVal(r.params?.fee || 5_000_000);
+    const tok = (Number(r.params?.confidence ?? 100) >>> 0) === 1_000_000
+      ? " PLUS tokens debited from your CairnX balance IF this attests an open offer (its ask + 1%)" : "";
+    return `cost: ${fmtCsd(fee)} network fee${tok}.`;
   }
   const fee = baseVal(r.params?.fee || (r.method === "sealClaim" ? 25000000 : 0));
   return `cost: ${fmtCsd(fee)} network fee (paid to miners), + a tiny chain fee.`;

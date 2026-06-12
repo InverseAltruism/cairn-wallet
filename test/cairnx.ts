@@ -6,7 +6,7 @@
 // @inversealtruism/cairnx-core builders (the convention's reference implementation),
 // so the wallet's isolated copy is pinned byte-for-byte to the resolver's reality.
 import { buildTransfer, canonicalJson, cairnxPayloadHash, formatUnits, parseUnits, decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE } from "../src/core/cairnx.js";
-import { describe, cairnxDescribe } from "../src/popup/clearsign.js";
+import { describe, cairnxDescribe, costLine } from "../src/popup/clearsign.js";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 
@@ -234,6 +234,22 @@ async function main() {
     // null-vs-absent: taker:null is NOT schema-valid → RAW
     const nullTaker = { give: { ticker: "CAIRN", amount: "5" }, t: "offer", taker: null, v: 1, want: { value: "9" } };
     check("taker:null → RAW (null is not absent)", decodeCairnxRecord(canonicalJson(nullTaker), cairnxPayloadHash(nullTaker)) === null);
+  }
+
+  {
+    // ── security review HIGH-1: a bare attest carrying the token-fill marker (confidence 1e6)
+    // is byte-identical to a token-priced fillOffer and MUST raise the loud token-spend warning ──
+    const WARN = "SPENDS TOKENS";
+    const attestFill = describe({ method: "attest", params: { proposalId: "0x" + "ab".repeat(32), score: 5, confidence: 1_000_000, fee: 5_000_000 } });
+    check("attest + confidence=1e6 → loud TOKEN-PRICED FILL warning (HIGH-1)", attestFill.includes(WARN));
+    const attestPlain = describe({ method: "attest", params: { proposalId: "0x" + "ab".repeat(32), score: 5, confidence: 100, fee: 5_000_000 } });
+    check("attest with ordinary confidence → NO token warning (no false alarm)", !attestPlain.includes(WARN));
+    // the cost line must also mention the token debit on the attest path
+    const cost = costLine({ method: "attest", params: { confidence: 1_000_000, fee: 5_000_000 } });
+    check("attest token-fill cost line mentions the token debit", /tokens debited/i.test(cost));
+    // fillOffer (the already-tested path) still warns - parity check
+    const fill = describe({ method: "fillOffer", params: { proposalId: "0x" + "cd".repeat(32), confidence: 1_000_000, score: 100, fee: 5_000_000, outputs: [] } });
+    check("fillOffer + confidence=1e6 still warns (parity)", fill.includes(WARN));
   }
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
