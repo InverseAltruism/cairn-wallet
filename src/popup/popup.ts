@@ -3,6 +3,7 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
+import { formatUnits, parseUnits } from "../core/cairnx.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -31,6 +32,10 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "send": return w.send(args[0], args[1], args[2]);
     case "cairnPost": return w.cairnPost(args[0]);
     case "cairnSupport": return w.cairnSupport(args[0], args[1], args[2], args[3]);
+    case "cairnxAssets": return w.cairnxAssets();
+    case "cairnxTokens": return w.cairnxTokens();
+    case "cairnxTransfer": return w.cairnxTransfer(args[0]);
+    case "setTradeApi": return w.setTradeApi(args[0]);
     case "signin": return w.signIn();
     case "export": return w.exportKey(args[0]);
     case "exportMnemonic": return w.exportMnemonic(args[0]);
@@ -68,7 +73,9 @@ async function render() {
   $("addr").textContent = st.addr;
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerAddr(st.addr);
   (($("set-api") as HTMLInputElement)).value = st.api;
+  (($("set-tradeapi") as HTMLInputElement)).value = st.tradeApi || "";
   refreshBalance();
+  renderAssets();
   renderPending();
   // keep open per-account panels in sync after a switch
   if (!($("activity") as HTMLElement).hidden) renderHistory();
@@ -126,21 +133,24 @@ async function renderAccts() {
   if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
 }
 
-const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Filled offer" };
+const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Filled offer", tokenSend: "Sent token" };
 async function renderHistory() {
   const h: any[] = await call("history");
   const el = $("history-list");
   if (!h.length) { el.innerHTML = `<div class="dim" style="padding:8px 0">No transactions yet. Send, post, or support something and it'll appear here.</div>`; return; }
   el.innerHTML = h.map((t) => {
-    const csd = ((Number(t.amount ?? t.fee ?? 0)) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 });
+    // token sends display the HUMAN token amount (decimals-aware), not base units as CSD
+    const csd = t.type === "tokenSend"
+      ? `${escapeHtml(String(t.human ?? t.amount ?? ""))} ${escapeHtml(String(t.ticker || ""))}`
+      : ((Number(t.amount ?? t.fee ?? 0)) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
     const kind = TX_LABEL[t.type] || t.type;
-    const detail = (t.type === "send" || t.type === "fillOffer") ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`
+    const detail = (t.type === "send" || t.type === "fillOffer" || t.type === "tokenSend") ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`
       : t.title ? escapeHtml(String(t.title).slice(0, 28))
       : t.domain ? escapeHtml(String(t.domain))
       : t.target ? `${escapeHtml(String(t.target).slice(0, 12))}…` : "";
     const when = t.ts ? new Date(t.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     return `<div class="tx">
-      <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd} CSD</span></div>
+      <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
       <div class="tx-sub"><span class="dim">${detail}</span><a href="${explorerTx(String(t.txid))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
       <div class="tx-when dim">${when}</div>
     </div>`;
@@ -157,6 +167,110 @@ async function refreshBalance() {
   }
   catch { el.classList.remove("loading"); el.textContent = "—"; }
 }
+// ── CairnX assets (token balances + .csd names) — read-only, never blocks the CSD UI ──
+// Balances come from the public CairnX resolver API. When it's unreachable we show a
+// single quiet retry line (and nothing else); the CSD balance above is untouched.
+let tokensCache: Record<string, { decimals: number; name?: string }> | null = null; // per-popup
+async function tokenMeta(): Promise<Record<string, { decimals: number; name?: string }>> {
+  if (tokensCache) return tokensCache;
+  const r = await call("cairnxTokens").catch(() => ({ ok: false }));
+  const m: Record<string, { decimals: number; name?: string }> = {};
+  if (r?.ok) for (const t of r.tokens || []) if (t && typeof t.ticker === "string") m[t.ticker] = { decimals: Number(t.decimals) || 0, name: t.name };
+  if (r?.ok) tokensCache = m;
+  return m;
+}
+async function renderAssets() {
+  const el = $("assets") as HTMLElement;
+  const a = await call("cairnxAssets").catch(() => ({ ok: false }));
+  if (!a?.ok) {
+    el.hidden = false;
+    el.innerHTML = `<div class="assets-retry dim">token balances unavailable · <a id="assets-retry">retry</a></div>`;
+    const rt = document.getElementById("assets-retry");
+    if (rt) rt.onclick = () => { el.innerHTML = `<div class="assets-retry dim">retrying…</div>`; renderAssets(); };
+    return;
+  }
+  const balances: Record<string, { available: string; locked: string }> = a.balances || {};
+  const names: string[] = a.names || [];
+  const tickers = Object.keys(balances).sort();
+  if (!tickers.length && !names.length) { el.hidden = true; el.innerHTML = ""; return; }
+  const meta = await tokenMeta();
+  const rows = tickers.map((t) => {
+    const b = balances[t] || { available: "0", locked: "0" };
+    const dec = meta[t]?.decimals ?? 0;
+    const locked = b.locked && b.locked !== "0" ? ` <span class="asset-locked">(+${escapeHtml(formatUnits(b.locked, dec))} locked)</span>` : "";
+    return `<div class="asset"><span class="asset-ticker">${escapeHtml(t)}</span>
+      <span class="asset-bal">${escapeHtml(formatUnits(b.available, dec))}${locked}</span>
+      <button class="mini" data-tsend="${escapeHtml(t)}">send</button></div>`;
+  }).join("");
+  const chips = names.length ? `<div class="names-row">${names.map((n) => `<span class="name-chip">${escapeHtml(String(n))}.csd</span>`).join("")}</div>` : "";
+  el.hidden = false;
+  el.innerHTML = `<span class="label">assets</span>${rows}${chips}`;
+  el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = () => {
+    const t = b.dataset.tsend!;
+    openTokenSend(t, meta[t]?.decimals ?? 0, balances[t]?.available ?? "0");
+  });
+}
+
+// ── send a CairnX token: recipient + amount → review (ticker/amount/to/fee) → sign ──
+// The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
+// the existing propose pipeline with the 0.25 CSD convention fee — no value outputs.
+const CAIRNX_FEE = 25_000_000; // 0.25 CSD (anchor fee, paid in CSD)
+let tsend: { ticker: string; decimals: number; available: string } | null = null;
+function openTokenSend(ticker: string, decimals: number, available: string) {
+  tsend = { ticker, decimals, available };
+  // force-open (openPanel toggles; clicking send on a second token must keep it open)
+  if (!openPanel("tsend-form")) ($("tsend-form") as HTMLElement).hidden = false;
+  ($("ts-ticker") as HTMLElement).textContent = ticker;
+  ($("ts-avail") as HTMLElement).textContent = `available: ${formatUnits(available, decimals)} ${ticker} · fee: 0.25 CSD`;
+  ($("ts-to") as HTMLInputElement).value = ""; ($("ts-amt") as HTMLInputElement).value = "";
+  ($("tsend-confirm") as HTMLElement).hidden = true;
+  msg("");
+}
+$("btn-tsend").addEventListener("click", async () => {
+  if (!tsend) return;
+  const to = val("ts-to").trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return msg("enter a valid 0x… 20-byte address", "err");
+  const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
+  if (base === null || base === "0") return msg(tsend.decimals ? `enter an amount (up to ${tsend.decimals} decimal places)` : "enter a whole-number amount (this token has 0 decimals)", "err");
+  if (BigInt(base) > BigInt(tsend.available || "0")) return msg(`amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)})`, "err");
+  // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
+  let firstTime = true, lookalike: string | null = null;
+  try {
+    const h: any[] = await call("history");
+    const sentTo = h.filter((t) => t.type === "send" || t.type === "tokenSend").map((t) => String(t.to || ""));
+    firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
+    const st = await call("status");
+    lookalike = lookalikeOf(to, [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))]);
+  } catch { /* no history → treat as first time */ }
+  $("tc-ticker").textContent = tsend.ticker;
+  $("tc-to").textContent = to.toLowerCase();              // FULL address, as it will appear in the signed record
+  $("tc-amt").textContent = `${formatUnits(base, tsend.decimals)} ${tsend.ticker}`;
+  $("tc-fee").textContent = (CAIRNX_FEE / 1e8) + " CSD";
+  const warnEl = $("tc-warn") as HTMLElement;
+  if (lookalike) { warnEl.innerHTML = `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
+  else if (firstTime) { warnEl.textContent = "⚠ First time sending to this address — check every character. Transfers are irreversible."; warnEl.hidden = false; }
+  else warnEl.hidden = true;
+  ($("tsend-confirm") as HTMLElement).hidden = false;
+  msg("");
+});
+$("btn-tsend-back").addEventListener("click", () => { ($("tsend-confirm") as HTMLElement).hidden = true; });
+$("btn-tsend-confirm").addEventListener("click", async () => {
+  if (!tsend) return;
+  const to = val("ts-to").trim();
+  const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
+  if (base === null || base === "0") return msg("enter an amount", "err");
+  try {
+    busy("sending…");
+    const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
+    if (r.ok) {
+      msg(`sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`, "ok");
+      ($("tsend-confirm") as HTMLElement).hidden = true;
+      ($("ts-to") as HTMLInputElement).value = ""; ($("ts-amt") as HTMLInputElement).value = "";
+      refreshBalance(); renderAssets();
+    } else msg("send failed: " + (r.error || "?"), "err");
+  } catch (e: any) { msg(e.message, "err"); }
+});
+
 async function renderPending() {
   if (!EXT) return;
   const p = await call("pending"); const el = $("pending") as HTMLElement;
@@ -202,12 +316,12 @@ $("btn-backup-done").addEventListener("click", () => { backupPhrase = ""; backup
 $("btn-import").addEventListener("click", async () => { try { if (!val("import-pw")) return msg("enter a password to encrypt the key", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("key imported", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
-$("btn-refresh").addEventListener("click", refreshBalance);
+$("btn-refresh").addEventListener("click", () => { refreshBalance(); renderAssets(); });
 $("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("addr").textContent || ""); flashBtn("btn-copy", "copied ✓"); });
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
-const PANELS = ["accts-panel", "send-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
+const PANELS = ["accts-panel", "send-form", "tsend-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
 function resetRevealPanel() {
   revealedKey = ""; const o = $("reveal-out"); o.textContent = ""; o.classList.remove("shown"); (o as HTMLElement).hidden = true;
@@ -223,6 +337,7 @@ function openPanel(id: string): boolean {
   const willOpen = ($(id) as HTMLElement).hidden;
   for (const p of PANELS) ($(p) as HTMLElement).hidden = true;
   ($("send-confirm") as HTMLElement).hidden = true;
+  ($("tsend-confirm") as HTMLElement).hidden = true;
   resetRevealPanel(); resetPhrasePanel();
   if (willOpen) ($(id) as HTMLElement).hidden = false;
   return willOpen;
@@ -306,9 +421,13 @@ async function ensureHostAccess(urls: string[]): Promise<boolean> {
 }
 $("btn-save-settings").addEventListener("click", async () => {
   const api = val("set-api").trim();
-  const granted = await ensureHostAccess([api]);
+  const tradeApi = val("set-tradeapi").trim();
+  const granted = await ensureHostAccess(tradeApi ? [api, tradeApi] : [api]);
   if (!granted) return msg("not saved — host access denied (the wallet can't reach an API it has no permission for)", "err");
-  await call("setApi", api); msg("settings saved", "ok"); render();
+  await call("setApi", api);
+  await call("setTradeApi", tradeApi);
+  tokensCache = null; // re-read token metadata from the new endpoint
+  msg("settings saved", "ok"); render();
 });
 
 // ── RPC dropdown (header) — preset + user-added nodes, switch with one click ──

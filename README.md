@@ -12,6 +12,8 @@ and support items on [Cairn](https://cairn-substrate.com).
 * **Non-custodial.** Keys are generated and stored only on your device, encrypted with your password.
 * **Standard recovery.** A 12-word BIP-39 phrase backs up every account.
 * **Local signing.** Transactions are built and signed on your device. Only the signed transaction is sent to the node.
+* **CairnX tokens and `.csd` names.** The popup lists your token balances (decimals-aware, with locked amounts shown) and owned names, and sends tokens through the same reviewed confirmation as a CSD send. Transfer records are built and hashed inside the wallet — never fetched from a server.
+* **CairnX clear-signing.** The approval window decodes `cairnx:v1` proposals (token transfers, deploys, mints, offers, bids, cancels, name claims/transfers/renewals) into structured fields — for wallet- and dApp-initiated requests alike. Unrecognized record shapes still show the raw payload.
 * **Multi-account**, multi-input sends, transaction history, sealed claims, and an idle auto-lock.
 * **Open source**, with a reproducible build you can verify yourself.
 
@@ -91,6 +93,7 @@ The extension layer:
 
 * **Node RPC.** Switch from the RPC menu at the top right. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`), a local node (`http://127.0.0.1:8790`), or add your own.
 * **Cairn API.** Set in Settings. Defaults to `https://cairn-substrate.com`.
+* **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet simply shows no assets (with a retry) — the CSD balance and sends are unaffected, and nothing the wallet signs ever depends on it.
 
 The derivation path `m/44'/7779'/0'/0/i` is public metadata. It describes which keys are
 derived, not the keys themselves. 7779 is an unregistered SLIP-44 coin type, used as Cairn

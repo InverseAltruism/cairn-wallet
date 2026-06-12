@@ -9,10 +9,11 @@ import { sealNew, sealWith, openWith, deriveVaultKey, type Vault } from "./keyst
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash } from "./csdtx.js";
+import { buildTransfer, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE } from "./cairnx.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
-export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; hasMnemonic: boolean }
+export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; hasMnemonic: boolean }
 
 // An in-memory account: its key + label, plus how it was created — `index` is its
 // BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
@@ -25,6 +26,11 @@ interface VaultDoc { v: 1 | 2; mnemonic?: string; nextIndex?: number; accounts: 
 
 const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
 const DEFAULT_API = "https://cairn-substrate.com";
+// Public CairnX read API (resolved token/name state). READ-ONLY convenience: balances and
+// names shown in the popup come from here, but every record the wallet SIGNS is built
+// locally (core/cairnx.ts) — a hostile API can at worst show wrong numbers, never change
+// what a signature commits to.
+const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
 
 // Public block explorer (static MPA): /tx.html?txid= · /address.html?addr= · /proposal.html?id=
 export const EXPLORER = "https://explorer.computesubstrate.org";
@@ -49,14 +55,17 @@ export class Wallet {
   private nextIndex = 0;
   rpc = DEFAULT_RPC;
   api = DEFAULT_API;
+  tradeApi = DEFAULT_TRADE_API;
   constructor(private store: Store) {}
 
   async init(): Promise<void> {
     this.rpc = (await this.store.get("rpc")) || DEFAULT_RPC;
     this.api = (await this.store.get("api")) || DEFAULT_API;
+    this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
   }
   async setRpc(u: string) { this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { this.api = u; await this.store.set("api", u); }
+  async setTradeApi(u: string) { this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
   async addRpc(u: string): Promise<void> { const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
@@ -66,7 +75,7 @@ export class Wallet {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     const active = this.accts ? this.active : (((await this.store.get("active")) as number) ?? 0);
     const addr = this.accts ? (this.accts[this.active]?.addr ?? null) : (wallets[active]?.addr ?? null);
-    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, hasMnemonic: !!this.mnemonic };
+    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, tradeApi: this.tradeApi, hasMnemonic: !!this.mnemonic };
   }
 
   // Persist the in-memory accounts: re-seal the vault (fresh IV, same salt+key, incl.
@@ -262,6 +271,44 @@ export class Wallet {
     return r;
   }
   async cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { const r = await node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); await this.maybeRecord(r, { type: "support", target: proposalId, fee }); return r; }
+
+  // ── CairnX tokens + .csd names ──────────────────────────────────────────────
+  // READS go to the public CairnX resolver API and NEVER throw — the popup must keep
+  // showing the CSD balance even when the token API is down ({ ok:false } → quiet retry).
+  async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[] }> {
+    try {
+      const r = await fetch(`${this.tradeApi}/cairnx/address/${this.addr()}`);
+      if (!r.ok) return { ok: false };
+      const j = await r.json();
+      const balances = (j && typeof j.balances === "object" && j.balances) || {};
+      const names = Array.isArray(j?.names) ? j.names.filter((n: unknown) => typeof n === "string") : [];
+      return { ok: true, balances, names };
+    } catch { return { ok: false }; }
+  }
+  async cairnxTokens(): Promise<{ ok: boolean; tokens?: { ticker: string; decimals: number; name?: string }[] }> {
+    try {
+      const r = await fetch(`${this.tradeApi}/cairnx/tokens`);
+      if (!r.ok) return { ok: false };
+      const j = await r.json();
+      return { ok: true, tokens: Array.isArray(j) ? j : [] };
+    } catch { return { ok: false }; }
+  }
+  // Token transfer = a cairnx:v1 Propose whose uri is the canonical transfer record,
+  // payload_hash = sha256(uri), fee 0.25 CSD, NO value outputs. The record is built
+  // LOCALLY (core/cairnx.ts) and validated before signing; `amount` is base units.
+  async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number }) {
+    const priv = this.must().privkey;
+    const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
+    const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
+    if (fee < CAIRNX_PROPOSE_FEE) throw new Error("cairnx anchor fee must be ≥ 0.25 CSD");
+    const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
+    await this.maybeRecord(r, {
+      type: "tokenSend", ticker: p.ticker, to: String(p.to).toLowerCase(), amount: p.amount,
+      human: typeof p.decimals === "number" ? formatUnits(p.amount, p.decimals) : p.amount, fee,
+    });
+    return r;
+  }
 
   // ── sealed claims (commit-reveal) — isolated per active account ─────────────
   async sealClaim(p: { domain?: string; claim: string; fee?: number }) {

@@ -1,5 +1,7 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
+import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
+
 export const escapeHtml = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
@@ -19,6 +21,65 @@ export function feeLine(raw: number, fallback = 0): string {
   if (!Number.isFinite(fee)) return `fee: <span class="err">invalid amount</span>`;
   const warn = fee > FEE_WARN ? ` <span class="err">⚠ unusually large fee</span>` : "";
   return `fee: ${fee / 1e8} CSD${warn}`;
+}
+
+// ── CairnX clear-signing: structured rendering of cairnx:v1 records ──────────
+// A cairnx propose's `uri` IS the action (token transfer, offer, name claim…). Showing it
+// as a raw JSON blob makes users rubber-stamp; decode it and show the fields instead —
+// for BOTH wallet-initiated and dApp-initiated proposes. decodeCairnxRecord only returns
+// a record that is canonical + hash-committed + schema-valid (anything else is a resolver
+// no-op), so what we render is exactly what the convention will execute. Unknown/invalid
+// shapes return null → the caller falls back to the raw uri.
+// Token amounts are shown in BASE UNITS (decimals are resolver state — the offline
+// approval window can't trust a site-supplied value), explicitly labeled as such.
+const esc = (v: unknown) => escapeHtml(String(v));
+const baseAmt = (v: unknown) => `<b>${esc(v)}</b> <span class="dim">base units</span>`;
+function sideStr(s: any): string {
+  if (s && typeof s === "object" && "name" in s) return `name <code>${esc(s.name)}.csd</code>`;
+  if (s && typeof s === "object" && "value" in s) return `${fmtCsd(Number(s.value))}`;
+  return `${baseAmt(s?.amount)} of <b>${esc(s?.ticker)}</b>`;
+}
+export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | null {
+  const r = decodeCairnxRecord(uri, payloadHash);
+  if (!r) return null;
+  const memo = r.memo !== undefined ? `<br>memo: <code>${esc(r.memo)}</code>` : "";
+  switch (r.t) {
+    case "transfer":
+      return `<b>CairnX token transfer</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${baseAmt(r.amount)}<br>to: <code>${esc(r.to)}</code>${memo}`;
+    case "deploy": {
+      const limit = r.mint === "open" ? ` · mint limit ${esc(r.mintLimit)}/tx` : "";
+      return `<b>CairnX token deploy</b><br>ticker: <b>${esc(r.ticker)}</b>${r.name !== undefined ? ` (${esc(r.name)})` : ""}<br>supply: ${baseAmt(r.supply)} · decimals: ${esc(r.decimals)}<br>minting: ${esc(r.mint)}${limit}`;
+    }
+    case "mint":
+      return `<b>CairnX token mint</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${r.amount !== undefined ? baseAmt(r.amount) : `<span class="dim">default lot</span>`}`;
+    case "offer": {
+      const extras = (r.min !== undefined ? `<br>partial fills from: ${baseAmt(r.min)}` : "")
+        + (r.taker !== undefined ? `<br>only fillable by: <code>${esc(r.taker)}</code>` : "")
+        + (r.bid !== undefined ? `<br>accepts bid: <code>${esc(r.bid)}</code>` : "")
+        + ((r.want as any)?.payto !== undefined ? `<br>paid to: <code>${esc((r.want as any).payto)}</code>` : "");
+      return `<b>CairnX offer</b> — escrows what you give until filled/cancelled<br>give: ${sideStr(r.give)}<br>want: ${sideStr(r.want)}${extras}${memo}`;
+    }
+    case "bid":
+      return `<b>CairnX bid</b><br>bidding: ${sideStr(r.give)}<br>for: ${sideStr(r.want)}${memo}`;
+    case "ocancel": {
+      const scope = r.ticker !== undefined ? `your open <b>${esc(r.ticker)}</b> offers` : r.name !== undefined ? `your open offers for <code>${esc(r.name)}.csd</code>` : `<b>ALL</b> your open offers`;
+      return `<b>CairnX cancel offers</b><br>cancels ${scope} (escrow returns to you)`;
+    }
+    case "ncommit":
+      return `<b>.csd name commit</b> — reserves a sealed name claim (revealed later)<br>commit: <code>${esc(r.commit)}</code>`;
+    case "name":
+      return `<b>.csd name claim</b><br>name: <code>${esc(r.name)}.csd</code>${r.salt !== undefined ? `<br><span class="dim">reveals a prior commit</span>` : ""}`;
+    case "nxfer":
+      return `<b>.csd name transfer</b><br>name: <code>${esc(r.name)}.csd</code><br>to: <code>${esc(r.to)}</code>`;
+    case "nset":
+      return `<b>.csd name → address record</b><br><code>${esc(r.name)}.csd</code> resolves to <code>${esc(r.addr)}</code>`;
+    case "nrenew":
+      return `<b>.csd name renewal</b><br>extends the lease on <code>${esc(r.name)}.csd</code>`;
+    case "tmeta":
+      return `<b>CairnX token metadata</b> (issuer-only)<br>token: <b>${esc(r.ticker)}</b><br>content: <code>${esc(r.hash)}</code>`;
+    default:
+      return null;
+  }
 }
 
 export function describe(r: any): string {
@@ -41,6 +102,14 @@ export function describe(r: any): string {
     const xfer = outs.length
       ? `<br><b>⚠ this proposal also transfers funds OUT of your wallet:</b><br>${rows}<br>total out: <b>${fmtCsd(total)}</b><div id="send-warn" class="err" style="margin-top:8px" hidden></div>`
       : "";
+    // cairnx:v1 proposes are ACTIONS (token transfer / offer / name claim…): decode the
+    // record and clear-sign its fields instead of a raw JSON blob. Falls through to the
+    // raw uri for anything that doesn't decode (which the resolver would no-op anyway).
+    if (String(p.domain) === CAIRNX_DOMAIN) {
+      const cx = cairnxDescribe(p.uri, p.payloadHash);
+      if (cx) return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, 1000000)}`
+        + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code>${xfer}`;
+    }
     return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee, 1000000)}`
       + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>${xfer}`;
   }

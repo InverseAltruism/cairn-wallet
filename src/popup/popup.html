@@ -81,6 +81,8 @@
       </div>
       <div class="bal-row"><span class="label">balance</span> <span id="balance" class="bal">—</span> <button id="btn-refresh" class="mini">↻</button></div>
 
+      <div id="assets" class="assets" hidden></div>
+
       <div id="pending" class="pending" hidden></div>
 
       <div class="actions">
@@ -127,6 +129,28 @@
         </div>
       </div>
 
+      <div id="tsend-form" class="settings" hidden>
+        <div class="act-head"><span class="label">send token</span><b id="ts-ticker" class="bal"></b></div>
+        <label>Recipient address <input id="ts-to" placeholder="0x… (20-byte addr)" /></label>
+        <label>Amount <input id="ts-amt" type="text" inputmode="decimal" placeholder="0.0" /></label>
+        <div id="ts-avail" class="dim" style="font-size:11px"></div>
+        <button id="btn-tsend" class="primary">Review send</button>
+
+        <div id="tsend-confirm" hidden>
+          <div class="confirm-box">
+            <div class="crow"><span class="label">Token</span><b id="tc-ticker" class="bal"></b></div>
+            <div class="crow"><span class="label">To</span><code id="tc-to" class="addr"></code></div>
+            <div class="crow"><span class="label">Amount</span><b id="tc-amt" class="bal"></b></div>
+            <div class="crow"><span class="label">Fee</span><span id="tc-fee"></span></div>
+            <div id="tc-warn" class="warn" hidden></div>
+          </div>
+          <div class="row">
+            <button id="btn-tsend-confirm" class="primary">Confirm &amp; send</button>
+            <button id="btn-tsend-back">Back</button>
+          </div>
+        </div>
+      </div>
+
       <div id="post-form" class="settings" hidden>
         <label>Category
           <select id="p-domain" class="acct-select" style="width:100%"></select>
@@ -164,6 +188,7 @@
 
       <div id="settings" class="settings" hidden>
         <label>Cairn API <input id="set-api" /></label>
+        <label>CairnX API (token balances) <input id="set-tradeapi" /></label>
         <button id="btn-save-settings" class="mini">save</button>
         <div class="dim" style="font-size:11px;margin-top:6px">Switch the node RPC from the <b>RPC</b> menu (top right).</div>
         <div class="dim" style="font-size:11px;margin-top:10px"><b>Connected sites</b> — sites allowed to see your address. They can’t move funds; signing always asks you each time.</div>
