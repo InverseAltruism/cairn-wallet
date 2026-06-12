@@ -83,7 +83,7 @@ Runs the 15-minute idle auto-lock that wipes the in-memory key, and retries regi
 ```
 The default Compute Substrate node proxy and Cairn API. Used to read public chain data (balance, UTXOs, proposals) and to submit transactions the user approves. No user data is sent beyond the signed transaction itself.
 ```
-- Host permission `http://127.0.0.1:8790/*`
+- Host permission `http://127.0.0.1:8789/*`
 ```
 Lets users who run their own local Compute Substrate node connect the wallet to it (localhost only). Optional; the wallet works against the default remote node without it.
 ```

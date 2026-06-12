@@ -59,7 +59,7 @@ extension.
 - **alarms** — to run the 15-minute idle auto-lock and to retry posting off-chain
   content after a transaction is mined, even if the service worker was suspended.
 - **Host access** to your configured node/API (`cairn-substrate.com` by default, plus a
-  local node at `127.0.0.1:8790` if you run one; any custom host is requested only when
+  local node at `127.0.0.1:8789` if you run one; any custom host is requested only when
   you set it in Settings) — to read chain data and submit the transactions you approve.
 
 ## Data retention and deletion

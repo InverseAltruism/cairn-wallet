@@ -91,7 +91,7 @@ The extension layer:
 
 ## Configuration
 
-* **Node RPC.** Switch from the RPC menu at the top right. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`), a local node (`http://127.0.0.1:8790`), or add your own.
+* **Node RPC.** Switch from the RPC menu at the top right. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`), a local node (`http://127.0.0.1:8789`), or add your own.
 * **Cairn API.** Set in Settings. Defaults to `https://cairn-substrate.com`.
 * **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet simply shows no assets (with a retry) — the CSD balance and sends are unaffected, and nothing the wallet signs ever depends on it.
 

@@ -52,9 +52,10 @@ best-in-class open-source wallets (MetaMask, Rabby, Phantom, Frame, Keplr) and s
    prototype pollution. Drop-in for esbuild. Medium.
 5. **Password-strength enforcement** at create/restore (length + zxcvbn-style) so the strong KDF
    isn't wasted on a weak password. Small.
-6. **Per-origin permission persistence + connected-sites view.** Today every dApp call prompts
-   (conservative, but no revocable record of connected origins). Add an EIP-2255-style grant +
-   a disconnect UI. Medium.
+6. ~~**Per-origin permission persistence + connected-sites view.**~~ ✅ **DONE** — per-origin
+   consent grants live in the background (`connectedSites` / `disconnectSite`,
+   `src/background.ts`), with a revocable Connected-sites list in Settings
+   (`src/popup/popup.ts`).
 
 ### P2 — context-dependent (lower priority on a contract-less UTXO chain)
 7. **Transaction pre-flight / risk display** — a node `/tx/template`-based dry-run + fee-rate

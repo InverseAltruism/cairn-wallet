@@ -17,6 +17,16 @@ are happy to credit you once it is resolved.
 * **Local signing.** The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node. The wallet never signs a digest handed to it by a server, so a malicious or intercepted RPC cannot redirect funds or change what you approved. The "sign in with CSD" digest is structurally distinct from a transaction sighash, so a hostile site cannot turn a sign-in into a spend.
 * **Deterministic, non-malleable signatures.** secp256k1 with RFC 6979 nonces and low-S enforcement.
 
+## What the wallet trusts the RPC for
+
+Signing is local and the RPC can never alter what you sign — but the wallet does trust the
+configured node/proxy for **state it displays and builds from**: balances, UTXO sets, history,
+and CairnX token state. A malicious RPC cannot redirect funds or forge your approval, but it
+could show a wrong balance, hide a transaction, or feed stale/false UTXOs (at worst causing a
+rejected transaction or a misleading display, not a key or fund compromise). If that matters
+for your threat model, point the wallet at your own node (`http://127.0.0.1:8789`) instead of
+the public proxy.
+
 ## dApp boundary
 
 A web page interacts with the wallet only through the injected `window.cairn` provider,

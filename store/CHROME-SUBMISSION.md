@@ -54,7 +54,7 @@ Runs a periodic timer that automatically locks the wallet after 15 minutes of in
 
 **Host permission**
 ```
-The wallet connects to the Compute Substrate blockchain node and the Cairn API to read public chain data (balances, unspent outputs, proposals) and to submit transactions the user explicitly approves. The default endpoints are cairn-substrate.com and an optional local node at 127.0.0.1:8790. Broader host access is optional and requested only at the moment the user enters a custom node URL in Settings, scoped to that host. No browsing data is read.
+The wallet connects to the Compute Substrate blockchain node and the Cairn API to read public chain data (balances, unspent outputs, proposals) and to submit transactions the user explicitly approves. The default endpoints are cairn-substrate.com and an optional local node at 127.0.0.1:8789. Broader host access is optional and requested only at the moment the user enters a custom node URL in Settings, scoped to that host. No browsing data is read.
 ```
 
 ---

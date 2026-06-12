@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { fromPriv, deriveAccount, newMnemonic } from "../src/core/account.ts";
 import * as node from "../src/core/node.ts";
 
-const RPC = process.env.CAIRN_RPC || "http://127.0.0.1:8790";
+const RPC = process.env.CAIRN_RPC || "http://127.0.0.1:8789";
 const COIN = 1_000_000; // 0.01 CSD
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

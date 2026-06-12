@@ -418,7 +418,7 @@ function originPattern(u: string): string | null {
   try {
     const url = new URL(u);
     const host = url.host; // includes :port if present
-    if (host === "cairn-substrate.com" || host === "127.0.0.1:8790") return null;
+    if (host === "cairn-substrate.com" || host === "127.0.0.1:8789") return null;
     return `${url.protocol}//${host}/*`;
   } catch { return null; }
 }
@@ -452,7 +452,7 @@ $("btn-save-settings").addEventListener("click", async () => {
 // ── RPC dropdown (header) — preset + user-added nodes, switch with one click ──
 const RPC_PRESETS = [
   { label: "Cairn proxy", url: "https://cairn-substrate.com/api/rpc" },
-  { label: "Local node", url: "http://127.0.0.1:8790" },
+  { label: "Local node", url: "http://127.0.0.1:8789" },
 ];
 async function renderRpcMenu() {
   const menu = $("rpc-menu");
