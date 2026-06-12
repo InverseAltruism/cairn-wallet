@@ -102,7 +102,9 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
   if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return null;
   try {
     if (canonicalJson(obj) !== uri) return null;
-    if (payloadHashHex !== undefined && cairnxPayloadHash(obj).toLowerCase() !== String(payloadHashHex).toLowerCase()) return null;
+    // the resolver requires the payload-hash commitment — a propose without one (or with a
+    // mismatch) can never execute, so it must show RAW, not a convincing structured render
+    if (typeof payloadHashHex !== "string" || cairnxPayloadHash(obj).toLowerCase() !== payloadHashHex.toLowerCase()) return null;
   } catch { return null; }
   const r = obj as Record<string, unknown>;
   if (r.v !== 1 || typeof r.t !== "string") return null;

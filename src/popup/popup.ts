@@ -216,6 +216,8 @@ async function renderAssets() {
 // the existing propose pipeline with the 0.25 CSD convention fee — no value outputs.
 const CAIRNX_FEE = 25_000_000; // 0.25 CSD (anchor fee, paid in CSD)
 let tsend: { ticker: string; decimals: number; available: string } | null = null;
+// the reviewed-and-frozen send: set when the confirm panel opens, signed verbatim on confirm
+let reviewed: { to: string; base: string } | null = null;
 function openTokenSend(ticker: string, decimals: number, available: string) {
   tsend = { ticker, decimals, available };
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
@@ -232,7 +234,11 @@ $("btn-tsend").addEventListener("click", async () => {
   if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return msg("enter a valid 0x… 20-byte address", "err");
   const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
   if (base === null || base === "0") return msg(tsend.decimals ? `enter an amount (up to ${tsend.decimals} decimal places)` : "enter a whole-number amount (this token has 0 decimals)", "err");
-  if (BigInt(base) > BigInt(tsend.available || "0")) return msg(`amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)})`, "err");
+  // `available` comes from the (configurable) trade API — never let a hostile/garbled value
+  // throw out of the handler and silently kill the send flow; treat unparseable as zero.
+  let avail = 0n;
+  try { avail = BigInt(tsend.available || "0"); } catch { avail = 0n; }
+  if (BigInt(base) > avail) return msg(`amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)})`, "err");
   // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
   let firstTime = true, lookalike: string | null = null;
   try {
@@ -250,21 +256,32 @@ $("btn-tsend").addEventListener("click", async () => {
   if (lookalike) { warnEl.innerHTML = `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.textContent = "⚠ First time sending to this address — check every character. Transfers are irreversible."; warnEl.hidden = false; }
   else warnEl.hidden = true;
+  // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
+  // (editing the form after "Review" must not let displayed values diverge from signed ones)
+  reviewed = { to: to.toLowerCase(), base };
+  ($("ts-to") as HTMLInputElement).disabled = true;
+  ($("ts-amt") as HTMLInputElement).disabled = true;
   ($("tsend-confirm") as HTMLElement).hidden = false;
   msg("");
 });
-$("btn-tsend-back").addEventListener("click", () => { ($("tsend-confirm") as HTMLElement).hidden = true; });
+$("btn-tsend-back").addEventListener("click", () => {
+  ($("tsend-confirm") as HTMLElement).hidden = true;
+  reviewed = null;
+  ($("ts-to") as HTMLInputElement).disabled = false;
+  ($("ts-amt") as HTMLInputElement).disabled = false;
+});
 $("btn-tsend-confirm").addEventListener("click", async () => {
-  if (!tsend) return;
-  const to = val("ts-to").trim();
-  const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
-  if (base === null || base === "0") return msg("enter an amount", "err");
+  if (!tsend || !reviewed) return;
+  const { to, base } = reviewed;
   try {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
     if (r.ok) {
       msg(`sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`, "ok");
       ($("tsend-confirm") as HTMLElement).hidden = true;
+      reviewed = null;
+      ($("ts-to") as HTMLInputElement).disabled = false;
+      ($("ts-amt") as HTMLInputElement).disabled = false;
       ($("ts-to") as HTMLInputElement).value = ""; ($("ts-amt") as HTMLInputElement).value = "";
       refreshBalance(); renderAssets();
     } else msg("send failed: " + (r.error || "?"), "err");

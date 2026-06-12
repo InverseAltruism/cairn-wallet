@@ -194,6 +194,48 @@ async function main() {
     check("cairnxTransfer refuses when locked", threw);
   } finally { (globalThis as any).fetch = origFetch; }
 
+  // ── audit follow-up (2026-06-12): the precise gaps the adversarial review listed ──
+  {
+    // parseUnits hostile inputs
+    for (const bad of ["0x10", "1e5", "١٢٣", "１２３", ".", ".5", "+5", "--1"]) {
+      check(`parseUnits rejects hostile "${bad}"`, parseUnits(bad, 8) === null);
+    }
+    // structured render REQUIRES the payload-hash commitment (render == execute)
+    const t = buildTransfer({ ticker: "CAIRN", amount: "1", to: "0x" + "ab".repeat(20) });
+    check("decode WITHOUT payloadHash → RAW (hash-less propose can never execute)",
+      decodeCairnxRecord(t.uri, undefined) === null);
+    check("decode with the correct hash → structured", decodeCairnxRecord(t.uri, t.payloadHash) !== null);
+    // duplicate JSON keys → canonical-form check kills it
+    const dup = '{"amount":"1","amount":"2","t":"transfer","ticker":"CAIRN","to":"0x' + "ab".repeat(20) + '","v":1}';
+    check("duplicate-key uri → RAW", decodeCairnxRecord(dup, t.payloadHash) === null);
+    // unicode lookalike ticker (Cyrillic С) → schema reject
+    const cyr = { amount: "1", t: "transfer", ticker: "\u0421AIRN", to: "0x" + "ab".repeat(20), v: 1 };
+    const cyrUri = canonicalJson(cyr);
+    check("unicode-lookalike ticker → RAW", decodeCairnxRecord(cyrUri, cairnxPayloadHash(cyr)) === null);
+    // the 512-byte consensus cap: per-field caps (memo ≤ 64 etc.) mean NO schema-valid record
+    // can reach 512 bytes — the byte gate is defense-in-depth. Assert both halves of that:
+    const maxMemo = { give: { ticker: "CAIRN", amount: "1" }, memo: "x".repeat(64), t: "offer", v: 1, want: { value: "1" } };
+    const mm = canonicalJson(maxMemo);
+    check("maximal legal record decodes (well under 512B: " + new TextEncoder().encode(mm).length + ")",
+      new TextEncoder().encode(mm).length < 512 && decodeCairnxRecord(mm, cairnxPayloadHash(maxMemo)) !== null);
+    const huge = '{"pad":"' + "x".repeat(520) + '","t":"offer","v":1}';
+    check("over-512-byte uri → RAW at the byte gate", decodeCairnxRecord(huge, cairnxPayloadHash(JSON.parse(huge))) === null);
+    // offer extras render structurally: taker / min / bid / token-want fixtures decode
+    for (const rec of [
+      { give: { ticker: "CAIRN", amount: "5" }, t: "offer", taker: "0x" + "cd".repeat(20), v: 1, want: { value: "9" } },
+      { give: { ticker: "CAIRN", amount: "5" }, min: "1", t: "offer", taker: "0x" + "cd".repeat(20), v: 1, want: { value: "9" } },
+      { bid: "0x" + "11".repeat(32), give: { ticker: "CAIRN", amount: "5" }, t: "offer", taker: "0x" + "cd".repeat(20), v: 1, want: { value: "9" } },
+      { give: { ticker: "CAIRN", amount: "5" }, t: "offer", v: 1, want: { ticker: "XE5XNS", amount: "2" } },
+    ]) {
+      const u = canonicalJson(rec);
+      check(`offer variant decodes (${Object.keys(rec).filter(k=>["taker","min","bid"].includes(k)).join("+")||"token-want"})`,
+        decodeCairnxRecord(u, cairnxPayloadHash(rec)) !== null);
+    }
+    // null-vs-absent: taker:null is NOT schema-valid → RAW
+    const nullTaker = { give: { ticker: "CAIRN", amount: "5" }, t: "offer", taker: null, v: 1, want: { value: "9" } };
+    check("taker:null → RAW (null is not absent)", decodeCairnxRecord(canonicalJson(nullTaker), cairnxPayloadHash(nullTaker)) === null);
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
