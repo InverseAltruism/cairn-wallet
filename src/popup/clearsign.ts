@@ -12,6 +12,15 @@ const FEE_WARN = 5 * 1e8;
 // Coerce a base-unit value for DISPLAY: a malicious/garbage value renders "invalid amount", never
 // "NaN CSD" — which a user skimming the clear-signing dialog might approve as a meaningless amount. C-WL5
 export function fmtCsd(raw: any): string { const n = Number(raw); return Number.isFinite(n) ? `${n / 1e8} CSD` : "invalid amount"; }
+// BigInt-safe variant for canonical record amounts (offer/bid `value` is a base-unit STRING up to
+// 2^96): Number() would lose precision above 2^53, so format the exact integer via BigInt. C-WL5
+export function fmtCsdBig(raw: any): string {
+  let v: bigint;
+  try { v = BigInt(String(raw)); } catch { return "invalid amount"; }
+  if (v < 0n) return "invalid amount";
+  const frac = (v % 100000000n).toString().padStart(8, "0").replace(/0+$/, "");
+  return `${(v / 100000000n).toString()}${frac ? "." + frac : ""} CSD`;
+}
 // Finite base-unit number for sums / balance-after math (garbage → 0; the tx won't build anyway —
 // node.send/sendMany hard-reject non-numeric amounts, so this only keeps the DISPLAY sane).
 export function baseVal(raw: any): number { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
@@ -36,7 +45,7 @@ const esc = (v: unknown) => escapeHtml(String(v));
 const baseAmt = (v: unknown) => `<b>${esc(v)}</b> <span class="dim">base units</span>`;
 function sideStr(s: any): string {
   if (s && typeof s === "object" && "name" in s) return `name <code>${esc(s.name)}.csd</code>`;
-  if (s && typeof s === "object" && "value" in s) return `${fmtCsd(Number(s.value))}`;
+  if (s && typeof s === "object" && "value" in s) return fmtCsdBig(s.value);
   return `${baseAmt(s?.amount)} of <b>${esc(s?.ticker)}</b>`;
 }
 export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | null {

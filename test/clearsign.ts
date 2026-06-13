@@ -1,6 +1,6 @@
 // Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml } from "../src/popup/clearsign.js";
+import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml } from "../src/popup/clearsign.js";
 declare const process: { exit(code: number): void };
 
 let pass = 0, fail = 0;
@@ -12,6 +12,18 @@ ok("fmtCsd(valid) → CSD", fmtCsd(150000000) === "1.5 CSD");
 ok("fmtCsd('abc') → 'invalid amount' (not NaN)", fmtCsd("abc") === "invalid amount");
 ok("fmtCsd(NaN) → 'invalid amount'", fmtCsd(NaN) === "invalid amount");
 ok("fmtCsd({}) → 'invalid amount'", fmtCsd({}) === "invalid amount");
+
+// LOW-2 — offer/bid CSD `value` (a base-unit STRING up to 2^96) rendered EXACTLY via BigInt.
+// Independent ground truth: the exact decimal is hand-derived, and the old Number() path is shown
+// to diverge above 2^53, so this is non-self-fulfilling.
+const bigVal = "9007199254740993"; // 2^53 + 1 base units
+ok("fmtCsdBig exact above 2^53 (no precision loss)", fmtCsdBig(bigVal) === "90071992.54740993 CSD");
+ok("old Number() path WOULD have diverged (independent check)", `${Number(bigVal) / 1e8} CSD` !== "90071992.54740993 CSD");
+ok("fmtCsdBig('500000000') → '5 CSD'", fmtCsdBig("500000000") === "5 CSD");
+ok("fmtCsdBig('100000000') → '1 CSD'", fmtCsdBig("100000000") === "1 CSD");
+ok("fmtCsdBig('1') → '0.00000001 CSD'", fmtCsdBig("1") === "0.00000001 CSD");
+ok("fmtCsdBig('-1') → 'invalid amount'", fmtCsdBig("-1") === "invalid amount");
+ok("fmtCsdBig('abc') → 'invalid amount'", fmtCsdBig("abc") === "invalid amount");
 ok("baseVal('abc') → 0 (finite for sums)", baseVal("abc") === 0);
 ok("baseVal(5) → 5", baseVal(5) === 5);
 const badSend = describe({ method: "send", params: { to: ADDR, amount: "evil" } });

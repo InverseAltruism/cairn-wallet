@@ -132,6 +132,12 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
 }
 
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
+  // Validate expiresEpoch up front: a negative/fractional/>2^53 value would otherwise wrap or throw
+  // inside u64() serialization, committing signed bytes (e.g. 0xFFFF…FF "never expires") that don't
+  // match the dApp's intent. Same SafeInteger posture as amounts/fee. (redteam LOW-1)
+  if (!Number.isSafeInteger(p.expiresEpoch) || p.expiresEpoch < 0) {
+    return Promise.resolve({ ok: false, error: "expiresEpoch must be a non-negative safe integer", sighashMatch: false });
+  }
   return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : []);
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
