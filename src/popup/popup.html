@@ -79,6 +79,7 @@
         <code id="addr" class="addr"></code>
         <button id="btn-copy" class="mini">copy</button>
       </div>
+      <div id="primary-name" class="primary-name" hidden></div>
       <div class="bal-row"><span class="label">balance</span> <span id="balance" class="bal">—</span> <button id="btn-refresh" class="mini">↻</button></div>
 
       <div id="assets" class="assets" hidden></div>
@@ -110,12 +111,13 @@
       </div>
 
       <div id="send-form" class="settings" hidden>
-        <label>Recipient address <input id="s-to" placeholder="0x… (20-byte addr)" /></label>
+        <label>Recipient <input id="s-to" placeholder="0x… address or alice.csd" /></label>
         <label>Amount (CSD) <input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" /></label>
         <button id="btn-send" class="primary">Review send</button>
 
         <div id="send-confirm" hidden>
           <div class="confirm-box">
+            <div class="crow" id="c-name-row" hidden><span class="label">Name</span><span id="c-name" class="dim"></span></div>
             <div class="crow"><span class="label">To</span><code id="c-to" class="addr"></code></div>
             <div class="crow"><span class="label">Amount</span><b id="c-amt" class="bal"></b></div>
             <div class="crow"><span class="label">Fee</span><span id="c-fee"></span></div>
@@ -131,7 +133,7 @@
 
       <div id="tsend-form" class="settings" hidden>
         <div class="act-head"><span class="label">send token</span><b id="ts-ticker" class="bal"></b></div>
-        <label>Recipient address <input id="ts-to" placeholder="0x… (20-byte addr)" /></label>
+        <label>Recipient <input id="ts-to" placeholder="0x… address or alice.csd" /></label>
         <label>Amount <input id="ts-amt" type="text" inputmode="decimal" placeholder="0.0" /></label>
         <div id="ts-avail" class="dim" style="font-size:11px"></div>
         <button id="btn-tsend" class="primary">Review send</button>
@@ -139,6 +141,7 @@
         <div id="tsend-confirm" hidden>
           <div class="confirm-box">
             <div class="crow"><span class="label">Token</span><b id="tc-ticker" class="bal"></b></div>
+            <div class="crow" id="tc-name-row" hidden><span class="label">Name</span><span id="tc-name" class="dim"></span></div>
             <div class="crow"><span class="label">To</span><code id="tc-to" class="addr"></code></div>
             <div class="crow"><span class="label">Amount</span><b id="tc-amt" class="bal"></b></div>
             <div class="crow"><span class="label">Fee</span><span id="tc-fee"></span></div>

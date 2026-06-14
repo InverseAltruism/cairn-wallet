@@ -9,7 +9,7 @@ import { sealNew, sealWith, openWith, deriveVaultKey, type Vault } from "./keyst
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash } from "./csdtx.js";
-import { buildTransfer, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
@@ -275,15 +275,54 @@ export class Wallet {
   // ── CairnX tokens + .csd names ──────────────────────────────────────────────
   // READS go to the public CairnX resolver API and NEVER throw — the popup must keep
   // showing the CSD balance even when the token API is down ({ ok:false } → quiet retry).
-  async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[] }> {
+  async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[]; nameDetails?: any[]; primaryName?: string | null }> {
     try {
       const r = await fetch(`${this.tradeApi}/cairnx/address/${this.addr()}`);
       if (!r.ok) return { ok: false };
       const j = await r.json();
       const balances = (j && typeof j.balances === "object" && j.balances) || {};
       const names = Array.isArray(j?.names) ? j.names.filter((n: unknown) => typeof n === "string") : [];
-      return { ok: true, balances, names };
+      // nameDetails (lease/expiry/addr per name) + the server-computed primary name (reverse record).
+      // Older services omit these → empty/null, and the popup falls back to plain name chips.
+      const nameDetails = Array.isArray(j?.nameDetails) ? j.nameDetails : [];
+      const primaryName = typeof j?.primaryName === "string" ? j.primaryName : null;
+      return { ok: true, balances, names, nameDetails, primaryName };
     } catch { return { ok: false }; }
+  }
+  // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
+  // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
+  // owner (so a name works as a recipient even before its holder sets a resolver record).
+  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string }> {
+    const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
+    try {
+      const r = await fetch(`${this.tradeApi}/cairnx/resolve/${nm}`);
+      if (r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
+      if (!r.ok) return { ok: false, error: "name lookup failed" };
+      const j = await r.json();
+      if (j?.lapsed) return { ok: false, error: `${nm}.csd lease has lapsed — can't send to it` };
+      if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
+      return { ok: true, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
+    } catch { return { ok: false, error: "name lookup failed" }; }
+  }
+  // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
+  async cairnxNameRenew(name: string) {
+    const priv = this.must().privkey;
+    const built = buildNameRenew({ name });
+    const fee = nameRegFee(name);
+    if (fee > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("renewal fee too large for the UI");
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 1000;
+    const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
+    await this.maybeRecord(r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
+    return r;
+  }
+  // Set a name you own as your PRIMARY identity = point it at your own address (nset → self).
+  async cairnxSetPrimary(name: string) {
+    const priv = this.must().privkey;
+    const built = buildNameSet({ name, addr: this.addr() });
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 100000;
+    const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
+    await this.maybeRecord(r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
+    return r;
   }
   async cairnxTokens(): Promise<{ ok: boolean; tokens?: { ticker: string; decimals: number; name?: string }[] }> {
     try {

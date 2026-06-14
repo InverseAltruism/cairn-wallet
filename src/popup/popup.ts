@@ -3,7 +3,7 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
-import { formatUnits, parseUnits } from "../core/cairnx.js";
+import { formatUnits, parseUnits, nameRegFee } from "../core/cairnx.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -35,6 +35,9 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "cairnxAssets": return w.cairnxAssets();
     case "cairnxTokens": return w.cairnxTokens();
     case "cairnxTransfer": return w.cairnxTransfer(args[0]);
+    case "resolveName": return w.resolveName(args[0]);
+    case "cairnxNameRenew": return w.cairnxNameRenew(args[0]);
+    case "cairnxSetPrimary": return w.cairnxSetPrimary(args[0]);
     case "setTradeApi": return w.setTradeApi(args[0]);
     case "signin": return w.signIn();
     case "export": return w.exportKey(args[0]);
@@ -61,9 +64,11 @@ function busy(text: string) { const m = $("msg"); m.innerHTML = `<span class="sp
 function flashBtn(id: string, label: string) { const b = $(id); const o = b.textContent; b.textContent = label; b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
 
 let currentRpc = "";
+let siteApi = "";   // the Cairn site base (for the /trade deep-link in the names list)
 async function render() {
   const st = await call("status");
   currentRpc = st.rpc || "";
+  siteApi = st.api || "";
   if (!st.hasVault) return show("setup");
   if (!st.unlocked) return show("locked");
   show("main");
@@ -179,9 +184,30 @@ async function tokenMeta(): Promise<Record<string, { decimals: number; name?: st
   if (r?.ok) tokensCache = m;
   return m;
 }
+// Show the primary .csd name as the account identity (server round-trip-verified — owner===addr===you).
+function setIdentity(name: string | null | undefined) {
+  const el = document.getElementById("primary-name");
+  if (!el) return;
+  if (name) { el.textContent = `${name}.csd`; (el as HTMLElement).hidden = false; }
+  else { el.textContent = ""; (el as HTMLElement).hidden = true; }
+}
+// epochs ≈ hours → a short remaining-time label for a lease
+function leaseLabel(n: any): string {
+  if (n?.lapsed) return "lapsed";
+  if (!n?.leased) return "";
+  if (n.inGrace) return "in grace · renew now";
+  const e = Number(n.epochsLeft ?? 0);
+  if (e <= 0) return "expiring";
+  return "expires " + (e < 48 ? `~${e}h` : e < 1440 ? `~${Math.round(e / 24)}d` : `~${Math.round(e / 720)}mo`);
+}
+function tradeNameUrl(name: string): string {
+  const base = (siteApi || "https://cairn-substrate.com").replace(/\/$/, "");
+  return `${base}/trade?name=${encodeURIComponent(name)}`;
+}
 async function renderAssets() {
   const el = $("assets") as HTMLElement;
   const a = await call("cairnxAssets").catch(() => ({ ok: false }));
+  setIdentity(a?.ok ? a.primaryName : null);
   if (!a?.ok) {
     el.hidden = false;
     el.innerHTML = `<div class="assets-retry dim">token balances unavailable · <a id="assets-retry">retry</a></div>`;
@@ -191,8 +217,10 @@ async function renderAssets() {
   }
   const balances: Record<string, { available: string; locked: string }> = a.balances || {};
   const names: string[] = a.names || [];
+  const details: any[] = Array.isArray(a.nameDetails) && a.nameDetails.length ? a.nameDetails : names.map((n) => ({ name: n }));
+  const primary: string | null = a.primaryName ?? null;
   const tickers = Object.keys(balances).sort();
-  if (!tickers.length && !names.length) { el.hidden = true; el.innerHTML = ""; return; }
+  if (!tickers.length && !details.length) { el.hidden = true; el.innerHTML = ""; return; }
   const meta = await tokenMeta();
   const rows = tickers.map((t) => {
     const b = balances[t] || { available: "0", locked: "0" };
@@ -202,13 +230,66 @@ async function renderAssets() {
       <span class="asset-bal">${escapeHtml(formatUnits(b.available, dec))}${locked}</span>
       <button class="mini" data-tsend="${escapeHtml(t)}">send</button></div>`;
   }).join("");
-  const chips = names.length ? `<div class="names-row">${names.map((n) => `<span class="name-chip">${escapeHtml(String(n))}.csd</span>`).join("")}</div>` : "";
+  // .csd names: identity + lease state + inline renew / set-primary + manage on /trade
+  const nameRows = details.length ? `<div class="names-head"><span class="label">.csd names</span></div>` + details.map((n) => {
+    const nm = String(n.name);
+    const isPrimary = nm === primary;
+    const lease = leaseLabel(n);
+    const cls = n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
+    const acts = n.lapsed
+      ? `<a class="mini" href="${tradeNameUrl(nm)}" target="_blank" rel="noopener noreferrer">recapture ↗</a>`
+      : `<button class="mini" data-nrenew="${escapeHtml(nm)}">renew</button>${isPrimary ? "" : `<button class="mini" data-nprimary="${escapeHtml(nm)}">★ primary</button>`}<a class="mini" href="${tradeNameUrl(nm)}" target="_blank" rel="noopener noreferrer">⋯</a>`;
+    return `<div class="name-asset${cls}">
+      <span class="na-name">${escapeHtml(nm)}<span class="dim">.csd</span>${isPrimary ? ` <span class="na-tag">★ primary</span>` : ""}</span>
+      <span class="na-lease dim">${escapeHtml(lease)}</span>
+      <span class="na-acts">${acts}</span></div>`;
+  }).join("") : "";
   el.hidden = false;
-  el.innerHTML = `<span class="label">assets</span>${rows}${chips}`;
+  el.innerHTML = `<span class="label">assets</span>${rows}${nameRows}`;
   el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = () => {
     const t = b.dataset.tsend!;
     openTokenSend(t, meta[t]?.decimals ?? 0, balances[t]?.available ?? "0");
   });
+  el.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
+  el.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
+}
+
+// Two-click confirm (the popup has no modal): first click arms + shows the cost, second runs it.
+let pendingNameAct: { kind: string; name: string } | null = null;
+function confirmNameAction(kind: "renew" | "primary", name: string) {
+  if (pendingNameAct && pendingNameAct.kind === kind && pendingNameAct.name === name) { pendingNameAct = null; return doNameAction(kind, name); }
+  pendingNameAct = { kind, name };
+  const cost = kind === "renew" ? `${(Number(nameRegFee(name)) / 1e8)} CSD + 0.25 anchor` : "0.25 CSD anchor";
+  msg(`click again to confirm: ${kind === "renew" ? "renew" : "set primary for"} ${name}.csd (${cost})`, "info");
+  setTimeout(() => { if (pendingNameAct && pendingNameAct.name === name && pendingNameAct.kind === kind) pendingNameAct = null; }, 6000);
+}
+async function doNameAction(kind: "renew" | "primary", name: string) {
+  try {
+    busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
+    const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name);
+    if (r.ok) { msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (settles ~1 block)`, "ok"); refreshBalance(); renderAssets(); }
+    else msg(`${kind === "renew" ? "renew" : "set primary"} failed: ${r.error || "?"}`, "err");
+  } catch (e: any) { msg(e.message, "err"); }
+}
+
+// Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
+const looksLikeName = (s: string) => /\.csd$/i.test(s) || /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(s.toLowerCase());
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string }> {
+  const r = (raw || "").trim();
+  if (/^0x[0-9a-fA-F]{40}$/.test(r)) return { ok: true, addr: r.toLowerCase(), name: null, label: null };
+  if (looksLikeName(r)) {
+    const nm = r.toLowerCase().replace(/\.csd$/, "");
+    const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
+    if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
+    return { ok: true, addr: res.addr, name: nm, label: `${nm}.csd → ${short(res.addr)} (via ${res.via})` };
+  }
+  return { ok: false, error: "enter a 0x… address or a name.csd" };
+}
+function setNameRow(rowId: string, valId: string, label: string | null | undefined) {
+  const row = document.getElementById(rowId), v = document.getElementById(valId);
+  if (!row || !v) return;
+  if (label) { v.textContent = label; (row as HTMLElement).hidden = false; }
+  else { v.textContent = ""; (row as HTMLElement).hidden = true; }
 }
 
 // ── send a CairnX token: recipient + amount → review (ticker/amount/to/fee) → sign ──
@@ -216,10 +297,11 @@ async function renderAssets() {
 // the existing propose pipeline with the 0.25 CSD convention fee — no value outputs.
 const CAIRNX_FEE = 25_000_000; // 0.25 CSD (anchor fee, paid in CSD)
 let tsend: { ticker: string; decimals: number; available: string } | null = null;
-// the reviewed-and-frozen send: set when the confirm panel opens, signed verbatim on confirm
-let reviewed: { to: string; base: string } | null = null;
+// the reviewed-and-frozen send: set when the confirm panel opens, signed verbatim on confirm.
+// `name` is the .csd name typed (if any) — re-resolved at confirm so it can't silently re-point.
+let reviewed: { to: string; base: string; name?: string | null } | null = null;
 // CSD-send reviewed snapshot (symmetry with token-send: sign exactly what was reviewed)
-let reviewedSend: { to: string; amt: number } | null = null;
+let reviewedSend: { to: string; amt: number; name?: string | null } | null = null;
 function openTokenSend(ticker: string, decimals: number, available: string) {
   tsend = { ticker, decimals, available };
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
@@ -232,10 +314,12 @@ function openTokenSend(ticker: string, decimals: number, available: string) {
 }
 $("btn-tsend").addEventListener("click", async () => {
   if (!tsend) return;
-  const to = val("ts-to").trim();
-  if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return msg("enter a valid 0x… 20-byte address", "err");
   const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
   if (base === null || base === "0") return msg(tsend.decimals ? `enter an amount (up to ${tsend.decimals} decimal places)` : "enter a whole-number amount (this token has 0 decimals)", "err");
+  const rr = await resolveRecipient(val("ts-to").trim());   // 0x… or alice.csd (refuse lapsed)
+  if (!rr.ok) return msg(rr.error!, "err");
+  const to = rr.addr!;
+  setNameRow("tc-name-row", "tc-name", rr.label);
   // `available` comes from the (configurable) trade API — never let a hostile/garbled value
   // throw out of the handler and silently kill the send flow; treat unparseable as zero.
   let avail = 0n;
@@ -260,7 +344,7 @@ $("btn-tsend").addEventListener("click", async () => {
   else warnEl.hidden = true;
   // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
   // (editing the form after "Review" must not let displayed values diverge from signed ones)
-  reviewed = { to: to.toLowerCase(), base };
+  reviewed = { to, base, name: rr.name ?? null };
   ($("ts-to") as HTMLInputElement).disabled = true;
   ($("ts-amt") as HTMLInputElement).disabled = true;
   ($("tsend-confirm") as HTMLElement).hidden = false;
@@ -274,7 +358,11 @@ $("btn-tsend-back").addEventListener("click", () => {
 });
 $("btn-tsend-confirm").addEventListener("click", async () => {
   if (!tsend || !reviewed) return;
-  const { to, base } = reviewed;
+  const { to, base, name } = reviewed;
+  if (name) {
+    const re = await call("resolveName", name).catch(() => ({ ok: false }));
+    if (!re.ok || String(re.addr).toLowerCase() !== to) return msg(`${name}.csd changed where it points — review again`, "err");
+  }
   try {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
@@ -565,10 +653,13 @@ function lookalikeOf(to: string, known: string[]): string | null {
 // never-seen-before recipient, and hard-flags a poisoning lookalike.
 const SEND_FEE = 1_000_000; // 0.01 CSD
 $("btn-send").addEventListener("click", async () => {
-  const to = val("s-to").trim();
+  const raw = val("s-to").trim();
   const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);
-  if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return msg("enter a valid 0x… 20-byte address", "err");
   if (!(amt > 0)) return msg("enter an amount", "err");
+  const rr = await resolveRecipient(raw);   // 0x… as-is, or alice.csd → resolved address (refuse lapsed)
+  if (!rr.ok) return msg(rr.error!, "err");
+  const to = rr.addr!;
+  setNameRow("c-name-row", "c-name", rr.label);
   let firstTime = true, known: string[] = [], lookalike: string | null = null, after = "";
   try {
     const h: any[] = await call("history");
@@ -587,7 +678,7 @@ $("btn-send").addEventListener("click", async () => {
   else if (firstTime) { warnEl.textContent = "⚠ First time sending to this address — check every character. Payments are irreversible."; warnEl.hidden = false; }
   else warnEl.hidden = true;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
-  reviewedSend = { to, amt };
+  reviewedSend = { to, amt, name: rr.name ?? null };
   ($("s-to") as HTMLInputElement).disabled = true;
   ($("s-amt") as HTMLInputElement).disabled = true;
   ($("send-confirm") as HTMLElement).hidden = false;
@@ -601,7 +692,12 @@ $("btn-send-back").addEventListener("click", () => {
 });
 $("btn-send-confirm").addEventListener("click", async () => {
   if (!reviewedSend) return;
-  const { to, amt } = reviewedSend;
+  const { to, amt, name } = reviewedSend;
+  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else
+  if (name) {
+    const re = await call("resolveName", name).catch(() => ({ ok: false }));
+    if (!re.ok || String(re.addr).toLowerCase() !== to) return msg(`${name}.csd changed where it points — review again`, "err");
+  }
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
     if (r.ok) {

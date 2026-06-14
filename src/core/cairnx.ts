@@ -10,6 +10,7 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 
 export const CAIRNX_DOMAIN = "cairnx:v1";
 export const CAIRNX_PROPOSE_FEE = 25_000_000; // 0.25 CSD — the convention's anchor fee floor
+export const TREASURY_ADDR = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // protocol fee sink (CONVENTION §10)
 
 // CONVENTION §4 field shapes
 const TICKER_RE = /^[A-Z][A-Z0-9]{2,11}$/;
@@ -58,6 +59,52 @@ export function buildTransfer(p: { ticker: string; amount: string; to: string })
   const uri = canonicalJson(record);
   if (utf8ToBytes(uri).length > MAX_RECORD_BYTES) throw new Error("record too large");
   return { record, uri, payloadHash: cairnxPayloadHash(record) };
+}
+
+// ── .csd name records (built + validated ON-DEVICE, like buildTransfer) ───────
+export interface BuiltCairnxRecord { record: Record<string, unknown>; uri: string; payloadHash: string }
+function buildNameRecord(record: Record<string, unknown>): BuiltCairnxRecord {
+  const uri = canonicalJson(record);
+  if (utf8ToBytes(uri).length > MAX_RECORD_BYTES) throw new Error("record too large");
+  return { record, uri, payloadHash: cairnxPayloadHash(record) };
+}
+/** name registration / renewal fee by length (base units) — mirrors the resolver curve. */
+export function nameRegFee(name: string): bigint {
+  const n = name.length;
+  if (n <= 3) return 500_000_000n; if (n === 4) return 200_000_000n; if (n === 5) return 100_000_000n;
+  if (n <= 9) return 50_000_000n; return 10_000_000n;
+}
+/** Front-run-proof commit hash (mirrors cairnx-core nameCommit): binds name+salt+lowercased owner. */
+export function nameCommitHash(name: string, salt: string, owner: string): string {
+  return cairnxPayloadHash({ t: "cairnx:name:commit:v1", name, salt, owner: String(owner).toLowerCase() });
+}
+export function buildNameCommit(p: { name: string; salt: string; owner: string }): BuiltCairnxRecord {
+  if (!isName(p.name)) throw new Error("invalid name (lowercase a-z 0-9 hyphen, 1-32, not reserved)");
+  if (!/^[0-9a-fA-F]{16,128}$/.test(p.salt)) throw new Error("invalid salt");
+  if (!isAddr(String(p.owner).toLowerCase())) throw new Error("owner must be a 0x… address");
+  return buildNameRecord({ v: 1, t: "ncommit", commit: nameCommitHash(p.name, p.salt, p.owner) });
+}
+export function buildNameClaim(p: { name: string; salt?: string }): BuiltCairnxRecord {
+  if (!isName(p.name)) throw new Error("invalid name (lowercase a-z 0-9 hyphen, 1-32, not reserved)");
+  if (p.salt !== undefined && !/^[0-9a-fA-F]{16,128}$/.test(p.salt)) throw new Error("invalid salt");
+  return buildNameRecord(p.salt ? { v: 1, t: "name", name: p.name, salt: p.salt } : { v: 1, t: "name", name: p.name });
+}
+export const buildNameReveal = (p: { name: string; salt: string }): BuiltCairnxRecord => buildNameClaim(p);
+export function buildNameRenew(p: { name: string }): BuiltCairnxRecord {
+  if (!isName(p.name)) throw new Error("invalid name");
+  return buildNameRecord({ v: 1, t: "nrenew", name: p.name });
+}
+export function buildNameSet(p: { name: string; addr: string }): BuiltCairnxRecord {
+  if (!isName(p.name)) throw new Error("invalid name");
+  const addr = String(p.addr || "").toLowerCase();
+  if (!isAddr(addr)) throw new Error("address must be a 0x… 20-byte address");
+  return buildNameRecord({ v: 1, t: "nset", name: p.name, addr });
+}
+export function buildNameXfer(p: { name: string; to: string }): BuiltCairnxRecord {
+  if (!isName(p.name)) throw new Error("invalid name");
+  const to = String(p.to || "").toLowerCase();
+  if (!isAddr(to)) throw new Error("recipient must be a 0x… 20-byte address");
+  return buildNameRecord({ v: 1, t: "nxfer", name: p.name, to });
 }
 
 // ── decimals-aware display/entry ─────────────────────────────────────────────

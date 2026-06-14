@@ -154,3 +154,22 @@ button:active:not(:disabled){transform:translateY(1px)}
 @media (prefers-reduced-motion: reduce){
   *{animation:none!important;transition:none!important}
 }
+
+/* primary .csd name as the account identity (shown under the address) */
+.primary-name{color:var(--green);font-weight:700;font-size:13px;margin:-2px 0 6px 64px;letter-spacing:.3px}
+.primary-name::before{content:"★ ";color:var(--green);font-weight:400}
+/* owned .csd names in the assets box */
+.names-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}
+.name-asset{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
+.name-asset:last-child{border-bottom:none}
+.name-asset.lapsed .na-name{color:var(--red)}
+.na-name{font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.na-name .dim{font-weight:400}
+.na-tag{color:var(--green);font-size:9px;border:1px solid var(--green);border-radius:4px;padding:0 4px;margin-left:2px;white-space:nowrap}
+.na-lease{font-size:10px;white-space:nowrap}
+.name-asset.grace .na-lease{color:var(--ink)}
+.name-asset.lapsed .na-lease{color:var(--red)}
+.na-acts{display:flex;align-items:center;gap:2px;white-space:nowrap}
+.na-acts .mini{margin:0 0 0 4px}
+.na-acts a.mini{text-decoration:none;color:var(--cyan);border:1px solid var(--line);border-radius:4px;padding:3px 6px}
+.na-acts a.mini:hover{color:#fff;border-color:var(--green)}
