@@ -19,7 +19,7 @@
   });
   (window as any).cairn = {
     isCairn: true,
-    version: "0.2.19",
+    version: "0.2.20",
     connect: () => req("connect"),
     getAddress: () => req("getAddress"),
     signIn: () => req("signin"),
