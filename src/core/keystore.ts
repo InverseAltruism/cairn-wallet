@@ -9,6 +9,11 @@ import { bytesToHex, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/
 
 const SUBTLE = (globalThis.crypto as Crypto).subtle;
 const PBKDF2_ITERS = 600_000;
+// Minimum password length for a NEW vault (create / restore / import). The KDF (600k PBKDF2) raises
+// per-guess cost, but cannot compensate for a trivially small keyspace if the encrypted vault is ever
+// exfiltrated out-of-band, so refuse obviously-weak passwords at creation time (audit KEY-1). NOT
+// enforced on unlock/re-seal, so existing vaults with shorter passwords keep working.
+const MIN_PASSWORD_LEN = 8;
 // Floor-clamp on OPEN: refuse to derive a key from a vault claiming an absurdly low
 // iteration count. Defeats a stored-params downgrade attack and guards against a
 // corrupted/forged vault weakening the KDF. Legitimate vaults are ≥600k.
@@ -41,6 +46,9 @@ export async function exportKeyRaw(key: CryptoKey): Promise<string> {
   return bytesToHex(new Uint8Array(await SUBTLE.exportKey("raw", key)));
 }
 export async function importKeyRaw(hex: string): Promise<CryptoKey> {
+  // Must be exactly 32 bytes — WebCrypto infers AES key size from byte length, so a short keyRaw would
+  // silently import as a weaker AES-128 key. Reject anything but a full 256-bit key (audit KEY-3).
+  if (typeof hex !== "string" || !/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("invalid session key");
   return SUBTLE.importKey("raw", bs(hexToBytes(hex)), { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
 }
 
@@ -77,6 +85,7 @@ export async function openWith(vault: Vault, key: CryptoKey): Promise<string> {
 // the caller can keep re-sealing without re-prompting.
 export async function sealNew(plaintext: string, password: string): Promise<{ vault: Vault; key: CryptoKey }> {
   if (!password) throw new Error("password required");
+  if (password.length < MIN_PASSWORD_LEN) throw new Error(`password must be at least ${MIN_PASSWORD_LEN} characters`);
   const salt = randomBytes(16);
   const key = await deriveKey(password, salt, PBKDF2_ITERS);
   const vault = await sealWith(plaintext, key, bytesToHex(salt), PBKDF2_ITERS);

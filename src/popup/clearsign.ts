@@ -229,6 +229,28 @@ export function lookalikeOf(to: string, known: string[]): string | null {
   return null;
 }
 
+// XREPO-1 mitigation. Sending to "<name>.csd" resolves the address through the (configurable /
+// MITM-able) name service, which the extension cannot yet verify against the chain — it bundles no
+// light client, so trustless .csd resolution is gated on that future feature (SECURITY-ROADMAP). The
+// proportionate defense is to make the resolved FULL address the unmissable thing the user confirms,
+// with an explicit "a malicious server could substitute this" caution. Returns the warn-banner HTML
+// (the name is regex-constrained at resolution, but escape it anyway — defense in depth).
+export function nameCautionHtml(name: string): string {
+  const n = escapeHtml(String(name));
+  return `⚠ <b>Sending to <code>${n}.csd</code> — verify the full address below.</b> The address was supplied by the name service, which the wallet cannot yet verify against the chain; a malicious or intercepted server could substitute it. Confirm the <b>To</b> address is the correct owner of <code>${n}.csd</code> before sending.`;
+}
+
+// XREPO-1 confirm-time guard. A name recipient is re-resolved at sign-time and the send is REFUSED
+// unless the service still returns EXACTLY the address the user reviewed. Fail-closed on any error /
+// lapse / shape change / network failure (a name that no longer resolves to the reviewed address must
+// never be signed silently). Pure over the re-resolution RESULT so it's unit-testable; the popup wires
+// the live `resolveName` call. NOTE: this stops a server that re-points the name BETWEEN review and
+// confirm — it does NOT defend against a server that is CONSISTENTLY hostile (returns the same attacker
+// address both times). Closing that requires the light client (the real fix); see SECURITY-ROADMAP.
+export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: unknown } | null | undefined): boolean {
+  return !!(re && re.ok && typeof re.addr === "string" && (re.addr as string).toLowerCase() === reviewed.toLowerCase());
+}
+
 // Cost summary line from the request's own params (no network).
 export function costLine(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return "no funds move — this only shares/signs your identity.";

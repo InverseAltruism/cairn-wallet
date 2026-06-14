@@ -42,6 +42,21 @@ best-in-class open-source wallets (MetaMask, Rabby, Phantom, Frame, Keplr) and s
    worker). Add `@ledgerhq/hw-transport-webhid` + a CSD/secp256k1 signing path: build the tx
    locally, send only the sighash to the device, apply the returned signature. Effort: large
    (multi-session). Borrow from Rabby/Frame Ledger integrations.
+3. **In-wallet SPV light client → trustless `.csd` resolution (audit XREPO-1).** Sending to a
+   `.csd` name currently trusts the configured CairnX name service for the `name → 0x…` address;
+   the extension bundles no light client, so it cannot verify that mapping against the chain. The
+   real fix is to resolve a name's winning record *in the wallet* and verify its inclusion
+   (PoW + checkpoint + merkle proof) against the node — the SPV bundle already exists on the `/trade`
+   web page (`swapguard`) and the CairnX codec is already in-wallet (`core/cairnx.ts`). **Constraint:**
+   do this WITHOUT porting a second full CairnX resolver into the extension (a divergent replay would
+   re-create the cross-language determinism-fork class); reuse the canonical `@inversealtruism/cairnx-core`
+   resolver, fed by SPV-verified chain bytes. Effort: large (multi-session).
+   - **Mitigated until then (DONE, this release):** a named send shows the **full** resolved address
+     as the unmissable thing to confirm, with an explicit "a malicious server could substitute this"
+     caution, and **re-resolves at confirm time, refusing to sign on any change** (stops a server that
+     re-points a name mid-flow). The residual — a *consistently* hostile server — is what the light
+     client closes. See `SECURITY.md` → "Sending to a `.csd` name". Tests: `test/cairnx.ts` (XREPO-1
+     section) + `test/pentest.ts` tripwires.
 
 ### P1 — defense-in-depth (below best-in-class; partly mitigated by CSD being contract-less)
 3. **Argon2id KDF for new vaults.** Memory-hard, vs PBKDF2's GPU/ASIC-friendliness for offline

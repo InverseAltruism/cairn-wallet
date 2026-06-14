@@ -2,6 +2,7 @@
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
 import { describe, debitOf, lookalikeOf, costLine, escapeHtml } from "./clearsign.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -78,7 +79,14 @@ async function fillSendWarning(r: any) {
   // payout, so they get the warning too — they're shown neutrally as "transfers OUT" in clearsign.)
   if ((r.method !== "send" && r.method !== "fillOffer" && r.method !== "propose") || warnForId === r.id) return; warnForId = r.id;
   const p = r.params || {};
-  const outs = Array.isArray(p.outputs) ? p.outputs : [{ to: p.to }];
+  const outs = Array.isArray(p.outputs) ? p.outputs.slice() : (p.to ? [{ to: p.to }] : []);
+  // A dApp-proposed CairnX token transfer carries its recipient in the decoded record's `to` (NOT a CSD
+  // output), so the first-time / address-poisoning check would otherwise skip it (audit POPUP-1). Decode
+  // the canonical+hash-committed record and include the token recipient in the same check.
+  if (r.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
+    const rec = decodeCairnxRecord(p.uri, p.payloadHash);
+    if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to });
+  }
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
     const sentTo = (h as any[]).filter((t) => t.type === "send" || t.type === "fillOffer").map((t) => String(t.to || ""));

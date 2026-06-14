@@ -27,6 +27,27 @@ rejected transaction or a misleading display, not a key or fund compromise). If 
 for your threat model, point the wallet at your own node (`http://127.0.0.1:8789`) instead of
 the public proxy.
 
+### Sending to a `.csd` name
+
+When you send to a `.csd` name (e.g. `alice.csd`), the wallet asks the configured CairnX name
+service to resolve it to a `0x…` address. **The wallet has no light client yet, so it cannot
+verify that mapping against the chain** — a compromised or intercepted (MITM) name service could
+return an attacker's address. To mitigate this until the light client ships (see
+`SECURITY-ROADMAP.md`), a named send:
+
+* shows the **full, untruncated resolved address** as the recipient you confirm — never just the
+  name — with an explicit caution that **a malicious server could substitute it**, so the address
+  is what you verify, not the name; and
+* **re-resolves the name at confirm time and refuses to sign** if the address changed between
+  review and confirm.
+
+This stops a server that *re-points* a name mid-flow. It does **not** defend against a server that
+is *consistently* hostile (returns the same attacker address both times) — that requires the
+in-wallet SPV light client, tracked as the real fix in `SECURITY-ROADMAP.md`. Until then, for a
+high-value transfer, verify the resolved address out-of-band (e.g. on the explorer) or paste the
+`0x…` address directly. (As with every send, the wallet still selects its own inputs and returns
+change only to your own address.)
+
 ## dApp boundary
 
 A web page interacts with the wallet only through the injected `window.cairn` provider,

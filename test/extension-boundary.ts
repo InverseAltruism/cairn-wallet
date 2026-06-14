@@ -7,6 +7,7 @@
 // prove they are rejected (not executed), even after the user approves.
 import { sha256 } from "@noble/hashes/sha256"; // (force module init parity w/ background)
 import { readFileSync } from "node:fs";
+import { mkCoin, txReply } from "./_coin.js";
 
 declare const process: { exit(code: number): void };
 declare const setTimeout: (f: () => void, ms: number) => void;
@@ -49,12 +50,13 @@ async function fireAutolock(idleMs: number): Promise<void> { NOW += idleMs; alar
 
 // ── mock the node RPC so an approved `send` actually builds + "submits" a tx we can
 //    inspect (one confirmed UTXO worth 10 CSD; /tx/submit captures the tx). ──
-const MOCK_UTXO = { txid: "0x" + "aa".repeat(32), vout: 0, value: 1_000_000_000, confirmations: 10, coinbase: false };
+const MC = mkCoin(1_000_000_000, 0, { coinbase: false }); const MOCK_UTXO = MC.coin;
 let lastSubmit: any = null;
 let submitN = 0;
 (globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
   if (u.includes("/utxos/")) return { ok: true, json: async () => ({ ok: true, confirmed_balance: MOCK_UTXO.value, utxos: [MOCK_UTXO] }) };
+  const tr = txReply(u, [MC]); if (tr) return tr;
   // unique txid per submit — the wallet's history is (correctly) idempotent by txid,
   // so a fixed mock txid would silently drop later records and mask real behavior.
   if (u.includes("/tx/submit")) { lastSubmit = JSON.parse(init.body); const id = "0x" + (submitN++).toString(16).padStart(64, "5"); return { ok: true, json: async () => ({ ok: true, txid: id }) }; }

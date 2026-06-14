@@ -7,13 +7,14 @@ import { memoryStore } from "../src/core/storage.js";
 import { seal, open, sealNew } from "../src/core/keystore.js";
 import { fromPriv } from "../src/core/account.js";
 import { readFileSync } from "node:fs";
+import { mkCoin, txReply } from "./_coin.js";
 
 declare const process: { exit(code: number): void };
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean) => { c ? (pass++, console.log("  ✅ " + n)) : (fail++, console.log("  ❌ " + n)); };
 const PW = "correct horse battery staple";
 const RCPT = "0x" + "cc".repeat(20);
-const COIN = { txid: "0x" + "aa".repeat(32), vout: 0, value: 100e8, confirmations: 5 };
+const CM = mkCoin(100e8); const COIN = CM.coin;
 const j = (o: any) => ({ ok: true, status: 200, json: async () => o });
 
 let lastSubmit: any = null;
@@ -21,6 +22,7 @@ const stub = () => { let n = 0; return async (url: any, init?: any) => {
   const u = String(url);
   if (u.includes("/tip")) return j({ height: 21000 });
   if (u.includes("/utxos/")) return j({ confirmed_balance: 100e8, utxos: [COIN] });
+  const tr = txReply(u, [CM]); if (tr) return tr;
   if (u.includes("/tx/submit")) { n++; lastSubmit = JSON.parse(init.body).tx; return j({ ok: true, txid: "0x" + String(n).padStart(64, "0") }); }
   if (u.includes("/proposal/")) return j({ payload_hash: [1, 2, 3] });
   if (u.includes("/api/content")) return j({ ok: true });
