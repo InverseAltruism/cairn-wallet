@@ -27,8 +27,21 @@ async function deriveKey(password: string, salt: Uint8Array, iter: number): Prom
   const base = await SUBTLE.importKey("raw", bs(utf8ToBytes(password)), "PBKDF2", false, ["deriveKey"]);
   return SUBTLE.deriveKey(
     { name: "PBKDF2", salt: bs(salt), iterations: iter, hash: "SHA-256" },
-    base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"],
+    // extractable:true so the unlocked key can be raw-exported into chrome.storage.session
+    // (in-RAM, extension-only, cleared on lock / idle / browser close) and re-imported after an
+    // MV3 service-worker restart — otherwise every SW idle-kill would force a fresh password.
+    // The raw key never touches disk; the at-rest vault stays AES-GCM encrypted.
+    base, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"],
   );
+}
+
+// Raw-export / re-import the derived AES-GCM key for the session-persist path (above). Round-trips
+// the 32 key bytes as hex through chrome.storage.session only.
+export async function exportKeyRaw(key: CryptoKey): Promise<string> {
+  return bytesToHex(new Uint8Array(await SUBTLE.exportKey("raw", key)));
+}
+export async function importKeyRaw(hex: string): Promise<CryptoKey> {
+  return SUBTLE.importKey("raw", bs(hexToBytes(hex)), { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
 }
 
 // Derive the AES-GCM key from a password + the vault's own salt. The wallet holds

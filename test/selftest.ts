@@ -342,6 +342,30 @@ async function main() {
   const kv = await seal(a.privkey, "super-secret-pw");
   check("vault records 600k PBKDF2 iterations", kv.iter === 600_000);
 
+  // (k) session persistence — survive an MV3 service-worker idle-kill WITHOUT re-prompting for the
+  //     password. A second Wallet over the SAME local+session stores simulates the restarted SW.
+  {
+    const local = memoryStore(), session = memoryStore();
+    const w1 = new Wallet(local, session); w1.idleMs = 60_000;
+    await w1.create("super-secret-pw");
+    check("session: freshly created wallet is unlocked", (await w1.status()).unlocked === true);
+    const w2 = new Wallet(local, session); w2.idleMs = 60_000; await w2.init();
+    check("session: a restarted SW rehydrates UNLOCKED with no password", (await w2.status()).unlocked === true);
+    check("session: rehydrated wallet exposes the active address", /^0x[0-9a-f]{40}$/.test((await w2.status()).addr || ""));
+    w2.lock();
+    const w3 = new Wallet(local, session); w3.idleMs = 60_000; await w3.init();
+    check("session: lock() clears the session key (restart stays LOCKED)", (await w3.status()).unlocked === false);
+  }
+  {
+    // a session older than idleMs must NOT rehydrate (idle auto-lock survives SW restarts)
+    const local = memoryStore(), session = memoryStore();
+    const w1 = new Wallet(local, session); w1.idleMs = 60_000; await w1.create("super-secret-pw");
+    await session.set("sessionTs", Date.now() - 10 * 60_000); // last activity 10 min ago
+    const w2 = new Wallet(local, session); w2.idleMs = 60_000; await w2.init();
+    check("session: an idle-expired session does NOT rehydrate (stays locked)", (await w2.status()).unlocked === false);
+    check("session: idle-expired session is cleared", (await session.get("session")) === null);
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

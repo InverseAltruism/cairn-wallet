@@ -27,3 +27,18 @@ export const chromeStore = (): Store => {
     async del(k) { await c.storage.local.remove(k); },
   };
 };
+
+// chrome.storage.session adapter (extension): IN-MEMORY, never written to disk, cleared when the
+// browser closes, and (by default access level TRUSTED_CONTEXTS) unreadable by content scripts /
+// web pages. Used only to survive MV3 service-worker idle-kills without re-prompting for the
+// password. Returns null where session storage is unavailable (older runtime / non-extension host),
+// so the wallet transparently falls back to in-memory-only behaviour.
+export const chromeSessionStore = (): Store | null => {
+  const c: any = (globalThis as any).chrome;
+  if (!c?.storage?.session) return null;
+  return {
+    async get(k) { return (await c.storage.session.get(k))[k] ?? null; },
+    async set(k, v) { await c.storage.session.set({ [k]: v }); },
+    async del(k) { await c.storage.session.remove(k); },
+  };
+};

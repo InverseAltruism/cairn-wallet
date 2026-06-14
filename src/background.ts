@@ -3,10 +3,12 @@
 // script. dApp WRITE/identity requests require the wallet to be unlocked AND an
 // explicit user approval via the popup (pending-request queue).
 import { Wallet } from "./core/wallet.js";
-import { chromeStore } from "./core/storage.js";
+import { chromeStore, chromeSessionStore } from "./core/storage.js";
 
 const chrome: any = (globalThis as any).chrome;
-const wallet = new Wallet(chromeStore());
+// session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
+try { (chrome as any).storage?.session?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }); } catch { /* older runtime */ }
+const wallet = new Wallet(chromeStore(), chromeSessionStore());
 const ready = wallet.init();
 
 // pending dApp approvals: id -> {origin, method, params, resolve}
@@ -245,7 +247,8 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
 // it, so a post made right before the popup closed still gets its content
 // registered once the tx mines (~30-60s) — no more hash-only placeholders.
 ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }));
-const AUTO_LOCK_MS = 15 * 60 * 1000; // wipe the in-memory key after 15 min idle
+const AUTO_LOCK_MS = 15 * 60 * 1000; // wipe the in-memory + session key after 15 min idle
+wallet.idleMs = AUTO_LOCK_MS;        // keep the session-rehydrate window == the auto-lock window
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
   chrome.alarms?.create("cairn-autolock", { periodInMinutes: 1 });

@@ -5,7 +5,7 @@
 // never leaks one account's activity or secrets into another's view.
 // Storage-injected so it runs in the service worker, a dev page, or a test.
 import { generate, fromPriv, newMnemonic, deriveAccount, isValidMnemonic, normalizeMnemonic, type Account } from "./account.js";
-import { sealNew, sealWith, openWith, deriveVaultKey, type Vault } from "./keystore.js";
+import { sealNew, sealWith, openWith, deriveVaultKey, exportKeyRaw, importKeyRaw, type Vault } from "./keystore.js";
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash } from "./csdtx.js";
@@ -56,12 +56,18 @@ export class Wallet {
   rpc = DEFAULT_RPC;
   api = DEFAULT_API;
   tradeApi = DEFAULT_TRADE_API;
-  constructor(private store: Store) {}
+  // Idle window for both auto-lock AND session-rehydrate expiry; background sets it to AUTO_LOCK_MS.
+  idleMs = 15 * 60 * 1000;
+  // `session` is chrome.storage.session (in-RAM) when running as an extension, else null. It lets the
+  // unlocked key survive an MV3 service-worker idle-kill so genuine activity within idleMs doesn't
+  // keep re-prompting for the password. null ⇒ in-memory-only (the old behaviour).
+  constructor(private store: Store, private session: Store | null = null) {}
 
   async init(): Promise<void> {
     this.rpc = (await this.store.get("rpc")) || DEFAULT_RPC;
     this.api = (await this.store.get("api")) || DEFAULT_API;
     this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
+    await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
   async setRpc(u: string) { this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { this.api = u; await this.store.set("api", u); }
@@ -102,6 +108,8 @@ export class Wallet {
     const { vault, key } = await sealNew(JSON.stringify(doc), password);
     this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter;
     await this.persistVault();
+    this.touch();
+    await this.persistSession(); // a freshly created/restored wallet is unlocked → persist the session
   }
 
   // ── vault lifecycle ────────────────────────────────────────────────────────
@@ -144,6 +152,16 @@ export class Wallet {
     const key = await deriveVaultKey(password, v.salt, v.iter);
     const doc = await openWith(v, key); // throws "bad password" on mismatch (GCM tag)
     this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
+    await this.applyDoc(doc);
+    await this.persistVault();
+    this.touch();
+    await this.persistSession(); // remember the unlocked key in chrome.storage.session (in-RAM)
+    return { addr: this.accts![this.active].addr };
+  }
+
+  // Populate the in-memory unlocked state from a decrypted vault doc (multi-account v2 or a legacy
+  // raw-key vault). Shared by unlock() and rehydrateSession().
+  private async applyDoc(doc: string): Promise<void> {
     let parsed: VaultDoc | null = null;
     try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy */ }
     if (parsed) {
@@ -161,9 +179,44 @@ export class Wallet {
       this.mnemonic = null; this.nextIndex = 0; this.accts = [a]; this.active = 0;
       await this.migrateLegacy(a.addr);
     }
-    await this.persistVault();
-    this.touch();
-    return { addr: this.accts[this.active].addr };
+  }
+
+  // ── session persistence (survive MV3 service-worker idle-kills without re-prompting) ──
+  // Persist the unlocked AES key (raw) + KDF params to chrome.storage.session (in-RAM, extension-
+  // only, cleared on browser close). The at-rest vault stays AES-GCM encrypted in local storage; the
+  // session only holds the decryption key, and only until lock / idle-expiry / browser close.
+  private async persistSession(): Promise<void> {
+    if (!this.session || !this.vaultKey) return;
+    try {
+      const keyRaw = await exportKeyRaw(this.vaultKey);
+      await this.session.set("session", { keyRaw, salt: this.salt, iter: this.iter });
+      await this.session.set("sessionTs", this.lastActive);
+    } catch { /* session unavailable → in-memory-only; SW death will re-prompt (still correct) */ }
+  }
+
+  // Re-open the unlocked state after a service-worker restart, IF a session key exists and the last
+  // activity is within idleMs. Fail-closed: any error / expiry leaves the wallet locked.
+  private async rehydrateSession(): Promise<boolean> {
+    if (this.accts || !this.session) return false;
+    let s: any, ts: number | null;
+    try { s = await this.session.get("session"); ts = await this.session.get("sessionTs"); } catch { return false; }
+    if (!s?.keyRaw) return false;
+    if (Date.now() - Number(ts ?? 0) > this.idleMs) { await this.clearSession(); return false; }
+    const v: Vault | null = await this.store.get("vault");
+    if (!v) { await this.clearSession(); return false; }
+    try {
+      const key = await importKeyRaw(s.keyRaw);
+      const doc = await openWith(v, key);            // re-decrypt the at-rest vault with the session key
+      this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
+      await this.applyDoc(doc);
+      this.lastActive = Number(ts ?? Date.now());
+      return true;
+    } catch { this.lock(); return false; }            // bad/forged session → stay locked + clear
+  }
+
+  private async clearSession(): Promise<void> {
+    if (!this.session) return;
+    try { await this.session.del("session"); await this.session.del("sessionTs"); } catch { /* best-effort */ }
   }
 
   private async migrateLegacy(addr: string) {
@@ -174,7 +227,10 @@ export class Wallet {
     await this.store.del("addr"); // legacy single-address key
   }
 
-  lock(): void { this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; this.mnemonic = null; this.nextIndex = 0; }
+  lock(): void {
+    this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; this.mnemonic = null; this.nextIndex = 0;
+    void this.clearSession(); // wipe the in-RAM session key too (fire-and-forget)
+  }
 
   // ── account management (require unlocked) ──────────────────────────────────
   private mustUnlocked(): Acct[] { if (!this.accts || !this.vaultKey) throw new Error("locked"); return this.accts; }
@@ -398,7 +454,12 @@ export class Wallet {
 
   // ── idle auto-lock ───────────────────────────────────────────────────────
   private lastActive = Date.now();
-  touch() { this.lastActive = Date.now(); }
+  touch() {
+    this.lastActive = Date.now();
+    // mirror the activity stamp into chrome.storage.session so the idle window is tracked across
+    // SW restarts (genuine activity extends the unlocked session; pure reads never call touch()).
+    if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => {});
+  }
   autoLock(maxIdleMs: number) { if (this.accts && Date.now() - this.lastActive > maxIdleMs) this.lock(); }
 
   // ── durable off-chain content registration (account-agnostic) ──────────────

@@ -196,9 +196,9 @@ function leaseLabel(n: any): string {
   if (n?.lapsed) return "lapsed";
   if (!n?.leased) return "";
   if (n.inGrace) return "in grace · renew now";
-  const e = Number(n.epochsLeft ?? 0);
+  const e = Number(n.epochsLeft ?? 0);   // epochs ≈ hours; 720 ≈ 1 month, 8760 ≈ 1 year
   if (e <= 0) return "expiring";
-  return "expires " + (e < 48 ? `~${e}h` : e < 1440 ? `~${Math.round(e / 24)}d` : `~${Math.round(e / 720)}mo`);
+  return "expires " + (e < 48 ? `~${e}h` : e < 1440 ? `~${Math.round(e / 24)}d` : e < 8760 ? `~${Math.round(e / 720)}mo` : `~${(e / 8760).toFixed(1)}y`);
 }
 function tradeNameUrl(name: string): string {
   const base = (siteApi || "https://cairn-substrate.com").replace(/\/$/, "");
