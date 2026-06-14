@@ -234,6 +234,25 @@ async function main() {
     // null-vs-absent: taker:null is NOT schema-valid → RAW
     const nullTaker = { give: { ticker: "CAIRN", amount: "5" }, t: "offer", taker: null, v: 1, want: { value: "9" } };
     check("taker:null → RAW (null is not absent)", decodeCairnxRecord(canonicalJson(nullTaker), cairnxPayloadHash(nullTaker)) === null);
+
+    // F2 mirror (well-formedness): a lone/unpaired UTF-16 surrogate has NO valid UTF-8 form, so its
+    // canonical encoding is undefinable across languages — the resolver no-ops it. The trap: it PASSES
+    // the canonical+hash gate (the uri is pure-ASCII `\uXXXX`), so without a dedicated check the wallet
+    // would render a structured action the resolver will silently ignore. Must show RAW.
+    {
+      const LS = "\uD800"; // lone high surrogate
+      // a) lone surrogate in a VALUE (transfer memo) — otherwise schema-valid
+      const surMemo = { amount: "1", memo: "x" + LS, t: "transfer", ticker: "CAIRN", to: "0x" + "ab".repeat(20), v: 1 };
+      const surMemoUri = canonicalJson(surMemo);
+      check("lone surrogate survives the canonical gate (the trap)", surMemoUri.includes("\\ud800"));
+      check("lone-surrogate memo → RAW (F2 mirror — resolver would no-op it)", decodeCairnxRecord(surMemoUri, cairnxPayloadHash(surMemo)) === null);
+      // b) lone surrogate in a NESTED value (deploy name)
+      const surName = { decimals: 0, mint: "issuer", name: "Bad" + LS, supply: "100", t: "deploy", ticker: "BAD", v: 1 };
+      check("lone-surrogate token name → RAW", decodeCairnxRecord(canonicalJson(surName), cairnxPayloadHash(surName)) === null);
+      // c) a well-formed non-BMP char (paired surrogates, e.g. an emoji) is FINE — not over-rejected
+      const okEmoji = { amount: "1", memo: "gift 🪙", t: "transfer", ticker: "CAIRN", to: "0x" + "ab".repeat(20), v: 1 };
+      check("paired surrogate (emoji memo) still decodes (no over-rejection)", decodeCairnxRecord(canonicalJson(okEmoji), cairnxPayloadHash(okEmoji)) !== null);
+    }
   }
 
   {

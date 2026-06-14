@@ -28,6 +28,13 @@ async function render() {
   // wipe the async-filled balance-after AND the security warning — so we don't.
   if (renderedId === current.id) return;
   renderedId = current.id;
+  // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
+  // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
+  // before building the request HTML (not per ~1.2s tick — this block runs once per new request).
+  // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
+  if (current.method === "propose" && (current.params || {}).expiresEpoch !== undefined) {
+    try { const e = await call("epoch"); if (e != null) current.currentEpoch = e; } catch { /* offline */ }
+  }
   const acct = (st.accounts || [])[st.active || 0];
   const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
   const queued = pend.length > 1 ? `<div class="req dim">request 1 of ${pend.length} — review each separately</div>` : "";

@@ -23,10 +23,6 @@ const consentStore = chromeStore();
 const CONSENT_KEY = "connectedOrigins";
 type ConsentMap = Record<string, { addr: string; ts: number }>;
 async function getConsents(): Promise<ConsentMap> { return (await consentStore.get(CONSENT_KEY)) || {}; }
-async function isConsented(origin: string): Promise<boolean> {
-  if (!origin || origin === "unknown") return false;
-  return !!(await getConsents())[origin];
-}
 async function recordConsent(origin: string, addr: string): Promise<void> {
   if (!origin || origin === "unknown") return;
   const c = await getConsents();
@@ -59,6 +55,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "renameAccount": return wallet.renameAccount(args[0], args[1]);
     case "removeAccount": return wallet.removeAccount(args[0]);
     case "balance": return wallet.balance();
+    case "epoch": return wallet.epoch();
     case "propose": return wallet.propose(args[0]);
     case "attest": return wallet.attest(args[0]);
     case "send": return wallet.send(args[0], args[1], args[2]);
@@ -145,6 +142,14 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
 // — so an arbitrary attacker-chosen `method` string can never be rendered or queued.
 const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
 
+// Pure READ / poll methods that must NOT reset the idle auto-lock. The approval window
+// polls status+pending every ~1.2s (approve.ts), so if these refreshed lastActive a
+// connected site could keep ≥1 request queued and hold the wallet unlocked forever,
+// defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
+// still touch(). The DENY-list is intentionally conservative — anything NOT listed here
+// (i.e. any write/sign/settings method) keeps extending the unlock as before.
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "rpcList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName"]);
+
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
 
@@ -186,17 +191,36 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
       // UI). dApp/page-relayed messages must NOT extend the unlock — otherwise a malicious
       // allowed-origin page could ping every minute (even with a rejected method) to keep
       // the wallet unlocked forever, defeating the 15-min auto-lock.
-      if (msg?.kind === "popup") { wallet.touch(); sendResponse({ ok: true, result: await runPopupMethod(msg.method, msg.args ?? []) }); return; }
+      if (msg?.kind === "popup") {
+        // Defense-in-depth sender check: popup-kind messages run privileged methods (unlock / export /
+        // settings / account mgmt). Today isolation rests SOLELY on the manifest having no external
+        // message surface (so no external listener fires + websites can't reach this one). Assert it
+        // positively too: only the extension's OWN popup/extension pages may send `popup` messages —
+        // they share our runtime id and have NO tab (a content script, by contrast, always carries
+        // sender.tab). Zero behavioral change for the real popup; a content-script/page forgery is
+        // rejected. A build/CI tripwire (test/extension-boundary.ts) keeps the no-external-surface
+        // invariant from regressing.
+        if (sender?.id !== chrome.runtime.id || sender?.tab) { sendResponse({ ok: false, error: "forbidden" }); return; }
+        // Reset the idle auto-lock ONLY on genuine USER ACTIVITY — never on a pure read/poll. The
+        // approval window status/pending-polls every ~1.2s; if those kept the wallet alive, a site
+        // that always keeps ≥1 request queued would never let the 15-min idle lock fire (WL-1/R19).
+        if (!READ_ONLY_METHODS.has(msg.method)) wallet.touch();
+        sendResponse({ ok: true, result: await runPopupMethod(msg.method, msg.args ?? []) }); return;
+      }
       if (msg?.kind === "dapp") {
         const origin = sender?.origin || sender?.url || "unknown";
         // Fast-path for ALREADY-CONNECTED origins: connect/getAddress may resolve the
         // address WITHOUT a fresh prompt — but ONLY when (a) the method is exactly
-        // connect/getAddress (address visibility), (b) the wallet is UNLOCKED, and
-        // (c) the origin was previously consented. This is the sole "silent" path.
-        // Every signing method falls through to queueDappRequest → approval window.
+        // connect/getAddress (address visibility), (b) the wallet is UNLOCKED, (c) the
+        // origin was previously consented, AND (d) the currently-active address is the
+        // SAME one the user consented to share. If the user has since switched accounts
+        // (F11), the active addr differs from the stored consent addr — so we fall through
+        // to a fresh approval prompt rather than silently leak the NEW (unconsented) address.
+        // This is the sole "silent" path; every signing method always queues + prompts.
         if (msg.method === "connect" || msg.method === "getAddress") {
           const st = await wallet.status();
-          if (st.unlocked && (await isConsented(origin))) {
+          const consentAddr = (await getConsents())[origin]?.addr;
+          if (st.unlocked && consentAddr && st.addr && consentAddr.toLowerCase() === String(st.addr).toLowerCase()) {
             sendResponse({ ok: true, result: { addr: st.addr } });
             return;
           }

@@ -36,6 +36,40 @@ export function cairnxPayloadHash(record: unknown): string {
   return "0x" + bytesToHex(sha256(utf8ToBytes(canonicalJson(record))));
 }
 
+// True iff a JS string is well-formed UTF-16 (no lone/unpaired surrogate). A lone surrogate has NO
+// valid UTF-8 encoding, so its canonical form is UNDEFINABLE across languages: V8 escapes it to ASCII
+// `\uXXXX` and accepts, while a raw-UTF-8 resolver (Rust/Python/Go) rejects/mangles it — a consensus
+// fork on identical chain bytes. The resolver treats such records as no-ops; mirror that here so the
+// wallet never renders a structured action the resolver will ignore. Native primitive where present
+// (Node ≥20 / modern V8), manual surrogate scan otherwise. Mirrors cairnx-core records.ts.
+function strWellFormed(s: string): boolean {
+  const wf = (String.prototype as { isWellFormed?: (this: string) => boolean }).isWellFormed;
+  if (typeof wf === "function") return wf.call(s);
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {                 // high surrogate: must be followed by a low one
+      const n = s.charCodeAt(i + 1);
+      if (!(n >= 0xdc00 && n <= 0xdfff)) return false;
+      i++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {          // lone low surrogate
+      return false;
+    }
+  }
+  return true;
+}
+/** Recursively reject any non-well-formed UTF-16 string anywhere in a decoded record (keys + values). */
+function isWellFormedDeep(v: unknown): boolean {
+  if (typeof v === "string") return strWellFormed(v);
+  if (Array.isArray(v)) return v.every(isWellFormedDeep);
+  if (v && typeof v === "object") {
+    for (const [k, val] of Object.entries(v)) {
+      if (!strWellFormed(k)) return false;
+      if (!isWellFormedDeep(val)) return false;
+    }
+  }
+  return true;
+}
+
 const parseAmount = (s: unknown, allowZero = false): bigint | null => {
   if (typeof s !== "string" || !AMOUNT_RE.test(s)) return null;
   const v = BigInt(s);
@@ -153,6 +187,11 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
     // mismatch) can never execute, so it must show RAW, not a convincing structured render
     if (typeof payloadHashHex !== "string" || cairnxPayloadHash(obj).toLowerCase() !== payloadHashHex.toLowerCase()) return null;
   } catch { return null; }
+  // Determinism gate (mirrors the resolver): a record carrying any non-well-formed UTF-16 string
+  // (lone surrogate) is canonically undefinable across languages → an invalid no-op everywhere. Show
+  // it RAW, never a structured render. Runs AFTER the canonical gate (the uri is pure-ASCII `\uXXXX`;
+  // the surrogate only exists in the parsed obj).
+  if (!isWellFormedDeep(obj)) return null;
   const r = obj as Record<string, unknown>;
   if (r.v !== 1 || typeof r.t !== "string") return null;
   switch (r.t) {

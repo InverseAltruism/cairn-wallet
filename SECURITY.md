@@ -41,7 +41,10 @@ sealed claims, and **send** (a plain CSD transfer).
 the first time an origin connects the user approves it, and the origin is recorded as a
 connected site (listed and revocable in Settings → wiped on reset). After that, that origin
 may read the address without a fresh prompt. This is the **only** silent path, and only when
-the wallet is unlocked. **Every signing / fund-moving action — signin, send, propose, attest,
+the wallet is unlocked **and the currently-active address is the SAME one the user consented to
+share** (F11): consent is recorded against a specific address, so if the user has since switched
+accounts, the silent path falls through to a fresh approval prompt rather than disclose the new,
+unconsented address. **Every signing / fund-moving action — signin, send, propose, attest,
 sealClaim, revealClaim — ALWAYS opens the clear-signing approval window, every time,
 regardless of connection state.** Being connected never pre-approves a signature (enforced by
 the fast-path guard in `background.ts` + the positive whitelist in `resolvePending`; proven by

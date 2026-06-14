@@ -32,6 +32,32 @@ export function feeLine(raw: number, fallback = 0): string {
   return `fee: ${fee / 1e8} CSD${warn}`;
 }
 
+// A propose's dApp-supplied `expiresEpoch` IS signed (csdtx.ts u64) but was never shown — a site could
+// commit a record that stays claimable for years past what the user expects. Render it humanized: an
+// epoch = 30 blocks ≈ 60 min, so 24 epochs ≈ 1 day. When the current epoch is known (approve.ts fills
+// it from the node tip) we show the remaining window from NOW and WARN past a year-plus horizon
+// (mirrors the FEE_WARN pattern); otherwise we show the raw epoch alone (the exact signed value).
+const EXPIRY_WARN_EPOCHS = 100000; // epochs past current ≈ >11 years — unusually long for a propose
+function humanEpochs(epochs: number): string {
+  const days = epochs * 30 * 120 / 86400; // 30 blocks/epoch · 120s/block / 86400s/day = epochs/24
+  if (days < 1) return `~${Math.max(1, Math.round(days * 24))} h`;
+  if (days < 365) return `~${Math.round(days)} day(s)`;
+  return `~${(days / 365).toFixed(1)} year(s)`;
+}
+export function expiryLine(expiresEpoch: unknown, currentEpoch?: unknown): string {
+  if (expiresEpoch === undefined || expiresEpoch === null) return "";
+  const e = Number(expiresEpoch);
+  if (!Number.isFinite(e) || !Number.isInteger(e) || e < 0) return `expires: <span class="err">invalid epoch</span>`;
+  const cur = Number(currentEpoch);
+  if (Number.isFinite(cur) && Number.isInteger(cur) && cur >= 0) {
+    const left = e - cur;
+    const warn = left > EXPIRY_WARN_EPOCHS ? ` <span class="err">⚠ unusually long claim window</span>` : "";
+    if (left <= 0) return `expires: epoch ${e} <span class="err">(already past — this record would be a no-op)</span>`;
+    return `expires: epoch ${e} (in ${humanEpochs(left)}, current epoch ${cur})${warn}`;
+  }
+  return `expires: epoch ${e}`;
+}
+
 // ── CairnX clear-signing: structured rendering of cairnx:v1 records ──────────
 // A cairnx propose's `uri` IS the action (token transfer, offer, name claim…). Showing it
 // as a raw JSON blob makes users rubber-stamp; decode it and show the fields instead —
@@ -114,13 +140,15 @@ export function describe(r: any): string {
     // cairnx:v1 proposes are ACTIONS (token transfer / offer / name claim…): decode the
     // record and clear-sign its fields instead of a raw JSON blob. Falls through to the
     // raw uri for anything that doesn't decode (which the resolver would no-op anyway).
+    // The dApp-supplied expiry is part of the signed bytes — surface it humanized in BOTH branches.
+    const exp = p.expiresEpoch !== undefined ? `<br>${expiryLine(p.expiresEpoch, r.currentEpoch)}` : "";
     if (String(p.domain) === CAIRNX_DOMAIN) {
       const cx = cairnxDescribe(p.uri, p.payloadHash);
       if (cx) return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, 1000000)}`
-        + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code>${xfer}`;
+        + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code>${exp}${xfer}`;
     }
     return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee, 1000000)}`
-      + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>${xfer}`;
+      + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>${exp}${xfer}`;
   }
   // score/confidence are serialized as u32 (>>>0); display the SAME value that will be
   // signed so a negative/oversized input can't show one thing and commit another.

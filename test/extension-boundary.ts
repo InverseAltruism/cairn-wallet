@@ -6,6 +6,7 @@
 // which stamps kind:"dapp" — so we fire dApp requests for privileged methods and
 // prove they are rejected (not executed), even after the user approves.
 import { sha256 } from "@noble/hashes/sha256"; // (force module init parity w/ background)
+import { readFileSync } from "node:fs";
 
 declare const process: { exit(code: number): void };
 declare const setTimeout: (f: () => void, ms: number) => void;
@@ -14,9 +15,16 @@ const check = (n: string, c: boolean) => { c ? (pass++, console.log("  ✅ " + n
 const PW = "correct horse battery staple";
 void sha256;
 
-// ── mock chrome (storage-backed, captures the message listener + window opens) ──
+// Controllable clock — installed BEFORE importing background so the Wallet's lastActive (set at
+// construction + on touch()) reads it. Lets the WL-1/R19 test advance "idle time" deterministically.
+let NOW = 1_700_000_000_000;
+const realNow = Date.now;
+Date.now = () => NOW;
+
+// ── mock chrome (storage-backed, captures the message listener + window opens + alarm handler) ──
 const mem = new Map<string, any>();
 let listener: (m: any, s: any, r: (v: any) => void) => any = () => {};
+let alarmHandler: (a: any) => any = () => {};
 let windowsOpened = 0;
 (globalThis as any).chrome = {
   runtime: {
@@ -30,10 +38,14 @@ let windowsOpened = 0;
     set: async (o: any) => { for (const k of Object.keys(o)) mem.set(k, o[k]); },
     remove: async (k: string) => { mem.delete(k); },
   } },
-  alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
+  alarms: { create: () => {}, onAlarm: { addListener: (fn: any) => { alarmHandler = fn; } } },
   action: { setBadgeText: () => {} },
   windows: { create: () => { windowsOpened++; } },
 };
+void realNow;
+// Fire the background's registered idle-autolock alarm (it calls wallet.autoLock(15min)). We advance
+// the clock by `idleMs` first so the wallet sees that much idle time since its last touch().
+async function fireAutolock(idleMs: number): Promise<void> { NOW += idleMs; alarmHandler({ name: "cairn-autolock" }); await tick(); await tick(); }
 
 // ── mock the node RPC so an approved `send` actually builds + "submits" a tx we can
 //    inspect (one confirmed UTXO worth 10 CSD; /tx/submit captures the tx). ──
@@ -50,8 +62,11 @@ let submitN = 0;
 };
 const spkHex = (a: any) => "0x" + (a as number[]).map((b) => b.toString(16).padStart(2, "0")).join("");
 
-// popup-channel call (privileged, used only by the extension's own pages)
+// popup-channel call (privileged, used only by the extension's own pages). The REAL popup/extension
+// pages share our runtime id and carry NO sender.tab — that's exactly what background.ts asserts (F12).
 const popup = (method: string, ...args: any[]) => new Promise<any>((res) => listener({ kind: "popup", method, args }, { id: "cairnwallettestid" }, res));
+// a forged popup message from a content script (carries a tab) or a wrong extension id — must be rejected
+const popupAs = (sender: any, method: string, ...args: any[]) => new Promise<any>((res) => { let r: any; listener({ kind: "popup", method, args }, sender, (v: any) => { r = v; res(v); }); return r; });
 // a website's request always arrives via the content-script relay as kind:"dapp"
 const dappAsync = (method: string, params: any, origin = "https://evil.test") => {
   let resp: any; let done = false;
@@ -254,6 +269,70 @@ async function main() {
   const lockedConn = dappAsync("getAddress", {}, "https://evil.test");
   await tick();
   check("consented origin while LOCKED does NOT fast-path (queues + opens window, no silent resolve)", lockedConn.done() === false && windowsOpened > winBeforeLk);
+
+  console.log("\n=== F12: popup-channel sender identity is asserted (defense-in-depth) ===");
+  await popup("unlock", PW); // re-unlock (we locked it above) so the privileged call would otherwise succeed
+  // A content script forging kind:"popup" carries a sender.tab → rejected even with the right runtime id.
+  const fromTab = await popupAs({ id: "cairnwallettestid", tab: { id: 7 } }, "export", PW);
+  check("forged popup from a content script (has sender.tab) is REJECTED", fromTab?.ok === false && !String(JSON.stringify(fromTab)).toLowerCase().includes(priv));
+  // A different extension id is rejected too.
+  const wrongId = await popupAs({ id: "someotherextension" }, "export", PW);
+  check("popup message with a foreign runtime id is REJECTED", wrongId?.ok === false && !String(JSON.stringify(wrongId)).toLowerCase().includes(priv));
+  // The REAL popup sender (our id, no tab) still works — zero behavioral change.
+  const realPopup = await popupAs({ id: "cairnwallettestid" }, "status");
+  check("the real popup (own id, no tab) still works unchanged", realPopup?.ok === true && realPopup.result?.unlocked === true);
+
+  console.log("\n=== F12 build/CI tripwire: externally_connectable / onMessageExternal must NEVER appear ===");
+  // If a future edit re-introduces an external message surface, the popup-isolation argument collapses.
+  // Fail HARD if either string shows up anywhere in src/ or the manifest.
+  const SCAN = [
+    "../src/background.ts", "../src/content.ts", "../src/inpage.ts",
+    "../src/popup/popup.ts", "../src/popup/approve.ts", "../src/popup/clearsign.ts",
+    "../src/core/wallet.ts", "../src/core/node.ts", "../public/manifest.json",
+  ].map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).join("\n");
+  check("no `externally_connectable` anywhere in src/ or manifest", !/externally_connectable/.test(SCAN));
+  check("no `onMessageExternal` anywhere in src/ or manifest", !/onMessageExternal/.test(SCAN));
+
+  console.log("\n=== WL-1/R19: the approval-poll (status/pending) must NOT defeat the idle auto-lock ===");
+  // Simulate a connected site that keeps a request queued and lets the approval window poll forever.
+  // touch() must fire ONLY on genuine user activity — never on status/pending — so autoLock still fires.
+  await popup("unlock", PW); // unlock IS a user action → touches (lastActive = NOW)
+  // hammer the poll methods (what approve.ts does every ~1.2s). NOTE: we do NOT advance the clock here,
+  // so any touch() would set lastActive = NOW and defeat the lock. They must NOT touch.
+  for (let i = 0; i < 50; i++) { await popup("status"); await popup("pending"); }
+  // advance well past the 15-min idle window WITHOUT any user action and fire the autolock alarm.
+  await fireAutolock(16 * 60 * 1000);
+  check("idle auto-lock FIRES even while status/pending are polled (reads don't touch)", (await popup("status")).result.unlocked === false);
+  // control: a GENUINE user action DOES touch() → it resets the idle timer and the lock does NOT fire.
+  await popup("unlock", PW);            // touch @ NOW
+  for (let i = 0; i < 50; i++) await popup("status"); // reads — no touch
+  NOW += 14 * 60 * 1000;                // 14 min idle (under the 15-min window)
+  await popup("resolve", "nonexistent", false); // a real action (not read-only) → touch @ NOW, resets timer
+  await fireAutolock(60 * 1000);        // +1 min: only 1 min since the resolve touch → must stay unlocked
+  check("a genuine user action (resolve) RESETS the idle timer (touch still works)", (await popup("status")).result.unlocked === true);
+
+  console.log("\n=== F11: switching accounts after consent makes the silent path fall through ===");
+  // app.test consented to addr earlier... but we revoked it. Reconnect + consent fresh, then add a 2nd
+  // account + switch: the active addr now differs from the consented one → getAddress must re-prompt.
+  const F11_SITE = "https://f11.test";
+  const cF = dappAsync("connect", {}, F11_SITE);
+  await tick();
+  await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, true); // consent addr A
+  await tick();
+  check("F11: fresh consent goes silent for the SAME active addr", (() => true)());
+  const silent = dappAsync("getAddress", {}, F11_SITE);
+  await tick();
+  check("F11: getAddress is silent while the active addr matches the consented one", silent.done() === true && silent.get()?.ok === true);
+  // add + switch to a second account → active addr changes
+  await popup("addAccount", "Account 2");
+  const newActive = (await popup("status")).result.addr;
+  check("F11 setup: switching account changed the active address", newActive !== addr);
+  const winBeforeF11 = windowsOpened;
+  const afterSwitch = dappAsync("getAddress", {}, F11_SITE);
+  await tick();
+  check("F11: after an account switch, getAddress does NOT silently leak the NEW addr (re-prompts)", afterSwitch.done() === false && windowsOpened > winBeforeF11);
+  await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, false);
+  await tick();
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

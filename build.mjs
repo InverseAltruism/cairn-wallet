@@ -2,7 +2,19 @@
 // incl. @noble, is inlined). background + popup are ES modules; content + inpage
 // run as classic scripts (IIFE).
 import * as esbuild from "esbuild";
-import { cpSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
+
+// F12 tripwire: the popup-isolation argument rests on the extension having NO external message
+// surface. Fail the build HARD if anything re-introduces one, so the assertion in background.ts
+// can never quietly become load-bearing-but-false. (Mirrored as a test in extension-boundary.ts.)
+const FORBIDDEN = ["externally" + "_connectable", "onMessage" + "External"]; // split so this guard never self-trips
+for (const dir of ["src", "public"]) {
+  const walk = (p) => { for (const e of readdirSync(p)) { const f = p + "/" + e; if (statSync(f).isDirectory()) walk(f); else {
+    const txt = readFileSync(f, "utf8");
+    for (const bad of FORBIDDEN) if (txt.includes(bad)) { console.error(`✗ build aborted: forbidden external-message surface "${bad}" found in ${f}`); process.exit(1); }
+  } } };
+  walk(dir);
+}
 
 rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist", { recursive: true });

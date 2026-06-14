@@ -1,6 +1,6 @@
 // Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml } from "../src/popup/clearsign.js";
+import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine } from "../src/popup/clearsign.js";
 declare const process: { exit(code: number): void };
 
 let pass = 0, fail = 0;
@@ -75,6 +75,31 @@ ok("describe(normal CSD fill) does NOT show the token warning", !/SPENDS TOKENS/
 ok("costLine(normal CSD fill) does NOT mention token debits", !/tokens debited/i.test(costLine(fo)));
 ok("describe(confidence 999999 ≠ marker) does NOT show the token warning",
   !/SPENDS TOKENS/.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "cc".repeat(32), confidence: 999_999, outputs: [], fee: 1 } })));
+
+// F6 — the dApp-supplied expiresEpoch is part of the SIGNED bytes (csdtx.ts u64) and must be shown
+// in the approval window so a site can't commit a record claimable for years past what the user expects.
+{
+  const EXP = 500000;
+  const raw = describe({ method: "propose", params: { domain: "csd:test", payloadHash: "0x" + "11".repeat(32), uri: "x", fee: 1000000, expiresEpoch: EXP } });
+  ok("describe(propose) RENDERS the signed expiresEpoch (F6 — was silently dropped)", raw.includes("expires") && raw.includes(String(EXP)));
+  const cx = describe({ method: "propose", params: { domain: "cairnx:v1", payloadHash: "0x" + "11".repeat(32), uri: '{"t":"name"}', fee: 25000000, expiresEpoch: EXP } });
+  ok("describe(propose, cairnx branch) ALSO renders the expiry", cx.includes("expires") && cx.includes(String(EXP)));
+  ok("describe(propose, no expiresEpoch) omits the expiry line cleanly", !describe({ method: "propose", params: { domain: "d", fee: 1 } }).includes("expires"));
+
+  // expiryLine: raw epoch alone when the current epoch is unknown (offline)
+  ok("expiryLine shows the raw epoch when current epoch unknown", expiryLine(1234) === "expires: epoch 1234");
+  ok("expiryLine() empty for absent expiry", expiryLine(undefined) === "" && expiryLine(null) === "");
+  ok("expiryLine flags a non-integer/garbage epoch (never 'NaN')", expiryLine("evil").includes("invalid") && !expiryLine("evil").includes("NaN"));
+  // with a known current epoch → humanized remaining window
+  const near = expiryLine(100 + 24, 100); // +24 epochs ≈ 1 day
+  ok("expiryLine humanizes the remaining window from the current epoch", /in ~1 day/.test(near) && near.includes("current epoch 100"));
+  ok("expiryLine WARNs on an unusually long claim window (mirrors FEE_WARN)", /unusually long/.test(expiryLine(100 + 100001, 100)));
+  ok("expiryLine does NOT warn on a normal horizon", !/unusually long/.test(expiryLine(100 + 24, 100)));
+  ok("expiryLine flags an already-past expiry as a no-op", /already past/.test(expiryLine(50, 100)));
+  // the warn flows through describe() when approve.ts supplies r.currentEpoch
+  const warned = describe({ method: "propose", params: { domain: "d", fee: 1, expiresEpoch: 100 + 200000 }, currentEpoch: 100 });
+  ok("describe(propose) surfaces the long-window WARN when current epoch is known", /unusually long/.test(warned));
+}
 
 // Address-poisoning: flag a head8/tail4 twin, but not an unrelated or identical address
 const real = "0xabcd1234" + "0".repeat(28) + "beef";
