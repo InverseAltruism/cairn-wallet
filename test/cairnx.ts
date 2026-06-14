@@ -6,7 +6,7 @@
 // @inversealtruism/cairnx-core builders (the convention's reference implementation),
 // so the wallet's isolated copy is pinned byte-for-byte to the resolver's reality.
 import { buildTransfer, canonicalJson, cairnxPayloadHash, formatUnits, parseUnits, decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE } from "../src/core/cairnx.js";
-import { describe, cairnxDescribe, costLine } from "../src/popup/clearsign.js";
+import { describe, cairnxDescribe, costLine, nameCautionHtml, reresolveUnchanged } from "../src/popup/clearsign.js";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";
@@ -280,6 +280,68 @@ async function main() {
     // fillOffer (the already-tested path) still warns - parity check
     const fill = describe({ method: "fillOffer", params: { proposalId: "0x" + "cd".repeat(32), confidence: 1_000_000, score: 100, fee: 5_000_000, outputs: [] } });
     check("fillOffer + confidence=1e6 still warns (parity)", fill.includes(WARN));
+  }
+
+  {
+    // ── audit XREPO-1: .csd name resolution is server-trusted (the wallet has no light client) ──
+    // The proportionate mitigation: (1) an unmissable "verify the full address — a malicious server
+    // could substitute it" caution on every named send, and (2) a confirm-time re-resolve that REFUSES
+    // if the address changed between review and confirm. (Trustless resolution = the light client; see
+    // SECURITY-ROADMAP. This guard stops a server that RE-POINTS the name mid-flow, the realistic case.)
+    const NAME = "alice";
+    const REVIEWED = "0x" + "22".repeat(20);   // address the user reviewed
+    const ATTACKER = "0x" + "11".repeat(20);   // where a hostile server later re-points the name
+
+    // (1) the name caution is surfaced + names it + tells the user to verify the To address + escapes it
+    const caution = nameCautionHtml(NAME);
+    check("XREPO-1: name caution warns a malicious server could substitute the address",
+      /malicious or intercepted server could substitute/i.test(caution) && /verify the full address/i.test(caution));
+    check("XREPO-1: name caution names the recipient + points at the To row to verify",
+      caution.includes(`${NAME}.csd`) && /<b>To<\/b>/.test(caution));
+    const evilName = nameCautionHtml('a<img src=x onerror=alert(1)>');
+    check("XREPO-1: name caution HTML-escapes the name (no injection)",
+      !evilName.includes("<img") && evilName.includes("&lt;img"));
+
+    // (2) confirm-time guard — the core defense. THE EXPLOIT: server re-points the name to the attacker
+    // between review and confirm → guard must REFUSE (this is the PoC's "redirect funds" turned blocked).
+    check("XREPO-1 EXPLOIT BLOCKED: re-resolve to a DIFFERENT addr is refused (the redirect is caught)",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: ATTACKER }) === false);
+    // honest flow: the name still points where the user reviewed → guard PASSES (send proceeds)
+    check("XREPO-1 HONEST: re-resolve to the SAME addr passes (named send still works)",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED }) === true);
+    check("XREPO-1 HONEST: re-resolve is case-insensitive on the hex (no false refusal)",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED.toUpperCase().replace("0X", "0x") }) === true);
+    // fail-closed on every degraded re-resolution: lapse/error/missing/garbled/network-drop
+    check("XREPO-1 FAIL-CLOSED: re-resolve {ok:false} (lapsed/error) is refused",
+      reresolveUnchanged(REVIEWED, { ok: false }) === false);
+    check("XREPO-1 FAIL-CLOSED: re-resolve with a missing addr is refused",
+      reresolveUnchanged(REVIEWED, { ok: true }) === false);
+    check("XREPO-1 FAIL-CLOSED: re-resolve with a non-string addr is refused",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: 12345 as any }) === false);
+    check("XREPO-1 FAIL-CLOSED: re-resolve null (network drop / thrown call) is refused",
+      reresolveUnchanged(REVIEWED, null) === false);
+
+    // (3) behavioral: drive the REAL wallet.resolveName against a hostile server that re-points the
+    // name on its SECOND read — exactly the mid-flow redirect the confirm-time guard must catch.
+    const origFetch = (globalThis as any).fetch;
+    try {
+      let hits = 0;
+      (globalThis as any).fetch = async (url: any) => {
+        const u = String(url);
+        if (u.includes(`/cairnx/resolve/${NAME}`)) {
+          hits++;
+          const addr = hits === 1 ? REVIEWED : ATTACKER;   // re-point on confirm-time read
+          return { ok: true, status: 200, json: async () => ({ ok: true, name: NAME, addr, via: "nset", owner: addr }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      };
+      const w = new Wallet(memoryStore()); await w.create("pw-xrepo1");
+      const review = await w.resolveName(NAME);              // review-time resolution
+      check("XREPO-1 behavioral: review-time resolveName returns the reviewed addr", review.ok && review.addr === REVIEWED.toLowerCase());
+      const confirm = await w.resolveName(NAME);             // confirm-time re-resolution (server re-points)
+      check("XREPO-1 behavioral: a server that RE-POINTS mid-flow is caught by the confirm guard",
+        reresolveUnchanged(String(review.addr), confirm) === false);
+    } finally { (globalThis as any).fetch = origFetch; }
   }
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);

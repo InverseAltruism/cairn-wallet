@@ -4,6 +4,7 @@
 import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
 import { formatUnits, parseUnits, nameRegFee } from "../core/cairnx.js";
+import { nameCautionHtml, reresolveUnchanged } from "./clearsign.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -284,10 +285,19 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
     // The address comes from the (configurable) name service and is NOT chain-verified by the wallet
-    // (audit XREPO-1) — prompt the user to check the full resolved address shown in the review below.
-    return { ok: true, addr: res.addr, name: nm, label: `${nm}.csd → ${short(res.addr)} (via ${res.via}) — verify the full address below` };
+    // (audit XREPO-1: the extension has no light client — trustless .csd resolution waits on it).
+    // The full resolved address is the unmissable thing the user confirms (the To row + the name
+    // caution banner); this label just identifies the mapping in the review.
+    return { ok: true, addr: res.addr, name: nm, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})` };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
+}
+// XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time and REFUSE unless it still
+// returns EXACTLY the reviewed address. Fail-closed on any error / network failure. The equality +
+// shape check lives in clearsign.reresolveUnchanged (pure, unit-tested); this only wires the live call.
+async function nameStillPointsTo(name: string, reviewed: string): Promise<boolean> {
+  const re = await call("resolveName", name).catch(() => ({ ok: false }));
+  return reresolveUnchanged(reviewed, re);
 }
 function setNameRow(rowId: string, valId: string, label: string | null | undefined) {
   const row = document.getElementById(rowId), v = document.getElementById(valId);
@@ -343,8 +353,11 @@ $("btn-tsend").addEventListener("click", async () => {
   $("tc-amt").textContent = `${formatUnits(base, tsend.decimals)} ${tsend.ticker}`;
   $("tc-fee").textContent = (CAIRNX_FEE / 1e8) + " CSD";
   const warnEl = $("tc-warn") as HTMLElement;
-  if (lookalike) { warnEl.innerHTML = `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
-  else if (firstTime) { warnEl.textContent = "⚠ First time sending to this address — check every character. Transfers are irreversible."; warnEl.hidden = false; }
+  // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
+  const nameCaution = rr.name ? nameCautionHtml(rr.name) : "";
+  if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
+  else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Transfers are irreversible.`; warnEl.hidden = false; }
+  else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
   else warnEl.hidden = true;
   // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
   // (editing the form after "Review" must not let displayed values diverge from signed ones)
@@ -363,10 +376,8 @@ $("btn-tsend-back").addEventListener("click", () => {
 $("btn-tsend-confirm").addEventListener("click", async () => {
   if (!tsend || !reviewed) return;
   const { to, base, name } = reviewed;
-  if (name) {
-    const re = await call("resolveName", name).catch(() => ({ ok: false }));
-    if (!re.ok || String(re.addr).toLowerCase() !== to) return msg(`${name}.csd changed where it points — review again`, "err");
-  }
+  // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1)
+  if (name && !(await nameStillPointsTo(name, to))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
@@ -689,8 +700,12 @@ $("btn-send").addEventListener("click", async () => {
   $("c-fee").textContent = (SEND_FEE / 1e8) + " CSD";
   $("c-after").textContent = after || "—";
   const warnEl = $("c-warn") as HTMLElement;
-  if (lookalike) { warnEl.innerHTML = `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — payments are irreversible.`; warnEl.hidden = false; }
-  else if (firstTime) { warnEl.textContent = "⚠ First time sending to this address — check every character. Payments are irreversible."; warnEl.hidden = false; }
+  // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
+  // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
+  const nameCaution = rr.name ? nameCautionHtml(rr.name) : "";
+  if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — payments are irreversible.`; warnEl.hidden = false; }
+  else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Payments are irreversible.`; warnEl.hidden = false; }
+  else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
   else warnEl.hidden = true;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   reviewedSend = { to, amt, name: rr.name ?? null };
@@ -708,11 +723,8 @@ $("btn-send-back").addEventListener("click", () => {
 $("btn-send-confirm").addEventListener("click", async () => {
   if (!reviewedSend) return;
   const { to, amt, name } = reviewedSend;
-  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else
-  if (name) {
-    const re = await call("resolveName", name).catch(() => ({ ok: false }));
-    if (!re.ok || String(re.addr).toLowerCase() !== to) return msg(`${name}.csd changed where it points — review again`, "err");
-  }
+  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1)
+  if (name && !(await nameStillPointsTo(name, to))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
     if (r.ok) {
