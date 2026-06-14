@@ -195,12 +195,18 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         // Defense-in-depth sender check: popup-kind messages run privileged methods (unlock / export /
         // settings / account mgmt). Today isolation rests SOLELY on the manifest having no external
         // message surface (so no external listener fires + websites can't reach this one). Assert it
-        // positively too: only the extension's OWN popup/extension pages may send `popup` messages —
-        // they share our runtime id and have NO tab (a content script, by contrast, always carries
-        // sender.tab). Zero behavioral change for the real popup; a content-script/page forgery is
-        // rejected. A build/CI tripwire (test/extension-boundary.ts) keeps the no-external-surface
-        // invariant from regressing.
-        if (sender?.id !== chrome.runtime.id || sender?.tab) { sendResponse({ ok: false, error: "forbidden" }); return; }
+        // positively too: only the extension's OWN popup/extension pages may send `popup` messages.
+        // The correct discriminator vs a content-script forgery is the sender's ORIGIN, NOT the
+        // presence of a tab: the approval window is opened with chrome.windows.create({type:"popup"}),
+        // which runs the extension page INSIDE A TAB — so sender.tab IS populated for the legit popup
+        // too. The old `|| sender?.tab` check therefore rejected the real connect/approval flow with
+        // "forbidden" (empty popup). A content script's sender.url is the host web page; an extension
+        // page's sender.url is chrome-extension://<our-id>/… — require exactly that. (A page cannot
+        // forge sender.url; it is set by the browser.) A build/CI tripwire (test/extension-boundary.ts)
+        // keeps the no-external-message-surface invariant from regressing.
+        const fromExtensionPage = sender?.id === chrome.runtime.id &&
+          typeof sender?.url === "string" && sender.url.startsWith(chrome.runtime.getURL(""));
+        if (!fromExtensionPage) { sendResponse({ ok: false, error: "forbidden" }); return; }
         // Reset the idle auto-lock ONLY on genuine USER ACTIVITY — never on a pure read/poll. The
         // approval window status/pending-polls every ~1.2s; if those kept the wallet alive, a site
         // that always keeps ≥1 request queued would never let the 15-min idle lock fire (WL-1/R19).

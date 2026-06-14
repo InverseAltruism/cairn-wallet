@@ -63,9 +63,11 @@ let submitN = 0;
 const spkHex = (a: any) => "0x" + (a as number[]).map((b) => b.toString(16).padStart(2, "0")).join("");
 
 // popup-channel call (privileged, used only by the extension's own pages). The REAL popup/extension
-// pages share our runtime id and carry NO sender.tab — that's exactly what background.ts asserts (F12).
-const popup = (method: string, ...args: any[]) => new Promise<any>((res) => listener({ kind: "popup", method, args }, { id: "cairnwallettestid" }, res));
-// a forged popup message from a content script (carries a tab) or a wrong extension id — must be rejected
+// pages share our runtime id and a chrome-extension://<our-id>/ sender.url. The approval window is
+// opened via chrome.windows.create({type:"popup"}) so it ALSO carries a sender.tab — the F12 gate must
+// key on the extension ORIGIN, not on tab-absence (keying on tab broke the connect/approval flow).
+const popup = (method: string, ...args: any[]) => new Promise<any>((res) => listener({ kind: "popup", method, args }, { id: "cairnwallettestid", url: "chrome-extension://x/approve.html", tab: { id: 1 } }, res));
+// a forged popup message from a content script (web-page sender.url) or a wrong extension id — must be rejected
 const popupAs = (sender: any, method: string, ...args: any[]) => new Promise<any>((res) => { let r: any; listener({ kind: "popup", method, args }, sender, (v: any) => { r = v; res(v); }); return r; });
 // a website's request always arrives via the content-script relay as kind:"dapp"
 const dappAsync = (method: string, params: any, origin = "https://evil.test") => {
@@ -272,15 +274,21 @@ async function main() {
 
   console.log("\n=== F12: popup-channel sender identity is asserted (defense-in-depth) ===");
   await popup("unlock", PW); // re-unlock (we locked it above) so the privileged call would otherwise succeed
-  // A content script forging kind:"popup" carries a sender.tab → rejected even with the right runtime id.
-  const fromTab = await popupAs({ id: "cairnwallettestid", tab: { id: 7 } }, "export", PW);
-  check("forged popup from a content script (has sender.tab) is REJECTED", fromTab?.ok === false && !String(JSON.stringify(fromTab)).toLowerCase().includes(priv));
+  // A content script forging kind:"popup" runs in a web page → its sender.url is the host page (not our
+  // chrome-extension:// origin), even though it shares our runtime id and carries a tab → REJECTED.
+  const fromTab = await popupAs({ id: "cairnwallettestid", url: "https://evil.example/x", tab: { id: 7 } }, "export", PW);
+  check("forged popup from a content script (web-page sender.url) is REJECTED", fromTab?.ok === false && !String(JSON.stringify(fromTab)).toLowerCase().includes(priv));
   // A different extension id is rejected too.
-  const wrongId = await popupAs({ id: "someotherextension" }, "export", PW);
+  const wrongId = await popupAs({ id: "someotherextension", url: "chrome-extension://someotherextension/popup.html" }, "export", PW);
   check("popup message with a foreign runtime id is REJECTED", wrongId?.ok === false && !String(JSON.stringify(wrongId)).toLowerCase().includes(priv));
-  // The REAL popup sender (our id, no tab) still works — zero behavioral change.
-  const realPopup = await popupAs({ id: "cairnwallettestid" }, "status");
-  check("the real popup (own id, no tab) still works unchanged", realPopup?.ok === true && realPopup.result?.unlocked === true);
+  // A popup-kind message with NO extension sender.url is rejected (the gate keys on origin, not just id).
+  const noUrl = await popupAs({ id: "cairnwallettestid" }, "export", PW);
+  check("popup message with no extension-origin sender.url is REJECTED", noUrl?.ok === false && !String(JSON.stringify(noUrl)).toLowerCase().includes(priv));
+  // REGRESSION (the empty-popup bug): the REAL approval window is an extension page opened via
+  // chrome.windows.create — it has our origin AND a sender.tab. It MUST be allowed (the old `||sender.tab`
+  // check rejected it with "forbidden", blanking the connect popup).
+  const realApprovalWin = await popupAs({ id: "cairnwallettestid", url: "chrome-extension://x/approve.html", tab: { id: 3 } }, "status");
+  check("the real approval window (extension origin, WITH a tab) works — F12 no longer breaks connect", realApprovalWin?.ok === true && realApprovalWin.result?.unlocked === true);
 
   console.log("\n=== F12 build/CI tripwire: externally_connectable / onMessageExternal must NEVER appear ===");
   // If a future edit re-introduces an external message surface, the popup-isolation argument collapses.
