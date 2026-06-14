@@ -165,6 +165,9 @@ export class Wallet {
     let parsed: VaultDoc | null = null;
     try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy */ }
     if (parsed) {
+      // A v2 doc with an empty accounts[] (corrupt/forged vault) would otherwise set active=-1 and crash
+      // unlock on accts[-1].addr. Reject cleanly (audit KEY-7).
+      if (parsed.accounts.length === 0) throw new Error("corrupt vault (no accounts)");
       this.mnemonic = parsed.mnemonic ?? null;
       this.accts = parsed.accounts.map((x) => this.acct(x.priv, x.label || "Account", { index: x.index, imported: x.imported }));
       this.active = Math.min(Math.max(0, parsed.active ?? 0), this.accts.length - 1);

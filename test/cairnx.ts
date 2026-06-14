@@ -9,6 +9,7 @@ import { buildTransfer, canonicalJson, cairnxPayloadHash, formatUnits, parseUnit
 import { describe, cairnxDescribe, costLine } from "../src/popup/clearsign.js";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
+import { mkCoin, txReply } from "./_coin.js";
 
 declare const process: { exit(code: number): void };
 let pass = 0, fail = 0;
@@ -115,6 +116,15 @@ for (const [t, uri, ph, wants] of RECORDS) {
   check("schema-invalid record (bad ticker) → raw fallback", cairnxDescribe(`{"amount":"1","t":"transfer","ticker":"bad","to":"${ADDR_AB}","v":1}`) === null);
   check("not-JSON / array / huge uri → raw fallback",
     cairnxDescribe("not json") === null && cairnxDescribe("[1,2]") === null && cairnxDescribe(`{"t":"mint","ticker":"TKN","v":1,"x":"${"a".repeat(600)}"}`) === null);
+  // resolver lockstep (cairnx-core v0.1.6 exact-key allowlist + ts SafeInteger; audit M1/FORK-1): a
+  // value-bearing record with a decoy extra key, or a ts outside the safe-integer range, canonicalizes
+  // differently across languages and the resolver no-ops it — so the wallet must NOT decode it either.
+  { const xk = { v: 1, t: "transfer", ticker: "TKN", amount: "1", to: ADDR_AB, ZZ: "decoy" };
+    check("extra-key transfer → raw fallback (resolver exact-key lockstep)", cairnxDescribe(canonicalJson(xk), cairnxPayloadHash(xk)) === null); }
+  { const bigts = { v: 1, t: "transfer", ticker: "TKN", amount: "1", to: ADDR_AB, ts: 9007199254740993 };
+    check("transfer ts > 2^53 → raw fallback (determinism SafeInteger)", cairnxDescribe(canonicalJson(bigts), cairnxPayloadHash(bigts)) === null); }
+  { const okts = { v: 1, t: "transfer", ticker: "TKN", amount: "1", to: ADDR_AB, ts: 1700000000 };
+    check("transfer with a normal ts still decodes (no over-rejection)", cairnxDescribe(canonicalJson(okts), cairnxPayloadHash(okts)) !== null); }
   const fullUnknown = describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, payloadHash: cairnxPayloadHash({ t: "futurething", v: 1 }), uri: `{"t":"futurething","v":1}`, fee: 1 } });
   check("describe(propose, unknown cairnx shape) still shows the RAW uri", fullUnknown.includes("futurething") && fullUnknown.includes("uri:"));
   const fullOther = describe({ method: "propose", params: { domain: "csd:apps", payloadHash: "0x" + "11".repeat(32), uri: t[1], fee: 1 } });
@@ -131,7 +141,7 @@ for (const [t, uri, ph, wants] of RECORDS) {
 // ─── 4) wallet integration: API degradation + the transfer propose pipeline ──────
 async function main() {
   const origFetch = (globalThis as any).fetch;
-  const COIN = { txid: "0x" + "cd".repeat(32), vout: 0, value: 100e8, confirmations: 10 };
+  const CC = mkCoin(100e8); const COIN = CC.coin; // real source-tx-derived coin so /tx verification passes
   try {
     // (a) API unreachable → { ok:false }, NEVER a throw (the popup keeps the CSD UI + quiet retry)
     (globalThis as any).fetch = async () => { throw new Error("ECONNREFUSED"); };
@@ -163,6 +173,7 @@ async function main() {
       if (u.includes("/tip")) return { ok: true, status: 200, json: async () => ({ height: 31100 }) };
       if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 100e8, utxos: [COIN] }) };
       if (u.includes("/tx/submit")) { submitted = JSON.parse(init.body); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "ee".repeat(32) }) }; }
+      const tr = txReply(u, [CC]); if (tr) return tr;
       return { ok: false, status: 404, json: async () => ({}) };
     };
     const r = await w.cairnxTransfer({ ticker: "CAIRN", amount: "150000000", to: ADDR_AB.toUpperCase().replace("0X", "0x"), decimals: 8 });

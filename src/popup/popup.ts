@@ -70,7 +70,9 @@ async function render() {
   currentRpc = st.rpc || "";
   siteApi = st.api || "";
   if (!st.hasVault) return show("setup");
-  if (!st.unlocked) return show("locked");
+  // On lock (manual or idle auto-lock), wipe any revealed private key / recovery phrase from the DOM and
+  // module memory so a secret never lingers on the locked screen (audit POPUP-2).
+  if (!st.unlocked) { resetRevealPanel(); resetPhrasePanel(); return show("locked"); }
   show("main");
   // Only HD wallets have a recovery phrase; hide the reveal button for imported keys.
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
@@ -281,7 +283,9 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     const nm = r.toLowerCase().replace(/\.csd$/, "");
     const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
-    return { ok: true, addr: res.addr, name: nm, label: `${nm}.csd → ${short(res.addr)} (via ${res.via})` };
+    // The address comes from the (configurable) name service and is NOT chain-verified by the wallet
+    // (audit XREPO-1) — prompt the user to check the full resolved address shown in the review below.
+    return { ok: true, addr: res.addr, name: nm, label: `${nm}.csd → ${short(res.addr)} (via ${res.via}) — verify the full address below` };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
@@ -416,25 +420,36 @@ function showBackup(mnemonic: string, privkey: string) {
 }
 $("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("enter a password", "err"); const r = await call("create", pw); ($("setup-pw") as HTMLInputElement).value = ""; showBackup(r.mnemonic, r.privkey); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
-$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase); flashBtn("btn-copy-seed", "copied ✓"); });
-$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv); flashBtn("btn-copy-priv", "copied ✓"); });
+$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); flashBtn("btn-copy-seed", "copied ✓"); });
+$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); flashBtn("btn-copy-priv", "copied ✓"); });
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
 $("btn-backup-done").addEventListener("click", () => { backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = ""; msg("wallet ready", "ok"); render(); });
 $("btn-import").addEventListener("click", async () => { try { if (!val("import-pw")) return msg("enter a password to encrypt the key", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("key imported", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
 $("btn-refresh").addEventListener("click", () => { refreshBalance(); renderAssets(); });
-$("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("addr").textContent || ""); flashBtn("btn-copy", "copied ✓"); });
+$("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("addr").textContent || "")?.catch(() => {}); flashBtn("btn-copy", "copied ✓"); });
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
 const PANELS = ["accts-panel", "send-form", "tsend-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
+// Best-effort clipboard hygiene for a copied key/phrase (audit KEY-6): when the reveal panel closes
+// (switch/close/popup-unload), clear the clipboard IFF it still holds the secret we copied — so we never
+// clobber unrelated clipboard content. Wrapped so a clipboard-permission error can never break a flow.
+let copiedSecret = "";
+function clearCopiedSecret() {
+  const s = copiedSecret; copiedSecret = "";
+  if (!s) return;
+  try { navigator.clipboard?.readText?.().then((c) => { if (c === s) navigator.clipboard?.writeText("").catch(() => {}); }).catch(() => {}); } catch { /* clipboard unavailable */ }
+}
 function resetRevealPanel() {
+  clearCopiedSecret();
   revealedKey = ""; const o = $("reveal-out"); o.textContent = ""; o.classList.remove("shown"); (o as HTMLElement).hidden = true;
   ($("reveal-actions") as HTMLElement).hidden = true; ($("reveal-pw") as HTMLInputElement).value = "";
 }
 function resetPhrasePanel() {
+  clearCopiedSecret();
   revealedPhrase = ""; const o = $("phrase-out"); o.innerHTML = ""; o.classList.remove("shown"); o.classList.add("blur"); (o as HTMLElement).hidden = true;
   ($("phrase-actions") as HTMLElement).hidden = true; ($("phrase-pw") as HTMLInputElement).value = "";
 }
@@ -462,7 +477,7 @@ $("btn-reveal-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-reveal-show").addEventListener("click", () => { ($("reveal-out") as HTMLElement).classList.toggle("shown"); });
-$("btn-reveal-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedKey); flashBtn("btn-reveal-copy", "copied ✓"); });
+$("btn-reveal-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedKey)?.catch(() => {}); copiedSecret = revealedKey; flashBtn("btn-reveal-copy", "copied ✓ (auto-clears)"); });
 $("btn-reveal-close").addEventListener("click", () => { resetRevealPanel(); ($("reveal-panel") as HTMLElement).hidden = true; });
 
 // Reveal recovery phrase — in-popup panel (password → blurred 12-word grid).
@@ -477,7 +492,7 @@ $("btn-phrase-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-phrase-show").addEventListener("click", () => { const o = $("phrase-out"); o.classList.toggle("shown"); o.classList.toggle("blur"); });
-$("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase); flashBtn("btn-phrase-copy", "copied ✓"); });
+$("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase)?.catch(() => {}); copiedSecret = revealedPhrase; flashBtn("btn-phrase-copy", "copied ✓ (auto-clears)"); });
 $("btn-phrase-close").addEventListener("click", () => { resetPhrasePanel(); ($("phrase-panel") as HTMLElement).hidden = true; });
 $("btn-settings").addEventListener("click", () => { if (openPanel("settings")) renderConnectedSites(); });
 
@@ -726,3 +741,5 @@ $("btn-post").addEventListener("click", async () => {
 
 render();
 if (EXT) setInterval(renderPending, 1500);
+// Clear a copied secret from the clipboard when the popup closes (audit KEY-6, best-effort).
+window.addEventListener("beforeunload", clearCopiedSecret);

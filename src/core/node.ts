@@ -2,7 +2,7 @@
 // Browser fetch. The non-custodial flow: coin-select → node /tx/template → sign the
 // signing_hash LOCALLY → set script_sig → node /tx/submit. The private key only ever
 // lives in the wallet; nothing here sends it anywhere.
-import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
+import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
 
 const strip = (h: string) => (h.startsWith("0x") ? h.slice(2) : h);
 
@@ -34,6 +34,58 @@ function txToNodeJson(tx: Tx): any {
     inputs: tx.inputs.map((i) => ({ prevout: { txid: bytesArr(i.prevTxid), vout: i.vout }, script_sig: bytesArr(i.scriptSig) })),
     outputs: tx.outputs.map((o) => ({ value: Number(o.value), script_pubkey: bytesArr(o.scriptPubkey) })),
   };
+}
+
+// Map a node-JSON tx body (from /tx or /block) back into our codec Tx so we can recompute its txid.
+function nodeTxToTx(j: any): Tx {
+  const a = j.app || {};
+  const app: App = a.type === "Propose"
+    ? { type: "Propose", domain: a.domain, payloadHash: a.payload_hash, uri: a.uri, expiresEpoch: a.expires_epoch }
+    : a.type === "Attest"
+      ? { type: "Attest", proposalId: a.proposal_id, score: a.score, confidence: a.confidence }
+      : { type: "None" };
+  return {
+    version: j.version, locktime: j.locktime, app,
+    inputs: (j.inputs || []).map((i: any) => ({ prevTxid: i.prev_txid, vout: i.vout, scriptSig: i.script_sig })),
+    outputs: (j.outputs || []).map((o: any) => ({ value: o.value, scriptPubkey: o.script_pubkey })),
+  };
+}
+
+// Confirm the REAL on-chain value of each selected input by fetching its source tx and
+// RECOMPUTING its txid with our consensus-exact codec. A CSD fee is implicit (Σin − Σout,
+// uncapped by consensus), so if the wallet trusted a hostile /utxos `value` it could compute
+// too-small a change and silently burn the difference as fee (audit TXB-1). The source tx's
+// txid commits to its output values, so a hostile RPC cannot serve a fake body whose recomputed
+// txid still matches the prevout — any tamper is detected and the send is refused (fail-closed).
+async function verifyInputValues(rpc: string, inputs: { txid: string; vout: number }[]): Promise<{ ok: boolean; total: number }> {
+  let total = 0;
+  for (const i of inputs) {
+    let body: any;
+    try { body = (await get(rpc, `/tx/${i.txid}`))?.tx; } catch { return { ok: false, total: 0 }; }
+    if (!body) return { ok: false, total: 0 };
+    let tx: Tx;
+    try { tx = nodeTxToTx(body); } catch { return { ok: false, total: 0 }; }
+    if (codecTxid(tx).toLowerCase() !== String(i.txid).toLowerCase()) return { ok: false, total: 0 }; // forged source body
+    const out = tx.outputs[i.vout];
+    if (!out) return { ok: false, total: 0 };
+    const v = Number(out.value);
+    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return { ok: false, total: 0 };
+    total += v;
+    if (!Number.isSafeInteger(total)) return { ok: false, total: 0 };
+  }
+  return { ok: true, total };
+}
+
+// Coin selection (REPORTED values, to pick which outpoints) THEN chain-verified totals (REAL
+// values, to compute change). Returns the verified input set + real total, or an error string.
+async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string }> {
+  const { utxos } = await balance(rpc, addr);
+  const sel = selectInputs(utxos, need);
+  if (!sel) return { error: "insufficient confirmed balance" };
+  const ver = await verifyInputValues(rpc, sel.inputs);
+  if (!ver.ok) return { error: "could not verify selected inputs against the chain (refusing to risk a burned fee)" };
+  if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance" };
+  return { inputs: sel.inputs, total: ver.total };
 }
 
 export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean }
@@ -118,16 +170,14 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
     sumOut += v;
     if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false };
   }
-  const { utxos } = await balance(rpc, addr);
   const need = sumOut + fee;
-  const sel = selectInputs(utxos, need);
-  if (!sel) return { ok: false, error: "insufficient confirmed balance for outputs + fee", sighashMatch: false };
-  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need)) return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
+  const sv = await selectVerified(rpc, addr, need);
+  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
   const outputs = payouts.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  const change = sel.total - need;
+  const change = sv.total - need; // CHAIN-VERIFIED input total
   if (change > 0) outputs.push({ value: change, scriptPubkey: addr });
   if (outputs.length === 0) return { ok: false, error: "tx would have no outputs", sighashMatch: false };
-  const tx: Tx = { version: 1, locktime: 0, app, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
+  const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
   return signAndSubmit(rpc, tx, priv);
 }
 
@@ -141,7 +191,8 @@ export function propose(rpc: string, p: { domain: string; payloadHash: string; u
   return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : []);
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
-  return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score, confidence: p.confidence }, p.fee, priv);
+  // Clamp to u32 here (parity with fillOffer) so the signed bytes equal the displayed score/confidence.
+  return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, p.fee, priv);
 }
 
 // Plain CSD transfer (app:None). Built + signed entirely client-side — sighash via
@@ -153,19 +204,16 @@ export async function send(rpc: string, p: { to: string; amount: number; fee: nu
   // CSD amounts are integer base units carried as JS numbers. Above 2^53 a Number
   // silently loses precision, so the value you sign could differ from what you meant.
   // Refuse anything outside the exactly-representable range (well above total supply).
-  if (!Number.isSafeInteger(p.amount) || !Number.isSafeInteger(p.fee) || !Number.isSafeInteger(p.amount + p.fee))
+  if (!Number.isSafeInteger(p.amount) || !Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(p.amount + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
   const addr = addrFromPriv(priv);
   const need = p.amount + p.fee;
-  const { utxos } = await balance(rpc, addr);
-  const sel = selectInputs(utxos, need);
-  if (!sel) return { ok: false, error: "insufficient confirmed balance for amount + fee", sighashMatch: false };
-  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need))
-    return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
-  const change = sel.total - p.amount - p.fee;
+  const sv = await selectVerified(rpc, addr, need);
+  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
+  const change = sv.total - p.amount - p.fee; // computed from CHAIN-VERIFIED input values, not the RPC's report
   const outputs = [{ value: p.amount, scriptPubkey: p.to }];
   if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self
-  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
+  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
   return signAndSubmit(rpc, tx, priv);
 }
 
@@ -191,15 +239,12 @@ export async function sendMany(rpc: string, p: { outputs: { to: string; value: n
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
   const addr = addrFromPriv(priv);
   const need = sumOut + p.fee;
-  const { utxos } = await balance(rpc, addr);
-  const sel = selectInputs(utxos, need);
-  if (!sel) return { ok: false, error: "insufficient confirmed balance for outputs + fee", sighashMatch: false };
-  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need))
-    return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
-  const change = sel.total - need;
+  const sv = await selectVerified(rpc, addr, need);
+  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
+  const change = sv.total - need; // CHAIN-VERIFIED input total
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self, never a caller-chosen address
-  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
+  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
   return signAndSubmit(rpc, tx, priv);
 }
 
@@ -230,19 +275,16 @@ export async function fillOffer(
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
   const addr = addrFromPriv(priv);
   const need = sumOut + p.fee;
-  const { utxos } = await balance(rpc, addr);
-  const sel = selectInputs(utxos, need);
-  if (!sel) return { ok: false, error: "insufficient confirmed balance for payment + fee", sighashMatch: false };
-  if (!Number.isSafeInteger(sel.total) || !Number.isSafeInteger(sel.total - need))
-    return { ok: false, error: "selected inputs exceed the safe integer range", sighashMatch: false };
-  const change = sel.total - need;
+  const sv = await selectVerified(rpc, addr, need);
+  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
+  const change = sv.total - need; // CHAIN-VERIFIED input total
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self, never a caller-chosen address
   if (outputs.length === 0) return { ok: false, error: "tx would have no outputs — add a payment or leave change", sighashMatch: false };
   const tx: Tx = {
     version: 1, locktime: 0,
     app: { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 },
-    inputs: sel.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })),
+    inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })),
     outputs,
   };
   return signAndSubmit(rpc, tx, priv);

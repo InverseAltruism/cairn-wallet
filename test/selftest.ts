@@ -6,6 +6,7 @@ import { seal, open } from "../src/core/keystore.js";
 import { Wallet, explorerTx, explorerAddr } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { send, selectInputs } from "../src/core/node.js";
+import { mkCoin, txReply } from "./_coin.js";
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex } from "@noble/hashes/utils";
 
@@ -67,20 +68,20 @@ async function main() {
 
   // 5) Wallet brain (memory store) — lifecycle + locked-op guards
   const w = new Wallet(memoryStore());
-  const c1 = await w.create("pw1");
+  const c1 = await w.create("pw1-secret");
   check("wallet create → addr + unlocked", /^0x[0-9a-f]{40}$/.test(c1.addr) && (await w.status()).unlocked);
   w.lock();
   check("lock → locked but vault persists", !(await w.status()).unlocked && (await w.status()).hasVault);
   let lockedThrew = false; try { await w.balance(); } catch { lockedThrew = true; }
   check("operations throw when locked", lockedThrew);
-  check("unlock restores same addr", (await w.unlock("pw1")).addr === c1.addr);
+  check("unlock restores same addr", (await w.unlock("pw1-secret")).addr === c1.addr);
   let badUnlock = false; try { await w.unlock("wrong"); } catch { badUnlock = true; }
   check("unlock rejects wrong password", badUnlock);
-  const exported = await w.exportKey("pw1");
+  const exported = await w.exportKey("pw1-secret");
   check("exportKey returns privkey for matching addr", /^0x[0-9a-f]{64}$/.test(exported) && fromPriv(exported).addr === c1.addr);
   const w2 = new Wallet(memoryStore());
-  check("import sets the matching addr", (await w2.importKey(exported, "pw2")).addr === c1.addr);
-  let dupThrew = false; try { await w.create("x"); } catch { dupThrew = true; }
+  check("import sets the matching addr", (await w2.importKey(exported, "pw2-secret")).addr === c1.addr);
+  let dupThrew = false; try { await w.create("dup-secret"); } catch { dupThrew = true; }
   check("create refuses to overwrite an existing wallet", dupThrew);
 
   // ─── 6) BRUTAL security ──────────────────────────────────────────────────
@@ -181,10 +182,11 @@ async function main() {
   // (h) transaction history — records on success, newest-first, idempotent, not on
   // failure. Drives the real send() path with a URL-routed stubbed fetch.
   const of2 = (globalThis as any).fetch;
-  const COIN = { txid: "0x" + "cd".repeat(32), vout: 0, value: 100e8, confirmations: 10 };
+  const CS = mkCoin(100e8); const COIN = CS.coin;
   const txStub = (submitOk: boolean, fixedTxid?: string) => { let n = 0; return async (url: any) => {
     const u = String(url);
     if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 100e8, utxos: [COIN] }) };
+    const tr = txReply(u, [CS]); if (tr) return tr;
     if (u.includes("/tx/submit")) { n++; return { ok: true, status: 200, json: async () => (submitOk ? { ok: true, txid: fixedTxid ?? ("0x" + String(n).padStart(64, "0")) } : { ok: false, err: "rejected" }) }; }
     return { ok: false, status: 404, json: async () => ({}) };
   }; };
@@ -261,7 +263,7 @@ async function main() {
 
     // an imported single key has NO recovery phrase
     let wi = new Wallet(memoryStore());
-    await wi.importKey("0x" + "11".repeat(32), "pw");
+    await wi.importKey("0x" + "11".repeat(32), "imp-secret");
     check("imported-key wallet reports no recovery phrase", (await wi.status()).hasMnemonic === false);
     let threw2 = false; try { await wi.exportMnemonic("pw"); } catch { threw2 = true; }
     check("imported-key wallet refuses exportMnemonic", threw2);
@@ -294,6 +296,7 @@ async function main() {
     const u = String(url);
     if (u.includes("/tip")) return { ok: true, status: 200, json: async () => ({ height: 21000 }) };
     if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 100e8, utxos: [COIN] }) };
+    const tr = txReply(u, [CS]); if (tr) return tr;
     if (u.includes("/tx/submit")) { n++; return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + String(n).padStart(64, "0") }) }; }
     if (u.includes("/api/content")) return { ok: true, status: 200, json: async () => ({ ok: true, revealed: true }) };
     return { ok: false, status: 404, json: async () => ({}) };
@@ -329,7 +332,7 @@ async function main() {
 
     // (h4) importKey must not silently overwrite an existing vault (mirrors create()).
     const ig = new Wallet(memoryStore()); await ig.create("super-secret-pw");
-    let imported = false; try { await ig.importKey("0x" + "11".repeat(32), "pw"); imported = true; } catch { /* expected */ }
+    let imported = false; try { await ig.importKey("0x" + "11".repeat(32), "imp-secret"); imported = true; } catch { /* expected */ }
     check("importKey refuses to overwrite an existing wallet", imported === false);
   } finally { (globalThis as any).fetch = of3; }
 

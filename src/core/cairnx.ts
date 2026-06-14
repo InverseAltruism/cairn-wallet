@@ -21,7 +21,11 @@ const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const RESERVED_NAMES = new Set(["csd", "treasury", "admin", "official", "root", "www", "support"]);
 const MAX_AMOUNT = (1n << 96n) - 1n;
 const MAX_RECORD_BYTES = 512;                // consensus MAX_URI_BYTES
-const MAX_DEPTH = 16;
+// MUST equal the resolver/codec depth cap (@inversealtruism/csd-codec content.ts) so canonicalJson is
+// byte-identical to what the resolver computes. A smaller cap here would make the wallet show RAW for a
+// deeply-nested-but-valid record the resolver still executes (audit DEPTH-1/DET-1). 512-byte records
+// can't actually nest this deep; the cap is purely a stack-overflow guard, matched across implementations.
+const MAX_DEPTH = 256;
 
 // Canonical JSON (csd-codec semantics): sorted keys, no whitespace, undefined dropped,
 // depth-capped. Byte-identical to the resolver's form — required for the hash commitment.
@@ -80,6 +84,17 @@ const isTicker = (t: unknown): t is string => typeof t === "string" && TICKER_RE
 const isAddr = (a: unknown): a is string => typeof a === "string" && ADDR_RE.test(a);
 const isHash = (h: unknown): h is string => typeof h === "string" && HASH_RE.test(h);
 const isName = (n: unknown): n is string => typeof n === "string" && NAME_RE.test(n) && !RESERVED_NAMES.has(n);
+
+// Exact-key allowlists for value-bearing records — MUST match cairnx-core records.ts (v0.1.6, audit M1):
+// a decoy extra key (esp. an astral-range key) canonicalizes to different bytes across languages → a
+// cross-language fork. Rejecting unknown keys makes such a record a no-op everywhere, and keeps the
+// wallet's clear-sign decode in lockstep with what the resolver actually executes.
+const onlyKeys = (r: Record<string, unknown>, allowed: ReadonlySet<string>): boolean => Object.keys(r).every((k) => allowed.has(k));
+const DEPLOY_KEYS = new Set(["v", "t", "ticker", "name", "decimals", "supply", "mint", "mintLimit"]);
+const MINT_KEYS = new Set(["v", "t", "ticker", "amount"]);
+const TRANSFER_KEYS = new Set(["v", "t", "ticker", "to", "amount", "memo", "ts"]);
+const OFFER_KEYS = new Set(["v", "t", "give", "want", "min", "bid", "taker", "memo", "ts"]);
+const BID_KEYS = new Set(["v", "t", "want", "give", "memo", "ts"]);
 
 // ── token transfer (the record the wallet's send-token flow signs) ───────────
 // uri is EXACTLY {"amount":"<baseUnits>","t":"transfer","ticker":"<TICKER>","to":"<0xaddr>","v":1}
@@ -196,6 +211,7 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
   if (r.v !== 1 || typeof r.t !== "string") return null;
   switch (r.t) {
     case "deploy": {
+      if (!onlyKeys(r, DEPLOY_KEYS)) return null;
       if (!isTicker(r.ticker)) return null;
       if (r.name !== undefined && (typeof r.name !== "string" || r.name.length > 32)) return null;
       if (typeof r.decimals !== "number" || !Number.isInteger(r.decimals) || r.decimals < 0 || r.decimals > 8) return null;
@@ -206,17 +222,20 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
       return r;
     }
     case "mint": {
+      if (!onlyKeys(r, MINT_KEYS)) return null;
       if (!isTicker(r.ticker)) return null;
       if (r.amount !== undefined && parseAmount(r.amount) === null) return null;
       return r;
     }
     case "transfer": {
+      if (!onlyKeys(r, TRANSFER_KEYS)) return null;
       if (!isTicker(r.ticker) || !isAddr(r.to) || parseAmount(r.amount) === null) return null;
       if (r.memo !== undefined && (typeof r.memo !== "string" || r.memo.length > 64)) return null;
-      if (r.ts !== undefined && (typeof r.ts !== "number" || !Number.isInteger(r.ts))) return null;
+      if (r.ts !== undefined && (typeof r.ts !== "number" || !Number.isSafeInteger(r.ts))) return null;
       return r;
     }
     case "offer": {
+      if (!onlyKeys(r, OFFER_KEYS)) return null;
       const g = r.give as Record<string, unknown> | undefined;
       const w = r.want as Record<string, unknown> | undefined;
       if (!g || !w || typeof g !== "object" || Array.isArray(g) || typeof w !== "object" || Array.isArray(w)) return null;
@@ -240,7 +259,7 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
       if (r.bid !== undefined && !isHash(r.bid)) return null;
       if (r.taker !== undefined && !isAddr(r.taker)) return null;
       if (r.memo !== undefined && (typeof r.memo !== "string" || r.memo.length > 64)) return null;
-      if (r.ts !== undefined && (typeof r.ts !== "number" || !Number.isInteger(r.ts))) return null;
+      if (r.ts !== undefined && (typeof r.ts !== "number" || !Number.isSafeInteger(r.ts))) return null;
       return r;
     }
     case "ocancel": {
@@ -251,6 +270,7 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
       return r;
     }
     case "bid": {
+      if (!onlyKeys(r, BID_KEYS)) return null;
       const w = r.want as Record<string, unknown> | undefined;
       const g = r.give as Record<string, unknown> | undefined;
       if (!w || !g || typeof w !== "object" || Array.isArray(w) || typeof g !== "object" || Array.isArray(g)) return null;
@@ -260,7 +280,7 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
       else return null;
       if (Object.keys(g).sort().join(",") !== "value" || parseAmount(g.value) === null) return null;
       if (r.memo !== undefined && (typeof r.memo !== "string" || r.memo.length > 64)) return null;
-      if (r.ts !== undefined && (typeof r.ts !== "number" || !Number.isInteger(r.ts))) return null;
+      if (r.ts !== undefined && (typeof r.ts !== "number" || !Number.isSafeInteger(r.ts))) return null;
       return r;
     }
     case "ncommit": {
