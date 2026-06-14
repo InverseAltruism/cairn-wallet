@@ -95,6 +95,7 @@ const MINT_KEYS = new Set(["v", "t", "ticker", "amount"]);
 const TRANSFER_KEYS = new Set(["v", "t", "ticker", "to", "amount", "memo", "ts"]);
 const OFFER_KEYS = new Set(["v", "t", "give", "want", "min", "bid", "taker", "memo", "ts"]);
 const BID_KEYS = new Set(["v", "t", "want", "give", "memo", "ts"]);
+const NAME_KEYS = new Set(["v", "t", "name", "salt"]);
 
 // ── token transfer (the record the wallet's send-token flow signs) ───────────
 // uri is EXACTLY {"amount":"<baseUnits>","t":"transfer","ticker":"<TICKER>","to":"<0xaddr>","v":1}
@@ -288,6 +289,10 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
       return r;
     }
     case "name": {
+      // Lockstep with cairnx-core: close the last astral-key determinism fork on the value-bearing
+      // `name` record (audit M1 / FORK-1). Keeps the wallet's clear-sign decode byte-identical to the
+      // canonical resolver — without this, the wallet would render/accept a name record the resolver rejects.
+      if (!onlyKeys(r, NAME_KEYS)) return null;
       if (!isName(r.name)) return null;
       if (r.salt !== undefined && (typeof r.salt !== "string" || !/^[0-9a-fA-F]{16,128}$/.test(r.salt))) return null;
       return r;
