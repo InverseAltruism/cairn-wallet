@@ -2,7 +2,7 @@
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
 import { describe, debitOf, lookalikeOf, costLine, escapeHtml } from "./clearsign.js";
-import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -93,7 +93,12 @@ async function fillSendWarning(r: any) {
     const known = [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))];
     const warns: string[] = [];
     for (const o of outs) {
-      const to = String(o.to || ""); const tag = `<code>${escapeHtml(to.slice(0, 10))}…${escapeHtml(to.slice(-6))}</code>`;
+      const to = String(o.to || "");
+      // The protocol fee/rebate sink is a FIXED, known convention address (CONVENTION §10; v1.6 1.5%
+      // treasury + maker rebate ride a fill as outputs to it / the maker) — not a user-chosen recipient,
+      // so it must not raise a first-time / address-poisoning warning. Skip it.
+      if (to.toLowerCase() === TREASURY_ADDR) continue;
+      const tag = `<code>${escapeHtml(to.slice(0, 10))}…${escapeHtml(to.slice(-6))}</code>`;
       const la = lookalikeOf(to, known);
       if (la) warns.push(`⚠ <b>Possible address-poisoning:</b> ${tag} resembles <code>${escapeHtml(la.slice(0, 10))}…${escapeHtml(la.slice(-6))}</code> you've seen before but is NOT identical. Verify every character — payments are irreversible.`);
       else if (!sentTo.some((a) => a.toLowerCase() === to.toLowerCase())) warns.push(`⚠ First time sending to ${tag} — verify every character. Payments are irreversible.`);
