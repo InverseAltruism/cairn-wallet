@@ -16,6 +16,23 @@ for (const dir of ["src", "public"]) {
   walk(dir);
 }
 
+// Version-sync tripwire: package.json is the single source of truth for the release version.
+// The Chrome Web Store shows manifest.json's version, and dApps read window.cairn.version from
+// inpage.ts — all three MUST agree. v0.2.21 shipped with a manifest/inpage left at 0.2.20 (the
+// browser kept showing the old version); this guard makes that class of release-hygiene drift a
+// hard build failure instead of a silent ship. (No literal "version" key match: scan structurally.)
+const PKG_VERSION = JSON.parse(readFileSync("package.json", "utf8")).version;
+const manifestVersion = JSON.parse(readFileSync("public/manifest.json", "utf8")).version;
+const inpageMatch = readFileSync("src/inpage.ts", "utf8").match(/version:\s*"([^"]+)"/);
+const inpageVersion = inpageMatch && inpageMatch[1];
+for (const [where, v] of [["public/manifest.json", manifestVersion], ["src/inpage.ts", inpageVersion]]) {
+  if (v !== PKG_VERSION) {
+    console.error(`✗ build aborted: version drift — package.json is ${PKG_VERSION} but ${where} is ${v}. Bump them in lockstep.`);
+    process.exit(1);
+  }
+}
+console.log(`✓ version sync: ${PKG_VERSION} (package.json == manifest == inpage)`);
+
 rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist", { recursive: true });
 

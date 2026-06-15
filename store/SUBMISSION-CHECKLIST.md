@@ -19,14 +19,15 @@ actions the build can't do); everything else is already prepared in this repo.
 - [ ] Put that URL in the dashboard **Privacy practices → Privacy policy** field.
 
 ## 3. Build the upload artifact
-- [x] `npm ci && npm test` — full gate passes (88 + 36 + 49 + 20 + 2).
+- [x] `npm ci && npm test` — full gate passes (135 tests across 7 suites).
 - [x] `npm run build` — MV3 bundle, no remote code, strict CSP.
-- [ ] Produce the upload zip: `npm run package` → `cairn-wallet.zip` (this is the
-      reproducible release zip; the Web Store accepts the same package). Or zip the
-      `dist/` folder's **contents** (manifest at the zip root).
-      Note: the store zip must have `manifest.json` at the top level — if you upload
-      `cairn-wallet.zip` (which nests under `cairn-wallet/`), re-zip `dist/*` flat for the
-      store, or upload `dist/` zipped from inside `dist`.
+- [ ] Produce the upload zip: `npm run package`. This emits TWO reproducible artifacts:
+      **`cairn-wallet-store.zip`** (manifest.json at the ROOT — upload THIS one to the
+      Web Store) and `cairn-wallet.zip` (nested under `cairn-wallet/`, for `Load unpacked`).
+      Each gets a `.sha256` sidecar; the zips are byte-identical across machines for the
+      same source, so the published hash is reproducible.
+      Note: the store rejects a zip without a root-level `manifest.json` — that is exactly
+      why `cairn-wallet-store.zip` exists. Do not upload the nested `cairn-wallet.zip`.
 
 ## 4. Manifest / policy compliance  (already done in repo)
 - [x] `manifest_version: 3`.
