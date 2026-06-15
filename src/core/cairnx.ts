@@ -11,6 +11,16 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 export const CAIRNX_DOMAIN = "cairnx:v1";
 export const CAIRNX_PROPOSE_FEE = 25_000_000; // 0.25 CSD — the convention's anchor fee floor
 export const TREASURY_ADDR = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // protocol fee sink (CONVENTION §10)
+// v1.6 (cairn doc 24): treasury trade fee 1%→1.5% on offers created at/after V16_HEIGHT, and a maker
+// rebate (flat 0.25 CSD + 0.5%, taker→maker) rides bid-answered whole fills. Both are RESOLVER-DERIVED
+// (from the offer's creation height + bid link) — the offer RECORD schema is UNCHANGED, so the
+// decodeCairnxRecord OFFER_KEYS/gates below are already v1.6-complete and need no change. These helpers
+// let the wallet compute the fee/rebate for clear-sign display. Mirror @inversealtruism/cairnx-core.
+export const FEE_BPS = 100, FEE_BPS_V16 = 150, REBATE_BPS = 50;
+export const REBATE_FLAT = 25_000_000n; // 0.25 CSD
+export const V16_HEIGHT = 40_000;       // PLACEHOLDER — operator sets the real activation
+export const cairnxTradeFee = (want: bigint, bps: number = FEE_BPS): bigint => (want * BigInt(bps) + 9999n) / 10000n;
+export const cairnxMakerRebate = (value: bigint): bigint => REBATE_FLAT + (value * BigInt(REBATE_BPS) + 9999n) / 10000n;
 
 // CONVENTION §4 field shapes
 const TICKER_RE = /^[A-Z][A-Z0-9]{2,11}$/;
