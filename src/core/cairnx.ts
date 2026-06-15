@@ -18,7 +18,7 @@ export const TREASURY_ADDR = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // pr
 // let the wallet compute the fee/rebate for clear-sign display. Mirror @inversealtruism/cairnx-core.
 export const FEE_BPS = 100, FEE_BPS_V16 = 150, REBATE_BPS = 50;
 export const REBATE_FLAT = 25_000_000n; // 0.25 CSD
-export const V16_HEIGHT = 40_000;       // PLACEHOLDER — operator sets the real activation
+export const V16_HEIGHT = 33_600;       // ACTIVATION — must match cairnx-core types.ts
 export const cairnxTradeFee = (want: bigint, bps: number = FEE_BPS): bigint => (want * BigInt(bps) + 9999n) / 10000n;
 export const cairnxMakerRebate = (value: bigint): bigint => REBATE_FLAT + (value * BigInt(REBATE_BPS) + 9999n) / 10000n;
 
