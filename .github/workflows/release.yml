@@ -37,6 +37,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Idempotent publish: `gh release create` hard-fails if a release for this tag
+          # already exists, which silently leaves STALE assets in place when a tag is
+          # re-pushed (this bit v0.2.21 — the moved tag re-ran CI but couldn't replace the
+          # release, so the site kept serving the old build). Delete any existing release
+          # for the tag first (KEEP the tag — no --cleanup-tag), then recreate cleanly.
+          gh release delete "${GITHUB_REF_NAME}" --yes 2>/dev/null || true
           gh release create "${GITHUB_REF_NAME}" \
             cairn-wallet-store.zip cairn-wallet-store.zip.sha256 \
             cairn-wallet.zip cairn-wallet.zip.sha256 \
