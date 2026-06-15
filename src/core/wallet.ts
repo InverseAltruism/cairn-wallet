@@ -357,8 +357,12 @@ export class Wallet {
   // owner (so a name works as a recipient even before its holder sets a resolver record).
   async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string }> {
     const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
+    // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
+    // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
+    // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
     try {
-      const r = await fetch(`${this.tradeApi}/cairnx/resolve/${nm}`);
+      const r = await fetch(`${this.tradeApi}/cairnx/resolve/${encodeURIComponent(nm)}`);
       if (r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
       if (!r.ok) return { ok: false, error: "name lookup failed" };
       const j = await r.json();

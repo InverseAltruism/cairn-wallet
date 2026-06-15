@@ -63,9 +63,11 @@ async function verifyInputValues(rpc: string, inputs: { txid: string; vout: numb
     let body: any;
     try { body = (await get(rpc, `/tx/${i.txid}`))?.tx; } catch { return { ok: false, total: 0 }; }
     if (!body) return { ok: false, total: 0 };
-    let tx: Tx;
-    try { tx = nodeTxToTx(body); } catch { return { ok: false, total: 0 }; }
-    if (codecTxid(tx).toLowerCase() !== String(i.txid).toLowerCase()) return { ok: false, total: 0 }; // forged source body
+    let tx: Tx, recomputed: string;
+    // robustness nit (audit D): codecTxid itself can throw on a malformed body, so decode AND
+    // recompute inside one try — any failure is a fail-closed reject, never an uncaught throw.
+    try { tx = nodeTxToTx(body); recomputed = codecTxid(tx); } catch { return { ok: false, total: 0 }; }
+    if (recomputed.toLowerCase() !== String(i.txid).toLowerCase()) return { ok: false, total: 0 }; // forged source body
     const out = tx.outputs[i.vout];
     if (!out) return { ok: false, total: 0 };
     const v = Number(out.value);
