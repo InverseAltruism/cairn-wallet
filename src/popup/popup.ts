@@ -3,7 +3,7 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
-import { formatUnits, parseUnits, nameRegFee } from "../core/cairnx.js";
+import { formatUnits, parseUnits } from "../core/cairnx.js";
 import { nameCautionHtml, reresolveUnchanged } from "./clearsign.js";
 
 const chrome: any = (globalThis as any).chrome;
@@ -259,10 +259,16 @@ async function renderAssets() {
 
 // Two-click confirm (the popup has no modal): first click arms + shows the cost, second runs it.
 let pendingNameAct: { kind: string; name: string } | null = null;
-function confirmNameAction(kind: "renew" | "primary", name: string) {
+async function confirmNameAction(kind: "renew" | "primary", name: string) {
   if (pendingNameAct && pendingNameAct.kind === kind && pendingNameAct.name === name) { pendingNameAct = null; return doNameAction(kind, name); }
   pendingNameAct = { kind, name };
-  const cost = kind === "renew" ? `${(Number(nameRegFee(name)) / 1e8)} CSD + 0.25 anchor` : "0.25 CSD anchor";
+  // v1.8: the renewal fee is height-gated, so the background prices it at the CURRENT tip — the same fee
+  // cairnxNameRenew will sign (WL-V18-1: never display the stale pre-V18 curve while signing the V18 fee).
+  let cost = "0.25 CSD anchor";
+  if (kind === "renew") {
+    const feeBase = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
+    cost = feeBase ? `${feeBase / 1e8} CSD + 0.25 anchor` : "fee + 0.25 anchor";
+  }
   msg(`click again to confirm: ${kind === "renew" ? "renew" : "set primary for"} ${name}.csd (${cost})`, "info");
   setTimeout(() => { if (pendingNameAct && pendingNameAct.name === name && pendingNameAct.kind === kind) pendingNameAct = null; }, 6000);
 }

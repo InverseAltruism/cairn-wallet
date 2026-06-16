@@ -9,7 +9,7 @@ import { sealNew, sealWith, openWith, deriveVaultKey, exportKeyRaw, importKeyRaw
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash } from "./csdtx.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
@@ -371,13 +371,20 @@ export class Wallet {
       return { ok: true, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
     } catch { return { ok: false, error: "name lookup failed" }; }
   }
+  // v1.8: the height-gated renewal fee priced at the CURRENT tip — for the popup's pre-spend estimate, so
+  // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.
+  async cairnxNameRenewFee(name: string): Promise<number> {
+    const fee = nameRegFee(name, buildFeeHeight(await node.tip(this.rpc)));
+    return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
+  }
   // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
   async cairnxNameRenew(name: string) {
     const priv = this.must().privkey;
     const built = buildNameRenew({ name });
-    const fee = nameRegFee(name);
+    const tip = await node.tip(this.rpc);
+    const fee = nameRegFee(name, buildFeeHeight(tip));  // v1.8: height-gated; V18-1 boundary-safe build pricing
     if (fee > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("renewal fee too large for the UI");
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 1000;
+    const expiresEpoch = Math.floor(tip / 30) + 1000;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
     await this.maybeRecord(r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
     return r;

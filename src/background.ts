@@ -68,6 +68,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnxTransfer": return wallet.cairnxTransfer(args[0]);
     case "resolveName": return wallet.resolveName(args[0]);
     case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0]);
+    case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0]);
     case "setTradeApi": return wallet.setTradeApi(args[0]);
     case "signin": return wallet.signIn();

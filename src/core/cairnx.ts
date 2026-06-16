@@ -128,8 +128,15 @@ function buildNameRecord(record: Record<string, unknown>): BuiltCairnxRecord {
   if (utf8ToBytes(uri).length > MAX_RECORD_BYTES) throw new Error("record too large");
   return { record, uri, payloadHash: cairnxPayloadHash(record) };
 }
-/** name registration / renewal fee by length (base units) — mirrors the resolver curve. */
-export function nameRegFee(name: string): bigint {
+/** name registration / renewal fee by length (base units) — mirrors cairnx-core types.ts, height-gated.
+ *  v1.8 (≥ V18_HEIGHT): ≤4 chars = 6.7 CSD premium, ≥5 chars = 3 CSD flat. Below it: the original curve.
+ *  `height` is the anchor height (the renewal's expected block). MUST match the resolver mirror exactly. */
+export const V18_HEIGHT = 40_000;
+// V18-1: a renewal fee built just below V18 but mined at/after it underpays → reject + treasury-fee forfeit.
+// Within a small margin below the gate, price the BUILD at V18 (overpay always accepted). Mirrors helpers.js.
+export const buildFeeHeight = (tip: number): number => (tip < V18_HEIGHT && tip >= V18_HEIGHT - 5) ? V18_HEIGHT : tip;
+export function nameRegFee(name: string, height: number): bigint {
+  if (height >= V18_HEIGHT) return name.length <= 4 ? 670_000_000n : 300_000_000n;
   const n = name.length;
   if (n <= 3) return 500_000_000n; if (n === 4) return 200_000_000n; if (n === 5) return 100_000_000n;
   if (n <= 9) return 50_000_000n; return 10_000_000n;
