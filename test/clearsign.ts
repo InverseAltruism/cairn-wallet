@@ -76,6 +76,18 @@ ok("costLine(normal CSD fill) does NOT mention token debits", !/tokens debited/i
 ok("describe(confidence 999999 ≠ marker) does NOT show the token warning",
   !/SPENDS TOKENS/.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "cc".repeat(32), confidence: 999_999, outputs: [], fee: 1 } })));
 
+// v1.7 claim-to-fill — a score-50 / confidence-0 attest is a PAYMENT-FREE reservation of an open CSD
+// offer; the wallet must label it "Reserve an open offer" and say it moves no money, so the user can
+// tell it apart from the fill that pays. (The attest method never carries value outputs.)
+const claim = describe({ method: "attest", params: { proposalId: "0x" + "dd".repeat(32), score: 50, confidence: 0, fee: 5_000_000 } });
+ok("describe(claim score50/conf0) labels it 'Reserve an open offer'", /Reserve an open offer/.test(claim));
+ok("describe(claim) states it MOVES NO MONEY (no payment)", /moves no money/i.test(claim) && /no payment/i.test(claim));
+ok("describe(claim) does NOT show the token-spend warning", !/SPENDS TOKENS/.test(claim));
+const sup = describe({ method: "attest", params: { proposalId: "0x" + "ee".repeat(32), score: 80, confidence: 70, fee: 5_000_000 } });
+ok("describe(ordinary attest score80) stays 'Support / review' (claim label is score50/conf0 only)", /Support \/ review/.test(sup) && !/Reserve an open offer/.test(sup));
+const atok = describe({ method: "attest", params: { proposalId: "0x" + "ff".repeat(32), score: 100, confidence: 1_000_000, fee: 5_000_000 } });
+ok("describe(token-fill attest conf1e6) STILL warns SPENDS TOKENS (claim branch didn't swallow it)", /SPENDS TOKENS/.test(atok));
+
 // F6 — the dApp-supplied expiresEpoch is part of the SIGNED bytes (csdtx.ts u64) and must be shown
 // in the approval window so a site can't commit a record claimable for years past what the user expects.
 {

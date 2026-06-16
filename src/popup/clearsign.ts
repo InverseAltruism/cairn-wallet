@@ -153,15 +153,23 @@ export function describe(r: any): string {
   // score/confidence are serialized as u32 (>>>0); display the SAME value that will be
   // signed so a negative/oversized input can't show one thing and commit another.
   if (r.method === "attest") {
+    const score = Number(p.score) >>> 0, conf = Number(p.confidence) >>> 0;
+    // CairnX v1.7: score 50 / confidence 0 is a claim-to-fill RESERVATION on an open CSD offer — a
+    // payment-free attest (the attest method carries NO value outputs) that reserves the offer so only
+    // the claimer can fill it for ~15 blocks. Label it plainly: it moves NO money (just the network
+    // fee), so the user can tell it apart from the fill that follows.
+    if (score === 50 && conf === 0) {
+      return `<b>Reserve an open offer</b> — v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~15 blocks; you pay only when you complete the purchase.<br>offer: <code>${escapeHtml(String(p.proposalId || "—"))}</code><br>${feeLine(p.fee)} · score 50 (claim) · no payment`;
+    }
     // CairnX v1.2: confidence 1 000 000 is the TOKEN-PRICED-FILL marker. A bare Attest carrying
     // it is BYTE-IDENTICAL to a fillOffer with empty outputs (the resolver cannot tell them
     // apart), so it can debit the user's CairnX token balance with NO visible output. Treat the
     // reserved value the same on EITHER path — never let a dApp route a token spend through the
     // unwarned attest method (security review HIGH-1, 2026-06-12).
-    const tokenFill = (Number(p.confidence) >>> 0) === 1_000_000
+    const tokenFill = conf === 1_000_000
       ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + 1% protocol fee (not visible here). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.`
       : "";
-    return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${(Number(p.score) >>> 0)} · confidence ${(Number(p.confidence) >>> 0)}`;
+    return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${score} · confidence ${conf}`;
   }
   if (r.method === "sealClaim") return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code><br>${feeLine(p.fee, 25000000)} · the salt + claim stay in your wallet`;
   if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> — publish the preimage; it becomes public + provably committed earlier.<br>tx: <code>${escapeHtml(String(r.params || "").slice(0, 18))}…</code>`;
