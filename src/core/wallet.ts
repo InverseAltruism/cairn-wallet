@@ -63,6 +63,21 @@ export class Wallet {
   // keep re-prompting for the password. null ⇒ in-memory-only (the old behaviour).
   constructor(private store: Store, private session: Store | null = null) {}
 
+  // Is `origin` the wallet's OWN first-party site (or a localhost dev origin)? Used to gate the
+  // legacy no-arg signIn(), which authenticates against the wallet's CONFIGURED api (`this.api`,
+  // default cairn-substrate.com) and returns that server's SESSION TOKEN. If any third-party page
+  // could invoke it, an approved "prove your address" prompt would mint+leak a first-party session
+  // to that page (confused-deputy → account takeover, finding AUTH-LEGACY-1). Third parties MUST use
+  // the audience-bound signInWithCsd() instead, which never touches `this.api` and never mints a
+  // session. `origin` is the browser-set, unforgeable sender.origin.
+  isFirstPartyOrigin(origin: string): boolean {
+    if (!origin || origin === "unknown") return false;
+    let host: string;
+    try { host = new URL(origin).hostname; } catch { return false; }
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return true; // dev
+    try { return new URL(this.api).origin === new URL(origin).origin; } catch { return false; }
+  }
+
   async init(): Promise<void> {
     this.rpc = (await this.store.get("rpc")) || DEFAULT_RPC;
     this.api = (await this.store.get("api")) || DEFAULT_API;

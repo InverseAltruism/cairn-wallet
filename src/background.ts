@@ -113,7 +113,12 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
       result = { addr: st.addr };
       await recordConsent(p.origin, st.addr);
     }
-    else if (p.method === "signin") result = await wallet.signIn();
+    else if (p.method === "signin") {
+      // defense-in-depth: the queue gate (AUTH-LEGACY-1) already blocks third-party signin, but
+      // never run the session-minting legacy path for a non-first-party origin even if queued.
+      if (!wallet.isFirstPartyOrigin(p.origin)) { p.resolve({ ok: false, error: "signIn() is first-party only; use signInWithCsd()." }); return { done: true }; }
+      result = await wallet.signIn();
+    }
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest(p.params);
     else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
@@ -218,6 +223,14 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
       }
       if (msg?.kind === "dapp") {
         const origin = sender?.origin || sender?.url || "unknown";
+        // AUTH-LEGACY-1 gate: the legacy no-arg signIn() authenticates against the wallet's OWN
+        // configured api (this.api) and returns that server's SESSION TOKEN — safe only for the
+        // first-party site. Reject it from any third-party origin BEFORE it can prompt, pointing
+        // devs to the audience-bound signInWithCsd() (which never mints a first-party session).
+        if (msg.method === "signin" && !wallet.isFirstPartyOrigin(origin)) {
+          sendResponse({ ok: false, error: "signIn() is reserved for the wallet's first-party site; third-party sites must use the audience-bound signInWithCsd()." });
+          return;
+        }
         // Fast-path for ALREADY-CONNECTED origins: connect/getAddress may resolve the
         // address WITHOUT a fresh prompt — but ONLY when (a) the method is exactly
         // connect/getAddress (address visibility), (b) the wallet is UNLOCKED, (c) the
