@@ -17,14 +17,32 @@
     // cross-origin iframe embedded in the page (defence in depth; we also check source).
     window.postMessage({ target: "cairn-content", id, method, params }, window.location.origin);
   });
+  // Provider events (accountsChanged / disconnect). The content script relays background pushes here
+  // as { target: "cairn-inpage-event", event, data }; we fan them out to the page's registered handlers.
+  const handlers: Record<string, Set<(d: any) => void>> = {};
+  window.addEventListener("message", (ev: MessageEvent) => {
+    if (ev.source !== window || (ev.data as any)?.target !== "cairn-inpage-event") return;
+    const { event, data } = ev.data as any;
+    const set = handlers[event];
+    if (set) for (const h of [...set]) { try { h(data); } catch { /* a bad handler can't break the others */ } }
+  });
   (window as any).cairn = {
     isCairn: true,
-    version: "0.2.23",
+    version: "0.2.24",
     connect: () => req("connect"),
     getAddress: () => req("getAddress"),
     signIn: () => req("signin"),
     signInWithCsd: (p: any) => req("signinWithCsd", p),
-    getCapabilities: () => Promise.resolve({ version: "0.2.23", siwc: "1", methods: ["connect", "getAddress", "signIn", "signInWithCsd", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
+    // Per-origin permissions (EIP-2255-style). getPermissions/revokePermissions are origin-scoped reads/
+    // self-revoke (silent); requestPermissions prompts (grants address visibility) like connect.
+    getPermissions: () => req("getPermissions"),
+    requestPermissions: () => req("requestPermissions"),
+    revokePermissions: () => req("revokePermissions"),
+    // Event subscription (accountsChanged / disconnect). on() returns nothing; use the same handler ref
+    // to removeListener. Cairn emits accountsChanged([]) on lock/account-switch/revoke (never a new addr).
+    on: (event: string, handler: (d: any) => void) => { (handlers[event] ||= new Set()).add(handler); },
+    removeListener: (event: string, handler: (d: any) => void) => { handlers[event]?.delete(handler); },
+    getCapabilities: () => Promise.resolve({ version: "0.2.24", siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
     // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which
@@ -48,4 +66,19 @@
     fillOffer: (p: any) => req("fillOffer", p),
   };
   window.dispatchEvent(new Event("cairn#initialized"));
+
+  // Discovery (EIP-6963 analog, under our OWN `csd:` namespace — window.cairn is NOT an EIP-1193
+  // provider, so we mirror the pattern rather than reuse the `eip6963:` names). Lets a dApp enumerate
+  // installed wallets without the single-global collision and coexist with other extensions. The dApp
+  // dispatches `csd:requestProvider`; we (re)announce a FROZEN detail {info:{uuid,name,icon,rdns},
+  // provider}. Tamper-resistant: the page can't mutate the frozen detail to swap the provider.
+  const uuid = (() => { try { return crypto.randomUUID(); } catch { return Date.now().toString(36) + Math.random().toString(36).slice(2); } })();
+  const ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5NiIgaGVpZ2h0PSI5NiIgdmlld0JveD0iMCAwIDk2IDk2Ij48cmVjdCB3aWR0aD0iOTYiIGhlaWdodD0iOTYiIHJ4PSIxOCIgZmlsbD0iIzBlMTExNiIvPjxnIGZpbGw9IiNlOGMzNGEiPjxlbGxpcHNlIGN4PSI0OCIgY3k9IjY2IiByeD0iMjYiIHJ5PSI5Ii8+PGVsbGlwc2UgY3g9IjQ4IiBjeT0iNDciIHJ4PSIxOSIgcnk9IjgiLz48ZWxsaXBzZSBjeD0iNDgiIGN5PSIzMSIgcng9IjEyIiByeT0iNiIvPjwvZz48L3N2Zz4=";
+  const detail = Object.freeze({
+    info: Object.freeze({ uuid, name: "Cairn Wallet", icon: ICON, rdns: "com.cairn-substrate.wallet" }),
+    provider: (window as any).cairn,
+  });
+  const announce = () => window.dispatchEvent(new CustomEvent("csd:announceProvider", { detail }));
+  window.addEventListener("csd:requestProvider", announce as EventListener);
+  announce();
 })();

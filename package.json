@@ -1,6 +1,6 @@
 {
   "name": "cairn-wallet",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "description": "Cairn Wallet — a non-custodial browser wallet for Compute Substrate (CSD). Likely the first CSD wallet.",
   "license": "MIT",
   "private": true,
@@ -8,7 +8,7 @@
   "scripts": {
     "build": "node build.mjs",
     "package": "node build.mjs && node scripts/package.mjs",
-    "test": "tsx test/selftest.ts && tsx test/multiwallet.ts && tsx test/pentest.ts && tsx test/extension-boundary.ts && tsx test/poc-signin-oracle.ts && tsx test/clearsign.ts && tsx test/cairnx.ts && tsx test/siwc.ts",
+    "test": "tsx test/selftest.ts && tsx test/multiwallet.ts && tsx test/pentest.ts && tsx test/extension-boundary.ts && tsx test/poc-signin-oracle.ts && tsx test/clearsign.ts && tsx test/cairnx.ts && tsx test/siwc.ts && tsx test/events.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

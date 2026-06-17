@@ -4,6 +4,7 @@
 // explicit user approval via the popup (pending-request queue).
 import { Wallet } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
+import { PortRegistry } from "./core/events.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -43,6 +44,26 @@ async function listConsents(): Promise<{ origin: string; addr: string; ts: numbe
   return Object.entries(c).map(([origin, v]) => ({ origin, addr: v.addr, ts: v.ts })).sort((a, b) => b.ts - a.ts);
 }
 
+// --- Provider events (doc 28 Phase 2): push accountsChanged/disconnect to connected dApp pages. ---
+// The CONTENT SCRIPT opens a long-lived port (it initiates, so no extra permission is needed); we track
+// ports by their browser-set, UNFORGEABLE sender origin. We push events ONLY to the relevant origins.
+// F11-safe: we NEVER push a new address — the sole account signal is `[]` ("you lost access / reconnect")
+// emitted on lock, account-switch, or consent-revoke. A page must call connect() again to (re)share.
+const eventRegistry = new PortRegistry();
+chrome.runtime?.onConnect?.addListener((port: any) => {
+  if (port?.name !== "cairn-events") return;
+  const origin = port.sender?.origin || port.sender?.url || "unknown";
+  eventRegistry.add(origin, port);
+  port.onDisconnect?.addListener(() => eventRegistry.remove(origin, port));
+});
+function emitToOrigin(origin: string, event: string, data: unknown): void { eventRegistry.emitToOrigin(origin, event, data); }
+// Emit ONLY to origins the user has connected (consented), never to every visited page — a random site
+// the user happens to have open must not learn the wallet's lock/account-switch timing.
+async function emitConnected(event: string, data: unknown): Promise<void> {
+  const c = await getConsents();
+  for (const origin of Object.keys(c)) emitToOrigin(origin, event, data);
+}
+
 async function runPopupMethod(method: string, args: any[]): Promise<any> {
   switch (method) {
     case "status": return wallet.status();
@@ -50,10 +71,10 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "restore": return wallet.restore(args[0], args[1]);
     case "import": return wallet.importKey(args[0], args[1]);
     case "unlock": return wallet.unlock(args[0]);
-    case "lock": return wallet.lock();
+    case "lock": { const r = await wallet.lock(); await emitConnected("accountsChanged", []); return r; }
     case "addAccount": return wallet.addAccount(args[0]);
     case "importAccount": return wallet.importAccount(args[0], args[1]);
-    case "switchAccount": return wallet.switchAccount(args[0]);
+    case "switchAccount": { const r = await wallet.switchAccount(args[0]); await emitConnected("accountsChanged", []); return r; }
     case "renameAccount": return wallet.renameAccount(args[0], args[1]);
     case "removeAccount": return wallet.removeAccount(args[0]);
     case "balance": return wallet.balance();
@@ -113,6 +134,11 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
       result = { addr: st.addr };
       await recordConsent(p.origin, st.addr);
     }
+    // EIP-2255-style explicit permission request (prompts like connect; records per-origin consent).
+    else if (p.method === "requestPermissions") {
+      await recordConsent(p.origin, st.addr);
+      result = [{ invoker: p.origin, accounts: [st.addr], grantedAt: Date.now() }];
+    }
     else if (p.method === "signin") {
       // defense-in-depth: the queue gate (AUTH-LEGACY-1) already blocks third-party signin, but
       // never run the session-minting legacy path for a non-first-party origin even if queued.
@@ -151,7 +177,7 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
 // Anything else is rejected before it can enter the pending queue or reach the popup UI
 // — so an arbitrary attacker-chosen `method` string can never be rendered or queued.
-const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
+const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
 
 // Pure READ / poll methods that must NOT reset the idle auto-lock. The approval window
 // polls status+pending every ~1.2s (approve.ts), so if these refreshed lastActive a
@@ -234,6 +260,22 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
           sendResponse({ ok: false, error: "signIn() is reserved for the wallet's first-party site; third-party sites must use the audience-bound signInWithCsd()." });
           return;
         }
+        // Per-origin permission queries (EIP-2255-style), origin-scoped + silent: getPermissions reads
+        // THIS origin's own grant; revokePermissions drops THIS origin's own consent. Both are keyed on
+        // the unforgeable sender origin, so a page can neither see nor revoke another origin's grant — no
+        // prompt needed (a read of / a self-revoke of one's own access). requestPermissions DOES prompt
+        // (it grants address visibility) → it falls through to the approval queue below.
+        if (msg.method === "getPermissions") {
+          const c = (await getConsents())[origin];
+          sendResponse({ ok: true, result: c ? [{ invoker: origin, accounts: [c.addr], grantedAt: c.ts }] : [] });
+          return;
+        }
+        if (msg.method === "revokePermissions") {
+          const r = await revokeConsent(origin);
+          emitToOrigin(origin, "accountsChanged", []); // tell a connected page it lost access (P2.3 events)
+          sendResponse({ ok: true, result: { revoked: r.removed } });
+          return;
+        }
         // Fast-path for ALREADY-CONNECTED origins: connect/getAddress may resolve the
         // address WITHOUT a fresh prompt — but ONLY when (a) the method is exactly
         // connect/getAddress (address visibility), (b) the wallet is UNLOCKED, (c) the
@@ -271,6 +313,10 @@ try {
   chrome.alarms?.create("cairn-autolock", { periodInMinutes: 1 });
   chrome.alarms?.onAlarm.addListener((a: any) => {
     if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {}));
-    if (a.name === "cairn-autolock") ready.then(() => wallet.autoLock(AUTO_LOCK_MS));
+    if (a.name === "cairn-autolock") ready.then(async () => {
+      const wasUnlocked = (await wallet.status()).unlocked;
+      await wallet.autoLock(AUTO_LOCK_MS);
+      if (wasUnlocked && !(await wallet.status()).unlocked) await emitConnected("accountsChanged", []); // idle-lock → tell pages
+    });
   });
 } catch { /* alarms permission unavailable — startup flush still runs */ }
