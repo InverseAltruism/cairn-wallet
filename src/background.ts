@@ -119,6 +119,9 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
       if (!wallet.isFirstPartyOrigin(p.origin)) { p.resolve({ ok: false, error: "signIn() is first-party only; use signInWithCsd()." }); return { done: true }; }
       result = await wallet.signIn();
     }
+    // Audience-bound SIWC for third parties: the wallet builds the message from the ATTESTED origin
+    // (p.origin) and signs it; it never mints a session, so it is safe for any origin.
+    else if (p.method === "signinWithCsd") result = await wallet.signInWithCsd(p.params, p.origin);
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest(p.params);
     else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
@@ -148,7 +151,7 @@ async function resolvePending(id: string, approve: boolean): Promise<{ done: boo
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
 // Anything else is rejected before it can enter the pending queue or reach the popup UI
 // — so an arbitrary attacker-chosen `method` string can never be rendered or queued.
-const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
+const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
 
 // Pure READ / poll methods that must NOT reset the idle auto-lock. The approval window
 // polls status+pending every ~1.2s (approve.ts), so if these refreshed lastActive a

@@ -23,6 +23,8 @@
     connect: () => req("connect"),
     getAddress: () => req("getAddress"),
     signIn: () => req("signin"),
+    signInWithCsd: (p: any) => req("signinWithCsd", p),
+    getCapabilities: () => Promise.resolve({ version: "0.2.23", siwc: "1", methods: ["connect", "getAddress", "signIn", "signInWithCsd", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
     // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which
