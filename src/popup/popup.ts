@@ -4,7 +4,7 @@
 import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
 import { formatUnits, parseUnits } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged } from "./clearsign.js";
+import { nameCautionHtml, reresolveUnchanged, lookalikeOf } from "./clearsign.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -674,11 +674,8 @@ async function renderSealed() {
 // Address-poisoning lookalike: attackers seed your history with an address that
 // shares the head+tail you eyeball but differs in the middle. Flag a recipient that
 // matches a previously-seen address on first 6 + last 4 hex chars but isn't identical.
-function lookalikeOf(to: string, known: string[]): string | null {
-  const t = to.toLowerCase(); const head = t.slice(0, 8), tail = t.slice(-4);
-  for (const k of known) { const a = k.toLowerCase(); if (a !== t && a.slice(0, 8) === head && a.slice(-4) === tail) return k; }
-  return null;
-}
+// lookalikeOf (the address-poisoning heuristic) is imported from ./clearsign.js — one definition,
+// so a tuning change can't land in only one of two copies of a security check.
 // Two-step send: "Review" shows a confirmation with the FULL recipient address,
 // amount, fee, and projected balance-after (defends against address-poisoning /
 // clipboard-swap — the user verifies exactly what will be signed), warns on a

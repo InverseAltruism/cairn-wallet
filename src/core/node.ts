@@ -154,6 +154,32 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
 }
 
+// Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).
+// The CALLER validates its own payment outputs + fee (caps, address shape, safe-integer sums); this
+// selects inputs from CHAIN-VERIFIED utxos, returns change ONLY to the wallet's own address (never a
+// caller-chosen one), refuses an empty output set, then signs + submits. Single-sourcing it keeps
+// that security posture — "inputs internal, change to self" — in ONE audited place. `outputs` are the
+// payment outputs BEFORE change; `emptyError` is the message if nothing (incl. change) would be paid.
+async function assembleValueTx(
+  rpc: string,
+  outputs: { value: number; scriptPubkey: string }[],
+  fee: number,
+  app: App,
+  priv: string,
+  emptyError = "tx would have no outputs",
+): Promise<SubmitResult> {
+  const addr = addrFromPriv(priv);
+  const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
+  const sv = await selectVerified(rpc, addr, need);
+  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
+  const outs = [...outputs];
+  const change = sv.total - need; // CHAIN-VERIFIED input total, not the RPC's report
+  if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
+  if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false };
+  const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
+  return signAndSubmit(rpc, tx, priv);
+}
+
 // `payouts` are optional value outputs carried in the SAME tx as the app payload (e.g. a
 // CairnX protocol fee to the treasury on a deploy / name registration). Same posture as
 // send/fillOffer: each recipient validated, sums safe-integer-guarded, inputs selected
@@ -163,7 +189,6 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
   // Cap the value outputs a Propose may carry (normally one protocol-fee output). Prevents a
   // hostile dApp from flooding the clear-signing window with hundreds of disguised payments.
   if (payouts.length > 8) return { ok: false, error: "too many outputs on a proposal (max 8)", sighashMatch: false };
-  const addr = addrFromPriv(priv);
   let sumOut = 0;
   for (const o of payouts) {
     if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false };
@@ -172,15 +197,8 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
     sumOut += v;
     if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false };
   }
-  const need = sumOut + fee;
-  const sv = await selectVerified(rpc, addr, need);
-  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
   const outputs = payouts.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  const change = sv.total - need; // CHAIN-VERIFIED input total
-  if (change > 0) outputs.push({ value: change, scriptPubkey: addr });
-  if (outputs.length === 0) return { ok: false, error: "tx would have no outputs", sighashMatch: false };
-  const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
-  return signAndSubmit(rpc, tx, priv);
+  return assembleValueTx(rpc, outputs, fee, app, priv);
 }
 
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
@@ -208,15 +226,8 @@ export async function send(rpc: string, p: { to: string; amount: number; fee: nu
   // Refuse anything outside the exactly-representable range (well above total supply).
   if (!Number.isSafeInteger(p.amount) || !Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(p.amount + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
-  const addr = addrFromPriv(priv);
-  const need = p.amount + p.fee;
-  const sv = await selectVerified(rpc, addr, need);
-  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
-  const change = sv.total - p.amount - p.fee; // computed from CHAIN-VERIFIED input values, not the RPC's report
   const outputs = [{ value: p.amount, scriptPubkey: p.to }];
-  if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self
-  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
-  return signAndSubmit(rpc, tx, priv);
+  return assembleValueTx(rpc, outputs, p.fee, { type: "None" }, priv);
 }
 
 // Multi-output transfer (app:None). Same single-key / single-signature model as
@@ -239,15 +250,8 @@ export async function sendMany(rpc: string, p: { outputs: { to: string; value: n
   }
   if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(sumOut + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
-  const addr = addrFromPriv(priv);
-  const need = sumOut + p.fee;
-  const sv = await selectVerified(rpc, addr, need);
-  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
-  const change = sv.total - need; // CHAIN-VERIFIED input total
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self, never a caller-chosen address
-  const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs };
-  return signAndSubmit(rpc, tx, priv);
+  return assembleValueTx(rpc, outputs, p.fee, { type: "None" }, priv);
 }
 
 // Fill an on-chain offer (CairnX-style atomic delivery-versus-payment): ONE transaction
@@ -275,21 +279,8 @@ export async function fillOffer(
   }
   if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(sumOut + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
-  const addr = addrFromPriv(priv);
-  const need = sumOut + p.fee;
-  const sv = await selectVerified(rpc, addr, need);
-  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
-  const change = sv.total - need; // CHAIN-VERIFIED input total
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  if (change > 0) outputs.push({ value: change, scriptPubkey: addr }); // change back to self, never a caller-chosen address
-  if (outputs.length === 0) return { ok: false, error: "tx would have no outputs — add a payment or leave change", sighashMatch: false };
-  const tx: Tx = {
-    version: 1, locktime: 0,
-    app: { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 },
-    inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })),
-    outputs,
-  };
-  return signAndSubmit(rpc, tx, priv);
+  return assembleValueTx(rpc, outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs — add a payment or leave change");
 }
 
 // Register a Cairn item's off-chain content (hash-verified by the server).
