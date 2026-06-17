@@ -8,7 +8,8 @@ import { generate, fromPriv, newMnemonic, deriveAccount, isValidMnemonic, normal
 import { sealNew, sealWith, openWith, deriveVaultKey, exportKeyRaw, importKeyRaw, type Vault } from "./keystore.js";
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
-import { cairnPayloadHash } from "./csdtx.js";
+import { cairnPayloadHash, signSighash } from "./csdtx.js";
+import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
@@ -320,6 +321,45 @@ export class Wallet {
     return r;
   }
   signIn() { return node.signIn(this.api, this.must().privkey); }
+
+  // Audience-bound "Sign in with CSD" (SIWC) for THIRD-PARTY sites — the secure replacement for the
+  // legacy first-party-only signIn(). The wallet builds a CAIP-122-style message binding the
+  // requesting site's domain (derived from the UNFORGEABLE sender.origin, NEVER a dApp-asserted
+  // string), the RP's single-use nonce, the chain id, and an issued-at/expiration window; signs the
+  // domain-separated SIWC digest; and returns ONLY the signed artifact. It NEVER talks to cairn's
+  // /auth and NEVER mints a session — the dApp's own server verifies (verifySiwc) and issues its own
+  // session. `origin` is supplied by the background from sender.origin (browser-set, unforgeable).
+  async signInWithCsd(
+    params: { nonce?: unknown; statement?: unknown; uri?: unknown; domain?: unknown; expirationSecs?: unknown; notBeforeSecs?: unknown; requestId?: unknown; resources?: unknown },
+    origin: string,
+  ): Promise<{ account: string; pub33: string; sig64: string; message: string; chainId: string }> {
+    const a = this.must();
+    const domain = originToDomain(origin);
+    if (!domain) throw new Error("sign-in: unknown requesting origin");
+    const p = params || {};
+    // The page MAY pass its domain, but it is only cross-checked against the real origin — never trusted.
+    if (p.domain !== undefined && String(p.domain) !== domain) throw new Error("sign-in: declared domain does not match the requesting site");
+    // uri defaults to the origin root; if supplied it MUST be on the requesting site.
+    let uri: string;
+    if (p.uri === undefined || p.uri === null) uri = origin.replace(/\/+$/, "") + "/";
+    else { let h: string | null; try { h = new URL(String(p.uri)).host; } catch { h = null; } if (h !== domain) throw new Error("sign-in: uri must be on the requesting site"); uri = String(p.uri); }
+    const nonce = String(p.nonce ?? "");
+    if (!/^[A-Za-z0-9]{8,}$/.test(nonce)) throw new Error("sign-in: a server-issued nonce (>=8 alphanumeric chars) is required");
+    const statement = p.statement != null && String(p.statement) !== "" ? String(p.statement) : undefined;
+    if (statement !== undefined && /[\r\n]/.test(statement)) throw new Error("sign-in: statement must be a single line");
+    const expSecs = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600))); // clamp 60s..1h, default 10m
+    const now = Date.now();
+    const fields: SiwcFields = {
+      domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
+      nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
+      notBefore: p.notBeforeSecs != null && Number.isFinite(Number(p.notBeforeSecs)) ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
+      requestId: p.requestId != null ? String(p.requestId) : undefined,
+      resources: Array.isArray(p.resources) ? p.resources.map((x) => String(x)) : undefined,
+    };
+    const message = buildSiwcMessage(fields);
+    const { sig64, pub33 } = signSighash(siwcDigest(message), a.privkey);
+    return { account: a.addr, pub33, sig64, message, chainId: CSD_CHAIN_MAINNET };
+  }
 
   // Plain CSD transfer to any address. fee default 0.01 CSD.
   async send(to: string, amount: number, fee = 1_000_000) { const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(r, { type: "send", to, amount, fee }); return r; }

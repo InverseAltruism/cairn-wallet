@@ -16,4 +16,20 @@ window.addEventListener("message", (ev: MessageEvent) => {
   });
 });
 
+// Provider events: open a long-lived port to the background and relay its pushes to the inpage provider.
+// The CONTENT SCRIPT initiates the connection, so no extra permission is needed; the background learns
+// this page's origin from the (unforgeable) port sender. On MV3 service-worker idle the port may drop —
+// reconnect lazily so later events still arrive. Only background-originated event messages are relayed.
+function connectEvents() {
+  try {
+    const port = chrome.runtime.connect({ name: "cairn-events" });
+    port.onMessage.addListener((m: any) => {
+      if (m?.kind !== "cairn-event") return;
+      window.postMessage({ target: "cairn-inpage-event", event: m.event, data: m.data }, window.location.origin);
+    });
+    port.onDisconnect.addListener(() => { setTimeout(connectEvents, 1000); });
+  } catch { /* extension context unavailable */ }
+}
+connectEvents();
+
 export {};

@@ -119,8 +119,22 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
 
 export function describe(r: any): string {
   const p = r.params || {};
-  if (r.method === "connect" || r.method === "getAddress") return "<b>Connect</b> — share your address with this site.";
+  if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions") return "<b>Connect</b> — grant this site permission to see your address (no transaction, no funds move).";
   if (r.method === "signin") return "<b>Sign in with CSD</b> — prove your address (no transaction, no funds move).";
+  // Audience-bound SIWC. The audience is the REAL requesting site (origin), bound into the signed
+  // message; show it prominently so the user sees exactly which site they authenticate to. If the
+  // page declared a different domain than its origin, warn — the wallet will refuse it.
+  if (r.method === "signinWithCsd") {
+    const aud = (() => { try { return new URL(String(r.origin)).host; } catch { return String(r.origin || "this site"); } })();
+    const nonce = String(p.nonce ?? "");
+    const nshort = nonce.length > 16 ? nonce.slice(0, 8) + "…" + nonce.slice(-4) : nonce;
+    const stmt = p.statement != null && String(p.statement) !== "" ? `<br>“${escapeHtml(String(p.statement))}”` : "";
+    const expS = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600)));
+    const mism = p.domain !== undefined && String(p.domain) !== aud
+      ? `<br><b class="err">⚠ this page asked to sign in as “${escapeHtml(String(p.domain))}”, but you are on “${escapeHtml(aud)}” — sign-in will be refused.</b>` : "";
+    return `<b>Sign in to <code>${escapeHtml(aud)}</code></b> — prove your address to this site. <b>No transaction, no funds move.</b>${stmt}`
+      + `<br><span class="dim">audience: ${escapeHtml(aud)} · nonce ${escapeHtml(nshort)} · expires in ~${expS}s</span>${mism}`;
+  }
   // Clear-signing: show EVERYTHING the site controls and the chain will commit —
   // not just domain+fee. payloadHash/uri are dApp-supplied and were previously hidden.
   if (r.method === "propose") {
@@ -222,7 +236,7 @@ export function debitOf(r: any): number {
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
     return total + baseVal(p.fee || (r.method === "fillOffer" ? 5_000_000 : 1_000_000));
   }
-  if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return 0;
+  if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return 0;
   // a propose may carry protocol-fee outputs (CairnX deploy / name registration) → count them
   const outs = r.method === "propose" && Array.isArray(p.outputs) ? p.outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
   return outs + baseVal(p.fee || (r.method === "sealClaim" ? 25000000 : 0));
@@ -261,7 +275,7 @@ export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: 
 
 // Cost summary line from the request's own params (no network).
 export function costLine(r: any): string {
-  if (r.method === "connect" || r.method === "getAddress" || r.method === "signin") return "no funds move — this only shares/signs your identity.";
+  if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return "no funds move — this only proves your address to the site.";
   if (r.method === "send") { const fee = baseVal(r.params?.fee || 1_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
   if (r.method === "fillOffer") {
     const fee = baseVal(r.params?.fee || 5_000_000); const sent = debitOf(r) - fee;
