@@ -352,7 +352,7 @@ export class Wallet {
     const fields: SiwcFields = {
       domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
       nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
-      notBefore: p.notBeforeSecs != null ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
+      notBefore: p.notBeforeSecs != null && Number.isFinite(Number(p.notBeforeSecs)) ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
       requestId: p.requestId != null ? String(p.requestId) : undefined,
       resources: Array.isArray(p.resources) ? p.resources.map((x) => String(x)) : undefined,
     };
