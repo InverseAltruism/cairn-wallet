@@ -138,8 +138,9 @@ export function describe(r: any): string {
     const resList = Array.isArray(p.resources) && p.resources.length
       ? `<br><span class="dim">resources (${p.resources.length}): ${p.resources.slice(0, 10).map((x: any) => escapeHtml(String(x).slice(0, 256))).join(" · ")}</span>` : "";
     const reqLine = p.requestId != null && String(p.requestId) !== "" ? `<br><span class="dim">request id: ${escapeHtml(String(p.requestId))}</span>` : "";
+    const nbfLine = p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? `<br><span class="dim">not valid before: ~${Math.floor(Number(p.notBeforeSecs))}s from now</span>` : "";
     return `<b>Sign in to <code>${escapeHtml(aud)}</code></b> — prove your address to this site. <b>No transaction, no funds move.</b>${stmt}`
-      + `<br><span class="dim">audience: ${escapeHtml(aud)} · nonce ${escapeHtml(nshort)} · expires in ~${expS}s</span>${uriLine}${resList}${reqLine}${mism}`;
+      + `<br><span class="dim">audience: ${escapeHtml(aud)} · nonce ${escapeHtml(nshort)} · expires in ~${expS}s</span>${uriLine}${resList}${reqLine}${nbfLine}${mism}`;
   }
   // Clear-signing: show EVERYTHING the site controls and the chain will commit —
   // not just domain+fee. payloadHash/uri are dApp-supplied and were previously hidden.

@@ -180,15 +180,22 @@ export class Wallet {
     if (g.failed >= 5) g.until = Date.now() + Math.min(5 * 60_000, 5_000 * 2 ** (g.failed - 5)); // 5s,10s,20s,… cap 5min
     await this.session.set("authGuard", g).catch(() => {});
   }
+  // Run a password check under the brute-force guard: fast-reject if locked out, else count the attempt
+  // (success resets, failure increments). One helper used by unlock/exportKey/exportMnemonic so the
+  // check-then-count logic lives in exactly one place (no per-call try/catch to drift out of sync).
+  private async withAuthGuard<T>(verify: () => Promise<T>): Promise<T> {
+    await this.authGuardCheck();
+    try { const r = await verify(); await this.authGuardRecord(true); return r; }
+    catch (e) { await this.authGuardRecord(false); throw e; }
+  }
 
   async unlock(password: string): Promise<{ addr: string }> {
     const v: Vault | null = await this.store.get("vault");
     if (!v) throw new Error("no wallet — create or import one first");
-    await this.authGuardCheck();
-    const key = await deriveVaultKey(password, v.salt, v.iter);
-    let doc: string;
-    try { doc = await openWith(v, key); } catch (e) { await this.authGuardRecord(false); throw e; } // count bad-password (GCM tag) attempts
-    await this.authGuardRecord(true);
+    const { key, doc } = await this.withAuthGuard(async () => {
+      const key = await deriveVaultKey(password, v.salt, v.iter);
+      return { key, doc: await openWith(v, key) }; // openWith throws "bad password" on GCM-tag mismatch → counted
+    });
     this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
     await this.applyDoc(doc);
     await this.persistVault();
@@ -252,7 +259,7 @@ export class Wallet {
       await this.applyDoc(doc);
       this.lastActive = Number(ts ?? Date.now());
       return true;
-    } catch { this.lock(); return false; }            // bad/forged session → stay locked + clear
+    } catch { await this.lock(); return false; }       // bad/forged session → stay locked + clear (await: wipe the key before returning)
   }
 
   private async clearSession(): Promise<void> {
@@ -566,7 +573,7 @@ export class Wallet {
     // SW restarts (genuine activity extends the unlocked session; pure reads never call touch()).
     if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => {});
   }
-  autoLock(maxIdleMs: number) { if (this.accts && Date.now() - this.lastActive > maxIdleMs) void this.lock(); }
+  async autoLock(maxIdleMs: number) { if (this.accts && Date.now() - this.lastActive > maxIdleMs) await this.lock(); } // await: the idle-lock race LOCK-ASYNC targets
 
   // ── durable off-chain content registration (account-agnostic) ──────────────
   private async addPending(content: unknown, txid: string) {
@@ -593,10 +600,7 @@ export class Wallet {
   // Reveal the ACTIVE account's private key — requires re-entering the password.
   async exportKey(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
-    await this.authGuardCheck();
-    let doc: string;
-    try { doc = await openWith(v, await deriveVaultKey(password, v.salt, v.iter)); } catch (e) { await this.authGuardRecord(false); throw e; }
-    await this.authGuardRecord(true);
+    const doc = await this.withAuthGuard(async () => openWith(v, await deriveVaultKey(password, v.salt, v.iter)));
     let parsed: VaultDoc | null = null;
     try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy raw key */ }
     if (!parsed) return doc.startsWith("0x") ? doc : "0x" + doc; // legacy single-key vault
@@ -608,10 +612,7 @@ export class Wallet {
   // for legacy/import-only wallets that have no seed phrase.
   async exportMnemonic(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
-    await this.authGuardCheck();
-    let doc: string;
-    try { doc = await openWith(v, await deriveVaultKey(password, v.salt, v.iter)); } catch (e) { await this.authGuardRecord(false); throw e; }
-    await this.authGuardRecord(true);
+    const doc = await this.withAuthGuard(async () => openWith(v, await deriveVaultKey(password, v.salt, v.iter)));
     let parsed: VaultDoc | null = null;
     try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy */ }
     if (!parsed?.mnemonic) throw new Error("this wallet has no recovery phrase (it was created from an imported key)");

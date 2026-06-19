@@ -2,14 +2,25 @@
 // call is relayed to the extension and gated by user approval + an unlocked wallet.
 // The private key is NEVER exposed to the page.
 (() => {
-  // Per-page-load secret shared ONLY with our content script: the content script injects THIS script
-  // with a `data-cairn-nonce` attribute and removes it on load. At document_start no page script has
-  // run yet, so the page never observes the nonce. Every RESPONSE/EVENT the content script sends back
-  // must carry it; without it a co-present page script (XSS, malicious ad) cannot forge a reply even if
-  // it observes a request id (audit SEQ-INJECT). `document.currentScript` is this <script> during the
-  // synchronous top-level run. Requests we POST OUT deliberately do NOT carry the nonce (that would leak
-  // it on `window`); only the inbound direction — the one an attacker would forge — is authenticated.
-  const NONCE = (() => { try { const n = (document.currentScript as HTMLScriptElement | null)?.dataset?.cairnNonce; return typeof n === "string" && n ? n : ""; } catch { return ""; } })();
+  // Per-page-load secret shared with our content script via this script's `data-cairn-nonce` attribute,
+  // which we clear the INSTANT we read it. Every RESPONSE/EVENT the content script sends back must carry
+  // it, so a co-present page script can't forge a reply by guessing the (now-random) request id. Requests
+  // we POST OUT deliberately omit the nonce (posting it on `window` would leak it); only the inbound
+  // direction — the one an attacker forges — is authenticated. RESIDUAL (honest): the attribute is briefly
+  // DOM-readable while this <script src> loads asynchronously, so a script running in that window could
+  // read it and regain forgery capability — full isolation would need inline injection, which strict page
+  // CSP blocks. This still removes the trivial "post any reply" forge and, regardless, the security-
+  // critical path is unaffected: signing/connect require popup approval bound to the unforgeable sender
+  // origin, and the key never reaches the page. Fail-closed: no currentScript ⇒ NONCE="" ⇒ all replies
+  // rejected rather than trusted (breaks connectivity loudly, never silently downgrades).
+  const NONCE = (() => {
+    try {
+      const el = document.currentScript as HTMLScriptElement | null;
+      const n = el?.dataset?.cairnNonce;
+      el?.removeAttribute("data-cairn-nonce"); // minimise the exposure window — don't wait for content's onload
+      return typeof n === "string" && n ? n : "";
+    } catch { return ""; }
+  })();
   const newId = () => { try { return crypto.randomUUID(); } catch { return Date.now().toString(36) + Math.random().toString(36).slice(2); } };
   const waiters = new Map<string, (v: any) => void>();
   window.addEventListener("message", (ev: MessageEvent) => {

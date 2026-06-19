@@ -8,7 +8,7 @@
   "scripts": {
     "build": "node build.mjs",
     "package": "node build.mjs && node scripts/package.mjs",
-    "test": "tsx test/selftest.ts && tsx test/multiwallet.ts && tsx test/pentest.ts && tsx test/extension-boundary.ts && tsx test/poc-signin-oracle.ts && tsx test/clearsign.ts && tsx test/cairnx.ts && tsx test/siwc.ts && tsx test/events.test.ts",
+    "test": "tsx test/selftest.ts && tsx test/multiwallet.ts && tsx test/pentest.ts && tsx test/extension-boundary.ts && tsx test/poc-signin-oracle.ts && tsx test/clearsign.ts && tsx test/cairnx.ts && tsx test/siwc.ts && tsx test/events.test.ts && tsx test/bruteforce.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
