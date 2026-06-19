@@ -268,7 +268,7 @@ export function lookalikeOf(to: string, known: string[]): string | null {
 export function nameCautionHtml(name: string, verified?: boolean): string {
   const n = escapeHtml(String(name));
   if (verified) {
-    return `✓ <b><code>${n}.csd</code> is verified on-chain.</b> The wallet independently confirmed (via SPV) that this address is what the chain records for <code>${n}.csd</code>. Still confirm the <b>To</b> address for large sends — a former owner could in principle present a stale mapping.`;
+    return `✓ <b><code>${n}.csd</code> is verified on-chain (as shown).</b> The wallet independently confirmed (via SPV) that this address is backed by signed, mined records for <code>${n}.csd</code>. For large sends still confirm the <b>To</b> address: a hostile name server could in principle hide a record (a later transfer, or a competing claim) — verification proves "chain-backed as shown", not "provably current".`;
   }
   return `⚠ <b>Sending to <code>${n}.csd</code> — verify the full address below.</b> The address was supplied by the name service and could <b>not</b> be verified on-chain right now; a malicious or intercepted server could substitute it. Confirm the <b>To</b> address is the correct owner of <code>${n}.csd</code> before sending.`;
 }

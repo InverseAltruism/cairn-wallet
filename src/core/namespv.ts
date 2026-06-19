@@ -15,13 +15,22 @@
 //                      does NOT commit the scriptSig) and reconstruct the resolver ChainEvent.
 //   then: resolve(events, verifiedTip).names[name] — the audited resolver, byte-for-byte.
 //
-// HONEST SCOPE (must not be overstated in the UI): this proves the mapping is backed by SPV-verified,
-// correctly-signed events AS SHOWN by the resolver's hint list. It defeats FABRICATION (the dominant
-// hostile-resolver redirect). It does NOT by itself prove COMPLETENESS — a resolver colluding with a
-// FORMER owner could WITHHOLD a later transfer to show a stale-but-real mapping (no event is forged;
-// one is hidden). So "verified" means "chain-backed as shown", and the send UX keeps a caution for
-// high-value sends; a second-source cross-check (doc 34 §6 follow-on) closes the residual. Everything
-// fails CLOSED: any gap, mismatch, or error returns verified:false with a reason — never a false pass.
+// HONEST SCOPE (must NOT be overstated in the UI): this proves the mapping is backed by SPV-verified,
+// correctly-signed, mined events AS SHOWN by the resolver's hint list. It defeats FABRICATION (the
+// dominant hostile-resolver redirect — the attacker has no signed/mined events for 0xATTACKER). It does
+// NOT by itself prove COMPLETENESS: the resolver chooses WHICH txids to show, and the wallet cannot prove
+// it was shown ALL of a name's events. So a hostile resolver can WITHHOLD events to mislead the replay —
+// two cases, both real:
+//   (a) stale: hide a later nxfer/nset so an old (real) mapping looks current → routes to a prior owner.
+//   (b) **competing-claim**: hide the legitimate owner's WINNING claim (lower effectiveHeight) and show
+//       only an attacker's REAL, mined, fee-paid but LOSING `name` registration for the same name → the
+//       replay sees only the attacker's claim → resolves to the ATTACKER's address → matches the hostile
+//       resolver's claim → verified:true. NOT arbitrary (the attacker must have pre-registered + paid for
+//       a losing claim on that exact name AND control/MITM the resolver) but it CAN route to an attacker.
+// So "verified" means "chain-backed AS SHOWN", never "provably the current/winning mapping". The send UX
+// keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
+// cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
+// error returns verified:false with a reason — never a false pass against FABRICATION.
 import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, addrFromPub, verifyDigest, resolve, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
 
 // Baked checkpoint: a real finalized CSD header at the NAMES-ACTIVATION floor (V11_HEIGHT). No name can
