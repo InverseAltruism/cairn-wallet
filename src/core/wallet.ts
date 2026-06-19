@@ -11,6 +11,7 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { verifyName as spvVerifyName, liveSpvSource, type NameVerification, type SpvSource } from "./namespv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
@@ -454,7 +455,7 @@ export class Wallet {
   // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
   // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
   // owner (so a name works as a recipient even before its holder sets a resolver record).
-  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string }> {
+  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number }> {
     const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
     // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
     // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
@@ -467,8 +468,50 @@ export class Wallet {
       const j = await r.json();
       if (j?.lapsed) return { ok: false, error: `${nm}.csd lease has lapsed — can't send to it` };
       if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
-      return { ok: true, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
+      const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
+      // XREPO-1 cure: independently SPV-verify the name → address against the chain. The resolver's
+      // answer above is UNTRUSTED until this confirms it. Best-effort + fail-closed: a PROVEN mismatch
+      // (the chain says a different address) REFUSES; an unavailable verifier returns the address with a
+      // caution flag (today's behaviour + a signal), never silently "verified".
+      const v = await this.verifyName(nm).catch(() => null);
+      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth };
+      if (v && /does NOT match|hostile/i.test(v.reason ?? ""))
+        return { ok: false, error: `${nm}.csd: the resolver's address contradicts the chain — refusing (possible hostile resolver)`, verified: false };
+      return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable" };
     } catch { return { ok: false, error: "name lookup failed" }; }
+  }
+
+  // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies
+  // itself, replaying the AUDITED resolver over merkle-verified records (see core/namespv.ts). Returns the
+  // fail-closed tri-state. Exposed to dApps (popup "verifyName") so a recipient can be confirmed before a send.
+  async verifyName(name: string): Promise<NameVerification & { name: string }> {
+    const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, scope: "as-shown", name: nm };
+    try {
+      const r = await fetch(`${this.tradeApi}/cairnx/name-history/${encodeURIComponent(nm)}`);
+      if (r.status === 404) return { verified: false, reason: `${nm}.csd is not registered`, scope: "as-shown", name: nm };
+      if (!r.ok) return { verified: false, reason: "name-history lookup failed", scope: "as-shown", name: nm };
+      const j = await r.json();
+      if (!j?.ok) return { verified: false, reason: j?.error ?? "name-history unavailable", scope: "as-shown", name: nm };
+      const claim = { addr: j.resolve?.addr, owner: j.resolve?.owner, via: j.resolve?.via, lapsed: j.resolve?.lapsed };
+      const res = await spvVerifyName(nm, claim, Array.isArray(j.events) ? j.events : [], await this.spvSource());
+      return { ...res, name: nm };
+    } catch (e) {
+      return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, scope: "as-shown", name: nm };
+    }
+  }
+
+  // Lazily built PoW-verified-header SPV source (singleton per wallet), with the header-chain snapshot
+  // persisted in the wallet store so only the FIRST verify pays the cold-sync cost. Rebuilt on failure.
+  private _spvSrc: Promise<SpvSource> | null = null;
+  private spvSource(): Promise<SpvSource> {
+    if (!this._spvSrc) {
+      this._spvSrc = liveSpvSource({
+        rpcBase: this.rpc, headersBase: this.api,
+        cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
+      }).catch((e) => { this._spvSrc = null; throw e; });
+    }
+    return this._spvSrc;
   }
   // v1.8: the height-gated renewal fee priced at the CURRENT tip — for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.

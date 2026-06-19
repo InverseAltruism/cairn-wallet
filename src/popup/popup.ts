@@ -37,6 +37,7 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "cairnxTokens": return w.cairnxTokens();
     case "cairnxTransfer": return w.cairnxTransfer(args[0]);
     case "resolveName": return w.resolveName(args[0]);
+    case "verifyName": return w.verifyName(args[0]);
     case "cairnxNameRenew": return w.cairnxNameRenew(args[0]);
     case "cairnxSetPrimary": return w.cairnxSetPrimary(args[0]);
     case "setTradeApi": return w.setTradeApi(args[0]);
@@ -283,18 +284,21 @@ async function doNameAction(kind: "renew" | "primary", name: string) {
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(s.toLowerCase());
-async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string }> {
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean }> {
   const r = (raw || "").trim();
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) return { ok: true, addr: r.toLowerCase(), name: null, label: null };
   if (looksLikeName(r)) {
     const nm = r.toLowerCase().replace(/\.csd$/, "");
     const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
+    // XREPO-1 cure: resolveName now SPV-verifies the name → address against a PoW header chain the wallet
+    // checks itself (core/namespv.ts), so a hostile resolver that fabricated a redirect is REFUSED here
+    // (res.ok === false). A could-not-verify (res.verified === false) still returns the address but flags
+    // it ⚠ in the review; a chain-confirmed mapping shows ✓. The full address remains the unmissable thing
+    // the user confirms; this badge tells them whether the chain backs it.
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
-    // The address comes from the (configurable) name service and is NOT chain-verified by the wallet
-    // (audit XREPO-1: the extension has no light client — trustless .csd resolution waits on it).
-    // The full resolved address is the unmissable thing the user confirms (the To row + the name
-    // caution banner); this label just identifies the mapping in the review.
-    return { ok: true, addr: res.addr, name: nm, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})` };
+    const verified = res.verified === true;
+    const badge = verified ? `✓ verified on-chain${res.depth ? ` (${res.depth} conf)` : ""}` : "⚠ NOT chain-verified — confirm the address";
+    return { ok: true, addr: res.addr, name: nm, verified, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
