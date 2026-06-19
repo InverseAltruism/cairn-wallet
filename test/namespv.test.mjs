@@ -142,5 +142,20 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   ok("a resolver-reported lapsed lease is REFUSED up front", r.verified === false && /lapsed/i.test(r.reason));
 }
 
+// 9. DoS-RESISTANCE — a hostile node pads a hinted block with an app-LESS filler tx (no `app` field).
+//    rpcTxToTx must not throw on it (the fix); the hinted record still verifies. (review finding #2)
+{
+  const filler = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] }; // NO app
+  const txs = [claimTx, filler];
+  const merkle = merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }))));
+  const blocks = new Map([[33700, txs]]);
+  const hints = [{ txid: ctxid(rpcTxToTx(claimTx)), height: 33700, pos: 0 }];
+  // a source that serves the real (filler-padded) tx-set + its true merkle
+  const src = { async prepare() { return { verifiedTip: 33800, nodeTip: 33800 }; }, async blockAt() { return { merkle, txs }; } };
+  // only a claim (no nset) ⇒ addr defaults to owner A
+  const r = await verifyName(NAME, { addr: A, owner: A }, hints, src);
+  ok("an app-less filler tx in a hinted block does NOT break verification (no throw)", r.verified === true && r.owner === A);
+}
+
 console.log(`\nnamespv: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

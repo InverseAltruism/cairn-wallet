@@ -258,15 +258,19 @@ export function lookalikeOf(to: string, known: string[]): string | null {
   return null;
 }
 
-// XREPO-1 mitigation. Sending to "<name>.csd" resolves the address through the (configurable /
-// MITM-able) name service, which the extension cannot yet verify against the chain — it bundles no
-// light client, so trustless .csd resolution is gated on that future feature (SECURITY-ROADMAP). The
-// proportionate defense is to make the resolved FULL address the unmissable thing the user confirms,
-// with an explicit "a malicious server could substitute this" caution. Returns the warn-banner HTML
-// (the name is regex-constrained at resolution, but escape it anyway — defense in depth).
-export function nameCautionHtml(name: string): string {
+// XREPO-1. Sending to "<name>.csd" resolves the address through a configurable / MITM-able name service.
+// The wallet now SPV-verifies that mapping against a PoW header chain it checks itself (core/namespv.ts),
+// so the banner is VERIFIED-AWARE: when the chain backs the address it says so (and notes the honest
+// residual — a former owner could still show a stale-but-real mapping); when it could NOT be verified
+// (resolver offline, service not yet upgraded, or a proven mismatch already refused upstream) it carries
+// the original strong caution. Either way the resolved FULL address stays the unmissable thing the user
+// confirms. (The name is regex-constrained at resolution, but escape it anyway — defense in depth.)
+export function nameCautionHtml(name: string, verified?: boolean): string {
   const n = escapeHtml(String(name));
-  return `⚠ <b>Sending to <code>${n}.csd</code> — verify the full address below.</b> The address was supplied by the name service, which the wallet cannot yet verify against the chain; a malicious or intercepted server could substitute it. Confirm the <b>To</b> address is the correct owner of <code>${n}.csd</code> before sending.`;
+  if (verified) {
+    return `✓ <b><code>${n}.csd</code> is verified on-chain.</b> The wallet independently confirmed (via SPV) that this address is what the chain records for <code>${n}.csd</code>. Still confirm the <b>To</b> address for large sends — a former owner could in principle present a stale mapping.`;
+  }
+  return `⚠ <b>Sending to <code>${n}.csd</code> — verify the full address below.</b> The address was supplied by the name service and could <b>not</b> be verified on-chain right now; a malicious or intercepted server could substitute it. Confirm the <b>To</b> address is the correct owner of <code>${n}.csd</code> before sending.`;
 }
 
 // XREPO-1 confirm-time guard. A name recipient is re-resolved at sign-time and the send is REFUSED

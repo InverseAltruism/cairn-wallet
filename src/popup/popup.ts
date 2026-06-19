@@ -364,7 +364,7 @@ $("btn-tsend").addEventListener("click", async () => {
   $("tc-fee").textContent = (CAIRNX_FEE / 1e8) + " CSD";
   const warnEl = $("tc-warn") as HTMLElement;
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified) : "";
   if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Transfers are irreversible.`; warnEl.hidden = false; }
   else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
@@ -709,7 +709,7 @@ $("btn-send").addEventListener("click", async () => {
   const warnEl = $("c-warn") as HTMLElement;
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified) : "";
   if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — payments are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Payments are irreversible.`; warnEl.hidden = false; }
   else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }

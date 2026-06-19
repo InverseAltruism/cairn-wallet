@@ -133,7 +133,10 @@ export async function verifyName(name: string, claim: NameClaim, hints: NameHint
     const events: Record<string, unknown>[] = [];
     for (const [height, hs] of byHeight) {
       const { merkle, txs } = await src.blockAt(height);            // THROWS if the header can't be PoW-verified
-      const rebuilt = txs.map(rpcTxToTx);
+      // A plain/coinbase tx may carry no `app`; default it to {None} BEFORE decode so a hostile node
+      // can't omit `app` on one filler tx to make rpcTxToTx throw and DoS the whole verify (swapguard does
+      // the same `jt.app || {type:"None"}` guard). A None tx still has a real txid → the merkle bind holds.
+      const rebuilt = txs.map((t) => rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }));
       const ids = rebuilt.map(ctxid);
       // FULL-block bind: the entire tx-set must hash to the verified header's merkle root, so the node
       // cannot have omitted/altered/added any committed body within this block (completeness-in-block).
