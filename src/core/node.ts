@@ -221,6 +221,9 @@ export function attest(rpc: string, p: { proposalId: string; score: number; conf
 export async function send(rpc: string, p: { to: string; amount: number; fee: number }, priv: string): Promise<SubmitResult> {
   if (!/^0x[0-9a-fA-F]{40}$/.test(p.to)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false };
   if (!(p.amount > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false };
+  // Reject a zero fee up front: the node enforces a minimum feerate, so a zero-fee tx is built and signed
+  // but then silently rejected by the mempool (audit FEE-FLOOR). Surface it here as a clear error instead.
+  if (!(p.fee > 0)) return { ok: false, error: "fee must be positive (the node enforces a minimum fee)", sighashMatch: false };
   // CSD amounts are integer base units carried as JS numbers. Above 2^53 a Number
   // silently loses precision, so the value you sign could differ from what you meant.
   // Refuse anything outside the exactly-representable range (well above total supply).

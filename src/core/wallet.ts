@@ -246,9 +246,9 @@ export class Wallet {
     await this.store.del("addr"); // legacy single-address key
   }
 
-  lock(): void {
+  async lock(): Promise<void> {
     this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; this.mnemonic = null; this.nextIndex = 0;
-    void this.clearSession(); // wipe the in-RAM session key too (fire-and-forget)
+    await this.clearSession(); // wipe the in-RAM session key BEFORE returning, so "locked" can't race a still-persisted key (audit LOCK-ASYNC)
   }
 
   // ── account management (require unlocked) ──────────────────────────────────
@@ -529,7 +529,7 @@ export class Wallet {
     // SW restarts (genuine activity extends the unlocked session; pure reads never call touch()).
     if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => {});
   }
-  autoLock(maxIdleMs: number) { if (this.accts && Date.now() - this.lastActive > maxIdleMs) this.lock(); }
+  autoLock(maxIdleMs: number) { if (this.accts && Date.now() - this.lastActive > maxIdleMs) void this.lock(); }
 
   // ── durable off-chain content registration (account-agnostic) ──────────────
   private async addPending(content: unknown, txid: string) {
@@ -579,7 +579,7 @@ export class Wallet {
   // preimages — so a freshly-created wallet can't surface a prior owner's data.
   async reset(): Promise<void> {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
-    this.lock();
+    await this.lock();
     for (const w of wallets) { await this.store.del(histKey(w.addr)); await this.store.del(sealKey(w.addr)); }
     for (const k of ["vault", "wallets", "active", "addr", "txHistory", "sealedClaims", "pendingContent"]) await this.store.del(k);
   }
