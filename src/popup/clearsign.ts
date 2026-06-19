@@ -132,8 +132,14 @@ export function describe(r: any): string {
     const expS = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600)));
     const mism = p.domain !== undefined && String(p.domain) !== aud
       ? `<br><b class="err">⚠ this page asked to sign in as “${escapeHtml(String(p.domain))}”, but you are on “${escapeHtml(aud)}” — sign-in will be refused.</b>` : "";
+    // Surface the rest of the SIGNED message the site controls — previously hidden (audit SIWC-RESOURCES,
+    // SIWC-URI): a dApp can embed claims (e.g. resources) the user would otherwise sign blind.
+    const uriLine = p.uri != null && String(p.uri) !== "" ? `<br><span class="dim">uri: ${escapeHtml(String(p.uri))}</span>` : "";
+    const resList = Array.isArray(p.resources) && p.resources.length
+      ? `<br><span class="dim">resources (${p.resources.length}): ${p.resources.slice(0, 10).map((x: any) => escapeHtml(String(x).slice(0, 256))).join(" · ")}</span>` : "";
+    const reqLine = p.requestId != null && String(p.requestId) !== "" ? `<br><span class="dim">request id: ${escapeHtml(String(p.requestId))}</span>` : "";
     return `<b>Sign in to <code>${escapeHtml(aud)}</code></b> — prove your address to this site. <b>No transaction, no funds move.</b>${stmt}`
-      + `<br><span class="dim">audience: ${escapeHtml(aud)} · nonce ${escapeHtml(nshort)} · expires in ~${expS}s</span>${mism}`;
+      + `<br><span class="dim">audience: ${escapeHtml(aud)} · nonce ${escapeHtml(nshort)} · expires in ~${expS}s</span>${uriLine}${resList}${reqLine}${mism}`;
   }
   // Clear-signing: show EVERYTHING the site controls and the chain will commit —
   // not just domain+fee. payloadHash/uri are dApp-supplied and were previously hidden.

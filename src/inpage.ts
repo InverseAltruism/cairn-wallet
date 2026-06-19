@@ -2,16 +2,24 @@
 // call is relayed to the extension and gated by user approval + an unlocked wallet.
 // The private key is NEVER exposed to the page.
 (() => {
-  let seq = 0;
+  // Per-page-load secret shared ONLY with our content script: the content script injects THIS script
+  // with a `data-cairn-nonce` attribute and removes it on load. At document_start no page script has
+  // run yet, so the page never observes the nonce. Every RESPONSE/EVENT the content script sends back
+  // must carry it; without it a co-present page script (XSS, malicious ad) cannot forge a reply even if
+  // it observes a request id (audit SEQ-INJECT). `document.currentScript` is this <script> during the
+  // synchronous top-level run. Requests we POST OUT deliberately do NOT carry the nonce (that would leak
+  // it on `window`); only the inbound direction — the one an attacker would forge — is authenticated.
+  const NONCE = (() => { try { const n = (document.currentScript as HTMLScriptElement | null)?.dataset?.cairnNonce; return typeof n === "string" && n ? n : ""; } catch { return ""; } })();
+  const newId = () => { try { return crypto.randomUUID(); } catch { return Date.now().toString(36) + Math.random().toString(36).slice(2); } };
   const waiters = new Map<string, (v: any) => void>();
   window.addEventListener("message", (ev: MessageEvent) => {
-    if (ev.source !== window || (ev.data as any)?.target !== "cairn-inpage") return;
+    if (ev.source !== window || (ev.data as any)?.target !== "cairn-inpage" || (ev.data as any)?.nonce !== NONCE) return;
     const { id, res } = ev.data as any;
     const w = waiters.get(id);
     if (w) { waiters.delete(id); w(res); }
   });
   const req = (method: string, params?: any) => new Promise((resolve) => {
-    const id = String(seq++);
+    const id = newId(); // unguessable per-request id (was a predictable sequential int — audit SEQ-INJECT)
     waiters.set(id, resolve);
     // Target our OWN origin, not "*", so the relay message can never be delivered to a
     // cross-origin iframe embedded in the page (defence in depth; we also check source).
@@ -19,9 +27,9 @@
   });
   // Provider events (accountsChanged / disconnect). The content script relays background pushes here
   // as { target: "cairn-inpage-event", event, data }; we fan them out to the page's registered handlers.
-  const handlers: Record<string, Set<(d: any) => void>> = {};
+  const handlers: Record<string, Set<(d: any) => void>> = Object.create(null); // null-proto: on('__proto__') can't pollute Object.prototype (audit PROTO-POLLUTE)
   window.addEventListener("message", (ev: MessageEvent) => {
-    if (ev.source !== window || (ev.data as any)?.target !== "cairn-inpage-event") return;
+    if (ev.source !== window || (ev.data as any)?.target !== "cairn-inpage-event" || (ev.data as any)?.nonce !== NONCE) return;
     const { event, data } = ev.data as any;
     const set = handlers[event];
     if (set) for (const h of [...set]) { try { h(data); } catch { /* a bad handler can't break the others */ } }

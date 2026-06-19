@@ -102,7 +102,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "removeRpc": return wallet.removeRpc(args[0]);
     case "reset": { await consentStore.set(CONSENT_KEY, {}); return wallet.reset(); }
     case "connectedSites": return listConsents();
-    case "disconnectSite": return revokeConsent(args[0]);
+    case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); return r; } // tell the page it lost access (audit DISC-MISSING)
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)

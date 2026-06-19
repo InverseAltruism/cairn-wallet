@@ -162,11 +162,33 @@ export class Wallet {
     return { addr: a.addr };
   }
 
+  // Brute-force throttle for the password-gated paths (unlock / exportKey / exportMnemonic). PBKDF2-600k
+  // already costs ~200ms/guess; this adds an explicit lockout after 5 failures (audit BRUTE-UNLOCK). State
+  // lives in the in-RAM session store, so it survives an MV3 SW idle-restart within the session; a full SW
+  // teardown resets it, but the KDF cost and the offline-vault-brute threat are unchanged. In a non-extension
+  // context (tests / Node) `this.session` is null, so the guard is inert and never gates correct usage.
+  private async authGuardCheck(): Promise<void> {
+    const g: any = (this.session ? await this.session.get("authGuard").catch(() => null) : null) || {};
+    if (typeof g.until === "number" && Date.now() < g.until)
+      throw new Error(`too many failed attempts — try again in ${Math.ceil((g.until - Date.now()) / 1000)}s`);
+  }
+  private async authGuardRecord(ok: boolean): Promise<void> {
+    if (!this.session) return;
+    if (ok) { await this.session.del("authGuard").catch(() => {}); return; }
+    const g: any = (await this.session.get("authGuard").catch(() => null)) || { failed: 0, until: 0 };
+    g.failed = (g.failed || 0) + 1;
+    if (g.failed >= 5) g.until = Date.now() + Math.min(5 * 60_000, 5_000 * 2 ** (g.failed - 5)); // 5s,10s,20s,… cap 5min
+    await this.session.set("authGuard", g).catch(() => {});
+  }
+
   async unlock(password: string): Promise<{ addr: string }> {
     const v: Vault | null = await this.store.get("vault");
     if (!v) throw new Error("no wallet — create or import one first");
+    await this.authGuardCheck();
     const key = await deriveVaultKey(password, v.salt, v.iter);
-    const doc = await openWith(v, key); // throws "bad password" on mismatch (GCM tag)
+    let doc: string;
+    try { doc = await openWith(v, key); } catch (e) { await this.authGuardRecord(false); throw e; } // count bad-password (GCM tag) attempts
+    await this.authGuardRecord(true);
     this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
     await this.applyDoc(doc);
     await this.persistVault();
@@ -349,12 +371,27 @@ export class Wallet {
     if (statement !== undefined && /[\r\n]/.test(statement)) throw new Error("sign-in: statement must be a single line");
     const expSecs = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600))); // clamp 60s..1h, default 10m
     const now = Date.now();
+    // Cap dApp-supplied resources (audit SIWC-RESOURCES): the user now sees them in the approval popup,
+    // and we bound count + per-entry length and reject embedded newlines so a dApp can neither bloat the
+    // signed credential nor inject extra SIWC lines via a multi-line resource entry.
+    if (p.resources !== undefined && !Array.isArray(p.resources)) throw new Error("sign-in: resources must be an array");
+    if (Array.isArray(p.resources) && p.resources.length > 10) throw new Error("sign-in: too many resources (max 10)");
+    const resources = Array.isArray(p.resources) ? p.resources.map((x) => {
+      const s = String(x);
+      if (s.length > 256) throw new Error("sign-in: a resource entry exceeds 256 chars");
+      if (/[\r\n]/.test(s)) throw new Error("sign-in: resources must be single-line");
+      return s;
+    }) : undefined;
+    // Reject (don't silently truncate) an over-long/multi-line requestId: the popup shows the full value,
+    // so truncating only the SIGNED copy would break what-you-see-is-what-you-sign.
+    const requestId = p.requestId != null ? String(p.requestId) : undefined;
+    if (requestId !== undefined && (requestId.length > 256 || /[\r\n]/.test(requestId))) throw new Error("sign-in: requestId too long or multi-line");
     const fields: SiwcFields = {
       domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
       nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
       notBefore: p.notBeforeSecs != null && Number.isFinite(Number(p.notBeforeSecs)) ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
-      requestId: p.requestId != null ? String(p.requestId) : undefined,
-      resources: Array.isArray(p.resources) ? p.resources.map((x) => String(x)) : undefined,
+      requestId,
+      resources,
     };
     const message = buildSiwcMessage(fields);
     const { sig64, pub33 } = signSighash(siwcDigest(message), a.privkey);
@@ -556,7 +593,10 @@ export class Wallet {
   // Reveal the ACTIVE account's private key — requires re-entering the password.
   async exportKey(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
-    const doc = await openWith(v, await deriveVaultKey(password, v.salt, v.iter)); // throws "bad password"
+    await this.authGuardCheck();
+    let doc: string;
+    try { doc = await openWith(v, await deriveVaultKey(password, v.salt, v.iter)); } catch (e) { await this.authGuardRecord(false); throw e; }
+    await this.authGuardRecord(true);
     let parsed: VaultDoc | null = null;
     try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy raw key */ }
     if (!parsed) return doc.startsWith("0x") ? doc : "0x" + doc; // legacy single-key vault
@@ -568,7 +608,10 @@ export class Wallet {
   // for legacy/import-only wallets that have no seed phrase.
   async exportMnemonic(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
-    const doc = await openWith(v, await deriveVaultKey(password, v.salt, v.iter)); // throws "bad password"
+    await this.authGuardCheck();
+    let doc: string;
+    try { doc = await openWith(v, await deriveVaultKey(password, v.salt, v.iter)); } catch (e) { await this.authGuardRecord(false); throw e; }
+    await this.authGuardRecord(true);
     let parsed: VaultDoc | null = null;
     try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy */ }
     if (!parsed?.mnemonic) throw new Error("this wallet has no recovery phrase (it was created from an imported key)");
