@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, lookalikeOf, costLine, escapeHtml } from "./clearsign.js";
+import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -89,7 +89,7 @@ async function fillSendWarning(r: any) {
   }
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
-    const sentTo = (h as any[]).filter((t) => t.type === "send" || t.type === "fillOffer").map((t) => String(t.to || ""));
+    const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
     const known = [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))];
     const warns: string[] = [];
     for (const o of outs) {

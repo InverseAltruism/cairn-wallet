@@ -71,7 +71,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "restore": return wallet.restore(args[0], args[1]);
     case "import": return wallet.importKey(args[0], args[1]);
     case "unlock": return wallet.unlock(args[0]);
-    case "lock": { const r = await wallet.lock(); await emitConnected("accountsChanged", []); return r; }
+    case "lock": { const r = await wallet.lock(); await emitConnected("accountsChanged", []); await emitConnected("disconnect", { reason: "locked" }); return r; }
     case "addAccount": return wallet.addAccount(args[0]);
     case "importAccount": return wallet.importAccount(args[0], args[1]);
     case "switchAccount": { const r = await wallet.switchAccount(args[0]); await emitConnected("accountsChanged", []); return r; }
@@ -103,7 +103,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "removeRpc": return wallet.removeRpc(args[0]);
     case "reset": { await consentStore.set(CONSENT_KEY, {}); return wallet.reset(); }
     case "connectedSites": return listConsents();
-    case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); return r; } // tell the page it lost access (audit DISC-MISSING)
+    case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1]); // (id, approve)
@@ -204,8 +204,17 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
     catch { resolve({ opened: false }); }
   });
 }
+// Bound the approval queue (audit NSPV-DAPP-QUEUE): a malicious page could otherwise flood the SW with
+// approval requests, growing `pending` without limit, burying the user's real request and DoS-ing the
+// approval UI. A legitimate dApp never has many outstanding prompts at once, so cap per-origin and global
+// and reject the excess with a clear {ok:false} (never queue it) — the page is told to clear its backlog.
+const MAX_PENDING_GLOBAL = 32;
+const MAX_PENDING_PER_ORIGIN = 5;
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, error: "unsupported dApp method: " + String(method).slice(0, 32) });
+  if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, error: "too many pending wallet requests — approve or reject the queued ones first" });
+  let perOrigin = 0; for (const p of pending.values()) if (p.origin === origin) perOrigin++;
+  if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, error: "too many pending requests from this site — approve or reject the queued ones first" });
   return new Promise((resolve) => {
     const id = `${Date.now()}-${reqSeq++}`;
     pending.set(id, { origin, method, params, resolve });
@@ -274,6 +283,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         if (msg.method === "revokePermissions") {
           const r = await revokeConsent(origin);
           emitToOrigin(origin, "accountsChanged", []); // tell a connected page it lost access (P2.3 events)
+          emitToOrigin(origin, "disconnect", { reason: "revoked" }); // make the advertised `disconnect` capability real (EIP footgun)
           sendResponse({ ok: true, result: { revoked: r.removed } });
           return;
         }
@@ -317,7 +327,7 @@ try {
     if (a.name === "cairn-autolock") ready.then(async () => {
       const wasUnlocked = (await wallet.status()).unlocked;
       await wallet.autoLock(AUTO_LOCK_MS);
-      if (wasUnlocked && !(await wallet.status()).unlocked) await emitConnected("accountsChanged", []); // idle-lock → tell pages
+      if (wasUnlocked && !(await wallet.status()).unlocked) { await emitConnected("accountsChanged", []); await emitConnected("disconnect", { reason: "idle-lock" }); } // idle-lock → tell pages
     });
   });
 } catch { /* alarms permission unavailable — startup flush still runs */ }

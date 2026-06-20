@@ -45,9 +45,9 @@
     const set = handlers[event];
     if (set) for (const h of [...set]) { try { h(data); } catch { /* a bad handler can't break the others */ } }
   });
-  (window as any).cairn = {
+  const provider = Object.freeze({
     isCairn: true,
-    version: "0.2.26",
+    version: "0.2.27",
     connect: () => req("connect"),
     getAddress: () => req("getAddress"),
     signIn: () => req("signin"),
@@ -61,7 +61,7 @@
     // to removeListener. Cairn emits accountsChanged([]) on lock/account-switch/revoke (never a new addr).
     on: (event: string, handler: (d: any) => void) => { (handlers[event] ||= new Set()).add(handler); },
     removeListener: (event: string, handler: (d: any) => void) => { handlers[event]?.delete(handler); },
-    getCapabilities: () => Promise.resolve({ version: "0.2.26", siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
+    getCapabilities: () => Promise.resolve({ version: "0.2.27", siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
     // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which
@@ -83,7 +83,14 @@
     // selects its own inputs; change returns only to itself.
     //   { proposalId, outputs: [{ to, value }, …], score?, confidence?, fee? }
     fillOffer: (p: any) => req("fillOffer", p),
-  };
+  });
+  // Expose window.cairn as a NON-WRITABLE, NON-CONFIGURABLE, FROZEN provider (audit NSPV-PMR-FREEZE): a
+  // co-present page script must not be able to replace a method (e.g. swap `send`) to spoof what the dApp
+  // invokes. Methods stay functional — on()/removeListener() mutate a closure-captured handler map, not the
+  // frozen object. Guarded so a (rare) double-injection can't throw on the non-configurable redefine.
+  try {
+    if (!(window as any).cairn?.isCairn) Object.defineProperty(window, "cairn", { value: provider, writable: false, configurable: false, enumerable: true });
+  } catch { try { (window as any).cairn = provider; } catch { /* already non-writable — leave the existing provider */ } }
   window.dispatchEvent(new Event("cairn#initialized"));
 
   // Discovery (EIP-6963 analog, under our OWN `csd:` namespace — window.cairn is NOT an EIP-1193
@@ -95,7 +102,7 @@
   const ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5NiIgaGVpZ2h0PSI5NiIgdmlld0JveD0iMCAwIDk2IDk2Ij48cmVjdCB3aWR0aD0iOTYiIGhlaWdodD0iOTYiIHJ4PSIxOCIgZmlsbD0iIzBlMTExNiIvPjxnIGZpbGw9IiNlOGMzNGEiPjxlbGxpcHNlIGN4PSI0OCIgY3k9IjY2IiByeD0iMjYiIHJ5PSI5Ii8+PGVsbGlwc2UgY3g9IjQ4IiBjeT0iNDciIHJ4PSIxOSIgcnk9IjgiLz48ZWxsaXBzZSBjeD0iNDgiIGN5PSIzMSIgcng9IjEyIiByeT0iNiIvPjwvZz48L3N2Zz4=";
   const detail = Object.freeze({
     info: Object.freeze({ uuid, name: "Cairn Wallet", icon: ICON, rdns: "com.cairn-substrate.wallet" }),
-    provider: (window as any).cairn,
+    provider,
   });
   const announce = () => window.dispatchEvent(new CustomEvent("csd:announceProvider", { detail }));
   window.addEventListener("csd:requestProvider", announce as EventListener);

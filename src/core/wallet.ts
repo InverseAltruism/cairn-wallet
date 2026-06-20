@@ -11,7 +11,7 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
-import { verifyName as spvVerifyName, liveSpvSource, type NameVerification, type SpvSource } from "./namespv.js";
+import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
@@ -33,6 +33,11 @@ const DEFAULT_API = "https://cairn-substrate.com";
 // locally (core/cairnx.ts) — a hostile API can at worst show wrong numbers, never change
 // what a signature commits to.
 const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
+// Independent SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
+// node→indexer→cairnx (structurally independent — 0 non-local sockets), so unioning its name-history with
+// the primary's defeats a withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the
+// SAME event). Fail-soft: if clarvis is unreachable the verify falls back to single-source (with caution).
+const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 
 // Public block explorer (static MPA): /tx.html?txid= · /address.html?addr= · /proposal.html?id=
 export const EXPLORER = "https://explorer.computesubstrate.org";
@@ -74,10 +79,16 @@ export class Wallet {
   // session. `origin` is the browser-set, unforgeable sender.origin.
   isFirstPartyOrigin(origin: string): boolean {
     if (!origin || origin === "unknown") return false;
-    let host: string;
-    try { host = new URL(origin).hostname; } catch { return false; }
-    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return true; // dev
-    try { return new URL(this.api).origin === new URL(origin).origin; } catch { return false; }
+    try {
+      const o = new URL(origin), apiO = new URL(this.api);
+      if (o.origin === apiO.origin) return true; // exact first-party match (the configured api's origin)
+      // Dev convenience: treat localhost as first-party ONLY when the wallet's OWN api is itself localhost
+      // (audit NSPV-DAPP-LOCALHOST). In production api=cairn-substrate.com, so ANY localhost app is NOT
+      // first-party — it must use the audience-bound signInWithCsd(), closing the broad confused-deputy
+      // surface where any local app on any port could invoke the session-minting legacy signIn().
+      const isLocal = (h: string) => h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+      return isLocal(o.hostname) && isLocal(apiO.hostname);
+    } catch { return false; }
   }
 
   async init(): Promise<void> {
@@ -397,7 +408,10 @@ export class Wallet {
     const fields: SiwcFields = {
       domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
       nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
-      notBefore: p.notBeforeSecs != null && Number.isFinite(Number(p.notBeforeSecs)) ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
+      // Only emit notBefore for a POSITIVE offset — a 0/negative value is a no-op "valid from now-or-past"
+      // constraint that the clear-sign window (clearsign.ts) does NOT display, so signing it would mean
+      // committing a field the user never saw (audit SDS-1). Matching the conditions keeps WYSIWYS exact.
+      notBefore: p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
       requestId,
       resources,
     };
@@ -455,7 +469,7 @@ export class Wallet {
   // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
   // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
   // owner (so a name works as a recipient even before its holder sets a resolver record).
-  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number }> {
+  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; agreed?: number; disagree?: boolean }> {
     const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
     // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
     // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
@@ -474,7 +488,7 @@ export class Wallet {
       // (the chain says a different address) REFUSES; an unavailable verifier returns the address with a
       // caution flag (today's behaviour + a signal), never silently "verified".
       const v = await this.verifyName(nm).catch(() => null);
-      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth };
+      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, agreed: v.agreed, disagree: v.disagree };
       if (v && /does NOT match|hostile/i.test(v.reason ?? ""))
         return { ok: false, error: `${nm}.csd: the resolver's address contradicts the chain — refusing (possible hostile resolver)`, verified: false };
       return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable" };
@@ -488,13 +502,11 @@ export class Wallet {
     const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
     if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, scope: "as-shown", name: nm };
     try {
-      const r = await fetch(`${this.tradeApi}/cairnx/name-history/${encodeURIComponent(nm)}`);
-      if (r.status === 404) return { verified: false, reason: `${nm}.csd is not registered`, scope: "as-shown", name: nm };
-      if (!r.ok) return { verified: false, reason: "name-history lookup failed", scope: "as-shown", name: nm };
-      const j = await r.json();
-      if (!j?.ok) return { verified: false, reason: j?.error ?? "name-history unavailable", scope: "as-shown", name: nm };
-      const claim = { addr: j.resolve?.addr, owner: j.resolve?.owner, via: j.resolve?.via, lapsed: j.resolve?.lapsed };
-      const res = await spvVerifyName(nm, claim, Array.isArray(j.events) ? j.events : [], await this.spvSource());
+      // Cross-check the user's configured primary resolver against the independent clarvis second source
+      // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
+      // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
+      const sources: ResolverSource[] = [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
+      const res = await verifyNameUnion(nm, sources, await this.spvSource());
       return { ...res, name: nm };
     } catch (e) {
       return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, scope: "as-shown", name: nm };

@@ -5,6 +5,18 @@ import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
 export const escapeHtml = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
+// The SINGLE source of truth for "addresses this account has previously PAID" — used by the first-time /
+// address-poisoning (look-alike) check on EVERY send surface (CSD send, token send, dApp send/fillOffer/
+// propose-with-outputs). Previously three copies of this filter had drifted (send-only vs send|tokenSend vs
+// send|fillOffer), so the same recipient could be flagged first-time on one path and silent on another
+// (audit NSPV-POISON-FILTERS). Returns lower-cased addresses; callers compare case-insensitively.
+export function paidRecipients(history: unknown): string[] {
+  return (Array.isArray(history) ? history : [])
+    .filter((t: any) => t && (t.type === "send" || t.type === "tokenSend" || t.type === "fillOffer"))
+    .map((t: any) => String(t.to || "").toLowerCase())
+    .filter(Boolean);
+}
+
 // Surface a fee in CSD and flag an unusually large one so a phishing site can't slip a huge fee past
 // a user skimming the dialog. propose min is 0.25 CSD; >5 CSD is odd.
 const FEE_WARN = 5 * 1e8;
@@ -207,7 +219,14 @@ export function describe(r: any): string {
       : "";
     return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${score} · confidence ${conf}`;
   }
-  if (r.method === "sealClaim") return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code><br>${feeLine(p.fee, 25000000)} · the salt + claim stay in your wallet`;
+  if (r.method === "sealClaim") {
+    // Show the actual claim TEXT being committed: sealClaim hashes {domain,claim,nonce} into the on-chain
+    // payloadHash, so a dApp-supplied `claim` is what the user's key commits to — it must be visible, not
+    // hidden behind "domain + fee" (audit SEAL-1). The salt (nonce) stays local and is only published on reveal.
+    const claim = p.claim != null ? String(p.claim) : "";
+    const claimLine = claim ? `<br>claim: <code>${escapeHtml(claim.slice(0, 200))}${claim.length > 200 ? "…" : ""}</code>` : "";
+    return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code>${claimLine}<br>${feeLine(p.fee, 25000000)} · the salt stays in your wallet (the claim is published only when you reveal)`;
+  }
   if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> — publish the preimage; it becomes public + provably committed earlier.<br>tx: <code>${escapeHtml(String(r.params || "").slice(0, 18))}…</code>`;
   // Send is the only dApp method that MOVES funds to a page-chosen recipient, so we
   // clear-sign the FULL (untruncated) recipient address(es) + each amount + total + fee.
@@ -280,10 +299,21 @@ export function lookalikeOf(to: string, known: string[]): string | null {
 // (resolver offline, service not yet upgraded, or a proven mismatch already refused upstream) it carries
 // the original strong caution. Either way the resolved FULL address stays the unmissable thing the user
 // confirms. (The name is regex-constrained at resolution, but escape it anyway — defense in depth.)
-export function nameCautionHtml(name: string, verified?: boolean): string {
+export function nameCautionHtml(name: string, verified?: boolean, info?: { sources?: number; agreed?: number; disagree?: boolean }): string {
   const n = escapeHtml(String(name));
   if (verified) {
-    return `✓ <b><code>${n}.csd</code> is verified on-chain (as shown).</b> The wallet independently confirmed (via SPV) that this address is backed by signed, mined records for <code>${n}.csd</code>. For large sends still confirm the <b>To</b> address: a hostile name server could in principle hide a record (a later transfer, or a competing claim) — verification proves "chain-backed as shown", not "provably current".`;
+    // A source's stated claim disagreed with the SPV-proven union winner (NSPV-COMPLETE-1): one resolver may
+    // be hostile/stale. The address shown IS the chain-proven winner across all sources, but flag it loudly.
+    if (info?.disagree) {
+      return `⚠ <b><code>${n}.csd</code> — sources DISAGREE.</b> The wallet SPV-verified the records, but one name source's answer did <b>not</b> match what the chain proves across the others — a source may be hostile or stale. The <b>To</b> address shown is the chain-proven winner, but <b>double-check it out-of-band</b> before any sizable send.`;
+    }
+    // ≥2 independent sources agreed on the SPV-verified mapping → the withholding residual is now bounded to
+    // an attacker controlling BOTH independent hosts (doc 36). This is the strong case.
+    if ((info?.sources ?? 1) >= 2) {
+      return `✓ <b><code>${n}.csd</code> — chain-backed, confirmed by ${info!.sources} independent sources.</b> The wallet SPV-verified the records and ${info!.sources} independent name servers agree on this address. (An attacker would have to compromise <b>all</b> of them to hide a record.) Confirm the <b>To</b> address for very large sends.`;
+    }
+    // Single usable source (the other was unreachable) — the honest withholding caveat still applies.
+    return `<b><code>${n}.csd</code> — chain-backed (1 source).</b> The wallet SPV-verified that this address is backed by signed, mined records — but only one name source answered, and a single source could still <b>hide</b> a later transfer or a competing claim. For any sizable send, confirm the full <b>To</b> address out-of-band.`;
   }
   return `⚠ <b>Sending to <code>${n}.csd</code> — verify the full address below.</b> The address was supplied by the name service and could <b>not</b> be verified on-chain right now; a malicious or intercepted server could substitute it. Confirm the <b>To</b> address is the correct owner of <code>${n}.csd</code> before sending.`;
 }

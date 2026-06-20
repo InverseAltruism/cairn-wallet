@@ -9,9 +9,25 @@ const strip = (h: string) => (h.startsWith("0x") ? h.slice(2) : h);
 async function get(rpc: string, path: string): Promise<any> {
   const r = await fetch(`${rpc}${path}`); if (!r.ok) throw new Error(`${path} -> ${r.status}`); return r.json();
 }
+// Symmetric with get(): a POST must NEVER throw out of the caller after a tx is already signed —
+// otherwise a non-JSON 4xx/5xx (e.g. an HTML error page from a proxy) on /tx/submit would surface as an
+// uncaught rejection AFTER signing, leaving send/sendMany/fillOffer/propose with an ambiguous outcome
+// (audit VAL-2). Read the body as text, parse if we can, and return a structured {ok:false,err} on any
+// non-2xx / network error / unparseable body. Every caller already reads {ok,txid,err}, so a 2xx JSON
+// body is returned unchanged — this only converts the failure path from "throw" to "fail-closed value".
 async function post(rpc: string, path: string, body: unknown): Promise<any> {
-  const r = await fetch(`${rpc}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  return r.json();
+  let r: Response;
+  try { r = await fetch(`${rpc}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
+  catch { return { ok: false, err: `${path} -> network error` }; }
+  // Symmetric with get(): never let a non-JSON 4xx/5xx (e.g. an HTML proxy error page) throw out of a
+  // caller AFTER a tx is already signed — parse defensively and return a structured {ok:false,err} on any
+  // non-2xx or unparseable body (audit VAL-2). A 2xx JSON body is returned unchanged; every caller reads
+  // {ok,txid,err}, so this only converts the failure path from "throw" to a fail-closed value.
+  let j: any;
+  try { j = await r.json(); } catch { j = undefined; }
+  if (!r.ok) return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${r.status}` };
+  if (j === undefined) return { ok: false, err: `${path} -> non-JSON response` };
+  return j;
 }
 
 export async function tip(rpc: string): Promise<number> { return Number((await get(rpc, "/tip")).height ?? 0); }
@@ -211,6 +227,12 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
 }
 
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
+  // Validate the dApp-supplied payloadHash shape up front (parity with fillOffer's proposalId guard) so a
+  // malformed value fails closed with a clear error instead of throwing a cryptic codec error deep inside
+  // bytesArr() AFTER the SafeInteger checks pass (audit VAL-3). A real cairnx payloadHash is sha256 = 0x+64hex.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.payloadHash))) {
+    return Promise.resolve({ ok: false, error: "payloadHash must be a 0x… 32-byte hash", sighashMatch: false });
+  }
   // Validate expiresEpoch up front: a negative/fractional/>2^53 value would otherwise wrap or throw
   // inside u64() serialization, committing signed bytes (e.g. 0xFFFF…FF "never expires") that don't
   // match the dApp's intent. Same SafeInteger posture as amounts/fee. (redteam LOW-1)
@@ -220,6 +242,11 @@ export function propose(rpc: string, p: { domain: string; payloadHash: string; u
   return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : []);
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
+  // Validate the proposalId shape up front (parity with fillOffer) so a malformed dApp-supplied value fails
+  // closed instead of throwing a cryptic codec error inside bytesArr() (audit VAL-3). A proposalId is a txid.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) {
+    return Promise.resolve({ ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false });
+  }
   // Clamp to u32 here (parity with fillOffer) so the signed bytes equal the displayed score/confidence.
   return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, p.fee, priv);
 }
@@ -305,5 +332,8 @@ export async function signIn(apiBase: string, priv: string): Promise<{ ok: boole
   // field. Otherwise a malicious/MITM'd API could return a tx sighash and harvest a
   // valid spend signature from the login flow (see test/poc-signin-oracle.ts).
   const { sig64, pub33 } = signSighash(loginDigest(String(n.nonce)), priv);
-  return post(apiBase, "/auth/verify", { nonce: n.nonce, pub33, sig64 });
+  const v = await post(apiBase, "/auth/verify", { nonce: n.nonce, pub33, sig64 });
+  // Normalize the failure shape to this function's declared `error` key — post() returns {ok:false,err}
+  // on a non-2xx body (VAL-2), and this legacy path's callers read `.error`.
+  return v?.ok ? v : { ok: false, error: v?.error ?? v?.err ?? "sign-in failed" };
 }

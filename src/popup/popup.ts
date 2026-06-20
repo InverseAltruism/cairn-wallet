@@ -4,7 +4,7 @@
 import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
 import { formatUnits, parseUnits } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged, lookalikeOf } from "./clearsign.js";
+import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients } from "./clearsign.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -284,21 +284,24 @@ async function doNameAction(kind: "renew" | "primary", name: string) {
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(s.toLowerCase());
-async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean }> {
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; agreed?: number; disagree?: boolean }> {
   const r = (raw || "").trim();
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) return { ok: true, addr: r.toLowerCase(), name: null, label: null };
   if (looksLikeName(r)) {
     const nm = r.toLowerCase().replace(/\.csd$/, "");
     const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
-    // XREPO-1 cure: resolveName now SPV-verifies the name → address against a PoW header chain the wallet
-    // checks itself (core/namespv.ts), so a hostile resolver that fabricated a redirect is REFUSED here
-    // (res.ok === false). A could-not-verify (res.verified === false) still returns the address but flags
-    // it ⚠ in the review; a chain-confirmed mapping shows ✓. The full address remains the unmissable thing
-    // the user confirms; this badge tells them whether the chain backs it.
+    // XREPO-1 cure: resolveName SPV-verifies the name → address against a PoW header chain the wallet checks
+    // itself AND cross-checks ≥2 independent resolvers (NSPV-COMPLETE-1, doc 36). A fabricated redirect is
+    // REFUSED here (res.ok === false). The send target is the chain-PROVEN union winner; the badge tells the
+    // user how strong the confirmation is (2 independent sources / 1 source / a flagged disagreement).
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
     const verified = res.verified === true;
-    const badge = verified ? `✓ verified on-chain${res.depth ? ` (${res.depth} conf)` : ""}` : "⚠ NOT chain-verified — confirm the address";
-    return { ok: true, addr: res.addr, name: nm, verified, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
+    const conf = res.depth ? ` (${res.depth} conf)` : "";
+    const badge = !verified ? "⚠ NOT chain-verified — confirm the address"
+      : res.disagree ? `⚠ chain-backed but a name source DISAGREED — verify the address${conf}`
+      : (res.sources ?? 1) >= 2 ? `✓ chain-backed by ${res.sources} independent sources${conf}`
+      : `✓ chain-backed (1 source)${conf}`;
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, agreed: res.agreed, disagree: res.disagree, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
@@ -353,7 +356,7 @@ $("btn-tsend").addEventListener("click", async () => {
   let firstTime = true, lookalike: string | null = null;
   try {
     const h: any[] = await call("history");
-    const sentTo = h.filter((t) => t.type === "send" || t.type === "tokenSend").map((t) => String(t.to || ""));
+    const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
     firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
     const st = await call("status");
     lookalike = lookalikeOf(to, [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))]);
@@ -364,7 +367,7 @@ $("btn-tsend").addEventListener("click", async () => {
   $("tc-fee").textContent = (CAIRNX_FEE / 1e8) + " CSD";
   const warnEl = $("tc-warn") as HTMLElement;
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree }) : "";
   if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Transfers are irreversible.`; warnEl.hidden = false; }
   else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
@@ -687,8 +690,14 @@ async function renderSealed() {
 const SEND_FEE = 1_000_000; // 0.01 CSD
 $("btn-send").addEventListener("click", async () => {
   const raw = val("s-to").trim();
-  const amt = Math.round(parseFloat(val("s-amt") || "0") * 1e8);
-  if (!(amt > 0)) return msg("enter an amount", "err");
+  // Strict base-unit parse (audit AMT-1): the lax Math.round(parseFloat()) accepted "1e3" (→1000 CSD),
+  // "1,000" (→1), "1abc", "+1", ".5" and half-sat rounding — so the signed amount could differ from what
+  // the user typed/saw. parseUnits enforces /^\d+(\.\d{0,8})?$/ and exact base-unit conversion (same path
+  // the token send already uses), so a malformed amount is rejected up front instead of silently coerced.
+  const amtStr = parseUnits(val("s-amt").trim(), 8);
+  if (amtStr === null || amtStr === "0") return msg("enter a valid amount (up to 8 decimal places)", "err");
+  const amt = Number(amtStr);
+  if (!Number.isSafeInteger(amt) || amt <= 0) return msg("amount out of range", "err");
   const rr = await resolveRecipient(raw);   // 0x… as-is, or alice.csd → resolved address (refuse lapsed)
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
@@ -696,7 +705,7 @@ $("btn-send").addEventListener("click", async () => {
   let firstTime = true, known: string[] = [], lookalike: string | null = null, after = "";
   try {
     const h: any[] = await call("history");
-    const sentTo = h.filter((t) => t.type === "send").map((t) => String(t.to || ""));
+    const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
     firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
     const st = await call("status"); known = [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))];
     lookalike = lookalikeOf(to, known);
@@ -709,7 +718,7 @@ $("btn-send").addEventListener("click", async () => {
   const warnEl = $("c-warn") as HTMLElement;
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree }) : "";
   if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — payments are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Payments are irreversible.`; warnEl.hidden = false; }
   else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
@@ -750,7 +759,11 @@ $("btn-post").addEventListener("click", async () => {
   if (!/^csd:[a-z0-9:_-]+$/i.test(domain)) return msg("pick a category or enter one like csd:tools", "err");
   if (!val("p-title").trim()) return msg("enter a title", "err");
   try {
-    const fee = Math.max(Math.round(parseFloat(val("p-fee") || "0.25") * 1e8), 25000000);
+    const feeStr = parseUnits((val("p-fee").trim() || "0.25"), 8); // strict parse (audit AMT-1) — no "1e3"/"1,000"/half-sat
+    if (feeStr === null) return msg("enter a valid fee (e.g. 0.25)", "err");
+    const feeNum = Number(feeStr);
+    if (!Number.isSafeInteger(feeNum)) return msg("fee out of range", "err"); // parity with the send-amount path (safe-integer backstop)
+    const fee = Math.max(feeNum, 25000000);
     busy("posting…");
     const r = await call("cairnPost", { domain, title: val("p-title"), body: val("p-body"), fee });
     if (r.ok) { msg("posted · " + String(r.txid).slice(0, 12) + "… (shows on Cairn after ~1 block)", "ok"); refreshBalance(); }

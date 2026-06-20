@@ -2,8 +2,8 @@
 // synthetic PoW-verified blocks (the SpvSource injection seam). Proves the security properties without a
 // live chain: a correct mapping verifies, a FORGED address is refused, a TAMPERED block is refused, a
 // LAPSED lease is refused, and the replay equals the audited resolver. Run: tsx test/namespv.test.mjs
-import { verifyName } from "../src/core/namespv.ts";
-import { buildNameClaim, buildNameSet, buildNameXfer, TREASURY_ADDR } from "../src/core/cairnx.ts";
+import { verifyName, verifyNameUnion } from "../src/core/namespv.ts";
+import { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.ts";
 import { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.ts";
 import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, resolve } from "../src/vendor/cairnx-spv.js";
 
@@ -155,6 +155,71 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   // only a claim (no nset) ⇒ addr defaults to owner A
   const r = await verifyName(NAME, { addr: A, owner: A }, hints, src);
   ok("an app-less filler tx in a hinted block does NOT break verification (no throw)", r.verified === true && r.owner === A);
+}
+
+// 10. V19 / nprofile (audit NSPV-V19-TESTS) — the prior suite ran ENTIRELY below V19_HEIGHT (36,700), so the
+//     wallet's own SPV verifier was never exercised over a V19-height block. V19 went live on-chain; the
+//     vendored resolver must (a) process a hinted nprofile record at a height >= V19_HEIGHT without error, and
+//     (b) keep the send verdict UNCHANGED — nprofile is cosmetic identity metadata and must NOT move owner/addr
+//     (the property the wallet relies on: namespv reads only addr/owner/expired, never the profile field).
+{
+  const V19 = 36700;
+  const profTx = proposeTx({ ...pick(buildNameProfile({ name: NAME, profile: { twitter: "alice", avatar: "ipfs://Qmxyz" } })), priv: keyA });
+  const { blocks, hints } = world([
+    { height: 33700, tx: claimTx }, { height: 33710, tx: nsetTx }, { height: V19 + 10, tx: profTx },
+  ]);
+  const r = await verifyName(NAME, { addr: TARGET, owner: A, via: "nset" }, hints, source(blocks, V19 + 100));
+  ok("V19 nprofile at a >=V19_HEIGHT block verifies without error", r.verified === true);
+  ok("nprofile is consensus-inert for the send verdict (addr/owner unchanged)", r.addr === TARGET && r.owner === A);
+  // and a forged addr is still refused even with the V19 record present
+  const rf = await verifyName(NAME, { addr: ATTACKER, owner: A }, hints, source(blocks, V19 + 100));
+  ok("a forged addr is still REFUSED with an nprofile record in play", rf.verified === false);
+}
+
+// 11-14. UNION cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B) — verifyNameUnion over 2 independent sources
+{
+  const NM = "bob";
+  const aClaim = proposeTx({ ...pick(buildNameClaim({ name: NM })), priv: keyA, outputs: feeOut() }); // A wins (earlier height)
+  const aNset = proposeTx({ ...pick(buildNameSet({ name: NM, addr: TARGET })), priv: keyA });
+  const bClaim = proposeTx({ ...pick(buildNameClaim({ name: NM })), priv: keyB, outputs: feeOut(REG_FEE + 1) }); // B loses (later height); distinct fee → distinct txid (a real competing claim spends different inputs)
+  const bNset = proposeTx({ ...pick(buildNameSet({ name: NM, addr: ATTACKER })), priv: keyB });
+  const { blocks } = world([
+    { height: 33700, tx: aClaim }, { height: 33705, tx: bClaim }, { height: 33710, tx: aNset }, { height: 33715, tx: bNset },
+  ]);
+  const H = (tx, h) => ({ txid: ctxid(rpcTxToTx(tx)), height: h, pos: 0 });
+  const granus = [H(bClaim, 33705), H(bNset, 33715)];   // HOSTILE: withholds A's winning claim, shows only B's losing one
+  const clarvis = [H(aClaim, 33700), H(aNset, 33710)];  // HONEST: shows A's winning claim
+  const src = source(blocks, 33800);
+  const SRC = [{ label: "primary", base: "https://primary.example/trade/api" }, { label: "clarvis", base: "https://clarvis.example/trade/api" }];
+  const mkFetch = (gBody, cBody) => async (url) => {
+    const u = String(url);
+    const body = u.includes("primary") ? gBody : u.includes("clarvis") ? cBody : { ok: false };
+    if (body && body.__status === 502) return { ok: false, status: 502, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => body };
+  };
+
+  // 11. withholding DEFEATED: union resolves to the true winner (TARGET), not the attacker; hostile source flagged
+  const r11 = await verifyNameUnion(NM, SRC, src, mkFetch(
+    { ok: true, resolve: { addr: ATTACKER, owner: B, via: "nset" }, events: granus },
+    { ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: clarvis }));
+  ok("union DEFEATS a withholding resolver — resolves to the true winner, NOT the attacker", r11.verified === true && r11.addr === TARGET && r11.addr !== ATTACKER);
+  ok("union flags the disagreeing (hostile) source", r11.disagree === true && r11.sources === 2 && r11.agreed === 1);
+
+  // 12. both sources AGREE on the true mapping → strong, no disagreement
+  const r12 = await verifyNameUnion(NM, SRC, src, mkFetch(
+    { ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: clarvis },
+    { ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: clarvis }));
+  ok("two agreeing sources → verified, 2 sources, no disagreement", r12.verified === true && r12.addr === TARGET && r12.sources === 2 && r12.agreed === 2 && r12.disagree === false);
+
+  // 13. fail-SOFT: one source down (502) → single-source verify still works
+  const r13 = await verifyNameUnion(NM, SRC, src, mkFetch(
+    { ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: clarvis },
+    { __status: 502 }));
+  ok("fail-soft: one source down → single-source verify (sources=1)", r13.verified === true && r13.addr === TARGET && r13.sources === 1 && r13.disagree === false);
+
+  // 14. both sources down → unavailable (fail-closed, not verified)
+  const r14 = await verifyNameUnion(NM, SRC, src, mkFetch({ __status: 502 }, { __status: 502 }));
+  ok("both sources down → NOT verified (fail-closed, unavailable)", r14.verified === false && r14.sources === 0);
 }
 
 console.log(`\nnamespv: ${pass} passed, ${fail} failed`);

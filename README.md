@@ -136,6 +136,28 @@ The extension layer:
 * `content.ts` and `inpage.ts`: inject the `window.cairn` provider and relay requests to the background, behind explicit approval and same-origin checks.
 * `popup/`: the user interface.
 
+## Dual-source `.csd` name verification (XREPO-1 / NSPV-COMPLETE-1 cure)
+
+Sending to a `.csd` name never trusts a resolver's word. The wallet:
+
+1. fetches the name's on-chain record **hints** from **two independent resolvers** —
+   `cairn-substrate.com` (primary) and `clarvis.cairn-substrate.com` (an independent second source running its
+   own node→indexer→cairnx; see [cairn doc 36](https://github.com/InverseAltruism/cairn/blob/master/docs/ecosystem/36-clarvis-second-source-handoff.md));
+2. **unions** them and **SPV-verifies every event** against a PoW header chain the wallet builds itself
+   (`src/core/namespv.ts` → vendored `LightClient`): full-block merkle-bind + per-record signer-auth, so a
+   resolver can only ever *add* real mined events, **never fabricate** one;
+3. replays the audited CairnX resolver over the verified union and **sends to the chain-proven winner** — not
+   to any resolver's bare claim — and flags any source whose stated answer disagrees.
+
+A single resolver can't redirect funds (every record is SPV-verified), and it can't *withhold* its way to a
+redirect either, because the other independent source fills the omission — an attacker would have to make
+**both** hosts hide the **same** event. It is **fail-soft**: if the second source is unreachable the wallet
+falls back to single-source with a caution; nothing the wallet signs ever depends on a resolver being up.
+
+The dual-resolver architecture (topology, routing, how each host runs, and the wallet union contract) is
+documented in [cairn doc 38 — wallet dual-source handoff](https://github.com/InverseAltruism/cairn/blob/master/docs/handoffs/38-wallet-dual-source-clarvis-handoff.md)
+(wallet side) and [doc 36](https://github.com/InverseAltruism/cairn/blob/master/docs/ecosystem/36-clarvis-second-source-handoff.md) (clarvis host side).
+
 ## Configuration
 
 * **Node RPC.** Switch from the RPC menu at the top right. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`), a local node (`http://127.0.0.1:8789`), or add your own.

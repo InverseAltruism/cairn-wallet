@@ -47,10 +47,20 @@ export interface NameVerification {
   depth?: number;             // confirmations of the most recent defining record
   reason?: string;            // fail-closed explanation when !verified
   scope: "as-shown";          // honest completeness label (see file header)
+  // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many INDEPENDENT resolvers were
+  // unioned, how many AGREED with the chain-recomputed address, and whether any disagreed (a source whose
+  // stated claim ≠ the SPV-proven union winner — caught + flagged; the send still goes to the proven winner).
+  sources?: number;
+  agreed?: number;
+  disagree?: boolean;
 }
 
 export interface NameClaim { addr?: string; owner?: string; via?: string; lapsed?: boolean }
 export interface NameHint { txid: string; height: number; pos: number; kind?: string }
+// An independent name-history source (resolver) to cross-check against. `base` ends at the trade-API root,
+// e.g. "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api".
+export interface ResolverSource { label: string; base: string }
+interface SourceResult { label: string; ok: boolean; unregistered?: boolean; claim?: NameClaim; hints: NameHint[]; error?: string }
 
 // The SPV data seam. Production wires the real LightClient (liveSpvSource); tests inject synthetic
 // PoW-verified blocks so the merkle-bind + replay + fail-closed logic is exercised without a chain.
@@ -113,68 +123,126 @@ function toChainEvent(tx: Tx, id: string, height: number, pos: number): Record<s
   return { kind: "attest", txid: id.toLowerCase(), proposalId: String(tx.app.proposalId).toLowerCase(), attester: signer, score: Number(tx.app.score), confidence: Number.isSafeInteger(conf) && conf >= 0 ? conf : 0, height, pos, paidTo };
 }
 
+// Core SPV replay (no claim gate): SPV-verify `hints` against the chain and recompute the name's (owner,addr)
+// via the AUDITED resolver. Shared by the single-source verifyName and the multi-source verifyNameUnion.
+type Replay = { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number } | { ok: false; reason: string };
+async function replayName(name: string, hints: NameHint[], src: SpvSource): Promise<Replay> {
+  if (!Array.isArray(hints) || hints.length === 0) return { ok: false, reason: "no on-chain records were offered for this name" };
+  // group hinted txids by block height — verify each block ONCE against its PoW-committed merkle root
+  const byHeight = new Map<number, NameHint[]>();
+  let maxHeight = 0;
+  for (const h of hints) {
+    const height = Number(h.height);
+    if (!Number.isInteger(height) || height < 0) return { ok: false, reason: "a record hint has an invalid height" };
+    (byHeight.get(height) ?? byHeight.set(height, []).get(height)!).push(h);
+    if (height > maxHeight) maxHeight = height;
+  }
+  const { verifiedTip, nodeTip } = await src.prepare(maxHeight);
+  if (maxHeight > verifiedTip) return { ok: false, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
+  const lapseTip = Math.max(verifiedTip, Number.isFinite(nodeTip) ? nodeTip : 0);
+
+  const events: Record<string, unknown>[] = [];
+  for (const [height, hs] of byHeight) {
+    const { merkle, txs } = await src.blockAt(height);            // THROWS if the header can't be PoW-verified
+    // A plain/coinbase tx may carry no `app`; default it to {None} BEFORE decode so a hostile node can't omit
+    // `app` on one filler tx to make rpcTxToTx throw and DoS the whole verify. A None tx still has a real txid.
+    const rebuilt = txs.map((t) => rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }));
+    const ids = rebuilt.map(ctxid);
+    // FULL-block bind: the entire tx-set must hash to the verified header's merkle root, so the node cannot
+    // have omitted/altered/added any committed body within this block (completeness-in-block).
+    if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase()) return { ok: false, reason: `block ${height} doesn't match its verified merkle root (tampered read path)` };
+    for (const hint of hs) {
+      const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());
+      if (pos < 0) return { ok: false, reason: `record ${hint.txid} is not in verified block ${height}` };
+      const ev = toChainEvent(rebuilt[pos], ids[pos], height, pos);
+      if (!ev) return { ok: false, reason: `record ${hint.txid} couldn't be authenticated (not a signed cairnx record)` };
+      events.push(ev);
+    }
+  }
+  // Replay the AUDITED resolver over ONLY the verified events. `lapseTip` (≥ the node-reported chain tip,
+  // monotonic-floored) drives the lease-lapse epoch fail-closed.
+  const state = resolve(events, lapseTip);
+  const rec = state.names[name];
+  if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
+  if (rec.expired) return { ok: false, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
+  return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1) };
+}
+
 /**
- * Verify `name → claim.addr` against the chain via SPV + an audited replay. Returns a tri-state-friendly
- * NameVerification. `hints` are the UNTRUSTED txids from /cairnx/name-history; `src` is the PoW-verified
- * block source. Pure over `src` so it is fully Node-testable.
+ * Verify `name → claim.addr` against the chain via SPV + an audited replay (SINGLE source). The
+ * chain-recomputed address must equal what the resolver claimed — a fabricated redirect cannot pass (the
+ * attacker has no signed, mined events for 0xATTACKER). Pure over `src` so it is fully Node-testable.
+ * NOTE: single-source verify cannot defeat a WITHHOLDING resolver — use verifyNameUnion for that.
  */
 export async function verifyName(name: string, claim: NameClaim, hints: NameHint[], src: SpvSource): Promise<NameVerification> {
   try {
     if (!claim?.addr || !/^0x[0-9a-f]{40}$/.test(String(claim.addr).toLowerCase())) return fail("the resolver returned no usable address for this name");
     if (claim.lapsed) return fail(`${name}.csd lease has lapsed — refusing to send`);
-    if (!Array.isArray(hints) || hints.length === 0) return fail("no on-chain records were offered for this name");
-
-    // group hinted txids by block height — verify each block ONCE against its PoW-committed merkle root
-    const byHeight = new Map<number, NameHint[]>();
-    let maxHeight = 0;
-    for (const h of hints) {
-      const height = Number(h.height);
-      if (!Number.isInteger(height) || height < 0) return fail("a record hint has an invalid height");
-      (byHeight.get(height) ?? byHeight.set(height, []).get(height)!).push(h);
-      if (height > maxHeight) maxHeight = height;
-    }
-    // sync verified headers up to the LAST record (+cushion) — not the whole chain. `nodeTip` (untrusted)
-    // drives only the lease-lapse epoch, fail-closed: a higher tip can only make a name read as lapsed.
-    const { verifiedTip, nodeTip } = await src.prepare(maxHeight);
-    if (maxHeight > verifiedTip) return fail(`a record at height ${maxHeight} is above the verified tip (${verifiedTip})`);
-    const lapseTip = Math.max(verifiedTip, Number.isFinite(nodeTip) ? nodeTip : 0);
-
-    const events: Record<string, unknown>[] = [];
-    for (const [height, hs] of byHeight) {
-      const { merkle, txs } = await src.blockAt(height);            // THROWS if the header can't be PoW-verified
-      // A plain/coinbase tx may carry no `app`; default it to {None} BEFORE decode so a hostile node
-      // can't omit `app` on one filler tx to make rpcTxToTx throw and DoS the whole verify (swapguard does
-      // the same `jt.app || {type:"None"}` guard). A None tx still has a real txid → the merkle bind holds.
-      const rebuilt = txs.map((t) => rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }));
-      const ids = rebuilt.map(ctxid);
-      // FULL-block bind: the entire tx-set must hash to the verified header's merkle root, so the node
-      // cannot have omitted/altered/added any committed body within this block (completeness-in-block).
-      if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase()) return fail(`block ${height} doesn't match its verified merkle root (tampered read path)`);
-      for (const hint of hs) {
-        const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());
-        if (pos < 0) return fail(`record ${hint.txid} is not in verified block ${height}`);
-        const ev = toChainEvent(rebuilt[pos], ids[pos], height, pos);
-        if (!ev) return fail(`record ${hint.txid} couldn't be authenticated (not a signed cairnx record)`);
-        events.push(ev);
-      }
-    }
-
-    // Replay the AUDITED resolver over ONLY the verified events. nameHistory() guarantees this scoped set
-    // reproduces the full-chain name record (proven by cairnx/test/namehist.test.ts). `lapseTip` (≥ the
-    // node-reported chain tip) drives the lease-lapse epoch fail-closed.
-    const state = resolve(events, lapseTip);
-    const rec = state.names[name];
-    if (!rec) return fail("the verified records don't establish ownership of this name");
-    if (rec.expired) return fail(`${name}.csd lease has lapsed (per the chain) — refusing to send`);
-    const owner = String(rec.owner).toLowerCase();
-    const addr = String(rec.addr ?? rec.owner).toLowerCase();
-    // THE comparison: the chain-recomputed address must equal what the resolver claimed. A hostile
-    // resolver that fabricated a redirect cannot pass this — it has no signed, mined events for 0xATTACKER.
-    if (addr !== String(claim.addr).toLowerCase())
+    const r = await replayName(name, hints, src);
+    if (!r.ok) return fail(r.reason);
+    if (r.addr !== String(claim.addr).toLowerCase())
       return fail("the resolver's address does NOT match what the chain proves — refusing (possible hostile resolver)");
-    return { verified: true, addr, owner, via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1), scope: "as-shown" };
+    return { verified: true, addr: r.addr, owner: r.owner, via: r.via, depth: r.depth, scope: "as-shown", sources: 1, agreed: 1, disagree: false };
   } catch (e) {
     return fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`);
+  }
+}
+
+// Fetch one resolver's /cairnx/name-history. Fail-soft: any error → ok:false (the union tolerates a down source).
+async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: typeof fetch): Promise<SourceResult> {
+  try {
+    const r = await fetchImpl(`${s.base.replace(/\/$/, "")}/cairnx/name-history/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(8000) });
+    if (r.status === 404) return { label: s.label, ok: false, unregistered: true, hints: [] };
+    if (!r.ok) return { label: s.label, ok: false, hints: [], error: `${r.status}` };
+    const j: any = await r.json();
+    if (!j?.ok) return { label: s.label, ok: false, hints: [], error: j?.error ?? "name-history unavailable" };
+    return { label: s.label, ok: true, hints: Array.isArray(j.events) ? j.events : [], claim: { addr: j.resolve?.addr, owner: j.resolve?.owner, via: j.resolve?.via, lapsed: j.resolve?.lapsed } };
+  } catch (e) { return { label: s.label, ok: false, hints: [], error: (e as Error)?.message ?? String(e) }; }
+}
+
+/**
+ * NSPV-COMPLETE-1 cure (doc 36 Part B): verify `name → addr` against ≥2 INDEPENDENT name-history sources
+ * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com). Each source's hints are fetched, UNIONed by
+ * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and replayed by the
+ * audited resolver to the true winner. Because every unioned event is SPV-authenticated, a source can only
+ * ADD real events (filling another's omission) — never fabricate — so the union defeats a WITHHOLDING
+ * resolver as long as ONE source is honest (an attacker must make BOTH independent hosts withhold the SAME
+ * event). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
+ * it is flagged. Fail-soft: 1 usable source → single-source (caution); ≥2 agree → strong; a disagreement is
+ * flagged but the send still goes to the proven winner (the disagreeing source was lying/stale, not trusted).
+ */
+export async function verifyNameUnion(name: string, sources: ResolverSource[], src: SpvSource, fetchImpl: typeof fetch = fetch): Promise<NameVerification> {
+  try {
+    // de-dup sources by base so [primary, clarvis] with an identical custom tradeApi doesn't double-count
+    const seen = new Set<string>();
+    const uniq = sources.filter((s) => s.base && !seen.has(s.base.replace(/\/$/, "")) && seen.add(s.base.replace(/\/$/, "")));
+    const results = await Promise.all(uniq.map((s) => fetchNameHistory(s, name, fetchImpl)));
+    const usable = results.filter((r) => r.ok && r.hints.length > 0);
+    if (usable.length === 0) {
+      if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, agreed: 0, disagree: false };
+      return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, agreed: 0, disagree: false };
+    }
+    // UNION the hints by lowercase txid; a same-txid-different-height across sources is a tamper → conflict.
+    const byTxid = new Map<string, NameHint>();
+    let conflict = false;
+    for (const r of usable) for (const h of r.hints) {
+      const k = String(h.txid).toLowerCase();
+      const prev = byTxid.get(k);
+      if (prev) { if (Number(prev.height) !== Number(h.height) || Number(prev.pos) !== Number(h.pos)) conflict = true; }
+      else byTxid.set(k, h);
+    }
+    const rep = await replayName(name, [...byTxid.values()], src);
+    if (!rep.ok) return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
+    // Cross-check: each usable source's STATED claim.addr against the SPV-proven union winner.
+    let agreed = 0; const disagreeing: string[] = [];
+    for (const r of usable) {
+      const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null;
+      if (c === rep.addr) agreed++; else disagreeing.push(r.label);
+    }
+    const disagree = disagreeing.length > 0 || conflict;
+    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, scope: "as-shown", sources: usable.length, agreed, disagree };
+  } catch (e) {
+    return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, agreed: 0, disagree: false };
   }
 }
 
@@ -216,20 +284,31 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
     await lc.syncFromCheckpoint(CP.height, CP.hash);
   }
   const LC = lc;
+  // Monotonic tip floor (audit NSPV-STALE-LAPSE): a hostile/MITM resolver can DEFLATE the reported tip so a
+  // genuinely-lapsed lease's expiry epoch is under-computed and an old-but-real mapping looks current. We
+  // never let the tip used for the lapse epoch REGRESS below the highest value this source has already
+  // reported in the session, so a mid-flow deflation can't roll the lease-state back. Cheap (an integer) —
+  // crucially NO extra header sync, so the first name-verify stays fast (syncing the whole chain to tip would
+  // add ~tens of seconds to the cold path and STILL not defeat a consistent MITM, which serves a short chain
+  // anyway). The residual — a wallet that has only ever seen a consistently-deflated source — is the same
+  // single-source-trust limit as NSPV-COMPLETE-1, closed only by a second source.
+  let seenFloor = 0;
 
   return {
     async prepare(maxEventHeight: number) {
       let nodeTip = 0;
-      try { nodeTip = Number((await client.tip())?.height); } catch { /* node tip unknown → lapse uses verified tip */ }
-      // sync only as far as the records need (+cushion), capped by the node tip — keeps an old, sparse
-      // name's cold sync small (and within the headers budget) instead of fetching the whole chain.
+      try { nodeTip = Number((await client.tip())?.height); } catch { /* node tip unknown → lapse uses the floor / verified tip */ }
+      if (Number.isFinite(nodeTip) && nodeTip > seenFloor) seenFloor = nodeTip; // monotonic — never regress
+      // Inclusion only needs headers up to the record + cushion (kept cheap; an old, sparse name does not
+      // pay a full chain sync). LC.sync re-derives PoW+LWMA per header, so a lying-high cushion fails closed.
       const want = Math.min(Number.isFinite(nodeTip) && nodeTip > 0 ? nodeTip : maxEventHeight + CONF_BUFFER, maxEventHeight + CONF_BUFFER);
       const cur = LC.baseHeight + LC.chain.length - 1;
       if (want > cur) {
         await LC.sync(want);                           // a lying-high header THROWS here (fail-closed)
         if (opts.cache) { try { await opts.cache.set(LC.toSnapshot()); } catch { /* cache best-effort */ } }
       }
-      return { verifiedTip: LC.baseHeight + LC.chain.length - 1, nodeTip };
+      // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
+      return { verifiedTip: LC.baseHeight + LC.chain.length - 1, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0) };
     },
     async blockAt(height: number) {
       const vh = LC.chain[height - LC.baseHeight];

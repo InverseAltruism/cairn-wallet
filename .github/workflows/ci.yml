@@ -1,0 +1,56 @@
+name: ci
+
+# Push/PR gate (audit NSPV-SUPPLY-1 — the wallet previously had release-tag-only CI, so a regression or a
+# stale vendored SPV bundle could land on master uncaught). Runs the full suite, the typecheck, a build, and
+# the vendor-freshness gate on every push and PR.
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts   # no dependency lifecycle scripts (supply-chain hardening)
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      # Vendor-freshness gate (cheap path): verifies the committed SPV bundle's sha256 == PROVENANCE.json and
+      # that the @noble pins match (the second crypto mirror). The full rebuild-vs-source byte-diff runs in the
+      # vendor-fresh-full job below when the cross-repo token is configured; here it self-skips (cheap checks
+      # still gate), so this job needs no token.
+      - run: npm run verify:vendor
+
+  # Full vendor-freshness gate (audit NSPV-SUPPLY-1 / NSPV-MIRROR-1): rebuild the SPV bundle from the PINNED
+  # csd-sdk source and require byte-identity with the committed bundle (+ source @noble == wallet pins). This
+  # is the structural drift guarantee — it needs the (private) csd-sdk repo, so it runs only when the operator
+  # has set the ECOSYSTEM_RO_TOKEN secret (same token cairnx's CI already uses). Without it, the job no-ops and
+  # the cheap gate above still runs. To fully close NSPV-SUPPLY-1 in CI, set ECOSYSTEM_RO_TOKEN.
+  vendor-fresh-full:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.ECOSYSTEM_RO_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: cairn-wallet }
+      - uses: actions/checkout@v4
+        with:
+          repository: InverseAltruism/csd-sdk
+          token: ${{ secrets.ECOSYSTEM_RO_TOKEN }}
+          path: csd-sdk
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: corepack enable && pnpm -C csd-sdk install --frozen-lockfile && pnpm -C csd-sdk -r build
+      - run: npm -C cairn-wallet ci --ignore-scripts
+      - name: rebuild-vs-source byte-diff + noble equality
+        env:
+          CSD_SDK_DIR: ${{ github.workspace }}/csd-sdk
+        run: npm -C cairn-wallet run verify:vendor
