@@ -110,6 +110,21 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
       return `<b>.csd name → address record</b><br><code>${esc(r.name)}.csd</code> resolves to <code>${esc(r.addr)}</code>`;
     case "nrenew":
       return `<b>.csd name renewal</b><br>extends the lease on <code>${esc(r.name)}.csd</code>`;
+    case "nprofile": {
+      // v1.9 ENS-class identity (doc 36). COSMETIC profile — does NOT change where funds go. Show every
+      // key/value being set (escaped + truncated), "clears it" for an empty map, and WARN if a cosmetic
+      // field is named like an address (a dApp could try to dress a profile value up as a send target).
+      const pm = (r.p && typeof r.p === "object" ? r.p : {}) as Record<string, unknown>;
+      const keys = Object.keys(pm);
+      if (!keys.length) return `<b>.csd profile</b> — <b>clears</b> the identity profile on <code>${esc(r.name)}.csd</code><br><span class="dim">cosmetic only · does not change where funds go</span>`;
+      const rows = keys.map((k) => `${esc(k)}: <code>${esc(String((pm as Record<string, unknown>)[k]).slice(0, 120))}</code>`).join("<br>");
+      // defense-in-depth (Gate-3 INFO): warn on a reserved key NAME *or* any value that LOOKS like an
+      // address (0x+40hex under ANY key) — a dApp must not be able to dress a cosmetic profile field up as
+      // a send target. (Funds can never route through the profile regardless — this is purely to alert the user.)
+      const flagKey = keys.find((k) => k === "addr" || k === "address" || k === "coin" || /0x[0-9a-fA-F]{40}/.test(String((pm as Record<string, unknown>)[k])));
+      const warn = flagKey ? `<br><b class="err">⚠ this profile's “${esc(flagKey)}” field is cosmetic text, NOT a send address. Funds always go to the name's verified record, never the profile.</b>` : "";
+      return `<b>.csd identity profile</b> — cosmetic metadata on <code>${esc(r.name)}.csd</code> (does NOT change where funds go)<br>${rows}${warn}`;
+    }
     case "tmeta":
       return `<b>CairnX token metadata</b> (issuer-only)<br>token: <b>${esc(r.ticker)}</b><br>content: <code>${esc(r.hash)}</code>`;
     default:

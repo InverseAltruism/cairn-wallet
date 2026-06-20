@@ -28,6 +28,14 @@ const ADDR_RE = /^0x[0-9a-f]{40}$/;          // records carry LOWERCASE addresse
 const AMOUNT_RE = /^(0|[1-9][0-9]*)$/;       // decimal string, no leading zeros
 const HASH_RE = /^0x[0-9a-f]{64}$/;
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+// v1.9 ENS-class identity (doc 36). Mirror cairnx-core: PKEY = NAME_RE + "." (ASCII → sort-invariant);
+// string-only values ≤256 B; ≤16 keys. PROFILE_RESERVED_KEYS is the WALLET app-layer guard (decision
+// §9.4): a profile is cosmetic and must NEVER carry a send target, so the BUILDER refuses these keys.
+// (The resolver + decode stay semantics-agnostic — they'd store/render any charset-valid key — so the
+// protection lives on the write path here + a clear-sign warning + the UI.)
+const PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
+const PROFILE_MAX_KEYS = 16, PROFILE_MAX_VALUE_BYTES = 256;
+const PROFILE_RESERVED_KEYS = new Set(["addr", "address", "coin"]);
 const RESERVED_NAMES = new Set(["csd", "treasury", "admin", "official", "root", "www", "support"]);
 const MAX_AMOUNT = (1n << 96n) - 1n;
 const MAX_RECORD_BYTES = 512;                // consensus MAX_URI_BYTES
@@ -106,6 +114,7 @@ const TRANSFER_KEYS = new Set(["v", "t", "ticker", "to", "amount", "memo", "ts"]
 const OFFER_KEYS = new Set(["v", "t", "give", "want", "min", "bid", "taker", "memo", "ts"]);
 const BID_KEYS = new Set(["v", "t", "want", "give", "memo", "ts"]);
 const NAME_KEYS = new Set(["v", "t", "name", "salt"]);
+const NPROFILE_KEYS = new Set(["v", "t", "name", "p"]);
 
 // ── token transfer (the record the wallet's send-token flow signs) ───────────
 // uri is EXACTLY {"amount":"<baseUnits>","t":"transfer","ticker":"<TICKER>","to":"<0xaddr>","v":1}
@@ -172,6 +181,24 @@ export function buildNameXfer(p: { name: string; to: string }): BuiltCairnxRecor
   const to = String(p.to || "").toLowerCase();
   if (!isAddr(to)) throw new Error("recipient must be a 0x… 20-byte address");
   return buildNameRecord({ v: 1, t: "nxfer", name: p.name, to });
+}
+// v1.9 ENS-class identity profile (doc 36). INERT cosmetic metadata — NEVER a send target. The builder
+// (the WRITE path) enforces the app-layer invariant (decision §9.4): reject addr/address/coin keys so a
+// profile can't be confused for a send address. Charset + caps mirror the resolver; an empty map clears.
+export function buildNameProfile(p: { name: string; profile: Record<string, string> }): BuiltCairnxRecord {
+  if (!isName(p.name)) throw new Error("invalid name");
+  const map = p.profile;
+  if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error("profile must be an object");
+  const keys = Object.keys(map);
+  if (keys.length > PROFILE_MAX_KEYS) throw new Error(`too many profile keys (max ${PROFILE_MAX_KEYS})`);
+  for (const k of keys) {
+    if (PROFILE_RESERVED_KEYS.has(k)) throw new Error(`profile key "${k}" is not allowed — addresses live in the name record (set-address), not the cosmetic profile`);
+    if (!PKEY.test(k)) throw new Error(`invalid profile key "${k}" (lowercase a-z 0-9 . - , 1-32, alnum start/end)`);
+    const val = map[k];
+    if (typeof val !== "string") throw new Error(`profile value for "${k}" must be a string`);
+    if (utf8ToBytes(val).length > PROFILE_MAX_VALUE_BYTES) throw new Error(`profile value for "${k}" too long (max ${PROFILE_MAX_VALUE_BYTES} bytes)`);
+  }
+  return buildNameRecord({ v: 1, t: "nprofile", name: p.name, p: map });
 }
 
 // ── decimals-aware display/entry ─────────────────────────────────────────────
@@ -324,6 +351,25 @@ export function decodeCairnxRecord(uri: unknown, payloadHashHex?: unknown): Reco
     }
     case "nrenew": {
       if (!isName(r.name) || Object.keys(r).length !== 3) return null;
+      return r;
+    }
+    case "nprofile": {
+      // v1.9 ENS-class identity (doc 36) — lockstep with cairnx-core parseRecord. SHAPE-only validation
+      // (semantics-agnostic, like the resolver) so the clear-sign render matches exactly what the resolver
+      // executes. The addr/address/coin key BLOCK is on the WRITE path (buildNameProfile) + a clear-sign
+      // warning; decode must mirror the resolver, which stores any charset-valid key.
+      if (!onlyKeys(r, NPROFILE_KEYS)) return null;
+      if (!isName(r.name)) return null;
+      const pm = r.p as Record<string, unknown> | undefined;
+      if (!pm || typeof pm !== "object" || Array.isArray(pm)) return null;
+      const pk = Object.keys(pm);
+      if (pk.length > PROFILE_MAX_KEYS) return null;
+      for (const k of pk) {
+        if (!PKEY.test(k)) return null;
+        const val = pm[k];
+        if (typeof val !== "string") return null;
+        if (utf8ToBytes(val).length > PROFILE_MAX_VALUE_BYTES) return null;
+      }
       return r;
     }
     case "tmeta": {
