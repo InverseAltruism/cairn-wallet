@@ -447,6 +447,9 @@ var POW_LIMIT_BITS = 503382015;
 var LWMA_WINDOW = 45;
 var LWMA_SOLVETIME_MAX_FACTOR = 12;
 var MAX_FUTURE_DRIFT_SECS = 2 * 60 * 60;
+var MTP_WINDOW = 11;
+var MIN_BLOCK_SPACING_SECS = 60;
+var EPOCH_LEN = 30;
 var COIN = 1e8;
 var INITIAL_REWARD = 50 * COIN;
 var MAX_U128 = (1n << 128n) - 1n;
@@ -555,14 +558,15 @@ function targetToBits(target) {
   mant &= 16777215;
   return (exp << 24 | mant) >>> 0;
 }
+var POW_LIMIT_TARGET = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
 function powOk(headerHashBE, bits) {
-  const target = bitsToTarget(bits);
-  if (target.every((b) => b === 0)) return false;
-  return targetToBigInt(headerHashBE) <= targetToBigInt(target);
+  const target = targetToBigInt(bitsToTarget(bits));
+  if (target === 0n || target > POW_LIMIT_TARGET) return false;
+  return targetToBigInt(headerHashBE) <= target;
 }
 function workForBits(bits) {
   const target = targetToBigInt(bitsToTarget(bits));
-  if (target === 0n) return 0n;
+  if (target === 0n || target > POW_LIMIT_TARGET) return 0n;
   const w = (1n << 256n) / (target + 1n);
   return w > MAX_U128 ? MAX_U128 : w;
 }
@@ -654,17 +658,18 @@ var CsdClient = class {
     this.retries = Math.max(0, opts.retries ?? 0);
     if (!this.f) throw new Error("no fetch available \u2014 pass opts.fetch");
   }
-  async req(path, init) {
+  async req(path, init, opts) {
+    const maxRetries = opts?.noRetry ? 0 : this.retries;
     let lastErr;
     for (let attempt = 0; ; attempt++) {
       try {
         const r = await this.f(`${this.base}${path}`, { ...init, signal: AbortSignal.timeout(this.timeoutMs) });
-        if (r.status >= 500 && attempt < this.retries) {
+        if (r.status >= 500 && attempt < maxRetries) {
           lastErr = new Error(`HTTP ${r.status}`);
         } else if (!r.ok) throw new Error(`${init?.method ?? "GET"} ${path} \u2192 HTTP ${r.status}`);
         else return await this.readCapped(r, path);
       } catch (e) {
-        if (attempt >= this.retries) throw e;
+        if (attempt >= maxRetries) throw e;
         lastErr = e;
       }
       const cap = Math.min(5e3, 250 * 2 ** attempt);
@@ -686,7 +691,8 @@ var CsdClient = class {
     const body = r.body;
     if (!body || typeof body.getReader !== "function") {
       const t = await r.text();
-      if (t.length > max) throw new Error(`GET ${path} \u2192 response too large (${t.length} > ${max} bytes)`);
+      const byteLen = new TextEncoder().encode(t).length;
+      if (byteLen > max) throw new Error(`GET ${path} \u2192 response too large (${byteLen} > ${max} bytes)`);
       return JSON.parse(t);
     }
     const reader = body.getReader();
@@ -718,8 +724,8 @@ var CsdClient = class {
   get(path) {
     return this.req(path);
   }
-  post(path, body) {
-    return this.req(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  post(path, body, opts) {
+    return this.req(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, opts);
   }
   // The node returns application errors as `{ok:false, err}` with HTTP **200**, so a bare `get()`
   // can't see them. For endpoints whose `{ok:false}` result is useless to the caller (a missing
@@ -751,8 +757,11 @@ var CsdClient = class {
   utxos(addr, opts = {}) {
     return this.get(`/utxos/${addr}${opts.available === false ? "" : "?available=true"}`);
   }
+  // getOk: a not-found proposal returns {ok:false}@200; without this the caller reads .domain/.uri off a
+  // malformed object instead of seeing the error (audit M6). (tx() deliberately keeps its bare get — its
+  // {ok:false} is a documented VALID "not yet in a block" state that waitForTx/verifyInputValues handle.)
   proposal(id) {
-    return this.get(`/proposal/${id}`);
+    return this.getOk(`/proposal/${id}`);
   }
   proposals(domain, limit = 40) {
     return this.get(`/proposals/${encodeURIComponent(domain)}/${limit}`);
@@ -798,7 +807,7 @@ var CsdClient = class {
    * alone mistakes a rejected tx for a broadcast one. Use `submitOrThrow` if you want a hard failure.
    */
   submit(nodeJsonTx) {
-    return this.post("/tx/submit", { tx: nodeJsonTx });
+    return this.post("/tx/submit", { tx: nodeJsonTx }, { noRetry: true });
   }
   /** As `submit`, but throws on node rejection (`ok:false`) instead of returning a misleading txid. */
   async submitOrThrow(nodeJsonTx) {
@@ -828,7 +837,7 @@ function rpcHeaderToHeader(h) {
 }
 
 // ../csd-sdk/packages/light/dist/index.js
-var POW_LIMIT_TARGET = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
+var POW_LIMIT_TARGET2 = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
 function expectedBitsFromWindow(window, height) {
   if (height === 0) return INITIAL_BITS;
   const parent = window[window.length - 1];
@@ -864,10 +873,10 @@ function expectedBitsFromWindow(window, height) {
   for (const tg of targets) sumTarget += tg;
   const avgTarget = sumTarget / BigInt(m);
   let nextTarget = avgTarget * avgSolvetime / t;
-  if (nextTarget > POW_LIMIT_TARGET) nextTarget = POW_LIMIT_TARGET;
+  if (nextTarget > POW_LIMIT_TARGET2) nextTarget = POW_LIMIT_TARGET2;
   if (nextTarget === 0n || nextTarget >= 1n << 256n) return POW_LIMIT_BITS;
   const bits = targetToBits(bigIntToTarget(nextTarget));
-  if (targetToBigInt(bitsToTarget(bits)) > POW_LIMIT_TARGET) return POW_LIMIT_BITS;
+  if (targetToBigInt(bitsToTarget(bits)) > POW_LIMIT_TARGET2) return POW_LIMIT_BITS;
   return bits;
 }
 var satAddWork = (a, bits) => {
@@ -956,12 +965,38 @@ var LightClient = class _LightClient {
     } else {
       if (!parent) throw new Error(`no parent context for height ${height}`);
       if (header.prev.toLowerCase() !== parent.hash.toLowerCase()) throw new Error(`broken prev link at ${height}`);
+      this.checkTimeRules(height, header, window, parent);
       const exp = expectedBitsFromWindow(window, height);
       if (header.bits !== exp) throw new Error(`bad bits at ${height}: header ${header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
     }
     if (!powOk(headerHashBytes(header), header.bits)) throw new Error(`invalid PoW at ${height}`);
     this.pinCheckpoint(height, hash);
     return { height, hash, header, chainwork: satAddWork(parent?.chainwork ?? 0n, header.bits) };
+  }
+  /**
+   * Timestamp consensus rules (H3), a faithful port of chain/index.rs + chain/time.rs:
+   *   • min spacing:  time ≥ parent.time + MIN_BLOCK_SPACING_SECS
+   *   • MTP:          time > median of the last MTP_WINDOW header times ending at parent (inclusive)
+   *   • future drift: time ≤ now() + MAX_FUTURE_DRIFT_SECS   (wall-clock, as the node does)
+   * `window` is the chronological run preceding `height`; its last element IS the parent, so its
+   * tail of MTP_WINDOW headers is exactly the node's MTP walk. Without these, an attacker could grind
+   * timestamps to drive the LWMA toward POW_LIMIT.
+   *
+   * Edge (safe-direction): right after a checkpoint seed shorter than MTP_WINDOW, the available window
+   * can be shorter than the node's full MTP walk (which would reach below baseHeight). A truncated
+   * median over ascending times is ≥ the node's, so the `time > mtp` gate is only ever STRICTER here —
+   * it can reject a header the node accepts, never accept one the node rejects. The standard API
+   * (`syncFromCheckpoint`, context = LWMA_WINDOW = 45 ≥ MTP_WINDOW) always supplies a full window.
+   */
+  checkTimeRules(height, header, window, parent) {
+    const time = Number(header.time);
+    const minAllowed = Number(parent.header.time) + MIN_BLOCK_SPACING_SECS;
+    if (time < minAllowed) throw new Error(`time too early at ${height}: ${time} < parent+${MIN_BLOCK_SPACING_SECS} (${minAllowed})`);
+    const recent = window.slice(Math.max(0, window.length - MTP_WINDOW)).map((h) => Number(h.time)).sort((a, b) => a - b);
+    const mtp = recent.length ? recent[Math.floor(recent.length / 2)] : 0;
+    if (time <= mtp) throw new Error(`time <= MTP at ${height}: ${time} <= ${mtp}`);
+    const maxAllowed = Math.floor(Date.now() / 1e3) + MAX_FUTURE_DRIFT_SECS;
+    if (time > maxAllowed) throw new Error(`time too far in future at ${height}: ${time} > now+${MAX_FUTURE_DRIFT_SECS}`);
   }
   /**
    * Seed a TRUSTED, contiguous header run ending at a pinned checkpoint, so forward sync needs
@@ -1100,9 +1135,14 @@ var LightClient = class _LightClient {
       if (e.height !== s.baseHeight + i) throw new Error(`snapshot not contiguous at ${e.height}`);
       const hash = headerHash(e.header);
       if (hash.toLowerCase() !== e.hash.toLowerCase()) throw new Error(`snapshot hash mismatch at ${e.height}`);
+      if (i === 0 && s.baseHeight === 0) {
+        if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`snapshot foreign genesis: ${hash}`);
+        if (e.header.bits !== INITIAL_BITS) throw new Error("snapshot genesis bits != INITIAL_BITS");
+      }
       if (prevHash && e.header.prev.toLowerCase() !== prevHash) throw new Error(`snapshot prev link broken at ${e.height}`);
       if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${e.height}`);
-      if (!e.trusted && e.height > 0) {
+      const fullWindowAvailable = e.height - s.baseHeight >= LWMA_WINDOW;
+      if (e.height > 0 && (!e.trusted || fullWindowAvailable)) {
         const exp = expectedBitsFromWindow(lc.windowBefore(e.height), e.height);
         if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${e.height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
       }
@@ -3154,11 +3194,11 @@ function addrFromPub(pub33) {
   return hash160(hb2(pub33));
 }
 function verifyDigest(sig64, pub33, digestHex) {
-  const s = hb2(sig64), p = hb2(pub33);
-  if (s.length !== 64 || p.length !== 33) return false;
   try {
+    const s = hb2(sig64), p = hb2(pub33), d = hb2(digestHex);
+    if (s.length !== 64 || p.length !== 33 || d.length !== 32) return false;
     if (secp256k1.Signature.fromCompact(s).hasHighS()) return false;
-    return secp256k1.verify(s, hb2(digestHex), p, { lowS: true });
+    return secp256k1.verify(s, d, p, { lowS: true });
   } catch {
     return false;
   }
@@ -3173,7 +3213,6 @@ var V14_HEIGHT = 31400;
 var V15_HEIGHT = 32e3;
 var V16_HEIGHT = 33600;
 var V17_HEIGHT = 34e3;
-var EPOCH_LEN = 30;
 var NAME_TERM_EPOCHS = 8760;
 var NAME_GRACE_EPOCHS = 720;
 var NAME_PREMIUM_START = 20n;
@@ -3203,6 +3242,10 @@ var DEPLOY_FEE = 1e8;
 var V18_HEIGHT = 4e4;
 var NAME_FEE_SHORT_V18 = 670000000n;
 var NAME_FEE_V18 = 300000000n;
+var V19_HEIGHT = 36700;
+var PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
+var PROFILE_MAX_KEYS = 16;
+var PROFILE_MAX_VALUE_BYTES = 256;
 function nameRegFee(name, height) {
   if (height >= V18_HEIGHT) return name.length <= 4 ? NAME_FEE_SHORT_V18 : NAME_FEE_V18;
   const n = name.length;
@@ -3219,6 +3262,7 @@ var ADDR_RE = /^0x[0-9a-f]{40}$/;
 var AMOUNT_RE = /^(0|[1-9][0-9]*)$/;
 var NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 var HASH_RE = /^0x[0-9a-f]{64}$/;
+var SALT_RE = /^[0-9a-fA-F]{16,128}$/;
 var RESERVED_NAMES = /* @__PURE__ */ new Set(["csd", "treasury", "admin", "official", "root", "www", "support"]);
 var COMMIT_MAX_BLOCKS = 8 * EPOCH_LEN;
 var epochOf = (height) => Math.floor(height / EPOCH_LEN);
@@ -3271,6 +3315,7 @@ var TRANSFER_KEYS = /* @__PURE__ */ new Set(["v", "t", "ticker", "to", "amount",
 var OFFER_KEYS = /* @__PURE__ */ new Set(["v", "t", "give", "want", "min", "bid", "taker", "memo", "ts"]);
 var BID_KEYS = /* @__PURE__ */ new Set(["v", "t", "want", "give", "memo", "ts"]);
 var NAME_KEYS = /* @__PURE__ */ new Set(["v", "t", "name", "salt"]);
+var NPROFILE_KEYS = /* @__PURE__ */ new Set(["v", "t", "name", "p"]);
 function parseRecord(uri, payloadHashHex) {
   if (new TextEncoder().encode(uri).length > MAX_RECORD_BYTES) return null;
   let obj;
@@ -3378,7 +3423,7 @@ function parseRecord(uri, payloadHashHex) {
     case "name": {
       if (!onlyKeys(r, NAME_KEYS)) return null;
       if (!isName(r.name)) return null;
-      if (r.salt !== void 0 && (typeof r.salt !== "string" || !/^[0-9a-fA-F]{16,128}$/.test(r.salt))) return null;
+      if (r.salt !== void 0 && (typeof r.salt !== "string" || !SALT_RE.test(r.salt))) return null;
       return r;
     }
     case "nxfer": {
@@ -3397,9 +3442,24 @@ function parseRecord(uri, payloadHashHex) {
       if (Object.keys(r).length !== 3) return null;
       return r;
     }
+    case "nprofile": {
+      if (!onlyKeys(r, NPROFILE_KEYS)) return null;
+      if (!isName(r.name)) return null;
+      const p = r.p;
+      if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+      const keys = Object.keys(p);
+      if (keys.length > PROFILE_MAX_KEYS) return null;
+      for (const k of keys) {
+        if (!PKEY.test(k)) return null;
+        const val = p[k];
+        if (typeof val !== "string") return null;
+        if (new TextEncoder().encode(val).length > PROFILE_MAX_VALUE_BYTES) return null;
+      }
+      return r;
+    }
     case "tmeta": {
       if (!isTicker(r.ticker)) return null;
-      if (typeof r.hash !== "string" || !/^0x[0-9a-f]{64}$/.test(r.hash)) return null;
+      if (typeof r.hash !== "string" || !HASH_RE.test(r.hash)) return null;
       if (Object.keys(r).length !== 4) return null;
       return r;
     }
@@ -3488,6 +3548,7 @@ function resolve(events, tipHeight) {
     const v12 = ev.height >= V12_HEIGHT;
     const v15 = ev.height >= V15_HEIGHT;
     const v16 = ev.height >= V16_HEIGHT;
+    const v19 = ev.height >= V19_HEIGHT;
     const feeToTreasury = ev.kind === "propose" ? BigInt((ev.paidTo ?? {})[TREASURY_ADDR] ?? "0") : 0n;
     if (ev.kind === "propose") {
       const rec = parseRecord(ev.uri, ev.payloadHash);
@@ -3643,6 +3704,7 @@ function resolve(events, tipHeight) {
         }
         n.owner = rec.to.toLowerCase();
         n.addr = void 0;
+        n.profile = void 0;
         note(ev, ev.id, "nxfer", true);
       } else if (rec.t === "nset") {
         const n = names.get(rec.name);
@@ -3656,6 +3718,22 @@ function resolve(events, tipHeight) {
         }
         n.addr = rec.addr.toLowerCase();
         note(ev, ev.id, "nset", true);
+      } else if (rec.t === "nprofile") {
+        if (!v19) {
+          note(ev, ev.id, "nprofile", false, "before v1.9 activation");
+          continue;
+        }
+        const n = names.get(rec.name);
+        if (!n || n.owner !== who) {
+          note(ev, ev.id, "nprofile", false, "not the name owner");
+          continue;
+        }
+        if (v15 && lapsed(n, epochOf(ev.height))) {
+          note(ev, ev.id, "nprofile", false, "lease lapsed \u2014 claim it instead");
+          continue;
+        }
+        n.profile = Object.keys(rec.p).length ? { ...rec.p } : void 0;
+        note(ev, ev.id, "nprofile", true);
       } else if (rec.t === "offer") {
         const wantIsToken = isTokenWant(rec.want);
         if ((wantIsToken || rec.min !== void 0 || rec.bid !== void 0) && !v12) {
@@ -3909,6 +3987,7 @@ function resolve(events, tipHeight) {
           giveName.owner = who;
           giveName.locked = false;
           giveName.addr = void 0;
+          giveName.profile = void 0;
           if (ev.height >= V13_HEIGHT) {
             giveName.effHeight = ev.height;
             giveName.pos = ev.pos;
@@ -4038,6 +4117,7 @@ function resolve(events, tipHeight) {
           n.owner = who;
           n.locked = false;
           n.addr = void 0;
+          n.profile = void 0;
           if (ev.height >= V13_HEIGHT) {
             n.effHeight = ev.height;
             n.pos = ev.pos;
@@ -4108,6 +4188,7 @@ function resolve(events, tipHeight) {
   }
   const namesOut = {};
   const tipV15 = tipHeight >= V15_HEIGHT;
+  const tipV19 = tipHeight >= V19_HEIGHT;
   const tipEpoch = epochOf(tipHeight);
   for (const [nm, n] of [...names.entries()].sort(([a], [b]) => ord(a, b))) {
     namesOut[nm] = {
@@ -4119,6 +4200,9 @@ function resolve(events, tipHeight) {
       locked: n.locked,
       ...n.addr ? { addr: n.addr } : {},
       ...n.viaFill ? { viaFill: true } : {},
+      // v1.9 profile materialized at v1.9+ tips ONLY (the apply is also gated) → every pre-v1.9 canonical
+      // hash stays byte-identical; absent when empty/unset.
+      ...tipV19 && n.profile ? { profile: n.profile } : {},
       // lease fields exist only at v1.5+ tips so every pre-v1.5 canonical hash stays pinned
       ...tipV15 ? { paidThroughEpoch: paidThrough(n), ...lapsed(n, tipEpoch) ? { expired: true } : {} } : {}
     };

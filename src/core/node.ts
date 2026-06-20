@@ -110,7 +110,10 @@ export function selectInputs(utxos: any[], need: number): Selection | null {
   // inflate the input count with duplicates/dust or feed a negative value into selection.
   const seen = new Set<string>();
   const confirmed = utxos.filter((x: any) => {
-    if (Number(x.confirmations ?? 0) < 1) return false;
+    // Number.isFinite so confirmations:"abc"→NaN / "1e9999"→Infinity (NaN<1 and Infinity<1 are both
+    // false) can't slip an unconfirmed/immature coin past the maturity gate — lockstep with csd-tx (audit L4).
+    const c = Number(x.confirmations ?? 0);
+    if (!Number.isFinite(c) || c < 1) return false;
     const v = Number(x.value);
     if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return false;
     const key = `${String(x.txid).toLowerCase()}:${Number(x.vout)}`; // case-normalize hex so a hostile RPC can't bypass dedupe with mixed case

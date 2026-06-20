@@ -19,7 +19,9 @@ export const CSD_CHAIN_MAINNET = "csd:00000052c2821f71b19c3d79dfabfb12";
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 const NONCE_RE = /^[A-Za-z0-9]{8,}$/;
-const hasLF = (s: string) => s.includes("\n") || s.includes("\r");
+// Block ALL line terminators (incl. Unicode U+2028/U+2029/U+0085 + \v/\f), lockstep with csd-siwc (audit L17):
+// otherwise the wallet could build+sign a field that an RP's csd-siwc verifier rejects as malformed.
+const hasLF = (s: string) => /[\n\r\u2028\u2029\u0085\u000b\u000c]/.test(s);
 
 export interface SiwcFields {
   domain: string; account: string; statement?: string; uri: string; version: string;
