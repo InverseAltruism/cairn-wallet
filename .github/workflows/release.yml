@@ -26,6 +26,11 @@ jobs:
       - run: npm test            # full gate — a broken/failed build never ships
       - run: npm run package     # deterministic zip + cairn-wallet.zip.sha256
       - name: Attest build provenance
+        # SLSA provenance requires a PUBLIC repo (GitHub: "not available for user-owned private
+        # repositories"). The wallet is open-source, but while the repo is private this step can't
+        # run — so it must NOT block the release (it bit v0.2.24/v0.2.26: zips built + tests passed,
+        # but the publish step never ran). Make the repo public to restore full provenance.
+        continue-on-error: true
         uses: actions/attest-build-provenance@v1
         with:
           # attest BOTH artifacts — the store-upload zip (manifest at root) AND the unpacked
