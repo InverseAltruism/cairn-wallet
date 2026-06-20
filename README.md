@@ -19,19 +19,23 @@ and support items on [Cairn](https://cairn-substrate.com).
 
 ## Install
 
-1. Download `cairn-wallet.zip` from the [latest release](https://github.com/InverseAltruism/cairn-wallet/releases/latest), or click **Get Wallet** on [cairn-substrate.com](https://cairn-substrate.com).
+1. Download `cairn-wallet.zip` from **[cairn-substrate.com/api/wallet/download](https://cairn-substrate.com/api/wallet/download)** (or click **Get Wallet** on the homepage). *This repo is private, so the GitHub Release asset is not publicly downloadable — the website self-serves the zip instead; see [Release & download flow](#release--download-flow).*
 2. Unzip it. You get a `cairn-wallet` folder.
 3. Open `chrome://extensions` in Chrome, Brave, or Edge. Turn on **Developer mode**, click **Load unpacked**, and select the `cairn-wallet` folder.
 
 ### Verify the download
 
-Every release ships a SHA-256 checksum and a build-provenance attestation that ties the zip
-to the source commit and CI run.
+The download is SHA-256-pinned. Fetch the checksum from the same origin and verify:
 
 ```bash
-sha256sum -c cairn-wallet.zip.sha256
-gh attestation verify cairn-wallet.zip --repo InverseAltruism/cairn-wallet
+curl -sO https://cairn-substrate.com/api/wallet/download -o cairn-wallet.zip
+curl -s https://cairn-substrate.com/api/wallet/download.sha256 | sha256sum -c -
 ```
+
+The same `cairn-wallet.zip.sha256` is committed alongside the served zip (`cairn/public/downloads/`) and is
+produced by the reproducible `npm run package` from the tagged source — so you can rebuild and match it without
+trusting the binary. *(While the repo is private the GitHub SLSA build-provenance attestation cannot run — see
+the flow section; it returns once the repo is public again.)*
 
 ## Backups
 
@@ -72,6 +76,49 @@ The signing core is verified against external ground truth, not only its own ass
 * the core produces transactions the live node accepts;
 * the vault rejects a wrong password and resists a stored-iteration downgrade, and signatures are deterministic and low-S;
 * the dApp boundary, approval flow, coin selection, and HD derivation each have dedicated tests.
+
+## Release & download flow
+
+> **For maintainers / future agentic work — read this before shipping a wallet update.** This repo is
+> **private**, which changes two things from the usual GitHub-release flow: SLSA provenance can't run, and the
+> public can't download release assets. The flow below is the *correct, working* path; don't "fix" it back to a
+> bare GitHub redirect while the repo is private.
+
+**1. Version is lockstepped across three files.** `build.mjs` aborts the build on any drift, so bump all three:
+`package.json` · `public/manifest.json` · `src/inpage.ts` (both `version:` in the provider object **and** in
+`getCapabilities`). Then `npm test && npm run package` must pass locally.
+
+**2. Cut the release.** `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z` triggers
+`.github/workflows/release.yml`: `npm ci` → `npm test` (full gate) → `npm run package` (deterministic
+`cairn-wallet.zip` = *load-unpacked* variant with files under a `cairn-wallet/` folder, **and**
+`cairn-wallet-store.zip` = *Web-Store* variant with `manifest.json` at the zip root, each with a `.sha256`) →
+publish the GitHub Release.
+- ⚠ The **Attest build provenance** step is `continue-on-error` **on purpose**: GitHub's SLSA attestation is
+  "not available for user-owned private repositories", so it errors — and before this was made non-blocking it
+  silently stopped the publish step (v0.2.24/v0.2.26 built green but never released). Making the repo public
+  re-enables real provenance; **do not remove `continue-on-error` while the repo is private.**
+
+**3. The website does NOT redirect to the GitHub release** (it's private → `releases/latest/download/…` 404s for
+the public). Instead the **cairn** server self-serves the zip:
+- `cairn/public/downloads/cairn-wallet.zip` (+ `.sha256`) is committed and served by
+  `GET /api/wallet/download` (and `GET /api/wallet/download.sha256`); the page buttons (`WALLET_ZIP` in
+  `cairn/public/{landing,app,wall}.js`) point at that same-origin endpoint.
+- After each wallet release, refresh it from the (private) release and redeploy:
+  ```bash
+  cd /opt/cairn_substrate/cairn
+  scripts/sync-wallet-download.sh                 # gh-auth pull of the CI-built zip + sha256 verify
+  git add public/downloads && git commit -m "chore: sync wallet download to vX.Y.Z" && git push
+  systemctl --user restart cairn.service          # serve the new zip
+  curl -sI https://cairn-substrate.com/api/wallet/download   # expect HTTP 200, application/zip
+  ```
+
+**4. Chrome Web Store (optional).** Upload `cairn-wallet-store.zip` (manifest at root) from the release, or
+`npm run package` and upload `cairn-wallet-store.zip`. The website download already serves users; the Web Store
+is a second channel.
+
+**If the repo is made public again:** the SLSA attestation step succeeds, `releases/latest/download/cairn-wallet.zip`
+becomes publicly fetchable, and the cairn site may revert `/api/wallet/download` to a 302 redirect to the release
+(its original tamper-resistant design) instead of self-serving.
 
 ## Architecture
 
