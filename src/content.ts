@@ -24,6 +24,10 @@ window.addEventListener("message", (ev: MessageEvent) => {
   if (ev.source !== window || ev.origin !== window.location.origin || (ev.data as any)?.target !== "cairn-content") return;
   const { id, method, params } = ev.data as any;
   chrome.runtime.sendMessage({ kind: "dapp", method, params }, (res: any) => {
+    // If this page was moved into the back/forward cache (or the SW dropped) before the reply arrived,
+    // the channel is closed — read lastError so Chrome doesn't log "Unchecked runtime.lastError", and
+    // skip posting to a now-frozen page (cosmetic; the page reconnects/re-requests on resume). Harmless.
+    if (chrome.runtime.lastError) return;
     // Reply only to our own origin (not "*") — the inpage provider lives in the same page.
     window.postMessage({ target: "cairn-inpage", id, res, nonce: NONCE }, window.location.origin);
   });
