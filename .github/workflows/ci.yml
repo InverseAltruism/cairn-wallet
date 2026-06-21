@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -37,7 +41,7 @@ jobs:
   # the cheap gate above still runs. To fully close NSPV-SUPPLY-1 in CI, set ECOSYSTEM_RO_TOKEN.
   vendor-fresh-full:
     runs-on: ubuntu-latest
-    if: ${{ secrets.ECOSYSTEM_RO_TOKEN != '' }}
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v4
         with: { path: cairn-wallet }
