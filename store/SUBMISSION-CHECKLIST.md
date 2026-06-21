@@ -48,7 +48,7 @@ actions the build can't do); everything else is already prepared in this repo.
 - [ ] Name, summary, detailed description, category (Productivity), language.
 - [ ] Single-purpose statement.
 - [ ] Per-permission + per-host justifications.
-- [ ] Data categories (authentication info only) + the 3 certifications checked.
+- [ ] Data categories: leave **ALL UNCHECKED** (NONE collected/transmitted — keys + state stay on-device; see STORE-LISTING.md / CHROME-SUBMISSION.md) + the 3 certifications checked.
 - [ ] Remote code = **No**.
 - [ ] Upload screenshots + promo tile.
 
