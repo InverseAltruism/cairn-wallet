@@ -162,7 +162,7 @@ async function renderHistory() {
     const when = t.ts ? new Date(t.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
-      <div class="tx-sub"><span class="dim">${detail}</span><a href="${explorerLink(currentExplorer, "tx", String(t.txid))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
+      <div class="tx-sub"><span class="dim">${detail}</span><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
       <div class="tx-when dim">${when}</div>
     </div>`;
   }).join("");
@@ -243,8 +243,8 @@ async function renderAssets() {
     const lease = leaseLabel(n);
     const cls = n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
     const acts = n.lapsed
-      ? `<a class="mini" href="${tradeNameUrl(nm)}" target="_blank" rel="noopener noreferrer">recapture ↗</a>`
-      : `<button class="mini" data-nrenew="${escapeHtml(nm)}">renew</button>${isPrimary ? "" : `<button class="mini" data-nprimary="${escapeHtml(nm)}">★ primary</button>`}<a class="mini" href="${tradeNameUrl(nm)}" target="_blank" rel="noopener noreferrer">⋯</a>`;
+      ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">recapture ↗</a>`
+      : `<button class="mini" data-nrenew="${escapeHtml(nm)}">renew</button>${isPrimary ? "" : `<button class="mini" data-nprimary="${escapeHtml(nm)}">★ primary</button>`}<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">⋯</a>`;
     return `<div class="name-asset${cls}">
       <span class="na-name">${escapeHtml(nm)}<span class="dim">.csd</span>${isPrimary ? ` <span class="na-tag">★ primary</span>` : ""}</span>
       <span class="na-lease dim">${escapeHtml(lease)}</span>
@@ -707,7 +707,7 @@ async function renderSealed() {
     const when = s.committedTs ? new Date(s.committedTs).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>` : `🔒 sealed`;
     const right = s.revealed
-      ? `<a href="${explorerLink(currentExplorer, "tx", String(s.txid))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
+      ? `<a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(s.txid)))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
       : `<button class="mini" data-reveal="${escapeHtml(String(s.txid))}">Reveal</button>`;
     return `<div class="tx"><div class="tx-top"><span class="tx-kind">${status}</span><span class="dim">${when}</span></div>
       <div class="tx-sub"><span class="dim">${escapeHtml(String(s.claim).slice(0, 44))}</span>${right}</div></div>`;

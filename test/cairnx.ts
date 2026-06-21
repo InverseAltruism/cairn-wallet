@@ -482,7 +482,7 @@ async function main() {
     let expCairn = false, expOfficial = false, expCustom = false, expJunk = false, expCred = false;
     try { await w.setExplorer("cairn"); expCairn = (await w.status()).explorer === "cairn"; } catch { /* */ }
     try { await w.setExplorer("official"); expOfficial = (await w.status()).explorer === "official"; } catch { /* */ }
-    try { await w.setExplorer("https://my-explorer.example"); expCustom = (await w.status()).explorer === "https://my-explorer.example"; } catch { /* */ }
+    try { await w.setExplorer("https://my-explorer.example"); expCustom = (await w.status()).explorer === "https://my-explorer.example/"; } catch { /* */ }
     try { await w.setExplorer("not-a-url"); } catch { expJunk = true; }
     try { await w.setExplorer("https://user:pass@evil.example"); } catch { expCred = true; }
     check("explorer: setExplorer('cairn') preset accepted + in status", expCairn);
@@ -490,6 +490,10 @@ async function main() {
     check("explorer: setExplorer(custom https) accepted", expCustom);
     check("explorer: setExplorer(junk) rejected", expJunk);
     check("explorer: setExplorer(embedded-credential URL) rejected", expCred);
+    // EXP-XSS defense-in-depth: a custom explorer with href-breakout chars is canonicalized at storage
+    let expNorm = false;
+    try { await w.setExplorer('https://evil.example/"><img src=x>'); const stored = (await w.status()).explorer; expNorm = !/[<>"]/.test(stored) && stored.startsWith("https://evil.example/"); } catch { /* */ }
+    check("explorer: malicious custom URL stored canonicalized (no raw < > \")", expNorm);
   }
 
   // CQ-1: the hand-written cairnx.ts convention mirror must not drift from the vendored resolver bundle on the

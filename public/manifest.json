@@ -28,7 +28,7 @@
     "alarms"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'none'; frame-ancestors 'none'; connect-src 'self' https://cairn-substrate.com https://clarvis.cairn-substrate.com http://127.0.0.1:* http://localhost:* https://localhost:*"
+    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; object-src 'self'; base-uri 'none'; frame-ancestors 'none'; connect-src 'self' https://cairn-substrate.com https://clarvis.cairn-substrate.com http://127.0.0.1:* http://localhost:* https://localhost:*"
   },
   "host_permissions": [
     "http://127.0.0.1:8789/*",

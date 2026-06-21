@@ -39,7 +39,6 @@ const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
 // SAME event). Fail-soft: if clarvis is unreachable the verify falls back to single-source (with caution).
 const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 
-// Public block explorer (static MPA): /tx.html?txid= · /address.html?addr= · /proposal.html?id=
 // Block-explorer presets the wallet links to. Navigation-only — opened in a new tab, NEVER fetched — so this
 // adds NO CSP / host_permission / fetch surface (the source-host tripwire only covers fetched *_RPC/*_API
 // hosts). Default = the Cairn explorer (the indexer UI, hash-routed); the Official CSD explorer (a static MPA
@@ -138,11 +137,13 @@ export class Wallet {
   async removeRpc(u: string): Promise<void> { await this.store.set("customRpcs", (await this.rpcList()).filter((x) => x !== u)); }
   // Block-explorer selection (navigation-only; preset id "cairn"/"official" or a custom https base).
   async setExplorer(v: string): Promise<void> {
-    if (v !== "cairn" && v !== "official" && !validRpcUrl(v)) throw new Error("explorer must be a preset or an https:// URL (or http://localhost)");
-    this.explorer = v; await this.store.set("explorer", v);
+    if (v === "cairn" || v === "official") { this.explorer = v; await this.store.set("explorer", v); return; }
+    if (!validRpcUrl(v)) throw new Error("explorer must be a preset or an https:// URL (or http://localhost)");
+    const norm = new URL(v).href; // canonicalize — encodes any href-breakout chars before it is ever rendered (defense-in-depth vs EXP-XSS)
+    this.explorer = norm; await this.store.set("explorer", norm);
   }
   async explorerList(): Promise<string[]> { return (await this.store.get("customExplorers")) || []; }
-  async addExplorer(u: string): Promise<void> { if (!validRpcUrl(u)) throw new Error("explorer " + RPC_URL_ERR); const l = await this.explorerList(); if (!l.includes(u)) { l.push(u); await this.store.set("customExplorers", l.slice(0, 20)); } }
+  async addExplorer(u: string): Promise<void> { if (!validRpcUrl(u)) throw new Error("explorer " + RPC_URL_ERR); const norm = new URL(u).href; const l = await this.explorerList(); if (!l.includes(norm)) { l.push(norm); await this.store.set("customExplorers", l.slice(0, 20)); } }
   async removeExplorer(u: string): Promise<void> { await this.store.set("customExplorers", (await this.explorerList()).filter((x) => x !== u)); }
 
   async status(): Promise<WalletStatus> {

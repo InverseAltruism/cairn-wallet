@@ -1,6 +1,7 @@
 // Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
 import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine } from "../src/popup/clearsign.js";
+import { explorerLink } from "../src/core/wallet.js";
 declare const process: { exit(code: number): void };
 
 let pass = 0, fail = 0;
@@ -36,6 +37,15 @@ ok("debitOf is always finite", Number.isFinite(debitOf({ method: "send", params:
 const xss = describe({ method: "propose", params: { domain: '"><img src=x onerror=alert(1)>', fee: 1000 } });
 ok("describe escapes a malicious domain (no raw <img>)", !xss.includes("<img") && xss.includes("&lt;img"));
 ok("escapeHtml neutralizes <script>", escapeHtml("<script>") === "&lt;script&gt;");
+
+// EXP-XSS-1/2 regression — any URL flowing into an href (explorer link, trade-name link) is escapeHtml'd at the
+// render layer so a malicious custom-explorer/API base cannot break out of the href attribute and inject markup.
+{
+  const evilBase = 'https://evil.example/"><img src=x onerror=alert(1)>';
+  const rendered = escapeHtml(explorerLink(evilBase, "tx", "0xdeadbeef")); // what popup.ts puts inside href="…"
+  ok("EXP-XSS: rendered href has no raw <, >, or \" (cannot break out of the attribute)", !/[<>"]/.test(rendered));
+  ok("EXP-XSS: the injected <img is neutralized to inert &lt;img text (not a live tag)", !rendered.includes("<img") && rendered.includes("&lt;img"));
+}
 
 // fillOffer (Attest + payment in one tx) — clear-signs like send, plus the offer id
 const fo = { method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), score: 100, confidence: 100, outputs: [{ to: ADDR, value: 200_000_000 }], fee: 5_000_000 } };
