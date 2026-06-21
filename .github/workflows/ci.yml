@@ -64,13 +64,14 @@ jobs:
         uses: actions/setup-node@v4
         with: { node-version: "22" }
       - if: ${{ env.HAS_TOKEN == 'true' }}
-        # Honor csd-sdk's OWN pinned pnpm (its package.json `packageManager`). Bare `corepack enable` lets the
-        # runner's newer corepack ship a pnpm that REFUSES to switch to csd-sdk's pin (corepack ≥0.31 / pnpm 11),
-        # which broke this step; `corepack prepare <pin> --activate` installs+activates exactly that version.
+        # Install csd-sdk's OWN pinned pnpm directly (bypassing corepack). The runner's newer corepack ships a
+        # pnpm that REFUSES to switch to csd-sdk's pin (pnpm 11 vs the pinned 10.x → version-mismatch error),
+        # and `corepack prepare --activate` alone doesn't put pnpm on PATH. `npm i -g <pin>` is bulletproof.
         run: |
-          PM=$(node -p "require('./csd-sdk/package.json').packageManager")
-          echo "Using csd-sdk's pinned package manager: $PM"
-          corepack prepare "$PM" --activate
+          PM=$(node -p "require('./csd-sdk/package.json').packageManager")   # e.g. pnpm@10.32.1
+          echo "Installing csd-sdk's pinned package manager: $PM"
+          npm i -g "$PM"
+          pnpm -v
           pnpm -C csd-sdk install --frozen-lockfile && pnpm -C csd-sdk -r build
       - if: ${{ env.HAS_TOKEN == 'true' }}
         run: npm -C cairn-wallet ci --ignore-scripts
