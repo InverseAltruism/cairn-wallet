@@ -1,6 +1,7 @@
 {
   "note": "Provenance for src/vendor/cairnx-spv.js (the vendored SPV bundle). Rebuild with scripts/build-spv-vendor.sh, then regenerate with `node scripts/check-vendor-fresh.mjs --write`. Verified by scripts/check-vendor-fresh.mjs (audit NSPV-SUPPLY-1 / NSPV-MIRROR-1).",
   "csdSdkVersion": "0.1.14",
+  "csdSdkCommit": "f1a4671bbbba412c1298e58bc4583e7ac5bb5390",
   "bundleSha256": "e6a94987f387b7d205a4308b8466d8308ffe61439e2dfbd48999cfe0682fdd07",
   "noble": {
     "@noble/curves": "1.9.7",

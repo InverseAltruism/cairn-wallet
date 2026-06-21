@@ -29,24 +29,32 @@ the public proxy.
 
 ### Sending to a `.csd` name
 
-When you send to a `.csd` name (e.g. `alice.csd`), the wallet asks the configured CairnX name
-service to resolve it to a `0x…` address. **The wallet has no light client yet, so it cannot
-verify that mapping against the chain** — a compromised or intercepted (MITM) name service could
-return an attacker's address. To mitigate this until the light client ships (see
-`SECURITY-ROADMAP.md`), a named send:
+When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the configured CairnX name
+service as **untrusted** and verifies its answer against the chain itself:
 
-* shows the **full, untruncated resolved address** as the recipient you confirm — never just the
-  name — with an explicit caution that **a malicious server could substitute it**, so the address
-  is what you verify, not the name; and
-* **re-resolves the name at confirm time and refuses to sign** if the address changed between
-  review and confirm.
+* it runs an **in-wallet SPV light client** seeded at a baked checkpoint, verifying every header
+  forward (PoW + LWMA difficulty + prev-link), and proves each name record's inclusion against the
+  PoW-committed merkle root;
+* it **re-runs the audited CairnX resolver** over only those merkle-verified records and requires the
+  recomputed `(owner, address)` to equal what the service claimed — a fabricated redirect (the service
+  has no signed, mined events for the attacker's address) **fails closed**;
+* it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
+  signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
+  to re-attribute a name's owner (NSPV-SIGSUB-1);
+* it **unions name-history from two independent sources** (primary + clarvis) and resolves to the
+  SPV-proven winner, so a single source that *withholds* a later transfer or a competing claim is
+  defeated as long as one source is honest; a source whose answer disagrees with the proof is flagged;
+* it never shows a name as plain "verified" when ownership was decided by an on-chain **offer fill**
+  whose validity depends on state outside the name's own history (an open-lane claim cap or a
+  name-for-token balance) — those show an explicit **caution**, not a green badge (NSPV-CLAIMCAP-1); and
+* it still shows the **full, untruncated resolved address** as the recipient you confirm, and
+  **re-resolves + re-verifies at confirm time**, refusing to sign on any address change *or* a drop in
+  verification status between review and confirm.
 
-This stops a server that *re-points* a name mid-flow. It does **not** defend against a server that
-is *consistently* hostile (returns the same attacker address both times) — that requires the
-in-wallet SPV light client, tracked as the real fix in `SECURITY-ROADMAP.md`. Until then, for a
-high-value transfer, verify the resolved address out-of-band (e.g. on the explorer) or paste the
-`0x…` address directly. (As with every send, the wallet still selects its own inputs and returns
-change only to your own address.)
+The honest residual: "verified" means **chain-backed as shown** — for a very high-value transfer it is
+still prudent to confirm the `0x…` address out-of-band. (As with every send, the wallet selects its own
+inputs and returns change only to your own address.) See `SECURITY-ROADMAP.md` for the remaining
+hardening (a third, different-domain source; per-source block bodies).
 
 ## dApp boundary
 
@@ -85,10 +93,25 @@ own interface and are refused on the dApp channel even if a user approves the di
 ## Supply chain
 
 The wallet has a small, pinned dependency set (`@noble/curves`, `@noble/hashes`,
-`@scure/bip32`, `@scure/bip39`). Releases are built in CI from tagged source with
-`npm ci`, ship a SHA-256 checksum and a SLSA build-provenance attestation, and are
-byte-for-byte reproducible: rebuild from the same source and the hash matches the published
-release.
+`@scure/bip32`, `@scure/bip39`), installed with `npm ci --ignore-scripts` (no install-time
+lifecycle scripts run). The trust-sensitive SPV code is a **vendored bundle** of csd-sdk's audited
+dists (`src/vendor/cairnx-spv.js`); `PROVENANCE.json` pins its sha256, the exact `@noble` versions,
+the csd-sdk **version and source commit**, and a CI gate (`scripts/check-vendor-fresh.mjs`) rebuilds
+it from source and requires byte-identity — so it cannot be hand-edited or left stale. Releases are
+built in CI from tagged source with `npm ci` and a deterministic zip writer, so they are
+**byte-for-byte reproducible**: rebuild from the same source and the SHA-256 matches the published
+release. SLSA build-provenance is emitted when the source repo is public (it is a no-op on a private
+repo — see `store/PUBLISH-RUNBOOK.md`).
+
+## Publishing & updates
+
+The wallet's defenses (SPV name-verify, clear-signing, the dApp boundary) run **inside the
+extension**, so a malicious auto-update would disable them all at once — making the Chrome Web Store
+publish credential the highest-blast-radius asset (cf. the Trust Wallet Dec-2025 leaked-CWS-key drain).
+The CWS upload is therefore kept a **manual operator step, deliberately off CI** (a CI-resident store
+key is exactly what supply-chain worms scrape), behind hardware-2FA, with reproduce-then-publish and
+post-publish hash verification. You can verify the build you installed is the reviewed one by comparing
+its version + hash against the published release. The full procedure is in `store/PUBLISH-RUNBOOK.md`.
 
 ## Verification
 

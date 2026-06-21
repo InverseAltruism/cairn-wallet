@@ -16,12 +16,22 @@ const keyA = "0x" + "11".repeat(32), keyB = "0x" + "22".repeat(32);
 const A = addrFromPriv(keyA).toLowerCase(), B = addrFromPriv(keyB).toLowerCase();
 const TARGET = "0x" + "cd".repeat(20), ATTACKER = "0x" + "ee".repeat(20);
 
+// NSPV-SIGSUB-1 (H3): the verifier now binds each record's recovered signer to the scriptPubkey of the coin
+// it spends (SpvSource.prevoutScriptPubkey). Each built tx therefore references a UNIQUE prevout whose
+// scriptPubkey is registered here; by default the signer spends their OWN coin (the honest case), and a test
+// can override `prevScriptPubkey` to simulate a swapped scriptSig (signer ≠ coin owner).
+let _utxoSeq = 0;
+const PREVOUTS = new Map(); // prevTxid(lowercase) -> 0x scriptPubkey of that outpoint
+const prevoutFor = (t) => PREVOUTS.get(String(t).toLowerCase()) ?? null;
+
 // Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape — exactly what SpvSource.blockAt returns.
-function proposeTx({ uri, payloadHash, expiresEpoch = 9_999_999, priv, outputs = [] }) {
-  // codec Tx (camel) — one dummy input (its prevout is irrelevant to name replay), app + fee outputs
+function proposeTx({ uri, payloadHash, expiresEpoch = 9_999_999, priv, outputs = [], prevScriptPubkey }) {
+  const prevTxid = "0x" + (++_utxoSeq).toString(16).padStart(64, "0"); // a unique, real-looking prevout per tx
+  PREVOUTS.set(prevTxid.toLowerCase(), String(prevScriptPubkey ?? addrFromPriv(priv)).toLowerCase()); // honest: signer owns it
+  // codec Tx (camel) — input spends `prevTxid`, app + fee outputs
   const tx = {
     version: 1, locktime: 0,
-    inputs: [{ prevTxid: "0x" + "00".repeat(32), vout: 0, scriptSig: "0x" }],
+    inputs: [{ prevTxid, vout: 0, scriptSig: "0x" }],
     outputs: outputs.map((o) => ({ value: o.value, scriptPubkey: o.to })),
     app: { type: "Propose", domain: CAIRNX_DOMAIN, payloadHash, uri, expiresEpoch },
   };
@@ -30,7 +40,7 @@ function proposeTx({ uri, payloadHash, expiresEpoch = 9_999_999, priv, outputs =
   // → RpcTxJson (snake_case), the shape the node/block endpoint serves
   return {
     version: 1, locktime: 0,
-    inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 0, script_sig: tx.inputs[0].scriptSig }],
+    inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: tx.inputs[0].scriptSig }],
     outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
     app: { type: "Propose", domain: CAIRNX_DOMAIN, payload_hash: payloadHash, uri, expires_epoch: expiresEpoch },
   };
@@ -49,6 +59,7 @@ function source(blocks, tip, tamperMerkle = null) {
       if (tamperMerkle === height) merkle = "0x" + "ff".repeat(32);
       return { merkle, txs };
     },
+    async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); }, // H3 prevout-ownership oracle
   };
 }
 // place txs into blocks at given heights, return {blocks, hints} (hints = txid+height+pos per placed tx)
@@ -151,7 +162,7 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   const blocks = new Map([[33700, txs]]);
   const hints = [{ txid: ctxid(rpcTxToTx(claimTx)), height: 33700, pos: 0 }];
   // a source that serves the real (filler-padded) tx-set + its true merkle
-  const src = { async prepare() { return { verifiedTip: 33800, nodeTip: 33800 }; }, async blockAt() { return { merkle, txs }; } };
+  const src = { async prepare() { return { verifiedTip: 33800, nodeTip: 33800 }; }, async blockAt() { return { merkle, txs }; }, async prevoutScriptPubkey(t) { return prevoutFor(t); } };
   // only a claim (no nset) ⇒ addr defaults to owner A
   const r = await verifyName(NAME, { addr: A, owner: A }, hints, src);
   ok("an app-less filler tx in a hinted block does NOT break verification (no throw)", r.verified === true && r.owner === A);
@@ -220,6 +231,48 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   // 14. both sources down → unavailable (fail-closed, not verified)
   const r14 = await verifyNameUnion(NM, SRC, src, mkFetch({ __status: 502 }, { __status: 502 }));
   ok("both sources down → NOT verified (fail-closed, unavailable)", r14.verified === false && r14.sources === 0);
+}
+
+// 15. H3 / NSPV-SIGSUB-1 — a hostile block-body provider swaps a salt-less name claim's scriptSig for a
+//     FOREIGN but VALID signature over the same (secret-free) public sighash, re-attributing the author. The
+//     txid is unchanged (scriptSig is stripped from it) so the merkle proof still passes — the ONLY thing that
+//     stops the redirect is the prevout-ownership bind: the signer must own the coin the tx spends.
+{
+  const NM = "carol";
+  const legit = proposeTx({ ...pick(buildNameClaim({ name: NM })), priv: keyA, outputs: feeOut() }); // A's own coin
+  // tamper: re-sign the SAME (stripped) sighash with the ATTACKER's key B, keeping A's prevout
+  const tampered = JSON.parse(JSON.stringify(legit));
+  const { sig64, pub33 } = signSighash(vSighash(rpcTxToTx(legit)), keyB);
+  tampered.inputs[0].script_sig = buildScriptSig(sig64, pub33);
+  const { blocks, hints } = world([{ height: 33700, tx: tampered }]); // ctxid(tampered)==ctxid(legit): same hint + merkle
+  const r = await verifyName(NM, { addr: B, owner: B }, hints, source(blocks, 33800));
+  ok("H3: scriptSig substitution on a salt-less name claim is REFUSED (prevout-ownership bind)", r.verified === false && /own the coin|substitution/i.test(r.reason));
+  // and the HONEST claim (A signs, A owns the coin) still verifies — the bind does not over-reject
+  const { blocks: hb, hints: hh } = world([{ height: 33700, tx: legit }]);
+  const rh = await verifyName(NM, { addr: A, owner: A }, hh, source(hb, 33800));
+  ok("H3: the honest signer (owns the spent coin) still verifies — no over-rejection", rh.verified === true && rh.owner === A);
+}
+
+// 16. H1 / NSPV-CLAIMCAP-1 — a source flags scopedReplaySufficient:false (its winner was decided by out-of-
+//     name-scope state: a V17 open-lane claim cap or a name-for-token balance). The union MUST fail closed even
+//     though the scoped replay reproduces the claimed address — and must NOT over-degrade an honest name whose
+//     replay IS sufficient.
+{
+  const NM = "dave";
+  const dClaim = proposeTx({ ...pick(buildNameClaim({ name: NM })), priv: keyA, outputs: feeOut() });
+  const dNset = proposeTx({ ...pick(buildNameSet({ name: NM, addr: TARGET })), priv: keyA });
+  const { blocks } = world([{ height: 33700, tx: dClaim }, { height: 33710, tx: dNset }]);
+  const H = (tx, h) => ({ txid: ctxid(rpcTxToTx(tx)), height: h, pos: 0 });
+  const ev = [H(dClaim, 33700), H(dNset, 33710)];
+  const src = source(blocks, 33800);
+  const SRC = [{ label: "primary", base: "https://primary.example/trade/api" }];
+  const mk = (flag) => async () => ({ ok: true, status: 200, json: async () => ({ ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: ev, ...(flag === undefined ? {} : { scopedReplaySufficient: flag }) }) });
+  const rFalse = await verifyNameUnion(NM, SRC, src, mk(false));
+  ok("H1: scopedReplaySufficient:false ⇒ NOT verified (fail-closed caution)", rFalse.verified === false && /scope|fill|out-of-band/i.test(rFalse.reason));
+  const rTrue = await verifyNameUnion(NM, SRC, src, mk(true));
+  ok("H1: scopedReplaySufficient:true (honest registration) stays verified — no over-degradation", rTrue.verified === true && rTrue.addr === TARGET);
+  const rNone = await verifyNameUnion(NM, SRC, src, mk(undefined));
+  ok("H1: a non-viaFill name with no flag stays verified (back-compat with older servers)", rNone.verified === true && rNone.addr === TARGET);
 }
 
 console.log(`\nnamespv: ${pass} passed, ${fail} failed`);

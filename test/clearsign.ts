@@ -121,5 +121,28 @@ ok("lookalikeOf flags a head/tail twin", lookalikeOf(twin, [real]) === real);
 ok("lookalikeOf does NOT flag an unrelated address", lookalikeOf(other, [real]) === null);
 ok("lookalikeOf does NOT flag an identical address", lookalikeOf(real, [real]) === null);
 
+// WYSIWYS-TRUNC-1 — a multi-output send with MORE recipients than the display cap must LOUDLY disclose the
+// hidden recipients + their TOTAL (not a quiet "…and N more"), so a dApp can't hide where funds go.
+{
+  const manyOuts = Array.from({ length: 15 }, (_, i) => ({ to: "0x" + (i + 1).toString(16).padStart(40, "0"), value: 1e8 }));
+  const manyHtml = describe({ method: "send", params: { outputs: manyOuts, fee: 1e6 } });
+  ok("TRUNC-1: truncated multi-send LOUDLY flags the hidden recipients (err class, not a dim aside)",
+    /NOT shown/i.test(manyHtml) && manyHtml.includes('class="err"') && /3 more recipient/i.test(manyHtml)); // 15−12=3 hidden
+  ok("TRUNC-1: truncated multi-send discloses the HIDDEN total (3 × 1 CSD)", /3 CSD/.test(manyHtml));
+  ok("TRUNC-1: a send within the cap shows no truncation warning (no false alarm)",
+    !/NOT shown/i.test(describe({ method: "send", params: { outputs: manyOuts.slice(0, 5), fee: 1e6 } })));
+  // and the SAME loud truncation applies to a dApp fillOffer (single-sourced renderer)
+  ok("TRUNC-1: a truncated fillOffer also flags hidden recipients",
+    /NOT shown/i.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), outputs: manyOuts, fee: 5e6 } })));
+}
+
+// WYSIWYS-BIDI-1 — escapeHtml neutralizes Unicode bidi-override / zero-width controls to a VISIBLE \uXXXX
+// token, so a dApp can't reorder or hide characters in a displayed name/address/memo vs the signed bytes.
+ok("BIDI-1: a bidi-override (U+202E) is neutralized to a visible token (not passed through)",
+  escapeHtml("abc\u202Edef") === "abc\\u202Edef" && !escapeHtml("abc\u202Edef").includes("\u202E"));
+ok("BIDI-1: a zero-width char (U+200B) is neutralized", escapeHtml("a\u200Bb") === "a\\u200Bb");
+ok("BIDI-1: an RLI isolate (U+2067) is neutralized", escapeHtml("x\u2067y") === "x\\u2067y");
+ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alice.csd") === "alice.csd" && escapeHtml("0x" + "ab".repeat(20)) === "0x" + "ab".repeat(20));
+
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

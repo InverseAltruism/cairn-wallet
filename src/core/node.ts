@@ -119,6 +119,11 @@ interface Selection { inputs: SelectedInput[]; total: number }
 // since all of a wallet's inputs are from one address/key, we sign once and apply the
 // same scriptSig to each. `total` is summed in the safe-integer range (guarded below).
 const MAX_TX_INPUTS = 512; // consensus cap (params/mod.rs) — refuse locally with a clear error
+// Defense-in-depth absolute fee cap (NETNEW-NO-MAX-FEE-CAP-1). A legitimate CSD miner fee is well under 1 CSD;
+// the clear-sign window already WARNs above 5 CSD. Hard-refuse an absurd caller/dApp-supplied fee at the single
+// chokepoint every value tx routes through, so a compromised UI can't steer a user PAST the visible warning
+// into burning a huge fee. 100 CSD is ~100× any real fee — no legitimate flow approaches it.
+const MAX_FEE = 100 * 1e8; // base units (100 CSD)
 export function selectInputs(utxos: any[], need: number): Selection | null {
   // Default a missing `confirmations` to 0 (UNCONFIRMED), never 1 — a hostile/buggy RPC
   // must not be able to make an immature/absent coin look spendable by omitting the field.
@@ -193,6 +198,7 @@ async function assembleValueTx(
   // error up front instead (audit FEE-FLOOR). Non-negative integer / safe-integer checks stay with the
   // callers that own the fee value.
   if (!(fee > 0)) return { ok: false, error: "fee must be positive (the node enforces a minimum fee)", sighashMatch: false };
+  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${MAX_FEE / 1e8} CSD safety cap — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false };
   const addr = addrFromPriv(priv);
   const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
   const sv = await selectVerified(rpc, addr, need);

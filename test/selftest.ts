@@ -2,7 +2,7 @@
 // on-chain signature), plus keystore/account adversarial cases. No mocks of our own.
 import { serialize, txid, sighash, verifySig, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
 import { generate, fromPriv, newMnemonic, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";
-import { seal, open } from "../src/core/keystore.js";
+import { seal, open, importKeyRaw } from "../src/core/keystore.js";
 import { Wallet, explorerTx, explorerAddr } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { send, selectInputs } from "../src/core/node.js";
@@ -128,9 +128,28 @@ async function main() {
   for (let i = 0; i < 40; i++) { const d = "0x" + ((i + 1).toString(16).padStart(2, "0")).repeat(32); const s = signSighash(d, TPRIV); if (secp256k1.Signature.fromCompact(s.sig64.slice(2)).hasHighS()) lowSAll = false; }
   check("sig always LOW-S (no malleability)", lowSAll);
 
+  // CQ-6 / KEY-3: importKeyRaw must accept ONLY a full 256-bit (64-hex) key. A short keyRaw would otherwise
+  // be silently imported by WebCrypto as a WEAKER AES-128 key (it infers size from byte length) — the exact
+  // downgrade the 64-hex guard blocks. Round-trips a valid key; rejects 16-byte / non-hex / odd-length.
+  {
+    let valid = false, short = false, nonHex = false, odd = false;
+    try { await importKeyRaw("ab".repeat(32)); valid = true; } catch { /* */ }      // 64 hex = 32 bytes → OK
+    try { await importKeyRaw("ab".repeat(16)); } catch { short = true; }            // 32 hex = 16 bytes → reject (AES-128 downgrade)
+    try { await importKeyRaw("zz".repeat(32)); } catch { nonHex = true; }           // non-hex → reject
+    try { await importKeyRaw("abc"); } catch { odd = true; }                        // wrong length → reject
+    check("CQ-6/KEY-3: importKeyRaw accepts a full 32-byte (64-hex) key", valid);
+    check("CQ-6/KEY-3: importKeyRaw REJECTS a 16-byte key (no silent AES-128 downgrade)", short);
+    check("CQ-6/KEY-3: importKeyRaw rejects a non-hex key", nonHex);
+    check("CQ-6/KEY-3: importKeyRaw rejects a wrong-length key", odd);
+  }
+
   // (e) send input validation (no network needed for these paths)
   check("send rejects non-address recipient", !(await send("x", { to: "0xnotanaddress", amount: 1e7, fee: 1e6 }, TPRIV)).ok);
   check("send rejects zero amount", !(await send("x", { to: "0x" + "cc".repeat(20), amount: 0, fee: 1e6 }, TPRIV)).ok);
+  // NETNEW-NO-MAX-FEE-CAP-1: an absurd fee (200 CSD, above the 100-CSD safety cap) is refused at the
+  // assembleValueTx chokepoint BEFORE any network call — defense-in-depth beyond the clear-sign warning.
+  const overCap = await send("x", { to: "0x" + "cc".repeat(20), amount: 1e7, fee: 200e8 }, TPRIV);
+  check("send rejects an over-cap fee (max-fee safety cap)", !overCap.ok && /safety cap/i.test(overCap.error ?? ""));
 
   // (f) DURABLE content registration — the bug that showed posts as hash-only
   // placeholders. flushPending must: register+drop when mined, KEEP when not yet

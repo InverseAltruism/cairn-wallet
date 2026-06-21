@@ -341,6 +341,13 @@ async function main() {
     check("XREPO-1: name caution HTML-escapes the name (no injection)",
       !evilName.includes("<img") && evilName.includes("&lt;img"));
 
+    // H1 (NSPV-CLAIMCAP-1): a viaFill (purchased) name renders the SPECIFIC "acquired by fill, not name-scope
+    // provable" caution — never the green verified badge and never the generic "couldn't verify" message.
+    const viaFillCaution = nameCautionHtml(NAME, false, { viaFill: true });
+    check("H1: viaFill name shows the purchase/fill-specific caution (not the generic one)",
+      /acquired by an on-chain purchase|offer fill/i.test(viaFillCaution) && !/malicious or intercepted server/i.test(viaFillCaution));
+    check("H1: viaFill caution is never a green ✓ verified badge", !viaFillCaution.includes("✓"));
+
     // (2) confirm-time guard — the core defense. THE EXPLOIT: server re-points the name to the attacker
     // between review and confirm → guard must REFUSE (this is the PoC's "redirect funds" turned blocked).
     check("XREPO-1 EXPLOIT BLOCKED: re-resolve to a DIFFERENT addr is refused (the redirect is caught)",
@@ -359,6 +366,17 @@ async function main() {
       reresolveUnchanged(REVIEWED, { ok: true, addr: 12345 as any }) === false);
     check("XREPO-1 FAIL-CLOSED: re-resolve null (network drop / thrown call) is refused",
       reresolveUnchanged(REVIEWED, null) === false);
+
+    // L7 (CONFIRMGUARD): a verification-status REGRESSION at confirm — same address, but a name that WAS
+    // chain-verified at review can no longer be verified — must be refused (a source went hostile/stale).
+    check("L7: verified→unverified regression at confirm (same addr) is REFUSED",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED, verified: false }, true) === false);
+    check("L7: still-verified at confirm (same addr) PASSES",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED, verified: true }, true) === true);
+    check("L7: a name reviewed as UNverified (caution) is not held to a regression check (no false refusal)",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED, verified: false }, false) === true);
+    check("L7: back-compat — omitting reviewedVerified keeps the addr-only behavior",
+      reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED }) === true);
 
     // (3) behavioral: drive the REAL wallet.resolveName against a hostile server that re-points the
     // name on its SECOND read — exactly the mid-flow redirect the confirm-time guard must catch.
@@ -381,6 +399,104 @@ async function main() {
       check("XREPO-1 behavioral: a server that RE-POINTS mid-flow is caught by the confirm guard",
         reresolveUnchanged(String(review.addr), confirm) === false);
     } finally { (globalThis as any).fetch = origFetch; }
+  }
+
+  // NETNEW-STALE-OFFER-1: wallet.fillOffer re-checks the offer is still open and REFUSES on an affirmative
+  // cancelled/filled (a no-op fill that would burn the payment irreversibly); it must NOT false-refuse an
+  // unknown/unscanned offer (404 → proceed; the node + clear-sign remain the guards).
+  {
+    const origFetch = (globalThis as any).fetch;
+    const PID = "0x" + "ab".repeat(32);
+    const RCPT = "0x" + "cc".repeat(20);
+    try {
+      const w = new Wallet(memoryStore()); await w.create("pw-stale-offer");
+      // (1) resolver AFFIRMATIVELY reports the offer cancelled → refuse BEFORE signing (node never reached)
+      (globalThis as any).fetch = async (url: any) =>
+        String(url).includes("/cairnx/offer/") ? { ok: true, status: 200, json: async () => ({ status: "cancelled" }) }
+        : { ok: false, status: 404, json: async () => ({}) };
+      const r1 = await w.fillOffer({ proposalId: PID, outputs: [{ to: RCPT, value: 1e7 }], fee: 5e6 });
+      check("STALE-OFFER: a cancelled offer is REFUSED before signing (no-op fill blocked)",
+        r1.ok === false && /cancelled|no-op fill/i.test(r1.error ?? ""));
+      // (2) offer unknown to the wallet's resolver (404) → proceed past the recheck (fails later for an
+      // unrelated reason, NOT a false stale-offer refusal — no over-blocking of recent/cross-resolver offers)
+      (globalThis as any).fetch = async (url: any) => {
+        const u = String(url);
+        if (u.includes("/cairnx/offer/")) return { ok: false, status: 404, json: async () => ({}) };
+        if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 0, utxos: [] }) };
+        return { ok: false, status: 404, json: async () => ({}) };
+      };
+      const r2 = await w.fillOffer({ proposalId: PID, outputs: [{ to: RCPT, value: 1e7 }], fee: 5e6 });
+      check("STALE-OFFER: a 404 (unscanned/cross-resolver) offer is NOT false-refused for staleness",
+        r2.ok === false && !/no-op fill/i.test(r2.error ?? ""));
+    } finally { (globalThis as any).fetch = origFetch; }
+  }
+
+  // M3 token-fill simulation: tokenFillQuote computes the token DEBIT (ask + 1% fee) for an OPEN token-want
+  // offer so the clear-sign can show it; it FAILS CLOSED (ok:false → the UI keeps its loud caution, never
+  // "free") for a CSD-want / closed / unreachable offer.
+  {
+    const origFetch = (globalThis as any).fetch;
+    const PID = "0x" + "1a".repeat(32);
+    try {
+      const w = new Wallet(memoryStore()); await w.create("pw-tokenfill-quote");
+      (globalThis as any).fetch = async (url: any) =>
+        String(url).includes("/cairnx/offer/")
+          ? { ok: true, status: 200, json: async () => ({ status: "open", feeBps: 100, want: { ticker: "FOO", amount: "1000" } }) }
+          : { ok: false, status: 404, json: async () => ({}) };
+      const q = await w.tokenFillQuote(PID);
+      check("M3: token-fill quote computes ask + 1% fee (1000 + 10 = 1010 base units of FOO)",
+        q.ok === true && q.ticker === "FOO" && q.amount === "1000" && q.fee === "10" && q.total === "1010" && q.estimated === false);
+      // QA-4: a resolver that OMITS feeBps → estimate at the higher V16 rate (150 bps → fee 15) + flag it,
+      // so the quote never UNDER-states the debit (over-stating ≤0.5% is the fail-safe direction).
+      (globalThis as any).fetch = async (url: any) =>
+        String(url).includes("/cairnx/offer/")
+          ? { ok: true, status: 200, json: async () => ({ status: "open", want: { ticker: "FOO", amount: "1000" } }) }
+          : { ok: false, status: 404, json: async () => ({}) };
+      const qEst = await w.tokenFillQuote(PID);
+      check("M3/QA-4: omitted feeBps → estimated at 150 bps (fee 15, total 1015), flagged estimated",
+        qEst.ok === true && qEst.fee === "15" && qEst.total === "1015" && qEst.estimated === true);
+      (globalThis as any).fetch = async () => ({ ok: true, status: 200, json: async () => ({ status: "open", want: { value: "500000000" } }) });
+      check("M3: a CSD-want offer is NOT quoted as a token fill (fail-closed)", (await w.tokenFillQuote(PID)).ok === false);
+      (globalThis as any).fetch = async () => ({ ok: true, status: 200, json: async () => ({ status: "filled", want: { ticker: "FOO", amount: "1000" } }) });
+      check("M3: a non-open offer is NOT quoted (fail-closed)", (await w.tokenFillQuote(PID)).ok === false);
+      (globalThis as any).fetch = async () => { throw new Error("net down"); };
+      check("M3: an unreachable resolver yields ok:false (UI keeps its loud caution, never 'free')", (await w.tokenFillQuote(PID)).ok === false);
+    } finally { (globalThis as any).fetch = origFetch; }
+  }
+
+  // L5: a custom RPC/API endpoint must be https (or loopback http) with NO embedded credentials.
+  {
+    const w = new Wallet(memoryStore()); await w.create("pw-rpc-validation");
+    let credRej = false, httpRej = false, schemeRej = false, httpsOk = false, loopbackOk = false;
+    try { await w.setRpc("https://user:pass@evil.example/api"); } catch { credRej = true; }
+    try { await w.setApi("http://evil.example"); } catch { httpRej = true; }            // plain-http remote
+    try { await w.addRpc("ftp://nope"); } catch { schemeRej = true; }
+    try { await w.setRpc("https://good.example/api/rpc"); httpsOk = true; } catch { /* */ }
+    try { await w.setRpc("http://localhost:8789"); loopbackOk = true; } catch { /* */ }
+    check("L5: setRpc rejects an embedded-credential URL (https://user:pass@…)", credRej);
+    check("L5: setApi rejects a plain-http remote URL", httpRej);
+    check("L5: addRpc rejects a non-http(s) scheme", schemeRej);
+    check("L5: setRpc accepts a clean https URL", httpsOk);
+    check("L5: setRpc accepts http://localhost for dev", loopbackOk);
+  }
+
+  // CQ-1: the hand-written cairnx.ts convention mirror must not drift from the vendored resolver bundle on the
+  // load-bearing consensus constants. Compare the constants NAMED in both, numerically (handles 4e4 /
+  // underscores / BigInt n-suffix). A future csd-sdk fee/height change landing in the bundle but NOT the
+  // hand-mirror (or vice-versa) fails here — closing the cross-mirror drift gap (CQ-1).
+  {
+    const { readFileSync } = await import("node:fs");
+    const norm = (v: string) => Number(String(v).replace(/_/g, "").replace(/n$/, ""));
+    const ts = readFileSync("src/core/cairnx.ts", "utf8");
+    const js = readFileSync("src/vendor/cairnx-spv.js", "utf8");
+    const grab = (src: string, name: string): number | null => {
+      const m = src.match(new RegExp(`\\b${name}\\s*=\\s*([0-9_]+(?:e[0-9]+)?n?)`));
+      return m ? norm(m[1]) : null;
+    };
+    for (const name of ["FEE_BPS", "FEE_BPS_V16", "REBATE_BPS", "MAX_RECORD_BYTES", "V18_HEIGHT"]) {
+      const a = grab(ts, name), b = grab(js, name);
+      check(`CQ-1: ${name} matches across cairnx.ts (${a}) and the vendored bundle (${b})`, a !== null && b !== null && a === b);
+    }
   }
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);

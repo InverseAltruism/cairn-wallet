@@ -16,6 +16,7 @@ function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m
 
 let current: any = null;
 let renderedId: string | null = null; // only rebuild the request view when the request changes
+let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
 async function render() {
   const st = await call("status");
   ($("view-locked") as HTMLElement).hidden = st.unlocked;
@@ -37,6 +38,7 @@ async function render() {
     try { const e = await call("epoch"); if (e != null) current.currentEpoch = e; } catch { /* offline */ }
   }
   const acct = (st.accounts || [])[st.active || 0];
+  renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
   const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
   const queued = pend.length > 1 ? `<div class="req dim">request 1 of ${pend.length} — review each separately</div>` : "";
   // For a connection request, tell the user exactly what approving grants: address
@@ -53,6 +55,27 @@ async function render() {
   armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
   fillBalance(current);
   fillSendWarning(current);
+  fillTokenSim(current);
+}
+
+// M3 (token-fill simulation): for a TOKEN-priced fill (confidence===1e6 on fillOffer/attest), show the actual
+// token DEBIT the convention will take (ask + 1% fee), fetched from the resolver — closing the "not visible
+// here" gap in the clear-sign. Fail-CLOSED: if it can't be computed, ESCALATE to a "do NOT approve unless
+// verified" caution rather than leave the amount quietly unknown. Once per request (render doesn't rebuild each tick).
+let tokenSimForId: string | null = null;
+async function fillTokenSim(r: any) {
+  const conf = Number((r.params || {}).confidence ?? 100) >>> 0;
+  if ((r.method !== "fillOffer" && r.method !== "attest") || conf !== 1_000_000 || tokenSimForId === r.id) return; tokenSimForId = r.id;
+  const el = document.getElementById("token-sim");
+  if (!el) return;
+  const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };
+  try {
+    const q = await call("tokenFillQuote", (r.params || {}).proposalId);
+    if (q && q.ok) show(`<b>You will pay ${escapeHtml(String(q.total))} base units of ${escapeHtml(String(q.ticker))}</b> <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span> — confirm this token + amount on the site/explorer.`);
+    else show(`<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). Do NOT approve unless you have verified the exact token + amount on the site/explorer.</b>`);
+  } catch {
+    show(`<b class="err">⚠ could not compute the token debit. Do NOT approve unless you have verified the exact token + amount on the site/explorer.</b>`);
+  }
 }
 
 // Fetch the signer's balance once per request and show the projected balance-after so
@@ -86,6 +109,11 @@ async function fillSendWarning(r: any) {
   if (r.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
     const rec = decodeCairnxRecord(p.uri, p.payloadHash);
     if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to });
+    // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
+    // nxfer hands the name to a new owner — both carry an attacker-influenceable address that deserves the
+    // same first-time / address-poisoning (look-alike) check as a transfer recipient.
+    if (rec && rec.t === "nset" && typeof rec.addr === "string") outs.push({ to: rec.addr });
+    if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to });
   }
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
@@ -119,9 +147,10 @@ function armButtons() {
 async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
+  const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
-  current = null; renderedId = null;
-  await call("resolve", id, approve);
+  current = null; renderedId = null; renderedSigner = null;
+  await call("resolve", id, approve, signer); // background refuses if the active account changed since render
   msg(approve ? "approved" : "rejected");
   render();
 }

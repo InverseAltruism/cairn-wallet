@@ -3,7 +3,7 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
-import { formatUnits, parseUnits } from "../core/cairnx.js";
+import { formatUnits, parseUnits, isPlainName } from "../core/cairnx.js";
 import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients } from "./clearsign.js";
 
 const chrome: any = (globalThis as any).chrome;
@@ -283,8 +283,8 @@ async function doNameAction(kind: "renew" | "primary", name: string) {
 }
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
-const looksLikeName = (s: string) => /\.csd$/i.test(s) || /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(s.toLowerCase());
-async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; agreed?: number; disagree?: boolean }> {
+const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }> {
   const r = (raw || "").trim();
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) return { ok: true, addr: r.toLowerCase(), name: null, label: null };
   if (looksLikeName(r)) {
@@ -296,21 +296,23 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // user how strong the confirmation is (2 independent sources / 1 source / a flagged disagreement).
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
     const verified = res.verified === true;
+    const viaFill = res.viaFill === true;
     const conf = res.depth ? ` (${res.depth} conf)` : "";
-    const badge = !verified ? "⚠ NOT chain-verified — confirm the address"
+    const badge = !verified
+      ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
       : res.disagree ? `⚠ chain-backed but a name source DISAGREED — verify the address${conf}`
       : (res.sources ?? 1) >= 2 ? `✓ chain-backed by ${res.sources} independent sources${conf}`
       : `✓ chain-backed (1 source)${conf}`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, agreed: res.agreed, disagree: res.disagree, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, agreed: res.agreed, disagree: res.disagree, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
 // XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time and REFUSE unless it still
 // returns EXACTLY the reviewed address. Fail-closed on any error / network failure. The equality +
 // shape check lives in clearsign.reresolveUnchanged (pure, unit-tested); this only wires the live call.
-async function nameStillPointsTo(name: string, reviewed: string): Promise<boolean> {
+async function nameStillPointsTo(name: string, reviewed: string, reviewedVerified?: boolean): Promise<boolean> {
   const re = await call("resolveName", name).catch(() => ({ ok: false }));
-  return reresolveUnchanged(reviewed, re);
+  return reresolveUnchanged(reviewed, re, reviewedVerified); // L7: also refuses a verified→unverified regression
 }
 function setNameRow(rowId: string, valId: string, label: string | null | undefined) {
   const row = document.getElementById(rowId), v = document.getElementById(valId);
@@ -326,9 +328,9 @@ const CAIRNX_FEE = 25_000_000; // 0.25 CSD (anchor fee, paid in CSD)
 let tsend: { ticker: string; decimals: number; available: string } | null = null;
 // the reviewed-and-frozen send: set when the confirm panel opens, signed verbatim on confirm.
 // `name` is the .csd name typed (if any) — re-resolved at confirm so it can't silently re-point.
-let reviewed: { to: string; base: string; name?: string | null } | null = null;
+let reviewed: { to: string; base: string; name?: string | null; verified?: boolean } | null = null;
 // CSD-send reviewed snapshot (symmetry with token-send: sign exactly what was reviewed)
-let reviewedSend: { to: string; amt: number; name?: string | null } | null = null;
+let reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean } | null = null;
 function openTokenSend(ticker: string, decimals: number, available: string) {
   tsend = { ticker, decimals, available };
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
@@ -367,14 +369,14 @@ $("btn-tsend").addEventListener("click", async () => {
   $("tc-fee").textContent = (CAIRNX_FEE / 1e8) + " CSD";
   const warnEl = $("tc-warn") as HTMLElement;
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree }) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
   if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Transfers are irreversible.`; warnEl.hidden = false; }
   else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
   else warnEl.hidden = true;
   // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
   // (editing the form after "Review" must not let displayed values diverge from signed ones)
-  reviewed = { to, base, name: rr.name ?? null };
+  reviewed = { to, base, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
   ($("ts-to") as HTMLInputElement).disabled = true;
   ($("ts-amt") as HTMLInputElement).disabled = true;
   ($("tsend-confirm") as HTMLElement).hidden = false;
@@ -388,9 +390,10 @@ $("btn-tsend-back").addEventListener("click", () => {
 });
 $("btn-tsend-confirm").addEventListener("click", async () => {
   if (!tsend || !reviewed) return;
-  const { to, base, name } = reviewed;
-  // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1)
-  if (name && !(await nameStillPointsTo(name, to))) return msg(`${name}.csd changed where it points — review again`, "err");
+  const { to, base, name, verified } = reviewed;
+  // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1) or its
+  // chain-verification regressed since review (L7).
+  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
@@ -718,13 +721,13 @@ $("btn-send").addEventListener("click", async () => {
   const warnEl = $("c-warn") as HTMLElement;
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree }) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
   if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — payments are irreversible.`; warnEl.hidden = false; }
   else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Payments are irreversible.`; warnEl.hidden = false; }
   else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
   else warnEl.hidden = true;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
-  reviewedSend = { to, amt, name: rr.name ?? null };
+  reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
   ($("s-to") as HTMLInputElement).disabled = true;
   ($("s-amt") as HTMLInputElement).disabled = true;
   ($("send-confirm") as HTMLElement).hidden = false;
@@ -738,9 +741,10 @@ $("btn-send-back").addEventListener("click", () => {
 });
 $("btn-send-confirm").addEventListener("click", async () => {
   if (!reviewedSend) return;
-  const { to, amt, name } = reviewedSend;
-  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1)
-  if (name && !(await nameStillPointsTo(name, to))) return msg(`${name}.csd changed where it points — review again`, "err");
+  const { to, amt, name, verified } = reviewedSend;
+  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
+  // chain-verification regressed since review (L7) — fail-closed to a re-review either way.
+  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
     if (r.ok) {

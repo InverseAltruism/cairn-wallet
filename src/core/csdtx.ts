@@ -61,6 +61,10 @@ export function pubFromPriv(priv: string): string { return "0x" + bytesToHex(sec
 export function addrFromPriv(priv: string): string { return hash160(secp256k1.getPublicKey(hb(priv), true)); }
 export function addrFromPub(pub: string): string { return hash160(hb(pub)); }
 export function signSighash(sighashHex: string, priv: string): { sig64: string; pub33: string } {
+  // L11 (SIGLEN): enforce a 32-byte digest (parity with verifyDigest/verifySig's length checks). All callers
+  // already pass a 32-byte tx sighash / login / SIWC digest; this guarantees the signer can never be handed a
+  // truncated or over-long value to sign over (a latent footgun if a future caller drifts).
+  if (!/^0x[0-9a-fA-F]{64}$/.test(sighashHex)) throw new Error("sighash must be a 32-byte 0x-hex digest");
   const sig = secp256k1.sign(hb(sighashHex), hb(priv), { lowS: true });
   return { sig64: "0x" + bytesToHex(sig.toCompactRawBytes()), pub33: pubFromPriv(priv) };
 }

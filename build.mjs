@@ -33,6 +33,54 @@ for (const [where, v] of [["public/manifest.json", manifestVersion], ["src/inpag
 }
 console.log(`✓ version sync: ${PKG_VERSION} (package.json == manifest == inpage)`);
 
+// Source-host tripwire (NSPV-CLARVIS-MANIFEST-1 / H2): every hardcoded remote host the wallet FETCHES from —
+// name-history resolver sources + the SPV RPC/header origins (the `*_RPC` / `*_API` constants in wallet.ts) —
+// MUST appear in BOTH the CSP `connect-src` and `host_permissions`, or the packaged MV3 worker silently
+// CSP-blocks it and the verify fail-softs (clarvis was dead-on-arrival exactly this way). This makes adding a
+// future source-without-permission a hard build failure. Navigation-only constants (e.g. EXPLORER) are
+// intentionally NOT matched — they are opened in a tab, never fetched.
+{
+  const manifest = JSON.parse(readFileSync("public/manifest.json", "utf8"));
+  const csp = manifest.content_security_policy?.extension_pages ?? "";
+  const connectSrc = (csp.match(/connect-src([^;]*)/)?.[1] ?? "").trim().split(/\s+/);
+  const hostPerms = manifest.host_permissions ?? [];
+  // Scan the wallet's OWN source (NOT the vendored bundle, which takes its base URL as a parameter) for EVERY
+  // hardcoded https:// host literal — so a future fetch host added in ANY form or file (not just a *_RPC/*_API
+  // const in wallet.ts) is still required to be in the manifest (H2-TRIPWIRE-EVASION-1). Navigation-only hosts
+  // (opened in a tab, never fetched) are explicitly allowlisted.
+  const NAV_ALLOWLIST = new Set(["explorer.computesubstrate.org"]);
+  const srcFiles = [];
+  const walkSrc = (p) => { for (const e of readdirSync(p)) { const f = p + "/" + e; if (statSync(f).isDirectory()) { if (e !== "vendor") walkSrc(f); } else if (/\.(ts|js|mjs)$/.test(e)) srcFiles.push(f); } };
+  walkSrc("src");
+  const fetchedHosts = new Set();
+  for (const f of srcFiles) {
+    for (const m of readFileSync(f, "utf8").matchAll(/https:\/\/([a-z0-9.-]+)/gi)) {
+      const host = m[1].toLowerCase().replace(/[.]+$/, "");
+      // A real remote fetch host always has a dotted TLD; this skips placeholder/userinfo fragments that
+      // appear in comments + the L5 validation examples ("https://user:pass@…", "https://your-node", …).
+      if (host && host.includes(".") && !NAV_ALLOWLIST.has(host)) fetchedHosts.add(host);
+    }
+  }
+  const cspCovers = (host) => connectSrc.some((tok) => {
+    const m = tok.match(/^https:\/\/([^/]+?)(?::\*)?\/?$/); if (!m) return false;
+    const pat = m[1];
+    if (pat === host) return true;
+    if (pat.startsWith("*.")) return host.endsWith(pat.slice(1)) && host !== pat.slice(2); // *.x.com covers a.x.com, not x.com
+    return false;
+  });
+  const permCovers = (host) => hostPerms.some((p) => { try { return new URL(p.replace(/\*$/, "")).host === host; } catch { return false; } });
+  const missing = [];
+  for (const host of fetchedHosts) {
+    const inCsp = cspCovers(host), inPerm = permCovers(host);
+    if (!inCsp || !inPerm) missing.push(`${host} (connect-src:${inCsp ? "ok" : "MISSING"}, host_permissions:${inPerm ? "ok" : "MISSING"})`);
+  }
+  if (missing.length) {
+    console.error(`✗ build aborted: wallet fetches host(s) absent from the manifest (CSP would block them → silent single-source):\n   - ${missing.join("\n   - ")}`);
+    process.exit(1);
+  }
+  console.log(`✓ source-host coverage: ${[...fetchedHosts].join(", ")} all in connect-src + host_permissions`);
+}
+
 rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist", { recursive: true });
 

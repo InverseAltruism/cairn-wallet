@@ -303,6 +303,20 @@ async function main() {
   check("no `externally_connectable` anywhere in src/ or manifest", !/externally_connectable/.test(SCAN));
   check("no `onMessageExternal` anywhere in src/ or manifest", !/onMessageExternal/.test(SCAN));
 
+  console.log("\n=== CQ-4: every dApp-allowlisted method has a handler (no allowlist↔dispatch drift) ===");
+  // The dApp surface is defined by FOUR hand-synced lists (DAPP_METHODS, the resolvePending if-chain, the
+  // dapp message-branch fast-paths, READ_ONLY_METHODS). A method added to the allowlist but with no executor
+  // (or vice-versa) is a real drift bug. Assert every DAPP_METHOD is handled somewhere in background.ts.
+  const bgSrc = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
+  const dappSet = bgSrc.match(/DAPP_METHODS\s*=\s*new Set\(\[([^\]]*)\]/);
+  const dappMethods = dappSet ? [...dappSet[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+  check("CQ-4: DAPP_METHODS allowlist parses + is non-trivial", dappMethods.length >= 10);
+  for (const m of dappMethods) {
+    // handled in resolvePending (`p.method === "m"`) OR the dapp message branch (`msg.method === "m"`)
+    const handled = new RegExp(`(?:p|msg)\\.method === "${m}"`).test(bgSrc);
+    check(`CQ-4: dApp method '${m}' has a handler (no allowlist↔dispatch drift)`, handled);
+  }
+
   console.log("\n=== WL-1/R19: the approval-poll (status/pending) must NOT defeat the idle auto-lock ===");
   // Simulate a connected site that keeps a request queued and lets the approval window poll forever.
   // touch() must fire ONLY on genuine user activity — never on status/pending — so autoLock still fires.

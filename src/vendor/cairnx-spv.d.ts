@@ -21,6 +21,7 @@ export class CsdClient {
   tip(): Promise<{ height: number; hash?: string }>;
   blockByHeight(h: number): Promise<RpcBlock>;
   blockByHash(hash: string): Promise<RpcBlock>;
+  tx(id: string): Promise<{ ok?: boolean; tx?: RpcTxJson } | null>; // /tx/{id} — used by namespv prevout-ownership bind (H3)
 }
 export class LightClient {
   readonly chain: VerifiedHeader[];

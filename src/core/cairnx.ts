@@ -27,7 +27,11 @@ const TICKER_RE = /^[A-Z][A-Z0-9]{2,11}$/;
 const ADDR_RE = /^0x[0-9a-f]{40}$/;          // records carry LOWERCASE addresses only
 const AMOUNT_RE = /^(0|[1-9][0-9]*)$/;       // decimal string, no leading zeros
 const HASH_RE = /^0x[0-9a-f]{64}$/;
-const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+// Single source of truth for the .csd name syntax (L10 / NORMALIZE). Mirrors cairnx-core. Exported so the
+// wallet's resolve/verify paths and the popup recipient parser validate against ONE regex (it was duplicated
+// inline at 3 sites — a drift risk). `isPlainName` is the syntax-only check used before a name reaches a URL.
+export const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+export const isPlainName = (n: unknown): n is string => typeof n === "string" && NAME_RE.test(n);
 // v1.9 ENS-class identity (doc 36). Mirror cairnx-core: PKEY = NAME_RE + "." (ASCII → sort-invariant);
 // string-only values ≤256 B; ≤16 keys. PROFILE_RESERVED_KEYS is the WALLET app-layer guard (decision
 // §9.4): a profile is cosmetic and must NEVER carry a send target, so the BUILDER refuses these keys.

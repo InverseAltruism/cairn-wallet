@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
@@ -43,6 +43,21 @@ const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 export const EXPLORER = "https://explorer.computesubstrate.org";
 export const explorerTx = (txid: string) => `${EXPLORER}/tx.html?txid=${encodeURIComponent(txid)}`;
 export const explorerAddr = (addr: string) => `${EXPLORER}/address.html?addr=${encodeURIComponent(addr)}`;
+
+// L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
+// loopback http for local dev) with NO embedded credentials — otherwise `setRpc("https://user:pass@evil")`
+// or a plain-http remote could exfiltrate via the userinfo or be trivially MITM'd. The wallet still treats
+// any custom RPC as UNTRUSTED (TXB-1 verifies values; namespv SPV-verifies names) — this just blocks the
+// obviously-unsafe URL shapes before they're stored/used.
+function validRpcUrl(u: string): boolean {
+  let x: URL;
+  try { x = new URL(String(u)); } catch { return false; }
+  if (x.username || x.password) return false;                 // reject https://user:pass@host credential leak
+  if (x.protocol === "https:") return true;
+  if (x.protocol === "http:" && (x.hostname === "127.0.0.1" || x.hostname === "localhost")) return true; // loopback dev only
+  return false;
+}
+const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for dev), with no embedded credentials";
 
 // Per-account storage namespaces — keep each account's activity + secrets separate.
 const histKey = (addr: string) => "txHistory:" + addr;
@@ -97,12 +112,12 @@ export class Wallet {
     this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
-  async setRpc(u: string) { this.rpc = u; await this.store.set("rpc", u); }
-  async setApi(u: string) { this.api = u; await this.store.set("api", u); }
-  async setTradeApi(u: string) { this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
+  async setRpc(u: string) { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); this.rpc = u; await this.store.set("rpc", u); }
+  async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); this.api = u; await this.store.set("api", u); }
+  async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
-  async addRpc(u: string): Promise<void> { const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
+  async addRpc(u: string): Promise<void> { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
   async removeRpc(u: string): Promise<void> { await this.store.set("customRpcs", (await this.rpcList()).filter((x) => x !== u)); }
 
   async status(): Promise<WalletStatus> {
@@ -354,6 +369,22 @@ export class Wallet {
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number }) {
     const q = { proposalId: p.proposalId, score: (p.score ?? 100) >>> 0, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? 5_000_000 };
+    // NETNEW-STALE-OFFER-1: a fill into an offer cancelled/filled in an EARLIER block is a resolver NO-OP
+    // while the CSD/token payment lands irreversibly (the buyer gets nothing back). Best-effort re-check the
+    // offer's CURRENT status and refuse if the resolver AFFIRMATIVELY reports it no longer open. Proceed on
+    // 404 / unreachable so a very recent or cross-resolver offer the wallet's tradeApi hasn't scanned yet is
+    // NOT false-refused — there, clear-sign + the node remain the guards (resolver-trusted, so a hostile
+    // resolver could lie "open" regardless; this only catches the benign/honest stale-offer race).
+    if (/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) {
+      try {
+        const r0 = await fetch(`${this.tradeApi}/cairnx/offer/${encodeURIComponent(p.proposalId)}`, { signal: AbortSignal.timeout(6000) });
+        if (r0.ok) {
+          const o: any = await r0.json().catch(() => null);
+          const status = o && typeof o.status === "string" ? o.status : null;
+          if (status && status !== "open") return { ok: false, error: `offer is ${status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false };
+        }
+      } catch { /* resolver unreachable → proceed; the node + clear-sign remain the guards */ }
+    }
     const r = await node.fillOffer(this.rpc, q, this.must().privkey);
     const outs = Array.isArray(q.outputs) ? q.outputs : [];
     const total = outs.reduce((a, o) => a + Number(o.value || 0), 0);
@@ -469,12 +500,12 @@ export class Wallet {
   // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
   // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
   // owner (so a name works as a recipient even before its holder sets a resolver record).
-  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; agreed?: number; disagree?: boolean }> {
+  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }> {
     const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
     // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
     // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
     // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
-    if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
+    if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
     try {
       const r = await fetch(`${this.tradeApi}/cairnx/resolve/${encodeURIComponent(nm)}`);
       if (r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
@@ -491,8 +522,38 @@ export class Wallet {
       if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, agreed: v.agreed, disagree: v.disagree };
       if (v && /does NOT match|hostile/i.test(v.reason ?? ""))
         return { ok: false, error: `${nm}.csd: the resolver's address contradicts the chain — refusing (possible hostile resolver)`, verified: false };
-      return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable" };
+      // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill — not name-scope
+      // provable" caution rather than the generic "couldn't verify" one. Still verified:false (fail-closed).
+      return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable", viaFill: v?.viaFill === true };
     } catch { return { ok: false, error: "name lookup failed" }; }
+  }
+
+  // M3 (offline token-fill simulation): quote the actual token DEBIT for a token-priced fill (confidence
+  // ===1e6) so the clear-sign window shows what the user pays instead of "not visible here". Fetches the
+  // offer from the resolver and, IF it is an OPEN token-want offer, computes debit = ask + protocol fee
+  // (BigInt-exact, same cairnxTradeFee the convention uses). Returns ok:false on any unreachable/mismatch so
+  // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
+  // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
+  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string }> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
+    try {
+      const r = await fetch(`${this.tradeApi}/cairnx/offer/${encodeURIComponent(proposalId)}`, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) return { ok: false, error: "offer not found" };
+      const o: any = await r.json().catch(() => null);
+      if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+      const w = o.want;
+      if (!w || typeof w.ticker !== "string" || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
+      let amount: bigint;
+      try { amount = BigInt(String(w.amount)); } catch { return { ok: false, error: "bad amount" }; }
+      if (amount < 0n) return { ok: false, error: "bad amount" };
+      // QA-4: if the resolver omits feeBps, default to the HIGHER current rate (V16, 150 bps) so the quote
+      // never UNDER-states what will be debited (over-stating by ≤0.5% is the fail-safe direction) and mark
+      // it estimated so the UI can say so. A supplied feeBps is used exactly.
+      const hasBps = Number.isFinite(Number(o.feeBps));
+      const bps = hasBps ? Number(o.feeBps) : FEE_BPS_V16;
+      const fee = cairnxTradeFee(amount, bps);
+      return { ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps };
+    } catch { return { ok: false, error: "offer unavailable" }; }
   }
 
   // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies
@@ -500,7 +561,7 @@ export class Wallet {
   // fail-closed tri-state. Exposed to dApps (popup "verifyName") so a recipient can be confirmed before a send.
   async verifyName(name: string): Promise<NameVerification & { name: string }> {
     const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
-    if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, scope: "as-shown", name: nm };
+    if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, scope: "as-shown", name: nm };
     try {
       // Cross-check the user's configured primary resolver against the independent clarvis second source
       // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the

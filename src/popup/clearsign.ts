@@ -2,8 +2,17 @@
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
 import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
 
+// WYSIWYS-BIDI-1: neutralize Unicode bidi-override + zero-width / BOM controls BEFORE HTML-escaping, so a
+// dApp can't visually REORDER or HIDE characters in a displayed field (making a name/address/memo read
+// differently than the bytes that get signed). Rendered as a visible \uXXXX token — NOT silently stripped —
+// so the user SEES that something is off. Applied inside escapeHtml so EVERY displayed field is covered;
+// addresses/hashes/amounts are regex-constrained and never contain these, so honest fields are unaffected.
+// bidi overrides/isolates (U+202A–202E, U+2066–2069, U+200E/200F, U+061C) + zero-width/BOM (U+200B–200D, U+FEFF)
+const CONTROL_CHARS = /[\u202A-\u202E\u2066-\u2069\u200B-\u200F\u061C\uFEFF]/g;
+const neutralizeControls = (s: string): string =>
+  s.replace(CONTROL_CHARS, (c) => `\\u${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}`);
 export const escapeHtml = (s: string): string =>
-  s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+  neutralizeControls(String(s)).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
 // The SINGLE source of truth for "addresses this account has previously PAID" — used by the first-time /
 // address-poisoning (look-alike) check on EVERY send surface (CSD send, token send, dApp send/fillOffer/
@@ -36,6 +45,19 @@ export function fmtCsdBig(raw: any): string {
 // Finite base-unit number for sums / balance-after math (garbage → 0; the tx won't build anyway —
 // node.send/sendMany hard-reject non-numeric amounts, so this only keeps the DISPLAY sane).
 export function baseVal(raw: any): number { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
+
+// WYSIWYS-TRUNC-1: render value outputs for clear-sign. Caps visible rows so the fee/total/buttons can't be
+// scrolled out of the window, but makes truncation LOUD and discloses the HIDDEN recipients' TOTAL — a dApp
+// must never be able to hide where funds go behind a quiet "…and N more". Single source for the three
+// fund-moving describe() branches (send / fillOffer / propose-with-outputs), so the rendering can't drift.
+export function renderOutputs(outs: any[], shown = 12): string {
+  const list = Array.isArray(outs) ? outs : [];
+  const rows = list.slice(0, shown).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${fmtCsd(o.value)}</b>`).join("<br>");
+  if (list.length <= shown) return rows;
+  const hidden = list.slice(shown);
+  const hiddenTotal = hidden.reduce((a: number, o: any) => a + baseVal(o.value), 0);
+  return rows + `<br><b class="err">⚠ ${hidden.length} more recipient(s) NOT shown here — ${fmtCsd(hiddenTotal)} to addresses you cannot see. Only approve if you fully trust this site.</b>`;
+}
 
 export function feeLine(raw: number, fallback = 0): string {
   const fee = Number(raw || fallback);
@@ -178,10 +200,8 @@ export function describe(r: any): string {
     // warning as Send (#send-warn, populated by approve.ts). This defeats a malicious site that
     // tries to disguise a payout to itself as a "fee".
     const outs = Array.isArray(p.outputs) ? p.outputs : [];
-    const SHOWN = 6;
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const rows = outs.slice(0, SHOWN).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${fmtCsd(o.value)}</b>`).join("<br>")
-      + (outs.length > SHOWN ? `<br><span class="dim">…and ${outs.length - SHOWN} more recipient(s)</span>` : "");
+    const rows = renderOutputs(outs);
     const xfer = outs.length
       ? `<br><b>⚠ this proposal also transfers funds OUT of your wallet:</b><br>${rows}<br>total out: <b>${fmtCsd(total)}</b><div id="send-warn" class="err" style="margin-top:8px" hidden></div>`
       : "";
@@ -215,7 +235,7 @@ export function describe(r: any): string {
     // reserved value the same on EITHER path — never let a dApp route a token spend through the
     // unwarned attest method (security review HIGH-1, 2026-06-12).
     const tokenFill = conf === 1_000_000
-      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + 1% protocol fee (not visible here). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.`
+      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + 1% protocol fee (computed below when available). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
       : "";
     return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${score} · confidence ${conf}`;
   }
@@ -234,11 +254,7 @@ export function describe(r: any): string {
   if (r.method === "send") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [{ to: p.to, value: p.amount }];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    // Cap rendered rows so a huge multi-output request can't scroll the fee/total/buttons
-    // out of the window; the total + count are always shown.
-    const SHOWN = 12;
-    const rows = outs.slice(0, SHOWN).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${fmtCsd(o.value)}</b>`).join("<br>")
-      + (outs.length > SHOWN ? `<br><span class="dim">…and ${outs.length - SHOWN} more recipient(s)</span>` : "");
+    const rows = renderOutputs(outs); // capped+LOUD-on-truncation, single-sourced (WYSIWYS-TRUNC-1)
     const totalLine = outs.length > 1 ? `<br>total: <b>${fmtCsd(total)}</b> to ${outs.length} recipients` : "";
     return `<b>Send CSD</b><br>${rows}<br>${feeLine(p.fee, 1000000)}${totalLine}<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
   }
@@ -250,16 +266,14 @@ export function describe(r: any): string {
   if (r.method === "fillOffer") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const SHOWN = 12;
-    const rows = outs.slice(0, SHOWN).map((o: any) => `→ <code>${escapeHtml(String(o.to))}</code> &nbsp;<b>${fmtCsd(o.value)}</b>`).join("<br>")
-      + (outs.length > SHOWN ? `<br><span class="dim">…and ${outs.length - SHOWN} more recipient(s)</span>` : "");
+    const rows = renderOutputs(outs); // capped+LOUD-on-truncation, single-sourced (WYSIWYS-TRUNC-1)
     const totalLine = outs.length > 1 ? `<br>total: <b>${fmtCsd(total)}</b> to ${outs.length} recipients` : "";
     // CairnX v1.2: confidence 1 000 000 is the TOKEN-PRICED-FILL marker — approving it lets the
     // convention debit the user's CairnX token balance (offer ask + 1% fee) with NO CSD output
     // visible here. The wallet can't see which token/how much (resolver-level), so it must say
     // so loudly: an outputs-free fill would otherwise clear-sign as "free".
     const tokenFill = (Number(p.confidence ?? 100) >>> 0) === 1_000_000
-      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> — the offer's asking amount + 1% protocol fee, debited by the trading convention (not visible as outputs below). Verify the offer's price on the site/explorer before approving.`
+      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> — the offer's asking amount + 1% protocol fee, debited by the trading convention (computed below when available). Verify the offer's price on the site/explorer before approving.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
       : "";
     return `<b>Fill offer</b> — pay + attest in ONE atomic transaction<br>`
       + `offer: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${rows}<br>`
@@ -299,8 +313,17 @@ export function lookalikeOf(to: string, known: string[]): string | null {
 // (resolver offline, service not yet upgraded, or a proven mismatch already refused upstream) it carries
 // the original strong caution. Either way the resolved FULL address stays the unmissable thing the user
 // confirms. (The name is regex-constrained at resolution, but escape it anyway — defense in depth.)
-export function nameCautionHtml(name: string, verified?: boolean, info?: { sources?: number; agreed?: number; disagree?: boolean }): string {
+export function nameCautionHtml(name: string, verified?: boolean, info?: { sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }): string {
   const n = escapeHtml(String(name));
+  // Checked BEFORE the verified branch (and independent of `verified`) so a viaFill name can NEVER render a
+  // green badge — defense-in-depth even though the verifier already forces viaFill ⇒ verified:false.
+  if (info?.viaFill) {
+    // NSPV-CLAIMCAP-1 (H1): the records ARE chain-backed, but ownership was set by an on-chain offer FILL
+    // whose validity depends on state OUTSIDE this name's history (an open-lane claim cap that is global over
+    // all offers, or a name-for-token buyer's global balance) — a name-scoped SPV proof provably cannot
+    // reconstruct it, and a second source runs the same scoped selector. So this is NOT shown as verified.
+    return `⚠ <b><code>${n}.csd</code> was acquired by an on-chain purchase (offer fill).</b> The wallet SPV-verified the records, but ownership set by a fill can hinge on chain state <b>outside</b> this name's own history, which a name-scoped proof cannot verify — so the address is <b>not</b> shown as chain-verified. Confirm the <b>To</b> address out-of-band before sending.`;
+  }
   if (verified) {
     // A source's stated claim disagreed with the SPV-proven union winner (NSPV-COMPLETE-1): one resolver may
     // be hostile/stale. The address shown IS the chain-proven winner across all sources, but flag it loudly.
@@ -325,8 +348,13 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: { sourc
 // the live `resolveName` call. NOTE: this stops a server that re-points the name BETWEEN review and
 // confirm — it does NOT defend against a server that is CONSISTENTLY hostile (returns the same attacker
 // address both times). Closing that requires the light client (the real fix); see SECURITY-ROADMAP.
-export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: unknown } | null | undefined): boolean {
-  return !!(re && re.ok && typeof re.addr === "string" && (re.addr as string).toLowerCase() === reviewed.toLowerCase());
+export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean } | null | undefined, reviewedVerified?: boolean): boolean {
+  if (!(re && re.ok && typeof re.addr === "string" && (re.addr as string).toLowerCase() === reviewed.toLowerCase())) return false;
+  // L7 (CONFIRMGUARD): also refuse a verification-status REGRESSION. If the name was chain-verified at
+  // review but the confirm-time re-resolution can no longer verify it (even at the SAME address), a source
+  // may have gone hostile/stale or a competing claim appeared between the two reads — re-review, don't sign.
+  if (reviewedVerified === true && re.verified === false) return false;
+  return true;
 }
 
 // Cost summary line from the request's own params (no network).

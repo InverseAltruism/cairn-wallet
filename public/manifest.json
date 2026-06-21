@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cairn Wallet",
-  "version": "0.2.27",
+  "version": "0.2.28",
   "description": "Non-custodial wallet for Compute Substrate (CSD): hold keys locally, sign transactions, post to Cairn, and Sign in with CSD.",
   "action": {
     "default_popup": "popup.html",
@@ -28,11 +28,12 @@
     "alarms"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'none'; frame-ancestors 'none'; connect-src 'self' https://cairn-substrate.com http://127.0.0.1:* http://localhost:* https://localhost:*"
+    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'none'; frame-ancestors 'none'; connect-src 'self' https://cairn-substrate.com https://clarvis.cairn-substrate.com http://127.0.0.1:* http://localhost:* https://localhost:*"
   },
   "host_permissions": [
     "http://127.0.0.1:8789/*",
-    "https://cairn-substrate.com/*"
+    "https://cairn-substrate.com/*",
+    "https://clarvis.cairn-substrate.com/*"
   ],
   "optional_host_permissions": [
     "http://localhost/*",

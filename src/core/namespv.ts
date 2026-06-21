@@ -47,6 +47,11 @@ export interface NameVerification {
   depth?: number;             // confirmations of the most recent defining record
   reason?: string;            // fail-closed explanation when !verified
   scope: "as-shown";          // honest completeness label (see file header)
+  // NSPV-CLAIMCAP-1 (H1): true when the winning record was acquired via an on-chain offer FILL/recapture
+  // (cairnx resolver `viaFill`). Such ownership can depend on out-of-name-scope state (the V17 open-lane
+  // claim cap is global over ALL offers; a name-for-token fill depends on the buyer's global token balance),
+  // so a name-scoped SPV replay cannot soundly prove it. Surfaced so the UI never shows it as plain "verified".
+  viaFill?: boolean;
   // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many INDEPENDENT resolvers were
   // unioned, how many AGREED with the chain-recomputed address, and whether any disagreed (a source whose
   // stated claim ≠ the SPV-proven union winner — caught + flagged; the send still goes to the proven winner).
@@ -57,10 +62,17 @@ export interface NameVerification {
 
 export interface NameClaim { addr?: string; owner?: string; via?: string; lapsed?: boolean }
 export interface NameHint { txid: string; height: number; pos: number; kind?: string }
+// The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so a hinted
+// record whose authenticating input looks like one is rejected (no prevout owner to bind against).
+// Mirrors the vendored bundle's own `isCoinbaseInput`/`COINBASE_VOUT(=0xffffffff)` — kept local because
+// those are not in the bundle's export surface (the .d.ts types only the members namespv.ts already used).
+const COINBASE_TXID = "0x" + "00".repeat(32);
+const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
+  String(i.prevTxid).toLowerCase() === COINBASE_TXID && Number(i.vout) === 0xffffffff;
 // An independent name-history source (resolver) to cross-check against. `base` ends at the trade-API root,
 // e.g. "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api".
 export interface ResolverSource { label: string; base: string }
-interface SourceResult { label: string; ok: boolean; unregistered?: boolean; claim?: NameClaim; hints: NameHint[]; error?: string }
+interface SourceResult { label: string; ok: boolean; unregistered?: boolean; claim?: NameClaim; hints: NameHint[]; error?: string; scopedReplaySufficient?: boolean }
 
 // The SPV data seam. Production wires the real LightClient (liveSpvSource); tests inject synthetic
 // PoW-verified blocks so the merkle-bind + replay + fail-closed logic is exercised without a chain.
@@ -72,6 +84,13 @@ export interface SpvSource {
   prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number }>;
   // The PoW-VERIFIED merkle root for `height` + that block's node-JSON txs. THROWS if it cannot verify.
   blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
+  // NSPV-SIGSUB-1 (H3): resolve the scriptPubkey of a record's spent prevout, BOUND to its txid — the
+  // fetched source tx must recompute to `prevTxid` (the consensus txid commits its outputs incl. scriptPubkey),
+  // reusing the TXB-1 fetch+recompute pattern. Lets replayName require that the recovered signer actually OWNS
+  // the coin it spends (mirroring consensus / BIP-174), so a hostile node can't swap in a foreign valid
+  // scriptSig to re-attribute a record. Returns the 0x-prefixed 20-byte scriptPubkey, or null on any
+  // mismatch / unavailable / malformed body → the caller fails CLOSED.
+  prevoutScriptPubkey(prevTxid: string, vout: number): Promise<string | null>;
 }
 
 // Headers to sync past the last record so its inclusion proof has a confirmation cushion. The verifier
@@ -108,13 +127,12 @@ function recoverSigner(tx: Tx): string | null {
   catch { return null; }
 }
 
-// Reconstruct a resolver ChainEvent from a merkle-verified, signer-authenticated tx. Returns null for a
-// non-cairnx tx or a bad signature (the caller fail-closes — a hinted tx we can't faithfully replay is a
-// lying read). Field shapes match the scanner exactly so resolve() produces identical state.
-function toChainEvent(tx: Tx, id: string, height: number, pos: number): Record<string, unknown> | null {
+// Reconstruct a resolver ChainEvent from a merkle-verified, signer-authenticated, prevout-bound tx. The
+// caller has already recovered + ownership-bound `signer` (see replayName); this only decodes the app
+// payload. Returns null for a non-cairnx tx (the caller fail-closes — a hinted tx we can't faithfully
+// replay is a lying read). Field shapes match the scanner exactly so resolve() produces identical state.
+function toChainEvent(tx: Tx, id: string, height: number, pos: number, signer: string): Record<string, unknown> | null {
   if (!tx.app || tx.app.type === "None") return null;
-  const signer = recoverSigner(tx);
-  if (!signer) return null;
   const paidTo = outputsToPaidTo(tx.outputs);
   if (tx.app.type === "Propose") {
     return { kind: "propose", id: id.toLowerCase(), proposer: signer, uri: tx.app.uri, payloadHash: String(tx.app.payloadHash).toLowerCase(), expiresEpoch: Number(tx.app.expiresEpoch), height, pos, paidTo };
@@ -125,9 +143,14 @@ function toChainEvent(tx: Tx, id: string, height: number, pos: number): Record<s
 
 // Core SPV replay (no claim gate): SPV-verify `hints` against the chain and recompute the name's (owner,addr)
 // via the AUDITED resolver. Shared by the single-source verifyName and the multi-source verifyNameUnion.
-type Replay = { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number } | { ok: false; reason: string };
+type Replay = { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number; viaFill: boolean } | { ok: false; reason: string };
+// Cap the hinted records a verify will SPV-prove (L8 / HINTDOS): each hint now also costs a prevout fetch
+// (H3), so an unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a
+// handful of records; 256 is far above any honest history and bounds a hostile source's fetch amplification.
+const MAX_HINTS = 256;
 async function replayName(name: string, hints: NameHint[], src: SpvSource): Promise<Replay> {
   if (!Array.isArray(hints) || hints.length === 0) return { ok: false, reason: "no on-chain records were offered for this name" };
+  if (hints.length > MAX_HINTS) return { ok: false, reason: `too many record hints for one name (>${MAX_HINTS}) — refusing` };
   // group hinted txids by block height — verify each block ONCE against its PoW-committed merkle root
   const byHeight = new Map<number, NameHint[]>();
   let maxHeight = 0;
@@ -154,8 +177,21 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     for (const hint of hs) {
       const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());
       if (pos < 0) return { ok: false, reason: `record ${hint.txid} is not in verified block ${height}` };
-      const ev = toChainEvent(rebuilt[pos], ids[pos], height, pos);
-      if (!ev) return { ok: false, reason: `record ${hint.txid} couldn't be authenticated (not a signed cairnx record)` };
+      const tx = rebuilt[pos];
+      const signer = recoverSigner(tx);
+      if (!signer) return { ok: false, reason: `record ${hint.txid} couldn't be authenticated (not a signed cairnx record)` };
+      // NSPV-SIGSUB-1 (H3): the merkle root + txid commit the tx BODY but NOT the scriptSig, and the public
+      // sighash is secret-free — so a hostile/MITM block-body provider could substitute a foreign VALID
+      // signature over it to re-attribute this record's author (re-pointing a name's owner). Defeat it the
+      // way consensus / BIP-174 do: bind the recovered signer to the COIN it spends — the authenticating
+      // input's prevout scriptPubkey (a 20-byte hash160) must equal hash160(pub) == this signer's address.
+      // SpvSource.prevoutScriptPubkey txid-binds the source body (reuses the TXB-1 cure). Fail CLOSED on any gap.
+      const in0 = tx.inputs?.[0];
+      if (!in0 || isCoinbaseInput(in0)) return { ok: false, reason: `record ${hint.txid} has no spendable authenticating input` };
+      const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
+      if (!spk || spk.toLowerCase() !== signer) return { ok: false, reason: `record ${hint.txid} signer does not own the coin it spends (rejected possible scriptSig substitution)` };
+      const ev = toChainEvent(tx, ids[pos], height, pos, signer);
+      if (!ev) return { ok: false, reason: `record ${hint.txid} is not a cairnx app record` };
       events.push(ev);
     }
   }
@@ -165,7 +201,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   const rec = state.names[name];
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
   if (rec.expired) return { ok: false, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
-  return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1) };
+  return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1), viaFill: !!rec.viaFill };
 }
 
 /**
@@ -182,7 +218,11 @@ export async function verifyName(name: string, claim: NameClaim, hints: NameHint
     if (!r.ok) return fail(r.reason);
     if (r.addr !== String(claim.addr).toLowerCase())
       return fail("the resolver's address does NOT match what the chain proves — refusing (possible hostile resolver)");
-    return { verified: true, addr: r.addr, owner: r.owner, via: r.via, depth: r.depth, scope: "as-shown", sources: 1, agreed: 1, disagree: false };
+    // NSPV-CLAIMCAP-1 (H1): a fill-acquired name can't be soundly proven from a name-scoped replay, and the
+    // single-source path has no scopedReplaySufficient signal to consult — fail CLOSED rather than show green.
+    if (r.viaFill)
+      return { ...fail(`${name}.csd ownership was decided by an on-chain offer fill that a name-scoped replay cannot prove — refusing to show as verified (confirm out-of-band)`), sources: 1, agreed: 0, disagree: false, viaFill: true };
+    return { verified: true, addr: r.addr, owner: r.owner, via: r.via, depth: r.depth, scope: "as-shown", sources: 1, agreed: 1, disagree: false, viaFill: false };
   } catch (e) {
     return fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`);
   }
@@ -196,7 +236,11 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
     if (!r.ok) return { label: s.label, ok: false, hints: [], error: `${r.status}` };
     const j: any = await r.json();
     if (!j?.ok) return { label: s.label, ok: false, hints: [], error: j?.error ?? "name-history unavailable" };
-    return { label: s.label, ok: true, hints: Array.isArray(j.events) ? j.events : [], claim: { addr: j.resolve?.addr, owner: j.resolve?.owner, via: j.resolve?.via, lapsed: j.resolve?.lapsed } };
+    // Capture the resolver's scopedReplaySufficient flag (cairnx `service.ts`): true = "a name-scoped replay
+    // reproduces the same owner/addr as the full chain"; false = "ownership depends on out-of-name-scope state
+    // (V17 open-lane claim cap / name-for-token balance) — the wallet MUST fail closed". We HONOR a served
+    // false but never TRUST a served true (the self-computed viaFill gate in verifyNameUnion is the real check).
+    return { label: s.label, ok: true, hints: Array.isArray(j.events) ? j.events : [], claim: { addr: j.resolve?.addr, owner: j.resolve?.owner, via: j.resolve?.via, lapsed: j.resolve?.lapsed }, scopedReplaySufficient: typeof j.scopedReplaySufficient === "boolean" ? j.scopedReplaySufficient : undefined };
   } catch (e) { return { label: s.label, ok: false, hints: [], error: (e as Error)?.message ?? String(e) }; }
 }
 
@@ -233,6 +277,22 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     }
     const rep = await replayName(name, [...byTxid.values()], src);
     if (!rep.ok) return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
+    // NSPV-CLAIMCAP-1 (H1): never present a fill-acquired ("viaFill") name — or a name any usable source
+    // flagged scopedReplaySufficient:false — as plain verified. Its ownership can hinge on out-of-name-scope
+    // state (the V17 open-lane claim cap is global over ALL offers; a name-for-token fill depends on the
+    // buyer's global token balance) that this name-scoped replay provably cannot reconstruct, and a second
+    // honest source runs the IDENTICAL scoped selector, so the union cannot fill the gap. `viaFill` is
+    // COMPUTED from our own SPV-verified events (we honor a served false but never TRUST a served true).
+    // Fail CLOSED to caution. (B3 will re-green legitimately taker-bound purchases via self-derived binding.)
+    const servedInsufficient = usable.some((r) => r.scopedReplaySufficient === false);
+    if (rep.viaFill || servedInsufficient) {
+      // Distinct, accurate reasons for the two triggers (QA-3): a self-computed viaFill winner vs a source
+      // that explicitly reported its answer is not name-scope-provable. Both are fail-closed to caution.
+      const reason = rep.viaFill
+        ? `${name}.csd ownership was decided by an on-chain offer fill that a name-scoped replay cannot prove (open-lane / token sale) — confirm the address out-of-band before sending`
+        : `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain) — confirm the address out-of-band before sending`;
+      return { ...fail(reason), sources: usable.length, agreed: 0, disagree: false, viaFill: !!rep.viaFill };
+    }
     // Cross-check: each usable source's STATED claim.addr against the SPV-proven union winner.
     let agreed = 0; const disagreeing: string[] = [];
     for (const r of usable) {
@@ -240,7 +300,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (c === rep.addr) agreed++; else disagreeing.push(r.label);
     }
     const disagree = disagreeing.length > 0 || conflict;
-    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, scope: "as-shown", sources: usable.length, agreed, disagree };
+    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, scope: "as-shown", sources: usable.length, agreed, disagree, viaFill: false };
   } catch (e) {
     return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, agreed: 0, disagree: false };
   }
@@ -315,6 +375,23 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
       if (!vh) throw new Error(`no PoW-verified header at ${height}`);
       const b = await client.blockByHeight(height);
       return { merkle: String(vh.header.merkle), txs: b.txs };
+    },
+    // NSPV-SIGSUB-1 (H3): fetch a record's spent prevout and bind it to its txid exactly as verifyInputValues
+    // (TXB-1) does — fetch the source tx, recompute its consensus txid, and require it == prevTxid (the txid
+    // commits every output incl. its 20-byte scriptPubkey). A hostile node cannot serve a fake body whose
+    // recomputed txid still matches the outpoint. Returns the 0x scriptPubkey, or null (→ fail-closed) on any
+    // missing / not-yet-mined / mismatched / malformed body. Same untrusted-node read path as blockAt.
+    async prevoutScriptPubkey(prevTxid: string, vout: number) {
+      try {
+        const body = (await client.tx(prevTxid))?.tx;
+        if (!body) return null;
+        const tx = rpcTxToTx(body);
+        if (String(ctxid(tx)).toLowerCase() !== String(prevTxid).toLowerCase()) return null; // forged source body
+        const out = tx.outputs?.[vout];
+        if (!out) return null;
+        const a = String(out.scriptPubkey ?? "").toLowerCase().replace(/^0x/, "");
+        return /^[0-9a-f]{40}$/.test(a) ? "0x" + a : null;
+      } catch { return null; }
     },
   };
 }
