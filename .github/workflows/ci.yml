@@ -41,20 +41,34 @@ jobs:
   # the cheap gate above still runs. To fully close NSPV-SUPPLY-1 in CI, set ECOSYSTEM_RO_TOKEN.
   vendor-fresh-full:
     runs-on: ubuntu-latest
+    # Run on push + same-repo PRs (where secrets are available); skip fork PRs (no secrets). The `secrets`
+    # context is illegal in a job-level `if:`, so the actual token-presence is checked at step level below
+    # (HAS_TOKEN): without ECOSYSTEM_RO_TOKEN the private-repo steps self-skip and the cheap gate in `test`
+    # still gates — this preserves the by-design no-op, it is NOT a failure.
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      HAS_TOKEN: ${{ secrets.ECOSYSTEM_RO_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - if: ${{ env.HAS_TOKEN != 'true' }}
+        run: echo "ECOSYSTEM_RO_TOKEN not set — skipping the full rebuild-vs-source gate (cheap vendor gate in 'test' still runs)."
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        uses: actions/checkout@v4
         with: { path: cairn-wallet }
-      - uses: actions/checkout@v4
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        uses: actions/checkout@v4
         with:
           repository: InverseAltruism/csd-sdk
           token: ${{ secrets.ECOSYSTEM_RO_TOKEN }}
           path: csd-sdk
-      - uses: actions/setup-node@v4
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        uses: actions/setup-node@v4
         with: { node-version: "22" }
-      - run: corepack enable && pnpm -C csd-sdk install --frozen-lockfile && pnpm -C csd-sdk -r build
-      - run: npm -C cairn-wallet ci --ignore-scripts
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        run: corepack enable && pnpm -C csd-sdk install --frozen-lockfile && pnpm -C csd-sdk -r build
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        run: npm -C cairn-wallet ci --ignore-scripts
       - name: rebuild-vs-source byte-diff + noble equality
+        if: ${{ env.HAS_TOKEN == 'true' }}
         env:
           CSD_SDK_DIR: ${{ github.workspace }}/csd-sdk
         run: npm -C cairn-wallet run verify:vendor
