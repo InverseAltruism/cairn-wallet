@@ -102,6 +102,10 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "rpcList": return wallet.rpcList();
     case "addRpc": return wallet.addRpc(args[0]);
     case "removeRpc": return wallet.removeRpc(args[0]);
+    case "setExplorer": return wallet.setExplorer(args[0]);
+    case "explorerList": return wallet.explorerList();
+    case "addExplorer": return wallet.addExplorer(args[0]);
+    case "removeExplorer": return wallet.removeExplorer(args[0]);
     case "reset": { await consentStore.set(CONSENT_KEY, {}); return wallet.reset(); }
     case "connectedSites": return listConsents();
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
@@ -195,7 +199,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "rpcList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

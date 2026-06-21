@@ -15,7 +15,7 @@ import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, 
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
-export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; hasMnemonic: boolean }
+export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean }
 
 // An in-memory account: its key + label, plus how it was created — `index` is its
 // BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
@@ -40,9 +40,24 @@ const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
 const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 
 // Public block explorer (static MPA): /tx.html?txid= · /address.html?addr= · /proposal.html?id=
-export const EXPLORER = "https://explorer.computesubstrate.org";
-export const explorerTx = (txid: string) => `${EXPLORER}/tx.html?txid=${encodeURIComponent(txid)}`;
-export const explorerAddr = (addr: string) => `${EXPLORER}/address.html?addr=${encodeURIComponent(addr)}`;
+// Block-explorer presets the wallet links to. Navigation-only — opened in a new tab, NEVER fetched — so this
+// adds NO CSP / host_permission / fetch surface (the source-host tripwire only covers fetched *_RPC/*_API
+// hosts). Default = the Cairn explorer (the indexer UI, hash-routed); the Official CSD explorer (a static MPA
+// with a different URL scheme) is the alternative; a user may add a custom explorer (assumed indexer hash
+// format). The selection is stored as a preset id ("cairn"|"official") or a custom https base URL.
+export const EXPLORER_PRESETS = [
+  { id: "cairn", label: "Cairn Explorer", base: "https://cairn-substrate.com/explorer" },
+  { id: "official", label: "Official CSD Explorer", base: "https://explorer.computesubstrate.org" },
+] as const;
+export const DEFAULT_EXPLORER = "cairn";
+/** Resolve an explorer setting (preset id | custom https base) + a tx/addr value into a link URL. */
+export function explorerLink(setting: string, kind: "tx" | "addr", value: string): string {
+  const v = encodeURIComponent(value);
+  if (setting === "official") return `https://explorer.computesubstrate.org/${kind === "tx" ? `tx.html?txid=${v}` : `address.html?addr=${v}`}`;
+  // "cairn" (default) and any custom base use the indexer explorer's hash route (#/tx/… , #/address/…)
+  const base = !setting || setting === "cairn" ? "https://cairn-substrate.com/explorer" : setting.replace(/\/+$/, "");
+  return `${base}#/${kind === "tx" ? "tx" : "address"}/${v}`;
+}
 
 // L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
 // loopback http for local dev) with NO embedded credentials — otherwise `setRpc("https://user:pass@evil")`
@@ -78,6 +93,7 @@ export class Wallet {
   rpc = DEFAULT_RPC;
   api = DEFAULT_API;
   tradeApi = DEFAULT_TRADE_API;
+  explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base) — navigation-only
   // Idle window for both auto-lock AND session-rehydrate expiry; background sets it to AUTO_LOCK_MS.
   idleMs = 15 * 60 * 1000;
   // `session` is chrome.storage.session (in-RAM) when running as an extension, else null. It lets the
@@ -110,6 +126,7 @@ export class Wallet {
     this.rpc = (await this.store.get("rpc")) || DEFAULT_RPC;
     this.api = (await this.store.get("api")) || DEFAULT_API;
     this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
+    this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
   async setRpc(u: string) { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); this.rpc = u; await this.store.set("rpc", u); }
@@ -119,12 +136,20 @@ export class Wallet {
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
   async addRpc(u: string): Promise<void> { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
   async removeRpc(u: string): Promise<void> { await this.store.set("customRpcs", (await this.rpcList()).filter((x) => x !== u)); }
+  // Block-explorer selection (navigation-only; preset id "cairn"/"official" or a custom https base).
+  async setExplorer(v: string): Promise<void> {
+    if (v !== "cairn" && v !== "official" && !validRpcUrl(v)) throw new Error("explorer must be a preset or an https:// URL (or http://localhost)");
+    this.explorer = v; await this.store.set("explorer", v);
+  }
+  async explorerList(): Promise<string[]> { return (await this.store.get("customExplorers")) || []; }
+  async addExplorer(u: string): Promise<void> { if (!validRpcUrl(u)) throw new Error("explorer " + RPC_URL_ERR); const l = await this.explorerList(); if (!l.includes(u)) { l.push(u); await this.store.set("customExplorers", l.slice(0, 20)); } }
+  async removeExplorer(u: string): Promise<void> { await this.store.set("customExplorers", (await this.explorerList()).filter((x) => x !== u)); }
 
   async status(): Promise<WalletStatus> {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     const active = this.accts ? this.active : (((await this.store.get("active")) as number) ?? 0);
     const addr = this.accts ? (this.accts[this.active]?.addr ?? null) : (wallets[active]?.addr ?? null);
-    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, tradeApi: this.tradeApi, hasMnemonic: !!this.mnemonic };
+    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, tradeApi: this.tradeApi, explorer: this.explorer, hasMnemonic: !!this.mnemonic };
   }
 
   // Persist the in-memory accounts: re-seal the vault (fresh IV, same salt+key, incl.

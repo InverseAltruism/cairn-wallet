@@ -3,7 +3,7 @@
 import { serialize, txid, sighash, verifySig, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
 import { generate, fromPriv, newMnemonic, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";
 import { seal, open, importKeyRaw } from "../src/core/keystore.js";
-import { Wallet, explorerTx, explorerAddr } from "../src/core/wallet.js";
+import { Wallet, explorerLink } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { send, selectInputs } from "../src/core/node.js";
 import { mkCoin, txReply } from "./_coin.js";
@@ -195,8 +195,13 @@ async function main() {
 
   // (g) explorer deep-links — must match the real explorer routes (verified live:
   // tx.html?txid= · address.html?addr=). These are what the wallet history links to.
-  check("explorerTx → /tx.html?txid=", explorerTx("0xdeadbeef") === "https://explorer.computesubstrate.org/tx.html?txid=0xdeadbeef");
-  check("explorerAddr → /address.html?addr=", explorerAddr("0x" + "ab".repeat(20)) === "https://explorer.computesubstrate.org/address.html?addr=0x" + "ab".repeat(20));
+  // explorerLink: Cairn (default, indexer hash route) · Official CSD (static MPA query) · custom base (hash route)
+  check("explorerLink(cairn, tx) → indexer hash route", explorerLink("cairn", "tx", "0xdeadbeef") === "https://cairn-substrate.com/explorer#/tx/0xdeadbeef");
+  check("explorerLink(cairn, addr) → indexer hash route", explorerLink("cairn", "addr", "0x" + "ab".repeat(20)) === "https://cairn-substrate.com/explorer#/address/0x" + "ab".repeat(20));
+  check("explorerLink(default/empty) falls back to cairn", explorerLink("", "tx", "0xabc") === "https://cairn-substrate.com/explorer#/tx/0xabc");
+  check("explorerLink(official, tx) → /tx.html?txid=", explorerLink("official", "tx", "0xdeadbeef") === "https://explorer.computesubstrate.org/tx.html?txid=0xdeadbeef");
+  check("explorerLink(official, addr) → /address.html?addr=", explorerLink("official", "addr", "0x" + "ab".repeat(20)) === "https://explorer.computesubstrate.org/address.html?addr=0x" + "ab".repeat(20));
+  check("explorerLink(custom base) → indexer hash route, trailing slash trimmed", explorerLink("https://my.example/exp/", "tx", "0xabc") === "https://my.example/exp#/tx/0xabc");
 
   // (h) transaction history — records on success, newest-first, idempotent, not on
   // failure. Drives the real send() path with a URL-routed stubbed fetch.

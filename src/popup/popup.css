@@ -90,6 +90,7 @@ code{font-family:inherit}
 .acct-rename-input{width:118px;margin:0;padding:3px 7px;font-size:11px}
 
 /* header RPC switcher */
+.hdr-tools{display:flex;gap:6px;align-items:center}
 .rpc-wrap{position:relative}
 .rpcbtn{width:auto;margin:0;padding:4px 9px;font-size:11px;letter-spacing:.5px;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--dim);cursor:pointer}
 .rpcbtn:hover{border-color:var(--cyan);color:#fff}

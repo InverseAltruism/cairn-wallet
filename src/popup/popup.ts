@@ -1,7 +1,7 @@
 // Popup UI controller. In the extension it messages the background service worker
 // (which owns the keys); standalone (dev/E2E, no chrome.*) it drives a local Wallet
 // against localStorage so the exact UI flows can be tested in a real browser.
-import { Wallet, explorerTx, explorerAddr } from "../core/wallet.js";
+import { Wallet, explorerLink, EXPLORER_PRESETS } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
 import { formatUnits, parseUnits, isPlainName } from "../core/cairnx.js";
 import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients } from "./clearsign.js";
@@ -66,10 +66,12 @@ function busy(text: string) { const m = $("msg"); m.innerHTML = `<span class="sp
 function flashBtn(id: string, label: string) { const b = $(id); const o = b.textContent; b.textContent = label; b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
 
 let currentRpc = "";
+let currentExplorer = "cairn"; // selected block explorer (preset id or custom base) for activity/address links
 let siteApi = "";   // the Cairn site base (for the /trade deep-link in the names list)
 async function render() {
   const st = await call("status");
   currentRpc = st.rpc || "";
+  currentExplorer = st.explorer || "cairn";
   siteApi = st.api || "";
   if (!st.hasVault) return show("setup");
   // On lock (manual or idle auto-lock), wipe any revealed private key / recovery phrase from the DOM and
@@ -80,7 +82,7 @@ async function render() {
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
   renderAcctSelect(st.accounts || [], st.active || 0);
   $("addr").textContent = st.addr;
-  if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerAddr(st.addr);
+  if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerLink(currentExplorer, "addr", st.addr);
   (($("set-api") as HTMLInputElement)).value = st.api;
   (($("set-tradeapi") as HTMLInputElement)).value = st.tradeApi || "";
   refreshBalance();
@@ -160,7 +162,7 @@ async function renderHistory() {
     const when = t.ts ? new Date(t.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
-      <div class="tx-sub"><span class="dim">${detail}</span><a href="${explorerTx(String(t.txid))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
+      <div class="tx-sub"><span class="dim">${detail}</span><a href="${explorerLink(currentExplorer, "tx", String(t.txid))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
       <div class="tx-when dim">${when}</div>
     </div>`;
   }).join("");
@@ -610,8 +612,44 @@ async function selectRpc(url: string) {
   await call("setRpc", url); ($("rpc-menu") as HTMLElement).hidden = true; msg("RPC: " + url.replace(/^https?:\/\//, ""), "ok"); render();
 }
 $("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLElement; if (m.hidden) { renderRpcMenu(); m.hidden = false; } else m.hidden = true; });
-// click-away closes the RPC menu
-document.addEventListener("click", (e) => { const m = $("rpc-menu") as HTMLElement; const w = (e.target as HTMLElement).closest(".rpc-wrap"); if (!w && !m.hidden) m.hidden = true; });
+
+// ── Explorer dropdown (header, left of RPC) — choose the block explorer for activity/address links ──
+// Navigation-only: switching it changes where ↗ links point; it never grants fetch/host access (no ensureHostAccess).
+async function renderExplorerMenu() {
+  const menu = $("explorer-menu");
+  const customs: string[] = await call("explorerList").catch(() => []);
+  const sel = (v: string) => v === currentExplorer;
+  const row = (val: string, label: string, hint: string, removable: boolean) => `
+    <div class="rpc-row${sel(val) ? " active" : ""}">
+      <button class="rpc-pick" data-exp="${escapeHtml(val)}">${sel(val) ? "● " : ""}<span class="rpc-label">${escapeHtml(label)}</span><span class="rpc-url">${escapeHtml(hint)}</span></button>
+      ${removable ? `<button class="rpc-del mini" data-delexp="${escapeHtml(val)}" title="remove">×</button>` : ""}
+    </div>`;
+  menu.innerHTML = EXPLORER_PRESETS.map((p) => row(p.id, p.label, p.base.replace(/^https?:\/\//, ""), false)).join("")
+    + customs.map((u) => row(u, "Custom", u.replace(/^https?:\/\//, ""), true)).join("")
+    + `<div class="rpc-add"><input id="exp-add-input" placeholder="https://your-explorer…" /><button id="exp-add-btn" class="mini">add</button></div>`;
+  menu.querySelectorAll<HTMLElement>("[data-exp]").forEach((b) => b.onclick = () => selectExplorer(b.dataset.exp!));
+  menu.querySelectorAll<HTMLElement>("[data-delexp]").forEach((b) => b.onclick = async (e) => { e.stopPropagation(); await call("removeExplorer", b.dataset.delexp); renderExplorerMenu(); });
+  ($("exp-add-btn") as HTMLElement).onclick = async () => {
+    const u = (($("exp-add-input") as HTMLInputElement).value || "").trim();
+    if (!/^https?:\/\/.+/.test(u)) return msg("enter a full explorer URL (https://…)", "err");
+    try { await call("addExplorer", u); await selectExplorer(u); } catch (e: any) { msg(e.message, "err"); }
+  };
+}
+async function selectExplorer(v: string) {
+  try { await call("setExplorer", v); } catch (e: any) { return msg(e.message, "err"); }
+  ($("explorer-menu") as HTMLElement).hidden = true;
+  msg("Explorer: " + (EXPLORER_PRESETS.find((p) => p.id === v)?.label || v.replace(/^https?:\/\//, "")), "ok"); render();
+}
+$("btn-explorer").addEventListener("click", () => { const m = $("explorer-menu") as HTMLElement; if (m.hidden) { renderExplorerMenu(); m.hidden = false; } else m.hidden = true; });
+
+// click-away: close each header dropdown when the click is outside BOTH its button and its menu
+document.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  for (const [btnId, menuId] of [["btn-rpc", "rpc-menu"], ["btn-explorer", "explorer-menu"]]) {
+    const m = document.getElementById(menuId), b = document.getElementById(btnId);
+    if (m && !m.hidden && b && !m.contains(t) && !b.contains(t)) m.hidden = true;
+  }
+});
 
 ($("acct-select") as HTMLSelectElement).addEventListener("change", async (e) => {
   try { await call("switchAccount", Number((e.target as HTMLSelectElement).value)); msg("switched account", "ok"); render(); }
@@ -669,7 +707,7 @@ async function renderSealed() {
     const when = s.committedTs ? new Date(s.committedTs).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>` : `🔒 sealed`;
     const right = s.revealed
-      ? `<a href="${explorerTx(String(s.txid))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
+      ? `<a href="${explorerLink(currentExplorer, "tx", String(s.txid))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
       : `<button class="mini" data-reveal="${escapeHtml(String(s.txid))}">Reveal</button>`;
     return `<div class="tx"><div class="tx-top"><span class="tx-kind">${status}</span><span class="dim">${when}</span></div>
       <div class="tx-sub"><span class="dim">${escapeHtml(String(s.claim).slice(0, 44))}</span>${right}</div></div>`;

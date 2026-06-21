@@ -478,6 +478,18 @@ async function main() {
     check("L5: addRpc rejects a non-http(s) scheme", schemeRej);
     check("L5: setRpc accepts a clean https URL", httpsOk);
     check("L5: setRpc accepts http://localhost for dev", loopbackOk);
+    // explorer setting (nav-only): accept presets + https/loopback custom; reject junk + embedded creds; status reflects it
+    let expCairn = false, expOfficial = false, expCustom = false, expJunk = false, expCred = false;
+    try { await w.setExplorer("cairn"); expCairn = (await w.status()).explorer === "cairn"; } catch { /* */ }
+    try { await w.setExplorer("official"); expOfficial = (await w.status()).explorer === "official"; } catch { /* */ }
+    try { await w.setExplorer("https://my-explorer.example"); expCustom = (await w.status()).explorer === "https://my-explorer.example"; } catch { /* */ }
+    try { await w.setExplorer("not-a-url"); } catch { expJunk = true; }
+    try { await w.setExplorer("https://user:pass@evil.example"); } catch { expCred = true; }
+    check("explorer: setExplorer('cairn') preset accepted + in status", expCairn);
+    check("explorer: setExplorer('official') preset accepted", expOfficial);
+    check("explorer: setExplorer(custom https) accepted", expCustom);
+    check("explorer: setExplorer(junk) rejected", expJunk);
+    check("explorer: setExplorer(embedded-credential URL) rejected", expCred);
   }
 
   // CQ-1: the hand-written cairnx.ts convention mirror must not drift from the vendored resolver bundle on the
