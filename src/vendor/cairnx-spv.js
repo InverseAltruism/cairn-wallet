@@ -3246,6 +3246,8 @@ var NAME_FEE_SHORT_V18 = 670000000n;
 var NAME_FEE_V18 = 300000000n;
 var V19_HEIGHT = 36700;
 var V20_HEIGHT = 38400;
+var V21_HEIGHT = 42e3;
+var MAX_OFFER_EPOCHS = 168;
 var PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
 var PROFILE_MAX_KEYS = 16;
 var PROFILE_MAX_VALUE_BYTES = 256;
@@ -3518,16 +3520,17 @@ function resolve(events, tipHeight) {
       b.available += amt;
     }
   };
+  const effExpiry = (e, height) => height >= V21_HEIGHT ? Math.min(e.expiresEpoch, epochOf(e.height) + MAX_OFFER_EPOCHS) : e.expiresEpoch;
   const sweepExpired = (height) => {
     const ep = epochOf(height);
     for (const o of offers.values()) {
-      if (o.status === "open" && ep > o.expiresEpoch) {
+      if (o.status === "open" && ep > effExpiry(o, height)) {
         releaseGive(o);
         o.status = "expired";
       }
     }
     for (const b of bids.values()) {
-      if (b.status === "open" && ep > b.expiresEpoch) b.status = "expired";
+      if (b.status === "open" && ep > effExpiry(b, height)) b.status = "expired";
     }
   };
   const V15_EPOCH = epochOf(V15_HEIGHT);
@@ -3762,6 +3765,10 @@ function resolve(events, tipHeight) {
           note(ev, ev.id, "offer", false, "already expired at anchor");
           continue;
         }
+        if (ev.height >= V21_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
+          note(ev, ev.id, "offer", false, "v2.1: offer duration exceeds the max");
+          continue;
+        }
         const give = rec.give;
         if (isNameGive(give)) {
           if (!v11) {
@@ -3829,6 +3836,10 @@ function resolve(events, tipHeight) {
         }
         if (epochOf(ev.height) > ev.expiresEpoch) {
           note(ev, ev.id, "bid", false, "already expired at anchor");
+          continue;
+        }
+        if (ev.height >= V21_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
+          note(ev, ev.id, "bid", false, "v2.1: bid duration exceeds the max");
           continue;
         }
         bids.set(ev.id, {
