@@ -3230,6 +3230,8 @@ var SCORE_FILL = 100;
 var SCORE_CANCEL = 0;
 var SCORE_CLAIM = 50;
 var CLAIM_WINDOW_BLOCKS = 15;
+var CLAIM_WINDOW_BLOCKS_V20 = 40;
+var CLAIM_FILL_GRACE_BLOCKS = 5;
 var MAX_ACTIVE_CLAIMS = 3;
 var CLAIM_COOLDOWN_BLOCKS = 15;
 var CONF_TOKEN_FILL = 1e6;
@@ -3243,6 +3245,7 @@ var V18_HEIGHT = 4e4;
 var NAME_FEE_SHORT_V18 = 670000000n;
 var NAME_FEE_V18 = 300000000n;
 var V19_HEIGHT = 36700;
+var V20_HEIGHT = 38400;
 var PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
 var PROFILE_MAX_KEYS = 16;
 var PROFILE_MAX_VALUE_BYTES = 256;
@@ -3536,7 +3539,9 @@ function resolve(events, tipHeight) {
     const b = bids.get(o.bid);
     if (b && b.status === "open" && b.bidder === buyer) b.status = "done";
   };
-  const liveClaim = (o, height) => o.claimedBy !== void 0 && o.claimUntilHeight !== void 0 && height < o.claimUntilHeight;
+  const claimGrace = (o) => o.claimUntilHeight !== void 0 && o.claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_FILL_GRACE_BLOCKS : 0;
+  const claimHeld = (o, height) => o.claimedBy !== void 0 && o.claimUntilHeight !== void 0 && height < o.claimUntilHeight + claimGrace(o);
+  const claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
   for (const ev of ordered) {
     if (ev.height < ACTIVATION_HEIGHT) continue;
     if (ev.height !== pendingBlock) {
@@ -4018,7 +4023,7 @@ function resolve(events, tipHeight) {
             note(ev, ev.txid, "fill", false, "v1.3: open CSD-quoted fills disabled (offer must be taker-bound)");
             continue;
           }
-          if (!(liveClaim(o, ev.height) && who === o.claimedBy)) {
+          if (!(claimHeld(o, ev.height) && who === o.claimedBy)) {
             note(ev, ev.txid, "fill", false, "v1.7: open offer \u2014 claim it first (no live claim by you)");
             continue;
           }
@@ -4083,7 +4088,7 @@ function resolve(events, tipHeight) {
             note(ev, ev.txid, "fill", false, "v1.3: open CSD-quoted fills disabled (offer must be taker-bound)");
             continue;
           }
-          if (!(liveClaim(o, ev.height) && who === o.claimedBy)) {
+          if (!(claimHeld(o, ev.height) && who === o.claimedBy)) {
             note(ev, ev.txid, "fill", false, "v1.7: open offer \u2014 claim it first (no live claim by you)");
             continue;
           }
@@ -4153,22 +4158,22 @@ function resolve(events, tipHeight) {
           note(ev, ev.txid, "claim", false, "claims are for CSD-priced offers (token offers are no-op-safe)");
           continue;
         }
-        if (liveClaim(o, ev.height)) {
-          note(ev, ev.txid, "claim", false, "offer already claimed (window live)");
+        if (claimHeld(o, ev.height)) {
+          note(ev, ev.txid, "claim", false, "offer already claimed (hold live)");
           continue;
         }
-        if (o.claimedBy === who && o.claimUntilHeight !== void 0 && ev.height < o.claimUntilHeight + CLAIM_COOLDOWN_BLOCKS) {
+        if (o.claimedBy === who && o.claimUntilHeight !== void 0 && ev.height < o.claimUntilHeight + claimGrace(o) + CLAIM_COOLDOWN_BLOCKS) {
           note(ev, ev.txid, "claim", false, "claim cooldown (you just held this offer)");
           continue;
         }
         let liveN = 0;
-        for (const x of offers.values()) if (x.claimedBy === who && x.claimUntilHeight !== void 0 && ev.height < x.claimUntilHeight) liveN++;
+        for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, ev.height)) liveN++;
         if (liveN >= MAX_ACTIVE_CLAIMS) {
           note(ev, ev.txid, "claim", false, `max ${MAX_ACTIVE_CLAIMS} live claims per address`);
           continue;
         }
         o.claimedBy = who;
-        o.claimUntilHeight = ev.height + CLAIM_WINDOW_BLOCKS;
+        o.claimUntilHeight = ev.height + claimWindowAt(ev.height);
         note(ev, ev.txid, "claim", true);
       }
     }
