@@ -54,10 +54,20 @@ jobs:
       - if: ${{ env.HAS_TOKEN == 'true' }}
         uses: actions/checkout@v4
         with: { path: cairn-wallet }
+      # Pin the csd-sdk checkout to the EXACT commit the committed bundle records (PROVENANCE.csdSdkCommit),
+      # NOT the moving master (audit M2). This makes the rebuild-vs-source byte-diff REPRODUCIBLE and turns the
+      # gate into a true "the bundle matches the source commit it claims" integrity check — a benign csd-sdk
+      # advance no longer false-fails the gate (the prior unpinned master checkout flipped STALE/DRIFTED on
+      # every csd-sdk bump, training maintainers to ignore it). Re-vendoring updates PROVENANCE.csdSdkCommit,
+      # which moves this pin in lockstep.
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        id: prov
+        run: echo "commit=$(node -p "require('./cairn-wallet/src/vendor/PROVENANCE.json').csdSdkCommit")" >> "$GITHUB_OUTPUT"
       - if: ${{ env.HAS_TOKEN == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: InverseAltruism/csd-sdk
+          ref: ${{ steps.prov.outputs.commit }}
           token: ${{ secrets.ECOSYSTEM_RO_TOKEN }}
           path: csd-sdk
       - if: ${{ env.HAS_TOKEN == 'true' }}

@@ -74,20 +74,35 @@ function nodeTxToTx(j: any): Tx {
 // txid commits to its output values, so a hostile RPC cannot serve a fake body whose recomputed
 // txid still matches the prevout — any tamper is detected and the send is refused (fail-closed).
 async function verifyInputValues(rpc: string, inputs: { txid: string; vout: number }[]): Promise<{ ok: boolean; total: number }> {
-  let total = 0;
-  for (const i of inputs) {
+  // Each input is verified INDEPENDENTLY (fetch its source tx, recompute the consensus txid, require it to
+  // match the prevout, then read the committed output value), so the per-input `/tx` fetches run in PARALLEL
+  // — an N-input send is one round-trip's latency, not N sequential ones (matters for a wallet whose UTXO set
+  // got fragmented into many small coins). The browser's per-host connection cap bounds concurrency; the input
+  // set is already capped at MAX_TX_INPUTS. Verification + fail-closed semantics are UNCHANGED: a per-input
+  // checker returns the verified value or `null`, and ANY null (unfetchable / forged body / txid mismatch /
+  // missing or out-of-range output) makes the whole call fail closed — never a partial trust (audit TXB-1).
+  const verifyOne = async (i: { txid: string; vout: number }): Promise<number | null> => {
     let body: any;
-    try { body = (await get(rpc, `/tx/${i.txid}`))?.tx; } catch { return { ok: false, total: 0 }; }
-    if (!body) return { ok: false, total: 0 };
+    try { body = (await get(rpc, `/tx/${i.txid}`))?.tx; } catch { return null; }
+    if (!body) return null;
     let tx: Tx, recomputed: string;
     // robustness nit (audit D): codecTxid itself can throw on a malformed body, so decode AND
     // recompute inside one try — any failure is a fail-closed reject, never an uncaught throw.
-    try { tx = nodeTxToTx(body); recomputed = codecTxid(tx); } catch { return { ok: false, total: 0 }; }
-    if (recomputed.toLowerCase() !== String(i.txid).toLowerCase()) return { ok: false, total: 0 }; // forged source body
+    try { tx = nodeTxToTx(body); recomputed = codecTxid(tx); } catch { return null; }
+    if (recomputed.toLowerCase() !== String(i.txid).toLowerCase()) return null; // forged source body
     const out = tx.outputs[i.vout];
-    if (!out) return { ok: false, total: 0 };
+    if (!out) return null;
     const v = Number(out.value);
-    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return { ok: false, total: 0 };
+    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return null;
+    return v;
+  };
+  const values = await Promise.all(inputs.map(verifyOne));
+  // Fold the verified values in input order: any failed input fails the whole call closed, and the running
+  // sum must stay in the safe-integer range so a hostile RPC can't push it past 2^53 (parity with the prior
+  // sequential checks — addition is commutative, so the parallel fetch doesn't change the result).
+  let total = 0;
+  for (const v of values) {
+    if (v === null) return { ok: false, total: 0 };
     total += v;
     if (!Number.isSafeInteger(total)) return { ok: false, total: 0 };
   }

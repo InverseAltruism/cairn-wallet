@@ -24,6 +24,12 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts   # no dependency lifecycle scripts run in CI (supply-chain hardening)
       - run: npm test            # full gate — a broken/failed build never ships
+      # Vendor-freshness gate on the PUBLISH path (audit M2): the cheap checks (committed SPV bundle sha256 ==
+      # PROVENANCE + @noble pin equality) always run with no csd-sdk checkout, so a hand-edited/desynced bundle
+      # can never be packaged + released. The full rebuild-vs-source byte-diff is enforced at merge time by ci.yml's
+      # vendor-fresh-full job (it has the token-gated cross-repo checkout); a release is always cut from a master
+      # commit that already passed that gate, so this step is the publish-path backstop, not a duplicate.
+      - run: npm run verify:vendor
       - run: npm run package     # deterministic zip + cairn-wallet.zip.sha256
       - name: Attest build provenance
         # SLSA provenance requires a PUBLIC repo (GitHub: "not available for user-owned private
