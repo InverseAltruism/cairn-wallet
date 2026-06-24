@@ -47,7 +47,10 @@ const DISTS = {
   CLIENT: ["client", "rpcTxToTx"],
   CODEC: ["codec", "txid, sighash, merkleRoot, verifyMerkleProof"],
   CRYPTO: ["crypto", "addrFromPub, verifyDigest"],
-  CAIRNX: ["cairnx", "resolve"],
+  // Phase 2 (shared-core de-dup, docs/Plans/46): the wallet now imports the WHOLE CairnX convention from the
+  // bundle (constants/fee+name math/canonicalJson/parseRecord/regexes), not just resolve — so this rebuild
+  // entry MUST use `export *` to match scripts/build-spv-vendor.sh, or the byte-diff false-fails.
+  CAIRNX: ["cairnx", "*"],
 };
 const sdkPresent = existsSync(SDK) && Object.values(DISTS).every(([p]) => existsSync(join(SDK, `packages/${p}/dist/index.js`)));
 
@@ -104,8 +107,10 @@ if (!sdkPresent) {
   const tmp = mkdtempSync(join(tmpdir(), "vendor-fresh-"));
   const entry = join(tmp, "entry.mjs");
   const outTmp = join(tmp, "out.js");
-  writeFileSync(entry, Object.values(DISTS).map(([p, names]) =>
-    `export { ${names} } from "${join(SDK, `packages/${p}/dist/index.js`)}";`).join("\n") + "\n");
+  writeFileSync(entry, Object.values(DISTS).map(([p, names]) => {
+    const from = `"${join(SDK, `packages/${p}/dist/index.js`)}"`;
+    return names === "*" ? `export * from ${from};` : `export { ${names} } from ${from};`;
+  }).join("\n") + "\n");
   try {
     execFileSync(join(WALLET, "node_modules/.bin/esbuild"), [entry,
       "--bundle", "--format=esm", "--platform=browser", "--target=es2022", "--legal-comments=none", `--outfile=${outTmp}`],
