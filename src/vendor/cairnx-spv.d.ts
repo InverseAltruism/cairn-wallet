@@ -41,3 +41,34 @@ export function addrFromPub(pub: string): string;
 export function verifyDigest(sig: string, pub: string, digest: string): boolean;
 // THE audited CairnX resolver, reused (never re-typed). Returns canonical state; we read .names[name].
 export function resolve(events: unknown[], tipHeight: number): { names: Record<string, { owner: string; addr?: string; expired?: boolean; viaFill?: boolean; effectiveHeight: number; height: number; claimId: string }>;[k: string]: unknown };
+
+// ── CairnX convention surface (cairnx-core) — imported by core/cairnx.ts instead of a hand-typed copy
+// (shared-core de-dup, cairn docs/Plans/46). The bundle already inlines all of cairnx-core to serve
+// resolve(); these are the same reviewed bytes, now type-declared for the wallet's build/decode/display.
+export const DOMAIN: string;
+export const MIN_FEE_PROPOSE: number;
+export const TREASURY_ADDR: string;
+export const FEE_BPS: number;
+export const FEE_BPS_V16: number;
+export const REBATE_BPS: number;
+export const REBATE_FLAT: bigint;
+export const V16_HEIGHT: number;
+export const V18_HEIGHT: number;
+export const NAME_RE: RegExp;
+export const PKEY: RegExp;
+export const TICKER_RE: RegExp;
+export const ADDR_RE: RegExp;
+export const AMOUNT_RE: RegExp;
+export const SALT_RE: RegExp;
+export const RESERVED_NAMES: ReadonlySet<string>;
+export const MAX_AMOUNT: bigint;
+export const MAX_RECORD_BYTES: number;
+export const PROFILE_MAX_KEYS: number;
+export const PROFILE_MAX_VALUE_BYTES: number;
+export function canonicalJson(v: unknown, depth?: number): string;
+export function payloadHash(record: unknown): string;
+export function tradeFee(want: bigint, bps?: number): bigint;
+export function makerRebate(value: bigint): bigint;
+export function nameRegFee(name: string, height: number): bigint;
+export function parseRecord(uri: string, payloadHashHex: string): Record<string, unknown> | null;
+export function nameCommit(name: string, salt: string, owner: string): string;

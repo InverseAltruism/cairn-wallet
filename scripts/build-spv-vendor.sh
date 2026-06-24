@@ -40,7 +40,12 @@ trap 'rm -f "$TMP_ENTRY"' EXIT
   printf 'export { rpcTxToTx } from "%s";\n' "$CLIENT"
   printf 'export { txid, sighash, merkleRoot, verifyMerkleProof } from "%s";\n' "$CODEC"
   printf 'export { addrFromPub, verifyDigest } from "%s";\n' "$CRYPTO"
-  printf 'export { resolve } from "%s";\n' "$CAIRNX"
+  # cairnx-core: the WHOLE convention (constants, fee/name math, canonicalJson, parseRecord, the record
+  # builders, *_KEYS, the §4 regexes) — so core/cairnx.ts IMPORTS them instead of hand-typing a second copy
+  # (shared-core de-dup, cairn docs/Plans/46). esbuild already inlines all of cairnx-core to serve `resolve`
+  # (namespv.ts), so this only WIDENS the export surface of the SAME reviewed bytes — no new dep tree, no
+  # size change of note, MV3 posture unchanged (one inlined artifact).
+  printf 'export * from "%s";\n' "$CAIRNX"
 } > "$TMP_ENTRY"
 
 node_modules/.bin/esbuild "$TMP_ENTRY" \
@@ -48,4 +53,4 @@ node_modules/.bin/esbuild "$TMP_ENTRY" \
   --legal-comments=none --outfile="$OUT"
 
 echo "built $OUT ($(du -h "$OUT" | cut -f1))"
-node --input-type=module -e "import('./$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','resolve'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok:',k.join(','))})"
+node --input-type=module -e "import('./$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"

@@ -452,7 +452,16 @@ var MIN_BLOCK_SPACING_SECS = 60;
 var EPOCH_LEN = 30;
 var COIN = 1e8;
 var INITIAL_REWARD = 50 * COIN;
+var HALVING_INTERVAL = 1051200;
+var MAX_HALVINGS = 64;
+var MIN_FEE_PROPOSE = 25e6;
+var MIN_FEE_ATTEST = 5e6;
 var MAX_U128 = (1n << 128n) - 1n;
+function blockReward(height) {
+  const halvings = Math.floor(height / HALVING_INTERVAL);
+  if (halvings >= MAX_HALVINGS) return 0;
+  return Math.floor(INITIAL_REWARD / 2 ** halvings);
+}
 var COINBASE_TXID = "0x" + "00".repeat(32);
 var COINBASE_VOUT = 4294967295;
 var isCoinbaseInput = (i) => i.prevTxid === COINBASE_TXID && i.vout === COINBASE_VOUT;
@@ -3205,6 +3214,7 @@ function verifyDigest(sig64, pub33, digestHex) {
 }
 
 // ../csd-sdk/packages/cairnx/dist/index.js
+var DOMAIN = "cairnx:v1";
 var ACTIVATION_HEIGHT = 29860;
 var V11_HEIGHT = 29960;
 var V12_HEIGHT = 30300;
@@ -3271,6 +3281,14 @@ var SALT_RE = /^[0-9a-fA-F]{16,128}$/;
 var RESERVED_NAMES = /* @__PURE__ */ new Set(["csd", "treasury", "admin", "official", "root", "www", "support"]);
 var COMMIT_MAX_BLOCKS = 8 * EPOCH_LEN;
 var epochOf = (height) => Math.floor(height / EPOCH_LEN);
+var claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
+var claimWindowOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
+var claimGraceOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_FILL_GRACE_BLOCKS : 0;
+var offerExpiryHeightOf = (expiresEpoch, anchorHeight) => {
+  const raw = (Number(expiresEpoch ?? 0) + 1) * EPOCH_LEN;
+  const capped = (epochOf(anchorHeight) + MAX_OFFER_EPOCHS + 1) * EPOCH_LEN;
+  return Math.min(raw, Math.max(V21_HEIGHT, capped));
+};
 var isNameGive = (g) => typeof g.name === "string";
 var isTokenWant = (w) => typeof w.ticker === "string";
 function parseAmount(s, opts = {}) {
@@ -3472,6 +3490,26 @@ function parseRecord(uri, payloadHashHex) {
       return null;
   }
 }
+function buildRecord(record) {
+  const uri = canonicalJson(record);
+  const ph = payloadHash(record);
+  const back = parseRecord(uri, ph);
+  if (back === null) throw new Error("record does not validate against CONVENTION.md");
+  return { record, uri, payloadHash: ph };
+}
+var deploy = (r) => buildRecord({ v: 1, t: "deploy", ...r });
+var mint = (r) => buildRecord({ v: 1, t: "mint", ...r });
+var transfer = (r) => buildRecord({ v: 1, t: "transfer", ...r });
+var offer = (r) => buildRecord({ v: 1, t: "offer", ...r });
+var bid = (r) => buildRecord({ v: 1, t: "bid", ...r });
+var offerCancelAll = (r = {}) => buildRecord({ v: 1, t: "ocancel", ...r });
+var nameCommitRecord = (r) => buildRecord({ v: 1, t: "ncommit", ...r });
+var nameClaim = (r) => buildRecord({ v: 1, t: "name", ...r });
+var nameXfer = (r) => buildRecord({ v: 1, t: "nxfer", ...r });
+var nameSet = (r) => buildRecord({ v: 1, t: "nset", ...r });
+var nameRenew = (r) => buildRecord({ v: 1, t: "nrenew", ...r });
+var tokenMeta = (r) => buildRecord({ v: 1, t: "tmeta", ...r });
+var nameProfile = (r) => buildRecord({ v: 1, t: "nprofile", ...r });
 var ord = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function resolve(events, tipHeight) {
   const ordered = [...events].sort(
@@ -3542,9 +3580,33 @@ function resolve(events, tipHeight) {
     const b = bids.get(o.bid);
     if (b && b.status === "open" && b.bidder === buyer) b.status = "done";
   };
-  const claimGrace = (o) => o.claimUntilHeight !== void 0 && o.claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_FILL_GRACE_BLOCKS : 0;
+  const claimGrace = (o) => o.claimUntilHeight !== void 0 ? claimGraceOf(o.claimUntilHeight) : 0;
   const claimHeld = (o, height) => o.claimedBy !== void 0 && o.claimUntilHeight !== void 0 && height < o.claimUntilHeight + claimGrace(o);
-  const claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
+  const openFillReject = (o, height, who) => {
+    if (!(height >= V13_HEIGHT && !o.taker)) return void 0;
+    if (height < V17_HEIGHT) return "v1.3: open CSD-quoted fills disabled (offer must be taker-bound)";
+    if (!(claimHeld(o, height) && who === o.claimedBy)) return "v1.7: open offer \u2014 claim it first (no live claim by you)";
+    return void 0;
+  };
+  const deliverNameToBuyer = (n, who, ev) => {
+    n.owner = who;
+    n.locked = false;
+    n.addr = void 0;
+    n.profile = void 0;
+    if (ev.height >= V13_HEIGHT) {
+      n.effHeight = ev.height;
+      n.pos = ev.pos;
+      n.id = ev.txid;
+      n.height = ev.height;
+      n.viaFill = true;
+    }
+  };
+  const releaseGiveLock = (o, who, amt) => {
+    const t = o.give.ticker;
+    bal(t, o.seller).locked -= amt;
+    bal(t, who).available += amt;
+    offerLock.delete(o.id);
+  };
   for (const ev of ordered) {
     if (ev.height < ACTIVATION_HEIGHT) continue;
     if (ev.height !== pendingBlock) {
@@ -3999,23 +4061,8 @@ function resolve(events, tipHeight) {
         buyer.available -= amt + fee;
         bal(o.want.ticker, o.want.payto).available += amt;
         if (fee > 0n) bal(o.want.ticker, TREASURY_ADDR).available += fee;
-        if (isNameGive(o.give)) {
-          giveName.owner = who;
-          giveName.locked = false;
-          giveName.addr = void 0;
-          giveName.profile = void 0;
-          if (ev.height >= V13_HEIGHT) {
-            giveName.effHeight = ev.height;
-            giveName.pos = ev.pos;
-            giveName.id = ev.txid;
-            giveName.height = ev.height;
-            giveName.viaFill = true;
-          }
-        } else {
-          bal(o.give.ticker, o.seller).locked -= giveLock;
-          bal(o.give.ticker, who).available += giveLock;
-          offerLock.delete(o.id);
-        }
+        if (isNameGive(o.give)) deliverNameToBuyer(giveName, who, ev);
+        else releaseGiveLock(o, who, giveLock);
         o.status = "filled";
         o.fill = { buyer: who, txid: ev.txid, height: ev.height, paid: amt.toString(), fee: fee.toString() };
         markBidDone(o, who);
@@ -4029,15 +4076,10 @@ function resolve(events, tipHeight) {
           note(ev, ev.txid, "fill", false, "taker-bound offer");
           continue;
         }
-        if (ev.height >= V13_HEIGHT && !o.taker) {
-          if (ev.height < V17_HEIGHT) {
-            note(ev, ev.txid, "fill", false, "v1.3: open CSD-quoted fills disabled (offer must be taker-bound)");
-            continue;
-          }
-          if (!(claimHeld(o, ev.height) && who === o.claimedBy)) {
-            note(ev, ev.txid, "fill", false, "v1.7: open offer \u2014 claim it first (no live claim by you)");
-            continue;
-          }
+        const blk = openFillReject(o, ev.height, who);
+        if (blk) {
+          note(ev, ev.txid, "fill", false, blk);
+          continue;
         }
         const pt = ev.paidTo ?? {};
         const want = BigInt(o.want.value);
@@ -4094,15 +4136,10 @@ function resolve(events, tipHeight) {
           note(ev, ev.txid, "fill", false, "taker-bound offer");
           continue;
         }
-        if (ev.height >= V13_HEIGHT && !o.taker) {
-          if (ev.height < V17_HEIGHT) {
-            note(ev, ev.txid, "fill", false, "v1.3: open CSD-quoted fills disabled (offer must be taker-bound)");
-            continue;
-          }
-          if (!(claimHeld(o, ev.height) && who === o.claimedBy)) {
-            note(ev, ev.txid, "fill", false, "v1.7: open offer \u2014 claim it first (no live claim by you)");
-            continue;
-          }
+        const blk = openFillReject(o, ev.height, who);
+        if (blk) {
+          note(ev, ev.txid, "fill", false, blk);
+          continue;
         }
         const pt = ev.paidTo ?? {};
         const want = BigInt(o.want.value);
@@ -4130,26 +4167,14 @@ function resolve(events, tipHeight) {
             note(ev, ev.txid, "fill", false, "name vanished (consensus violation)");
             continue;
           }
-          n.owner = who;
-          n.locked = false;
-          n.addr = void 0;
-          n.profile = void 0;
-          if (ev.height >= V13_HEIGHT) {
-            n.effHeight = ev.height;
-            n.pos = ev.pos;
-            n.id = ev.txid;
-            n.height = ev.height;
-            n.viaFill = true;
-          }
+          deliverNameToBuyer(n, who, ev);
         } else {
           const amt = offerLock.get(o.id);
           if (amt === void 0) {
             note(ev, ev.txid, "fill", false, "offer lock missing");
             continue;
           }
-          bal(o.give.ticker, o.seller).locked -= amt;
-          bal(o.give.ticker, who).available += amt;
-          offerLock.delete(o.id);
+          releaseGiveLock(o, who, amt);
         }
         feesPaid += fee;
         o.status = "filled";
@@ -4229,14 +4254,135 @@ function resolve(events, tipHeight) {
   for (const [id, b] of [...bids.entries()].sort(([a], [b2]) => ord(a, b2))) bidsOut[id] = b;
   return { tipHeight, tokens: tokensOut, balances: balancesOut, names: namesOut, offers: offersOut, bids: bidsOut, events: log, feesPaid: feesPaid.toString() };
 }
+function canonicalState(s) {
+  const sortKeys = (v) => {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(Object.entries(v).sort(([a], [b]) => ord(a, b)).map(([k, x]) => [k, sortKeys(x)]));
+    }
+    return v;
+  };
+  const { events: _events, ...data } = s;
+  return JSON.stringify(sortKeys(data));
+}
+var CLAIM_ATTACKER_Q = 0.2;
+var CLAIM_MIN_DEPTH = 3;
+var COMMIT_REVEAL_MIN_DEPTH = 3;
+function requiredClaimDepth(valueSats, height) {
+  const r = CLAIM_ATTACKER_Q / (1 - CLAIM_ATTACKER_Q);
+  const V = Number(valueSats);
+  const R = blockReward(height) || INITIAL_REWARD;
+  const max = claimWindowAt(height) - 5;
+  for (let D = CLAIM_MIN_DEPTH; D <= max; D++) {
+    if (Math.pow(r, D) * V <= D * R) return { depth: D, reversalPct: Math.pow(r, D) * 100, capped: false };
+  }
+  return { depth: max, reversalPct: Math.pow(r, max) * 100, capped: true };
+}
 export {
+  ACTIVATION_HEIGHT,
+  ADDR_RE,
+  AMOUNT_RE,
+  BID_KEYS,
+  CLAIM_ATTACKER_Q,
+  CLAIM_COOLDOWN_BLOCKS,
+  CLAIM_FILL_GRACE_BLOCKS,
+  CLAIM_MIN_DEPTH,
+  CLAIM_WINDOW_BLOCKS,
+  CLAIM_WINDOW_BLOCKS_V20,
+  COMMIT_MAX_BLOCKS,
+  COMMIT_REVEAL_MIN_DEPTH,
+  CONF_TOKEN_FILL,
   CsdClient,
+  DEPLOY_FEE,
+  DEPLOY_KEYS,
+  DOMAIN,
+  EPOCH_LEN,
+  FEE_BPS,
+  FEE_BPS_V16,
+  HALVING_INTERVAL,
+  HASH_RE,
+  INITIAL_REWARD,
   LightClient,
+  MAX_ACTIVE_CLAIMS,
+  MAX_AMOUNT,
+  MAX_OFFER_EPOCHS,
+  MAX_RECORD_BYTES,
+  MINT_KEYS,
+  MIN_FEE_ATTEST,
+  MIN_FEE_PROPOSE,
+  NAME_FEE_SHORT_V18,
+  NAME_FEE_V18,
+  NAME_GRACE_EPOCHS,
+  NAME_KEYS,
+  NAME_PREMIUM_DECAY_EPOCHS,
+  NAME_PREMIUM_START,
+  NAME_RE,
+  NAME_TERM_EPOCHS,
+  NPROFILE_KEYS,
+  OFFER_KEYS,
+  PKEY,
+  PROFILE_MAX_KEYS,
+  PROFILE_MAX_VALUE_BYTES,
+  REBATE_BPS,
+  REBATE_FLAT,
+  RESERVED_NAMES,
+  SALT_RE,
+  SCORE_CANCEL,
+  SCORE_CLAIM,
+  SCORE_FILL,
+  TICKER_RE,
+  TRANSFER_KEYS,
+  TREASURY_ADDR,
+  V11_HEIGHT,
+  V12_HEIGHT,
+  V13_HEIGHT,
+  V14_HEIGHT,
+  V15_HEIGHT,
+  V16_HEIGHT,
+  V17_HEIGHT,
+  V18_HEIGHT,
+  V19_HEIGHT,
+  V20_HEIGHT,
+  V21_HEIGHT,
   addrFromPub,
+  bid,
+  blockReward,
+  buildRecord,
+  canonicalJson,
+  canonicalState,
+  claimGraceOf,
+  claimWindowAt,
+  claimWindowOf,
+  deploy,
+  epochOf,
+  expiredClaimFee,
+  isName,
+  isNameGive,
+  isTokenWant,
+  makerRebate,
   merkleRoot,
+  mint,
+  nameClaim,
+  nameCommit,
+  nameCommitRecord,
+  nameProfile,
+  nameRegFee,
+  nameRenew,
+  nameSet,
+  nameXfer,
+  offer,
+  offerCancelAll,
+  offerExpiryHeightOf,
+  parseAmount,
+  parseRecord,
+  payloadHash,
+  requiredClaimDepth,
   resolve,
   rpcTxToTx,
   sighash,
+  tokenMeta,
+  tradeFee,
+  transfer,
   txid,
   verifyDigest,
   verifyMerkleProof

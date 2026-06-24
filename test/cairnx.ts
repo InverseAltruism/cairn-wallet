@@ -496,22 +496,25 @@ async function main() {
     check("explorer: malicious custom URL stored canonicalized (no raw < > \")", expNorm);
   }
 
-  // CQ-1: the hand-written cairnx.ts convention mirror must not drift from the vendored resolver bundle on the
-  // load-bearing consensus constants. Compare the constants NAMED in both, numerically (handles 4e4 /
-  // underscores / BigInt n-suffix). A future csd-sdk fee/height change landing in the bundle but NOT the
-  // hand-mirror (or vice-versa) fails here — closing the cross-mirror drift gap (CQ-1).
+  // CQ-1 (post shared-core de-dup, cairn docs/Plans/46): cairnx.ts no longer HAND-DECLARES the consensus
+  // constants — it IMPORTS them from the vendored cairnx-core bundle, so there is nothing left to drift.
+  // This guard now keeps the mirror COLLAPSED: (a) the bundle import is present and no consensus constant is
+  // re-declared in cairnx.ts (a re-introduced hand-decl would re-open the drift gap), and (b) the live
+  // re-exported VALUES still equal the bundle's (the import actually wires through).
   {
     const { readFileSync } = await import("node:fs");
-    const norm = (v: string) => Number(String(v).replace(/_/g, "").replace(/n$/, ""));
     const ts = readFileSync("src/core/cairnx.ts", "utf8");
-    const js = readFileSync("src/vendor/cairnx-spv.js", "utf8");
-    const grab = (src: string, name: string): number | null => {
-      const m = src.match(new RegExp(`\\b${name}\\s*=\\s*([0-9_]+(?:e[0-9]+)?n?)`));
-      return m ? norm(m[1]) : null;
-    };
-    for (const name of ["FEE_BPS", "FEE_BPS_V16", "REBATE_BPS", "MAX_RECORD_BYTES", "V18_HEIGHT"]) {
-      const a = grab(ts, name), b = grab(js, name);
-      check(`CQ-1: ${name} matches across cairnx.ts (${a}) and the vendored bundle (${b})`, a !== null && b !== null && a === b);
+    const bundle = await import("../src/vendor/cairnx-spv.js");
+    const mod = await import("../src/core/cairnx.js");
+    check("CQ-1: cairnx.ts imports the convention surface from ../vendor/cairnx-spv.js (single source)",
+      /from\s*["']\.\.\/vendor\/cairnx-spv\.js["']/.test(ts));
+    for (const name of ["FEE_BPS", "FEE_BPS_V16", "REBATE_BPS", "MAX_RECORD_BYTES", "V18_HEIGHT", "MAX_AMOUNT", "REBATE_FLAT"]) {
+      check(`CQ-1: ${name} is NOT hand-declared in cairnx.ts (imported, no second copy)`,
+        !new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=`).test(ts));
+    }
+    for (const name of ["FEE_BPS", "FEE_BPS_V16", "REBATE_BPS", "V18_HEIGHT", "REBATE_FLAT"] as const) {
+      const a = (mod as Record<string, unknown>)[name], b = (bundle as Record<string, unknown>)[name];
+      check(`CQ-1: ${name} re-export equals the bundle (${a} === ${b})`, a != null && a === b);
     }
   }
 
