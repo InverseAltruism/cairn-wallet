@@ -15,6 +15,6 @@ Everything needed to list Cairn Wallet. Start with **SUBMISSION-CHECKLIST.md**.
 
 The store **icon** is the existing `../public/icons/icon-128.png`.
 
-Upload artifact: `npm run package` (reproducible zip) — but the Web Store needs
+Upload artifact: `npm run package` (reproducible zip), but the Web Store needs
 `manifest.json` at the zip root, so for the store, zip the **contents** of `dist/`
 (flat), not the `cairn-wallet/`-nested release zip.

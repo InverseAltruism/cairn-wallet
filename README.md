@@ -12,14 +12,14 @@ and support items on [Cairn](https://cairn-substrate.com).
 * **Non-custodial.** Keys are generated and stored only on your device, encrypted with your password.
 * **Standard recovery.** A 12-word BIP-39 phrase backs up every account.
 * **Local signing.** Transactions are built and signed on your device. Only the signed transaction is sent to the node.
-* **CairnX tokens and `.csd` names.** The popup lists your token balances (decimals-aware, with locked amounts shown) and owned names, and sends tokens through the same reviewed confirmation as a CSD send. Transfer records are built and hashed inside the wallet — never fetched from a server.
-* **CairnX clear-signing.** The approval window decodes `cairnx:v1` proposals (token transfers, deploys, mints, offers, bids, cancels, name claims/transfers/renewals) into structured fields — for wallet- and dApp-initiated requests alike. Unrecognized record shapes still show the raw payload.
+* **CairnX tokens and `.csd` names.** The popup lists your token balances (decimals-aware, with locked amounts shown) and owned names, and sends tokens through the same reviewed confirmation as a CSD send. Transfer records are built and hashed inside the wallet, never fetched from a server.
+* **CairnX clear-signing.** The approval window decodes `cairnx:v1` proposals (token transfers, deploys, mints, offers, bids, cancels, name claims/transfers/renewals) into structured fields, for wallet- and dApp-initiated requests alike. Unrecognized record shapes still show the raw payload.
 * **Multi-account**, multi-input sends, transaction history, sealed claims, and an idle auto-lock.
 * **Open source**, with a reproducible build you can verify yourself.
 
 ## Install
 
-1. Download `cairn-wallet.zip` from **[cairn-substrate.com/api/wallet/download](https://cairn-substrate.com/api/wallet/download)** (or click **Get Wallet** on the homepage). *This repo is private, so the GitHub Release asset is not publicly downloadable — the website self-serves the zip instead; see [Release & download flow](#release--download-flow).*
+1. Download `cairn-wallet.zip` from **[cairn-substrate.com/api/wallet/download](https://cairn-substrate.com/api/wallet/download)** (or click **Get Wallet** on the homepage). *This repo is private, so the GitHub Release asset is not publicly downloadable, the website self-serves the zip instead; see [Release & download flow](#release--download-flow).*
 2. Unzip it. You get a `cairn-wallet` folder.
 3. Open `chrome://extensions` in Chrome, Brave, or Edge. Turn on **Developer mode**, click **Load unpacked**, and select the `cairn-wallet` folder.
 
@@ -33,8 +33,8 @@ curl -s https://cairn-substrate.com/api/wallet/download.sha256 | sha256sum -c -
 ```
 
 The same `cairn-wallet.zip.sha256` is committed alongside the served zip (`cairn/public/downloads/`) and is
-produced by the reproducible `npm run package` from the tagged source — so you can rebuild and match it without
-trusting the binary. *(While the repo is private the GitHub SLSA build-provenance attestation cannot run — see
+produced by the reproducible `npm run package` from the tagged source, so you can rebuild and match it without
+trusting the binary. *(While the repo is private the GitHub SLSA build-provenance attestation cannot run, see
 the flow section; it returns once the repo is public again.)*
 
 ## Backups
@@ -79,7 +79,7 @@ The signing core is verified against external ground truth, not only its own ass
 
 ## Release & download flow
 
-> **For maintainers / future agentic work — read this before shipping a wallet update.** This repo is
+> **For maintainers / future agentic work, read this before shipping a wallet update.** This repo is
 > **private**, which changes two things from the usual GitHub-release flow: SLSA provenance can't run, and the
 > public can't download release assets. The flow below is the *correct, working* path; don't "fix" it back to a
 > bare GitHub redirect while the repo is private.
@@ -94,7 +94,7 @@ The signing core is verified against external ground truth, not only its own ass
 `cairn-wallet-store.zip` = *Web-Store* variant with `manifest.json` at the zip root, each with a `.sha256`) →
 publish the GitHub Release.
 - ⚠ The **Attest build provenance** step is `continue-on-error` **on purpose**: GitHub's SLSA attestation is
-  "not available for user-owned private repositories", so it errors — and before this was made non-blocking it
+  "not available for user-owned private repositories", so it errors, and before this was made non-blocking it
   silently stopped the publish step (v0.2.24/v0.2.26 built green but never released). Making the repo public
   re-enables real provenance; **do not remove `continue-on-error` while the repo is private.**
 
@@ -140,29 +140,28 @@ The extension layer:
 
 Sending to a `.csd` name never trusts a resolver's word. The wallet:
 
-1. fetches the name's on-chain record **hints** from **two independent resolvers** —
-   `cairn-substrate.com` (primary) and `clarvis.cairn-substrate.com` (an independent second source running its
+1. fetches the name's on-chain record **hints** from **two independent resolvers**,    `cairn-substrate.com` (primary) and `clarvis.cairn-substrate.com` (an independent second source running its
    own node→indexer→cairnx; see [cairn doc 36](https://github.com/InverseAltruism/cairn/blob/master/docs/ecosystem/36-clarvis-second-source-handoff.md));
 2. **unions** them and **SPV-verifies every event** against a PoW header chain the wallet builds itself
    (`src/core/namespv.ts` → vendored `LightClient`): full-block merkle-bind + per-record signer-auth, so a
    resolver can only ever *add* real mined events, **never fabricate** one;
-3. replays the audited CairnX resolver over the verified union and **sends to the chain-proven winner** — not
-   to any resolver's bare claim — and flags any source whose stated answer disagrees.
+3. replays the audited CairnX resolver over the verified union and **sends to the chain-proven winner:** not
+   to any resolver's bare claim, and flags any source whose stated answer disagrees.
 
 A single resolver can't redirect funds (every record is SPV-verified), and it can't *withhold* its way to a
-redirect either, because the other independent source fills the omission — an attacker would have to make
+redirect either, because the other independent source fills the omission, an attacker would have to make
 **both** hosts hide the **same** event. It is **fail-soft**: if the second source is unreachable the wallet
 falls back to single-source with a caution; nothing the wallet signs ever depends on a resolver being up.
 
 The dual-resolver architecture (topology, routing, how each host runs, and the wallet union contract) is
-documented in [cairn doc 38 — wallet dual-source handoff](https://github.com/InverseAltruism/cairn/blob/master/docs/handoffs/38-wallet-dual-source-clarvis-handoff.md)
+documented in [cairn doc 38, wallet dual-source handoff](https://github.com/InverseAltruism/cairn/blob/master/docs/handoffs/38-wallet-dual-source-clarvis-handoff.md)
 (wallet side) and [doc 36](https://github.com/InverseAltruism/cairn/blob/master/docs/ecosystem/36-clarvis-second-source-handoff.md) (clarvis host side).
 
 ## Configuration
 
 * **Node RPC.** Switch from the RPC menu at the top right. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`), a local node (`http://127.0.0.1:8789`), or add your own.
 * **Cairn API.** Set in Settings. Defaults to `https://cairn-substrate.com`.
-* **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet simply shows no assets (with a retry) — the CSD balance and sends are unaffected, and nothing the wallet signs ever depends on it.
+* **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet simply shows no assets (with a retry), the CSD balance and sends are unaffected, and nothing the wallet signs ever depends on it.
 
 The derivation path `m/44'/7779'/0'/0/i` is public metadata. It describes which keys are
 derived, not the keys themselves. 7779 is an unregistered SLIP-44 coin type, used as Cairn
