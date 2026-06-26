@@ -3258,6 +3258,7 @@ var V19_HEIGHT = 36700;
 var V20_HEIGHT = 38400;
 var V21_HEIGHT = 40100;
 var MAX_OFFER_EPOCHS = 168;
+var V22_HEIGHT = 41300;
 var PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
 var PROFILE_MAX_KEYS = 16;
 var PROFILE_MAX_VALUE_BYTES = 256;
@@ -3286,6 +3287,7 @@ var claimWindowOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS
 var claimGraceOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_FILL_GRACE_BLOCKS : 0;
 var offerExpiryHeightOf = (expiresEpoch, anchorHeight) => {
   const raw = (Number(expiresEpoch ?? 0) + 1) * EPOCH_LEN;
+  if (anchorHeight >= V22_HEIGHT) return raw;
   const capped = (epochOf(anchorHeight) + MAX_OFFER_EPOCHS + 1) * EPOCH_LEN;
   return Math.min(raw, Math.max(V21_HEIGHT, capped));
 };
@@ -3558,7 +3560,7 @@ function resolve(events, tipHeight) {
       b.available += amt;
     }
   };
-  const effExpiry = (e, height) => height >= V21_HEIGHT ? Math.min(e.expiresEpoch, epochOf(e.height) + MAX_OFFER_EPOCHS) : e.expiresEpoch;
+  const effExpiry = (e, height) => e.height >= V22_HEIGHT ? e.expiresEpoch : height >= V21_HEIGHT ? Math.min(e.expiresEpoch, epochOf(e.height) + MAX_OFFER_EPOCHS) : e.expiresEpoch;
   const sweepExpired = (height) => {
     const ep = epochOf(height);
     for (const o of offers.values()) {
@@ -3827,7 +3829,7 @@ function resolve(events, tipHeight) {
           note(ev, ev.id, "offer", false, "already expired at anchor");
           continue;
         }
-        if (ev.height >= V21_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
+        if (ev.height >= V21_HEIGHT && ev.height < V22_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
           note(ev, ev.id, "offer", false, "v2.1: offer duration exceeds the max");
           continue;
         }
@@ -3900,7 +3902,7 @@ function resolve(events, tipHeight) {
           note(ev, ev.id, "bid", false, "already expired at anchor");
           continue;
         }
-        if (ev.height >= V21_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
+        if (ev.height >= V21_HEIGHT && ev.height < V22_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
           note(ev, ev.id, "bid", false, "v2.1: bid duration exceeds the max");
           continue;
         }
@@ -4344,6 +4346,7 @@ export {
   V19_HEIGHT,
   V20_HEIGHT,
   V21_HEIGHT,
+  V22_HEIGHT,
   addrFromPub,
   bid,
   blockReward,
