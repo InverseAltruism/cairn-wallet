@@ -68,6 +68,16 @@ function flashBtn(id: string, label: string) { const b = $(id); const o = b.text
 let currentRpc = "";
 let currentExplorer = "cairn"; // selected block explorer (preset id or custom base) for activity/address links
 let siteApi = "";   // the Cairn site base (for the /trade deep-link in the names list)
+// Wipe any unsent recipient/amount draft on lock so it doesn't reappear pre-filled on the next unlock or
+// popup reopen. The popup view-switches (it does not tear down) on lock, so input values otherwise persist;
+// the browser can also restore them on reopen. Cleared here (alongside the secret-wipe) and via autocomplete=off.
+function clearSendDrafts() {
+  for (const id of ["s-to", "s-amt", "ts-to", "ts-amt"]) { const el = document.getElementById(id) as HTMLInputElement | null; if (el) { el.value = ""; el.disabled = false; } }
+  // also tear down any FROZEN review (a primed Confirm panel must not survive the lock boundary, or a click on
+  // unlock would sign the stale snapshot). Null the snapshots + hide both confirm panels.
+  reviewed = null; reviewedSend = null;
+  for (const id of ["send-confirm", "tsend-confirm"]) { const el = document.getElementById(id); if (el) (el as HTMLElement).hidden = true; }
+}
 async function render() {
   const st = await call("status");
   currentRpc = st.rpc || "";
@@ -76,7 +86,7 @@ async function render() {
   if (!st.hasVault) return show("setup");
   // On lock (manual or idle auto-lock), wipe any revealed private key / recovery phrase from the DOM and
   // module memory so a secret never lingers on the locked screen (audit POPUP-2).
-  if (!st.unlocked) { resetRevealPanel(); resetPhrasePanel(); return show("locked"); }
+  if (!st.unlocked) { resetRevealPanel(); resetPhrasePanel(); clearSendDrafts(); return show("locked"); }
   show("main");
   // Only HD wallets have a recovery phrase; hide the reveal button for imported keys.
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
@@ -288,7 +298,16 @@ async function doNameAction(kind: "renew" | "primary", name: string) {
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
 async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }> {
   const r = (raw || "").trim();
-  if (/^0x[0-9a-fA-F]{40}$/.test(r)) return { ok: true, addr: r.toLowerCase(), name: null, label: null };
+  // Refuse the zero address outright: a send there is an irrecoverable burn. Defense-in-depth for the V23
+  // transition: a wallet that CARRIES this guard but whose vendored core still lacked the v23 branch would
+  // replay a cleared name to 0x000..0, and this blocks that burn. It does NOT cover releases predating this
+  // guard (no 0x0 check -> they burn after V23); for those the only safeguard is the deploy discipline in
+  // types.ts (set V23_HEIGHT only after wallet ADOPTION, not publication).
+  const isZero = (a: string) => /^0x0{40}$/i.test(a || "");
+  if (/^0x[0-9a-fA-F]{40}$/.test(r)) {
+    if (isZero(r)) return { ok: false, error: "that is the zero address — sends there are burned and unrecoverable" };
+    return { ok: true, addr: r.toLowerCase(), name: null, label: null };
+  }
   if (looksLikeName(r)) {
     const nm = r.toLowerCase().replace(/\.csd$/, "");
     const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
@@ -297,6 +316,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // REFUSED here (res.ok === false). The send target is the chain-PROVEN union winner; the badge tells the
     // user how strong the confirmation is (2 independent sources / 1 source / a flagged disagreement).
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
+    if (isZero(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address — refusing (sends would be burned)` };
     const verified = res.verified === true;
     const viaFill = res.viaFill === true;
     const conf = res.depth ? ` (${res.depth} conf)` : "";

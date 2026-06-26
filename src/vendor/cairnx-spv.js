@@ -3259,6 +3259,8 @@ var V20_HEIGHT = 38400;
 var V21_HEIGHT = 40100;
 var MAX_OFFER_EPOCHS = 168;
 var V22_HEIGHT = 41300;
+var V23_HEIGHT = 43500;
+var ZERO_ADDR = "0x" + "00".repeat(20);
 var PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
 var PROFILE_MAX_KEYS = 16;
 var PROFILE_MAX_VALUE_BYTES = 256;
@@ -3621,6 +3623,7 @@ function resolve(events, tipHeight) {
     const v15 = ev.height >= V15_HEIGHT;
     const v16 = ev.height >= V16_HEIGHT;
     const v19 = ev.height >= V19_HEIGHT;
+    const v23 = ev.height >= V23_HEIGHT;
     const feeToTreasury = ev.kind === "propose" ? BigInt((ev.paidTo ?? {})[TREASURY_ADDR] ?? "0") : 0n;
     if (ev.kind === "propose") {
       const rec = parseRecord(ev.uri, ev.payloadHash);
@@ -3788,7 +3791,8 @@ function resolve(events, tipHeight) {
           note(ev, ev.id, "nset", false, "lease lapsed \u2014 claim it instead");
           continue;
         }
-        n.addr = rec.addr.toLowerCase();
+        if (v23 && rec.addr.toLowerCase() === ZERO_ADDR) n.addr = void 0;
+        else n.addr = rec.addr.toLowerCase();
         note(ev, ev.id, "nset", true);
       } else if (rec.t === "nprofile") {
         if (!v19) {
@@ -4347,6 +4351,8 @@ export {
   V20_HEIGHT,
   V21_HEIGHT,
   V22_HEIGHT,
+  V23_HEIGHT,
+  ZERO_ADDR,
   addrFromPub,
   bid,
   blockReward,
