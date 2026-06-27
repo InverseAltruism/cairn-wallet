@@ -608,6 +608,8 @@ export class Wallet {
       this._spvSrc = liveSpvSource({
         rpcBase: this.rpc, headersBase: this.api,
         cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
+        // NAME-4: persist the node-tip high-water so the lapse floor survives a service-worker restart.
+        floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
       }).catch((e) => { this._spvSrc = null; throw e; });
     }
     return this._spvSrc;

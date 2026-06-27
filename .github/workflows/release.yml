@@ -14,7 +14,52 @@ permissions:
   attestations: write   # write the attestation
 
 jobs:
+  # Publish-path structural vendor gate (audit SUP-VENDOR-GATE-01). A MIRROR of ci.yml's vendor-fresh-full:
+  # rebuild the SPV bundle from the PINNED csd-sdk source and require byte-identity with the committed bundle.
+  # The release job `needs:` this, so a tag cut from a commit that bypassed master CI still cannot publish a
+  # desynced fund-path bundle. Token-gated and self-skipping: without ECOSYSTEM_RO_TOKEN every step is skipped
+  # (a skipped job succeeds), so the release still cuts via the cheap gate below. Set the token to ACTIVATE this
+  # as a real publish-path gate (copy the value already set on the cairn / cairnx repos). Keep in lockstep with
+  # ci.yml's vendor-fresh-full.
+  vendor-fresh-full:
+    runs-on: ubuntu-latest
+    env:
+      HAS_TOKEN: ${{ secrets.ECOSYSTEM_RO_TOKEN != '' }}
+    steps:
+      - if: ${{ env.HAS_TOKEN != 'true' }}
+        run: echo "ECOSYSTEM_RO_TOKEN not set — skipping the full rebuild-vs-source gate on the publish path (the cheap vendor gate in 'release' still runs). Set the token to activate this."
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        uses: actions/checkout@v4
+        with: { path: cairn-wallet }
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        id: prov
+        run: echo "commit=$(node -p "require('./cairn-wallet/src/vendor/PROVENANCE.json').csdSdkCommit")" >> "$GITHUB_OUTPUT"
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: InverseAltruism/csd-sdk
+          ref: ${{ steps.prov.outputs.commit }}
+          token: ${{ secrets.ECOSYSTEM_RO_TOKEN }}
+          path: csd-sdk
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        run: |
+          PM=$(node -p "require('./csd-sdk/package.json').packageManager")
+          npm i -g "$PM"
+          pnpm -v
+          pnpm -C csd-sdk install --frozen-lockfile && pnpm -C csd-sdk -r build
+      - if: ${{ env.HAS_TOKEN == 'true' }}
+        run: npm -C cairn-wallet ci --ignore-scripts
+      - name: rebuild-vs-source byte-diff + noble equality
+        if: ${{ env.HAS_TOKEN == 'true' }}
+        env:
+          CSD_SDK_DIR: ${{ github.workspace }}/csd-sdk
+        run: npm -C cairn-wallet run verify:vendor
+
   release:
+    needs: vendor-fresh-full
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,11 +69,12 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts   # no dependency lifecycle scripts run in CI (supply-chain hardening)
       - run: npm test            # full gate — a broken/failed build never ships
-      # Vendor-freshness gate on the PUBLISH path (audit M2): the cheap checks (committed SPV bundle sha256 ==
-      # PROVENANCE + @noble pin equality) always run with no csd-sdk checkout, so a hand-edited/desynced bundle
-      # can never be packaged + released. The full rebuild-vs-source byte-diff is enforced at merge time by ci.yml's
-      # vendor-fresh-full job (it has the token-gated cross-repo checkout); a release is always cut from a master
-      # commit that already passed that gate, so this step is the publish-path backstop, not a duplicate.
+      # Vendor-freshness gate on the PUBLISH path (audit M2 / SUP-VENDOR-GATE-01). This step is the cheap,
+      # always-on check (committed SPV bundle sha256 == PROVENANCE + @noble pin equality), so a hand-edited or
+      # desynced bundle can never be packaged + released. The STRUCTURAL rebuild-vs-source byte-diff now also
+      # gates this publish path via the `vendor-fresh-full` job above (this job `needs:` it), so a tag cut from a
+      # commit that bypassed master CI still cannot ship a desynced fund-path bundle once ECOSYSTEM_RO_TOKEN is
+      # set. Until the token is set, vendor-fresh-full self-skips and this cheap check is the backstop.
       - run: npm run verify:vendor
       - run: npm run package     # deterministic zip + cairn-wallet.zip.sha256
       - name: Attest build provenance

@@ -337,10 +337,13 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: { sourc
     if (info?.disagree) {
       return `⚠ <b><code>${n}.csd</code> — sources DISAGREE.</b> The wallet SPV-verified the records, but one name source's answer did <b>not</b> match what the chain proves across the others — a source may be hostile or stale. The <b>To</b> address shown is the chain-proven winner, but <b>double-check it out-of-band</b> before any sizable send.`;
     }
-    // ≥2 independent sources agreed on the SPV-verified mapping → the withholding residual is now bounded to
-    // an attacker controlling BOTH independent hosts (doc 36). This is the strong case.
+    // ≥2 sources agreed on the SPV-verified mapping. HONESTY (2026-06-27 red-team): the two sources
+    // (cairn-substrate.com + clarvis) are currently CO-LOCATED on one operator/apex (live DNS confirmed), so
+    // this is NOT yet independence-backed. Against record WITHHOLDING the residual is the same as the 1-source
+    // case until a genuinely independent second source exists, so do NOT claim "independent" / "compromise all
+    // of them" here. See docs/security/cairn-wallet-redteam-2026-06-27.md and docs/handoffs/38.
     if ((info?.sources ?? 1) >= 2) {
-      return `✓ <b><code>${n}.csd</code> — chain-backed, confirmed by ${info!.sources} independent sources.</b> The wallet SPV-verified the records and ${info!.sources} independent name servers agree on this address. (An attacker would have to compromise <b>all</b> of them to hide a record.) Confirm the <b>To</b> address for very large sends.`;
+      return `✓ <b><code>${n}.csd</code> — chain-backed, ${info!.sources} name servers agree.</b> The wallet SPV-verified that this address is backed by signed, mined records. Those name servers currently share one operator, so they do not yet rule out that operator hiding a later transfer or competing claim. For any sizable send, confirm the full <b>To</b> address out-of-band.`;
     }
     // Single usable source (the other was unreachable) — the honest withholding caveat still applies.
     return `<b><code>${n}.csd</code> — chain-backed (1 source).</b> The wallet SPV-verified that this address is backed by signed, mined records — but only one name source answered, and a single source could still <b>hide</b> a later transfer or a competing claim. For any sizable send, confirm the full <b>To</b> address out-of-band.`;

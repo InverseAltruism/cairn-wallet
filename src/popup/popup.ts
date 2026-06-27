@@ -341,9 +341,11 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     const nm = r.toLowerCase().replace(/\.csd$/, "");
     const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
     // XREPO-1 cure: resolveName SPV-verifies the name → address against a PoW header chain the wallet checks
-    // itself AND cross-checks ≥2 independent resolvers (NSPV-COMPLETE-1, doc 36). A fabricated redirect is
+    // itself AND cross-checks ≥2 name-history sources (NSPV-COMPLETE-1, doc 36). A fabricated redirect is
     // REFUSED here (res.ok === false). The send target is the chain-PROVEN union winner; the badge tells the
-    // user how strong the confirmation is (2 independent sources / 1 source / a flagged disagreement).
+    // user how strong the confirmation is (2 servers agree / 1 source / a flagged disagreement). NOTE: the two
+    // sources are currently CO-LOCATED (same operator/apex), so the badge does not claim "independent" — the
+    // withholding residual is unchanged until a genuinely independent second source exists (red-team 2026-06-27).
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
     if (isZero(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address — refusing (sends would be burned)` };
     const verified = res.verified === true;
@@ -352,7 +354,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     const badge = !verified
       ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
       : res.disagree ? `⚠ chain-backed but a name source DISAGREED — verify the address${conf}`
-      : (res.sources ?? 1) >= 2 ? `✓ chain-backed by ${res.sources} independent sources${conf}`
+      : (res.sources ?? 1) >= 2 ? `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`
       : `✓ chain-backed (1 source)${conf}`;
     return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, agreed: res.agreed, disagree: res.disagree, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
   }
@@ -456,8 +458,25 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
       ($("ts-amt") as HTMLInputElement).disabled = false;
       ($("ts-to") as HTMLInputElement).value = ""; ($("ts-amt") as HTMLInputElement).value = "";
       refreshBalance(); renderAssets();
-    } else msg("send failed: " + (r.error || "?"), "err");
-  } catch (e: any) { msg(e.message, "err"); }
+    } else {
+      // Double-send guard (FOOT-3, token parity with the CSD send path): a failed submit is AMBIGUOUS — the tx
+      // may already be in the mempool. Don't leave Confirm armed on the same frozen snapshot; tear it down so
+      // resending takes a deliberate re-Review. Only this failure branch changes — the success path above is
+      // untouched (no added send latency, nothing declined that would have succeeded).
+      ($("tsend-confirm") as HTMLElement).hidden = true;
+      reviewed = null;
+      ($("ts-to") as HTMLInputElement).disabled = false; ($("ts-amt") as HTMLInputElement).disabled = false;
+      refreshBalance(); renderAssets();
+      msg("send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.", "err");
+    }
+  } catch (e: any) {
+    // Same double-send guard for a thrown error (the bridge call failed; the tx may or may not have landed).
+    ($("tsend-confirm") as HTMLElement).hidden = true;
+    reviewed = null;
+    ($("ts-to") as HTMLInputElement).disabled = false; ($("ts-amt") as HTMLInputElement).disabled = false;
+    refreshBalance(); renderAssets();
+    msg((e?.message ? e.message + " — " : "") + "send didn't confirm; it may already be in flight. Check history before resending.", "err");
+  }
 });
 
 async function renderPending() {
@@ -496,7 +515,22 @@ function showBackup(mnemonic: string, privkey: string) {
   ($("btn-backup-done") as HTMLButtonElement).disabled = true;
   show("backup");
 }
-$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("enter a password", "err"); const r = await call("create", pw); ($("setup-pw") as HTMLInputElement).value = ""; showBackup(r.mnemonic, r.privkey); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("enter a password", "err"); const r = await call("create", pw); ($("setup-pw") as HTMLInputElement).value = ""; const h0 = document.getElementById("setup-pw-hint"); if (h0) h0.textContent = ""; showBackup(r.mnemonic, r.privkey); } catch (e: any) { msg(e.message, "err"); } });
+// CUST-1-1 nudge: a no-dependency password-strength HINT on the new-wallet field. NON-blocking (the keystore
+// still enforces the 8-char minimum); it just steers users toward a long passphrase, which is the real defense
+// against an offline brute of an exfiltrated at-rest vault. Length-dominant with a small variety bonus; no dep.
+function pwStrength(pw: string): string {
+  const len = pw.length; if (!len) return "";
+  if (len < 8) return "too short (8+ required)";
+  let classes = 0; for (const re of [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/]) if (re.test(pw)) classes++;
+  if (len >= 16 || (len >= 12 && classes >= 3)) return "strong";
+  if (len >= 12 && classes >= 2) return "fair";
+  return "weak — use a longer passphrase";
+}
+$("setup-pw").addEventListener("input", () => {
+  const v = ($("setup-pw") as HTMLInputElement).value; const h = document.getElementById("setup-pw-hint");
+  if (h) h.textContent = v ? `password strength: ${pwStrength(v)}` : "";
+});
 $("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); flashBtn("btn-copy-seed", "copied ✓"); });
 $("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); flashBtn("btn-copy-priv", "copied ✓"); });
@@ -702,6 +736,11 @@ document.addEventListener("click", (e) => {
 });
 
 ($("acct-select") as HTMLSelectElement).addEventListener("change", async (e) => {
+  // WYSIWYS (R2-WYSIWYS / SIGN-3): tear down any primed send / name-action review BEFORE switching accounts.
+  // A renew / set-primary panel (or a send) reviewed under the old account must never be Confirmed under the
+  // new one — the name-action path signs with the now-active account. clearSendDrafts nulls the frozen
+  // snapshots and hides all three confirm panels, exactly the teardown the lock path uses.
+  clearSendDrafts();
   try { await call("switchAccount", Number((e.target as HTMLSelectElement).value)); msg("switched account", "ok"); render(); }
   catch (err: any) { msg(err.message, "err"); }
 });
@@ -842,8 +881,26 @@ $("btn-send-confirm").addEventListener("click", async () => {
       ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;
       ($("s-to") as HTMLInputElement).value = ""; ($("s-amt") as HTMLInputElement).value = "";
       refreshBalance();
-    } else msg("send failed: " + (r.error || "?"), "err");
-  } catch (e: any) { msg(e.message, "err"); }
+    } else {
+      // Double-send guard (FOOT-3): a failed submit is AMBIGUOUS — the tx may already have reached the mempool
+      // (lost response / timeout / 429 AFTER the node ingested it). Do NOT leave the Confirm button armed on the
+      // same frozen snapshot: one more click selects a DIFFERENT coin and double-pays. Tear the review down so
+      // resending takes a deliberate re-Review, and tell the user to check first. Only this failure branch
+      // changes — the happy path above is untouched (no added send latency, nothing declined that would succeed).
+      ($("send-confirm") as HTMLElement).hidden = true;
+      reviewedSend = null;
+      ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;
+      refreshBalance();
+      msg("send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.", "err");
+    }
+  } catch (e: any) {
+    // Same double-send guard for a thrown error (the bridge call failed; the tx may or may not have landed).
+    ($("send-confirm") as HTMLElement).hidden = true;
+    reviewedSend = null;
+    ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;
+    refreshBalance();
+    msg((e?.message ? e.message + " — " : "") + "send didn't confirm; it may already be in flight. Check history before resending.", "err");
+  }
 });
 $("btn-name-confirm").addEventListener("click", () => doNameAction());
 $("btn-name-cancel").addEventListener("click", () => {

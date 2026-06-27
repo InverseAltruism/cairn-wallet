@@ -312,6 +312,13 @@ export interface LiveSpvOpts {
   headersBase: string;   // e.g. https://cairn-substrate.com          (/api/headers batch header source)
   // optional header-chain snapshot cache (the wallet store) so we don't re-sync every verify; re-verified on load
   cache?: { get(): Promise<unknown | null>; set(s: unknown): Promise<void> };
+  // optional persisted node-tip high-water (NSPV-STALE-LAPSE / NAME-4). The monotonic floor below only
+  // protects WITHIN a session; persisting it lets the floor survive MV3 service-worker restarts so a deflated
+  // tip served on the first verify of a fresh session cannot roll lease-state back below a height we have
+  // already trusted. A single integer, written (awaited) only when the observed tip ADVANCES, on the .csd
+  // name-resolve path — off the send hot path; a write failure is swallowed (the floor just degrades to
+  // within-session, the prior behaviour).
+  floor?: { get(): Promise<number | null>; set(v: number): Promise<void> };
 }
 
 /** Build the live SPV source. The LightClient seeds at the baked checkpoint and verifies forward to tip. */
@@ -352,13 +359,16 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   // add ~tens of seconds to the cold path and STILL not defeat a consistent MITM, which serves a short chain
   // anyway). The residual — a wallet that has only ever seen a consistently-deflated source — is the same
   // single-source-trust limit as NSPV-COMPLETE-1, closed only by a second source.
+  // Seed from the persisted high-water (NAME-4) so the floor survives an MV3 service-worker restart, not just
+  // the current session. Best-effort: a missing/garbage value just starts at 0 (the prior behaviour).
   let seenFloor = 0;
+  if (opts.floor) { try { const f = Number(await opts.floor.get()); if (Number.isFinite(f) && f > 0) seenFloor = f; } catch { /* no persisted floor → start at 0 */ } }
 
   return {
     async prepare(maxEventHeight: number) {
       let nodeTip = 0;
       try { nodeTip = Number((await client.tip())?.height); } catch { /* node tip unknown → lapse uses the floor / verified tip */ }
-      if (Number.isFinite(nodeTip) && nodeTip > seenFloor) seenFloor = nodeTip; // monotonic — never regress
+      if (Number.isFinite(nodeTip) && nodeTip > seenFloor) { seenFloor = nodeTip; if (opts.floor) { try { await opts.floor.set(seenFloor); } catch { /* persist best-effort */ } } } // monotonic — never regress; persist the high-water across SW restarts
       // Inclusion only needs headers up to the record + cushion (kept cheap; an old, sparse name does not
       // pay a full chain sync). LC.sync re-derives PoW+LWMA per header, so a lying-high cushion fails closed.
       const want = Math.min(Number.isFinite(nodeTip) && nodeTip > 0 ? nodeTip : maxEventHeight + CONF_BUFFER, maxEventHeight + CONF_BUFFER);
