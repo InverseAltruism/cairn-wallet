@@ -81,8 +81,10 @@ intact, verified by a multi-agent regression + pentest QA):
    vaults. Medium, security-sensitive — needs careful round-trip tests.
 4. **Runtime dependency lockdown (LavaMoat / SES `lockdown()`).** Sandbox the 4 deps + neutralize
    prototype pollution. Drop-in for esbuild. Medium.
-5. **Password-strength enforcement** at create/restore (length + zxcvbn-style) so the strong KDF
-   isn't wasted on a weak password. Small.
+5. ~~**Password-strength enforcement** at create/restore (length + zxcvbn-style).~~ ✅ **DONE** —
+   obviously-weak passwords are refused at vault creation (`core/keystore.ts`, audit KEY-1) and a
+   non-blocking strength hint shows on the new-wallet field (`popup/popup.ts`, CUST-1-1). A full
+   zxcvbn-style score remains an optional refinement.
 6. ~~**Per-origin permission persistence + connected-sites view.**~~ ✅ **DONE** — per-origin
    consent grants live in the background (`connectedSites` / `disconnectSite`,
    `src/background.ts`), with a revocable Connected-sites list in Settings
