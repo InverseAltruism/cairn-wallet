@@ -113,6 +113,7 @@ code{font-family:inherit}
 #send-confirm{margin-top:10px}
 .confirm-box{padding:10px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}
 .crow{display:flex;align-items:flex-start;gap:8px;margin:4px 0}
+.crow[hidden]{display:none}   /* the .crow class selector beats the UA [hidden] rule, so a row toggled hidden would otherwise still show (e.g. an empty "Name"/"Renewal fee" row). Restore the intended hide. */
 .crow .label{min-width:54px}
 .crow .addr{color:var(--cyan);font-size:11px;word-break:break-all;flex:1}
 .warn{margin-top:8px;padding:7px 8px;border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:11px;line-height:1.4}

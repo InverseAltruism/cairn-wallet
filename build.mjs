@@ -23,15 +23,19 @@ for (const dir of ["src", "public"]) {
 // hard build failure instead of a silent ship. (No literal "version" key match: scan structurally.)
 const PKG_VERSION = JSON.parse(readFileSync("package.json", "utf8")).version;
 const manifestVersion = JSON.parse(readFileSync("public/manifest.json", "utf8")).version;
-const inpageMatch = readFileSync("src/inpage.ts", "utf8").match(/version:\s*"([^"]+)"/);
-const inpageVersion = inpageMatch && inpageMatch[1];
-for (const [where, v] of [["public/manifest.json", manifestVersion], ["src/inpage.ts", inpageVersion]]) {
+// inpage.ts carries the version in MORE than one place (window.cairn.version AND getCapabilities().version);
+// check EVERY `version:` string, not just the first, so a drift in only the capabilities string (which a
+// dApp reads) can't slip through. (audit N2: the old single-match regex left line ~64 unguarded.)
+const inpageVersions = [...readFileSync("src/inpage.ts", "utf8").matchAll(/version:\s*"([^"]+)"/g)].map((m) => m[1]);
+if (inpageVersions.length === 0) { console.error("✗ build aborted: no version: string found in src/inpage.ts"); process.exit(1); }
+const versionChecks = [["public/manifest.json", manifestVersion], ...inpageVersions.map((v, i) => [`src/inpage.ts (version #${i + 1})`, v])];
+for (const [where, v] of versionChecks) {
   if (v !== PKG_VERSION) {
     console.error(`✗ build aborted: version drift — package.json is ${PKG_VERSION} but ${where} is ${v}. Bump them in lockstep.`);
     process.exit(1);
   }
 }
-console.log(`✓ version sync: ${PKG_VERSION} (package.json == manifest == inpage)`);
+console.log(`✓ version sync: ${PKG_VERSION} (package.json == manifest == inpage ×${inpageVersions.length})`);
 
 // Source-host tripwire (NSPV-CLARVIS-MANIFEST-1 / H2): every hardcoded remote host the wallet FETCHES from —
 // name-history resolver sources + the SPV RPC/header origins (the `*_RPC` / `*_API` constants in wallet.ts) —

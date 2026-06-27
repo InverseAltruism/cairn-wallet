@@ -112,7 +112,7 @@ async function fillSendWarning(r: any) {
     // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
     // nxfer hands the name to a new owner — both carry an attacker-influenceable address that deserves the
     // same first-time / address-poisoning (look-alike) check as a transfer recipient.
-    if (rec && rec.t === "nset" && typeof rec.addr === "string") outs.push({ to: rec.addr });
+    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !/^(0x)?0{40}$/i.test(rec.addr)) outs.push({ to: rec.addr });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient — skip the poisoning check (0x0 sends are hard-blocked anyway)
     if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to });
   }
   try {

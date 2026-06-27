@@ -140,8 +140,15 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
       return `<b>.csd name claim</b><br>name: <code>${esc(r.name)}.csd</code>${r.salt !== undefined ? `<br><span class="dim">reveals a prior commit</span>` : ""}`;
     case "nxfer":
       return `<b>.csd name transfer</b><br>name: <code>${esc(r.name)}.csd</code><br>to: <code>${esc(r.to)}</code>`;
-    case "nset":
+    case "nset": {
+      // QA #4: a zero-address nset is the V23 "un-point" sentinel, NOT a send to 0x0 — render the clear
+      // semantics so the clear-sign is honest. The wallet can't know the landing height at sign time, so
+      // state both effects + the backstop (sends to a 0x0-resolving name are hard-refused regardless).
+      if (/^(0x)?0{40}$/i.test(String(r.addr ?? ""))) {
+        return `<b>.csd un-point (clear address record)</b><br>clears the resolver record on <code>${esc(r.name)}.csd</code> — at the V23 upgrade it falls back to its owner and drops out of your primary name. <span class="dim">Before V23 it would set the literal zero address; either way the wallet refuses any send to a 0x0-resolving name.</span>`;
+      }
       return `<b>.csd name → address record</b><br><code>${esc(r.name)}.csd</code> resolves to <code>${esc(r.addr)}</code>`;
+    }
     case "nrenew":
       return `<b>.csd name renewal</b><br>extends the lease on <code>${esc(r.name)}.csd</code>`;
     case "nprofile": {

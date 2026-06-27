@@ -214,6 +214,14 @@ async function assembleValueTx(
   // callers that own the fee value.
   if (!(fee > 0)) return { ok: false, error: "fee must be positive (the node enforces a minimum fee)", sighashMatch: false };
   if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${MAX_FEE / 1e8} CSD safety cap — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false };
+  // Refuse the zero address at the SINGLE place every value tx is assembled — send, sendMany,
+  // propose, attest, fillOffer and buildSignSubmit all route through here. A payment to 0x000…0 is an
+  // irrecoverable burn; the popup send form already blocks it, but the dApp send/sendMany/fillOffer paths
+  // bypass that form, so the universal backstop lives here (audit M1 / V23 nset-clear burn class). The
+  // node accepts a zero-address output, so this MUST be caught client-side. Change is always to self.
+  for (const o of outputs) {
+    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0) — these funds would be unrecoverable", sighashMatch: false };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
+  }
   const addr = addrFromPriv(priv);
   const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
   const sv = await selectVerified(rpc, addr, need);

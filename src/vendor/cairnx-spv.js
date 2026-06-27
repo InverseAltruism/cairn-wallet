@@ -3259,7 +3259,7 @@ var V20_HEIGHT = 38400;
 var V21_HEIGHT = 40100;
 var MAX_OFFER_EPOCHS = 168;
 var V22_HEIGHT = 41300;
-var V23_HEIGHT = 43500;
+var V23_HEIGHT = 52e3;
 var ZERO_ADDR = "0x" + "00".repeat(20);
 var PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
 var PROFILE_MAX_KEYS = 16;
@@ -3514,6 +3514,9 @@ var nameSet = (r) => buildRecord({ v: 1, t: "nset", ...r });
 var nameRenew = (r) => buildRecord({ v: 1, t: "nrenew", ...r });
 var tokenMeta = (r) => buildRecord({ v: 1, t: "tmeta", ...r });
 var nameProfile = (r) => buildRecord({ v: 1, t: "nprofile", ...r });
+function ptAmt(v) {
+  return typeof v === "string" && AMOUNT_RE.test(v) ? BigInt(v) : 0n;
+}
 var ord = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function resolve(events, tipHeight) {
   const ordered = [...events].sort(
@@ -3624,7 +3627,7 @@ function resolve(events, tipHeight) {
     const v16 = ev.height >= V16_HEIGHT;
     const v19 = ev.height >= V19_HEIGHT;
     const v23 = ev.height >= V23_HEIGHT;
-    const feeToTreasury = ev.kind === "propose" ? BigInt((ev.paidTo ?? {})[TREASURY_ADDR] ?? "0") : 0n;
+    const feeToTreasury = ev.kind === "propose" ? ptAmt((ev.paidTo ?? {})[TREASURY_ADDR]) : 0n;
     if (ev.kind === "propose") {
       const rec = parseRecord(ev.uri, ev.payloadHash);
       if (!rec) {
@@ -4091,7 +4094,7 @@ function resolve(events, tipHeight) {
         const want = BigInt(o.want.value);
         const paidSoFar = BigInt(o.paid ?? "0");
         const remaining = want - paidSoFar;
-        const X = BigInt(pt[o.want.payto] ?? "0");
+        const X = ptAmt(pt[o.want.payto]);
         const minV = BigInt(o.min);
         const effMin = remaining < minV ? remaining : minV;
         if (X < effMin) {
@@ -4100,7 +4103,7 @@ function resolve(events, tipHeight) {
         }
         const x = X < remaining ? X : remaining;
         const fee = o.feeBps ? tradeFee(x, o.feeBps) : 0n;
-        if (BigInt(pt[TREASURY_ADDR] ?? "0") < fee) {
+        if (ptAmt(pt[TREASURY_ADDR]) < fee) {
           note(ev, ev.txid, "fill", false, "protocol fee unpaid");
           continue;
         }
@@ -4158,7 +4161,7 @@ function resolve(events, tipHeight) {
         addNeed(TREASURY_ADDR, fee);
         if (rebate > 0n) addNeed(o.seller, rebate);
         let unpaid;
-        for (const [addr, amt] of need) if (BigInt(pt[addr] ?? "0") < amt) {
+        for (const [addr, amt] of need) if (ptAmt(pt[addr]) < amt) {
           unpaid = addr === TREASURY_ADDR ? "protocol fee unpaid" : rebate > 0n && addr === o.seller ? "maker rebate unpaid (v1.6)" : "payment below want.value";
           break;
         }
@@ -4166,7 +4169,7 @@ function resolve(events, tipHeight) {
           note(ev, ev.txid, "fill", false, unpaid);
           continue;
         }
-        const paid = BigInt(pt[o.want.payto] ?? "0");
+        const paid = ptAmt(pt[o.want.payto]);
         if (isNameGive(o.give)) {
           const n = names.get(o.give.name);
           if (!n) {

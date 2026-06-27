@@ -75,8 +75,9 @@ function clearSendDrafts() {
   for (const id of ["s-to", "s-amt", "ts-to", "ts-amt"]) { const el = document.getElementById(id) as HTMLInputElement | null; if (el) { el.value = ""; el.disabled = false; } }
   // also tear down any FROZEN review (a primed Confirm panel must not survive the lock boundary, or a click on
   // unlock would sign the stale snapshot). Null the snapshots + hide both confirm panels.
-  reviewed = null; reviewedSend = null;
+  reviewed = null; reviewedSend = null; reviewedNameAct = null;
   for (const id of ["send-confirm", "tsend-confirm"]) { const el = document.getElementById(id); if (el) (el as HTMLElement).hidden = true; }
+  { const el = document.getElementById("name-action-form"); if (el) (el as HTMLElement).hidden = true; }   // the name renew/primary review panel signs real CSD — never let a primed one survive a lock
 }
 async function render() {
   const st = await call("status");
@@ -270,26 +271,54 @@ async function renderAssets() {
   el.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
 }
 
-// Two-click confirm (the popup has no modal): first click arms + shows the cost, second runs it.
-let pendingNameAct: { kind: string; name: string } | null = null;
+// One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
+// A name renew / set-primary spends real CSD, so it must be reviewable and declinable like every other
+// value-moving action — NOT signed from an easy-to-miss inline message. `reviewedNameAct` is the frozen
+// snapshot the Confirm button signs (torn down on lock by clearSendDrafts, so a primed panel can't survive
+// a lock/unlock — and wallet.must() throws if a click somehow lands while locked).
+let reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number } | null = null;
+let nameActSeq = 0;   // QA #18: supersede stale async continuations — a newer invocation bumps this; older ones abort after their awaits
 async function confirmNameAction(kind: "renew" | "primary", name: string) {
-  if (pendingNameAct && pendingNameAct.kind === kind && pendingNameAct.name === name) { pendingNameAct = null; return doNameAction(kind, name); }
-  pendingNameAct = { kind, name };
-  // v1.8: the renewal fee is height-gated, so the background prices it at the CURRENT tip — the same fee
-  // cairnxNameRenew will sign (WL-V18-1: never display the stale pre-V18 curve while signing the V18 fee).
-  let cost = "0.25 CSD anchor";
+  const seq = ++nameActSeq;
+  reviewedNameAct = null;
+  openPanel("name-action-form");
+  ($("name-action-form") as HTMLElement).hidden = false;   // always SHOW the review — openPanel toggles, and a name action must never toggle the panel closed
+  $("nc-action").textContent = kind === "renew" ? "Renew lease" : "Set primary name";
+  $("nc-name").textContent = `${name}.csd`;
+  $("nc-anchor").textContent = (CAIRNX_FEE / 1e8) + " CSD";
+  // renew also pays a height-gated registration fee to the treasury; set-primary is anchor-only. The fee is
+  // priced at the CURRENT tip — the same one cairnxNameRenew signs (WL-V18-1: never show a stale fee curve).
+  let renewFee = 0;
   if (kind === "renew") {
-    const feeBase = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
-    cost = feeBase ? `${feeBase / 1e8} CSD + 0.25 anchor` : "fee + 0.25 anchor";
+    renewFee = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
+    if (seq !== nameActSeq) return;   // a newer name action superseded this one — don't clobber its panel/snapshot
+    ($("nc-fee-row") as HTMLElement).hidden = false;
+    $("nc-fee").textContent = renewFee ? (renewFee / 1e8) + " CSD" : "priced at confirm";
+  } else {
+    ($("nc-fee-row") as HTMLElement).hidden = true;
   }
-  msg(`click again to confirm: ${kind === "renew" ? "renew" : "set primary for"} ${name}.csd (${cost})`, "info");
-  setTimeout(() => { if (pendingNameAct && pendingNameAct.name === name && pendingNameAct.kind === kind) pendingNameAct = null; }, 6000);
+  const total = CAIRNX_FEE + renewFee;
+  $("nc-total").textContent = (total / 1e8) + " CSD";
+  let after = "";
+  try { const b = await call("balance"); after = ((b.confirmed - total) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD"; } catch { /* offline */ }
+  if (seq !== nameActSeq) return;   // superseded after the balance fetch — abort before priming the snapshot
+  $("nc-after").textContent = after || "—";
+  $("nc-note").textContent = kind === "renew"
+    ? "Extends this name's lease by one term. Anyone may renew a live lease."
+    // QA #5: the wallet's set-primary is a single nset→self — it makes the name primary only if it's your
+    // OLDEST self-pointing name. Switching from an older name needs the multi-step flow on the website.
+    : "Points this name at you (its reverse record). If it's your oldest such name it becomes your primary; to switch from an older name, use cairn-substrate.com/names.";
+  reviewedNameAct = { kind, name, total };
+  msg("");
 }
-async function doNameAction(kind: "renew" | "primary", name: string) {
+async function doNameAction() {
+  if (!reviewedNameAct) return;
+  const { kind, name } = reviewedNameAct;
+  reviewedNameAct = null;                                   // consume the snapshot: one Confirm = one signature
   try {
     busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
     const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name);
-    if (r.ok) { msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (settles ~1 block)`, "ok"); refreshBalance(); renderAssets(); }
+    if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (settles ~1 block)`, "ok"); refreshBalance(); renderAssets(); }
     else msg(`${kind === "renew" ? "renew" : "set primary"} failed: ${r.error || "?"}`, "err");
   } catch (e: any) { msg(e.message, "err"); }
 }
@@ -481,7 +510,7 @@ $("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
-const PANELS = ["accts-panel", "send-form", "tsend-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
+const PANELS = ["accts-panel", "send-form", "tsend-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
 // Best-effort clipboard hygiene for a copied key/phrase (audit KEY-6): when the reveal panel closes
 // (switch/close/popup-unload), clear the clipboard IFF it still holds the secret we copied — so we never
@@ -509,6 +538,7 @@ function openPanel(id: string): boolean {
   for (const p of PANELS) ($(p) as HTMLElement).hidden = true;
   ($("send-confirm") as HTMLElement).hidden = true;
   ($("tsend-confirm") as HTMLElement).hidden = true;
+  reviewedNameAct = null;                        // switching views drops any primed name renew/set-primary snapshot
   resetRevealPanel(); resetPhrasePanel();
   if (willOpen) ($(id) as HTMLElement).hidden = false;
   return willOpen;
@@ -814,6 +844,12 @@ $("btn-send-confirm").addEventListener("click", async () => {
       refreshBalance();
     } else msg("send failed: " + (r.error || "?"), "err");
   } catch (e: any) { msg(e.message, "err"); }
+});
+$("btn-name-confirm").addEventListener("click", () => doNameAction());
+$("btn-name-cancel").addEventListener("click", () => {
+  ($("name-action-form") as HTMLElement).hidden = true;
+  reviewedNameAct = null;
+  msg("");
 });
 $("btn-post").addEventListener("click", async () => {
   const sel = ($("p-domain") as HTMLSelectElement).value;
