@@ -63,6 +63,14 @@ export function buildTransfer(p: { ticker: string; amount: string; to: string })
   const to = String(p.to || "").toLowerCase();
   if (!isTicker(p.ticker)) throw new Error("invalid ticker (A-Z0-9, 3-12 chars, starts with a letter)");
   if (!isAddr(to)) throw new Error("recipient must be a 0x… 20-byte address");
+  // Defense-in-depth backstop at the record builder, parity with the CSD 0x0 burn-guard (node.ts
+  // assembleValueTx) and the popup's resolveRecipient refusal: a token transfer to the zero address has
+  // no key that can ever spend it (there are no protocol burn semantics), so it is an irrecoverable
+  // loss. buildTransfer is popup-only (cairnxTransfer is not a dApp method) and the popup already
+  // refuses 0x0 before reaching here, so this adds no friction to any legit flow; it just makes the
+  // builder self-protecting against a future caller that skips the UI check. `to` is already lowercased
+  // 0x+40hex here, so the exact form suffices.
+  if (/^0x0{40}$/.test(to)) throw new Error("refusing to send tokens to the zero address — they would be unrecoverable");
   if (parseAmount(p.amount) === null) throw new Error("amount must be a positive integer of base units");
   const record = { v: 1, t: "transfer", ticker: p.ticker, amount: p.amount, to };
   const uri = canonicalJson(record);

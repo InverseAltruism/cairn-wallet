@@ -36,6 +36,8 @@ const ADDR_CD = "0x" + "cd".repeat(20);
   const rej = (p: any) => { try { buildTransfer(p); return false; } catch { return true; } };
   check("buildTransfer rejects a bad ticker", rej({ ticker: "no", amount: "1", to: ADDR_AB }) && rej({ ticker: "1ABC", amount: "1", to: ADDR_AB }));
   check("buildTransfer rejects a bad recipient", rej({ ticker: "TKN", amount: "1", to: "0x1234" }));
+  check("buildTransfer rejects the zero address (token 0x0 burn-guard, parity with the CSD guard)",
+    rej({ ticker: "TKN", amount: "1", to: "0x" + "0".repeat(40) }));
   check("buildTransfer rejects zero / negative / non-integer / leading-zero amounts",
     rej({ ticker: "TKN", amount: "0", to: ADDR_AB }) && rej({ ticker: "TKN", amount: "-1", to: ADDR_AB })
     && rej({ ticker: "TKN", amount: "1.5", to: ADDR_AB }) && rej({ ticker: "TKN", amount: "01", to: ADDR_AB }));
