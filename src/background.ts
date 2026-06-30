@@ -79,6 +79,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "removeAccount": return wallet.removeAccount(args[0]);
     case "balance": return wallet.balance();
     case "epoch": return wallet.epoch();
+    case "tip": return wallet.tip();
     case "propose": return wallet.propose(args[0]);
     case "attest": return wallet.attest(args[0]);
     case "send": return wallet.send(args[0], args[1], args[2]);
@@ -90,7 +91,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "resolveName": return wallet.resolveName(args[0]);
     case "verifyName": return wallet.verifyName(args[0]);
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
-    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0]);
+    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1]);
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0]);
     case "setTradeApi": return wallet.setTradeApi(args[0]);
@@ -121,24 +122,31 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
   }
 }
 
-async function resolvePending(id: string, approve: boolean, displayedSigner?: string): Promise<{ done: boolean }> {
+async function resolvePending(id: string, approve: boolean, displayedSigner?: string): Promise<{ done: boolean; ok?: boolean; error?: string; txid?: string }> {
   const p = pending.get(id);
   if (!p) return { done: false };
   pending.delete(id);
   try { chrome.action?.setBadgeText?.({ text: pending.size ? String(pending.size) : "" }); } catch { /* no-op */ }
-  if (!approve) { p.resolve({ ok: false, error: "rejected by user" }); return { done: true }; }
+  // POPUP-OUTCOME-1: resolve the dApp promise (UNCHANGED) AND report the TRUE action outcome back to the
+  // approval popup, so it shows "sent ✓" / "failed: …" instead of a blanket "approved" when the signed action
+  // actually failed (locked, account-switch, a network/guard reject, or a soft {ok:false} builder result).
+  const finish = (out: { ok: boolean; result?: any; error?: string }): { done: boolean; ok: boolean; error?: string; txid?: string } => {
+    p.resolve(out);
+    const actionOk = out.ok && (out.result?.ok !== false);
+    return { done: true, ok: actionOk, error: out.error ?? (out.result?.ok === false ? out.result?.error : undefined), txid: out.result?.txid };
+  };
+  if (!approve) return finish({ ok: false, error: "rejected by user" });
   try {
     const st = await wallet.status();
     // unlocked implies a loaded key/address; the explicit addr check makes the invariant
     // visible to the type system (st.addr is string|null before unlock)
-    if (!st.unlocked || !st.addr) { p.resolve({ ok: false, error: "wallet locked" }); return { done: true }; }
+    if (!st.unlocked || !st.addr) return finish({ ok: false, error: "wallet locked" });
     // M5 (account-switch mid-approval — WYSIWYS on the SIGNER): the approval window passes the account it
     // DISPLAYED ("signing as …"). If the active account changed between review and approve (e.g. the user
     // switched accounts in the toolbar popup after the window rendered), refuse rather than silently sign/
     // disclose with the now-active account the user did NOT review. Fail-closed → reopen + re-review.
     if (typeof displayedSigner === "string" && displayedSigner && displayedSigner.toLowerCase() !== String(st.addr).toLowerCase()) {
-      p.resolve({ ok: false, error: "the active account changed since you reviewed this request — reopen it and review again before approving" });
-      return { done: true };
+      return finish({ ok: false, error: "the active account changed since you reviewed this request — reopen it and review again before approving" });
     }
     let result: any;
     if (p.method === "connect" || p.method === "getAddress") {
@@ -156,7 +164,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "signin") {
       // defense-in-depth: the queue gate (AUTH-LEGACY-1) already blocks third-party signin, but
       // never run the session-minting legacy path for a non-first-party origin even if queued.
-      if (!wallet.isFirstPartyOrigin(p.origin)) { p.resolve({ ok: false, error: "signIn() is first-party only; use signInWithCsd()." }); return { done: true }; }
+      if (!wallet.isFirstPartyOrigin(p.origin)) return finish({ ok: false, error: "signIn() is first-party only; use signInWithCsd()." });
       result = await wallet.signIn();
     }
     // Audience-bound SIWC for third parties: the wallet builds the message from the ATTESTED origin
@@ -183,9 +191,8 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // and change only ever returns to the wallet's own address.
     else if (p.method === "fillOffer") result = await wallet.fillOffer(p.params);
     else throw new Error("unsupported dApp method: " + p.method);
-    p.resolve({ ok: true, result });
-  } catch (e: any) { p.resolve({ ok: false, error: e?.message ?? String(e) }); }
-  return { done: true };
+    return finish({ ok: true, result });
+  } catch (e: any) { return finish({ ok: false, error: e?.message ?? String(e) }); }
 }
 
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
@@ -199,7 +206,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

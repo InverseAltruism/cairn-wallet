@@ -2,6 +2,7 @@
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
 import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
+import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 declare const process: { exit(code: number): void };
 
 let pass = 0, fail = 0;
@@ -153,6 +154,19 @@ ok("BIDI-1: a bidi-override (U+202E) is neutralized to a visible token (not pass
 ok("BIDI-1: a zero-width char (U+200B) is neutralized", escapeHtml("a\u200Bb") === "a\\u200Bb");
 ok("BIDI-1: an RLI isolate (U+2067) is neutralized", escapeHtml("x\u2067y") === "x\\u2067y");
 ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alice.csd") === "alice.csd" && escapeHtml("0x" + "ab".repeat(20)) === "0x" + "ab".repeat(20));
+
+// CLEARSIGN-FEE-1 — a dApp-built .csd renewal that UNDERPAYS the length-graded fee must warn (fund-loss with
+// no benefit: the fee leaves the wallet but the resolver no-ops the underpaid record). "audit" (5 chars) costs
+// 5 CSD at V24 (tip ≥ V24_HEIGHT=49200) but only the 3 CSD V18 price below it.
+{
+  const ren = buildNameRenew({ name: "audit" });
+  const mk = (treasuryVal: number, tip?: number) => describe({ method: "propose", currentTip: tip,
+    params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
+  ok("FEE-1: underpaid renewal (3 CSD where V24 needs 5) WARNS", /BELOW the current price/.test(mk(3e8, 49300)));
+  ok("FEE-1: correctly-paid renewal (5 CSD at V24) does NOT warn", !/BELOW the current price/.test(mk(5e8, 49300)));
+  ok("FEE-1: pre-V24 renewal paying the 3 CSD V18 price does NOT warn (no false alarm)", !/BELOW the current price/.test(mk(3e8, 44230)));
+  ok("FEE-1: offline (no tip) skips the fee check (no false warning)", !/BELOW the current price/.test(mk(3e8, undefined)));
+}
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

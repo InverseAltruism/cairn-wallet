@@ -36,6 +36,7 @@ async function render() {
   // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
   if (current.method === "propose" && (current.params || {}).expiresEpoch !== undefined) {
     try { const e = await call("epoch"); if (e != null) current.currentEpoch = e; } catch { /* offline */ }
+    try { const t = await call("tip"); if (t != null) current.currentTip = t; } catch { /* offline → fee-sufficiency check skipped */ }
   }
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
@@ -150,8 +151,14 @@ async function resolve(approve: boolean) {
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
   current = null; renderedId = null; renderedSigner = null;
-  await call("resolve", id, approve, signer); // background refuses if the active account changed since render
-  msg(approve ? "approved" : "rejected");
+  if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("rejected"); render(); return; }
+  msg("approving…");
+  // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
+  // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
+  let r: any; try { r = await call("resolve", id, true, signer); } catch (e: any) { r = { ok: false, error: e?.message }; }
+  if (r && r.ok === false) msg("failed: " + (r.error || "?"), "err");
+  else if (r && r.txid) msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
+  else msg("approved", "ok");
   render();
 }
 

@@ -276,7 +276,7 @@ async function renderAssets() {
 // value-moving action — NOT signed from an easy-to-miss inline message. `reviewedNameAct` is the frozen
 // snapshot the Confirm button signs (torn down on lock by clearSendDrafts, so a primed panel can't survive
 // a lock/unlock — and wallet.must() throws if a click somehow lands while locked).
-let reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number } | null = null;
+let reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number } | null = null;
 let nameActSeq = 0;   // QA #18: supersede stale async continuations — a newer invocation bumps this; older ones abort after their awaits
 async function confirmNameAction(kind: "renew" | "primary", name: string) {
   const seq = ++nameActSeq;
@@ -308,19 +308,30 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
     // QA #5: the wallet's set-primary is a single nset→self — it makes the name primary only if it's your
     // OLDEST self-pointing name. Switching from an older name needs the multi-step flow on the website.
     : "Points this name at you (its reverse record). If it's your oldest such name it becomes your primary; to switch from an older name, use cairn-substrate.com/names.";
-  reviewedNameAct = { kind, name, total };
+  reviewedNameAct = { kind, name, total, fee: renewFee };   // freeze the reviewed fee — doNameAction signs EXACTLY this
   msg("");
 }
 async function doNameAction() {
   if (!reviewedNameAct) return;
-  const { kind, name } = reviewedNameAct;
+  const { kind, name, fee } = reviewedNameAct;
   reviewedNameAct = null;                                   // consume the snapshot: one Confirm = one signature
   try {
     busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
-    const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name);
+    // WL-FEE-FREEZE-1: a renew signs EXACTLY the reviewed fee; the background throws FEE_CHANGED (without
+    // signing) if the tip crossed a fee-gate since review, so the user never signs a different amount.
+    const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee] : []));
     if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (settles ~1 block)`, "ok"); refreshBalance(); renderAssets(); }
     else msg(`${kind === "renew" ? "renew" : "set primary"} failed: ${r.error || "?"}`, "err");
-  } catch (e: any) { msg(e.message, "err"); }
+  } catch (e: any) {
+    const m = String(e?.message || e);
+    if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm — nothing was signed
+      const newFee = Number(m.slice("FEE_CHANGED:".length));
+      await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
+      msg(`renewal fee changed to ${(newFee / 1e8)} CSD since you reviewed — re-check and confirm again`, "err");  // …then explain
+      return;
+    }
+    msg(m, "err");
+  }
 }
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).

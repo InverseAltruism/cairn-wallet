@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, TREASURY_ADDR } from "../core/cairnx.js";
 
 // WYSIWYS-BIDI-1: neutralize Unicode bidi-override + zero-width / BOM controls BEFORE HTML-escaping, so a
 // dApp can't visually REORDER or HIDE characters in a displayed field (making a name/address/memo read
@@ -219,8 +219,25 @@ export function describe(r: any): string {
     const exp = p.expiresEpoch !== undefined ? `<br>${expiryLine(p.expiresEpoch, r.currentEpoch)}` : "";
     if (String(p.domain) === CAIRNX_DOMAIN) {
       const cx = cairnxDescribe(p.uri, p.payloadHash);
-      if (cx) return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, 1000000)}`
-        + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code>${exp}${xfer}`;
+      if (cx) {
+        // CLEARSIGN-FEE-1: a dApp-built .csd registration/renewal that UNDERPAYS the length-graded fee is a
+        // silent fund-loss-with-no-benefit (the fee leaves the wallet, but the resolver no-ops the underpaid
+        // record so the name is NOT registered/renewed). Warn loudly when the treasury fee output is below the
+        // current price. The wallet's OWN Renew button always prices correctly (WL-FEE-FREEZE-1); this guards
+        // the third-party-built path. Needs the live tip (threaded from approve.ts); skipped when offline.
+        let feeWarn = "";
+        const rec = decodeCairnxRecord(p.uri, p.payloadHash);
+        if (rec && (rec.t === "nrenew" || rec.t === "name") && typeof rec.name === "string" && r.currentTip != null) {
+          try {
+            const paid = outs.filter((o: any) => String(o.to).toLowerCase() === String(TREASURY_ADDR).toLowerCase())
+              .reduce((a: number, o: any) => a + baseVal(o.value), 0);
+            const need = Number(nameRegFee(rec.name as string, buildFeeHeight(Number(r.currentTip))));
+            if (need > 0 && paid < need) feeWarn = `<br><b class="err">⚠ the ${rec.t === "nrenew" ? "renewal" : "registration"} fee here (${fmtCsd(paid)}) is BELOW the current price (${fmtCsd(need)}). If you sign this, the fee LEAVES your wallet but the name is NOT ${rec.t === "nrenew" ? "renewed" : "registered"} — an underpaid record is rejected on-chain. Use the wallet's own Renew button (it prices this correctly).</b>`;
+          } catch { /* tip/fee unavailable → no warning */ }
+        }
+        return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, 1000000)}`
+          + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code>${exp}${xfer}${feeWarn}`;
+      }
     }
     return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee, 1000000)}`
       + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>${exp}${xfer}`;
