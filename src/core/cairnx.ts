@@ -15,7 +15,7 @@ import { utf8ToBytes } from "@noble/hashes/utils";
 import {
   // constants
   DOMAIN, MIN_FEE_PROPOSE, TREASURY_ADDR,
-  FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT,
+  FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V24_HEIGHT,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, AMOUNT_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
   // functions
@@ -32,10 +32,12 @@ export const cairnxTradeFee = tradeFee;
 export const cairnxMakerRebate = makerRebate;
 export const cairnxPayloadHash = (record: unknown): string => payloadHash(record);
 export { nameRegFee };
-// V18-1 build heuristic (app-side, NOT a resolver rule): a renewal fee built just below V18 but mined at/
-// after it underpays → reject + treasury-fee forfeit. Within a small margin below the gate, price the BUILD
-// at V18 (overpay always accepted). Mirrors helpers.js buildFeeHeight.
-export const buildFeeHeight = (tip: number): number => (tip < V18_HEIGHT && tip >= V18_HEIGHT - 5) ? V18_HEIGHT : tip;
+// name-fee build heuristic (app-side, NOT a resolver rule): a renewal fee built just below a fee gate but mined
+// at/after it underpays → reject + treasury-fee forfeit. Within a small margin below ANY upcoming fee gate
+// (V18, V24, …) price the BUILD at that gate (overpay always accepted, the resolver gate is strict `<`). Mirrors
+// helpers.js buildFeeHeight.
+const NAME_FEE_GATES = [V18_HEIGHT, V24_HEIGHT];
+export const buildFeeHeight = (tip: number): number => { for (const g of NAME_FEE_GATES) if (tip < g && tip >= g - 5) return g; return tip; };
 
 // Single source of truth for the .csd name syntax. `isPlainName` is the syntax-only check used before a name
 // reaches a URL (NO reserved-name check — that is the registrar's, not the parser's).

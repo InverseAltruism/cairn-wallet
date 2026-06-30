@@ -3254,6 +3254,11 @@ var DEPLOY_FEE = 1e8;
 var V18_HEIGHT = 4e4;
 var NAME_FEE_SHORT_V18 = 670000000n;
 var NAME_FEE_V18 = 300000000n;
+var V24_HEIGHT = 49200;
+var NAME_FEE_LEN3_V24 = 1500000000n;
+var NAME_FEE_LEN4_V24 = 1000000000n;
+var NAME_FEE_MID_V24 = 500000000n;
+var NAME_FEE_LONG_V24 = 300000000n;
 var V19_HEIGHT = 36700;
 var V20_HEIGHT = 38400;
 var V21_HEIGHT = 40100;
@@ -3265,6 +3270,13 @@ var PKEY = /^[a-z0-9](?:[a-z0-9.-]{0,30}[a-z0-9])?$/;
 var PROFILE_MAX_KEYS = 16;
 var PROFILE_MAX_VALUE_BYTES = 256;
 function nameRegFee(name, height) {
+  if (height >= V24_HEIGHT) {
+    const ln = name.length;
+    if (ln <= 3) return NAME_FEE_LEN3_V24;
+    if (ln === 4) return NAME_FEE_LEN4_V24;
+    if (ln <= 9) return NAME_FEE_MID_V24;
+    return NAME_FEE_LONG_V24;
+  }
   if (height >= V18_HEIGHT) return name.length <= 4 ? NAME_FEE_SHORT_V18 : NAME_FEE_V18;
   const n = name.length;
   if (n <= 3) return 500000000n;
@@ -4319,6 +4331,10 @@ export {
   MINT_KEYS,
   MIN_FEE_ATTEST,
   MIN_FEE_PROPOSE,
+  NAME_FEE_LEN3_V24,
+  NAME_FEE_LEN4_V24,
+  NAME_FEE_LONG_V24,
+  NAME_FEE_MID_V24,
   NAME_FEE_SHORT_V18,
   NAME_FEE_V18,
   NAME_GRACE_EPOCHS,
@@ -4355,6 +4371,7 @@ export {
   V21_HEIGHT,
   V22_HEIGHT,
   V23_HEIGHT,
+  V24_HEIGHT,
   ZERO_ADDR,
   addrFromPub,
   bid,

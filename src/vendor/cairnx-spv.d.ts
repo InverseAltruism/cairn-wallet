@@ -54,6 +54,7 @@ export const REBATE_BPS: number;
 export const REBATE_FLAT: bigint;
 export const V16_HEIGHT: number;
 export const V18_HEIGHT: number;
+export const V24_HEIGHT: number;   // v2.4 name-fee gate (imported by core/cairnx.ts buildFeeHeight)
 export const NAME_RE: RegExp;
 export const PKEY: RegExp;
 export const TICKER_RE: RegExp;
