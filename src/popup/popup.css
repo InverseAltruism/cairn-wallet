@@ -171,6 +171,8 @@ button:active:not(:disabled){transform:translateY(1px)}
 .na-lease{font-size:10px;white-space:nowrap}
 .name-asset.grace .na-lease{color:var(--ink)}
 .name-asset.lapsed .na-lease{color:var(--red)}
+.name-asset.pending .na-name{color:var(--cyan)}
+.name-asset.pending .na-lease{color:var(--cyan)}
 .na-acts{display:flex;align-items:center;gap:2px;white-space:nowrap}
 .na-acts .mini{margin:0 0 0 4px}
 .na-acts a.mini{text-decoration:none;color:var(--cyan);border:1px solid var(--line);border-radius:4px;padding:3px 6px}

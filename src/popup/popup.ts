@@ -250,10 +250,16 @@ async function renderAssets() {
   // .csd names: identity + lease state + inline renew / set-primary + manage on /trade
   const nameRows = details.length ? `<div class="names-head"><span class="label">.csd names</span></div>` + details.map((n) => {
     const nm = String(n.name);
-    const isPrimary = nm === primary;
-    const lease = leaseLabel(n);
-    const cls = n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
-    const acts = n.lapsed
+    const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized — no owner actions
+    const isPrimary = !isPending && nm === primary;
+    const lease = isPending ? "finalizing · complete on site" : leaseLabel(n);
+    const cls = isPending ? " pending" : n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
+    // A pending reservation MUST be non-actionable here: renew / set-primary on it broadcast a fee the
+    // resolver rejects on a pending record (nrenew/nset both reject `if (n.pending)`) — an honest self-burn
+    // of the anchor + up to the reg fee. Surface only a link to finish the reveal on /trade.
+    const acts = isPending
+      ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">finalize ↗</a>`
+      : n.lapsed
       ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">recapture ↗</a>`
       : `<button class="mini" data-nrenew="${escapeHtml(nm)}">renew</button>${isPrimary ? "" : `<button class="mini" data-nprimary="${escapeHtml(nm)}">★ primary</button>`}<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">⋯</a>`;
     return `<div class="name-asset${cls}">
