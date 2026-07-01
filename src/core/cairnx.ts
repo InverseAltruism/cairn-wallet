@@ -15,7 +15,7 @@ import { utf8ToBytes } from "@noble/hashes/utils";
 import {
   // constants
   DOMAIN, MIN_FEE_PROPOSE, TREASURY_ADDR,
-  FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V24_HEIGHT,
+  FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V24_HEIGHT, V25_HEIGHT,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, AMOUNT_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
   // functions
@@ -25,7 +25,7 @@ import {
 // ── app constants (re-exported under the wallet's historical names) ───────────
 export const CAIRNX_DOMAIN = DOMAIN;                 // "cairnx:v1"
 export const CAIRNX_PROPOSE_FEE = MIN_FEE_PROPOSE;   // 0.25 CSD — the convention's anchor fee floor
-export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, NAME_RE, canonicalJson };
+export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, NAME_RE, canonicalJson };
 // v1.6 fee/rebate: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; these
 // just compute the fee/rebate for clear-sign display. Byte-identical to cairnx-core (callers pass bigint).
 export const cairnxTradeFee = tradeFee;
@@ -101,6 +101,13 @@ export function buildNameClaim(p: { name: string; salt?: string }): BuiltCairnxR
   return buildNameRecord(p.salt ? { v: 1, t: "name", name: p.name, salt: p.salt } : { v: 1, t: "name", name: p.name });
 }
 export const buildNameReveal = (p: { name: string; salt: string }): BuiltCairnxRecord => buildNameClaim(p);
+/** v2.5 winner-only register finalize (salt MANDATORY; carries the reg fee). At height >= V25 the `name` reveal
+ *  is payment-free and this is what actually pays + completes the registration, once the contest has frozen. */
+export function buildNameFinalize(p: { name: string; salt: string }): BuiltCairnxRecord {
+  if (!isName(p.name)) throw new Error("invalid name (lowercase a-z 0-9 hyphen, 1-32, not reserved)");
+  if (!isSalt(p.salt)) throw new Error("invalid salt");
+  return buildNameRecord({ v: 1, t: "nfinalize", name: p.name, salt: p.salt });
+}
 export function buildNameRenew(p: { name: string }): BuiltCairnxRecord {
   if (!isName(p.name)) throw new Error("invalid name");
   return buildNameRecord({ v: 1, t: "nrenew", name: p.name });

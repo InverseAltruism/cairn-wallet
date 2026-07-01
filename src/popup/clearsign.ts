@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, TREASURY_ADDR } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, TREASURY_ADDR, V25_HEIGHT } from "../core/cairnx.js";
 
 // WYSIWYS-BIDI-1: neutralize Unicode bidi-override + zero-width / BOM controls BEFORE HTML-escaping, so a
 // dApp can't visually REORDER or HIDE characters in a displayed field (making a name/address/memo read
@@ -137,7 +137,9 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
     case "ncommit":
       return `<b>.csd name commit</b> — reserves a sealed name claim (revealed later)<br>commit: <code>${esc(r.commit)}</code>`;
     case "name":
-      return `<b>.csd name claim</b><br>name: <code>${esc(r.name)}.csd</code>${r.salt !== undefined ? `<br><span class="dim">reveals a prior commit</span>` : ""}`;
+      return `<b>.csd name claim</b><br>name: <code>${esc(r.name)}.csd</code>${r.salt !== undefined ? `<br><span class="dim">reveals a prior commit</span>` : ""}<br><span class="dim">at the v2.5 upgrade this reveal is free (reserves the name); the registration fee is charged at the final confirm, and only if you win — so a lost race never charges the fee.</span>`;
+    case "nfinalize":
+      return `<b>.csd registration — final confirm</b><br>name: <code>${esc(r.name)}.csd</code><br>completes your reservation and pays the registration fee. Only the winner of the name pays; charged once.`;
     case "nxfer":
       return `<b>.csd name transfer</b><br>name: <code>${esc(r.name)}.csd</code><br>to: <code>${esc(r.to)}</code>`;
     case "nset": {
@@ -227,12 +229,20 @@ export function describe(r: any): string {
         // the third-party-built path. Needs the live tip (threaded from approve.ts); skipped when offline.
         let feeWarn = "";
         const rec = decodeCairnxRecord(p.uri, p.payloadHash);
-        if (rec && (rec.t === "nrenew" || rec.t === "name") && typeof rec.name === "string" && r.currentTip != null) {
+        // under v2.5 the `name` reveal is PAYMENT-FREE (the fee moves to `nfinalize`), so the fee-bearing record
+        // is nrenew, nfinalize, or a PRE-v2.5 `name`. An underpaid nfinalize burns exactly like an underpaid
+        // pre-v2.5 registration (the fee leaves, the name is not registered), so it gets the same loud warning.
+        const tipNow = r.currentTip != null ? Number(r.currentTip) : null;
+        const feeBearing = !!rec && typeof rec.name === "string" && tipNow != null &&
+          (rec.t === "nrenew" || rec.t === "nfinalize" || (rec.t === "name" && tipNow < V25_HEIGHT));
+        if (feeBearing && rec) {
           try {
             const paid = outs.filter((o: any) => String(o.to).toLowerCase() === String(TREASURY_ADDR).toLowerCase())
               .reduce((a: number, o: any) => a + baseVal(o.value), 0);
-            const need = Number(nameRegFee(rec.name as string, buildFeeHeight(Number(r.currentTip))));
-            if (need > 0 && paid < need) feeWarn = `<br><b class="err">⚠ the ${rec.t === "nrenew" ? "renewal" : "registration"} fee here (${fmtCsd(paid)}) is BELOW the current price (${fmtCsd(need)}). If you sign this, the fee LEAVES your wallet but the name is NOT ${rec.t === "nrenew" ? "renewed" : "registered"} — an underpaid record is rejected on-chain. Use the wallet's own Renew button (it prices this correctly).</b>`;
+            const need = Number(nameRegFee(rec.name as string, buildFeeHeight(tipNow!)));
+            const noun = rec.t === "nrenew" ? "renewal" : "registration";
+            const verb = rec.t === "nrenew" ? "renewed" : "registered";
+            if (need > 0 && paid < need) feeWarn = `<br><b class="err">⚠ the ${noun} fee here (${fmtCsd(paid)}) is BELOW the current price (${fmtCsd(need)}). If you sign this, the fee LEAVES your wallet but the name is NOT ${verb} — an underpaid record is rejected on-chain. Use the wallet's own button (it prices this correctly).</b>`;
           } catch { /* tip/fee unavailable → no warning */ }
         }
         return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, 1000000)}`

@@ -55,6 +55,7 @@ export const REBATE_FLAT: bigint;
 export const V16_HEIGHT: number;
 export const V18_HEIGHT: number;
 export const V24_HEIGHT: number;   // v2.4 name-fee gate (imported by core/cairnx.ts buildFeeHeight)
+export const V25_HEIGHT: number;   // v2.5 sealed-reservation gate (clearsign fee-warning: name reveal is free at V25)
 export const NAME_RE: RegExp;
 export const PKEY: RegExp;
 export const TICKER_RE: RegExp;
