@@ -201,6 +201,11 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   const rec = state.names[name];
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
   if (rec.expired) return { ok: false, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
+  // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized —
+  // it confers no address and is not an owned name yet. Fail CLOSED (never resolve it to the owner) so a name
+  // that is only reserved, or whose promoting `nfinalize` is being withheld from the hint set, can never be a
+  // send target. A finalized name is not pending (nfinalize clears the flag), so this only blocks true reserves.
+  if (rec.pending) return { ok: false, reason: `${name}.csd is a reservation that has not been finalized on-chain yet — refusing to send` };
   return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1), viaFill: !!rec.viaFill };
 }
 

@@ -40,7 +40,7 @@ export function verifyMerkleProof(txid: string, pos: number, branch: string[], r
 export function addrFromPub(pub: string): string;
 export function verifyDigest(sig: string, pub: string, digest: string): boolean;
 // THE audited CairnX resolver, reused (never re-typed). Returns canonical state; we read .names[name].
-export function resolve(events: unknown[], tipHeight: number): { names: Record<string, { owner: string; addr?: string; expired?: boolean; viaFill?: boolean; effectiveHeight: number; height: number; claimId: string }>;[k: string]: unknown };
+export function resolve(events: unknown[], tipHeight: number): { names: Record<string, { owner: string; addr?: string; expired?: boolean; viaFill?: boolean; pending?: boolean; finalizeBy?: number; effectiveHeight: number; height: number; claimId: string }>;[k: string]: unknown };
 
 // ── CairnX convention surface (cairnx-core) — imported by core/cairnx.ts instead of a hand-typed copy
 // (shared-core de-dup, cairn docs/Plans/46). The bundle already inlines all of cairnx-core to serve
