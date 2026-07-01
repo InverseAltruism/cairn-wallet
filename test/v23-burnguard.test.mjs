@@ -8,7 +8,7 @@
 // Run: tsx test/v23-burnguard.test.mjs
 import { send, sendMany, fillOffer, propose } from "../src/core/node.js";
 import { buildNameClaim, buildNameSet, TREASURY_ADDR } from "../src/core/cairnx.ts";
-import { resolve, V23_HEIGHT, ZERO_ADDR } from "../src/vendor/cairnx-spv.js";   // pull the gate height from the bundle so this test self-maintains when the release height changes
+import { resolve, V23_HEIGHT, V25_HEIGHT, ZERO_ADDR } from "../src/vendor/cairnx-spv.js";   // pull the gate heights from the bundle so this test self-maintains when the release heights change
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? pass++ : fail++; console.log(`  ${c ? "✓" : "✗"} ${n}`); };
@@ -40,13 +40,16 @@ console.log("B. vendored resolver carries the V23 clear branch (regression guard
 
   // gate boundary comes straight from the vendored bundle (self-maintaining across a release height change).
   const V23 = V23_HEIGHT;
+  // register BELOW V25 so the name is a real pay-now OWNED name (at >=V25 a `name` reveal is a payment-free
+  // reservation, not owned, so nset/clear would no-op); the nset->0x0 still happens at the V23 boundary.
+  const REG_H = Math.min(V25_HEIGHT, V23_HEIGHT) - 100;
   // above the gate: register, self-point, then clear → addr must be UNDEFINED (resolves to owner)
-  const up = []; reg(up, "swap", V23 + 10); set(up, "swap", D, V23 + 12); set(up, "swap", ZERO, V23 + 14);
+  const up = []; reg(up, "swap", REG_H); set(up, "swap", D, V23 + 12); set(up, "swap", ZERO, V23 + 14);
   const sUp = resolve(up, V23 + 20).names["swap"];
   ok("≥V23 nset→0x0 CLEARS addr (undefined)", sUp && sUp.addr === undefined && sUp.owner === D);
 
   // below the gate: the SAME clear keeps the literal zero (pre-V23 behavior, byte-identical to 0.1.20)
-  const dn = []; reg(dn, "swap2", V23 - 40); set(dn, "swap2", D, V23 - 38); set(dn, "swap2", ZERO, V23 - 36);
+  const dn = []; reg(dn, "swap2", REG_H); set(dn, "swap2", D, V23 - 38); set(dn, "swap2", ZERO, V23 - 36);
   const sDn = resolve(dn, V23 - 20).names["swap2"];
   ok("<V23 nset→0x0 keeps literal zero (old behavior)", sDn && String(sDn.addr).toLowerCase() === ZERO);
 }
