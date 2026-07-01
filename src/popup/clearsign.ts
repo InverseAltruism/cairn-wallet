@@ -139,7 +139,7 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
     case "name":
       return `<b>.csd name claim</b><br>name: <code>${esc(r.name)}.csd</code>${r.salt !== undefined ? `<br><span class="dim">reveals a prior commit</span>` : ""}<br><span class="dim">at the v2.5 upgrade this reveal is free (reserves the name); the registration fee is charged at the final confirm, and only if you win — so a lost race never charges the fee.</span>`;
     case "nfinalize":
-      return `<b>.csd registration — final confirm</b><br>name: <code>${esc(r.name)}.csd</code><br>completes your reservation and pays the registration fee. Only the winner of the name pays; charged once.`;
+      return `<b>.csd — final confirm</b><br>name: <code>${esc(r.name)}.csd</code><br>completes your reservation and pays the fee shown below (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner of the name pays; charged once — a lost race is never charged.`;
     case "nxfer":
       return `<b>.csd name transfer</b><br>name: <code>${esc(r.name)}.csd</code><br>to: <code>${esc(r.to)}</code>`;
     case "nset": {

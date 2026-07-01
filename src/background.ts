@@ -248,7 +248,20 @@ function queueDappRequest(origin: string, method: string, params: any): Promise<
 }
 
 // forget the approval window once it closes, so the next request (or "Review") reopens it
-try { chrome.windows?.onRemoved?.addListener((wid: number) => { if (wid === approveWinId) approveWinId = null; }); } catch { /* no-op */ }
+try { chrome.windows?.onRemoved?.addListener((wid: number) => {
+  if (wid !== approveWinId) return;
+  approveWinId = null;
+  // POPUP-DISMISS-REJECT: the user closed the approval window with requests still queued. Settle those dApp
+  // promises as REJECTED (MetaMask parity) instead of leaving them hanging until the 24h GC (which stranded the
+  // page on an optimistic "waiting…" state — e.g. the phantom "commitment placed" card). An APPROVED request is
+  // already removed from `pending` by resolvePending before the window closes, and approve.ts only auto-closes
+  // the window once the queue is EMPTY, so this rejects exactly the genuinely un-actioned requests.
+  if (pending.size) {
+    for (const [, p] of pending) { try { p.resolve({ ok: false, error: "rejected (approval window closed)" }); } catch { /* no-op */ } }
+    pending.clear();
+    try { chrome.action?.setBadgeText?.({ text: "" }); } catch { /* no-op */ }
+  }
+}); } catch { /* no-op */ }
 
 chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: any) => void) => {
   (async () => {

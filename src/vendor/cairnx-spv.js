@@ -3300,6 +3300,7 @@ var REG_COMMIT_MAX_BLOCKS = 8;
 var REG_FINALIZE_GRACE_BLOCKS = 20;
 var MAX_PENDING_REG = 3;
 var FINALIZE_TIP_MARGIN = 2;
+var V26_HEIGHT = 1e7;
 var epochOf = (height) => Math.floor(height / EPOCH_LEN);
 var claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
 var claimWindowOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
@@ -3554,6 +3555,7 @@ function resolve(events, tipHeight) {
   const balances = /* @__PURE__ */ new Map();
   const names = /* @__PURE__ */ new Map();
   const commits = /* @__PURE__ */ new Map();
+  const recaptures = /* @__PURE__ */ new Map();
   const offers = /* @__PURE__ */ new Map();
   const offerLock = /* @__PURE__ */ new Map();
   const bids = /* @__PURE__ */ new Map();
@@ -3606,6 +3608,10 @@ function resolve(events, tipHeight) {
       const n = names.get(nm);
       if (n.pending && n.finalizeBy !== void 0 && height > n.finalizeBy) names.delete(nm);
     }
+    for (const nm of [...recaptures.keys()]) {
+      const r = recaptures.get(nm);
+      if (height > r.finalizeBy) recaptures.delete(nm);
+    }
   };
   const V15_EPOCH = epochOf(V15_HEIGHT);
   const paidThrough = (n) => n.paidThroughEpoch ?? V15_EPOCH + NAME_TERM_EPOCHS;
@@ -3657,6 +3663,7 @@ function resolve(events, tipHeight) {
     const v19 = ev.height >= V19_HEIGHT;
     const v23 = ev.height >= V23_HEIGHT;
     const v25 = ev.height >= V25_HEIGHT;
+    const v26 = ev.height >= V26_HEIGHT;
     const feeToTreasury = ev.kind === "propose" ? ptAmt((ev.paidTo ?? {})[TREASURY_ADDR]) : 0n;
     if (ev.kind === "propose") {
       const rec = parseRecord(ev.uri, ev.payloadHash);
@@ -3742,7 +3749,7 @@ function resolve(events, tipHeight) {
           note(ev, ev.id, "name", false, "before v1.1 activation");
           continue;
         }
-        const regWindow = v25 ? REG_COMMIT_MAX_BLOCKS : COMMIT_MAX_BLOCKS;
+        const regWindow = v25 || v26 ? REG_COMMIT_MAX_BLOCKS : COMMIT_MAX_BLOCKS;
         let effHeight = ev.height;
         if (rec.salt !== void 0) {
           const ch = nameCommit(rec.name, rec.salt, who);
@@ -3757,6 +3764,28 @@ function resolve(events, tipHeight) {
         const epClaim = epochOf(ev.height);
         const curActive = cur && cur.pending && cur.finalizeBy !== void 0 && ev.height > cur.finalizeBy ? void 0 : cur;
         if (curActive && !curActive.pending && v15 && lapsed(curActive, epClaim)) {
+          if (v26) {
+            if (rec.salt === void 0) {
+              note(ev, ev.id, "name", false, "v2.6: recapture requires a commit-reveal (salt)");
+              continue;
+            }
+            const cr = recaptures.get(rec.name);
+            const crActive = cr && ev.height > cr.finalizeBy ? void 0 : cr;
+            const better2 = !crActive || (effHeight < crActive.effHeight || effHeight === crActive.effHeight && (ev.pos < crActive.pos || ev.pos === crActive.pos && ev.id < crActive.id));
+            if (!better2) {
+              note(ev, ev.id, "name", false, "recapture already reserved (earlier anchor wins)");
+              continue;
+            }
+            let myR = 0;
+            for (const [nm, r] of recaptures) if (r.owner === who && nm !== rec.name && ev.height <= r.finalizeBy) myR++;
+            if (myR >= MAX_PENDING_REG) {
+              note(ev, ev.id, "name", false, "too many pending recaptures (max reached)");
+              continue;
+            }
+            recaptures.set(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
+            note(ev, ev.id, "name", true, crActive ? "recapture reserved (displaced prior reservation)" : "recapture reserved (pending finalize)");
+            continue;
+          }
           const fee = expiredClaimFee(rec.name, epClaim - (paidThrough(curActive) + NAME_GRACE_EPOCHS), ev.height);
           if (feeToTreasury < fee) {
             note(ev, ev.id, "name", false, "lapsed-name claim fee unpaid (decaying premium)");
@@ -3830,32 +3859,69 @@ function resolve(events, tipHeight) {
           continue;
         }
         const n = names.get(rec.name);
-        if (!n || !n.pending || n.owner !== who) {
-          note(ev, ev.id, "nfinalize", false, "no matching pending reservation you own");
+        if (n && n.pending && n.owner === who) {
+          const cH = commits.get(nameCommit(rec.name, rec.salt, who));
+          if (cH === void 0 || cH !== n.effHeight) {
+            note(ev, ev.id, "nfinalize", false, "salt does not match the reservation commit");
+            continue;
+          }
+          if (!(ev.height > n.effHeight + REG_COMMIT_MAX_BLOCKS)) {
+            note(ev, ev.id, "nfinalize", false, "too early \u2014 displacement contest not yet frozen");
+            continue;
+          }
+          if (n.finalizeBy !== void 0 && ev.height > n.finalizeBy) {
+            note(ev, ev.id, "nfinalize", false, "reservation expired");
+            continue;
+          }
+          if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
+            note(ev, ev.id, "nfinalize", false, "name registration fee unpaid");
+            continue;
+          }
+          n.pending = void 0;
+          n.finalizeBy = void 0;
+          n.paidThroughEpoch = epochOf(ev.height) + NAME_TERM_EPOCHS;
+          feesPaid += nameRegFee(rec.name, ev.height);
+          note(ev, ev.id, "nfinalize", true);
           continue;
         }
-        const cH = commits.get(nameCommit(rec.name, rec.salt, who));
-        if (cH === void 0 || cH !== n.effHeight) {
-          note(ev, ev.id, "nfinalize", false, "salt does not match the reservation commit");
+        const r = v26 ? recaptures.get(rec.name) : void 0;
+        if (r && r.owner === who) {
+          const cH = commits.get(nameCommit(rec.name, rec.salt, who));
+          if (cH === void 0 || cH !== r.effHeight) {
+            note(ev, ev.id, "nfinalize", false, "salt does not match the recapture commit");
+            continue;
+          }
+          if (!(ev.height > r.effHeight + REG_COMMIT_MAX_BLOCKS)) {
+            note(ev, ev.id, "nfinalize", false, "too early \u2014 recapture contest not yet frozen");
+            continue;
+          }
+          if (ev.height > r.finalizeBy) {
+            note(ev, ev.id, "nfinalize", false, "recapture reservation expired");
+            continue;
+          }
+          const cur = names.get(rec.name);
+          const ep = epochOf(ev.height);
+          if (!cur || cur.pending || !lapsed(cur, ep)) {
+            recaptures.delete(rec.name);
+            note(ev, ev.id, "nfinalize", false, "name is no longer lapsed");
+            continue;
+          }
+          const fee = expiredClaimFee(rec.name, ep - (paidThrough(cur) + NAME_GRACE_EPOCHS), ev.height);
+          if (feeToTreasury < fee) {
+            note(ev, ev.id, "nfinalize", false, "recapture premium unpaid (decaying)");
+            continue;
+          }
+          for (const o of offers.values()) if (o.status === "open" && isNameGive(o.give) && o.give.name === rec.name) {
+            releaseGive(o);
+            o.status = "cancelled";
+          }
+          names.set(rec.name, { owner: who, effHeight: r.effHeight, pos: r.pos, id: r.id, height: r.height, locked: false, paidThroughEpoch: ep + NAME_TERM_EPOCHS });
+          recaptures.delete(rec.name);
+          feesPaid += fee;
+          note(ev, ev.id, "nfinalize", true, "recapture finalized (premium)");
           continue;
         }
-        if (!(ev.height > n.effHeight + REG_COMMIT_MAX_BLOCKS)) {
-          note(ev, ev.id, "nfinalize", false, "too early \u2014 displacement contest not yet frozen");
-          continue;
-        }
-        if (n.finalizeBy !== void 0 && ev.height > n.finalizeBy) {
-          note(ev, ev.id, "nfinalize", false, "reservation expired");
-          continue;
-        }
-        if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
-          note(ev, ev.id, "nfinalize", false, "name registration fee unpaid");
-          continue;
-        }
-        n.pending = void 0;
-        n.finalizeBy = void 0;
-        n.paidThroughEpoch = epochOf(ev.height) + NAME_TERM_EPOCHS;
-        feesPaid += nameRegFee(rec.name, ev.height);
-        note(ev, ev.id, "nfinalize", true);
+        note(ev, ev.id, "nfinalize", false, "no matching pending reservation you own");
       } else if (rec.t === "nxfer") {
         const n = names.get(rec.name);
         if (!n || n.owner !== who) {
@@ -4376,7 +4442,9 @@ function resolve(events, tipHeight) {
   for (const [id, o] of [...offers.entries()].sort(([a], [b]) => ord(a, b))) offersOut[id] = o;
   const bidsOut = {};
   for (const [id, b] of [...bids.entries()].sort(([a], [b2]) => ord(a, b2))) bidsOut[id] = b;
-  return { tipHeight, tokens: tokensOut, balances: balancesOut, names: namesOut, offers: offersOut, bids: bidsOut, events: log, feesPaid: feesPaid.toString() };
+  const recapturesOut = {};
+  for (const [nm, r] of [...recaptures.entries()].sort(([a], [b]) => ord(a, b))) recapturesOut[nm] = { owner: r.owner, effectiveHeight: r.effHeight, finalizeBy: r.finalizeBy };
+  return { tipHeight, tokens: tokensOut, balances: balancesOut, names: namesOut, offers: offersOut, bids: bidsOut, recaptures: recapturesOut, events: log, feesPaid: feesPaid.toString() };
 }
 function canonicalState(s) {
   const sortKeys = (v) => {
@@ -4386,7 +4454,7 @@ function canonicalState(s) {
     }
     return v;
   };
-  const { events: _events, ...data } = s;
+  const { events: _events, recaptures: _recaptures, ...data } = s;
   return JSON.stringify(sortKeys(data));
 }
 var CLAIM_ATTACKER_Q = 0.2;
@@ -4481,6 +4549,7 @@ export {
   V23_HEIGHT,
   V24_HEIGHT,
   V25_HEIGHT,
+  V26_HEIGHT,
   ZERO_ADDR,
   addrFromPub,
   bid,
