@@ -520,6 +520,25 @@ async function main() {
     }
   }
 
+  // B9 (Plan 56 A.4 finding 2): the pre-spend parseRecord ROUND-TRIP at the builder chokepoint.
+  // The exact fee-forfeit reproducer: a profile value with a LONE UTF-16 SURROGATE passed every
+  // wallet-side key/type/length check, anchored the 0.25 CSD fee, and the resolver no-oped it
+  // (well-formed-UTF-16 rule). The builder must now refuse it BEFORE any spend.
+  {
+    const { buildNameProfile, buildNameSet, buildTransfer } = await import("../src/core/cairnx.js");
+    let threw = "";
+    try { buildNameProfile({ name: "test", profile: { bio: "truncated\uD83D" } }); }
+    catch (e: any) { threw = String(e?.message ?? e); }
+    check("RT-1: a lone-surrogate profile value is REFUSED pre-spend (was: fee anchored, record no-oped)",
+      /consensus validation/.test(threw));
+    const good = buildNameProfile({ name: "test", profile: { bio: "hello \uD83D\uDE00" } });
+    check("RT-1: a well-formed astral-pair value still builds (no false rejection)",
+      typeof good.payloadHash === "string" && good.payloadHash.length === 66);
+    check("RT-1: ordinary name + transfer records still build through the round-trip",
+      buildNameSet({ name: "test", addr: "0x" + "aa".repeat(20) }).uri.length > 0 &&
+      buildTransfer({ ticker: "CAIRN", amount: "5", to: "0x" + "bb".repeat(20) }).uri.length > 0);
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

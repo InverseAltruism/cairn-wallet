@@ -16,10 +16,11 @@ import {
   // constants
   DOMAIN, MIN_FEE_PROPOSE, TREASURY_ADDR,
   FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V24_HEIGHT, V25_HEIGHT,
-  NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, AMOUNT_RE, SALT_RE,
+  NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
   // functions
   canonicalJson, payloadHash, tradeFee, makerRebate, nameRegFee, parseRecord, nameCommit,
+  parseAmount as parseAmountCanonical,
 } from "../vendor/cairnx-spv.js";
 
 // ── app constants (re-exported under the wallet's historical names) ───────────
@@ -47,12 +48,9 @@ export const isPlainName = (n: unknown): n is string => typeof n === "string" &&
 const PROFILE_RESERVED_KEYS = new Set(["addr", "address", "coin"]);
 
 // ── thin §4 validators (wrappers over the IMPORTED regexes/limits — used by the on-device builders) ──
-const parseAmount = (s: unknown, allowZero = false): bigint | null => {
-  if (typeof s !== "string" || !AMOUNT_RE.test(s)) return null;
-  const v = BigInt(s);
-  if (v > MAX_AMOUNT || (v === 0n && !allowZero)) return null;
-  return v;
-};
+// parseAmount is the vendored canonical one since B9 (semantics verified identical: AMOUNT_RE +
+// MAX_AMOUNT + allowZero); only the option-object signature is adapted at this one seam.
+const parseAmount = (s: unknown, allowZero = false): bigint | null => parseAmountCanonical(s, { allowZero });
 const isTicker = (t: unknown): t is string => typeof t === "string" && TICKER_RE.test(t);
 const isAddr = (a: unknown): a is string => typeof a === "string" && ADDR_RE.test(a);
 const isName = (n: unknown): n is string => typeof n === "string" && NAME_RE.test(n) && !RESERVED_NAMES.has(n);
@@ -77,7 +75,11 @@ export function buildTransfer(p: { ticker: string; amount: string; to: string })
   const record = { v: 1, t: "transfer", ticker: p.ticker, amount: p.amount, to };
   const uri = canonicalJson(record);
   if (utf8ToBytes(uri).length > MAX_RECORD_BYTES) throw new Error("record too large");
-  return { record, uri, payloadHash: cairnxPayloadHash(record) };
+  const ph = cairnxPayloadHash(record);
+  // same pre-spend round-trip as buildNameRecord (see there): build-success must imply
+  // resolver-acceptance on every fee-bearing record the wallet can anchor.
+  if (parseRecord(uri, ph) === null) throw new Error("record fails the resolver's consensus validation (it would anchor the fee and then be ignored): check ticker/amount/recipient");
+  return { record, uri, payloadHash: ph };
 }
 
 // ── .csd name records (built + validated ON-DEVICE, like buildTransfer) ───────
@@ -85,7 +87,17 @@ export interface BuiltCairnxRecord { record: Record<string, unknown>; uri: strin
 function buildNameRecord(record: Record<string, unknown>): BuiltCairnxRecord {
   const uri = canonicalJson(record);
   if (utf8ToBytes(uri).length > MAX_RECORD_BYTES) throw new Error("record too large");
-  return { record, uri, payloadHash: cairnxPayloadHash(record) };
+  const ph = cairnxPayloadHash(record);
+  // Pre-spend ROUND-TRIP (Plan 56 A.4 finding 2 / Plan 57 B9): the resolver's parseRecord is the
+  // consensus gate, and anything it rejects is NO-OPED on-chain AFTER the anchor fee was paid
+  // (the Plan 55 fee-forfeit class: e.g. a profile value with a lone UTF-16 surrogate passed the
+  // wallet's own key/length checks but fails the resolver's well-formed-UTF-16 rule). Running our
+  // own output through the SAME vendored parser the SPV verifier replays makes build-success
+  // imply resolver-acceptance. The SDK's builders are immune by construction (buildRecord
+  // round-trips internally); the wallet's on-device twins get the same property here, at their
+  // one chokepoint.
+  if (parseRecord(uri, ph) === null) throw new Error("record fails the resolver's consensus validation (it would anchor the fee and then be ignored): check for unusual characters in values");
+  return { record, uri, payloadHash: ph };
 }
 /** Front-run-proof commit hash — the canonical cairnx-core nameCommit (binds name+salt+lowercased owner). */
 export const nameCommitHash = (name: string, salt: string, owner: string): string => nameCommit(name, salt, owner);

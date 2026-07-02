@@ -39,7 +39,7 @@ trap 'rm -f "$TMP_ENTRY"' EXIT
   printf 'export { LightClient, CsdClient } from "%s";\n' "$LIGHT"
   printf 'export { rpcTxToTx } from "%s";\n' "$CLIENT"
   printf 'export { txid, sighash, merkleRoot, verifyMerkleProof } from "%s";\n' "$CODEC"
-  printf 'export { addrFromPub, verifyDigest } from "%s";\n' "$CRYPTO"
+  printf 'export { addrFromPub, verifyDigest, recoverSigner } from "%s";\n' "$CRYPTO"
   # cairnx-core: the WHOLE convention (constants, fee/name math, canonicalJson, parseRecord, the record
   # builders, *_KEYS, the §4 regexes) — so core/cairnx.ts IMPORTS them instead of hand-typing a second copy
   # (shared-core de-dup, cairn docs/Plans/46). esbuild already inlines all of cairnx-core to serve `resolve`
@@ -53,4 +53,4 @@ node_modules/.bin/esbuild "$TMP_ENTRY" \
   --legal-comments=none --outfile="$OUT"
 
 echo "built $OUT ($(du -h "$OUT" | cut -f1))"
-node --input-type=module -e "import('./$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"
+node --input-type=module -e "import('./$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"

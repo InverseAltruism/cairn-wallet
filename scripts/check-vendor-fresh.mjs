@@ -46,7 +46,7 @@ const DISTS = {
   LIGHT: ["light", "LightClient, CsdClient"],
   CLIENT: ["client", "rpcTxToTx"],
   CODEC: ["codec", "txid, sighash, merkleRoot, verifyMerkleProof"],
-  CRYPTO: ["crypto", "addrFromPub, verifyDigest"],
+  CRYPTO: ["crypto", "addrFromPub, verifyDigest, recoverSigner"],
   // Phase 2 (shared-core de-dup, docs/Plans/46): the wallet now imports the WHOLE CairnX convention from the
   // bundle (constants/fee+name math/canonicalJson/parseRecord/regexes), not just resolve — so this rebuild
   // entry MUST use `export *` to match scripts/build-spv-vendor.sh, or the byte-diff false-fails.

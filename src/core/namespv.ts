@@ -31,7 +31,7 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason — never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, addrFromPub, verifyDigest, resolve, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
+import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
 
 // Baked checkpoint: a real finalized CSD header at the NAMES-ACTIVATION floor (V11_HEIGHT). No name can
 // have an effectiveHeight below this, so a forward-only verified chain seeded here covers every name.
@@ -117,13 +117,14 @@ function outputsToPaidTo(outputs: Tx["outputs"]): Record<string, string> {
 // Recover + AUTHENTICATE a tx's signer. scriptSig = 0x40‖sig64‖0x21‖pub33 (99 bytes). The signature MUST
 // validate against sighash(tx): the merkle root commits the tx BODY but not the scriptSig, so without this
 // a lying node could re-attribute (or fabricate) a record's author. null on any malformation / bad sig.
+// Since csd-crypto 0.1.15 (Plan 57 B9) the STRICT parser+verifier is the vendored recoverSigner
+// (exact 198-byte frame + verifyDigest + lowercase addr — the same contract this file hand-rolled);
+// this wrapper only supplies sighash(tx), kept INSIDE the try so a malformed hinted tx null-fails
+// instead of throwing (fail-closed, never fail-crashed).
 function recoverSigner(tx: Tx): string | null {
   const ss = tx.inputs?.[0]?.scriptSig;
   if (typeof ss !== "string") return null;
-  const hex = ss.startsWith("0x") ? ss.slice(2) : ss;
-  if (hex.length !== 198 || hex.slice(0, 2) !== "40" || hex.slice(130, 132) !== "21") return null;
-  const sig = "0x" + hex.slice(2, 130), pub = "0x" + hex.slice(132, 198);
-  try { if (!verifyDigest(sig, pub, sighash(tx))) return null; return addrFromPub(pub).toLowerCase(); }
+  try { return recoverSignerFromScriptSig(ss, sighash(tx)); }
   catch { return null; }
 }
 

@@ -675,10 +675,10 @@ var CsdClient = class {
         const r = await this.f(`${this.base}${path}`, { ...init, signal: AbortSignal.timeout(this.timeoutMs) });
         if (r.status >= 500 && attempt < maxRetries) {
           lastErr = new Error(`HTTP ${r.status}`);
-        } else if (!r.ok) throw new Error(`${init?.method ?? "GET"} ${path} \u2192 HTTP ${r.status}`);
+        } else if (!r.ok) throw Object.assign(new Error(`${init?.method ?? "GET"} ${path} \u2192 HTTP ${r.status}`), { terminal: r.status < 500 });
         else return await this.readCapped(r, path);
       } catch (e) {
-        if (attempt >= maxRetries) throw e;
+        if (attempt >= maxRetries || e?.terminal) throw e;
         lastErr = e;
       }
       const cap = Math.min(5e3, 250 * 2 ** attempt);
@@ -901,9 +901,12 @@ var LightClient = class _LightClient {
   /** Height of chain[0] — 0 for genesis-start, the seed start for checkpoint-start. */
   baseHeight = 0;
   batch;
+  /** Whether a real per-height source exists (vs the default provider that can only throw). */
+  hasHeaderSource;
   constructor(opts = {}) {
     this.client = opts.client ?? (opts.baseUrl ? new CsdClient({ baseUrl: opts.baseUrl }) : void 0);
     this.batch = opts.headersBatchProvider;
+    this.hasHeaderSource = !!(opts.headerProvider ?? this.client);
     this.checkpoints = opts.checkpoints ?? {};
     this.provider = opts.headerProvider ?? (async (h) => {
       if (!this.client) throw new Error("LightClient needs a client/baseUrl or a headerProvider");
@@ -1035,10 +1038,28 @@ var LightClient = class _LightClient {
   /** Fetch + seed the LWMA window ending at `checkpointHeight`, asserting its hash, then ready to sync forward. */
   async syncFromCheckpoint(checkpointHeight, checkpointHash, context = LWMA_WINDOW) {
     const start = Math.max(0, checkpointHeight - context);
-    const seed = [];
-    for (let h = start; h <= checkpointHeight; h++) {
-      const { header, hash } = await this.provider(h);
-      seed.push({ height: h, header, hash });
+    let seed = [];
+    if (this.batch) {
+      try {
+        for (let h = start; h <= checkpointHeight; ) {
+          const want = Math.min(512, checkpointHeight - h + 1);
+          const rows = await this.batch(h, want);
+          if (!rows.length) throw new Error(`batch provider returned no headers at ${h}`);
+          for (const r of rows.slice(0, want)) {
+            seed.push({ height: h, header: r.header, hash: r.hash });
+            h++;
+          }
+        }
+      } catch (e) {
+        if (!this.hasHeaderSource) throw e;
+        seed = [];
+      }
+    }
+    if (!seed.length) {
+      for (let h = start; h <= checkpointHeight; h++) {
+        const { header, hash } = await this.provider(h);
+        seed.push({ height: h, header, hash });
+      }
     }
     this.seedTrusted(seed, checkpointHash);
   }
@@ -3212,6 +3233,29 @@ function verifyDigest(sig64, pub33, digestHex) {
     return false;
   }
 }
+function parseScriptSig(scriptSig) {
+  if (typeof scriptSig !== "string") return null;
+  const h = strip0x2(scriptSig).toLowerCase();
+  if (h.length < 2 + 128 + 2 + 66) return null;
+  if (h.slice(0, 2) !== "40") return null;
+  if (h.slice(130, 132) !== "21") return null;
+  const sig = h.slice(2, 130), pub = h.slice(132, 198);
+  if (!/^[0-9a-f]{128}$/.test(sig) || !/^[0-9a-f]{66}$/.test(pub)) return null;
+  return { sig64: "0x" + sig, pub33: "0x" + pub };
+}
+function recoverSigner(scriptSig, digestHex) {
+  if (typeof scriptSig !== "string") return null;
+  const h = strip0x2(scriptSig).toLowerCase();
+  if (h.length !== 198) return null;
+  const p = parseScriptSig(h);
+  if (!p) return null;
+  try {
+    if (!verifyDigest(p.sig64, p.pub33, digestHex)) return null;
+    return addrFromPub(p.pub33).toLowerCase();
+  } catch {
+    return null;
+  }
+}
 
 // ../csd-sdk/packages/cairnx/dist/index.js
 var DOMAIN = "cairnx:v1";
@@ -4470,6 +4514,14 @@ function requiredClaimDepth(valueSats, height) {
   }
   return { depth: max, reversalPct: Math.pow(r, max) * 100, capped: true };
 }
+function paidToFromOutputs(outputs) {
+  const m = /* @__PURE__ */ Object.create(null);
+  for (const o of outputs) {
+    if (typeof o.value !== "number" || !Number.isSafeInteger(o.value) || o.value < 0) continue;
+    m[o.addr] = (BigInt(m[o.addr] ?? "0") + BigInt(o.value)).toString();
+  }
+  return m;
+}
 export {
   ACTIVATION_HEIGHT,
   ADDR_RE,
@@ -4581,9 +4633,11 @@ export {
   offer,
   offerCancelAll,
   offerExpiryHeightOf,
+  paidToFromOutputs,
   parseAmount,
   parseRecord,
   payloadHash,
+  recoverSigner,
   requiredClaimDepth,
   resolve,
   rpcTxToTx,

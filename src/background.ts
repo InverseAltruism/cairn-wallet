@@ -127,26 +127,31 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   if (!p) return { done: false };
   pending.delete(id);
   try { chrome.action?.setBadgeText?.({ text: pending.size ? String(pending.size) : "" }); } catch { /* no-op */ }
+  // MACHINE ERROR CODES (Plan 57 B9, additive): every {ok:false} a dApp can see now also carries a
+  // stable `code` (USER_REJECTED / WALLET_LOCKED / ACCOUNT_CHANGED / FIRST_PARTY_ONLY /
+  // UNSUPPORTED_METHOD / RATE_LIMITED / APPROVAL_CLOSED / FORBIDDEN / UNKNOWN_KIND / INTERNAL) so
+  // SDKs stop matching on human error STRINGS (which are UX copy and may change). The strings stay
+  // exactly as they were: nothing existing breaks, and pre-0.2.46 consumers keep working.
   // POPUP-OUTCOME-1: resolve the dApp promise (UNCHANGED) AND report the TRUE action outcome back to the
   // approval popup, so it shows "sent ✓" / "failed: …" instead of a blanket "approved" when the signed action
   // actually failed (locked, account-switch, a network/guard reject, or a soft {ok:false} builder result).
-  const finish = (out: { ok: boolean; result?: any; error?: string }): { done: boolean; ok: boolean; error?: string; txid?: string } => {
+  const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }): { done: boolean; ok: boolean; error?: string; txid?: string } => {
     p.resolve(out);
     const actionOk = out.ok && (out.result?.ok !== false);
     return { done: true, ok: actionOk, error: out.error ?? (out.result?.ok === false ? out.result?.error : undefined), txid: out.result?.txid };
   };
-  if (!approve) return finish({ ok: false, error: "rejected by user" });
+  if (!approve) return finish({ ok: false, code: "USER_REJECTED", error: "rejected by user" });
   try {
     const st = await wallet.status();
     // unlocked implies a loaded key/address; the explicit addr check makes the invariant
     // visible to the type system (st.addr is string|null before unlock)
-    if (!st.unlocked || !st.addr) return finish({ ok: false, error: "wallet locked" });
+    if (!st.unlocked || !st.addr) return finish({ ok: false, code: "WALLET_LOCKED", error: "wallet locked" });
     // M5 (account-switch mid-approval — WYSIWYS on the SIGNER): the approval window passes the account it
     // DISPLAYED ("signing as …"). If the active account changed between review and approve (e.g. the user
     // switched accounts in the toolbar popup after the window rendered), refuse rather than silently sign/
     // disclose with the now-active account the user did NOT review. Fail-closed → reopen + re-review.
     if (typeof displayedSigner === "string" && displayedSigner && displayedSigner.toLowerCase() !== String(st.addr).toLowerCase()) {
-      return finish({ ok: false, error: "the active account changed since you reviewed this request — reopen it and review again before approving" });
+      return finish({ ok: false, code: "ACCOUNT_CHANGED", error: "the active account changed since you reviewed this request — reopen it and review again before approving" });
     }
     let result: any;
     if (p.method === "connect" || p.method === "getAddress") {
@@ -164,7 +169,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "signin") {
       // defense-in-depth: the queue gate (AUTH-LEGACY-1) already blocks third-party signin, but
       // never run the session-minting legacy path for a non-first-party origin even if queued.
-      if (!wallet.isFirstPartyOrigin(p.origin)) return finish({ ok: false, error: "signIn() is first-party only; use signInWithCsd()." });
+      if (!wallet.isFirstPartyOrigin(p.origin)) return finish({ ok: false, code: "FIRST_PARTY_ONLY", error: "signIn() is first-party only; use signInWithCsd()." });
       result = await wallet.signIn();
     }
     // Audience-bound SIWC for third parties: the wallet builds the message from the ATTESTED origin
@@ -192,7 +197,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "fillOffer") result = await wallet.fillOffer(p.params);
     else throw new Error("unsupported dApp method: " + p.method);
     return finish({ ok: true, result });
-  } catch (e: any) { return finish({ ok: false, error: e?.message ?? String(e) }); }
+  } catch (e: any) { return finish({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
 }
 
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
@@ -231,10 +236,10 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
 const MAX_PENDING_GLOBAL = 32;
 const MAX_PENDING_PER_ORIGIN = 5;
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
-  if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, error: "unsupported dApp method: " + String(method).slice(0, 32) });
-  if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, error: "too many pending wallet requests — approve or reject the queued ones first" });
+  if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
+  if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests — approve or reject the queued ones first" });
   let perOrigin = 0; for (const p of pending.values()) if (p.origin === origin) perOrigin++;
-  if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, error: "too many pending requests from this site — approve or reject the queued ones first" });
+  if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site — approve or reject the queued ones first" });
   return new Promise((resolve) => {
     const id = `${Date.now()}-${reqSeq++}`;
     pending.set(id, { origin, method, params, resolve });
@@ -257,7 +262,7 @@ try { chrome.windows?.onRemoved?.addListener((wid: number) => {
   // already removed from `pending` by resolvePending before the window closes, and approve.ts only auto-closes
   // the window once the queue is EMPTY, so this rejects exactly the genuinely un-actioned requests.
   if (pending.size) {
-    for (const [, p] of pending) { try { p.resolve({ ok: false, error: "rejected (approval window closed)" }); } catch { /* no-op */ } }
+    for (const [, p] of pending) { try { p.resolve({ ok: false, code: "APPROVAL_CLOSED", error: "rejected (approval window closed)" }); } catch { /* no-op */ } }
     pending.clear();
     try { chrome.action?.setBadgeText?.({ text: "" }); } catch { /* no-op */ }
   }
@@ -286,7 +291,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         // keeps the no-external-message-surface invariant from regressing.
         const fromExtensionPage = sender?.id === chrome.runtime.id &&
           typeof sender?.url === "string" && sender.url.startsWith(chrome.runtime.getURL(""));
-        if (!fromExtensionPage) { sendResponse({ ok: false, error: "forbidden" }); return; }
+        if (!fromExtensionPage) { sendResponse({ ok: false, code: "FORBIDDEN", error: "forbidden" }); return; }
         // Reset the idle auto-lock ONLY on genuine USER ACTIVITY — never on a pure read/poll. The
         // approval window status/pending-polls every ~1.2s; if those kept the wallet alive, a site
         // that always keeps ≥1 request queued would never let the 15-min idle lock fire (WL-1/R19).
@@ -300,7 +305,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         // first-party site. Reject it from any third-party origin BEFORE it can prompt, pointing
         // devs to the audience-bound signInWithCsd() (which never mints a first-party session).
         if (msg.method === "signin" && !wallet.isFirstPartyOrigin(origin)) {
-          sendResponse({ ok: false, error: "signIn() is reserved for the wallet's first-party site; third-party sites must use the audience-bound signInWithCsd()." });
+          sendResponse({ ok: false, code: "FIRST_PARTY_ONLY", error: "signIn() is reserved for the wallet's first-party site; third-party sites must use the audience-bound signInWithCsd()." });
           return;
         }
         // Per-origin permission queries (EIP-2255-style), origin-scoped + silent: getPermissions reads
@@ -339,8 +344,8 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         const res = await queueDappRequest(origin, msg.method, msg.params);
         sendResponse(res); return;
       }
-      sendResponse({ ok: false, error: "unknown message kind" });
-    } catch (e: any) { sendResponse({ ok: false, error: e?.message ?? String(e) }); }
+      sendResponse({ ok: false, code: "UNKNOWN_KIND", error: "unknown message kind" });
+    } catch (e: any) { sendResponse({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
   })();
   return true; // async response
 });

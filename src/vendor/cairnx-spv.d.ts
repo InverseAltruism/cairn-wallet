@@ -39,6 +39,9 @@ export function merkleRoot(txids: string[]): string;
 export function verifyMerkleProof(txid: string, pos: number, branch: string[], root: string): boolean;
 export function addrFromPub(pub: string): string;
 export function verifyDigest(sig: string, pub: string, digest: string): boolean;
+/** STRICT signer recovery (csd-crypto 0.1.15): exact 198-byte CSD_SIG_V1 frame + verifyDigest
+ *  against the given digest; lowercase addr20 or null. The wallet's namespv authenticator. */
+export function recoverSigner(scriptSig: string, digest: string): string | null;
 // THE audited CairnX resolver, reused (never re-typed). Returns canonical state; we read .names[name].
 export function resolve(events: unknown[], tipHeight: number): { names: Record<string, { owner: string; addr?: string; expired?: boolean; viaFill?: boolean; pending?: boolean; finalizeBy?: number; effectiveHeight: number; height: number; claimId: string }>;[k: string]: unknown };
 
@@ -73,4 +76,6 @@ export function tradeFee(want: bigint, bps?: number): bigint;
 export function makerRebate(value: bigint): bigint;
 export function nameRegFee(name: string, height: number): bigint;
 export function parseRecord(uri: string, payloadHashHex: string): Record<string, unknown> | null;
+/** Canonical amount gate (AMOUNT_RE + MAX_AMOUNT + allowZero); bigint or null. */
+export function parseAmount(s: unknown, opts?: { allowZero?: boolean }): bigint | null;
 export function nameCommit(name: string, salt: string, owner: string): string;
