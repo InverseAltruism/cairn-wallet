@@ -47,7 +47,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .dim{color:var(--dim)}
 .lead{color:var(--dim);margin:.2em 0 1em}
 .or{text-align:center;color:var(--dim);margin:10px 0}
-.msg{margin-top:10px;font-size:12px;min-height:1.2em}
+.msg{margin-top:10px;font-size:12px;min-height:1.2em;transition:opacity .4s var(--ease)}
+.msg.fade{opacity:0}
 .msg.ok{color:var(--green)} .msg.err{color:var(--red)} .msg.info{color:var(--dim)}
 /* clear-sign warning fragments (clearsign.ts emits <span class="err">/<b class="err"> for
    unusual-fee / hidden-recipient / invalid-amount warnings) — must always read as warnings */
@@ -67,6 +68,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 /* identity block: gradient identicon + primary name + full address */
 .id-block{display:flex;align-items:center;gap:10px;margin:10px 0 4px}
 .id-avatar{width:36px;height:36px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);border:1px solid var(--line2)}
+/* name-less account: the phosphor cairn mark instead of a gradient monogram */
+.id-avatar.mark{background:var(--panel);color:var(--green);text-shadow:none}
+.id-avatar.mark svg{width:20px;height:20px;filter:drop-shadow(0 0 6px rgba(110,231,160,.35))}
 .id-text{flex:1;min-width:0}
 .id-text .addr-row{margin:2px 0 0}
 /* primary .csd name as the account identity */
@@ -147,8 +151,23 @@ body:has(#view-main:not([hidden])) #msg:not(:empty){position:fixed;left:14px;rig
 .tx-sub a{color:var(--cyan);text-decoration:none}
 .tx-sub a:hover{color:#fff;text-decoration:underline}
 .tx-when{font-size:10px;margin-top:2px}
-/* account switcher (multi-wallet) */
-.acct-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+/* account switcher (multi-wallet): custom dropdown, same visual family as the RPC menus.
+   z-index on the ROW: the unlock-cascade animation gives every main-view row its own stacking
+   context, so the menu's z-index alone can't beat the LATER siblings (hero would sit on top). */
+.acct-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;position:relative;z-index:30}
+.acct-wrap{flex:1;min-width:0}
+.acct-btn{display:flex;align-items:center;gap:8px;width:100%;margin:0;padding:7px 10px;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;font-size:12px;cursor:pointer;text-align:left}
+.acct-btn:hover{border-color:var(--cyan);color:var(--ink)}
+.acct-btn .acct-cur{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct-btn .acct-addr{color:var(--dim);font-size:11px;margin-left:auto;white-space:nowrap}
+.acct-btn .acct-caret{color:var(--dim);font-size:10px}
+.acct-dot{width:10px;height:10px;border-radius:50%;flex:none;border:1px solid rgba(255,255,255,.15)}
+.acct-menu{left:0;right:auto;top:36px;width:100%;min-width:240px}
+.acct-menu .rpc-pick{flex-direction:row;align-items:center;justify-content:space-between;gap:8px}
+.acct-pick-line{display:flex;align-items:center;gap:8px;min-width:0}
+.acct-menu .rpc-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct-menu .rpc-url{white-space:nowrap}
+/* .acct-select stays for the post-form category <select> that reuses the class */
 .acct-select{flex:1;width:auto;margin:0;padding:7px 9px;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;cursor:pointer}
 .acct-select:focus{border-color:#fff;outline:none}
 #btn-accts{margin:0}

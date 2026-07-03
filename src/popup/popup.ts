@@ -60,10 +60,31 @@ async function call(method: string, ...args: any[]): Promise<any> {
 const $ = (id: string) => document.getElementById(id)!;
 const val = (id: string) => ($(id) as HTMLInputElement).value;
 function show(view: string) { for (const v of ["setup", "backup", "locked", "main"]) ($("view-" + v) as HTMLElement).hidden = v !== view; }
-function msg(text: string, cls = "info") { const m = $("msg"); m.textContent = text; m.className = "msg " + cls; }
+// Status line with auto-dismiss: transient info/ok fades after ~3.5s, errors hold ~8s before
+// fading (the outcome still lives in Activity/history). busy() cancels any pending fade.
+let msgTimer: ReturnType<typeof setTimeout> | undefined;
+let msgFadeTimer: ReturnType<typeof setTimeout> | undefined;
+function msg(text: string, cls = "info") {
+  const m = $("msg");
+  clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
+  m.classList.remove("fade");
+  m.textContent = text; m.className = "msg " + cls;
+  if (!text) return;
+  const hold = cls.includes("err") ? 8000 : 3500;
+  msgTimer = setTimeout(() => {
+    m.classList.add("fade");
+    msgFadeTimer = setTimeout(() => { m.textContent = ""; m.className = "msg"; }, 450);
+  }, hold);
+}
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-// In-progress status with an animated spinner (for async actions).
-function busy(text: string) { const m = $("msg"); m.innerHTML = `<span class="spinner"></span>${escapeHtml(text)}`; m.className = "msg info"; }
+// In-progress status with an animated spinner (for async actions). Never auto-fades: it is
+// always replaced by the outcome message of the action that showed it.
+function busy(text: string) {
+  const m = $("msg");
+  clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
+  m.classList.remove("fade");
+  m.innerHTML = `<span class="spinner"></span>${escapeHtml(text)}`; m.className = "msg info";
+}
 // Brief visual confirmation on a button (e.g. copy).
 function flashBtn(id: string, label: string) { const b = $(id); const o = b.textContent; b.textContent = label; b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
 // Send-success moment: one-shot glow sweep across the balance hero (display-only; reduced-motion aware).
@@ -118,10 +139,28 @@ async function render() {
 }
 
 const short = (a: string) => a && a.length > 14 ? a.slice(0, 8) + "…" + a.slice(-4) : a;
+// Custom account switcher (same visual system as the Explorer/RPC dropdowns; the native
+// <select> popup can't be styled and clashed with them). Each row carries the account's
+// identity-gradient dot (avatarGradient output is numbers-only: injection-safe by construction).
 function renderAcctSelect(accounts: { addr: string; label: string }[], active: number) {
-  const sel = $("acct-select") as HTMLSelectElement;
-  sel.innerHTML = accounts.map((a, i) => `<option value="${i}">${escapeHtml(a.label)} · ${escapeHtml(short(a.addr))}</option>`).join("");
-  sel.value = String(active);
+  const a = accounts[active];
+  $("acct-select").innerHTML = a
+    ? `<span class="acct-dot" style="background:${avatarGradient(identitySeed(null, a.addr))}"></span><span class="acct-cur">${escapeHtml(a.label)}</span><span class="acct-addr">${escapeHtml(short(a.addr))}</span><span class="acct-caret">▾</span>`
+    : "";
+  const menu = $("acct-menu");
+  menu.innerHTML = accounts.map((x, i) => `
+    <div class="rpc-row${i === active ? " active" : ""}">
+      <button class="rpc-pick" data-acct="${i}"><span class="acct-pick-line"><span class="acct-dot" style="background:${avatarGradient(identitySeed(null, x.addr))}"></span><span class="rpc-label">${i === active ? "● " : ""}${escapeHtml(x.label)}</span></span><span class="rpc-url">${escapeHtml(short(x.addr))}</span></button>
+    </div>`).join("");
+  menu.querySelectorAll<HTMLElement>("[data-acct]").forEach((b) => (b.onclick = () => switchAcct(Number(b.dataset.acct))));
+}
+async function switchAcct(i: number) {
+  ($("acct-menu") as HTMLElement).hidden = true;
+  // WYSIWYS (R2-WYSIWYS / SIGN-3): tear down any primed send / name-action review BEFORE switching
+  // accounts — a review under the old account must never be Confirmed under the new one.
+  clearSendDrafts();
+  try { await call("switchAccount", i); msg("switched account", "ok"); render(); }
+  catch (err: any) { msg(err.message, "err"); }
 }
 // per-row inline edit state (rename/remove) so we never use a browser prompt/confirm
 let acctEdit: { addr: string; mode: "rename" | "remove" } | null = null;
@@ -198,15 +237,24 @@ let curAddr = "";
 let lastBal: number | null = null;
 let balSeq = 0;
 const fmtBal = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
-// Gradient identicon in the identity block (seeded by the primary name once known, else the address).
+// Identity avatar: a primary .csd name gets its CNS-parity gradient + monogram; a name-less
+// account gets the phosphor cairn mark (a bare gradient + hex nibble read as a placeholder).
+const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
 function paintAvatar(name: string | null, addr: string) {
   const av = document.getElementById("avatar") as HTMLElement | null;
   if (!av) return;
-  const seed = identitySeed(name, addr);
+  const seed = name ? identitySeed(name, addr) : "__mark__";
   if (av.dataset.seed === seed) return;
   av.dataset.seed = seed;
-  av.style.background = avatarGradient(seed);
-  av.textContent = monogram(name, addr);
+  if (name) {
+    av.classList.remove("mark");
+    av.style.background = avatarGradient(identitySeed(name, addr));
+    av.textContent = monogram(name, addr);
+  } else {
+    av.classList.add("mark");
+    av.style.background = "";
+    av.innerHTML = CAIRN_MARK_SVG; // static markup, no interpolation
+  }
 }
 async function refreshBalance() {
   const el = $("balance");
@@ -857,21 +905,13 @@ $("btn-explorer").addEventListener("click", () => { const m = $("explorer-menu")
 // click-away: close each header dropdown when the click is outside BOTH its button and its menu
 document.addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
-  for (const [btnId, menuId] of [["btn-rpc", "rpc-menu"], ["btn-explorer", "explorer-menu"]]) {
+  for (const [btnId, menuId] of [["btn-rpc", "rpc-menu"], ["btn-explorer", "explorer-menu"], ["acct-select", "acct-menu"]]) {
     const m = document.getElementById(menuId), b = document.getElementById(btnId);
     if (m && !m.hidden && b && !m.contains(t) && !b.contains(t)) m.hidden = true;
   }
 });
 
-($("acct-select") as HTMLSelectElement).addEventListener("change", async (e) => {
-  // WYSIWYS (R2-WYSIWYS / SIGN-3): tear down any primed send / name-action review BEFORE switching accounts.
-  // A renew / set-primary panel (or a send) reviewed under the old account must never be Confirmed under the
-  // new one — the name-action path signs with the now-active account. clearSendDrafts nulls the frozen
-  // snapshots and hides all three confirm panels, exactly the teardown the lock path uses.
-  clearSendDrafts();
-  try { await call("switchAccount", Number((e.target as HTMLSelectElement).value)); msg("switched account", "ok"); render(); }
-  catch (err: any) { msg(err.message, "err"); }
-});
+$("acct-select").addEventListener("click", () => { const m = $("acct-menu") as HTMLElement; m.hidden = !m.hidden; });
 $("btn-accts").addEventListener("click", () => { if (openPanel("accts-panel")) renderAccts(); });
 $("btn-add-acct").addEventListener("click", async () => {
   try { const r = await call("addAccount"); msg("added " + (r.addr ? r.addr.slice(0, 10) + "…" : "account"), "ok"); render(); }
