@@ -23,14 +23,22 @@ s.onload = () => { s.removeAttribute("data-cairn-nonce"); s.remove(); };
 window.addEventListener("message", (ev: MessageEvent) => {
   if (ev.source !== window || ev.origin !== window.location.origin || (ev.data as any)?.target !== "cairn-content") return;
   const { id, method, params } = ev.data as any;
-  chrome.runtime.sendMessage({ kind: "dapp", method, params }, (res: any) => {
-    // If this page was moved into the back/forward cache (or the SW dropped) before the reply arrived,
-    // the channel is closed — read lastError so Chrome doesn't log "Unchecked runtime.lastError", and
-    // skip posting to a now-frozen page (cosmetic; the page reconnects/re-requests on resume). Harmless.
-    if (chrome.runtime.lastError) return;
-    // Reply only to our own origin (not "*") — the inpage provider lives in the same page.
-    window.postMessage({ target: "cairn-inpage", id, res, nonce: NONCE }, window.location.origin);
-  });
+  try {
+    chrome.runtime.sendMessage({ kind: "dapp", method, params }, (res: any) => {
+      // If this page was moved into the back/forward cache (or the SW dropped) before the reply arrived,
+      // the channel is closed — read lastError so Chrome doesn't log "Unchecked runtime.lastError", and
+      // skip posting to a now-frozen page (cosmetic; the page reconnects/re-requests on resume). Harmless.
+      if (chrome.runtime.lastError) return;
+      // Reply only to our own origin (not "*") — the inpage provider lives in the same page.
+      window.postMessage({ target: "cairn-inpage", id, res, nonce: NONCE }, window.location.origin);
+    });
+  } catch {
+    // The extension was updated/reloaded and THIS page still runs the orphaned content script: its
+    // chrome.runtime is invalidated and sendMessage THROWS ("Extension context invalidated"). Without
+    // this catch the dApp saw an uncaught error and its call hung forever. Resolve the call with a
+    // clean, actionable error instead; the page works again after a refresh (fresh content script).
+    window.postMessage({ target: "cairn-inpage", id, res: { ok: false, error: "WALLET_RELOADED: the wallet extension was updated or reloaded — refresh this page to reconnect" }, nonce: NONCE }, window.location.origin);
+  }
 });
 
 // Provider events: open a long-lived port to the background and relay its pushes to the inpage provider.
@@ -44,7 +52,11 @@ function connectEvents() {
       if (m?.kind !== "cairn-event") return;
       window.postMessage({ target: "cairn-inpage-event", event: m.event, data: m.data, nonce: NONCE }, window.location.origin);
     });
-    port.onDisconnect.addListener(() => { setTimeout(connectEvents, 1000); });
+    port.onDisconnect.addListener(() => {
+      // reconnect only while the extension context is still alive; an orphaned (post-update)
+      // content script must not throw once a second trying to reach a dead runtime
+      setTimeout(() => { try { if (chrome.runtime?.id) connectEvents(); } catch { /* context gone */ } }, 1000);
+    });
   } catch { /* extension context unavailable */ }
 }
 connectEvents();
