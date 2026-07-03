@@ -5,6 +5,8 @@ import { Wallet, explorerLink, EXPLORER_PRESETS } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
 import { formatUnits, parseUnits, isPlainName } from "../core/cairnx.js";
 import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients } from "./clearsign.js";
+import { avatarGradient, monogram, identitySeed } from "./identicon.js";
+import { drawQr } from "./qr/draw.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -64,6 +66,14 @@ const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", 
 function busy(text: string) { const m = $("msg"); m.innerHTML = `<span class="spinner"></span>${escapeHtml(text)}`; m.className = "msg info"; }
 // Brief visual confirmation on a button (e.g. copy).
 function flashBtn(id: string, label: string) { const b = $(id); const o = b.textContent; b.textContent = label; b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
+// Send-success moment: one-shot glow sweep across the balance hero (display-only; reduced-motion aware).
+function celebrateSend() {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const hero = document.querySelector(".bal-hero") as HTMLElement | null;
+  if (!hero) return;
+  hero.classList.remove("sent"); void hero.offsetWidth; hero.classList.add("sent");
+  setTimeout(() => hero.classList.remove("sent"), 900);
+}
 
 let currentRpc = "";
 let currentExplorer = "cairn"; // selected block explorer (preset id or custom base) for activity/address links
@@ -93,6 +103,7 @@ async function render() {
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
   renderAcctSelect(st.accounts || [], st.active || 0);
   $("addr").textContent = st.addr;
+  if (st.addr !== curAddr) { curAddr = st.addr; lastBal = null; paintAvatar(null, curAddr); } // new account: reset identity + balance tween base
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerLink(currentExplorer, "addr", st.addr);
   (($("set-api") as HTMLInputElement)).value = st.api;
   (($("set-tradeapi") as HTMLInputElement)).value = st.tradeApi || "";
@@ -103,6 +114,7 @@ async function render() {
   if (!($("activity") as HTMLElement).hidden) renderHistory();
   if (!($("seal-form") as HTMLElement).hidden) renderSealed();
   if (!($("accts-panel") as HTMLElement).hidden) renderAccts();
+  if (!($("receive-panel") as HTMLElement).hidden) renderReceive();
 }
 
 const short = (a: string) => a && a.length > 14 ? a.slice(0, 8) + "…" + a.slice(-4) : a;
@@ -178,16 +190,50 @@ async function renderHistory() {
     </div>`;
   }).join("");
 }
+// Balance count-up: a display-only tween between the previous fetched value and the new one
+// (ends on the exact canonical string; skipped on first paint, on reduced-motion, and on failure).
+// `lastBal` is reset on lock and account switch (clearSendDrafts / render) so a tween never
+// crosses an identity boundary; `balSeq` supersedes a stale tween if refreshes overlap.
+let curAddr = "";
+let lastBal: number | null = null;
+let balSeq = 0;
+const fmtBal = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
+// Gradient identicon in the identity block (seeded by the primary name once known, else the address).
+function paintAvatar(name: string | null, addr: string) {
+  const av = document.getElementById("avatar") as HTMLElement | null;
+  if (!av) return;
+  const seed = identitySeed(name, addr);
+  if (av.dataset.seed === seed) return;
+  av.dataset.seed = seed;
+  av.style.background = avatarGradient(seed);
+  av.textContent = monogram(name, addr);
+}
 async function refreshBalance() {
   const el = $("balance");
+  const seq = ++balSeq;
   el.classList.add("loading");                 // shimmer while we fetch
   try {
     const b = await call("balance");
+    if (seq !== balSeq) return;                // a newer refresh superseded this one
     el.classList.remove("loading");
-    el.textContent = (b.confirmed / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
+    const next = b.confirmed / 1e8;
+    const from = lastBal;
+    lastBal = next;
+    if (from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      el.textContent = fmtBal(next);
+    } else {
+      const t0 = performance.now(), dur = 450;
+      const step = (t: number) => {
+        if (seq !== balSeq) return;            // superseded mid-tween: let the newer write win
+        const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); // ease-out cubic
+        el.textContent = p < 1 ? fmtBal(from + (next - from) * e) : fmtBal(next);
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }
     el.classList.remove("flash"); void (el as HTMLElement).offsetWidth; el.classList.add("flash"); // retrigger green flash
   }
-  catch { el.classList.remove("loading"); el.textContent = "—"; }
+  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "—"; lastBal = null; } }
 }
 // ── CairnX assets (token balances + .csd names) — read-only, never blocks the CSD UI ──
 // Balances come from the public CairnX resolver API. When it's unreachable we show a
@@ -207,6 +253,7 @@ function setIdentity(name: string | null | undefined) {
   if (!el) return;
   if (name) { el.textContent = `${name}.csd`; (el as HTMLElement).hidden = false; }
   else { el.textContent = ""; (el as HTMLElement).hidden = true; }
+  paintAvatar(name || null, curAddr); // identicon follows the resolved identity (name seed == CNS profile)
 }
 // epochs ≈ hours → a short remaining-time label for a lease
 function leaseLabel(n: any): string {
@@ -221,9 +268,14 @@ function tradeNameUrl(name: string): string {
   const base = (siteApi || "https://cairn-substrate.com").replace(/\/$/, "");
   return `${base}/trade?name=${encodeURIComponent(name)}`;
 }
+// Supersession guard (same pattern as balSeq): an in-flight assets response for a PREVIOUS
+// account must never repaint identity/avatar/assets after a switch.
+let assetsSeq = 0;
 async function renderAssets() {
+  const seq = ++assetsSeq;
   const el = $("assets") as HTMLElement;
   const a = await call("cairnxAssets").catch(() => ({ ok: false }));
+  if (seq !== assetsSeq) return;
   setIdentity(a?.ok ? a.primaryName : null);
   if (!a?.ok) {
     el.hidden = false;
@@ -239,6 +291,7 @@ async function renderAssets() {
   const tickers = Object.keys(balances).sort();
   if (!tickers.length && !details.length) { el.hidden = true; el.innerHTML = ""; return; }
   const meta = await tokenMeta();
+  if (seq !== assetsSeq) return;
   const rows = tickers.map((t) => {
     const b = balances[t] || { available: "0", locked: "0" };
     const dec = meta[t]?.decimals ?? 0;
@@ -468,7 +521,8 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
     if (r.ok) {
-      msg(`sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`, "ok");
+      msg(`sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`, "ok sent");
+      celebrateSend();
       ($("tsend-confirm") as HTMLElement).hidden = true;
       reviewed = null;
       ($("ts-to") as HTMLInputElement).disabled = false;
@@ -552,7 +606,14 @@ $("btn-restore").addEventListener("click", async () => { try { const ph = val("r
 $("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); flashBtn("btn-copy-seed", "copied ✓"); });
 $("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); flashBtn("btn-copy-priv", "copied ✓"); });
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
-$("btn-backup-done").addEventListener("click", () => { backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = ""; msg("wallet ready", "ok"); render(); });
+$("btn-backup-done").addEventListener("click", () => {
+  backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = "";
+  msg("wallet ready", "ok"); render();
+  // wallet-ready moment: one-shot ring pulse over the balance hero (CSS-only; killed by reduced-motion)
+  const vm = $("view-main");
+  vm.classList.add("born");
+  setTimeout(() => vm.classList.remove("born"), 1600);
+});
 $("btn-import").addEventListener("click", async () => { try { if (!val("import-pw")) return msg("enter a password to encrypt the key", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("key imported", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
@@ -561,7 +622,7 @@ $("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
-const PANELS = ["accts-panel", "send-form", "tsend-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
+const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
 // Best-effort clipboard hygiene for a copied key/phrase (audit KEY-6): when the reveal panel closes
 // (switch/close/popup-unload), clear the clipboard IFF it still holds the secret we copied — so we never
@@ -582,18 +643,68 @@ function resetPhrasePanel() {
   revealedPhrase = ""; const o = $("phrase-out"); o.innerHTML = ""; o.classList.remove("shown"); o.classList.add("blur"); (o as HTMLElement).hidden = true;
   ($("phrase-actions") as HTMLElement).hidden = true; ($("phrase-pw") as HTMLInputElement).value = "";
 }
-// Show `id` and hide every other panel; returns true if it ended up OPEN. Wipes any
-// revealed secret so a key/phrase never lingers behind a now-hidden panel.
-function openPanel(id: string): boolean {
-  const willOpen = ($(id) as HTMLElement).hidden;
+// Close every panel + confirm sub-panel, drop primed value-moving snapshots, wipe revealed
+// secrets. EXACT statement order of the original openPanel body — this teardown is the
+// secret-wipe / WYSIWYS boundary and must stay byte-equivalent in behavior.
+function closeAllPanels() {
   for (const p of PANELS) ($(p) as HTMLElement).hidden = true;
   ($("send-confirm") as HTMLElement).hidden = true;
   ($("tsend-confirm") as HTMLElement).hidden = true;
   reviewedNameAct = null;                        // switching views drops any primed name renew/set-primary snapshot
+  // armed send/token reviews die with their panels: drop the frozen snapshots AND re-enable the
+  // inputs that only btn-send-back/btn-tsend-back used to re-enable (a back/home exit otherwise
+  // left the forms disabled = bricked until lock/unlock)
+  reviewed = null; reviewedSend = null;
+  for (const id of ["s-to", "s-amt", "ts-to", "ts-amt"]) { const el = document.getElementById(id) as HTMLInputElement | null; if (el) el.disabled = false; }
   resetRevealPanel(); resetPhrasePanel();
+}
+// Show `id` and hide every other panel; returns true if it ended up OPEN. Wipes any
+// revealed secret so a key/phrase never lingers behind a now-hidden panel.
+function openPanel(id: string): boolean {
+  const willOpen = ($(id) as HTMLElement).hidden;
+  closeAllPanels();
   if (willOpen) ($(id) as HTMLElement).hidden = false;
+  syncNav();
   return willOpen;
 }
+// Footer-nav active state: activity/settings when their panel is open, else home.
+function syncNav() {
+  const active = !($("activity") as HTMLElement).hidden ? "btn-activity-t"
+    : !($("settings") as HTMLElement).hidden ? "btn-settings" : "nav-home";
+  for (const id of ["nav-home", "btn-activity-t", "btn-settings"]) $(id).classList.toggle("active", id === active);
+}
+$("nav-home").addEventListener("click", () => { closeAllPanels(); syncNav(); msg(""); });
+// One delegated back-button for every panel head (no per-panel IDs): exits the panel with the
+// same full teardown as any panel switch (snapshots dropped, secrets wiped).
+$("layer").addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).closest(".panel-back")) { closeAllPanels(); syncNav(); msg(""); }
+});
+
+// ── Receive: QR + full address in a panel. Re-rendered on open AND on every render() while
+// open (account switches must never leave a previous account's address/QR on screen). The QR
+// is a convenience rendering of the SAME address printed in full beside it; the text is the
+// source of truth. ANY failure fail-softs: card hidden AND canvas zeroed (a stale QR bitmap
+// must never survive into a different account's context).
+async function renderReceive() {
+  const card = document.querySelector(".receive-card") as HTMLElement | null;
+  const canvas = document.getElementById("receive-qr") as HTMLCanvasElement | null;
+  try {
+    const st = await call("status");
+    if (($("receive-panel") as HTMLElement).hidden) return;   // closed while we fetched
+    $("receive-addr").textContent = st.addr || "";
+    const pn = $("primary-name"), rn = $("receive-name") as HTMLElement;
+    if (!(pn as HTMLElement).hidden && pn.textContent) { rn.textContent = pn.textContent; rn.hidden = false; }
+    else { rn.textContent = ""; rn.hidden = true; }
+    if (!st.addr || !canvas) throw new Error("no address");
+    drawQr(canvas, st.addr);
+    if (card) card.hidden = false;
+  } catch {
+    if (canvas) { canvas.width = 0; canvas.height = 0; }      // encodeText throws BEFORE resizing: wipe the old bitmap explicitly
+    if (card) card.hidden = true;
+  }
+}
+$("btn-receive").addEventListener("click", () => { if (openPanel("receive-panel")) renderReceive(); });
+$("btn-receive-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("receive-addr").textContent || "")?.catch(() => {}); flashBtn("btn-receive-copy", "copied ✓"); });
 
 // Reveal private key — in-popup panel (password → masked secret box).
 $("btn-export").addEventListener("click", () => { openPanel("reveal-panel"); });
@@ -892,7 +1003,8 @@ $("btn-send-confirm").addEventListener("click", async () => {
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
     if (r.ok) {
-      msg("sent " + (amt / 1e8) + " CSD · " + String(r.txid).slice(0, 12) + "…", "ok");
+      msg("sent " + (amt / 1e8) + " CSD · " + String(r.txid).slice(0, 12) + "…", "ok sent");
+      celebrateSend();
       ($("send-confirm") as HTMLElement).hidden = true;
       reviewedSend = null;
       ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;

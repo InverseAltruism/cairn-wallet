@@ -1,32 +1,40 @@
-:root{
-  /* monochrome terminal: white on black, faint phosphor-green for ok/live */
-  --bg:#070707; --panel:#0d0d0d; --ink:#e6e6e6; --dim:#7d7d7d;
-  --cyan:#e6e6e6; --magenta:#ffffff; --green:#6ee7a0; --amber:#c8c8c8; --red:#ff6b6b;
-  --line:#242424;
-}
-.brand{display:flex;align-items:center;gap:8px;font-size:15px}
-.brandlogo{height:30px;width:auto}
+/* Cairn Wallet — refine-terminal stylesheet, shared by popup.html and approve.html.
+   Layer order matters: tokens → base → primitives → home → panels → approve → views → motion,
+   with the reduced-motion kill-switch LAST so it always wins. */
 
-/* recovery-phrase backup grid */
-.seed-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:10px 0}
-.seed-word{display:flex;align-items:baseline;gap:6px;padding:6px 8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:12px}
-.seed-n{color:var(--dim);font-size:10px;min-width:14px;text-align:right}
-.infobox{margin:10px 0;padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(110,231,160,.04);font-size:11px;line-height:1.5;color:var(--dim)}
-.infobox .infohead{color:var(--green);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
-.infobox code{color:var(--ink);font-size:10px}
-.ack{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);margin:10px 0}
-.ack input{width:auto;margin:0}
-button:disabled{opacity:.45;cursor:not-allowed}
-.badge{font-size:9px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:6px;vertical-align:middle}
-.setuplogo{display:block;height:84px;width:auto;margin:6px auto 14px}
+/* ═══ 1. tokens ═══ */
+:root{
+  /* monochrome terminal: white on black, phosphor-green for ok/live, amber for pending */
+  --bg:#070707; --panel:#0d0d0d; --panel2:#111; --ink:#e6e6e6; --dim:#7d7d7d;
+  --cyan:#e6e6e6; --magenta:#ffffff; --green:#6ee7a0; --amber:#ffd24a; --red:#ff6b6b;
+  --line:#242424; --line2:#333;
+  /* spacing / radius scales */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px;
+  --r-1:4px; --r-2:8px; --r-3:12px;
+  /* elevation + glow */
+  --elev-1:0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.5);
+  --elev-2:0 16px 48px rgba(0,0,0,.65);
+  --glow-green:0 0 12px rgba(110,231,160,.25);
+  /* motion */
+  --dur-1:120ms; --dur-2:220ms; --dur-3:420ms;
+  --ease:cubic-bezier(.2,.7,.2,1);
+}
+
+/* ═══ 2. reset / base ═══ */
 *{box-sizing:border-box}
 body{margin:0;width:340px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);color:var(--ink)}
-#app{padding:14px}
+/* faint phosphor wash, landing-page DNA (sits behind #app content) */
+body::before{content:"";position:fixed;inset:0;background:radial-gradient(60% 30% at 80% -10%,rgba(110,231,160,.05),transparent);pointer-events:none;z-index:0}
+#app{padding:14px;position:relative;z-index:1}
 header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.brand{font-weight:700;letter-spacing:.5px;color:var(--magenta)}
-.brand .dim{color:var(--cyan);font-weight:400}
-.dim{color:var(--dim)}
-.lead{color:var(--dim);margin:.2em 0 1em}
+code{font-family:inherit}
+::selection{background:var(--green);color:#000}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--line2)}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ═══ 3. primitives ═══ */
 input,textarea{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;outline:none;resize:vertical}
 input:focus,textarea:focus{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.12)}
 button{width:100%;padding:9px 10px;margin:6px 0;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;cursor:pointer;transition:.12s}
@@ -34,23 +42,66 @@ button:hover{border-color:var(--cyan);color:#fff}
 button.primary{background:#fff;border-color:#fff;color:#000;font-weight:700}
 button.primary:hover{background:#d6d6d6;color:#000}
 button.mini{width:auto;padding:3px 8px;margin:0 0 0 6px;font-size:11px}
-.or{text-align:center;color:var(--dim);margin:10px 0}
-.addr-row,.bal-row{display:flex;align-items:center;gap:6px;margin:6px 0}
+button:disabled{opacity:.45;cursor:not-allowed}
 .label{color:var(--dim);font-size:11px;min-width:58px}
-.addr{color:var(--cyan);font-size:11px;word-break:break-all;flex:1}
-.bal{color:var(--green);font-weight:700}
-.actions{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.actions .primary{grid-column:1 / -1}
-.settings{margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:7px}
-.settings label{display:block;font-size:11px;color:var(--dim);margin-bottom:6px}
-.pending{margin:10px 0;padding:10px;border:1px solid var(--amber);border-radius:7px;background:rgba(255,193,77,.06)}
-.pending .req{font-size:12px;margin-bottom:8px}
-.pending .req b{color:var(--amber)}
-.pending .row{display:flex;gap:8px}
+.dim{color:var(--dim)}
+.lead{color:var(--dim);margin:.2em 0 1em}
+.or{text-align:center;color:var(--dim);margin:10px 0}
 .msg{margin-top:10px;font-size:12px;min-height:1.2em}
 .msg.ok{color:var(--green)} .msg.err{color:var(--red)} .msg.info{color:var(--dim)}
-code{font-family:inherit}
+/* clear-sign warning fragments (clearsign.ts emits <span class="err">/<b class="err"> for
+   unusual-fee / hidden-recipient / invalid-amount warnings) — must always read as warnings */
+.err{color:var(--red)}
+.badge{font-size:9px;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 4px;margin-left:6px;vertical-align:middle}
 
+/* ═══ 4. home components ═══ */
+.brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;letter-spacing:.5px;color:var(--magenta)}
+.brand .dim{color:var(--cyan);font-weight:400}
+.brandlogo{height:30px;width:auto}
+.addr-row,.bal-row{display:flex;align-items:center;gap:6px;margin:6px 0}
+.addr{color:var(--cyan);font-size:11px;word-break:break-all;flex:1}
+.bal{color:var(--green);font-weight:700;font-variant-numeric:tabular-nums}
+.actions{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.actions .primary{grid-column:1 / -1}
+.actions button{margin:0}
+/* identity block: gradient identicon + primary name + full address */
+.id-block{display:flex;align-items:center;gap:10px;margin:10px 0 4px}
+.id-avatar{width:36px;height:36px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.55);border:1px solid var(--line2)}
+.id-text{flex:1;min-width:0}
+.id-text .addr-row{margin:2px 0 0}
+/* primary .csd name as the account identity */
+.primary-name{color:var(--green);font-weight:700;font-size:13px;margin:0 0 2px;letter-spacing:.3px}
+.primary-name::before{content:"★ ";color:var(--green);font-weight:400}
+/* balance hero */
+.bal-hero{margin:6px 0 2px}
+.bal-hero .label{display:block;min-width:0}
+.bal-line{display:flex;align-items:center;gap:8px}
+.bal-xl{font-size:26px;line-height:1.25;letter-spacing:.5px}
+/* action tiers: Send/Receive pair, then the 2x2 utility grid */
+.actions-primary{margin-top:10px}
+.actions-primary button{padding:12px 10px;font-size:14px}
+.actions-primary .primary{grid-column:auto}
+button.primary.ghost{background:transparent;border-color:var(--green);color:var(--green)}
+button.primary.ghost:hover{background:rgba(110,231,160,.08);border-color:var(--green);color:var(--green)}
+.actions-secondary{margin-top:8px}
+.actions-secondary button{font-size:12px;padding:8px 10px}
+/* footer nav (main view only; fixed so it never scrolls away; hidden on setup/backup/locked) */
+.footnav{position:fixed;left:0;right:0;bottom:0;z-index:15;display:none;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);background:rgba(7,7,7,.92);backdrop-filter:blur(6px)}
+body:has(#view-main:not([hidden])) .footnav{display:grid}
+.nav-it{position:relative;margin:0;width:100%;padding:11px 4px;font-size:11px;letter-spacing:.5px;background:transparent;border:none;border-radius:0;color:var(--dim)}
+.nav-it:hover{color:var(--ink);border:none}
+.nav-it::after{content:"";position:absolute;top:-1px;left:22%;right:22%;height:2px;background:var(--green);transform:scaleX(0);transition:transform var(--dur-1) var(--ease)}
+.nav-it.active{color:var(--green)}
+.nav-it.active::after{transform:scaleX(1)}
+body:has(#view-main:not([hidden])){padding-bottom:46px}
+/* status line floats above the footer nav while the main view is active; pointer-events:none
+   so it can never click-block the controls in the band it overlays (it is text-only) */
+body:has(#view-main:not([hidden])) #msg:not(:empty){position:fixed;left:14px;right:14px;bottom:46px;z-index:14;background:rgba(7,7,7,.95);padding:6px 0;margin:0;pointer-events:none}
+/* receive panel */
+.receive-card{display:flex;justify-content:center;padding:12px;background:#f2f2f2;border-radius:10px;margin:4px 0 10px}
+.receive-card[hidden]{display:none}   /* display:flex would otherwise beat the UA [hidden] rule (same trap as .crow) */
+.addr-big{display:block;font-size:12px;margin:6px 0}
+.receive-note{font-size:11px;margin-top:6px}
 /* CairnX assets (token balances + .csd names) under the CSD balance */
 .assets{margin:8px 0 2px;padding:8px 10px;border:1px solid var(--line);border-radius:7px}
 .assets .label{display:block;margin-bottom:2px}
@@ -65,101 +116,6 @@ code{font-family:inherit}
 .assets-retry{font-size:11px;color:var(--dim)}
 .assets-retry a{color:var(--cyan);cursor:pointer;text-decoration:none}
 .assets-retry a:hover{color:#fff;text-decoration:underline}
-
-/* transaction history (Activity) */
-.act-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.act-head a{color:var(--cyan);font-size:11px;text-decoration:none}
-.act-head a:hover{color:#fff;text-decoration:underline}
-.history{max-height:240px;overflow-y:auto}
-.tx{padding:8px 0;border-bottom:1px solid var(--line)}
-.tx:last-child{border-bottom:none}
-.tx-top{display:flex;justify-content:space-between;align-items:baseline}
-.tx-kind{font-weight:700;color:var(--ink)}
-.tx-amt{color:var(--green);font-weight:700}
-.tx-sub{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;margin-top:2px}
-.tx-sub a{color:var(--cyan);text-decoration:none}
-.tx-sub a:hover{color:#fff;text-decoration:underline}
-.tx-when{font-size:10px;margin-top:2px}
-
-/* account switcher (multi-wallet) */
-.acct-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
-.acct-select{flex:1;width:auto;margin:0;padding:7px 9px;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;cursor:pointer}
-.acct-select:focus{border-color:#fff;outline:none}
-#btn-accts{margin:0}
-#accts-list .tx-kind{color:var(--magenta)}
-.acct-rename-input{width:118px;margin:0;padding:3px 7px;font-size:11px}
-
-/* header RPC switcher */
-.hdr-tools{display:flex;gap:6px;align-items:center}
-.rpc-wrap{position:relative}
-.rpcbtn{width:auto;margin:0;padding:4px 9px;font-size:11px;letter-spacing:.5px;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--dim);cursor:pointer}
-.rpcbtn:hover{border-color:var(--cyan);color:#fff}
-.rpc-menu{position:absolute;right:0;top:28px;z-index:20;width:240px;background:#0b0b0b;border:1px solid var(--line);border-radius:8px;padding:6px;box-shadow:0 16px 40px rgba(0,0,0,.6)}
-.rpc-row{display:flex;align-items:center;gap:4px}
-.rpc-pick{flex:1;width:auto;text-align:left;margin:1px 0;padding:6px 8px;background:transparent;border:1px solid transparent;border-radius:6px;color:var(--ink);cursor:pointer;display:flex;flex-direction:column;gap:1px}
-.rpc-pick:hover{border-color:var(--line);background:var(--panel)}
-.rpc-row.active .rpc-pick{color:var(--green)}
-.rpc-label{font-size:12px}
-.rpc-url{font-size:10px;color:var(--dim)}
-.rpc-del{width:auto;margin:0;padding:2px 7px;font-size:12px;color:var(--dim)}
-.rpc-del:hover{color:var(--red);border-color:var(--red)}
-.rpc-add{display:flex;gap:4px;margin-top:6px;border-top:1px solid var(--line);padding-top:6px}
-.rpc-add input{margin:0;font-size:11px;padding:5px 7px}
-.rpc-add .mini{margin:0}
-#accts-list .row{display:flex}
-.mono{font-family:inherit}
-
-/* send confirmation (anti address-poisoning) */
-#send-confirm{margin-top:10px}
-.confirm-box{padding:10px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}
-.crow{display:flex;align-items:flex-start;gap:8px;margin:4px 0}
-.crow[hidden]{display:none}   /* the .crow class selector beats the UA [hidden] rule, so a row toggled hidden would otherwise still show (e.g. an empty "Name"/"Renewal fee" row). Restore the intended hide. */
-.crow .label{min-width:54px}
-.crow .addr{color:var(--cyan);font-size:11px;word-break:break-all;flex:1}
-.warn{margin-top:8px;padding:7px 8px;border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:11px;line-height:1.4}
-#send-confirm .row{display:flex;gap:8px;margin-top:8px}
-
-/* ── motion: subtle, phosphor-terminal feel; all disabled under reduced-motion ── */
-@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-@keyframes spin{to{transform:rotate(360deg)}}
-@keyframes pulseAmber{0%,100%{box-shadow:0 0 0 0 rgba(200,200,200,.0)}50%{box-shadow:0 0 0 3px rgba(200,200,200,.10)}}
-@keyframes flash{from{color:#fff;text-shadow:0 0 8px rgba(110,231,160,.7)}to{}}
-@keyframes shimmer{to{background-position:-200% 0}}
-
-/* views + expandable panels ease in instead of snapping */
-section[id^="view-"]:not([hidden]){animation:fadeIn .18s ease both}
-.settings:not([hidden]),#pending:not([hidden]),#send-confirm:not([hidden]){animation:fadeIn .15s ease both}
-
-/* tactile button press */
-button:active:not(:disabled){transform:translateY(1px)}
-
-/* inline spinner shown next to status text during async ops */
-.spinner{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
-
-/* balance: green flash when it updates, shimmer while loading */
-.bal.flash{animation:flash .6s ease}
-.bal.loading{color:transparent;border-radius:4px;background:linear-gradient(90deg,#161616 25%,#222 37%,#161616 63%);background-size:200% 100%;animation:shimmer 1.1s linear infinite}
-
-/* a pending dApp approval gently pulses to draw the eye */
-.pending:not([hidden]){animation:fadeIn .15s ease both,pulseAmber 2s ease-in-out infinite}
-
-/* copied! micro-confirmation on the copy buttons */
-.copied{color:var(--green)!important;border-color:var(--green)!important}
-
-/* in-popup secret reveal (replaces window.prompt for the private key) */
-.secret{word-break:break-all;font-size:11px;color:var(--green);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;margin:6px 0;filter:blur(5px);transition:filter .15s}
-.secret.shown{filter:none}
-.seclabel{font-size:11px;color:var(--dim);margin:12px 0 2px}
-.seed-grid.blur{filter:blur(6px);transition:filter .15s}
-.seed-grid.shown{filter:none}
-
-@media (prefers-reduced-motion: reduce){
-  *{animation:none!important;transition:none!important}
-}
-
-/* primary .csd name as the account identity (shown under the address) */
-.primary-name{color:var(--green);font-weight:700;font-size:13px;margin:-2px 0 6px 64px;letter-spacing:.3px}
-.primary-name::before{content:"★ ";color:var(--green);font-weight:400}
 /* owned .csd names in the assets box */
 .names-head{margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}
 .name-asset{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
@@ -177,3 +133,224 @@ button:active:not(:disabled){transform:translateY(1px)}
 .na-acts .mini{margin:0 0 0 4px}
 .na-acts a.mini{text-decoration:none;color:var(--cyan);border:1px solid var(--line);border-radius:4px;padding:3px 6px}
 .na-acts a.mini:hover{color:#fff;border-color:var(--green)}
+/* transaction history (Activity) */
+.act-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.act-head a{color:var(--cyan);font-size:11px;text-decoration:none}
+.act-head a:hover{color:#fff;text-decoration:underline}
+.history{max-height:240px;overflow-y:auto}
+.tx{padding:8px 0;border-bottom:1px solid var(--line)}
+.tx:last-child{border-bottom:none}
+.tx-top{display:flex;justify-content:space-between;align-items:baseline}
+.tx-kind{font-weight:700;color:var(--ink)}
+.tx-amt{color:var(--green);font-weight:700}
+.tx-sub{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;margin-top:2px}
+.tx-sub a{color:var(--cyan);text-decoration:none}
+.tx-sub a:hover{color:#fff;text-decoration:underline}
+.tx-when{font-size:10px;margin-top:2px}
+/* account switcher (multi-wallet) */
+.acct-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.acct-select{flex:1;width:auto;margin:0;padding:7px 9px;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);font:inherit;cursor:pointer}
+.acct-select:focus{border-color:#fff;outline:none}
+#btn-accts{margin:0}
+#accts-list .tx-kind{color:var(--magenta)}
+#accts-list .row{display:flex}
+.acct-rename-input{width:118px;margin:0;padding:3px 7px;font-size:11px}
+.mono{font-family:inherit}
+/* header RPC + explorer switchers */
+.hdr-tools{display:flex;gap:6px;align-items:center}
+.rpc-wrap{position:relative}
+.rpcbtn{width:auto;margin:0;padding:4px 9px;font-size:11px;letter-spacing:.5px;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--dim);cursor:pointer}
+.rpcbtn:hover{border-color:var(--cyan);color:#fff}
+.rpc-menu{position:absolute;right:0;top:28px;z-index:20;width:240px;background:#0b0b0b;border:1px solid var(--line);border-radius:8px;padding:6px;box-shadow:0 16px 40px rgba(0,0,0,.6)}
+.rpc-row{display:flex;align-items:center;gap:4px}
+.rpc-pick{flex:1;width:auto;text-align:left;margin:1px 0;padding:6px 8px;background:transparent;border:1px solid transparent;border-radius:6px;color:var(--ink);cursor:pointer;display:flex;flex-direction:column;gap:1px}
+.rpc-pick:hover{border-color:var(--line);background:var(--panel)}
+.rpc-row.active .rpc-pick{color:var(--green)}
+.rpc-label{font-size:12px}
+.rpc-url{font-size:10px;color:var(--dim)}
+.rpc-del{width:auto;margin:0;padding:2px 7px;font-size:12px;color:var(--dim)}
+.rpc-del:hover{color:var(--red);border-color:var(--red)}
+.rpc-add{display:flex;gap:4px;margin-top:6px;border-top:1px solid var(--line);padding-top:6px}
+.rpc-add input{margin:0;font-size:11px;padding:5px 7px}
+.rpc-add .mini{margin:0}
+
+/* ═══ 5. panels ═══ */
+.settings{margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:7px}
+.settings label{display:block;font-size:11px;color:var(--dim);margin-bottom:6px}
+/* while any panel is open, the home content steps aside — the hidden attribute stays the
+   single source of truth; this rule only swaps what is VISIBLE, never what is open */
+#view-main:has(#layer > :not([hidden])) #home{display:none}
+.panel-head{display:flex;align-items:center;gap:8px;margin:0 0 8px}
+.panel-back{width:auto;margin:0;padding:2px 9px;font-size:13px;line-height:1.4;background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--dim)}
+.panel-back:hover{color:#fff;border-color:var(--cyan)}
+.panel-title{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--dim)}
+.panel-head .bal{margin-left:auto}   /* e.g. the token ticker in the send-token head */
+/* panels own their height and scroll internally so actions never fall past Chrome's popup cap;
+   the send/token confirm cards are small (~220px) and never scroll their warnings away */
+#layer > .settings{max-height:420px;overflow-y:auto}
+#layer .history{max-height:300px}
+/* send/token review: the confirm card becomes the whole panel; the (disabled) inputs step
+   aside visually — the frozen reviewed snapshot is what gets signed (shown in the c-/tc- rows) */
+#send-form:has(> #send-confirm:not([hidden])) > label,
+#send-form:has(> #send-confirm:not([hidden])) > #btn-send{display:none}
+#tsend-form:has(> #tsend-confirm:not([hidden])) > label,
+#tsend-form:has(> #tsend-confirm:not([hidden])) > #ts-avail,
+#tsend-form:has(> #tsend-confirm:not([hidden])) > #btn-tsend{display:none}
+#send-confirm{margin-top:0}
+/* review mode: the confirm card IS the screen — the account/identity/balance chrome steps
+   aside so the full address, amounts, warnings and buttons all fit in one popup viewport.
+   #pending stays visible (a hostile dApp request must never be maskable by a review). */
+#view-main:has(#send-confirm:not([hidden])) .acct-row,
+#view-main:has(#send-confirm:not([hidden])) .id-block,
+#view-main:has(#send-confirm:not([hidden])) .bal-hero,
+#view-main:has(#tsend-confirm:not([hidden])) .acct-row,
+#view-main:has(#tsend-confirm:not([hidden])) .id-block,
+#view-main:has(#tsend-confirm:not([hidden])) .bal-hero,
+#view-main:has(#name-action-form:not([hidden])) .acct-row,
+#view-main:has(#name-action-form:not([hidden])) .id-block,
+#view-main:has(#name-action-form:not([hidden])) .bal-hero{display:none}
+.pending{margin:10px 0;padding:10px;border:1px solid var(--amber);border-radius:7px;background:rgba(255,210,74,.06)}
+.pending .req{font-size:12px;margin-bottom:8px}
+.pending .req b{color:var(--amber)}
+.pending .row{display:flex;gap:8px}
+/* send confirmation (anti address-poisoning) */
+#send-confirm{margin-top:10px}
+.confirm-box{padding:10px;border:1px solid var(--line);border-radius:7px;background:var(--panel)}
+.crow{display:flex;align-items:flex-start;gap:8px;margin:4px 0}
+.crow[hidden]{display:none}   /* the .crow class selector beats the UA [hidden] rule, so a row toggled hidden would otherwise still show (e.g. an empty "Name"/"Renewal fee" row). Restore the intended hide. */
+.crow .label{min-width:54px}
+.crow .addr{color:var(--cyan);font-size:11px;word-break:break-all;flex:1}
+.warn{margin-top:8px;padding:7px 8px;border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:11px;line-height:1.4}
+#send-confirm .row{display:flex;gap:8px;margin-top:8px}
+
+/* ═══ 6. approve page (approve.html only — every rule scoped under .page-approve; zero
+   approve.ts / clearsign.ts edits, all IDs and class hooks untouched) ═══ */
+body.page-approve{width:auto;min-width:340px;max-width:380px}
+.page-approve #app{padding:var(--sp-4) var(--sp-4) 0}
+/* opacity-only view entrance here: a filled transform animation would re-anchor the sticky
+   action bar (Chrome keeps the transformed ancestor a containing block after fill) */
+@keyframes fadeInO{from{opacity:0}to{opacity:1}}
+.page-approve section[id^="view-"]:not([hidden]){animation:fadeInO var(--dur-2) var(--ease) both}
+/* the request: a stack of cards instead of one amber blob; the describe card (what you are
+   actually signing) carries the amber accent. #req keeps its .pending hooks but not the pulse. */
+.page-approve #req{padding:0;border:none;background:transparent;animation:none;margin:4px 0 10px}
+.page-approve #req > .req{padding:var(--sp-3);border:1px solid var(--line);border-radius:var(--r-2);background:var(--panel);margin:0 0 8px;font-size:12px;line-height:1.55;word-break:break-word}
+.page-approve #req > .req.dim{background:transparent;padding:7px var(--sp-3);font-size:11px;margin:0 0 6px}
+.page-approve #req > .req:not(.dim){border-left:2px solid var(--amber);box-shadow:var(--elev-1)}
+.page-approve #req > .req:not(.dim) b{color:var(--amber)}
+/* the cost / balance-after line reads as the money row */
+.page-approve #req > #cost{color:var(--ink);background:rgba(255,210,74,.05);border:1px solid rgba(255,210,74,.3);border-radius:var(--r-2)}
+/* Approve/Reject always on-screen: sticky bar at the window bottom; long clear-sign output
+   scrolls above it instead of pushing the buttons below the fold */
+.page-approve .actions{position:sticky;bottom:0;margin:0;padding:var(--sp-2) 0 var(--sp-3);background:linear-gradient(transparent,var(--bg) 38%)}
+.page-approve .actions button{margin:0}
+/* visible "arming" state for the 700ms anti-click-through window (never shortened) */
+.page-approve .actions button:disabled{opacity:.3;transition:opacity .25s}
+
+/* ═══ 7. views: setup / backup / locked ═══ */
+.setuplogo{display:block;height:84px;width:auto;margin:6px auto 14px}
+.setup-lead{text-align:center;font-size:12px}
+.pw-hint{font-size:12px;opacity:.7;margin:-4px 0 8px;min-height:14px}
+/* restore/import folded into disclosure rows (native details, no JS) */
+.alt-path{margin:10px 0;border:1px solid var(--line);border-radius:var(--r-2);background:var(--panel)}
+.alt-path summary{cursor:pointer;padding:9px 12px;font-size:12px;color:var(--dim);list-style:none;display:flex;align-items:center;gap:8px}
+.alt-path summary::-webkit-details-marker{display:none}
+.alt-path summary::before{content:"▸";font-size:10px;transition:transform var(--dur-1) var(--ease)}
+.alt-path[open] summary::before{transform:rotate(90deg)}
+.alt-path summary:hover{color:var(--ink)}
+.alt-path .alt-body{padding:0 12px 12px}
+/* backup: acknowledge + continue pinned while the long backup content scrolls */
+.backup-cta{position:sticky;bottom:0;background:linear-gradient(transparent 0,var(--bg) 12px);padding:16px 0 10px;margin-top:6px}
+.backup-cta .ack{margin:6px 0}
+.backup-cta button{margin:0}
+/* locked: centered cairn-mark composition (shared with the approve window's lock view) */
+.lock-view{text-align:center;padding:36px 0 16px}
+.lock-glyph{width:40px;height:40px;color:var(--green);filter:drop-shadow(0 0 8px rgba(110,231,160,.35));display:block;margin:0 auto 8px}
+/* recovery-phrase backup grid */
+.seed-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:10px 0}
+.seed-word{display:flex;align-items:baseline;gap:6px;padding:6px 8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:12px}
+.seed-n{color:var(--dim);font-size:10px;min-width:14px;text-align:right}
+.infobox{margin:10px 0;padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(110,231,160,.04);font-size:11px;line-height:1.5;color:var(--dim)}
+.infobox .infohead{color:var(--green);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
+.infobox code{color:var(--ink);font-size:10px}
+.ack{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);margin:10px 0}
+.ack input{width:auto;margin:0}
+/* in-popup secret reveal (replaces window.prompt for the private key) */
+.secret{word-break:break-all;font-size:11px;color:var(--green);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;margin:6px 0;filter:blur(5px);transition:filter .15s}
+.secret.shown{filter:none}
+.seclabel{font-size:11px;color:var(--dim);margin:12px 0 2px}
+.seed-grid.blur{filter:blur(6px);transition:filter .15s}
+.seed-grid.shown{filter:none}
+
+/* ═══ 8. motion: subtle, phosphor-terminal feel; all disabled under reduced-motion ═══ */
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes rowIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes slideUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulseAmber{0%,100%{box-shadow:0 0 0 0 rgba(255,210,74,0)}50%{box-shadow:0 0 0 3px rgba(255,210,74,.12)}}
+@keyframes flash{from{color:#fff;text-shadow:var(--glow-green),0 0 8px rgba(110,231,160,.7)}to{}}
+@keyframes shimmer{to{background-position:-200% 0}}
+@keyframes copyPop{from{transform:scale(.9)}50%{transform:scale(1.08)}to{transform:scale(1)}}
+@keyframes okPop{from{transform:scale(.4);opacity:0}60%{transform:scale(1.15)}to{transform:scale(1);opacity:1}}
+@keyframes bornRing{from{opacity:.9;transform:scale(.94)}to{opacity:0;transform:scale(1.05)}}
+@keyframes sweep{from{background-position:120% 0}to{background-position:-60% 0}}
+
+/* views ease in; the main view cascades its children (unlock moment) */
+section[id^="view-"]:not([hidden]){animation:fadeIn var(--dur-2) var(--ease) both}
+#view-main:not([hidden]) > .acct-row{animation:fadeIn var(--dur-2) var(--ease) both}
+#view-main:not([hidden]) > .id-block{animation:fadeIn var(--dur-2) var(--ease) both;animation-delay:40ms}
+#view-main:not([hidden]) > .bal-hero{animation:fadeIn var(--dur-2) var(--ease) both;animation-delay:80ms}
+#view-main:not([hidden]) > #home{animation:fadeIn var(--dur-2) var(--ease) both;animation-delay:120ms}
+
+/* panels + confirm cards slide up in place */
+.settings:not([hidden]),#pending:not([hidden]),#send-confirm:not([hidden]){animation:fadeIn .15s ease both}
+#layer > .settings:not([hidden]){animation:slideUp var(--dur-2) var(--ease) both}
+#send-confirm:not([hidden]),#tsend-confirm:not([hidden]){animation:slideUp var(--dur-2) var(--ease) both}
+
+/* list rows rise in with a short stagger (rows 9+ appear immediately) */
+.tx,.asset,.name-asset{animation:rowIn 180ms var(--ease) both}
+.tx:nth-child(2),.asset:nth-child(2),.name-asset:nth-child(2){animation-delay:25ms}
+.tx:nth-child(3),.asset:nth-child(3),.name-asset:nth-child(3){animation-delay:50ms}
+.tx:nth-child(4),.asset:nth-child(4),.name-asset:nth-child(4){animation-delay:75ms}
+.tx:nth-child(5),.asset:nth-child(5),.name-asset:nth-child(5){animation-delay:100ms}
+.tx:nth-child(6),.asset:nth-child(6),.name-asset:nth-child(6){animation-delay:125ms}
+.tx:nth-child(7),.asset:nth-child(7),.name-asset:nth-child(7){animation-delay:150ms}
+.tx:nth-child(8),.asset:nth-child(8),.name-asset:nth-child(8){animation-delay:175ms}
+
+/* seed words cascade on the backup screen (wallet-creation moment) */
+.seed-word{animation:rowIn var(--dur-2) var(--ease) both}
+.seed-word:nth-child(2){animation-delay:30ms}.seed-word:nth-child(3){animation-delay:60ms}
+.seed-word:nth-child(4){animation-delay:90ms}.seed-word:nth-child(5){animation-delay:120ms}
+.seed-word:nth-child(6){animation-delay:150ms}.seed-word:nth-child(7){animation-delay:180ms}
+.seed-word:nth-child(8){animation-delay:210ms}.seed-word:nth-child(9){animation-delay:240ms}
+.seed-word:nth-child(10){animation-delay:270ms}.seed-word:nth-child(11){animation-delay:300ms}
+.seed-word:nth-child(12){animation-delay:330ms}
+
+/* one-shot moments: wallet ready (ring pulse over the hero) + send success (glow sweep) */
+.bal-hero{position:relative}
+#view-main.born .bal-hero::after{content:"";position:absolute;inset:-8px -6px;border:2px solid var(--green);border-radius:12px;animation:bornRing .7s var(--ease) both;pointer-events:none}
+.bal-hero.sent::after{content:"";position:absolute;inset:-4px 0;background:linear-gradient(100deg,transparent 30%,rgba(110,231,160,.16) 50%,transparent 70%);background-size:250% 100%;animation:sweep .8s ease both;pointer-events:none;border-radius:8px}
+.msg.sent::before{content:"✓ ";display:inline-block;color:var(--green);animation:okPop .5s var(--ease) both}
+
+/* tactile button press + primary-action hover lift */
+button:active:not(:disabled){transform:translateY(1px)}
+.actions-primary button:hover{transform:translateY(-1px);box-shadow:0 0 12px rgba(110,231,160,.15)}
+.actions-primary button:active{transform:translateY(1px)}
+
+/* inline spinner shown next to status text during async ops */
+.spinner{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
+
+/* balance: green flash when it updates, shimmer while loading */
+.bal.flash{animation:flash .6s ease}
+.bal.loading{color:transparent;border-radius:4px;background:linear-gradient(90deg,#161616 25%,#222 37%,#161616 63%);background-size:200% 100%;animation:shimmer 1.1s linear infinite}
+
+/* a pending dApp approval gently pulses to draw the eye */
+.pending:not([hidden]){animation:fadeIn .15s ease both,pulseAmber 2s ease-in-out infinite}
+
+/* copied! micro-confirmation on the copy buttons */
+.copied{color:var(--green)!important;border-color:var(--green)!important;animation:copyPop .18s var(--ease)}
+
+/* ═══ 9. reduced-motion kill-switch — keep LAST so it always wins ═══ */
+@media (prefers-reduced-motion: reduce){
+  *{animation:none!important;transition:none!important}
+}

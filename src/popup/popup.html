@@ -24,18 +24,26 @@
 
     <section id="view-setup" hidden>
       <img class="setuplogo" src="icons/logo-white.png" alt="Cairn" />
-      <p class="lead">Create a non-custodial CSD wallet. A 12-word recovery phrase is generated on this device and encrypted under your password — never uploaded.</p>
+      <p class="lead setup-lead">Create a non-custodial CSD wallet. A 12-word recovery phrase is generated on this device and encrypted under your password — never uploaded.</p>
       <input id="setup-pw" type="password" placeholder="choose a password" autocomplete="new-password" />
-      <div id="setup-pw-hint" style="font-size:12px;opacity:0.7;margin:-4px 0 8px;min-height:14px"></div>
+      <div id="setup-pw-hint" class="pw-hint"></div>
       <button id="btn-create" class="primary">Create new wallet</button>
-      <div class="or">— or restore from a recovery phrase —</div>
-      <textarea id="restore-phrase" rows="2" placeholder="enter your 12-word recovery phrase"></textarea>
-      <input id="restore-pw" type="password" placeholder="password to encrypt it" autocomplete="new-password" />
-      <button id="btn-restore">Restore wallet</button>
-      <div class="or">— or import a single private key —</div>
-      <input id="import-key" type="password" placeholder="import private key (0x…64 hex)" />
-      <input id="import-pw" type="password" placeholder="password to encrypt it" autocomplete="new-password" />
-      <button id="btn-import">Import key</button>
+      <details class="alt-path">
+        <summary>Restore from a recovery phrase</summary>
+        <div class="alt-body">
+          <textarea id="restore-phrase" rows="2" placeholder="enter your 12-word recovery phrase"></textarea>
+          <input id="restore-pw" type="password" placeholder="password to encrypt it" autocomplete="new-password" />
+          <button id="btn-restore">Restore wallet</button>
+        </div>
+      </details>
+      <details class="alt-path">
+        <summary>Import a single private key</summary>
+        <div class="alt-body">
+          <input id="import-key" type="password" placeholder="import private key (0x…64 hex)" />
+          <input id="import-pw" type="password" placeholder="password to encrypt it" autocomplete="new-password" />
+          <button id="btn-import">Import key</button>
+        </div>
+      </details>
     </section>
 
     <section id="view-backup" hidden>
@@ -55,11 +63,14 @@
         A plain CSD key for this account only. It's the <b>portable</b> backup: import it into the <code>csd</code> CLI (<code>csd wallet recover</code>) or any CSD wallet to use this account elsewhere. (The phrase above already covers it — this is for moving a single account.)
       </div>
 
-      <label class="ack"><input id="ack-backup" type="checkbox" /> I've saved my recovery phrase (and/or private key) somewhere safe</label>
-      <button id="btn-backup-done" class="primary" disabled>Continue</button>
+      <div class="backup-cta">
+        <label class="ack"><input id="ack-backup" type="checkbox" /> I've saved my recovery phrase (and/or private key) somewhere safe</label>
+        <button id="btn-backup-done" class="primary" disabled>Continue</button>
+      </div>
     </section>
 
-    <section id="view-locked" hidden>
+    <section id="view-locked" class="lock-view" hidden>
+      <svg class="lock-glyph" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>
       <p class="lead">Wallet locked.</p>
       <input id="unlock-pw" type="password" placeholder="password" autocomplete="current-password" />
       <button id="btn-unlock" class="primary">Unlock</button>
@@ -71,8 +82,44 @@
         <button id="btn-accts" class="mini" title="Manage accounts">accounts ▾</button>
       </div>
 
+      <div class="id-block">
+        <div id="avatar" class="id-avatar" aria-hidden="true"></div>
+        <div class="id-text">
+          <div id="primary-name" class="primary-name" hidden></div>
+          <div class="addr-row">
+            <code id="addr" class="addr"></code>
+            <button id="btn-copy" class="mini">copy</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="bal-hero">
+        <span class="label">balance</span>
+        <div class="bal-line"><span id="balance" class="bal bal-xl">—</span> <button id="btn-refresh" class="mini">↻</button></div>
+      </div>
+
+      <!-- pending dApp approvals stay OUTSIDE the #home/#layer swap: a hostile request must
+           pulse into view even while a form panel is open -->
+      <div id="pending" class="pending" hidden></div>
+
+      <div id="home">
+        <div class="actions actions-primary">
+          <button id="btn-send-t" class="primary">↑ Send</button>
+          <button id="btn-receive" class="primary ghost">↓ Receive</button>
+        </div>
+        <div class="actions actions-secondary">
+          <button id="btn-post-t">Post to Cairn</button>
+          <button id="btn-seal-t">Seal a claim</button>
+          <button id="btn-phrase">Recovery phrase</button>
+          <button id="btn-export">Reveal key</button>
+        </div>
+        <div id="assets" class="assets" hidden></div>
+      </div>
+
+      <div id="layer">
+
       <div id="accts-panel" class="settings" hidden>
-        <div class="act-head"><span class="label">your accounts</span></div>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">your accounts</span></div>
         <div id="accts-list" class="history"></div>
         <button id="btn-add-acct" class="mini">+ New account</button>
         <div class="or">— or import an existing key —</div>
@@ -81,30 +128,17 @@
         <button id="btn-imp-acct" class="mini">Import account</button>
       </div>
 
-      <div class="addr-row">
-        <span class="label">address</span>
-        <code id="addr" class="addr"></code>
-        <button id="btn-copy" class="mini">copy</button>
-      </div>
-      <div id="primary-name" class="primary-name" hidden></div>
-      <div class="bal-row"><span class="label">balance</span> <span id="balance" class="bal">—</span> <button id="btn-refresh" class="mini">↻</button></div>
-
-      <div id="assets" class="assets" hidden></div>
-
-      <div id="pending" class="pending" hidden></div>
-
-      <div class="actions">
-        <button id="btn-send-t" class="primary">Send CSD</button>
-        <button id="btn-post-t">Post to Cairn</button>
-        <button id="btn-seal-t">Seal a claim</button>
-        <button id="btn-activity-t">Activity</button>
-        <button id="btn-phrase">Recovery phrase</button>
-        <button id="btn-export">Reveal key</button>
-        <button id="btn-settings">Settings</button>
-        <button id="btn-lock">Lock</button>
+      <div id="receive-panel" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">receive</span></div>
+        <div class="receive-card" hidden><canvas id="receive-qr" width="0" height="0"></canvas></div>
+        <div id="receive-name" class="primary-name" hidden></div>
+        <code id="receive-addr" class="addr addr-big"></code>
+        <button id="btn-receive-copy" class="mini">copy address</button>
+        <div class="dim receive-note">Only send CSD or CairnX assets on Compute Substrate to this address.</div>
       </div>
 
       <div id="seal-form" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">seal a claim</span></div>
         <label>Claim — kept secret until you reveal<textarea id="seal-claim" rows="2" placeholder="e.g. ETH &gt; $4000 by Friday"></textarea></label>
         <label>Topic (domain) <input id="seal-domain" value="csd:sealed" /></label>
         <button id="btn-seal" class="primary">Seal on-chain</button>
@@ -113,11 +147,13 @@
       </div>
 
       <div id="activity" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">activity</span></div>
         <div class="act-head"><span class="label">recent transactions</span><a id="addr-explorer" class="mini" target="_blank" rel="noopener noreferrer">view address ↗</a></div>
         <div id="history-list" class="history"></div>
       </div>
 
       <div id="send-form" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">send CSD</span></div>
         <label>Recipient <input id="s-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount (CSD) <input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" autocomplete="off" /></label>
         <button id="btn-send" class="primary">Review send</button>
@@ -139,7 +175,7 @@
       </div>
 
       <div id="tsend-form" class="settings" hidden>
-        <div class="act-head"><span class="label">send token</span><b id="ts-ticker" class="bal"></b></div>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">send token</span><b id="ts-ticker" class="bal"></b></div>
         <label>Recipient <input id="ts-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount <input id="ts-amt" type="text" inputmode="decimal" placeholder="0.0" autocomplete="off" /></label>
         <div id="ts-avail" class="dim" style="font-size:11px"></div>
@@ -162,6 +198,7 @@
       </div>
 
       <div id="name-action-form" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">confirm name action</span></div>
         <div class="confirm-box">
           <div class="crow"><span class="label">Action</span><b id="nc-action"></b></div>
           <div class="crow"><span class="label">Name</span><span id="nc-name" class="dim"></span></div>
@@ -178,6 +215,7 @@
       </div>
 
       <div id="post-form" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">post to Cairn</span></div>
         <label>Category
           <select id="p-domain" class="acct-select" style="width:100%"></select>
         </label>
@@ -189,6 +227,7 @@
       </div>
 
       <div id="reveal-panel" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">reveal private key</span></div>
         <label>Re-enter your password to reveal your private key<input id="reveal-pw" type="password" placeholder="password" autocomplete="current-password" /></label>
         <button id="btn-reveal-go" class="mini">Reveal</button>
         <div id="reveal-out" class="secret" hidden></div>
@@ -201,6 +240,7 @@
       </div>
 
       <div id="phrase-panel" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">recovery phrase</span></div>
         <label>Re-enter your password to reveal your recovery phrase<input id="phrase-pw" type="password" placeholder="password" autocomplete="current-password" /></label>
         <button id="btn-phrase-go" class="mini">Reveal</button>
         <div id="phrase-out" class="seed-grid blur" hidden></div>
@@ -213,6 +253,7 @@
       </div>
 
       <div id="settings" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">settings</span></div>
         <label>Cairn API <input id="set-api" /></label>
         <label>CairnX API (token balances) <input id="set-tradeapi" /></label>
         <button id="btn-save-settings" class="mini">save</button>
@@ -220,9 +261,20 @@
         <div class="dim" style="font-size:11px;margin-top:10px"><b>Connected sites</b> — sites allowed to see your address. They can’t move funds; signing always asks you each time.</div>
         <div id="connected-sites" class="history"></div>
       </div>
+
+      </div><!-- /#layer -->
     </section>
 
     <div id="msg" class="msg"></div>
+
+    <!-- outside the animated sections: a filled transform animation on an ancestor would
+         otherwise re-anchor this fixed nav to the section instead of the viewport -->
+    <nav class="footnav">
+      <button id="nav-home" class="nav-it active">home</button>
+      <button id="btn-activity-t" class="nav-it">activity</button>
+      <button id="btn-settings" class="nav-it">settings</button>
+      <button id="btn-lock" class="nav-it nav-lock" title="Lock wallet">lock</button>
+    </nav>
   </div>
   <script type="module" src="popup.js"></script>
 </body>
