@@ -3345,6 +3345,7 @@ var REG_FINALIZE_GRACE_BLOCKS = 20;
 var MAX_PENDING_REG = 3;
 var FINALIZE_TIP_MARGIN = 2;
 var V26_HEIGHT = 51200;
+var V27_HEIGHT = 52500;
 var epochOf = (height) => Math.floor(height / EPOCH_LEN);
 var claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
 var claimWindowOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
@@ -3666,6 +3667,13 @@ function resolve(events, tipHeight) {
     const b = bids.get(o.bid);
     if (b && b.status === "open" && b.bidder === buyer) b.status = "done";
   };
+  const voidOpenNameOffers = (name) => {
+    for (const o of offers.values()) if (o.status === "open" && isNameGive(o.give) && o.give.name === name) {
+      releaseGive(o);
+      o.status = "cancelled";
+    }
+  };
+  const earlierAnchor = (effHeight, pos, id, inc) => effHeight < inc.effHeight || effHeight === inc.effHeight && (pos < inc.pos || pos === inc.pos && id < inc.id);
   const claimGrace = (o) => o.claimUntilHeight !== void 0 ? claimGraceOf(o.claimUntilHeight) : 0;
   const claimHeld = (o, height) => o.claimedBy !== void 0 && o.claimUntilHeight !== void 0 && height < o.claimUntilHeight + claimGrace(o);
   const openFillReject = (o, height, who) => {
@@ -3815,7 +3823,7 @@ function resolve(events, tipHeight) {
             }
             const cr = recaptures.get(rec.name);
             const crActive = cr && ev.height > cr.finalizeBy ? void 0 : cr;
-            const better2 = !crActive || (effHeight < crActive.effHeight || effHeight === crActive.effHeight && (ev.pos < crActive.pos || ev.pos === crActive.pos && ev.id < crActive.id));
+            const better2 = !crActive || earlierAnchor(effHeight, ev.pos, ev.id, crActive);
             if (!better2) {
               note(ev, ev.id, "name", false, "recapture already reserved (earlier anchor wins)");
               continue;
@@ -3835,10 +3843,7 @@ function resolve(events, tipHeight) {
             note(ev, ev.id, "name", false, "lapsed-name claim fee unpaid (decaying premium)");
             continue;
           }
-          for (const o of offers.values()) if (o.status === "open" && isNameGive(o.give) && o.give.name === rec.name) {
-            releaseGive(o);
-            o.status = "cancelled";
-          }
+          voidOpenNameOffers(rec.name);
           names.set(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, viaFill: true, paidThroughEpoch: epClaim + NAME_TERM_EPOCHS });
           feesPaid += fee;
           note(ev, ev.id, "name", true, "lapsed lease re-claimed (premium)");
@@ -3849,7 +3854,7 @@ function resolve(events, tipHeight) {
             note(ev, ev.id, "name", false, "v2.5: registration requires a commit-reveal (salt)");
             continue;
           }
-          const better2 = !curActive || !curActive.viaFill && (effHeight < curActive.effHeight || effHeight === curActive.effHeight && (ev.pos < curActive.pos || ev.pos === curActive.pos && ev.id < curActive.id));
+          const better2 = !curActive || !curActive.viaFill && earlierAnchor(effHeight, ev.pos, ev.id, curActive);
           if (!better2) {
             note(ev, ev.id, "name", false, curActive?.viaFill ? "name taken (purchased \u2014 not displaceable)" : "name taken (earlier anchor wins)");
             continue;
@@ -3861,10 +3866,7 @@ function resolve(events, tipHeight) {
             continue;
           }
           if (curActive) {
-            for (const o of offers.values()) if (o.status === "open" && isNameGive(o.give) && o.give.name === rec.name) {
-              releaseGive(o);
-              o.status = "cancelled";
-            }
+            voidOpenNameOffers(rec.name);
           }
           names.set(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, pending: true, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
           note(ev, ev.id, "name", true, curActive ? "reserved (displaced prior reservation)" : "reserved (pending finalize)");
@@ -3883,16 +3885,13 @@ function resolve(events, tipHeight) {
           locked: false,
           ...v15 ? { paidThroughEpoch: epClaim + NAME_TERM_EPOCHS } : {}
         };
-        const better = !curActive || !curActive.viaFill && (effHeight < curActive.effHeight || effHeight === curActive.effHeight && (ev.pos < curActive.pos || ev.pos === curActive.pos && ev.id < curActive.id));
+        const better = !curActive || !curActive.viaFill && earlierAnchor(effHeight, ev.pos, ev.id, curActive);
         if (!better) {
           note(ev, ev.id, "name", false, curActive?.viaFill ? "name taken (purchased \u2014 not displaceable)" : "name taken (earlier anchor wins)");
           continue;
         }
         if (curActive) {
-          for (const o of offers.values()) if (o.status === "open" && isNameGive(o.give) && o.give.name === rec.name) {
-            releaseGive(o);
-            o.status = "cancelled";
-          }
+          voidOpenNameOffers(rec.name);
         }
         names.set(rec.name, cand);
         feesPaid += nameRegFee(rec.name, ev.height);
@@ -3921,8 +3920,8 @@ function resolve(events, tipHeight) {
             note(ev, ev.id, "nfinalize", false, "name registration fee unpaid");
             continue;
           }
-          n.pending = void 0;
-          n.finalizeBy = void 0;
+          delete n.pending;
+          delete n.finalizeBy;
           n.paidThroughEpoch = epochOf(ev.height) + NAME_TERM_EPOCHS;
           feesPaid += nameRegFee(rec.name, ev.height);
           note(ev, ev.id, "nfinalize", true);
@@ -3955,10 +3954,7 @@ function resolve(events, tipHeight) {
             note(ev, ev.id, "nfinalize", false, "recapture premium unpaid (decaying)");
             continue;
           }
-          for (const o of offers.values()) if (o.status === "open" && isNameGive(o.give) && o.give.name === rec.name) {
-            releaseGive(o);
-            o.status = "cancelled";
-          }
+          voidOpenNameOffers(rec.name);
           names.set(rec.name, { owner: who, effHeight: r.effHeight, pos: r.pos, id: r.id, height: r.height, locked: false, paidThroughEpoch: ep + NAME_TERM_EPOCHS });
           recaptures.delete(rec.name);
           feesPaid += fee;
@@ -4071,8 +4067,9 @@ function resolve(events, tipHeight) {
             note(ev, ev.id, "offer", false, "name already locked by another offer");
             continue;
           }
-          if (ev.height >= V13_HEIGHT && !n.viaFill && ev.height - n.effHeight <= COMMIT_MAX_BLOCKS) {
-            note(ev, ev.id, "offer", false, "v1.3: name too young to sell (claim must out-age the commit window)");
+          const saleEmbargo = ev.height >= V27_HEIGHT ? REG_COMMIT_MAX_BLOCKS : COMMIT_MAX_BLOCKS;
+          if (ev.height >= V13_HEIGHT && !n.viaFill && ev.height - n.effHeight <= saleEmbargo) {
+            note(ev, ev.id, "offer", false, "name too young to sell (must out-age the reveal window)");
             continue;
           }
           if (v15 && paidThrough(n) < ev.expiresEpoch) {
@@ -4602,6 +4599,7 @@ export {
   V24_HEIGHT,
   V25_HEIGHT,
   V26_HEIGHT,
+  V27_HEIGHT,
   ZERO_ADDR,
   addrFromPub,
   bid,
