@@ -37,7 +37,7 @@ window.addEventListener("message", (ev: MessageEvent) => {
     // chrome.runtime is invalidated and sendMessage THROWS ("Extension context invalidated"). Without
     // this catch the dApp saw an uncaught error and its call hung forever. Resolve the call with a
     // clean, actionable error instead; the page works again after a refresh (fresh content script).
-    window.postMessage({ target: "cairn-inpage", id, res: { ok: false, error: "WALLET_RELOADED: the wallet extension was updated or reloaded — refresh this page to reconnect" }, nonce: NONCE }, window.location.origin);
+    window.postMessage({ target: "cairn-inpage", id, res: { ok: false, error: "WALLET_RELOADED: the wallet extension was updated or reloaded - refresh this page to reconnect" }, nonce: NONCE }, window.location.origin);
   }
 });
 

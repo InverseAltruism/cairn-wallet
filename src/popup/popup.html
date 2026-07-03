@@ -24,7 +24,7 @@
 
     <section id="view-setup" hidden>
       <img class="setuplogo" src="icons/logo-white.png" alt="Cairn" />
-      <p class="lead setup-lead">Create a non-custodial CSD wallet. A 12-word recovery phrase is generated on this device and encrypted under your password — never uploaded.</p>
+      <p class="lead setup-lead">Create a non-custodial CSD wallet. A 12-word recovery phrase is generated on this device and encrypted under your password. It is never uploaded.</p>
       <input id="setup-pw" type="password" placeholder="choose a password" autocomplete="new-password" />
       <div id="setup-pw-hint" class="pw-hint"></div>
       <button id="btn-create" class="primary">Create new wallet</button>
@@ -51,7 +51,7 @@
       <div id="seed-words" class="seed-grid"></div>
       <button id="btn-copy-seed" class="mini">copy phrase</button>
       <div class="infobox">
-        <div class="infohead">Recovery phrase — backs up everything</div>
+        <div class="infohead">Recovery phrase: backs up everything</div>
         These 12 words restore <b>all</b> your accounts in Cairn Wallet, and in any CSD wallet that uses the same derivation path (<code>m/44'/7779'/0'/0/i</code>). This is your primary backup.
       </div>
 
@@ -59,8 +59,8 @@
       <div id="backup-priv" class="secret shown"></div>
       <button id="btn-copy-priv" class="mini">copy key</button>
       <div class="infobox">
-        <div class="infohead">Private key — portable, one account</div>
-        A plain CSD key for this account only. It's the <b>portable</b> backup: import it into the <code>csd</code> CLI (<code>csd wallet recover</code>) or any CSD wallet to use this account elsewhere. (The phrase above already covers it — this is for moving a single account.)
+        <div class="infohead">Private key: portable, one account</div>
+        A plain CSD key for this account only. It's the <b>portable</b> backup: import it into the <code>csd</code> CLI (<code>csd wallet recover</code>) or any CSD wallet to use this account elsewhere. (The phrase above already covers it; this is for moving a single account.)
       </div>
 
       <div class="backup-cta">
@@ -125,7 +125,7 @@
         <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">your accounts</span></div>
         <div id="accts-list" class="history"></div>
         <button id="btn-add-acct" class="mini">+ New account</button>
-        <div class="or">— or import an existing key —</div>
+        <div class="or">or import an existing key</div>
         <input id="imp-acct-key" type="password" placeholder="private key (0x…64 hex)" />
         <input id="imp-acct-label" placeholder="label (optional)" />
         <button id="btn-imp-acct" class="mini">Import account</button>
@@ -142,7 +142,7 @@
 
       <div id="seal-form" class="settings" hidden>
         <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">seal a claim</span></div>
-        <label>Claim — kept secret until you reveal<textarea id="seal-claim" rows="2" placeholder="e.g. ETH &gt; $4000 by Friday"></textarea></label>
+        <label>Claim: kept secret until you reveal<textarea id="seal-claim" rows="2" placeholder="e.g. ETH &gt; $4000 by Friday"></textarea></label>
         <label>Topic (domain) <input id="seal-domain" value="csd:sealed" /></label>
         <button id="btn-seal" class="primary">Seal on-chain</button>
         <div class="act-head" style="margin-top:10px"><span class="label">your sealed claims</span></div>
@@ -239,7 +239,7 @@
           <button id="btn-reveal-copy" class="mini">copy</button>
           <button id="btn-reveal-close" class="mini">done</button>
         </div>
-        <div class="dim" style="font-size:11px;margin-top:6px">Anyone with this key controls this account. Never share or paste it into a website. This key is portable — it restores this one account in the <code>csd</code> CLI or any CSD wallet. (Your recovery phrase backs up <b>all</b> accounts at once.)</div>
+        <div class="dim" style="font-size:11px;margin-top:6px">Anyone with this key controls this account. Never share or paste it into a website. This key is portable: it restores this one account in the <code>csd</code> CLI or any CSD wallet. (Your recovery phrase backs up <b>all</b> accounts at once.)</div>
       </div>
 
       <div id="phrase-panel" class="settings" hidden>
@@ -261,7 +261,7 @@
         <label>CairnX API (token balances) <input id="set-tradeapi" /></label>
         <button id="btn-save-settings" class="mini">save</button>
         <div class="dim" style="font-size:11px;margin-top:6px">Switch the node RPC from the <b>RPC</b> menu (top right).</div>
-        <div class="dim" style="font-size:11px;margin-top:10px"><b>Connected sites</b> — sites allowed to see your address. They can’t move funds; signing always asks you each time.</div>
+        <div class="dim" style="font-size:11px;margin-top:10px"><b>Connected sites</b>: sites allowed to see your address. They can’t move funds; signing always asks you each time.</div>
         <div id="connected-sites" class="history"></div>
       </div>
 
