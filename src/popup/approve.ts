@@ -35,8 +35,15 @@ async function render() {
   // before building the request HTML (not per ~1.2s tick — this block runs once per new request).
   // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
   if (current.method === "propose" && (current.params || {}).expiresEpoch !== undefined) {
-    try { const e = await call("epoch"); if (e != null) current.currentEpoch = e; } catch { /* offline */ }
-    try { const t = await call("tip"); if (t != null) current.currentTip = t; } catch { /* offline → fee-sufficiency check skipped */ }
+    // These are the ONLY network awaits before the request paints, and node.get() carries no timeout —
+    // a hung (not refused) RPC would hold the approval UI hostage indefinitely. Bound them at 2.5s and
+    // run them in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
+    // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
+    const bounded = (p: Promise<unknown>): Promise<unknown> =>
+      Promise.race([p.catch(() => null), new Promise((res) => setTimeout(() => res(null), 2500))]);
+    const [e, t] = await Promise.all([bounded(call("epoch")), bounded(call("tip"))]);
+    if (e != null) current.currentEpoch = e;
+    if (t != null) current.currentTip = t;
   }
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE

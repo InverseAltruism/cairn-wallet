@@ -434,8 +434,9 @@ export class Wallet {
         const pay = sums.get(payto) ?? 0n;
         const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
         // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
-        // the live tip. node.tip() reports an RPC failure as 0 (get() fails soft, never throws), and
-        // fillIsSafe(…, 0) would silently DISARM the claim gate (0 < V13_HEIGHT) — so an unknown tip on
+        // the live tip. this.tip() yields null on any RPC failure (node.get throws → the catch), and a
+        // degenerate 200-without-height reads as 0 — either way the value below lands at 0, and
+        // fillIsSafe(…, 0) would silently DISARM the claim gate (0 < V13_HEIGHT) — so a non-positive tip on
         // exactly this lane fails CLOSED with the same retryable posture as the unreachable-resolver branch
         // below. Taker-bound and token-priced lanes never consult the tip, so an RPC blip changes nothing
         // for them (no false refusal on the common lane).
