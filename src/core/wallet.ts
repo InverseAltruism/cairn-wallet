@@ -419,12 +419,48 @@ export class Wallet {
       if (offer && typeof offer.status === "string") {
         if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false };
         const me = this.addr();
-        // the seller payment is the output going to want.payto (the amount previewFill/fillIsSafe price against)
+        // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
+        // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
+        // instead of letting BigInt() throw raw out of the preflight.
+        const sums = new Map<string, bigint>();
+        for (const o of q.outputs ?? []) {
+          if (typeof o.value !== "number" || !Number.isSafeInteger(o.value) || o.value <= 0)
+            return { ok: false, error: "each output value must be a positive integer amount in base units — refusing to sign", sighashMatch: false };
+          const k = String(o.to).toLowerCase();
+          sums.set(k, (sums.get(k) ?? 0n) + BigInt(o.value));
+        }
+        // the seller payment is the output sum going to want.payto (what previewFill/fillIsSafe price against)
         const payto = String((offer.want as any)?.payto || "").toLowerCase();
-        const pay = BigInt(q.outputs.filter((o) => String(o.to).toLowerCase() === payto).reduce((a, o) => a + Number(o.value || 0), 0));
+        const pay = sums.get(payto) ?? 0n;
+        const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
+        // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
+        // the live tip. node.tip() reports an RPC failure as 0 (get() fails soft, never throws), and
+        // fillIsSafe(…, 0) would silently DISARM the claim gate (0 < V13_HEIGHT) — so an unknown tip on
+        // exactly this lane fails CLOSED with the same retryable posture as the unreachable-resolver branch
+        // below. Taker-bound and token-priced lanes never consult the tip, so an RPC blip changes nothing
+        // for them (no false refusal on the common lane).
         const tip = (await this.tip()) ?? 0;
+        if (!(tip > 0) && offer.taker === undefined && isCsdWant)
+          return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false };
         const verdict = fillIsSafe(offer, me, pay, tip);
         if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false };
+        // The resolver's value gate is a per-address SUM need-map (resolve.ts whole-fill: payto ≥ want,
+        // TREASURY ≥ fee, seller ≥ rebate, SUMMED when recipients coincide — payto==seller is the common
+        // case; partial fill: TREASURY ≥ fee on the clamped amount). A fill that underpays any of them is
+        // rejected on-chain AFTER the payment moved (the same pay-without-delivery burn class), so mirror
+        // the map and refuse before signing. Pure local math over data already in hand — no added I/O.
+        if (isCsdWant) {
+          const need = new Map<string, bigint>();
+          const addNeed = (a: string, v: bigint) => { const k = a.toLowerCase(); if (v > 0n) need.set(k, (need.get(k) ?? 0n) + v); };
+          const isPartial = offer.min !== undefined && !("name" in ((offer.give as any) ?? {}));
+          if (!isPartial) addNeed(payto, BigInt((offer.want as { value: string }).value)); // whole fill: full price at payto
+          addNeed(TREASURY_ADDR, verdict.preview.fee);
+          if (verdict.preview.rebate > 0n) addNeed(String((offer as any).seller || ""), verdict.preview.rebate);
+          for (const [a, v] of need) if ((sums.get(a) ?? 0n) < v) {
+            const what = a === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : a === payto ? "seller payment" : "maker rebate output";
+            return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false };
+          }
+        }
       } else if (fetchFailed) {
         // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
         // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.

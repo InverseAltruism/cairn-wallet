@@ -56,10 +56,11 @@ let submitN = 0;
 // fillOffer's C2/C3/C4 pre-flight fetches /cairnx/offer/:id; a test can seed a crafted offer here to
 // exercise the refusal paths (an unseeded id returns the generic {ok:true}, which the gate skips).
 const offerFixtures = new Map<string, any>();
+let tipDown = false; // simulate a node-RPC /tip blip (get() fails soft → tip reads 0, never throws)
 (globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
   if (u.includes("/utxos/")) return { ok: true, json: async () => ({ ok: true, confirmed_balance: MOCK_UTXO.value, utxos: [MOCK_UTXO] }) };
-  if (u.endsWith("/tip")) return { ok: true, json: async () => ({ ok: true, height: 34000 }) };  // ≥ V13/V17 (open-lane heights)
+  if (u.endsWith("/tip")) return tipDown ? { ok: false, status: 503, json: async () => ({}) } : { ok: true, json: async () => ({ ok: true, height: 34000 }) };  // ≥ V13/V17 (open-lane heights)
   const om = u.match(/\/cairnx\/offer\/(0x[0-9a-fA-F]{64})/);
   if (om && offerFixtures.has(om[1].toLowerCase())) return { ok: true, status: 200, json: async () => offerFixtures.get(om[1].toLowerCase()) };
   const tr = txReply(u, [MC]); if (tr) return tr;
@@ -258,6 +259,35 @@ async function main() {
   lastSubmit = null;
   const rOpen = await approveFill({ proposalId: OPEN_UNCLAIMED_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES an open CSD offer with no live claim by me (C2/C4)", rOpen?.result?.ok === false && /claim/i.test(String(rOpen?.result?.error)) && lastSubmit === null);
+
+  // ── review F1/F2/F4 follow-ups: tip-down fail-closed, fee/rebate need-map, integer-only money ──
+  // an OPEN CSD offer where *I* hold the live claim (claimUntilHeight past tip 34000): the fill is mine
+  // to make — the remaining ways it can still burn are a missing fee/rebate output or an unknown tip.
+  const MY_CLAIM_ID = "0x" + "26".repeat(32);
+  const TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR (types.ts:79) — the fee sink
+  const myAddr = (await popup("status")).result.addr as string;
+  offerFixtures.set(MY_CLAIM_ID.toLowerCase(), { id: MY_CLAIM_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 34000, feeBps: 150, claimedBy: myAddr, claimUntilHeight: 34100 });
+  // (d) F1: node-RPC /tip blip → tip reads 0 → the claim gate CANNOT be evaluated → fail CLOSED (retryable)
+  tipDown = true; lastSubmit = null;
+  const rTipDown = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
+  check("fillOffer REFUSES an open-CSD fill when the tip cannot be fetched (F1 fail-closed, no payment signed)", rTipDown?.result?.ok === false && /chain tip/i.test(String(rTipDown?.result?.error)) && lastSubmit === null);
+  tipDown = false;
+  // (e) F2: resolver need-map — treasury fee output missing → on-chain "protocol fee unpaid" AFTER payment; refuse
+  lastSubmit = null;
+  const rNoFee = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }], fee: 5_000_000 });
+  check("fillOffer REFUSES a fill missing the protocol-fee output (F2, no payment signed)", rNoFee?.result?.ok === false && /protocol fee/i.test(String(rNoFee?.result?.error)) && lastSubmit === null);
+  // (f) F2 SUM rule: payto==seller, so the seller output must cover price+rebate SUMMED (40M+25.2M); 40M alone underpays
+  lastSubmit = null;
+  const rNoRebate = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 40_000_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
+  check("fillOffer REFUSES when price+rebate at the same address underpays the SUM (F2)", rNoRebate?.result?.ok === false && /underpaid|missing/i.test(String(rNoRebate?.result?.error)) && lastSubmit === null);
+  // (g) F4: a fractional output value is a structured refusal, never a raw BigInt throw
+  lastSubmit = null;
+  const rFrac = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 1.5 }], fee: 5_000_000 });
+  check("fillOffer REFUSES a fractional output value with the structured error shape (F4)", rFrac?.result?.ok === false && /integer/i.test(String(rFrac?.result?.error)) && lastSubmit === null);
+  // (h) CONTROL: the correctly-built fill (price+rebate summed at payto==seller, fee to treasury) SIGNS
+  lastSubmit = null;
+  const rGood = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
+  check("fillOffer with the full need-map (price 40M + rebate 25.2M summed + fee 0.6) SIGNS — no false refusal", rGood?.result?.ok === true && !!rGood?.result?.txid && lastSubmit !== null);
   offerFixtures.clear();
 
   console.log("\n=== dApp `propose` with fee outputs (CairnX deploy/name-reg) — approval-gated, anti-smuggle, capped ===");

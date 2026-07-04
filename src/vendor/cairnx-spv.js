@@ -4517,7 +4517,7 @@ function previewFill(offer2, payRaw) {
   if (offer2.status !== "open") return { ...zero, reason: "not-open" };
   if (isTokenWant(offer2.want)) return { ...zero, reason: "not-csd-priced" };
   const want = BigInt(offer2.want.value);
-  const feeBps = offer2.feeBps || FEE_BPS;
+  const feeBps = offer2.feeBps;
   if (offer2.min !== void 0 && !isNameGive(offer2.give)) {
     const paidSoFar = BigInt(offer2.paid ?? "0");
     const remaining = want - paidSoFar;
