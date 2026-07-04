@@ -272,6 +272,17 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, agreed: 0, disagree: false };
       return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, agreed: 0, disagree: false };
     }
+    // H1 (deep-review 2026-07-03): a REGISTERED-vs-UNREGISTERED disagreement is fail-closed. When one source
+    // serves history (usable) but ANOTHER independent source AFFIRMATIVELY reports the name unregistered (a
+    // clean 404, `unregistered:true` — NOT mere unavailability), do NOT silently honor only the hint-serving
+    // source: the honest source may have fully replayed and seen an out-of-name-scope rejection (the V25
+    // MAX_PENDING_REG forged-green class) that the hint-serving source cannot represent. Fail closed to the
+    // untrusted-resolver caution. This is deliberately NOT a blanket ≥2-source rule — a lone honest source
+    // with NO disagreeing source still verifies, so the common clarvis-DOWN case keeps its single-source
+    // posture (down ≠ a 404). The cost is confined to a genuine primary-vs-second-source existence conflict.
+    if (results.some((r) => r.unregistered)) {
+      return { ...fail(`one name source reports ${name}.csd is unregistered while another served history — the sources disagree on whether it exists; confirm the address out-of-band before sending`), sources: usable.length, agreed: 0, disagree: true };
+    }
     // UNION the hints by lowercase txid; a same-txid-different-height across sources is a tamper → conflict.
     const byTxid = new Map<string, NameHint>();
     let conflict = false;

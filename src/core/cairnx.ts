@@ -21,6 +21,9 @@ import {
   // functions
   canonicalJson, payloadHash, tradeFee, makerRebate, nameRegFee, parseRecord, nameCommit,
   parseAmount as parseAmountCanonical,
+  // Tier 1 pre-flight (deep-review 2026-07-03): the shared value-safety surface the wallet's own
+  // fillOffer/finalize builders call so they never sign a doomed value tx (C1/C2/C3/C4).
+  previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim,
 } from "../vendor/cairnx-spv.js";
 
 // ── app constants (re-exported under the wallet's historical names) ───────────
@@ -31,6 +34,8 @@ export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGH
 // just compute the fee/rebate for clear-sign display. Byte-identical to cairnx-core (callers pass bigint).
 export const cairnxTradeFee = tradeFee;
 export const cairnxMakerRebate = makerRebate;
+// Tier 1 pre-flight helpers, re-exported under the wallet surface (the fillOffer/finalize gates call these).
+export { previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim };
 export const cairnxPayloadHash = (record: unknown): string => payloadHash(record);
 export { nameRegFee };
 // name-fee build heuristic (app-side, NOT a resolver rule): a renewal fee built just below a fee gate but mined

@@ -4511,6 +4511,68 @@ function requiredClaimDepth(valueSats, height) {
   }
   return { depth: max, reversalPct: Math.pow(r, max) * 100, capped: true };
 }
+function previewFill(offer2, payRaw) {
+  const pay = BigInt(payRaw);
+  const zero = { deliverable: false, got: 0n, pay: 0n, fee: 0n, rebate: 0n };
+  if (offer2.status !== "open") return { ...zero, reason: "not-open" };
+  if (isTokenWant(offer2.want)) return { ...zero, reason: "not-csd-priced" };
+  const want = BigInt(offer2.want.value);
+  const feeBps = offer2.feeBps || FEE_BPS;
+  if (offer2.min !== void 0 && !isNameGive(offer2.give)) {
+    const paidSoFar = BigInt(offer2.paid ?? "0");
+    const remaining = want - paidSoFar;
+    const minV = BigInt(offer2.min);
+    const effMin = remaining < minV ? remaining : minV;
+    if (pay < effMin) return { ...zero, reason: "below-min" };
+    const x = pay < remaining ? pay : remaining;
+    const fee2 = feeBps ? tradeFee(x, feeBps) : 0n;
+    const giveTotal = BigInt(offer2.give.amount);
+    const newPaid = paidSoFar + x;
+    const deliveredSoFar = BigInt(offer2.delivered ?? "0");
+    const out = giveTotal * newPaid / want - deliveredSoFar;
+    if (out === 0n) return { deliverable: false, reason: "zero-delivery", got: 0n, pay: x, fee: fee2, rebate: 0n };
+    return { deliverable: true, reason: "ok", got: out, pay: x, fee: fee2, rebate: 0n };
+  }
+  if (pay < want) return { deliverable: false, reason: "below-min", got: 0n, pay, fee: 0n, rebate: 0n };
+  const fee = feeBps ? tradeFee(want, feeBps) : 0n;
+  const restingLiquidity = offer2.taker !== void 0 && offer2.bid !== void 0 || offer2.height >= V17_HEIGHT && offer2.taker === void 0;
+  const rebate = offer2.height >= V16_HEIGHT && restingLiquidity ? makerRebate(want) : 0n;
+  const got = isNameGive(offer2.give) ? 1n : BigInt(offer2.give.amount);
+  return { deliverable: true, reason: "ok", got, pay: want, fee, rebate };
+}
+function isOpenClaimLane(offer2, tip) {
+  return tip >= V13_HEIGHT && offer2.taker === void 0 && !isTokenWant(offer2.want);
+}
+function hasLiveClaim(offer2, me, tip) {
+  if (tip < V17_HEIGHT) return false;
+  if (offer2.claimedBy === void 0 || offer2.claimUntilHeight === void 0) return false;
+  if (offer2.claimedBy.toLowerCase() !== me.toLowerCase()) return false;
+  const grace = claimGraceOf(offer2.claimUntilHeight);
+  return tip < offer2.claimUntilHeight + grace;
+}
+function fillIsSafe(offer2, me, pay, tip) {
+  const preview = previewFill(offer2, pay);
+  if (offer2.status !== "open") return { safe: false, reason: `offer is ${offer2.status}`, preview };
+  if (offer2.taker !== void 0 && offer2.taker.toLowerCase() !== me.toLowerCase())
+    return { safe: false, reason: "taker-bound offer \u2014 not bound to you", preview };
+  if (isOpenClaimLane(offer2, tip) && !hasLiveClaim(offer2, me, tip))
+    return { safe: false, reason: "open CSD offer \u2014 claim it first and fill while your claim is live", preview };
+  if (isTokenWant(offer2.want)) return { safe: true, reason: "token-priced \u2014 deliverability is the buyer's balance", preview };
+  if (!preview.deliverable) {
+    if (preview.reason === "below-min") return { safe: false, reason: "payment is below the offer minimum", preview };
+    return { safe: false, reason: "this payment would deliver 0 tokens \u2014 refusing (the CSD would be lost)", preview };
+  }
+  return { safe: true, reason: "ok", preview };
+}
+function finalizeWinnerCheck(nameState, me, commitHeight) {
+  const m = me.toLowerCase();
+  if (!nameState) return { safe: false, reason: "no reservation on-chain (displaced, swept, or never accepted) \u2014 a finalize now would burn the fee" };
+  if (nameState.owner?.toLowerCase() !== m) return { safe: false, reason: "an earlier committer won this name \u2014 you were outbid" };
+  if (nameState.pending !== true) return { safe: false, reason: "already registered to you \u2014 no second finalize fee is needed" };
+  if (Number(nameState.effectiveHeight) !== Number(commitHeight))
+    return { safe: false, reason: "your reservation was displaced (effective height changed) \u2014 a finalize now would burn the fee" };
+  return { safe: true, reason: "ok" };
+}
 function paidToFromOutputs(outputs) {
   const m = /* @__PURE__ */ Object.create(null);
   for (const o of outputs) {
@@ -4613,8 +4675,12 @@ export {
   deploy,
   epochOf,
   expiredClaimFee,
+  fillIsSafe,
+  finalizeWinnerCheck,
+  hasLiveClaim,
   isName,
   isNameGive,
+  isOpenClaimLane,
   isTokenWant,
   makerRebate,
   merkleRoot,
@@ -4635,6 +4701,7 @@ export {
   parseAmount,
   parseRecord,
   payloadHash,
+  previewFill,
   recoverSigner,
   requiredClaimDepth,
   resolve,

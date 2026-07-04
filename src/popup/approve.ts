@@ -115,6 +115,11 @@ async function fillSendWarning(r: any) {
     // same first-time / address-poisoning (look-alike) check as a transfer recipient.
     if (rec && rec.t === "nset" && typeof rec.addr === "string" && !/^(0x)?0{40}$/i.test(rec.addr)) outs.push({ to: rec.addr });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient — skip the poisoning check (0x0 sends are hard-blocked anyway)
     if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to });
+    // M1 (deep-review 2026-07-03): an `offer` routes its SALE PROCEEDS to want.payto when it fills. A
+    // bad-faith dApp can set payto to a look-alike of the user's OWN address, silently redirecting the
+    // proceeds. The field is shown at clear-sign but had no automated look-alike flag — add it here so it
+    // gets the same first-time / address-poisoning check as every other dApp-supplied recipient.
+    if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto });
   }
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);

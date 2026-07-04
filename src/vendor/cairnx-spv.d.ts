@@ -79,3 +79,28 @@ export function parseRecord(uri: string, payloadHashHex: string): Record<string,
 /** Canonical amount gate (AMOUNT_RE + MAX_AMOUNT + allowZero); bigint or null. */
 export function parseAmount(s: unknown, opts?: { allowZero?: boolean }): bigint | null;
 export function nameCommit(name: string, salt: string, owner: string): string;
+
+// ── Tier 1 pre-flight (deep-review 2026-07-03): the shared "before you sign a value tx" surface.
+// Minimal structural types (the offer/name records the wallet fetches from /cairnx/offer|name/:id).
+export interface CxOfferState {
+  id: string; seller: string;
+  give: { ticker: string; amount: string } | { name: string };
+  want: { value: string; payto: string } | { ticker: string; amount: string; payto: string };
+  taker?: string; status: string; height: number; feeBps: number;
+  min?: string; paid?: string; delivered?: string; bid?: string;
+  claimedBy?: string; claimUntilHeight?: number;
+}
+export interface CxNameState {
+  name: string; owner: string; effectiveHeight: number; pending?: boolean;
+  addr?: string; locked?: boolean; viaFill?: boolean;
+}
+export interface FillPreview { deliverable: boolean; reason?: string; got: bigint; pay: bigint; fee: bigint; rebate: bigint }
+export interface FillSafety { safe: boolean; reason: string; preview: FillPreview }
+/** Delivered `got` + fee + rebate for a CSD payment against a CSD-priced offer (exact resolver math). */
+export function previewFill(offer: CxOfferState, pay: bigint | string | number): FillPreview;
+/** The C2/C3/C4 union: status open, deliverability ≥1, live-claim holdership for open-CSD, taker match. */
+export function fillIsSafe(offer: CxOfferState, me: string, pay: bigint | string | number, tip: number): FillSafety;
+/** The C1 registration-finalize gate — pass the AUTHORITATIVE (freshly re-fetched) name record. */
+export function finalizeWinnerCheck(nameState: CxNameState | null | undefined, me: string, commitHeight: number): { safe: boolean; reason: string };
+export function isOpenClaimLane(offer: CxOfferState, tip: number): boolean;
+export function hasLiveClaim(offer: CxOfferState, me: string, tip: number): boolean;

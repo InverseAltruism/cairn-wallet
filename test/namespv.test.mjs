@@ -275,5 +275,32 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   ok("H1: a non-viaFill name with no flag stays verified (back-compat with older servers)", rNone.verified === true && rNone.addr === TARGET);
 }
 
+// 17. H1 UNION BACKSTOP (deep-review 2026-07-03) — a REGISTERED-vs-UNREGISTERED source disagreement is
+//     fail-closed: one source serves history while another INDEPENDENT source affirmatively 404s the name.
+//     The honest source may have fully replayed and seen an out-of-name-scope rejection (the MAX_PENDING_REG
+//     forged-green class) the hint-serving source cannot represent. Must caution — but a LONE honest source
+//     with no disagreeing peer must still verify (deliberately NOT a blanket ≥2-source rule; clarvis-DOWN,
+//     which is a 502 not a 404, keeps single-source verified).
+{
+  const NM = "erin";
+  const eClaim = proposeTx({ ...pick(buildNameClaim({ name: NM })), priv: keyA, outputs: feeOut() });
+  const eNset = proposeTx({ ...pick(buildNameSet({ name: NM, addr: TARGET })), priv: keyA });
+  const { blocks } = world([{ height: 33700, tx: eClaim }, { height: 33710, tx: eNset }]);
+  const H = (tx, h) => ({ txid: ctxid(rpcTxToTx(tx)), height: h, pos: 0 });
+  const ev = [H(eClaim, 33700), H(eNset, 33710)];
+  const src = source(blocks, 33800);
+  const SRC = [{ label: "primary", base: "https://primary.example/trade/api" }, { label: "clarvis", base: "https://clarvis.example/trade/api" }];
+  // fetch mock: primary serves history; clarvis 404s (affirmatively unregistered) or 502s (merely down)
+  const mk = (clarvisStatus) => async (url) => {
+    const u = String(url);
+    if (u.includes("clarvis")) return { ok: clarvisStatus === 200, status: clarvisStatus, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: ev }) };
+  };
+  const r404 = await verifyNameUnion(NM, SRC, src, mk(404));
+  ok("H1-backstop: registered-vs-UNREGISTERED (404) disagreement ⇒ NOT verified (fail-closed caution)", r404.verified === false && r404.disagree === true && /disagree|unregistered|out-of-band/i.test(r404.reason));
+  const r502 = await verifyNameUnion(NM, SRC, src, mk(502));
+  ok("H1-backstop: a merely-DOWN peer (502) is NOT a disagreement — lone honest source still verifies (no blanket ≥2-source rule)", r502.verified === true && r502.addr === TARGET && r502.sources === 1);
+}
+
 console.log(`\nnamespv: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

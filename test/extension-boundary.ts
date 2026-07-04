@@ -53,9 +53,15 @@ async function fireAutolock(idleMs: number): Promise<void> { NOW += idleMs; alar
 const MC = mkCoin(1_000_000_000, 0, { coinbase: false }); const MOCK_UTXO = MC.coin;
 let lastSubmit: any = null;
 let submitN = 0;
+// fillOffer's C2/C3/C4 pre-flight fetches /cairnx/offer/:id; a test can seed a crafted offer here to
+// exercise the refusal paths (an unseeded id returns the generic {ok:true}, which the gate skips).
+const offerFixtures = new Map<string, any>();
 (globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
   if (u.includes("/utxos/")) return { ok: true, json: async () => ({ ok: true, confirmed_balance: MOCK_UTXO.value, utxos: [MOCK_UTXO] }) };
+  if (u.endsWith("/tip")) return { ok: true, json: async () => ({ ok: true, height: 34000 }) };  // ≥ V13/V17 (open-lane heights)
+  const om = u.match(/\/cairnx\/offer\/(0x[0-9a-fA-F]{64})/);
+  if (om && offerFixtures.has(om[1].toLowerCase())) return { ok: true, status: 200, json: async () => offerFixtures.get(om[1].toLowerCase()) };
   const tr = txReply(u, [MC]); if (tr) return tr;
   // unique txid per submit — the wallet's history is (correctly) idempotent by txid,
   // so a fixed mock txid would silently drop later records and mask real behavior.
@@ -226,6 +232,33 @@ async function main() {
   check("fillOffer used the wallet's OWN input (smuggled `inputs` ignored)", fins.length === 1 && spkHex(fins[0].prevout.txid) === MOCK_UTXO.txid);
   check("fillOffer change returned only to the wallet's own address", fouts.every((o: any) => spkHex(o.script_pubkey) === SELLER || spkHex(o.script_pubkey) === addr));
   check("fillOffer recorded in history as a fill with seller + amount", ((await popup("history")).result as any[]).some((t) => t.type === "fillOffer" && t.target === OFFER_ID && t.to === SELLER && t.amount === 40_000_000));
+
+  console.log("\n=== fillOffer C2/C3/C4 pre-flight REFUSES a doomed value tx (deep-review 2026-07-03) ===");
+  // helper: approve a queued fillOffer and return the dApp response (refusals arrive as {ok:false,error})
+  const approveFill = async (params: any) => {
+    const req = dappAsync("fillOffer", params); await tick();
+    const q = (await popup("pending")).result; await popup("resolve", q[q.length - 1].id, true); await tick(); await tick();
+    return req.get();
+  };
+  // (a) a FILLED offer → refuse before any payment (no fill submit)
+  const FILLED_ID = "0x" + "23".repeat(32);
+  offerFixtures.set(FILLED_ID.toLowerCase(), { id: FILLED_ID, seller: SELLER, status: "filled", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 34000, feeBps: 150 });
+  lastSubmit = null;
+  const rFilled = await approveFill({ proposalId: FILLED_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
+  check("fillOffer REFUSES a filled offer (no payment signed)", rFilled?.result?.ok === false && /filled|no-op/i.test(String(rFilled?.result?.error)) && lastSubmit === null);
+  // (b) an OPEN CSD offer taker-bound to SOMEONE ELSE → refuse (taker mismatch; no tip needed)
+  const TAKER_OTHER_ID = "0x" + "24".repeat(32);
+  offerFixtures.set(TAKER_OTHER_ID.toLowerCase(), { id: TAKER_OTHER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: "0x" + "9a".repeat(20), height: 34000, feeBps: 150 });
+  lastSubmit = null;
+  const rTaker = await approveFill({ proposalId: TAKER_OTHER_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
+  check("fillOffer REFUSES a taker-bound offer bound to someone else (no payment signed)", rTaker?.result?.ok === false && /taker-bound|refusing/i.test(String(rTaker?.result?.error)) && lastSubmit === null);
+  // (c) an OPEN (untaken) CSD offer with NO live claim by me → refuse (C2/C4 whole-payment-loss)
+  const OPEN_UNCLAIMED_ID = "0x" + "25".repeat(32);
+  offerFixtures.set(OPEN_UNCLAIMED_ID.toLowerCase(), { id: OPEN_UNCLAIMED_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 34000, feeBps: 150 });
+  lastSubmit = null;
+  const rOpen = await approveFill({ proposalId: OPEN_UNCLAIMED_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
+  check("fillOffer REFUSES an open CSD offer with no live claim by me (C2/C4)", rOpen?.result?.ok === false && /claim/i.test(String(rOpen?.result?.error)) && lastSubmit === null);
+  offerFixtures.clear();
 
   console.log("\n=== dApp `propose` with fee outputs (CairnX deploy/name-reg) — approval-gated, anti-smuggle, capped ===");
   lastSubmit = null;

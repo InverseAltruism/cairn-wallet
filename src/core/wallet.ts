@@ -10,7 +10,8 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import type { CxOfferState } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
@@ -398,21 +399,41 @@ export class Wallet {
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number }) {
     const q = { proposalId: p.proposalId, score: (p.score ?? 100) >>> 0, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? 5_000_000 };
-    // NETNEW-STALE-OFFER-1: a fill into an offer cancelled/filled in an EARLIER block is a resolver NO-OP
-    // while the CSD/token payment lands irreversibly (the buyer gets nothing back). Best-effort re-check the
-    // offer's CURRENT status and refuse if the resolver AFFIRMATIVELY reports it no longer open. Proceed on
-    // 404 / unreachable so a very recent or cross-resolver offer the wallet's tradeApi hasn't scanned yet is
-    // NOT false-refused — there, clear-sign + the node remain the guards (resolver-trusted, so a hostile
-    // resolver could lie "open" regardless; this only catches the benign/honest stale-offer race).
+    // ── fund-safety pre-flight (deep-review 2026-07-03 C2/C3/C4): the wallet's own fillOffer must NEVER
+    // sign a payment tx the resolver will reject AFTER the CSD moves (no escrow → the payment is lost).
+    // We re-fetch the CURRENT offer record and run the shared cairnx-core pre-flight over it. The check is
+    // computed from the offer's OWN give/want/min/claim fields (not a resolver boolean), so even a hostile
+    // resolver cannot induce a loss by lying about status. Failure posture is asymmetric BY DESIGN:
+    //   • an OPEN (untaken) CSD offer uses claim-to-fill — a non-claimant fill loses the FULL payment, so we
+    //     fail CLOSED (refuse) when the offer can't be fetched/parsed (mirrors the website's verifyClaimSPV).
+    //   • a taker-bound / status-only fill keeps today's best-effort posture (proceed on 404/unreachable),
+    //     so a very recent or cross-resolver offer the tradeApi hasn't scanned yet is not false-refused.
     if (/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) {
+      let offer: CxOfferState | null = null;
+      let fetchFailed = false;
       try {
         const r0 = await fetch(`${this.tradeApi}/cairnx/offer/${encodeURIComponent(p.proposalId)}`, { signal: AbortSignal.timeout(6000) });
-        if (r0.ok) {
-          const o: any = await r0.json().catch(() => null);
-          const status = o && typeof o.status === "string" ? o.status : null;
-          if (status && status !== "open") return { ok: false, error: `offer is ${status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false };
-        }
-      } catch { /* resolver unreachable → proceed; the node + clear-sign remain the guards */ }
+        if (r0.ok) offer = (await r0.json().catch(() => null)) as any;
+        else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
+      } catch { fetchFailed = true; }
+      if (offer && typeof offer.status === "string") {
+        if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false };
+        const me = this.addr();
+        // the seller payment is the output going to want.payto (the amount previewFill/fillIsSafe price against)
+        const payto = String((offer.want as any)?.payto || "").toLowerCase();
+        const pay = BigInt(q.outputs.filter((o) => String(o.to).toLowerCase() === payto).reduce((a, o) => a + Number(o.value || 0), 0));
+        const tip = (await this.tip()) ?? 0;
+        const verdict = fillIsSafe(offer, me, pay, tip);
+        if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false };
+      } else if (fetchFailed) {
+        // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
+        // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
+        // This is narrow: it does not fire on a 404 (a very recent / cross-resolver offer the tradeApi hasn't
+        // scanned yet still proceeds below), only when the resolver is actually down — a clear retryable
+        // refusal instead of a possible silent loss.
+        return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable) — try again in a moment", sighashMatch: false };
+      }
+      // offer === null via a clean 404 → proceed (a very recent/cross-resolver offer; clear-sign + node guard).
     }
     const r = await node.fillOffer(this.rpc, q, this.must().privkey);
     const outs = Array.isArray(q.outputs) ? q.outputs : [];
