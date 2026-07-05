@@ -85,13 +85,13 @@ const RECORDS: [string, string, string, string[]][] = [
   ["ocancel-all", `{"t":"ocancel","v":1}`,
     "0xb049ba1b57455b88958ddcd233e51261ff0bf3e365532c95e90fcb631ee712fe", ["cancel offers", "ALL"]],
   ["name", `{"name":"satoshi","salt":"a1b2c3d4e5f60718","t":"name","v":1}`,
-    "0xe7bd075d10847e2aa7fd3df53c3ca4164555120171790e1c55fb1d2984d1a100", ["name claim", "satoshi.csd"]],
+    "0xe7bd075d10847e2aa7fd3df53c3ca4164555120171790e1c55fb1d2984d1a100", ["step 2 of 3", "satoshi.csd"]],   // Plan 63: titles mirror the site's step language
   ["nrenew", `{"name":"satoshi","t":"nrenew","v":1}`,
     "0x39e1f1d8fe702e5d6a604464605e4f481144b88229938b2619c86f3a76723aad", ["name renewal", "satoshi.csd"]],
   ["tmeta", `{"hash":"0x${"7e".repeat(32)}","t":"tmeta","ticker":"CAIRN","v":1}`,
     "0xa8ce7912affc29a4d090ccd80371a29a5d0e13678cac7ded5259ba27e55ea6d8", ["token metadata", "CAIRN", "7e".repeat(32)]],
   ["ncommit", `{"commit":"0x${"11".repeat(32)}","t":"ncommit","v":1}`,
-    "0x2428323f80b2858e430174b9e30bc2df146ca9b34961df4fe997ed73826db02c", ["name commit", "11".repeat(32)]],
+    "0x2428323f80b2858e430174b9e30bc2df146ca9b34961df4fe997ed73826db02c", ["step 1 of 3", "11".repeat(32)]],   // Plan 63: titles mirror the site's step language
   ["nxfer", `{"name":"satoshi","t":"nxfer","to":"${ADDR_AB}","v":1}`,
     "0x9b46a624241cf2ae22441ff65dae52d2396511d7cfc1d197ea6c886afcd4b8d0", ["name transfer", "satoshi.csd", ADDR_AB]],
   ["nset", `{"addr":"${ADDR_CD}","name":"satoshi","t":"nset","v":1}`,

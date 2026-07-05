@@ -570,7 +570,7 @@ export class Wallet {
   // ── CairnX tokens + .csd names ──────────────────────────────────────────────
   // READS go to the public CairnX resolver API and NEVER throw — the popup must keep
   // showing the CSD balance even when the token API is down ({ ok:false } → quiet retry).
-  async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[]; nameDetails?: any[]; primaryName?: string | null }> {
+  async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[]; nameDetails?: any[]; primaryName?: string | null; tipHeight?: number }> {
     try {
       const r = await fetch(`${this.tradeApi}/cairnx/address/${this.addr()}`);
       if (!r.ok) return { ok: false };
@@ -581,7 +581,9 @@ export class Wallet {
       // Older services omit these → empty/null, and the popup falls back to plain name chips.
       const nameDetails = Array.isArray(j?.nameDetails) ? j.nameDetails : [];
       const primaryName = typeof j?.primaryName === "string" ? j.primaryName : null;
-      return { ok: true, balances, names, nameDetails, primaryName };
+      // tip rides along so the popup can turn a pending reservation's finalizeBy into a live countdown
+      const tipHeight = Number(j?.tipHeight) || 0;
+      return { ok: true, balances, names, nameDetails, primaryName, tipHeight };
     } catch { return { ok: false }; }
   }
   // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the

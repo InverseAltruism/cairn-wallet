@@ -349,11 +349,18 @@ async function renderAssets() {
       <button class="mini" data-tsend="${escapeHtml(t)}">send</button></div>`;
   }).join("");
   // .csd names: identity + lease state + inline renew / set-primary + manage on /trade
+  const tip = Number(a.tipHeight) || 0;
   const nameRows = details.length ? `<div class="names-head"><span class="label">.csd names</span></div>` + details.map((n) => {
     const nm = String(n.name);
     const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized — no owner actions
     const isPrimary = !isPending && nm === primary;
-    const lease = isPending ? "finalizing · complete on site" : leaseLabel(n);
+    // a pending reservation with a served finalizeBy gets a REAL countdown (~2 min blocks); older
+    // services omit the field and the static label stays.
+    const finBy = Number(n.finalizeBy) || 0;
+    const pendingLabel = finBy && tip
+      ? (tip > finBy ? "reservation expired · register again on site" : `finalizing · ~${Math.max(1, (finBy - tip)) * 2} min left to complete`)
+      : "finalizing · complete on site";
+    const lease = isPending ? pendingLabel : leaseLabel(n);
     const cls = isPending ? " pending" : n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
     // A pending reservation MUST be non-actionable here: renew / set-primary on it broadcast a fee the
     // resolver rejects on a pending record (nrenew/nset both reject `if (n.pending)`) — an honest self-burn
