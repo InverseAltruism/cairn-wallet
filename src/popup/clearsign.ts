@@ -202,14 +202,6 @@ export function describe(r: any): string {
     return `<b>Sign in to <code>${escapeHtml(aud)}</code></b> — prove your address to this site. <b>No transaction, no funds move.</b>${stmt}`
       + `<br><span class="dim">audience: ${escapeHtml(aud)} · nonce ${escapeHtml(nshort)} · expires in ~${expS}s</span>${uriLine}${resList}${reqLine}${nbfLine}${mism}`;
   }
-  // Deferred finalize: renders EXACTLY like the propose it wraps (same record decode, same outputs
-  // disclosure, same fee warnings) + the deferral banner — what the wallet will do on the user's
-  // behalf, when, and the drop guarantees. Signing happens at approval; only the SEND is deferred.
-  if (r.method === "deferFinalize") {
-    const inner = describe({ ...r, method: "propose" });
-    const nb = Number(p.notBeforeHeight), na = Number(p.notAfterHeight);
-    return inner + `<br><b>⏱ deferred broadcast</b> — approved now, but the wallet sends it BY ITSELF once the name's lock-in ends (between blocks ${escapeHtml(String(nb))} and ${escapeHtml(String(na))}, ~${Math.max(1, na - nb) * 2} min window). Before sending, the wallet re-checks on-chain that you still hold the winning reservation; if you lost the race or the window passed, it is <b>dropped and nothing is paid</b>. You can cancel it from the wallet popup until it is sent.`;
-  }
   // Clear-signing: show EVERYTHING the site controls and the chain will commit —
   // not just domain+fee. payloadHash/uri are dApp-supplied and were previously hidden.
   if (r.method === "propose") {

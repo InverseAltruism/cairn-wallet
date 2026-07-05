@@ -12,7 +12,6 @@ import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import type { CxOfferState } from "../vendor/cairnx-spv.js";
-import { decideDeferred, deferOutcomeCopy, type DeferredFinalize, type DeferOutcome } from "./defer.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
@@ -396,53 +395,6 @@ export class Wallet {
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
-  // Deferred finalize (Plan 63, see core/defer.ts): sign the fee-bearing nfinalize NOW (it was fully
-  // clear-signed by the user), hold it; the background engine broadcasts it once the lock-in ends,
-  // behind decideDeferred's fresh winner/window check. HARD scope limit: ONLY an nfinalize record for
-  // the named reservation may be deferred — this is not a generic pre-signing surface.
-  async buildDeferredFinalize(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[]; name: string; effectiveHeight: number; notBeforeHeight: number; notAfterHeight: number }): Promise<{ ok: boolean; error?: string; item?: DeferredFinalize }> {
-    if (String(p.domain) !== CAIRNX_DOMAIN) return { ok: false, error: "deferFinalize is cairnx:v1 only" };
-    let rec: { t?: unknown; name?: unknown } | null = null;
-    try { rec = JSON.parse(String(p.uri)); } catch { return { ok: false, error: "uri is not a cairnx record" }; }
-    if (!rec || rec.t !== "nfinalize" || typeof rec.name !== "string" || rec.name !== p.name) {
-      return { ok: false, error: "only the nfinalize record for the named reservation can be deferred" };
-    }
-    const eff = Number(p.effectiveHeight), nb = Number(p.notBeforeHeight), na = Number(p.notAfterHeight);
-    if (![eff, nb, na].every((x) => Number.isSafeInteger(x) && x > 0) || na <= nb || nb <= eff) {
-      return { ok: false, error: "bad broadcast window (need effectiveHeight < notBefore < notAfter)" };
-    }
-    const r = await node.proposeBuild(this.rpc, { domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch, fee: p.fee, outputs: p.outputs }, this.must().privkey);
-    if (!r.ok || !r.built) return { ok: false, error: r.error || "could not build the finalize" };
-    const feeTotal = (Array.isArray(p.outputs) ? p.outputs : []).reduce((s, o) => s + Number(o.value || 0), 0);
-    return { ok: true, item: { name: p.name, owner: this.addr(), effectiveHeight: eff, notBeforeHeight: nb, notAfterHeight: na, feeTotal, txJson: r.built.txJson, outpoints: r.built.outpoints, createdAt: Date.now() } };
-  }
-  // mirror the deferred store's inputs into coin selection (called by the background on every store change)
-  setDeferredOutpoints(outpoints: string[]) { node.setReservedOutpoints(new Set(outpoints)); }
-  // One engine tick: check every held finalize against the LIVE resolver view and act. Returns the
-  // surviving items + user-facing events. Needs NO keys (broadcasting a signed tx), so it runs locked.
-  async deferTick(items: DeferredFinalize[]): Promise<{ items: DeferredFinalize[]; events: { outcome: DeferOutcome; name: string; title: string; message: string }[] }> {
-    const keep: DeferredFinalize[] = [];
-    const events: { outcome: DeferOutcome; name: string; title: string; message: string }[] = [];
-    for (const item of items) {
-      try {
-        const r = await fetch(`${this.tradeApi}/cairnx/name/${encodeURIComponent(item.name)}`);
-        const ns = r.ok ? await r.json() : (r.status === 404 ? null : undefined);
-        if (ns === undefined) { keep.push(item); continue; }               // resolver error → retry next tick
-        const tip = Number(ns?.tipHeight) || (await node.tip(this.rpc).catch(() => 0));
-        const outcome = decideDeferred(item, ns, tip);
-        if (outcome === "wait") { keep.push(item); continue; }
-        if (outcome === "broadcast") {
-          const sub = await node.submitRawTx(this.rpc, item.txJson).catch(() => ({ ok: false as const, error: "submit failed", sighashMatch: false as const }));
-          if (sub.ok) { item.broadcastTip = tip; item.txid = sub.txid; }   // completion is detected next tick (name flips non-pending)
-          keep.push(item);                                                 // errors retry until the window closes
-          continue;
-        }
-        const copy = deferOutcomeCopy(item.name, outcome);
-        if (copy) events.push({ outcome, name: item.name, ...copy });      // terminal: complete / lost / expired → drop
-      } catch { keep.push(item); }                                         // network blip → retry next tick
-    }
-    return { items: keep, events };
-  }
   async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number }) {

@@ -3,7 +3,6 @@
 // script. dApp WRITE/identity requests require the wallet to be unlocked AND an
 // explicit user approval via the popup (pending-request queue).
 import { Wallet } from "./core/wallet.js";
-import type { DeferredFinalize } from "./core/defer.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
 
@@ -65,44 +64,6 @@ async function emitConnected(event: string, data: unknown): Promise<void> {
   for (const origin of Object.keys(c)) emitToOrigin(origin, event, data);
 }
 
-/* ── deferred-finalize store + engine (Plan 63; decision logic in core/defer.ts) ──
-   The SIGNED nfinalize sits in storage.local; a 1-minute alarm wakes this SW (works with every tab
-   closed and the wallet locked — broadcasting needs no keys) and deferTick re-checks the live winner/
-   window before sending. Store changes always re-mirror the reserved inputs into coin selection. */
-const DEFER_KEY = "cairn:deferred:v1";
-const DEFER_ALARM = "cairn-defer-tick";
-async function deferLoad(): Promise<DeferredFinalize[]> {
-  try { const o = await chrome.storage.local.get(DEFER_KEY); const l = o?.[DEFER_KEY]; return Array.isArray(l) ? l : []; } catch { return []; }
-}
-async function deferSave(items: DeferredFinalize[]): Promise<void> {
-  try { await chrome.storage.local.set({ [DEFER_KEY]: items }); } catch { /* storage blip: next tick re-derives */ }
-  wallet.setDeferredOutpoints(items.flatMap((i) => i.outpoints));
-  try {
-    if (items.length) chrome.alarms?.create?.(DEFER_ALARM, { periodInMinutes: 1 });
-    else chrome.alarms?.clear?.(DEFER_ALARM);
-  } catch { /* alarms unavailable (tests) */ }
-}
-function deferNotify(title: string, message: string): void {
-  try { chrome.notifications?.create?.("", { type: "basic", iconUrl: chrome.runtime.getURL("icons/icon-128.png"), title, message }); } catch { /* notifications are best-effort */ }
-}
-let deferRunning = false;
-async function deferRun(): Promise<void> {
-  if (deferRunning) return; deferRunning = true;   // one engine pass at a time (alarm + startup can overlap)
-  try {
-    const items = await deferLoad();
-    if (!items.length) { await deferSave(items); return; }
-    const { items: next, events } = await wallet.deferTick(items);
-    await deferSave(next);
-    for (const e of events) deferNotify(e.title, e.message);
-  } finally { deferRunning = false; }
-}
-try { chrome.alarms?.onAlarm?.addListener((a: { name?: string }) => { if (a?.name === DEFER_ALARM) deferRun(); }); } catch { /* no alarms in tests */ }
-// SW startup: re-mirror reserved inputs, re-arm the alarm, settle anything already due
-deferLoad().then((items) => {
-  wallet.setDeferredOutpoints(items.flatMap((i) => i.outpoints));
-  if (items.length) { try { chrome.alarms?.create?.(DEFER_ALARM, { periodInMinutes: 1 }); } catch { /* no-op */ } deferRun(); }
-}).catch(() => { /* no-op */ });
-
 async function runPopupMethod(method: string, args: any[]): Promise<any> {
   switch (method) {
     case "status": return wallet.status();
@@ -133,10 +94,6 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1]);
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0]);
-    // deferred-finalize surface for the popup: list (txJson stripped — the raw tx never leaves the SW)
-    // and cancel (drops the held tx + releases its reserved inputs; the site's manual flow takes over).
-    case "deferList": return deferLoad().then((items) => ({ ok: true, items: items.map(({ txJson: _tx, ...rest }) => rest) }));
-    case "deferCancel": return (async () => { const items = await deferLoad(); const next = items.filter((i) => i.name !== String(args[0])); await deferSave(next); return { ok: true, removed: items.length - next.length }; })();
     case "setTradeApi": return wallet.setTradeApi(args[0]);
     case "signin": return wallet.signIn();
     case "export": return wallet.exportKey(args[0]);
@@ -238,19 +195,6 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
     // and change only ever returns to the wallet's own address.
     else if (p.method === "fillOffer") result = await wallet.fillOffer(p.params);
-    // Deferred finalize (clear-signed like a propose + the deferral banner): sign now, store, and let
-    // the alarm engine broadcast once the lock-in ends — behind its own fresh winner/window check.
-    else if (p.method === "deferFinalize") {
-      const b = await wallet.buildDeferredFinalize(p.params);
-      if (!b.ok || !b.item) result = { ok: false, error: b.error || "deferral refused" };
-      else {
-        const built = b.item;
-        const items = (await deferLoad()).filter((i) => !(i.name === built.name && i.owner === built.owner));   // re-arm replaces
-        items.push(built);
-        await deferSave(items);
-        result = { ok: true, deferred: true, name: built.name, notBeforeHeight: built.notBeforeHeight, notAfterHeight: built.notAfterHeight };
-      }
-    }
     else throw new Error("unsupported dApp method: " + p.method);
     return finish({ ok: true, result });
   } catch (e: any) { return finish({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
@@ -259,7 +203,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
 // Anything else is rejected before it can enter the pending queue or reach the popup UI
 // — so an arbitrary attacker-chosen `method` string can never be rendered or queued.
-const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer", "deferFinalize"]);
+const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
 
 // Pure READ / poll methods that must NOT reset the idle auto-lock. The approval window
 // polls status+pending every ~1.2s (approve.ts), so if these refreshed lastActive a
@@ -267,7 +211,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote", "deferList"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

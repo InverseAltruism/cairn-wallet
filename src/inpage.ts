@@ -61,7 +61,7 @@
     // to removeListener. Cairn emits accountsChanged([]) on lock/account-switch/revoke (never a new addr).
     on: (event: string, handler: (d: any) => void) => { (handlers[event] ||= new Set()).add(handler); },
     removeListener: (event: string, handler: (d: any) => void) => { handlers[event]?.delete(handler); },
-    getCapabilities: () => Promise.resolve({ version: "0.2.51", siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim", "deferFinalize"] }),
+    getCapabilities: () => Promise.resolve({ version: "0.2.51", siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
     // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which
@@ -83,12 +83,6 @@
     // selects its own inputs; change returns only to itself.
     //   { proposalId, outputs: [{ to, value }, …], score?, confidence?, fee? }
     fillOffer: (p: any) => req("fillOffer", p),
-    // Deferred finalize (.csd registration step 3): clear-signs the fee-bearing nfinalize NOW; the
-    // WALLET broadcasts it by itself once the reservation's lock-in ends, after re-checking on-chain
-    // that this wallet still holds the winning reservation (lost/expired ⇒ dropped, nothing paid).
-    //   { domain, payloadHash, uri, expiresEpoch, fee, outputs, name, effectiveHeight,
-    //     notBeforeHeight, notAfterHeight }
-    deferFinalize: (p: any) => req("deferFinalize", p),
   });
   // Expose window.cairn as a NON-WRITABLE, NON-CONFIGURABLE, FROZEN provider (audit NSPV-PMR-FREEZE): a
   // co-present page script must not be able to replace a method (e.g. swap `send`) to spoof what the dApp

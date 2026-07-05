@@ -109,19 +109,11 @@ async function verifyInputValues(rpc: string, inputs: { txid: string; vout: numb
   return { ok: true, total };
 }
 
-// Outpoints RESERVED by a deferred (signed-but-not-yet-broadcast) tx — excluded from every coin
-// selection so a later send/fill can't double-spend an input and silently invalidate the held tx.
-// Single writer: the background SW mirrors the deferred-finalize store into this set on every change
-// and on service-worker startup. Empty set = zero effect on any existing path.
-let RESERVED_OUTPOINTS = new Set<string>();
-export function setReservedOutpoints(s: Set<string>) { RESERVED_OUTPOINTS = s; }
-
 // Coin selection (REPORTED values, to pick which outpoints) THEN chain-verified totals (REAL
 // values, to compute change). Returns the verified input set + real total, or an error string.
 async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string }> {
   const { utxos } = await balance(rpc, addr);
-  const spendable = RESERVED_OUTPOINTS.size ? utxos.filter((u: { txid: string; vout: number }) => !RESERVED_OUTPOINTS.has(`${u.txid}:${u.vout}`)) : utxos;
-  const sel = selectInputs(spendable, need);
+  const sel = selectInputs(utxos, need);
   if (!sel) return { error: "insufficient confirmed balance" };
   const ver = await verifyInputValues(rpc, sel.inputs);
   if (!ver.ok) return { error: "could not verify selected inputs against the chain (refusing to risk a burned fee)" };
@@ -129,12 +121,7 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   return { inputs: sel.inputs, total: ver.total };
 }
 
-export interface SubmitResult {
-  ok: boolean; txid?: string; error?: string; sighashMatch: boolean;
-  // present ONLY on a build-only assembly (deferred finalize): the fully SIGNED tx in node wire
-  // format, ready for a later POST /tx/submit, plus the outpoints it spends (reserved until then).
-  built?: { txJson: unknown; outpoints: string[] };
-}
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 interface Selection { inputs: SelectedInput[]; total: number }
@@ -198,20 +185,12 @@ export function selectInputs(utxos: any[], need: number): Selection | null {
 // Sign every input with the one whole-tx sighash and submit. All inputs are blanked
 // in the sighash and all belong to this account's single key, so one signature is
 // reused across them. Returns sighashMatch:true because WE computed the sighash.
-function signTxLocal(tx: Tx, priv: string): Tx {
+async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitResult> {
   const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
   const scriptSig = buildScriptSig(sig64, pub33);
   for (const i of tx.inputs) i.scriptSig = scriptSig;
-  return tx;
-}
-// Broadcast an ALREADY-SIGNED tx (node wire format). Used by the deferred-finalize engine, which signs
-// at approval time and submits later; adds no signing authority (the signature already exists).
-export async function submitRawTx(rpc: string, txJson: unknown): Promise<SubmitResult> {
-  const sub = await post(rpc, "/tx/submit", { tx: txJson });
+  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
   return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
-}
-async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitResult> {
-  return submitRawTx(rpc, txToNodeJson(signTxLocal(tx, priv)));
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).
@@ -227,7 +206,6 @@ async function assembleValueTx(
   app: App,
   priv: string,
   emptyError = "tx would have no outputs",
-  buildOnly = false,   // sign but do NOT broadcast: returns { built } for the deferred-finalize engine
 ): Promise<SubmitResult> {
   // Reject a zero (or negative) fee at the SINGLE place every value tx is assembled — send, sendMany,
   // propose, attest and fillOffer all route through here. The node enforces a minimum feerate, so a
@@ -253,10 +231,6 @@ async function assembleValueTx(
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
   if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false };
   const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
-  if (buildOnly) {
-    const signed = signTxLocal(tx, priv);
-    return { ok: true, sighashMatch: true, built: { txJson: txToNodeJson(signed), outpoints: sv.inputs.map((i) => `${i.txid}:${i.vout}`) } };
-  }
   return signAndSubmit(rpc, tx, priv);
 }
 
@@ -264,7 +238,7 @@ async function assembleValueTx(
 // CairnX protocol fee to the treasury on a deploy / name registration). Same posture as
 // send/fillOffer: each recipient validated, sums safe-integer-guarded, inputs selected
 // internally, change ONLY to the wallet's own address; a dApp can't pick UTXOs or redirect change.
-async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string, payouts: { to: string; value: number }[] = [], buildOnly = false): Promise<SubmitResult> {
+async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string, payouts: { to: string; value: number }[] = []): Promise<SubmitResult> {
   if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false };
   // Cap the value outputs a Propose may carry (normally one protocol-fee output). Prevents a
   // hostile dApp from flooding the clear-signing window with hundreds of disguised payments.
@@ -278,7 +252,7 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
     if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false };
   }
   const outputs = payouts.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  return assembleValueTx(rpc, outputs, fee, app, priv, undefined, buildOnly);
+  return assembleValueTx(rpc, outputs, fee, app, priv);
 }
 
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
@@ -295,18 +269,6 @@ export function propose(rpc: string, p: { domain: string; payloadHash: string; u
     return Promise.resolve({ ok: false, error: "expiresEpoch must be a non-negative safe integer", sighashMatch: false });
   }
   return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : []);
-}
-// Build + sign a Propose WITHOUT broadcasting (the deferred-finalize path): same validations, same
-// "inputs internal, change to self" posture; returns { built: { txJson, outpoints } } for a later
-// submitRawTx. The tx is a normal signed propose — deferral changes WHEN it is sent, never WHAT.
-export function proposeBuild(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.payloadHash))) {
-    return Promise.resolve({ ok: false, error: "payloadHash must be a 0x… 32-byte hash", sighashMatch: false });
-  }
-  if (!Number.isSafeInteger(p.expiresEpoch) || p.expiresEpoch < 0) {
-    return Promise.resolve({ ok: false, error: "expiresEpoch must be a non-negative safe integer", sighashMatch: false });
-  }
-  return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : [], true);
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
   // Validate the proposalId shape up front (parity with fillOffer) so a malformed dApp-supplied value fails
