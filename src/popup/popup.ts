@@ -350,14 +350,21 @@ async function renderAssets() {
   }).join("");
   // .csd names: identity + lease state + inline renew / set-primary + manage on /trade
   const tip = Number(a.tipHeight) || 0;
+  // deferred finalizes armed for this account: the reservation completes BY ITSELF (core/defer.ts)
+  const dl = await call("deferList").catch(() => null) as any;
+  if (seq !== assetsSeq) return;
+  const armed = new Set<string>(((dl?.items as any[]) || []).map((i) => String(i.name)));
   const nameRows = details.length ? `<div class="names-head"><span class="label">.csd names</span></div>` + details.map((n) => {
     const nm = String(n.name);
     const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized — no owner actions
     const isPrimary = !isPending && nm === primary;
     // a pending reservation with a served finalizeBy gets a REAL countdown (~2 min blocks); older
-    // services omit the field and the static label stays.
+    // services omit the field and the static label stays. An ARMED one says so: no action needed.
     const finBy = Number(n.finalizeBy) || 0;
-    const pendingLabel = finBy && tip
+    const eta = finBy && tip && tip <= finBy ? ` · ~${Math.max(1, finBy - tip) * 2} min` : "";
+    const pendingLabel = armed.has(nm)
+      ? `finalize armed · completes by itself${eta}`
+      : finBy && tip
       ? (tip > finBy ? "reservation expired · register again on site" : `finalizing · ~${Math.max(1, (finBy - tip)) * 2} min left to complete`)
       : "finalizing · complete on site";
     const lease = isPending ? pendingLabel : leaseLabel(n);
@@ -366,7 +373,9 @@ async function renderAssets() {
     // resolver rejects on a pending record (nrenew/nset both reject `if (n.pending)`) — an honest self-burn
     // of the anchor + up to the reg fee. Surface only a link to finish the reveal on /trade.
     const acts = isPending
-      ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">finalize ↗</a>`
+      ? (armed.has(nm)
+        ? `<button class="mini" data-ndefercancel="${escapeHtml(nm)}">cancel auto</button>`
+        : `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">finalize ↗</a>`)
       : n.lapsed
       ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">recapture ↗</a>`
       : `<button class="mini" data-nrenew="${escapeHtml(nm)}">renew</button>${isPrimary ? "" : `<button class="mini" data-nprimary="${escapeHtml(nm)}">★ primary</button>`}<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">⋯</a>`;
@@ -383,6 +392,12 @@ async function renderAssets() {
   });
   el.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
   el.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
+  // drop a held (deferred) finalize: releases its reserved inputs; the site's manual flow takes over
+  el.querySelectorAll<HTMLElement>("[data-ndefercancel]").forEach((b) => b.onclick = async () => {
+    await call("deferCancel", b.dataset.ndefercancel!).catch(() => null);
+    msg("auto-finalize cancelled · finish on the site", "info");
+    renderAssets();
+  });
 }
 
 // One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
