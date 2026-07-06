@@ -215,6 +215,12 @@ const MAX_TX_INPUTS = 512; // consensus cap (params/mod.rs) — refuse locally w
 // chokepoint every value tx routes through, so a compromised UI can't steer a user PAST the visible warning
 // into burning a huge fee. 100 CSD is ~100× any real fee — no legitimate flow approaches it.
 const MAX_FEE = 100 * 1e8; // base units (100 CSD)
+// ★ KEEP-IN-SYNC: DELIBERATE supply-chain-isolated fork of csd-tx selectInputs
+// (csd-sdk/packages/tx/src/index.ts — which upstreamed this fork's `exclude` param as 0.1.16 on
+// 2026-07-06, so the two bodies are line-for-line equivalent again). The fork exists so the wallet's
+// coin selection never depends on npm-installed code (MV3 posture); it must NOT be "deduped" into an
+// import. Any semantic change lands in BOTH files; test/selectinputs-parity.ts pins them to identical
+// selections over shared fixtures.
 export function selectInputs(utxos: any[], need: number, exclude?: ReadonlySet<string>): Selection | null {
   // Default a missing `confirmations` to 0 (UNCONFIRMED), never 1 — a hostile/buggy RPC
   // must not be able to make an immature/absent coin look spendable by omitting the field.
@@ -303,6 +309,15 @@ async function assembleValueTx(
   const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
   const sv = await selectVerified(rpc, addr, need);
   if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
+  // Proportional fee bound on the CHAIN-VERIFIED selected total, KEEP-IN-SYNC with csd-tx feeCap
+  // (packages/tx/src/index.ts: max(1 CSD, 10% of inputs)). Combined with the flat MAX_FEE pre-check
+  // above, the effective cap is min(100 CSD, max(1 CSD, 10% of verified inputs)) — strictly TIGHTER
+  // than either alone: the flat cap alone let a hostile dApp fee of e.g. 400 CSD through on whale
+  // coins (>1000 CSD selected). Every legitimate flow's explicit fee is ≤ 0.25 CSD (name fees are
+  // OUTPUTS, never this fee param), 4x under the 1 CSD floor — no honest tx can trip this.
+  const propCap = Math.max(100_000_000, Math.floor(sv.total * 0.10));
+  if (fee > propCap)
+    return { ok: false, error: `fee exceeds ${propCap / 1e8} CSD (10% of the coins this spend uses) — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false };
   const outs = [...outputs];
   const change = sv.total - need; // CHAIN-VERIFIED input total, not the RPC's report
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self

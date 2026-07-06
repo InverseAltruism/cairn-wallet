@@ -4540,6 +4540,29 @@ function previewFill(offer2, payRaw) {
   const got = isNameGive(offer2.give) ? 1n : BigInt(offer2.give.amount);
   return { deliverable: true, reason: "ok", got, pay: want, fee, rebate };
 }
+function requiredFillOutputs(offer2, payRaw) {
+  if (isTokenWant(offer2.want)) return [];
+  const p = previewFill(offer2, payRaw);
+  if (!p.deliverable) return null;
+  const need = /* @__PURE__ */ new Map();
+  const add = (a, v) => {
+    if (v > 0n) {
+      const k = a.toLowerCase();
+      need.set(k, (need.get(k) ?? 0n) + v);
+    }
+  };
+  add(offer2.want.payto, p.pay);
+  add(TREASURY_ADDR, p.fee);
+  add(offer2.seller, p.rebate);
+  return [...need].map(([to, value]) => ({ to, value }));
+}
+var FEE_GATE_MARGIN_BLOCKS = 5;
+var NAME_FEE_GATES = [V18_HEIGHT, V24_HEIGHT];
+var buildFeeHeight = (tip) => {
+  const t = Number(tip);
+  for (const g of NAME_FEE_GATES) if (t < g && t >= g - FEE_GATE_MARGIN_BLOCKS) return g;
+  return t;
+};
 function isOpenClaimLane(offer2, tip) {
   return tip >= V13_HEIGHT && offer2.taker === void 0 && !isTokenWant(offer2.want);
 }
@@ -4573,6 +4596,17 @@ function finalizeWinnerCheck(nameState, me, commitHeight) {
     return { safe: false, reason: "your reservation was displaced (effective height changed) \u2014 a finalize now would burn the fee" };
   return { safe: true, reason: "ok" };
 }
+var primaryRankBefore = (a, b) => a.effectiveHeight < b.effectiveHeight || a.effectiveHeight === b.effectiveHeight && a.claimId < b.claimId;
+function pickPrimaryName(names, a) {
+  const q = String(a).toLowerCase();
+  let best = null;
+  for (const n of names) {
+    if (n.owner !== q || n.addr !== q) continue;
+    if (n.expired === true || n.locked) continue;
+    if (!best || primaryRankBefore(n, best)) best = n;
+  }
+  return best ? best.name : null;
+}
 function paidToFromOutputs(outputs) {
   const m = /* @__PURE__ */ Object.create(null);
   for (const o of outputs) {
@@ -4602,6 +4636,7 @@ export {
   EPOCH_LEN,
   FEE_BPS,
   FEE_BPS_V16,
+  FEE_GATE_MARGIN_BLOCKS,
   FINALIZE_TIP_MARGIN,
   HALVING_INTERVAL,
   HASH_RE,
@@ -4666,6 +4701,7 @@ export {
   addrFromPub,
   bid,
   blockReward,
+  buildFeeHeight,
   buildRecord,
   canonicalJson,
   canonicalState,
@@ -4701,9 +4737,12 @@ export {
   parseAmount,
   parseRecord,
   payloadHash,
+  pickPrimaryName,
   previewFill,
+  primaryRankBefore,
   recoverSigner,
   requiredClaimDepth,
+  requiredFillOutputs,
   resolve,
   rpcTxToTx,
   sighash,

@@ -31,7 +31,7 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason — never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
+import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, paidToFromOutputs, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
 
 // Baked checkpoint: a real finalized CSD header at the NAMES-ACTIVATION floor (V11_HEIGHT). No name can
 // have an effectiveHeight below this, so a forward-only verified chain seeded here covers every name.
@@ -99,19 +99,21 @@ const CONF_BUFFER = 12;
 
 const fail = (reason: string): NameVerification => ({ verified: false, reason, scope: "as-shown" });
 
-// outputs → addr→sum(value) map (the resolver's `paidTo`). Mirrors the scanner: a malformed output is
-// SKIPPED (conservative — dropping a fee output can only make a fee look unpaid → reject, never overpay).
+// outputs → addr→sum(value) map (the resolver's `paidTo`). The AGGREGATION is the vendored
+// paidToFromOutputs (the exact sink the cairnx scanner/resolver use — same skip-don't-throw
+// semantics for malformed values; a dropped fee output can only make a fee look unpaid → reject,
+// never overpay). What stays local is SPV-specific: raw tx outputs carry a scriptPubkey, not an
+// addr, so extract + validate the 40-hex address and coerce codec number|bigint values to number
+// (a value past 2^53 coerces non-safe and is skipped by the sink, matching the old local copy).
+// A hand-rolled twin of the aggregation lived here until 2026-07-06.
 function outputsToPaidTo(outputs: Tx["outputs"]): Record<string, string> {
-  const m: Record<string, string> = {};
+  const decoded: { addr: string; value: number }[] = [];
   for (const o of outputs) {
-    const v = Number(o.value);
-    if (!Number.isSafeInteger(v) || v < 0) continue;
     const a = String(o.scriptPubkey ?? "").toLowerCase().replace(/^0x/, "");
     if (!/^[0-9a-f]{40}$/.test(a)) continue;
-    const addr = "0x" + a;
-    m[addr] = (BigInt(m[addr] ?? "0") + BigInt(v)).toString();
+    decoded.push({ addr: "0x" + a, value: Number(o.value) });
   }
-  return m;
+  return paidToFromOutputs(decoded);
 }
 
 // Recover + AUTHENTICATE a tx's signer. scriptSig = 0x40‖sig64‖0x21‖pub33 (99 bytes). The signature MUST

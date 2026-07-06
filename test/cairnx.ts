@@ -518,6 +518,12 @@ async function main() {
       const a = (mod as Record<string, unknown>)[name], b = (bundle as Record<string, unknown>)[name];
       check(`CQ-1: ${name} re-export equals the bundle (${a} === ${b})`, a != null && a === b);
     }
+    // Functions promoted into cairnx-core 0.1.35 (2026-07-06): identity-compare so a regression to a
+    // LOCAL copy (buildFeeHeight lived here as a hand mirror until then) fails loudly, not silently.
+    for (const name of ["buildFeeHeight", "requiredFillOutputs", "previewFill", "fillIsSafe"] as const) {
+      check(`CQ-1: ${name} re-export IS the bundle function (no local re-implementation)`,
+        (mod as Record<string, unknown>)[name] === (bundle as Record<string, unknown>)[name] && typeof (bundle as Record<string, unknown>)[name] === "function");
+    }
   }
 
   // B9 (Plan 56 A.4 finding 2): the pre-spend parseRecord ROUND-TRIP at the builder chokepoint.

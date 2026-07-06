@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, requiredFillOutputs, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import type { CxOfferState } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
@@ -445,20 +445,18 @@ export class Wallet {
           return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false };
         const verdict = fillIsSafe(offer, me, pay, tip);
         if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false };
-        // The resolver's value gate is a per-address SUM need-map (resolve.ts whole-fill: payto ≥ want,
-        // TREASURY ≥ fee, seller ≥ rebate, SUMMED when recipients coincide — payto==seller is the common
-        // case; partial fill: TREASURY ≥ fee on the clamped amount). A fill that underpays any of them is
-        // rejected on-chain AFTER the payment moved (the same pay-without-delivery burn class), so mirror
-        // the map and refuse before signing. Pure local math over data already in hand — no added I/O.
+        // The resolver's value gate is a per-address SUM need-map (whole fill: payto ≥ want, TREASURY ≥
+        // fee, seller ≥ rebate, SUMMED when recipients coincide; partial: clamped pay + fee). A fill that
+        // underpays any leg is rejected on-chain AFTER the payment moved (the pay-without-delivery burn
+        // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35) — the same
+        // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
+        // this block hand-mirrored it. Pure local math over data already in hand — no added I/O.
         if (isCsdWant) {
-          const need = new Map<string, bigint>();
-          const addNeed = (a: string, v: bigint) => { const k = a.toLowerCase(); if (v > 0n) need.set(k, (need.get(k) ?? 0n) + v); };
-          const isPartial = offer.min !== undefined && !("name" in ((offer.give as any) ?? {}));
-          if (!isPartial) addNeed(payto, BigInt((offer.want as { value: string }).value)); // whole fill: full price at payto
-          addNeed(TREASURY_ADDR, verdict.preview.fee);
-          if (verdict.preview.rebate > 0n) addNeed(String((offer as any).seller || ""), verdict.preview.rebate);
-          for (const [a, v] of need) if ((sums.get(a) ?? 0n) < v) {
-            const what = a === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : a === payto ? "seller payment" : "maker rebate output";
+          const need = requiredFillOutputs(offer, pay);
+          if (need === null)
+            return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false };
+          for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
+            const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
             return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false };
           }
         }

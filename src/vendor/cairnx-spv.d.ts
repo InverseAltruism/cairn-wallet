@@ -104,3 +104,16 @@ export function fillIsSafe(offer: CxOfferState, me: string, pay: bigint | string
 export function finalizeWinnerCheck(nameState: CxNameState | null | undefined, me: string, commitHeight: number): { safe: boolean; reason: string };
 export function isOpenClaimLane(offer: CxOfferState, tip: number): boolean;
 export function hasLiveClaim(offer: CxOfferState, me: string, tip: number): boolean;
+/** The resolver's fill value-gate need-map as a build-ready output list (2026-07-06 promotion —
+ *  replaces the wallet's hand-mirrored per-address sums in fillOffer). [] = token-priced (no CSD
+ *  outputs); null = undeliverable (gate with fillIsSafe first). Amounts accumulate per address. */
+export function requiredFillOutputs(offer: CxOfferState, pay: bigint | string | number): { to: string; value: bigint }[] | null;
+/** Approach-the-gate name-fee build heuristic (owns the gate list; replaces the local copy that
+ *  lived in core/cairnx.ts until 2026-07-06). Overpay-safe: strict `<` resolver gate. */
+export function buildFeeHeight(tip: number): number;
+export const FEE_GATE_MARGIN_BLOCKS: number;
+/** paidTo map from tx outputs (addr → summed value as decimal string), the scanner/resolver shape —
+ *  replaces namespv.ts's hand-mirrored outputsToPaidTo (same reviewed bytes the resolver uses). */
+export function paidToFromOutputs(outputs: readonly { addr: string; value: number | bigint }[]): Record<string, string>;
+export const REG_COMMIT_MAX_BLOCKS: number;      // sealed-registration displacement freeze (v2.5)
+export const REG_FINALIZE_GRACE_BLOCKS: number;  // finalize window past the freeze (v2.5)

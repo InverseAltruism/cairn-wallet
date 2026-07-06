@@ -15,7 +15,7 @@ import { utf8ToBytes } from "@noble/hashes/utils";
 import {
   // constants
   DOMAIN, MIN_FEE_PROPOSE, TREASURY_ADDR,
-  FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V24_HEIGHT, V25_HEIGHT,
+  FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
   // functions
@@ -23,7 +23,7 @@ import {
   parseAmount as parseAmountCanonical,
   // Tier 1 pre-flight (deep-review 2026-07-03): the shared value-safety surface the wallet's own
   // fillOffer/finalize builders call so they never sign a doomed value tx (C1/C2/C3/C4).
-  previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim,
+  previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs,
 } from "../vendor/cairnx-spv.js";
 
 // ── app constants (re-exported under the wallet's historical names) ───────────
@@ -35,15 +35,13 @@ export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGH
 export const cairnxTradeFee = tradeFee;
 export const cairnxMakerRebate = makerRebate;
 // Tier 1 pre-flight helpers, re-exported under the wallet surface (the fillOffer/finalize gates call these).
-export { previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim };
+export { previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs };
 export const cairnxPayloadHash = (record: unknown): string => payloadHash(record);
 export { nameRegFee };
-// name-fee build heuristic (app-side, NOT a resolver rule): a renewal fee built just below a fee gate but mined
-// at/after it underpays → reject + treasury-fee forfeit. Within a small margin below ANY upcoming fee gate
-// (V18, V24, …) price the BUILD at that gate (overpay always accepted, the resolver gate is strict `<`). Mirrors
-// helpers.js buildFeeHeight.
-const NAME_FEE_GATES = [V18_HEIGHT, V24_HEIGHT];
-export const buildFeeHeight = (tip: number): number => { for (const g of NAME_FEE_GATES) if (tip < g && tip >= g - 5) return g; return tip; };
+// buildFeeHeight (the approach-the-gate name-fee build heuristic) is VENDORED since cairnx-core 0.1.35 —
+// the core owns the gate list, so a future fee tier (V28+) arrives by re-vendoring instead of a hand edit
+// here + in the trade UI. A local copy of the gates + margin lived here until 2026-07-06.
+export { buildFeeHeight } from "../vendor/cairnx-spv.js";
 
 // Single source of truth for the .csd name syntax. `isPlainName` is the syntax-only check used before a name
 // reaches a URL (NO reserved-name check — that is the registrar's, not the parser's).
