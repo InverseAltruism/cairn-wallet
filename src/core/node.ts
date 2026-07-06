@@ -1,10 +1,9 @@
-// Talks to a CSD node (reads + non-custodial submit) and the Cairn API (sign-in).
-// Browser fetch. The non-custodial flow: coin-select → node /tx/template → sign the
-// signing_hash LOCALLY → set script_sig → node /tx/submit. The private key only ever
-// lives in the wallet; nothing here sends it anywhere.
+// Talks to a CSD node (reads + non-custodial submit) and the Cairn API (sign-in). Browser fetch.
+// The build is FULLY LOCAL and never trusts a server-supplied hash: coin-select from CHAIN-VERIFIED
+// utxos, assemble the whole tx and compute OUR OWN codec sighash locally, sign it, then POST /tx/submit.
+// We never sign a signing_hash the node handed us, so a malicious/MITM'd RPC cannot steer a signature
+// onto a different transaction. The private key only ever lives in the wallet; nothing here sends it away.
 import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
-
-const strip = (h: string) => (h.startsWith("0x") ? h.slice(2) : h);
 
 async function get(rpc: string, path: string): Promise<any> {
   const r = await fetch(`${rpc}${path}`); if (!r.ok) throw new Error(`${path} -> ${r.status}`); return r.json();
@@ -162,7 +161,7 @@ const MAX_SELECT_ROUNDS = 3;      // bounds /tx traffic: at most 3 selections pe
 const GHOST_TTL_MS = 120_000;
 const ghostSeen = new Map<string, number>(); // outpoint -> expiry
 const fmtCsd = (v: number) => (v / 1e8).toLocaleString("en-US", { maximumFractionDigits: 8 });
-async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string }> {
+async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   const { utxos } = await balance(rpc, addr);
   const now = Date.now();
   for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
@@ -178,13 +177,13 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
     if (!sel) break;                        // remaining verifiable coins can't cover `need`
     const ver = await verifyInputValues(rpc, sel.inputs, verified);
     if (ver.ok) {
-      if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance" };
+      if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
       return { inputs: sel.inputs, total: ver.total };
     }
     if (ver.kind === "tamper")
-      return { error: "could not verify selected inputs against the chain (refusing to risk a burned fee)" };
+      return { error: "could not verify selected inputs against the chain (refusing to risk a burned fee)", code: "VERIFY_TAMPER" };
     if (ver.kind === "transient")
-      return { error: "couldn't fetch source transactions to verify input values (node unreachable or erroring); nothing was signed, try again in a moment" };
+      return { error: "couldn't fetch source transactions to verify input values (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" };
     for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
       const k = opKey(g.txid, g.vout);
       if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
@@ -192,12 +191,19 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
     }
     if (ghostSeen.size > 2048) ghostSeen.clear(); // hard cap: a hostile RPC can't grow this unboundedly
   }
-  if (!ghostCount) return { error: "insufficient confirmed balance" };
+  if (!ghostCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
   console.warn(`cairn-wallet: skipped ${ghostCount} coin(s) the node could not prove (source tx not found); reported balance may be overstated by ~${fmtCsd(ghostValue)} CSD`);
-  return { error: `${ghostCount} coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be verified on the chain and were skipped; the remaining verifiable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)` };
+  // Non-retryable: the skipped coins stay excluded until the node can PROVE them, so an immediate retry
+  // changes nothing (distinct from the retryable VERIFY_UNAVAILABLE transient class above).
+  return { error: `${ghostCount} coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be verified on the chain and were skipped; the remaining verifiable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)`, code: "GHOST_INPUTS_SKIPPED" };
 }
 
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean }
+// `code` (WS5, additive since 0.2.54): a stable UPPER_SNAKE machine tag on every {ok:false} so dApp
+// consumers switch on the code instead of the human `error` string (which is UX copy and may change).
+// `sighashMatch` is DEPRECATED and vestigial — it is constant-equal to `ok` (true only when WE computed
+// and matched the sighash, which is the entire local-build flow) and no reader was found — but it is KEPT
+// on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 interface Selection { inputs: SelectedInput[]; total: number }
@@ -273,7 +279,7 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   const scriptSig = buildScriptSig(sig64, pub33);
   for (const i of tx.inputs) i.scriptSig = scriptSig;
   const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true };
+  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true, code: sub.ok ? undefined : "SUBMIT_REJECTED" };
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).
@@ -295,20 +301,20 @@ async function assembleValueTx(
   // zero-fee tx is built and signed but then silently dropped by the mempool; surface it as a clear
   // error up front instead (audit FEE-FLOOR). Non-negative integer / safe-integer checks stay with the
   // callers that own the fee value.
-  if (!(fee > 0)) return { ok: false, error: "fee must be positive (the node enforces a minimum fee)", sighashMatch: false };
-  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${MAX_FEE / 1e8} CSD safety cap — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false };
+  if (!(fee > 0)) return { ok: false, error: "fee must be positive (the node enforces a minimum fee)", sighashMatch: false, code: "FEE_TOO_LOW" };
+  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${MAX_FEE / 1e8} CSD safety cap — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
   // Refuse the zero address at the SINGLE place every value tx is assembled — send, sendMany,
   // propose, attest, fillOffer and buildSignSubmit all route through here. A payment to 0x000…0 is an
   // irrecoverable burn; the popup send form already blocks it, but the dApp send/sendMany/fillOffer paths
   // bypass that form, so the universal backstop lives here (audit M1 / V23 nset-clear burn class). The
   // node accepts a zero-address output, so this MUST be caught client-side. Change is always to self.
   for (const o of outputs) {
-    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0) — these funds would be unrecoverable", sighashMatch: false };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
+    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0) — these funds would be unrecoverable", sighashMatch: false, code: "ZERO_ADDR_REFUSED" };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
   }
   const addr = addrFromPriv(priv);
   const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
   const sv = await selectVerified(rpc, addr, need);
-  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false };
+  if ("error" in sv) return { ok: false, error: sv.error, sighashMatch: false, code: sv.code };
   // Proportional fee bound on the CHAIN-VERIFIED selected total, KEEP-IN-SYNC with csd-tx feeCap
   // (packages/tx/src/index.ts: max(1 CSD, 10% of inputs)). Combined with the flat MAX_FEE pre-check
   // above, the effective cap is min(100 CSD, max(1 CSD, 10% of verified inputs)) — strictly TIGHTER
@@ -317,13 +323,38 @@ async function assembleValueTx(
   // OUTPUTS, never this fee param), 4x under the 1 CSD floor — no honest tx can trip this.
   const propCap = Math.max(100_000_000, Math.floor(sv.total * 0.10));
   if (fee > propCap)
-    return { ok: false, error: `fee exceeds ${propCap / 1e8} CSD (10% of the coins this spend uses) — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false };
+    return { ok: false, error: `fee exceeds ${propCap / 1e8} CSD (10% of the coins this spend uses) — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
   const outs = [...outputs];
   const change = sv.total - need; // CHAIN-VERIFIED input total, not the RPC's report
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
-  if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false };
+  if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false, code: "NO_OUTPUTS" };
   const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
   return signAndSubmit(rpc, tx, priv);
+}
+
+// Per-output validation shared by buildSignSubmit / sendMany / fillOffer. The per-caller deltas are REAL
+// and preserved exactly: sendMany requires ≥1 output while buildSignSubmit/fillOffer deliberately allow an
+// empty set (a token-priced fill carries NO CSD outputs); the caps differ (8 / 500 / 100); and the error
+// STRINGS cross the dApp trust boundary, so each caller supplies its own `messages` text — this helper
+// unifies the LOOP, never the prose (the machine `code` is what unifies the class, WS5). Returns {sumOut}
+// (safe-integer-guarded); the isSafeInteger(sumOut + fee) coupling STAYS at the call site (buildSignSubmit
+// intentionally lacks one). buildSignSubmit combined its positive+safe-integer check into ONE message, so
+// its notPositive and notSafe strings are identical — byte-for-byte equivalent to the old combined guard.
+interface OutputMessages { tooMany: string; minOne?: string; badAddr: string; notPositive: string; notSafe: string; sumOverflow: string }
+function validateOutputs(outs: { to: string; value: number }[], opts: { max: number; minOne: boolean; messages: OutputMessages }): SubmitResult | { sumOut: number } {
+  const m = opts.messages;
+  if (opts.minOne && outs.length < 1) return { ok: false, error: m.minOne!, sighashMatch: false, code: "BAD_OUTPUTS" };
+  if (outs.length > opts.max) return { ok: false, error: m.tooMany, sighashMatch: false, code: "BAD_OUTPUTS" };
+  let sumOut = 0;
+  for (const o of outs) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: m.badAddr, sighashMatch: false, code: "BAD_OUTPUTS" };
+    const v = Number(o.value);
+    if (!(v > 0)) return { ok: false, error: m.notPositive, sighashMatch: false, code: "BAD_OUTPUTS" };
+    if (!Number.isSafeInteger(v)) return { ok: false, error: m.notSafe, sighashMatch: false, code: "BAD_OUTPUTS" };
+    sumOut += v;
+    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: m.sumOverflow, sighashMatch: false, code: "BAD_OUTPUTS" };
+  }
+  return { sumOut };
 }
 
 // `payouts` are optional value outputs carried in the SAME tx as the app payload (e.g. a
@@ -331,18 +362,14 @@ async function assembleValueTx(
 // send/fillOffer: each recipient validated, sums safe-integer-guarded, inputs selected
 // internally, change ONLY to the wallet's own address; a dApp can't pick UTXOs or redirect change.
 async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string, payouts: { to: string; value: number }[] = []): Promise<SubmitResult> {
-  if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false };
+  if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false, code: "BAD_FEE" };
   // Cap the value outputs a Propose may carry (normally one protocol-fee output). Prevents a
   // hostile dApp from flooding the clear-signing window with hundreds of disguised payments.
-  if (payouts.length > 8) return { ok: false, error: "too many outputs on a proposal (max 8)", sighashMatch: false };
-  let sumOut = 0;
-  for (const o of payouts) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false };
-    const v = Number(o.value);
-    if (!(v > 0) || !Number.isSafeInteger(v)) return { ok: false, error: "each amount must be a positive safe integer", sighashMatch: false };
-    sumOut += v;
-    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false };
-  }
+  const chk = validateOutputs(payouts, {
+    max: 8, minOne: false,
+    messages: { tooMany: "too many outputs on a proposal (max 8)", badAddr: "each recipient must be a 0x… 20-byte address", notPositive: "each amount must be a positive safe integer", notSafe: "each amount must be a positive safe integer", sumOverflow: "outputs exceed the safe integer range" },
+  });
+  if (!("sumOut" in chk)) return chk;
   const outputs = payouts.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   return assembleValueTx(rpc, outputs, fee, app, priv);
 }
@@ -352,13 +379,13 @@ export function propose(rpc: string, p: { domain: string; payloadHash: string; u
   // malformed value fails closed with a clear error instead of throwing a cryptic codec error deep inside
   // bytesArr() AFTER the SafeInteger checks pass (audit VAL-3). A real cairnx payloadHash is sha256 = 0x+64hex.
   if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.payloadHash))) {
-    return Promise.resolve({ ok: false, error: "payloadHash must be a 0x… 32-byte hash", sighashMatch: false });
+    return Promise.resolve({ ok: false, error: "payloadHash must be a 0x… 32-byte hash", sighashMatch: false, code: "BAD_REQUEST" });
   }
   // Validate expiresEpoch up front: a negative/fractional/>2^53 value would otherwise wrap or throw
   // inside u64() serialization, committing signed bytes (e.g. 0xFFFF…FF "never expires") that don't
   // match the dApp's intent. Same SafeInteger posture as amounts/fee. (redteam LOW-1)
   if (!Number.isSafeInteger(p.expiresEpoch) || p.expiresEpoch < 0) {
-    return Promise.resolve({ ok: false, error: "expiresEpoch must be a non-negative safe integer", sighashMatch: false });
+    return Promise.resolve({ ok: false, error: "expiresEpoch must be a non-negative safe integer", sighashMatch: false, code: "BAD_REQUEST" });
   }
   return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : []);
 }
@@ -366,7 +393,7 @@ export function attest(rpc: string, p: { proposalId: string; score: number; conf
   // Validate the proposalId shape up front (parity with fillOffer) so a malformed dApp-supplied value fails
   // closed instead of throwing a cryptic codec error inside bytesArr() (audit VAL-3). A proposalId is a txid.
   if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) {
-    return Promise.resolve({ ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false });
+    return Promise.resolve({ ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" });
   }
   // Clamp to u32 here (parity with fillOffer) so the signed bytes equal the displayed score/confidence.
   return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, p.fee, priv);
@@ -376,13 +403,13 @@ export function attest(rpc: string, p: { proposalId: string; score: number; conf
 // our golden-vector-validated codec, so no node template is needed; /tx/submit
 // validates the signature against the node's own (identical) sighash.
 export async function send(rpc: string, p: { to: string; amount: number; fee: number }, priv: string): Promise<SubmitResult> {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(p.to)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false };
-  if (!(p.amount > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false };
+  if (!/^0x[0-9a-fA-F]{40}$/.test(p.to)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
+  if (!(p.amount > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false, code: "BAD_OUTPUTS" };
   // CSD amounts are integer base units carried as JS numbers. Above 2^53 a Number
   // silently loses precision, so the value you sign could differ from what you meant.
   // Refuse anything outside the exactly-representable range (well above total supply).
   if (!Number.isSafeInteger(p.amount) || !Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(p.amount + p.fee))
-    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
+    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
   const outputs = [{ value: p.amount, scriptPubkey: p.to }];
   return assembleValueTx(rpc, outputs, p.fee, { type: "None" }, priv);
 }
@@ -394,19 +421,13 @@ export async function send(rpc: string, p: { to: string; amount: number; fee: nu
 // for 1→many payments; send() above is the single-recipient convenience wrapper.
 export async function sendMany(rpc: string, p: { outputs: { to: string; value: number }[]; fee: number }, priv: string): Promise<SubmitResult> {
   const outs = Array.isArray(p.outputs) ? p.outputs : [];
-  if (outs.length < 1) return { ok: false, error: "at least one output required", sighashMatch: false };
-  if (outs.length > 500) return { ok: false, error: "too many outputs (max 500)", sighashMatch: false };
-  let sumOut = 0;
-  for (const o of outs) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false };
-    const v = Number(o.value);
-    if (!(v > 0)) return { ok: false, error: "each amount must be positive", sighashMatch: false };
-    if (!Number.isSafeInteger(v)) return { ok: false, error: "an amount exceeds the safe integer range", sighashMatch: false };
-    sumOut += v;
-    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "total outputs exceed the safe integer range", sighashMatch: false };
-  }
-  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(sumOut + p.fee))
-    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
+  const chk = validateOutputs(outs, {
+    max: 500, minOne: true,
+    messages: { minOne: "at least one output required", tooMany: "too many outputs (max 500)", badAddr: "each recipient must be a 0x… 20-byte address", notPositive: "each amount must be positive", notSafe: "an amount exceeds the safe integer range", sumOverflow: "total outputs exceed the safe integer range" },
+  });
+  if (!("sumOut" in chk)) return chk;
+  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
+    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   return assembleValueTx(rpc, outputs, p.fee, { type: "None" }, priv);
 }
@@ -420,22 +441,17 @@ export async function fillOffer(
   p: { proposalId: string; score: number; confidence: number; outputs: { to: string; value: number }[]; fee: number },
   priv: string,
 ): Promise<SubmitResult> {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false };
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
   const outs = Array.isArray(p.outputs) ? p.outputs : [];
   // outs MAY be empty: a CairnX v1.2 token-priced fill pays in tokens (resolver-debited,
   // marked by confidence=1e6) and carries no CSD payment — the tx is attest + change only.
-  if (outs.length > 100) return { ok: false, error: "too many outputs (max 100)", sighashMatch: false };
-  let sumOut = 0;
-  for (const o of outs) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false };
-    const v = Number(o.value);
-    if (!(v > 0)) return { ok: false, error: "each amount must be positive", sighashMatch: false };
-    if (!Number.isSafeInteger(v)) return { ok: false, error: "an amount exceeds the safe integer range", sighashMatch: false };
-    sumOut += v;
-    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "total outputs exceed the safe integer range", sighashMatch: false };
-  }
-  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(sumOut + p.fee))
-    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false };
+  const chk = validateOutputs(outs, {
+    max: 100, minOne: false,
+    messages: { tooMany: "too many outputs (max 100)", badAddr: "each recipient must be a 0x… 20-byte address", notPositive: "each amount must be positive", notSafe: "an amount exceeds the safe integer range", sumOverflow: "total outputs exceed the safe integer range" },
+  });
+  if (!("sumOut" in chk)) return chk;
+  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
+    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   return assembleValueTx(rpc, outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs — add a payment or leave change");
 }

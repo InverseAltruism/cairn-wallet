@@ -3,80 +3,24 @@
 // live chain: a correct mapping verifies, a FORGED address is refused, a TAMPERED block is refused, a
 // LAPSED lease is refused, and the replay equals the audited resolver. Run: tsx test/namespv.test.mjs
 import { verifyName, verifyNameUnion } from "../src/core/namespv.ts";
-import { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.ts";
-import { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.ts";
-import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, resolve } from "../src/vendor/cairnx-spv.js";
+import { checker } from "./_check.ts";
+// The SPV rig (proposeTx / world / source / mkFetch / prevout registry) + the cairnx/csdtx/vendor building
+// blocks are shared with the name2/name4/name5 PoCs via _spvrig.ts (extracted 2026-07-06 from 4 hand copies).
+import {
+  buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR,
+  addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, resolve,
+  REG_FEE, proposeTx, world, source, feeOut, pick, prevoutFor, mkFetch as mkFetchByBase,
+} from "./_spvrig.ts";
 
-let pass = 0, fail = 0;
-const ok = (n, c) => { c ? pass++ : fail++; console.log(`  ${c ? "✓" : "✗"} ${n}`); };
+const { check: ok, done } = checker();
 
-const CAIRNX_DOMAIN = "cairnx:v1";
-const REG_FEE = 1000_000_000;                 // 10 CSD — generously above any nameRegFee (overpay is accepted)
 const keyA = "0x" + "11".repeat(32), keyB = "0x" + "22".repeat(32);
 const A = addrFromPriv(keyA).toLowerCase(), B = addrFromPriv(keyB).toLowerCase();
 const TARGET = "0x" + "cd".repeat(20), ATTACKER = "0x" + "ee".repeat(20);
 
-// NSPV-SIGSUB-1 (H3): the verifier now binds each record's recovered signer to the scriptPubkey of the coin
-// it spends (SpvSource.prevoutScriptPubkey). Each built tx therefore references a UNIQUE prevout whose
-// scriptPubkey is registered here; by default the signer spends their OWN coin (the honest case), and a test
-// can override `prevScriptPubkey` to simulate a swapped scriptSig (signer ≠ coin owner).
-let _utxoSeq = 0;
-const PREVOUTS = new Map(); // prevTxid(lowercase) -> 0x scriptPubkey of that outpoint
-const prevoutFor = (t) => PREVOUTS.get(String(t).toLowerCase()) ?? null;
-
-// Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape — exactly what SpvSource.blockAt returns.
-function proposeTx({ uri, payloadHash, expiresEpoch = 9_999_999, priv, outputs = [], prevScriptPubkey }) {
-  const prevTxid = "0x" + (++_utxoSeq).toString(16).padStart(64, "0"); // a unique, real-looking prevout per tx
-  PREVOUTS.set(prevTxid.toLowerCase(), String(prevScriptPubkey ?? addrFromPriv(priv)).toLowerCase()); // honest: signer owns it
-  // codec Tx (camel) — input spends `prevTxid`, app + fee outputs
-  const tx = {
-    version: 1, locktime: 0,
-    inputs: [{ prevTxid, vout: 0, scriptSig: "0x" }],
-    outputs: outputs.map((o) => ({ value: o.value, scriptPubkey: o.to })),
-    app: { type: "Propose", domain: CAIRNX_DOMAIN, payloadHash, uri, expiresEpoch },
-  };
-  const { sig64, pub33 } = signSighash(vSighash(tx), priv);   // sign the VENDORED sighash → verifyDigest accepts
-  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
-  // → RpcTxJson (snake_case), the shape the node/block endpoint serves
-  return {
-    version: 1, locktime: 0,
-    inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: tx.inputs[0].scriptSig }],
-    outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
-    app: { type: "Propose", domain: CAIRNX_DOMAIN, payload_hash: payloadHash, uri, expires_epoch: expiresEpoch },
-  };
-}
-const feeOut = (v = REG_FEE) => [{ to: TREASURY_ADDR, value: v }];
-
-// A synthetic SpvSource: blocks keyed by height, each merkle root computed over its txs (so the verifier's
-// merkle-bind genuinely passes), tip fixed. `tamperMerkle` flips one block's root to simulate a lying node.
-function source(blocks, tip, tamperMerkle = null) {
-  return {
-    async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
-    async blockAt(height) {
-      const txs = blocks.get(height);
-      if (!txs) throw new Error(`no verified header at ${height}`);
-      let merkle = merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t))));
-      if (tamperMerkle === height) merkle = "0x" + "ff".repeat(32);
-      return { merkle, txs };
-    },
-    async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); }, // H3 prevout-ownership oracle
-  };
-}
-// place txs into blocks at given heights, return {blocks, hints} (hints = txid+height+pos per placed tx)
-function world(placements) {
-  const blocks = new Map(), hints = [];
-  for (const { height, tx } of placements) {
-    const arr = blocks.get(height) ?? blocks.set(height, []).get(height);
-    const pos = arr.length; arr.push(tx);
-    hints.push({ txid: ctxid(rpcTxToTx(tx)), height, pos });
-  }
-  return { blocks, hints };
-}
-
 const NAME = "alice";
 const claimTx = proposeTx({ ...pick(buildNameClaim({ name: NAME })), priv: keyA, outputs: feeOut() });
 const nsetTx = proposeTx({ ...pick(buildNameSet({ name: NAME, addr: TARGET })), priv: keyA });
-function pick(b) { return { uri: b.uri, payloadHash: b.payloadHash }; }
 
 console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blocks):");
 
@@ -99,7 +43,7 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
 // 3. TAMPERED BLOCK — node serves a tx-set that doesn't hash to the (claimed) verified merkle root ⇒ REFUSED
 {
   const { blocks, hints } = world([{ height: 33700, tx: claimTx }, { height: 33710, tx: nsetTx }]);
-  const r = await verifyName(NAME, { addr: TARGET, owner: A }, hints, source(blocks, 33800, 33710));
+  const r = await verifyName(NAME, { addr: TARGET, owner: A }, hints, source(blocks, 33800, { tamperMerkle: 33710 }));
   ok("tampered block (merkle mismatch) is REFUSED", r.verified === false && /merkle/i.test(r.reason));
 }
 
@@ -202,12 +146,8 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   const clarvis = [H(aClaim, 33700), H(aNset, 33710)];  // HONEST: shows A's winning claim
   const src = source(blocks, 33800);
   const SRC = [{ label: "primary", base: "https://primary.example/trade/api" }, { label: "clarvis", base: "https://clarvis.example/trade/api" }];
-  const mkFetch = (gBody, cBody) => async (url) => {
-    const u = String(url);
-    const body = u.includes("primary") ? gBody : u.includes("clarvis") ? cBody : { ok: false };
-    if (body && body.__status === 502) return { ok: false, status: 502, json: async () => ({}) };
-    return { ok: true, status: 200, json: async () => body };
-  };
+  // adapt the shared per-base mock to this section's (primary, clarvis) call shape (a {__status:502} body = down)
+  const mkFetch = (gBody, cBody) => mkFetchByBase({ [SRC[0].base]: gBody, [SRC[1].base]: cBody });
 
   // 11. withholding DEFEATED: union resolves to the true winner (TARGET), not the attacker; hostile source flagged
   const r11 = await verifyNameUnion(NM, SRC, src, mkFetch(
@@ -302,5 +242,4 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   ok("H1-backstop: a merely-DOWN peer (502) is NOT a disagreement — lone honest source still verifies (no blanket ≥2-source rule)", r502.verified === true && r502.addr === TARGET && r502.sources === 1);
 }
 
-console.log(`\nnamespv: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+done("namespv");

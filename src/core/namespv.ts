@@ -133,7 +133,13 @@ function recoverSigner(tx: Tx): string | null {
 // Reconstruct a resolver ChainEvent from a merkle-verified, signer-authenticated, prevout-bound tx. The
 // caller has already recovered + ownership-bound `signer` (see replayName); this only decodes the app
 // payload. Returns null for a non-cairnx tx (the caller fail-closes — a hinted tx we can't faithfully
-// replay is a lying read). Field shapes match the scanner exactly so resolve() produces identical state.
+// replay is a lying read).
+// ★ KEEP-IN-SYNC: the emitted field shapes mirror the cairnx scanner (cairnx repo src/scan.ts
+// tx()/propose/attest mapping) so resolve() produces identical state from either feed. The
+// aggregation half already IS the shared sink (paidToFromOutputs, above); this event shaping stays
+// a marked mirror because the two sides read different wire formats (SPV raw tx vs indexer JSON).
+// Any field-shape change lands in BOTH files; test/namespv.test.mjs replays against the audited
+// resolver and fails on shape drift.
 function toChainEvent(tx: Tx, id: string, height: number, pos: number, signer: string): Record<string, unknown> | null {
   if (!tx.app || tx.app.type === "None") return null;
   const paidTo = outputsToPaidTo(tx.outputs);

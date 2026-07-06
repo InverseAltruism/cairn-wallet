@@ -2,7 +2,7 @@
 // Handles popup messages (full control) and dApp messages relayed by the content
 // script. dApp WRITE/identity requests require the wallet to be unlocked AND an
 // explicit user approval via the popup (pending-request queue).
-import { Wallet } from "./core/wallet.js";
+import { Wallet, AUTO_LOCK_MS } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
 
@@ -355,7 +355,8 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
 // it, so a post made right before the popup closed still gets its content
 // registered once the tx mines (~30-60s) — no more hash-only placeholders.
 ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }));
-const AUTO_LOCK_MS = 15 * 60 * 1000; // wipe the in-memory + session key after 15 min idle
+// AUTO_LOCK_MS is imported from core/wallet.js so this enforced window can't drift from the wallet's
+// own idle default (both were separate 15-min literals). Wipe the in-memory + session key after it.
 wallet.idleMs = AUTO_LOCK_MS;        // keep the session-rehydrate window == the auto-lock window
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });

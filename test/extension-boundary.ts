@@ -247,6 +247,7 @@ async function main() {
   lastSubmit = null;
   const rFilled = await approveFill({ proposalId: FILLED_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES a filled offer (no payment signed)", rFilled?.result?.ok === false && /filled|no-op/i.test(String(rFilled?.result?.error)) && lastSubmit === null);
+  check("WS5: the preflight refusal carries the FILL_UNSAFE code on the nested result", rFilled?.result?.code === "FILL_UNSAFE");
   // (b) an OPEN CSD offer taker-bound to SOMEONE ELSE → refuse (taker mismatch; no tip needed)
   const TAKER_OTHER_ID = "0x" + "24".repeat(32);
   offerFixtures.set(TAKER_OTHER_ID.toLowerCase(), { id: TAKER_OTHER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: "0x" + "9a".repeat(20), height: 34000, feeBps: 150 });
@@ -271,6 +272,7 @@ async function main() {
   tipDown = true; lastSubmit = null;
   const rTipDown = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES an open-CSD fill when the tip cannot be fetched (F1 fail-closed, no payment signed)", rTipDown?.result?.ok === false && /chain tip/i.test(String(rTipDown?.result?.error)) && lastSubmit === null);
+  check("WS5: the tip-unavailable refusal carries the retryable VERIFY_UNAVAILABLE code", rTipDown?.result?.code === "VERIFY_UNAVAILABLE");
   tipDown = false;
   // (e) F2: resolver need-map — treasury fee output missing → on-chain "protocol fee unpaid" AFTER payment; refuse
   lastSubmit = null;
@@ -284,6 +286,7 @@ async function main() {
   lastSubmit = null;
   const rFrac = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 1.5 }], fee: 5_000_000 });
   check("fillOffer REFUSES a fractional output value with the structured error shape (F4)", rFrac?.result?.ok === false && /integer/i.test(String(rFrac?.result?.error)) && lastSubmit === null);
+  check("WS5: the bad-output refusal carries the BAD_OUTPUTS code", rFrac?.result?.code === "BAD_OUTPUTS");
   // (h) CONTROL: the correctly-built fill (price+rebate summed at payto==seller, fee to treasury) SIGNS
   lastSubmit = null;
   const rGood = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
@@ -319,6 +322,7 @@ async function main() {
   await popup("resolve", sp[sp.length - 1].id, true);
   await tick(); await tick();
   check("propose with >8 outputs is refused (anti-flood)", flood.get()?.ok === true && flood.get()?.result?.ok === false && /too many outputs/.test(JSON.stringify(flood.get())));
+  check("WS5: the >8-outputs refusal carries the BAD_OUTPUTS code (node validateOutputs)", flood.get()?.result?.code === "BAD_OUTPUTS");
 
   console.log("\n=== while LOCKED, an approved dApp request cannot act ===");
   await popup("lock");
@@ -379,6 +383,20 @@ async function main() {
     const handled = new RegExp(`(?:p|msg)\\.method === "${m}"`).test(bgSrc);
     check(`CQ-4: dApp method '${m}' has a handler (no allowlist↔dispatch drift)`, handled);
   }
+  // CQ-4 (2.9): the dApp surface is ALSO advertised to pages via inpage.ts getCapabilities().methods — the
+  // one hand-synced list no test covered. Parse it as text and assert it matches DAPP_METHODS as a SET,
+  // case-insensitively: getCapabilities uses the camelCase JS method names (signIn/signInWithCsd) the dApp
+  // dev calls, while the wire allowlist uses the lowercase wire strings (signin/signinwithcsd). A method
+  // advertised-but-not-allowlisted (or vice-versa) is a real drift bug — a page told it can call something
+  // the background rejects, or an allowlisted method the page can't discover.
+  const inpageSrc = readFileSync(new URL("../src/inpage.ts", import.meta.url), "utf8");
+  const capMatch = inpageSrc.match(/getCapabilities[\s\S]*?methods:\s*\[([^\]]*)\]/);
+  const capMethods = capMatch ? [...capMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+  check("CQ-4: inpage getCapabilities().methods parses + is non-trivial", capMethods.length >= 10);
+  const normSet = (xs: string[]) => [...new Set(xs.map((s) => s.toLowerCase()))].sort();
+  const capNorm = normSet(capMethods), dappNorm = normSet(dappMethods);
+  check("CQ-4: getCapabilities().methods matches DAPP_METHODS as a set (no inpage↔background drift)",
+    capNorm.length === dappNorm.length && capNorm.every((m, i) => m === dappNorm[i]));
 
   console.log("\n=== WL-1/R19: the approval-poll (status/pending) must NOT defeat the idle auto-lock ===");
   // Simulate a connected site that keeps a request queued and lets the approval window poll forever.

@@ -40,6 +40,11 @@ const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
 // SAME event). Fail-soft: if clarvis is unreachable the verify falls back to single-source (with caution).
 const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 
+// The idle window shared by the wallet's auto-lock AND its session-rehydrate expiry, and by the
+// background alarm that ENFORCES the lock. Exported so the decoy default here and background's
+// AUTO_LOCK_MS can never drift out of one another (they were two independent 15-min literals).
+export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
+
 // Block-explorer presets the wallet links to. Navigation-only — opened in a new tab, NEVER fetched — so this
 // adds NO CSP / host_permission / fetch surface (the source-host tripwire only covers fetched *_RPC/*_API
 // hosts). Default = the Cairn explorer (the indexer UI, hash-routed); the Official CSD explorer (a static MPA
@@ -78,6 +83,18 @@ const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for d
 const histKey = (addr: string) => "txHistory:" + addr;
 const sealKey = (addr: string) => "sealedClaims:" + addr;
 
+// Epoch math + record-expiry windows (all in EPOCHS; one epoch = BLOCKS_PER_EPOCH blocks). BLOCKS_PER_EPOCH
+// mirrors the vendored cairnx-core EPOCH_LEN (30) — kept as a named local because the wallet .d.ts does not
+// yet export it. Each +N offset below sets a Propose's expiresEpoch = currentEpoch + window.
+const BLOCKS_PER_EPOCH = 30;
+const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim — ample window to mine
+const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
+const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
+// Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
+const ATTEST_FLOOR = 5_000_000;
+// Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
+const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
+
 export class Wallet {
   // Unlocked state (memory only): the decrypted accounts, the active index, and the
   // derived AES key (so we can re-seal on changes without retaining the password).
@@ -95,7 +112,7 @@ export class Wallet {
   tradeApi = DEFAULT_TRADE_API;
   explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base) — navigation-only
   // Idle window for both auto-lock AND session-rehydrate expiry; background sets it to AUTO_LOCK_MS.
-  idleMs = 15 * 60 * 1000;
+  idleMs = AUTO_LOCK_MS;
   // `session` is chrome.storage.session (in-RAM) when running as an extension, else null. It lets the
   // unlocked key survive an MV3 service-worker idle-kill so genuine activity within idleMs doesn't
   // keep re-prompting for the password. null ⇒ in-memory-only (the old behaviour).
@@ -157,13 +174,19 @@ export class Wallet {
   // Persist the in-memory accounts: re-seal the vault (fresh IV, same salt+key, incl.
   // the HD seed + next index) and mirror the public list (addresses + labels + whether
   // each is an imported non-HD key) in cleartext for the UI.
-  private async persistVault() {
-    if (!this.accts || !this.vaultKey) throw new Error("locked");
-    const doc: VaultDoc = {
+  // Serialize the in-memory unlocked state into the encrypted-vault plaintext. Single source for the doc
+  // shape shared by persistVault (re-seal) and sealFresh (first seal), so the two can't drift.
+  private buildDoc(): VaultDoc {
+    return {
       v: 2, mnemonic: this.mnemonic ?? undefined, nextIndex: this.nextIndex,
-      accounts: this.accts.map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })),
+      accounts: (this.accts ?? []).map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })),
       active: this.active,
     };
+  }
+
+  private async persistVault() {
+    if (!this.accts || !this.vaultKey) throw new Error("locked");
+    const doc = this.buildDoc();
     const vault = await sealWith(JSON.stringify(doc), this.vaultKey, this.salt, this.iter);
     await this.store.set("vault", vault);
     await this.store.set("wallets", this.accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported })));
@@ -174,8 +197,7 @@ export class Wallet {
 
   // Seal a brand-new vault from an in-memory state already set on `this`.
   private async sealFresh(password: string) {
-    const doc: VaultDoc = { v: 2, mnemonic: this.mnemonic ?? undefined, nextIndex: this.nextIndex, accounts: this.accts!.map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })), active: this.active };
-    const { vault, key } = await sealNew(JSON.stringify(doc), password);
+    const { vault, key } = await sealNew(JSON.stringify(this.buildDoc()), password);
     this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter;
     await this.persistVault();
     this.touch();
@@ -243,15 +265,28 @@ export class Wallet {
     catch (e) { await this.authGuardRecord(false); throw e; }
   }
 
+  // Derive the vault key under the brute-force guard, decrypt the vault, and parse the plaintext. Single
+  // opener shared by unlock / exportKey / exportMnemonic. The caller fetches `v` first (each keeps its own
+  // "no wallet" message). `raw` is the decrypted plaintext; `parsed` is the v2 multi-account doc (null for a
+  // legacy single-key vault whose plaintext IS a raw privkey); `legacyPriv` is that plaintext 0x-normalized
+  // (exportKey's legacy repair, kept here so every opener sees the same normalized legacy form). openWith
+  // throws "bad password" on a GCM-tag mismatch — INSIDE the guard, so a wrong password is counted.
+  private async openVaultDoc(v: Vault, password: string): Promise<{ key: CryptoKey; raw: string; parsed: VaultDoc | null; legacyPriv: string }> {
+    const { key, raw } = await this.withAuthGuard(async () => {
+      const key = await deriveVaultKey(password, v.salt, v.iter);
+      return { key, raw: await openWith(v, key) };
+    });
+    let parsed: VaultDoc | null = null;
+    try { const p = JSON.parse(raw); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy raw-key vault */ }
+    return { key, raw, parsed, legacyPriv: raw.startsWith("0x") ? raw : "0x" + raw };
+  }
+
   async unlock(password: string): Promise<{ addr: string }> {
     const v: Vault | null = await this.store.get("vault");
     if (!v) throw new Error("no wallet — create or import one first");
-    const { key, doc } = await this.withAuthGuard(async () => {
-      const key = await deriveVaultKey(password, v.salt, v.iter);
-      return { key, doc: await openWith(v, key) }; // openWith throws "bad password" on GCM-tag mismatch → counted
-    });
+    const { key, raw } = await this.openVaultDoc(v, password);
     this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
-    await this.applyDoc(doc);
+    await this.applyDoc(raw);
     await this.persistVault();
     this.touch();
     await this.persistSession(); // remember the unlocked key in chrome.storage.session (in-RAM)
@@ -386,11 +421,26 @@ export class Wallet {
   private must(): Acct { if (!this.accts) throw new Error("locked"); return this.accts[this.active]; }
   private addr(): string { return this.must().addr; }
 
+  // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx — every caller
+  // discriminates status / parses / catches itself, so each keeps its own fail-soft (display reads) vs
+  // fail-closed (fillOffer/resolveName money paths) posture exactly. A network error / timeout abort throws
+  // out of fetch → the caller's own try/catch handles it. Timeouts bound the wait: 6s on recipient/fill
+  // paths (fail clean, never wrong), 12s on the slower display reads (bounded instead of hanging forever).
+  private tradeGet(path: string, timeoutMs = 6000): Promise<Response> {
+    return fetch(this.tradeApi + path, { signal: AbortSignal.timeout(timeoutMs) });
+  }
+
+  // Summarize payment outputs for a history entry: total value + a single-recipient addr or "N recipients".
+  private summarizeOutputs(outs: { to: string; value: number }[]): { total: number; to: string } {
+    const total = outs.reduce((a, o) => a + Number(o.value || 0), 0);
+    return { total, to: outs.length === 1 ? outs[0]!.to : `${outs.length} recipients` };
+  }
+
   balance() { return node.balance(this.rpc, this.addr()); }
   // Current epoch (= floor(tip/30), matching this wallet's own propose math) — lets the approval
   // window show a dApp-supplied expiresEpoch as a real "expires in N days from now". Best-effort:
   // returns null offline so the clear-signer just shows the raw epoch.
-  async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / 30); } catch { return null; } }
+  async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH); } catch { return null; } }
   // CLEARSIGN-FEE-1: exact tip for the clear-sign fee-sufficiency check on a dApp-built name registration/
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
@@ -398,84 +448,88 @@ export class Wallet {
   async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number }) {
-    const q = { proposalId: p.proposalId, score: (p.score ?? 100) >>> 0, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? 5_000_000 };
-    // ── fund-safety pre-flight (deep-review 2026-07-03 C2/C3/C4): the wallet's own fillOffer must NEVER
-    // sign a payment tx the resolver will reject AFTER the CSD moves (no escrow → the payment is lost).
-    // We re-fetch the CURRENT offer record and run the shared cairnx-core pre-flight over it. The check is
-    // computed from the offer's OWN give/want/min/claim fields (not a resolver boolean), so even a hostile
-    // resolver cannot induce a loss by lying about status. Failure posture is asymmetric BY DESIGN:
-    //   • an OPEN (untaken) CSD offer uses claim-to-fill — a non-claimant fill loses the FULL payment, so we
-    //     fail CLOSED (refuse) when the offer can't be fetched/parsed (mirrors the website's verifyClaimSPV).
-    //   • a taker-bound / status-only fill keeps today's best-effort posture (proceed on 404/unreachable),
-    //     so a very recent or cross-resolver offer the tradeApi hasn't scanned yet is not false-refused.
-    if (/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) {
-      let offer: CxOfferState | null = null;
-      let fetchFailed = false;
-      try {
-        const r0 = await fetch(`${this.tradeApi}/cairnx/offer/${encodeURIComponent(p.proposalId)}`, { signal: AbortSignal.timeout(6000) });
-        if (r0.ok) offer = (await r0.json().catch(() => null)) as any;
-        else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
-      } catch { fetchFailed = true; }
-      if (offer && typeof offer.status === "string") {
-        if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false };
-        const me = this.addr();
-        // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
-        // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
-        // instead of letting BigInt() throw raw out of the preflight.
-        const sums = new Map<string, bigint>();
-        for (const o of q.outputs ?? []) {
-          if (typeof o.value !== "number" || !Number.isSafeInteger(o.value) || o.value <= 0)
-            return { ok: false, error: "each output value must be a positive integer amount in base units — refusing to sign", sighashMatch: false };
-          const k = String(o.to).toLowerCase();
-          sums.set(k, (sums.get(k) ?? 0n) + BigInt(o.value));
-        }
-        // the seller payment is the output sum going to want.payto (what previewFill/fillIsSafe price against)
-        const payto = String((offer.want as any)?.payto || "").toLowerCase();
-        const pay = sums.get(payto) ?? 0n;
-        const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
-        // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
-        // the live tip. this.tip() yields null on any RPC failure (node.get throws → the catch), and a
-        // degenerate 200-without-height reads as 0 — either way the value below lands at 0, and
-        // fillIsSafe(…, 0) would silently DISARM the claim gate (0 < V13_HEIGHT) — so a non-positive tip on
-        // exactly this lane fails CLOSED with the same retryable posture as the unreachable-resolver branch
-        // below. Taker-bound and token-priced lanes never consult the tip, so an RPC blip changes nothing
-        // for them (no false refusal on the common lane).
-        const tip = (await this.tip()) ?? 0;
-        if (!(tip > 0) && offer.taker === undefined && isCsdWant)
-          return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false };
-        const verdict = fillIsSafe(offer, me, pay, tip);
-        if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false };
-        // The resolver's value gate is a per-address SUM need-map (whole fill: payto ≥ want, TREASURY ≥
-        // fee, seller ≥ rebate, SUMMED when recipients coincide; partial: clamped pay + fee). A fill that
-        // underpays any leg is rejected on-chain AFTER the payment moved (the pay-without-delivery burn
-        // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35) — the same
-        // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
-        // this block hand-mirrored it. Pure local math over data already in hand — no added I/O.
-        if (isCsdWant) {
-          const need = requiredFillOutputs(offer, pay);
-          if (need === null)
-            return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false };
-          for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
-            const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
-            return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false };
-          }
-        }
-      } else if (fetchFailed) {
-        // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
-        // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
-        // This is narrow: it does not fire on a 404 (a very recent / cross-resolver offer the tradeApi hasn't
-        // scanned yet still proceeds below), only when the resolver is actually down — a clear retryable
-        // refusal instead of a possible silent loss.
-        return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable) — try again in a moment", sighashMatch: false };
-      }
-      // offer === null via a clean 404 → proceed (a very recent/cross-resolver offer; clear-sign + node guard).
-    }
+    const q = { proposalId: p.proposalId, score: (p.score ?? 100) >>> 0, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? ATTEST_FLOOR };
+    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs);
+    if (refusal) return refusal;
     const r = await node.fillOffer(this.rpc, q, this.must().privkey);
-    const outs = Array.isArray(q.outputs) ? q.outputs : [];
-    const total = outs.reduce((a, o) => a + Number(o.value || 0), 0);
-    const to = outs.length === 1 ? outs[0]!.to : `${outs.length} recipients`;
+    const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
     await this.maybeRecord(r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
     return r;
+  }
+
+  // ── fund-safety pre-flight (deep-review 2026-07-03 C2/C3/C4): the wallet's own fillOffer must NEVER sign a
+  // payment tx the resolver will reject AFTER the CSD moves (no escrow → the payment is lost). Re-fetch the
+  // CURRENT offer record and run the shared cairnx-core pre-flight over it. The check is computed from the
+  // offer's OWN give/want/min/claim fields (not a resolver boolean), so even a hostile resolver cannot induce
+  // a loss by lying about status. Returns a refusal SubmitResult, or null to PROCEED. Posture is asymmetric BY
+  // DESIGN:
+  //   • an OPEN (untaken) CSD offer uses claim-to-fill — a non-claimant fill loses the FULL payment, so we
+  //     fail CLOSED (refuse) when the offer can't be fetched/parsed (mirrors the website's verifyClaimSPV).
+  //   • a taker-bound / status-only fill keeps today's best-effort posture (proceed on 404/unreachable), so a
+  //     very recent or cross-resolver offer the tradeApi hasn't scanned yet is not false-refused.
+  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[]): Promise<node.SubmitResult | null> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return null; // not a well-formed id → the node guard handles it
+    let offer: CxOfferState | null = null;
+    let fetchFailed = false;
+    try {
+      const r0 = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 6s: recipient path fails clean
+      if (r0.ok) offer = (await r0.json().catch(() => null)) as any;
+      else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
+    } catch { fetchFailed = true; }
+    if (offer && typeof offer.status === "string") {
+      if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false, code: "FILL_UNSAFE" };
+      const me = this.addr();
+      // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
+      // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
+      // instead of letting BigInt() throw raw out of the preflight.
+      const sums = new Map<string, bigint>();
+      for (const o of outputs ?? []) {
+        if (typeof o.value !== "number" || !Number.isSafeInteger(o.value) || o.value <= 0)
+          return { ok: false, error: "each output value must be a positive integer amount in base units — refusing to sign", sighashMatch: false, code: "BAD_OUTPUTS" };
+        const k = String(o.to).toLowerCase();
+        sums.set(k, (sums.get(k) ?? 0n) + BigInt(o.value));
+      }
+      // the seller payment is the output sum going to want.payto (what previewFill/fillIsSafe price against)
+      const payto = String((offer.want as any)?.payto || "").toLowerCase();
+      const pay = sums.get(payto) ?? 0n;
+      const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
+      // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
+      // the live tip. this.tip() yields null on any RPC failure (node.get throws → the catch), and a
+      // degenerate 200-without-height reads as 0 — either way the value below lands at 0, and
+      // fillIsSafe(…, 0) would silently DISARM the claim gate (0 < V13_HEIGHT) — so a non-positive tip on
+      // exactly this lane fails CLOSED with the same retryable posture as the unreachable-resolver branch
+      // below. Taker-bound and token-priced lanes never consult the tip, so an RPC blip changes nothing
+      // for them (no false refusal on the common lane).
+      const tip = (await this.tip()) ?? 0;
+      if (!(tip > 0) && offer.taker === undefined && isCsdWant)
+        return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+      const verdict = fillIsSafe(offer, me, pay, tip);
+      if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
+      // The resolver's value gate is a per-address SUM need-map (whole fill: payto ≥ want, TREASURY ≥
+      // fee, seller ≥ rebate, SUMMED when recipients coincide; partial: clamped pay + fee). A fill that
+      // underpays any leg is rejected on-chain AFTER the payment moved (the pay-without-delivery burn
+      // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35) — the same
+      // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
+      // this block hand-mirrored it. Pure local math over data already in hand — no added I/O.
+      if (isCsdWant) {
+        const need = requiredFillOutputs(offer, pay);
+        if (need === null)
+          return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
+        for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
+          const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
+          return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
+        }
+      }
+    } else if (fetchFailed) {
+      // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
+      // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
+      // This is narrow: it does not fire on a 404 (a very recent / cross-resolver offer the tradeApi hasn't
+      // scanned yet still proceeds below), only when the resolver is actually down — a clear retryable
+      // refusal instead of a possible silent loss.
+      return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    }
+    // offer === null via a clean 404 → proceed (a very recent/cross-resolver offer; clear-sign + node guard).
+    return null;
   }
   signIn() { return node.signIn(this.api, this.must().privkey); }
 
@@ -545,8 +599,7 @@ export class Wallet {
   async sendMany(p: { outputs: { to: string; value: number }[]; fee?: number }) {
     const fee = p.fee ?? 1_000_000;
     const r = await node.sendMany(this.rpc, { outputs: p.outputs, fee }, this.must().privkey);
-    const total = p.outputs.reduce((a, o) => a + Number(o.value || 0), 0);
-    const to = p.outputs.length === 1 ? p.outputs[0]!.to : `${p.outputs.length} recipients`;
+    const { total, to } = this.summarizeOutputs(p.outputs);
     await this.maybeRecord(r, { type: "send", to, amount: total, fee });
     return r;
   }
@@ -557,7 +610,7 @@ export class Wallet {
     const priv = this.must().privkey;
     const content = { v: 1, domain: p.domain, title: p.title, body: p.body ?? "", links: p.links ?? [] };
     const ph = cairnPayloadHash(content);
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
     if (r.ok && r.txid) { await this.addPending(content, r.txid); this.flushPending(); } // durable, alarm-driven
     await this.maybeRecord(r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
@@ -570,7 +623,7 @@ export class Wallet {
   // showing the CSD balance even when the token API is down ({ ok:false } → quiet retry).
   async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[]; nameDetails?: any[]; primaryName?: string | null; tipHeight?: number }> {
     try {
-      const r = await fetch(`${this.tradeApi}/cairnx/address/${this.addr()}`);
+      const r = await this.tradeGet(`/cairnx/address/${this.addr()}`, 12000); // display read: 12s bounded (was untimed)
       if (!r.ok) return { ok: false };
       const j = await r.json();
       const balances = (j && typeof j.balances === "object" && j.balances) || {};
@@ -588,13 +641,13 @@ export class Wallet {
   // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
   // owner (so a name works as a recipient even before its holder sets a resolver record).
   async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }> {
-    const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
+    const nm = normName(name);
     // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
     // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
     // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
     if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
     try {
-      const r = await fetch(`${this.tradeApi}/cairnx/resolve/${encodeURIComponent(nm)}`);
+      const r = await this.tradeGet(`/cairnx/resolve/${encodeURIComponent(nm)}`); // 6s: recipient path fails clean
       if (r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
       if (!r.ok) return { ok: false, error: "name lookup failed" };
       const j = await r.json();
@@ -624,7 +677,7 @@ export class Wallet {
   async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string }> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
     try {
-      const r = await fetch(`${this.tradeApi}/cairnx/offer/${encodeURIComponent(proposalId)}`, { signal: AbortSignal.timeout(6000) });
+      const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 6s: fill-quote read
       if (!r.ok) return { ok: false, error: "offer not found" };
       const o: any = await r.json().catch(() => null);
       if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
@@ -647,7 +700,7 @@ export class Wallet {
   // itself, replaying the AUDITED resolver over merkle-verified records (see core/namespv.ts). Returns the
   // fail-closed tri-state. Exposed to dApps (popup "verifyName") so a recipient can be confirmed before a send.
   async verifyName(name: string): Promise<NameVerification & { name: string }> {
-    const nm = String(name || "").toLowerCase().replace(/\.csd$/, "");
+    const nm = normName(name);
     if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, scope: "as-shown", name: nm };
     try {
       // Cross-check the user's configured primary resolver against the independent clarvis second source
@@ -694,7 +747,7 @@ export class Wallet {
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
-    const expiresEpoch = Math.floor(tip / 30) + 1000;
+    const expiresEpoch = Math.floor(tip / BLOCKS_PER_EPOCH) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
     await this.maybeRecord(r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
     return r;
@@ -703,14 +756,14 @@ export class Wallet {
   async cairnxSetPrimary(name: string) {
     const priv = this.must().privkey;
     const built = buildNameSet({ name, addr: this.addr() });
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 100000;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + SET_PRIMARY_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
     await this.maybeRecord(r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;
   }
   async cairnxTokens(): Promise<{ ok: boolean; tokens?: { ticker: string; decimals: number; name?: string }[] }> {
     try {
-      const r = await fetch(`${this.tradeApi}/cairnx/tokens`);
+      const r = await this.tradeGet(`/cairnx/tokens`, 12000); // display read: 12s bounded (was untimed)
       if (!r.ok) return { ok: false };
       const j = await r.json();
       return { ok: true, tokens: Array.isArray(j) ? j : [] };
@@ -722,7 +775,7 @@ export class Wallet {
   async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number }) {
     const priv = this.must().privkey;
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
     if (fee < CAIRNX_PROPOSE_FEE) throw new Error("cairnx anchor fee must be ≥ 0.25 CSD");
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
@@ -740,8 +793,8 @@ export class Wallet {
     const nonce = bytesToHex(randomBytes(32));
     const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
     const ph = cairnPayloadHash(content);
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / 30) + 720;
-    const fee = p.fee ?? 25_000_000; // propose min 0.25 CSD
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
+    const fee = p.fee ?? CAIRNX_PROPOSE_FEE; // propose min 0.25 CSD
     const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
     if (r.ok && r.txid) {
       const k = sealKey(this.addr());
@@ -811,10 +864,8 @@ export class Wallet {
   // Reveal the ACTIVE account's private key — requires re-entering the password.
   async exportKey(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
-    const doc = await this.withAuthGuard(async () => openWith(v, await deriveVaultKey(password, v.salt, v.iter)));
-    let parsed: VaultDoc | null = null;
-    try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy raw key */ }
-    if (!parsed) return doc.startsWith("0x") ? doc : "0x" + doc; // legacy single-key vault
+    const { parsed, legacyPriv } = await this.openVaultDoc(v, password);
+    if (!parsed) return legacyPriv; // legacy single-key vault (plaintext IS the raw privkey, 0x-normalized)
     const i = this.accts ? this.active : (parsed.active ?? 0);
     return parsed.accounts[Math.min(i, parsed.accounts.length - 1)].priv;
   }
@@ -823,9 +874,7 @@ export class Wallet {
   // for legacy/import-only wallets that have no seed phrase.
   async exportMnemonic(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
-    const doc = await this.withAuthGuard(async () => openWith(v, await deriveVaultKey(password, v.salt, v.iter)));
-    let parsed: VaultDoc | null = null;
-    try { const p = JSON.parse(doc); if (p && Array.isArray(p.accounts)) parsed = p; } catch { /* legacy */ }
+    const { parsed } = await this.openVaultDoc(v, password);
     if (!parsed?.mnemonic) throw new Error("this wallet has no recovery phrase (it was created from an imported key)");
     return parsed.mnemonic;
   }

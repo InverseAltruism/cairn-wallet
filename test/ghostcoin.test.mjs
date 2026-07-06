@@ -76,6 +76,7 @@ try {
     const r = await w.send(RCPT, 5e8, 1e6);
     check("ghost + shortfall: send fails", r.ok === false);
     check("…with the honest skip message (count + value + need)", /1 coin\(s\) totalling 51 CSD .*skipped/.test(r.error || ""));
+    check("…carries the non-retryable GHOST_INPUTS_SKIPPED code (WS5)", r.code === "GHOST_INPUTS_SKIPPED");
     check("…and nothing was submitted", stats.submits.length === 0);
   }
 
@@ -87,6 +88,7 @@ try {
     const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
     const r = await w.send(RCPT, 1e8, 1e6);
     check("all-ghost: fails with skip message, not the tamper string", r.ok === false && /could not be verified on the chain and were skipped/.test(r.error || "") && !/refusing to risk a burned fee/.test(r.error || ""));
+    check("all-ghost: code is GHOST_INPUTS_SKIPPED (WS5)", r.code === "GHOST_INPUTS_SKIPPED");
   }
 
   // ── 4. transient node failure: retryable message, NO exclusion pollution, heals ──
@@ -99,6 +101,7 @@ try {
     const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
     const r1 = await w.send(RCPT, 1e8, 1e6);
     check("transient: fails retryably (try again copy)", r1.ok === false && /try again in a moment/.test(r1.error || ""));
+    check("transient: code is the retryable VERIFY_UNAVAILABLE (WS5)", r1.code === "VERIFY_UNAVAILABLE");
     broken = false;
     const r2 = await w.send(RCPT, 1e8, 1e6);
     check("transient heals: SAME coin spends after the node recovers (no ghost-cache pollution)", r2.ok === true && submittedInputTxids(stats.submits[0]).includes(id));
@@ -114,6 +117,7 @@ try {
     const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
     const r = await w.send(RCPT, 1e8, 1e6);
     check("tamper: exact legacy refusal string", r.error === "could not verify selected inputs against the chain (refusing to risk a burned fee)");
+    check("tamper: code is the non-retryable VERIFY_TAMPER (WS5, string unchanged)", r.code === "VERIFY_TAMPER");
     check("tamper: single verify round (no retry against a forging RPC)", stats.txByIds[id] === 1);
     check("tamper: nothing submitted", stats.submits.length === 0);
   }

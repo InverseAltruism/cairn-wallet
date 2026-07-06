@@ -25,10 +25,10 @@ export class PortRegistry {
     for (const p of s) { try { p.postMessage({ kind: "cairn-event", event, data }); } catch { /* port closing */ } }
   }
 
-  /** Push an event to every connected origin's ports (used for wallet-wide lock/account-switch). */
-  emitAll(event: string, data: unknown): void {
-    for (const s of this.byOrigin.values()) for (const p of s) { try { p.postMessage({ kind: "cairn-event", event, data }); } catch { /* port closing */ } }
-  }
+  // There is DELIBERATELY no emitAll(): a wallet-wide event (lock / account-switch) must reach ONLY the
+  // origins the user has consented to, never every connected page — background emits per-consented-origin
+  // (emitConnected loops emitToOrigin over the consent map) precisely so a random open site can't learn the
+  // wallet's lock/account-switch timing. A broadcast helper here invited re-introducing that privacy leak.
 
   get size(): number { let n = 0; for (const s of this.byOrigin.values()) n += s.size; return n; }
 }

@@ -19,10 +19,14 @@ import {
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
   // functions
-  canonicalJson, payloadHash, tradeFee, makerRebate, nameRegFee, parseRecord, nameCommit,
+  canonicalJson, payloadHash, tradeFee, nameRegFee, parseRecord,
   parseAmount as parseAmountCanonical,
-  // Tier 1 pre-flight (deep-review 2026-07-03): the shared value-safety surface the wallet's own
-  // fillOffer/finalize builders call so they never sign a doomed value tx (C1/C2/C3/C4).
+  // Tier 1 pre-flight value-safety surface (deep-review 2026-07-03), re-exported under the wallet surface.
+  // WHO CALLS WHAT (honestly): fillIsSafe + requiredFillOutputs → the wallet's fillOffer preflight
+  // (wallet.ts fillOfferPreflight); finalizeWinnerCheck → the approve-path nfinalize gate
+  // (popup/clearsign.ts nfinalizeApproveGate, since the deferred-finalize gate); previewFill /
+  // isOpenClaimLane / hasLiveClaim → test oracles + the CQ-1 identity-compare (test/cairnx.ts) that pins
+  // them to the bundle (isOpenClaimLane/hasLiveClaim are also internal to the vendored fillIsSafe).
   previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs,
 } from "../vendor/cairnx-spv.js";
 
@@ -30,11 +34,12 @@ import {
 export const CAIRNX_DOMAIN = DOMAIN;                 // "cairnx:v1"
 export const CAIRNX_PROPOSE_FEE = MIN_FEE_PROPOSE;   // 0.25 CSD — the convention's anchor fee floor
 export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, NAME_RE, canonicalJson };
-// v1.6 fee/rebate: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; these
-// just compute the fee/rebate for clear-sign display. Byte-identical to cairnx-core (callers pass bigint).
+// v1.6 fee: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; this just
+// computes the trade fee for clear-sign display. Byte-identical to cairnx-core (callers pass bigint). (The
+// cairnxMakerRebate re-export was removed 2026-07-06 — it had zero callers anywhere; the rebate is computed
+// inside the vendored requiredFillOutputs/previewFill, which is what the fillOffer preflight actually uses.)
 export const cairnxTradeFee = tradeFee;
-export const cairnxMakerRebate = makerRebate;
-// Tier 1 pre-flight helpers, re-exported under the wallet surface (the fillOffer/finalize gates call these).
+// Tier 1 pre-flight helpers, re-exported under the wallet surface (callers named in the import block above).
 export { previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs };
 export const cairnxPayloadHash = (record: unknown): string => payloadHash(record);
 export { nameRegFee };
@@ -102,26 +107,15 @@ function buildNameRecord(record: Record<string, unknown>): BuiltCairnxRecord {
   if (parseRecord(uri, ph) === null) throw new Error("record fails the resolver's consensus validation (it would anchor the fee and then be ignored): check for unusual characters in values");
   return { record, uri, payloadHash: ph };
 }
-/** Front-run-proof commit hash — the canonical cairnx-core nameCommit (binds name+salt+lowercased owner). */
-export const nameCommitHash = (name: string, salt: string, owner: string): string => nameCommit(name, salt, owner);
-export function buildNameCommit(p: { name: string; salt: string; owner: string }): BuiltCairnxRecord {
-  if (!isName(p.name)) throw new Error("invalid name (lowercase a-z 0-9 hyphen, 1-32, not reserved)");
-  if (!isSalt(p.salt)) throw new Error("invalid salt");
-  if (!isAddr(String(p.owner).toLowerCase())) throw new Error("owner must be a 0x… address");
-  return buildNameRecord({ v: 1, t: "ncommit", commit: nameCommitHash(p.name, p.salt, p.owner) });
-}
+// NOTE (2026-07-06): buildNameCommit / nameCommitHash / buildNameReveal / buildNameFinalize were removed —
+// they had ZERO callers anywhere in src/ or test/. The wallet's live name flows are renew/set/transfer/
+// profile (below) + the on-website registration path; the on-device commit→reveal→finalize builders were
+// never wired. Reintroduce them from cairnx-core (nameCommit + t:"ncommit"/"nfinalize" records) if the
+// wallet ever grows an on-device registration flow.
 export function buildNameClaim(p: { name: string; salt?: string }): BuiltCairnxRecord {
   if (!isName(p.name)) throw new Error("invalid name (lowercase a-z 0-9 hyphen, 1-32, not reserved)");
   if (p.salt !== undefined && !isSalt(p.salt)) throw new Error("invalid salt");
   return buildNameRecord(p.salt ? { v: 1, t: "name", name: p.name, salt: p.salt } : { v: 1, t: "name", name: p.name });
-}
-export const buildNameReveal = (p: { name: string; salt: string }): BuiltCairnxRecord => buildNameClaim(p);
-/** v2.5 winner-only register finalize (salt MANDATORY; carries the reg fee). At height >= V25 the `name` reveal
- *  is payment-free and this is what actually pays + completes the registration, once the contest has frozen. */
-export function buildNameFinalize(p: { name: string; salt: string }): BuiltCairnxRecord {
-  if (!isName(p.name)) throw new Error("invalid name (lowercase a-z 0-9 hyphen, 1-32, not reserved)");
-  if (!isSalt(p.salt)) throw new Error("invalid salt");
-  return buildNameRecord({ v: 1, t: "nfinalize", name: p.name, salt: p.salt });
 }
 export function buildNameRenew(p: { name: string }): BuiltCairnxRecord {
   if (!isName(p.name)) throw new Error("invalid name");

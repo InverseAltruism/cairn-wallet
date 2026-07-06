@@ -1,10 +1,9 @@
 // Provider-event port registry tests (doc 28 Phase 2): the security-critical property is that a page
 // only ever receives events for ITS OWN origin (keyed on the unforgeable sender origin). Run: npx tsx test/events.test.ts
 import { PortRegistry } from "../src/core/events.js";
+import { checker } from "./_check.js";
 
-declare const process: { exit(code: number): void };
-let pass = 0, fail = 0;
-const check = (n: string, c: boolean) => { c ? (pass++, console.log("  ✅ " + n)) : (fail++, console.log("  ❌ " + n)); };
+const { check, done } = checker();
 const mkPort = () => { const msgs: any[] = []; return { msgs, postMessage(m: any) { msgs.push(m); } }; };
 
 const r = new PortRegistry();
@@ -17,8 +16,14 @@ check("emitToOrigin reaches ALL ports of that origin", a1.msgs.length === 1 && a
 check("★ emitToOrigin does NOT reach another origin (cross-origin isolation)", b1.msgs.length === 0);
 check("event message shape is {kind:'cairn-event',event,data}", a1.msgs[0].kind === "cairn-event" && a1.msgs[0].event === "accountsChanged" && Array.isArray(a1.msgs[0].data));
 
-r.emitAll("disconnect", null);
-check("emitAll reaches every origin's ports", a1.msgs.length === 2 && a2.msgs.length === 2 && b1.msgs.length === 1);
+// PRIVACY INVARIANT (why emitAll was removed, 2026-07-06): a wallet-wide event (lock / account-switch)
+// must reach ONLY the origins the user has CONSENTED to — never every connected page — or a random open
+// site learns the wallet's lock/account-switch timing. Background emits per-consented-origin (emitConnected
+// loops emitToOrigin over the consent map); model that here (a.* is "consented", b.* is not) and prove the
+// connected-but-unconsented origin hears nothing. A broadcast emitAll() would have leaked to b.* too.
+for (const consented of ["https://a.example"]) r.emitToOrigin(consented, "disconnect", null);
+check("per-consented-origin emit reaches the consented origin's ports", a1.msgs.length === 2 && a2.msgs.length === 2);
+check("★ a connected-but-UNconsented origin hears nothing (no lock-timing leak)", b1.msgs.length === 0);
 
 r.remove("https://a.example", a1);
 r.emitToOrigin("https://a.example", "x", 1);
@@ -33,5 +38,4 @@ r.add("https://c.example", bad); r.add("https://c.example", survivor);
 r.emitToOrigin("https://c.example", "y", 2);
 check("a throwing port can't break delivery to its siblings", survivor.msgs.length === 1);
 
-console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+done("events");
