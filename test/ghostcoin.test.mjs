@@ -1,0 +1,160 @@
+// Ghost-coin recovery suite (Plan 65 / wallet 0.2.53): per-coin fail-closed input verification.
+//
+// Incident class: a node's UTXO index can hold entries whose source tx is in NO block of its own
+// chain (failed reorg-undo, 2026-07-05). The old any-null-kills-all fold in verifyInputValues let ONE
+// such "ghost" coin brick every spend from the wallet. The fix classifies per-input verdicts
+// (verified value / notfound / transient / tamper) and re-selects around authoritative not-founds,
+// bounded, with no coin ever spent unverified and the tamper refusal byte-identical to before.
+//
+// Harness footgun: node.ts keeps a module-level session ghost cache (ghostSeen, TTL 2 min), shared
+// across cases in this one tsx process. Every case therefore uses DISTINCT coin values (=> distinct
+// txids) except the final case, where the carryover IS the assertion.
+import { Wallet } from "../src/core/wallet.js";
+import { memoryStore } from "../src/core/storage.js";
+import { selectInputs } from "../src/core/node.js";
+import { mkCoin, txReply } from "./_coin.js";
+
+let pass = 0, fail = 0;
+const check = (n, c) => { c ? pass++ : (fail++, console.error("  ✗ " + n)); if (c) console.log("  ✓ " + n); };
+const RCPT = "0x" + "11".repeat(20);
+const hexOf = (bytes) => "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+
+// URL-routed fetch stub (selftest.ts pattern): serve /utxos from `coins`, /tx/<id> from `served`
+// (a coin in `coins` but NOT `served` answers the node's canonical miss = a ghost), count fetches,
+// capture /tx/submit bodies. `overrides` lets a case break specific txids (transient / tamper).
+function mkStub({ coins, served, overrides = {} }) {
+  const stats = { tx: 0, txByIds: {}, submits: [] };
+  const stub = async (url) => {
+    const u = String(url);
+    if (u.includes("/utxos/")) {
+      return { ok: true, status: 200, json: async () => ({ confirmed_balance: coins.reduce((s, c) => s + c.coin.value, 0), utxos: coins.map((c) => c.coin) }) };
+    }
+    const idm = u.match(/\/tx\/(0x[0-9a-fA-F]{64})\b/);
+    if (idm) {
+      stats.tx++; const id = idm[1].toLowerCase();
+      stats.txByIds[id] = (stats.txByIds[id] || 0) + 1;
+      if (overrides[id]) return overrides[id]();
+      return txReply(u, served);
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  // fetch(url, init) form for POST /tx/submit: capture the submitted tx
+  const wrapped = async (url, init) => {
+    const u = String(url);
+    if (u.includes("/tx/submit")) { stats.submits.push(JSON.parse(init?.body ?? "{}")); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
+    return stub(url);
+  };
+  return { fetch: wrapped, stats };
+}
+const submittedInputTxids = (sub) => (sub?.tx?.inputs ?? []).map((i) => hexOf(i.prevout.txid).toLowerCase());
+
+const origFetch = globalThis.fetch;
+try {
+  // ── 1. one ghost among many: spend succeeds, ghost excluded, change math intact ──
+  {
+    const ghost = mkCoin(50e8); ghost.coin.txid = "0x" + "97".repeat(32); // never served
+    const g3 = mkCoin(3e8), g2 = mkCoin(2e8);
+    const { fetch, stats } = mkStub({ coins: [ghost, g3, g2], served: [g3, g2] });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 4e8, 1e6);
+    check("ghost among many: send succeeds", r.ok === true);
+    const ins = submittedInputTxids(stats.submits[0]);
+    check("ghost outpoint not in the submitted inputs", ins.length > 0 && !ins.includes(ghost.coin.txid.toLowerCase()));
+    const outs = stats.submits[0]?.tx?.outputs ?? [];
+    const changeOk = outs.some((o) => o.value === 3e8 + 2e8 - 4e8 - 1e6); // verified total − amount − fee
+    check("change equals verified-total minus amount minus fee", changeOk);
+  }
+
+  // ── 2. ghost + insufficient remainder: honest skip message, nothing submitted ──
+  {
+    const ghost = mkCoin(51e8); ghost.coin.txid = "0x" + "96".repeat(32);
+    const g1 = mkCoin(1e8);
+    const { fetch, stats } = mkStub({ coins: [ghost, g1], served: [g1] });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 5e8, 1e6);
+    check("ghost + shortfall: send fails", r.ok === false);
+    check("…with the honest skip message (count + value + need)", /1 coin\(s\) totalling 51 CSD .*skipped/.test(r.error || ""));
+    check("…and nothing was submitted", stats.submits.length === 0);
+  }
+
+  // ── 3. all-ghost: honest skip message, NOT the tamper refusal ──
+  {
+    const ghost = mkCoin(52e8); ghost.coin.txid = "0x" + "95".repeat(32);
+    const { fetch } = mkStub({ coins: [ghost], served: [] });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 1e8, 1e6);
+    check("all-ghost: fails with skip message, not the tamper string", r.ok === false && /could not be verified on the chain and were skipped/.test(r.error || "") && !/refusing to risk a burned fee/.test(r.error || ""));
+  }
+
+  // ── 4. transient node failure: retryable message, NO exclusion pollution, heals ──
+  {
+    const c = mkCoin(7e8);
+    const id = String(c.coin.txid).toLowerCase();
+    let broken = true;
+    const { fetch, stats } = mkStub({ coins: [c], served: [c], overrides: { [id]: () => broken ? { ok: false, status: 500, json: async () => ({}) } : txReply(`/tx/${id}`, [c]) } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r1 = await w.send(RCPT, 1e8, 1e6);
+    check("transient: fails retryably (try again copy)", r1.ok === false && /try again in a moment/.test(r1.error || ""));
+    broken = false;
+    const r2 = await w.send(RCPT, 1e8, 1e6);
+    check("transient heals: SAME coin spends after the node recovers (no ghost-cache pollution)", r2.ok === true && submittedInputTxids(stats.submits[0]).includes(id));
+  }
+
+  // ── 5. tamper: exact legacy refusal, single verify round, no retry, no submit ──
+  {
+    const c = mkCoin(9e8);
+    const id = String(c.coin.txid).toLowerCase();
+    const forged = JSON.parse(JSON.stringify(c.body)); forged.outputs[0].value = 9e8 * 2; // inflate → recompute mismatch
+    const { fetch, stats } = mkStub({ coins: [c], served: [c], overrides: { [id]: () => ({ ok: true, status: 200, json: async () => ({ ok: true, tx: forged }) }) } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 1e8, 1e6);
+    check("tamper: exact legacy refusal string", r.error === "could not verify selected inputs against the chain (refusing to risk a burned fee)");
+    check("tamper: single verify round (no retry against a forging RPC)", stats.txByIds[id] === 1);
+    check("tamper: nothing submitted", stats.submits.length === 0);
+  }
+
+  // ── 6. happy-path regression: all coins verify, one round, no extra fetches ──
+  {
+    const a = mkCoin(4e8), b = mkCoin(3.5e8);
+    const { fetch, stats } = mkStub({ coins: [a, b], served: [a, b] });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 6e8, 1e6);
+    check("happy path: succeeds", r.ok === true);
+    check("happy path: exactly one /tx fetch per selected input", stats.tx === submittedInputTxids(stats.submits[0]).length);
+  }
+
+  // ── 7. selectInputs exclude set: excluded outpoint never selected; 2-arg call identical ──
+  {
+    const u = (txid, value) => ({ txid, vout: 0, value, confirmations: 5 });
+    const A = "0x" + "aa".repeat(32), B = "0x" + "bb".repeat(32);
+    const pool = [u(A, 5e8), u(B, 5e8)];
+    const selAll = selectInputs(pool, 4e8);
+    check("selectInputs 2-arg unchanged (largest-first pick)", !!selAll && selAll.inputs.length === 1);
+    const sel = selectInputs(pool, 4e8, new Set([`${A}:0`]));
+    check("excluded outpoint never selected", !!sel && sel.inputs.length === 1 && sel.inputs[0].txid === B);
+    check("exclusion can exhaust the pool", selectInputs(pool, 4e8, new Set([`${A}:0`, `${B}:0`])) === null);
+  }
+
+  // ── 8. session ghost cache: an immediate retry pre-excludes the known ghost (0 refetches) ──
+  {
+    const ghost = mkCoin(53e8); ghost.coin.txid = "0x" + "94".repeat(32);
+    const good = mkCoin(6e8);
+    const { fetch, stats } = mkStub({ coins: [ghost, good], served: [good] });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    await w.send(RCPT, 1e8, 1e6);                       // learns the ghost (1 probe)
+    const probes1 = stats.txByIds[ghost.coin.txid.toLowerCase()] || 0;
+    await w.send(RCPT, 1e8, 1e6);                       // retry within TTL: cache-seeded exclude
+    const probes2 = stats.txByIds[ghost.coin.txid.toLowerCase()] || 0;
+    check("ghost probed exactly once across two sends (session cache)", probes1 === 1 && probes2 === 1);
+  }
+} finally { globalThis.fetch = origFetch; }
+
+console.log(`\nghostcoin: ${pass} passed, ${fail} failed`);
+if (fail) process.exit(1);

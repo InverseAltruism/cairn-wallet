@@ -73,52 +73,128 @@ function nodeTxToTx(j: any): Tx {
 // too-small a change and silently burn the difference as fee (audit TXB-1). The source tx's
 // txid commits to its output values, so a hostile RPC cannot serve a fake body whose recomputed
 // txid still matches the prevout — any tamper is detected and the send is refused (fail-closed).
-async function verifyInputValues(rpc: string, inputs: { txid: string; vout: number }[]): Promise<{ ok: boolean; total: number }> {
-  // Each input is verified INDEPENDENTLY (fetch its source tx, recompute the consensus txid, require it to
-  // match the prevout, then read the committed output value), so the per-input `/tx` fetches run in PARALLEL
-  // — an N-input send is one round-trip's latency, not N sequential ones (matters for a wallet whose UTXO set
-  // got fragmented into many small coins). The browser's per-host connection cap bounds concurrency; the input
-  // set is already capped at MAX_TX_INPUTS. Verification + fail-closed semantics are UNCHANGED: a per-input
-  // checker returns the verified value or `null`, and ANY null (unfetchable / forged body / txid mismatch /
-  // missing or out-of-range output) makes the whole call fail closed — never a partial trust (audit TXB-1).
-  const verifyOne = async (i: { txid: string; vout: number }): Promise<number | null> => {
+//
+// Per-input verdicts are CLASSIFIED (Plan 65, ghost-coin incident): a node can hold UTXO-index
+// entries whose source tx is in NO block of its own chain (a failed reorg-undo leaves them behind).
+// Under the old any-null-kills-all fold, ONE such coin bricked every spend from the wallet forever.
+// The classes and their handling (in selectVerified):
+//   number       verified value — the only thing that can ever be spent
+//   "notfound"   the node answered authoritatively that it has no such tx (404, or its canonical
+//                2xx {ok:false,err:"not found"} miss with no tx body) → a ghost coin; the CALLER may
+//                re-select around it. The coin itself is NEVER spent.
+//   "transient"  network error / non-2xx-non-404 / unparseable body → the node is unhealthy, refuse
+//                retryably and exclude NOTHING (a blip must not change which coins get spent).
+//   "tamper"     a body was served but fails decode / txid recompute / output sanity → possible
+//                hostile RPC; the whole spend is refused with no retry, exactly as before.
+// Caveat: a node answering 2xx {ok:false,err:"db busy"} with no tx body is indistinguishable from a
+// miss and classifies "notfound"; the failure mode is an honest "couldn't cover after skipping" error
+// (bounded by the caller's short ghost-cache TTL), never an unverified spend.
+type InputVerdict = number | "notfound" | "transient" | "tamper";
+type VerifyResult =
+  | { ok: true; total: number }
+  | { ok: false; kind: "tamper" }
+  | { ok: false; kind: "transient" }
+  | { ok: false; kind: "notfound"; ghosts: { txid: string; vout: number }[] };
+const opKey = (txid: unknown, vout: unknown) => `${String(txid).toLowerCase()}:${Number(vout)}`;
+async function verifyInputValues(
+  rpc: string,
+  inputs: { txid: string; vout: number }[],
+  // per-CALL cache: a coin verified in an earlier selection round is never refetched in a later one.
+  // Deliberately not cross-call (a txid does commit to its outputs immutably, but re-verifying every
+  // spend keeps the "always verify before signing" property trivially auditable).
+  verified: Map<string, number> = new Map(),
+): Promise<VerifyResult> {
+  // Each input is verified INDEPENDENTLY, so the per-input `/tx` fetches run in PARALLEL — an N-input
+  // send is one round-trip's latency, not N sequential ones. The browser's per-host connection cap
+  // bounds concurrency; the input set is already capped at MAX_TX_INPUTS.
+  const verifyOne = async (i: { txid: string; vout: number }): Promise<InputVerdict> => {
+    const hit = verified.get(opKey(i.txid, i.vout));
+    if (hit !== undefined) return hit;
     let body: any;
-    try { body = (await get(rpc, `/tx/${i.txid}`))?.tx; } catch { return null; }
-    if (!body) return null;
+    try {
+      const r = await fetch(`${rpc}/tx/${i.txid}`);
+      if (r.status === 404) return "notfound";
+      if (!r.ok) return "transient";
+      let j: any; try { j = await r.json(); } catch { return "transient"; }
+      body = j?.tx;
+    } catch { return "transient"; }
+    if (!body) return "notfound"; // the node's canonical 2xx miss: {ok:false,err:"not found"}, no tx
     let tx: Tx, recomputed: string;
     // robustness nit (audit D): codecTxid itself can throw on a malformed body, so decode AND
     // recompute inside one try — any failure is a fail-closed reject, never an uncaught throw.
-    try { tx = nodeTxToTx(body); recomputed = codecTxid(tx); } catch { return null; }
-    if (recomputed.toLowerCase() !== String(i.txid).toLowerCase()) return null; // forged source body
+    try { tx = nodeTxToTx(body); recomputed = codecTxid(tx); } catch { return "tamper"; }
+    if (recomputed.toLowerCase() !== String(i.txid).toLowerCase()) return "tamper"; // forged source body
     const out = tx.outputs[i.vout];
-    if (!out) return null;
+    if (!out) return "tamper";
     const v = Number(out.value);
-    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return null;
+    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return "tamper";
+    verified.set(opKey(i.txid, i.vout), v);
     return v;
   };
-  const values = await Promise.all(inputs.map(verifyOne));
-  // Fold the verified values in input order: any failed input fails the whole call closed, and the running
-  // sum must stay in the safe-integer range so a hostile RPC can't push it past 2^53 (parity with the prior
-  // sequential checks — addition is commutative, so the parallel fetch doesn't change the result).
+  const verdicts = await Promise.all(inputs.map(verifyOne));
+  // Severity order: any tamper refuses the whole spend immediately (never route around a forging RPC);
+  // any transient refuses retryably without excluding anything; only pure not-founds are skippable.
+  if (verdicts.includes("tamper")) return { ok: false, kind: "tamper" };
+  if (verdicts.includes("transient")) return { ok: false, kind: "transient" };
+  const ghosts = inputs.filter((_, k) => verdicts[k] === "notfound");
+  if (ghosts.length) return { ok: false, kind: "notfound", ghosts };
+  // Fold the verified values in input order; the running sum must stay in the safe-integer range so a
+  // hostile RPC can't push it past 2^53 (addition is commutative, the parallel fetch changes nothing).
   let total = 0;
-  for (const v of values) {
-    if (v === null) return { ok: false, total: 0 };
+  for (const v of verdicts as number[]) {
     total += v;
-    if (!Number.isSafeInteger(total)) return { ok: false, total: 0 };
+    if (!Number.isSafeInteger(total)) return { ok: false, kind: "tamper" };
   }
   return { ok: true, total };
 }
 
 // Coin selection (REPORTED values, to pick which outpoints) THEN chain-verified totals (REAL
 // values, to compute change). Returns the verified input set + real total, or an error string.
+//
+// Fail-closed PER COIN, not per wallet: when the verify round reports ghosts (see verifyInputValues),
+// re-select EXCLUDING those outpoints and try again — bounded rounds, and no coin is ever spent
+// unverified. A hostile RPC gains nothing it didn't have (it already controls the /utxos enumeration
+// entirely); tamper still kills the whole spend with no retry. Session ghost cache: outpoints that
+// answered not-found are pre-excluded for a short TTL so an immediate user retry doesn't burn a round;
+// module state dies with the MV3 service worker (~30s idle), which is desirable — after a node repair
+// or endpoint switch the coins are re-checked from scratch.
+const MAX_SELECT_ROUNDS = 3;      // bounds /tx traffic: at most 3 selections per spend attempt
+const GHOST_TTL_MS = 120_000;
+const ghostSeen = new Map<string, number>(); // outpoint -> expiry
+const fmtCsd = (v: number) => (v / 1e8).toLocaleString("en-US", { maximumFractionDigits: 8 });
 async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string }> {
   const { utxos } = await balance(rpc, addr);
-  const sel = selectInputs(utxos, need);
-  if (!sel) return { error: "insufficient confirmed balance" };
-  const ver = await verifyInputValues(rpc, sel.inputs);
-  if (!ver.ok) return { error: "could not verify selected inputs against the chain (refusing to risk a burned fee)" };
-  if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance" };
-  return { inputs: sel.inputs, total: ver.total };
+  const now = Date.now();
+  for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
+  const exclude = new Set<string>(ghostSeen.keys());
+  const verified = new Map<string, number>();
+  const reportedVal = new Map<string, number>(utxos.map((u: any) => [opKey(u.txid, u.vout), Number(u.value) || 0]));
+  // ghosts already known from the session cache that are present in THIS utxo set count toward the
+  // honest error (they are why the reported balance overstates what is spendable)
+  let ghostCount = 0, ghostValue = 0;
+  for (const k of exclude) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
+  for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
+    const sel = selectInputs(utxos, need, exclude);
+    if (!sel) break;                        // remaining verifiable coins can't cover `need`
+    const ver = await verifyInputValues(rpc, sel.inputs, verified);
+    if (ver.ok) {
+      if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance" };
+      return { inputs: sel.inputs, total: ver.total };
+    }
+    if (ver.kind === "tamper")
+      return { error: "could not verify selected inputs against the chain (refusing to risk a burned fee)" };
+    if (ver.kind === "transient")
+      return { error: "couldn't fetch source transactions to verify input values (node unreachable or erroring); nothing was signed, try again in a moment" };
+    for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
+      const k = opKey(g.txid, g.vout);
+      if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
+      exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS);
+    }
+    if (ghostSeen.size > 2048) ghostSeen.clear(); // hard cap: a hostile RPC can't grow this unboundedly
+  }
+  if (!ghostCount) return { error: "insufficient confirmed balance" };
+  console.warn(`cairn-wallet: skipped ${ghostCount} coin(s) the node could not prove (source tx not found); reported balance may be overstated by ~${fmtCsd(ghostValue)} CSD`);
+  return { error: `${ghostCount} coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be verified on the chain and were skipped; the remaining verifiable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)` };
 }
 
 export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean }
@@ -139,7 +215,7 @@ const MAX_TX_INPUTS = 512; // consensus cap (params/mod.rs) — refuse locally w
 // chokepoint every value tx routes through, so a compromised UI can't steer a user PAST the visible warning
 // into burning a huge fee. 100 CSD is ~100× any real fee — no legitimate flow approaches it.
 const MAX_FEE = 100 * 1e8; // base units (100 CSD)
-export function selectInputs(utxos: any[], need: number): Selection | null {
+export function selectInputs(utxos: any[], need: number, exclude?: ReadonlySet<string>): Selection | null {
   // Default a missing `confirmations` to 0 (UNCONFIRMED), never 1 — a hostile/buggy RPC
   // must not be able to make an immature/absent coin look spendable by omitting the field.
   // Dedupe by outpoint (txid:vout) and drop non-positive values so a malicious RPC can't
@@ -153,6 +229,7 @@ export function selectInputs(utxos: any[], need: number): Selection | null {
     const v = Number(x.value);
     if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return false;
     const key = `${String(x.txid).toLowerCase()}:${Number(x.vout)}`; // case-normalize hex so a hostile RPC can't bypass dedupe with mixed case
+    if (exclude?.has(key)) return false;    // outpoints a prior verify round proved unfetchable (ghosts)
     if (seen.has(key)) return false; seen.add(key);
     return true;
   });
