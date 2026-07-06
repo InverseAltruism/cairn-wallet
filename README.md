@@ -19,7 +19,7 @@ and support items on [Cairn](https://cairn-substrate.com).
 
 ## Install
 
-**[Add to Chrome — Chrome Web Store](https://chromewebstore.google.com/detail/cairn-wallet/nnjiejlalkcfckfojhihbbcpfhimfemd)** (works in Chrome, Brave, and Edge). This is the recommended install: a reviewed, auto-updating build.
+**[Add to Chrome (Chrome Web Store)](https://chromewebstore.google.com/detail/cairn-wallet/nnjiejlalkcfckfojhihbbcpfhimfemd)** (works in Chrome, Brave, and Edge). This is the recommended install: a reviewed, auto-updating build.
 
 Prefer to load it yourself? Every [GitHub release](https://github.com/InverseAltruism/cairn-wallet/releases/latest) ships `cairn-wallet.zip` (the load-unpacked variant) with a `.sha256`:
 
@@ -37,7 +37,7 @@ npm ci && npm run package          # produces a byte-identical cairn-wallet.zip
 sha256sum cairn-wallet.zip         # must equal the release .sha256
 ```
 
-Each release also carries a **SLSA build-provenance attestation** — run
+Each release also carries a **SLSA build-provenance attestation**: run
 `gh attestation verify cairn-wallet.zip --repo InverseAltruism/cairn-wallet` to confirm the published
 zip was built by this repo's CI from the tagged source.
 
@@ -88,17 +88,26 @@ The signing core is verified against external ground truth, not only its own ass
 1. **Bump the version in lockstep** across `package.json`, `public/manifest.json`, and `src/inpage.ts` (both the
    provider object's `version:` and `getCapabilities`). `build.mjs` aborts the build on any drift. Then
    `npm test && npm run package` must pass locally.
-2. **Tag and push** — `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z` triggers
+2. **Tag and push**: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z` triggers
    `.github/workflows/release.yml`: `npm ci` → `npm test` (full gate) → `npm run package` (deterministic
    `cairn-wallet.zip` *load-unpacked* variant **and** `cairn-wallet-store.zip` *Web-Store* variant with
    `manifest.json` at the zip root, each with a `.sha256`) → **SLSA build-provenance attestation** → publish the
    GitHub Release.
-3. **Chrome Web Store** — upload `cairn-wallet-store.zip` (manifest at the zip root) to the
+3. **Chrome Web Store**: upload `cairn-wallet-store.zip` (manifest at the zip root) to the
    [Developer Dashboard](https://chrome.google.com/webstore/devconsole). This is the primary distribution
    channel; `store/` holds the listing copy, privacy policy, and submission checklist.
 
 [cairn-substrate.com](https://cairn-substrate.com) links users to the Chrome Web Store for install and to this
 repo for source. It does not host the extension binary.
+
+## dApp error contract
+
+Every `{ok:false}` envelope a dApp can see carries a stable machine `code` next to the human
+`error` string (outer envelope codes since 0.2.46; nested `SubmitResult` codes since 0.2.54).
+The codes are the contract; the strings are UX copy and may change. The full list, retryability
+semantics, and the code-less legacy strings consumers must still know live in
+[`WALLET-ERROR-CODES.md`](WALLET-ERROR-CODES.md). The reference consumer is
+`cairn-sdk`'s `mapProviderError` plus the cairn site's code-first `walletErrText`.
 
 ## Architecture
 

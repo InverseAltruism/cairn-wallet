@@ -11,12 +11,12 @@ The provider resolves an envelope `{ok, result|error, code?}`. Tx methods (`send
 `{ok, txid|error, sighashMatch, code?}` inside `result`. Through 0.2.53 only the OUTER
 envelope carried a `code`. **As of 0.2.54 the nested `SubmitResult` also carries a `code`**
 on every `{ok:false}` (the builder refusals from `src/core/node.ts` and the `fillOffer`
-preflight in `src/core/wallet.ts`). The addition is purely additive — the human `error`
+preflight in `src/core/wallet.ts`). The addition is purely additive: the human `error`
 strings are byte-unchanged, and a consumer that still matches the string keeps working.
 See "Nested SubmitResult codes" below.
 
-(`sighashMatch` on a `SubmitResult` is deprecated/vestigial — constant-equal to `ok`, no
-known reader — but is still emitted on every result, including preflight errors, since
+(`sighashMatch` on a `SubmitResult` is deprecated/vestigial (constant-equal to `ok`, no
+known reader) but is still emitted on every result, including preflight errors, since
 dropping it would be a dApp-visible shape change.)
 
 ## Codes
@@ -37,13 +37,13 @@ dropping it would be a dApp-visible shape change.)
 ## Nested SubmitResult codes (0.2.54)
 
 These ride on the inner `result` of a tx method (`send`, `propose`, `attest`, `fillOffer`).
-The strings are unchanged from earlier releases — only the machine `code` is new.
+The strings are unchanged from earlier releases; only the machine `code` is new.
 
 | Code | Meaning | Retryable | Emitted from |
 |---|---|---|---|
-| `GHOST_INPUTS_SKIPPED` | Coins whose source tx the node couldn't prove were skipped and the rest couldn't cover the spend (the 0.2.53 per-coin ghost-skip). | **No** — the skipped coins stay excluded until the node can prove them; an immediate retry changes nothing. | `node.ts` `selectVerified` |
-| `VERIFY_UNAVAILABLE` | Couldn't fetch source txs / the chain tip / the resolver to verify before signing (node unreachable or erroring). | **Yes** — nothing was signed; try again shortly. | `node.ts` `selectVerified`, `wallet.ts` fillOffer preflight |
-| `VERIFY_TAMPER` | A served source-tx body failed txid recompute / output sanity (possible hostile RPC). | **No** — the whole spend is refused, no retry against a forging RPC. | `node.ts` `selectVerified` |
+| `GHOST_INPUTS_SKIPPED` | Coins whose source tx the node couldn't prove were skipped and the rest couldn't cover the spend (the 0.2.53 per-coin ghost-skip). | **No**: the skipped coins stay excluded until the node can prove them; an immediate retry changes nothing. | `node.ts` `selectVerified` |
+| `VERIFY_UNAVAILABLE` | Couldn't fetch source txs / the chain tip / the resolver to verify before signing (node unreachable or erroring). | **Yes**: nothing was signed; try again shortly. | `node.ts` `selectVerified`, `wallet.ts` fillOffer preflight |
+| `VERIFY_TAMPER` | A served source-tx body failed txid recompute / output sanity (possible hostile RPC). | **No**: the whole spend is refused, no retry against a forging RPC. | `node.ts` `selectVerified` |
 | `INSUFFICIENT` | Insufficient confirmed balance for the spend. | No (until funded). | `node.ts` `selectVerified` |
 | `FEE_TOO_LOW` | Fee is not positive (the node enforces a minimum). | No. | `node.ts` `assembleValueTx` |
 | `FEE_CAP` | Fee exceeds the flat 100 CSD cap or the 10%-of-selected-inputs cap. | No. | `node.ts` `assembleValueTx` |
@@ -52,8 +52,8 @@ The strings are unchanged from earlier releases — only the machine `code` is n
 | `BAD_OUTPUTS` | An output failed validation (count/cap, address shape, non-positive/unsafe value, sum overflow), incl. the fillOffer preflight's per-output integer check. | No. | `node.ts` `validateOutputs` / `send`, `wallet.ts` fillOffer preflight |
 | `NO_OUTPUTS` | The tx would have no outputs (nothing, incl. change, would be paid). | No. | `node.ts` `assembleValueTx` |
 | `BAD_REQUEST` | A propose/attest param failed its shape check (payloadHash / proposalId / expiresEpoch). | No. | `node.ts` `propose` / `attest` / `fillOffer` |
-| `FILL_UNSAFE` | The fillOffer fund-safety preflight refused (offer not open, undeliverable, or an underpaid seller/fee/rebate leg) — the chain would take the payment and reject the fill. | No (rebuild the fill as quoted). | `wallet.ts` fillOffer preflight |
-| `SUBMIT_REJECTED` | The node rejected the submitted tx (or `/tx/submit` failed). | Depends — inspect `error`. | `node.ts` `signAndSubmit` |
+| `FILL_UNSAFE` | The fillOffer fund-safety preflight refused (offer not open, undeliverable, or an underpaid seller/fee/rebate leg): the chain would take the payment and reject the fill. | No (rebuild the fill as quoted). | `wallet.ts` fillOffer preflight |
+| `SUBMIT_REJECTED` | The node rejected the submitted tx (or `/tx/submit` failed). | Depends; inspect `error`. | `node.ts` `signAndSubmit` |
 
 ## Code-less strings consumers must still know
 
