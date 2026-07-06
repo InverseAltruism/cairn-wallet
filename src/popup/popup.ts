@@ -4,7 +4,7 @@
 import { Wallet, explorerLink, EXPLORER_PRESETS } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
 import { formatUnits, parseUnits, isPlainName } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients } from "./clearsign.js";
+import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients, escapeHtml } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
 
@@ -76,7 +76,10 @@ function msg(text: string, cls = "info") {
     msgFadeTimer = setTimeout(() => { m.textContent = ""; m.className = "msg"; }, 450);
   }, hold);
 }
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+// escapeHtml is imported from clearsign.ts - the hardened variant that ALSO neutralizes bidi/
+// zero-width controls (WYSIWYS-BIDI-1). A plain 5-char escape lived here until 2026-07-06, so
+// account labels/history were HTML-safe but not bidi-safe, silently weaker than the clear-sign
+// surface. One implementation, one threat model.
 // In-progress status with an animated spinner (for async actions). Never auto-fades: it is
 // always replaced by the outcome message of the action that showed it.
 function busy(text: string) {
