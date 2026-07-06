@@ -1,10 +1,14 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients } from "./clearsign.js";
+import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients, fmtBalance, isZeroAddr, nfinalizeApproveGate, type NameFetchResult } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
+// Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
+// never hold the approval UI hostage. A miss degrades to null (callers fail soft).
+const bounded = (p: Promise<unknown>): Promise<unknown> =>
+  Promise.race([p.catch(() => null), new Promise((res) => setTimeout(() => res(null), 2500))]);
 
 function call(method: string, ...args: any[]): Promise<any> {
   return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
@@ -35,12 +39,9 @@ async function render() {
   // before building the request HTML (not per ~1.2s tick — this block runs once per new request).
   // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
   if (current.method === "propose" && (current.params || {}).expiresEpoch !== undefined) {
-    // These are the ONLY network awaits before the request paints, and node.get() carries no timeout —
-    // a hung (not refused) RPC would hold the approval UI hostage indefinitely. Bound them at 2.5s and
-    // run them in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
+    // These are the ONLY network awaits before the request paints. Bound (module-level `bounded`) and
+    // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
     // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
-    const bounded = (p: Promise<unknown>): Promise<unknown> =>
-      Promise.race([p.catch(() => null), new Promise((res) => setTimeout(() => res(null), 2500))]);
     const [e, t] = await Promise.all([bounded(call("epoch")), bounded(call("tip"))]);
     if (e != null) current.currentEpoch = e;
     if (t != null) current.currentTip = t;
@@ -64,6 +65,46 @@ async function render() {
   fillBalance(current);
   fillSendWarning(current);
   fillTokenSim(current);
+  armNfinalizeGate(current, st);
+}
+
+// ── nfinalize finalize-window gate (Plan 63 carry-over, shipped with 0.2.54) ──────────────────
+// Before an nfinalize can be APPROVED, re-check on the name service that the reservation is still
+// the signer's live pending one and inside its finalize window — an expired/displaced finalize burns
+// the fee (the C1 class; the pure verdict is clearsign.nfinalizeApproveGate). A clean 404 is a
+// definitive "no reservation" → refuse; 5xx/timeout fails OPEN (warn card, Approve stays live) so
+// approval never gains a hard network dependency. resolve() AWAITS the (bounded) verdict, so a click
+// racing the fetch cannot slip past a blocking verdict. Once per request (render doesn't rebuild).
+let nfinForId: string | null = null;
+let nfinBlocked = false;   // read by armButtons' re-enable + belt for the resolve() gate
+let nfinGate: Promise<{ block: boolean; note: string | null }> | null = null;
+async function checkNfinalize(name: string, tradeApi: string, me: string): Promise<{ block: boolean; note: string | null }> {
+  let fetched: NameFetchResult = { failed: true };
+  try {
+    const res = await fetch(`${String(tradeApi || "").replace(/\/$/, "")}/cairnx/name/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
+    if (res.status === 404) fetched = { record: null };
+    else if (res.ok) { const j = await res.json().catch(() => null); if (j && typeof j === "object") fetched = { record: j }; }
+  } catch { /* unreachable → fail-open (gate warns, never blocks) */ }
+  const t = await bounded(call("tip"));
+  return nfinalizeApproveGate(fetched, me, t == null ? null : Number(t));
+}
+function armNfinalizeGate(r: any, st: any) {
+  if (nfinForId === r.id) return; nfinForId = r.id;
+  nfinBlocked = false; nfinGate = null;
+  const p = r.params || {};
+  if (r.method !== "propose" || String(p.domain) !== CAIRNX_DOMAIN) return;
+  const rec = decodeCairnxRecord(p.uri, p.payloadHash);
+  if (!rec || rec.t !== "nfinalize" || typeof rec.name !== "string") return;
+  // signer captured at arm time = the account this request is DISPLAYED as signing with (M5 pairing:
+  // the background refuses the resolve anyway if the active account changed since render)
+  nfinGate = checkNfinalize(rec.name, String(st.tradeApi || ""), String(st.addr || ""));
+  nfinGate.then((g) => {
+    if (renderedId !== r.id) return;                 // superseded — never paint over a different request
+    if (g.block) { nfinBlocked = true; ($("btn-approve") as HTMLButtonElement).disabled = true; }
+    if (g.note) $("req").insertAdjacentHTML("beforeend",
+      g.block ? `<div class="req"><b class="err">⚠ ${escapeHtml(g.note)}</b></div>`
+              : `<div class="req dim">⚠ ${escapeHtml(g.note)}</div>`);
+  });
 }
 
 // M3 (token-fill simulation): for a TOKEN-priced fill (confidence===1e6 on fillOffer/attest), show the actual
@@ -94,9 +135,8 @@ async function fillBalance(r: any) {
   if (balForId === r.id) return; balForId = r.id;
   try {
     const b = await call("balance");
-    const after = (b.confirmed - debitOf(r)) / 1e8;
     const el = document.getElementById("cost");
-    if (el) el.textContent = `${costLine(r)}  balance: ${(b.confirmed / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 })} → ~${after.toLocaleString(undefined, { maximumFractionDigits: 4 })} CSD`;
+    if (el) el.textContent = `${costLine(r)}  balance: ${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`;
   } catch { /* offline — leave the static cost line */ }
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning
@@ -120,7 +160,7 @@ async function fillSendWarning(r: any) {
     // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
     // nxfer hands the name to a new owner — both carry an attacker-influenceable address that deserves the
     // same first-time / address-poisoning (look-alike) check as a transfer recipient.
-    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !/^(0x)?0{40}$/i.test(rec.addr)) outs.push({ to: rec.addr });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient — skip the poisoning check (0x0 sends are hard-blocked anyway)
+    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient — skip the poisoning check (0x0 sends are hard-blocked anyway)
     if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to });
     // M1 (deep-review 2026-07-03): an `offer` routes its SALE PROCEEDS to want.payto when it fills. A
     // bad-faith dApp can set payto to a look-alike of the user's OWN address, silently redirecting the
@@ -155,12 +195,22 @@ async function fillSendWarning(r: any) {
 function armButtons() {
   const ap = $("btn-approve") as HTMLButtonElement, rj = $("btn-reject") as HTMLButtonElement;
   ap.disabled = true; rj.disabled = true;
-  setTimeout(() => { ap.disabled = false; rj.disabled = false; }, 700);
+  // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
+  // AFTER this timer disables it directly in armNfinalizeGate).
+  setTimeout(() => { ap.disabled = nfinBlocked; rj.disabled = false; }, 700);
 }
 async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
+  // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip).
+  // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
+  // verdict proceeds (fail-open). Reject never waits.
+  if (approve && nfinGate && nfinForId === id) {
+    const g = await nfinGate.catch(() => null);
+    if (!current || current.id !== id) return;   // superseded while awaiting the verdict
+    if (g?.block) { msg(g.note || "refusing to approve this finalize", "err"); return; }
+  }
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
   current = null; renderedId = null; renderedSigner = null;
   if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("rejected"); render(); return; }

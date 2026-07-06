@@ -3,8 +3,8 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import { Wallet, explorerLink, EXPLORER_PRESETS } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
-import { formatUnits, parseUnits, isPlainName } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients, escapeHtml } from "./clearsign.js";
+import { formatUnits, parseUnits, isPlainName, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
+import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
 
@@ -18,6 +18,9 @@ async function call(method: string, ...args: any[]): Promise<any> {
     if (chrome.runtime.lastError) return rej(new Error(chrome.runtime.lastError.message));
     r?.ok ? res(r.result) : rej(new Error(r?.error || "error"));
   }));
+  // NOTE: this dev shim drives the SAME Wallet class against the REAL production RPC/APIs — it is
+  // NOT inert. Every forwarded spend method (send, cairnxTransfer, sealClaim, cairnxNameRenew…)
+  // signs and broadcasts real CSD if a funded key is unlocked in the dev browser profile.
   const w = await devWallet();
   switch (method) {
     case "status": return w.status();
@@ -34,16 +37,14 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "balance": return w.balance();
     case "send": return w.send(args[0], args[1], args[2]);
     case "cairnPost": return w.cairnPost(args[0]);
-    case "cairnSupport": return w.cairnSupport(args[0], args[1], args[2], args[3]);
     case "cairnxAssets": return w.cairnxAssets();
     case "cairnxTokens": return w.cairnxTokens();
     case "cairnxTransfer": return w.cairnxTransfer(args[0]);
     case "resolveName": return w.resolveName(args[0]);
-    case "verifyName": return w.verifyName(args[0]);
-    case "cairnxNameRenew": return w.cairnxNameRenew(args[0]);
+    case "cairnxNameRenew": return w.cairnxNameRenew(args[0], args[1]); // args[1] = the reviewed frozen fee (WL-FEE-FREEZE-1 parity with the background)
+    case "cairnxNameRenewFee": return w.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return w.cairnxSetPrimary(args[0]);
     case "setTradeApi": return w.setTradeApi(args[0]);
-    case "signin": return w.signIn();
     case "export": return w.exportKey(args[0]);
     case "exportMnemonic": return w.exportMnemonic(args[0]);
     case "setRpc": return w.setRpc(args[0]);
@@ -51,6 +52,18 @@ async function call(method: string, ...args: any[]): Promise<any> {
     case "rpcList": return w.rpcList();
     case "addRpc": return w.addRpc(args[0]);
     case "removeRpc": return w.removeRpc(args[0]);
+    case "setExplorer": return w.setExplorer(args[0]);
+    case "explorerList": return w.explorerList();
+    case "addExplorer": return w.addExplorer(args[0]);
+    case "removeExplorer": return w.removeExplorer(args[0]);
+    case "history": return w.history();
+    case "sealClaim": return w.sealClaim(args[0]);
+    case "sealedClaims": return w.sealedClaims();
+    case "revealClaim": return w.revealClaim(args[0]);
+    // background-only surfaces stubbed for dev (like `pending`): the dApp request queue and the
+    // per-origin consent store live in the service worker, so there is no Wallet method to forward.
+    case "connectedSites": return [];
+    case "disconnectSite": return { ok: true };
     case "pending": return [];
     case "resolve": return { done: true };
     default: throw new Error("unknown " + method);
@@ -102,14 +115,28 @@ function celebrateSend() {
 let currentRpc = "";
 let currentExplorer = "cairn"; // selected block explorer (preset id or custom base) for activity/address links
 let siteApi = "";   // the Cairn site base (for the /trade deep-link in the names list)
+// ── frozen review snapshots (WYSIWYS) ──────────────────────────────────────────────────────────
+// ONE owner for every primed value-moving review: `reviewed` (token send — set when the confirm panel
+// opens, signed verbatim on Confirm; `name` is the .csd name typed, re-resolved at confirm so it can't
+// silently re-point), `reviewedSend` (CSD send — same symmetry: sign exactly what was reviewed), and
+// `reviewedNameAct` (name renew / set-primary). The Confirm buttons sign EXACTLY these snapshots,
+// never the live inputs. dropReviews() is the single teardown, used by clearSendDrafts (the lock
+// boundary), closeAllPanels (any panel switch) and the flow handlers — panels are mutually exclusive
+// via openPanel, so dropping all three is always equivalent to dropping the one that was armed.
+const reviewState: {
+  reviewed: { to: string; base: string; name?: string | null; verified?: boolean } | null;
+  reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean } | null;
+  reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number } | null;
+} = { reviewed: null, reviewedSend: null, reviewedNameAct: null };
+function dropReviews() { reviewState.reviewed = null; reviewState.reviewedSend = null; reviewState.reviewedNameAct = null; }
 // Wipe any unsent recipient/amount draft on lock so it doesn't reappear pre-filled on the next unlock or
 // popup reopen. The popup view-switches (it does not tear down) on lock, so input values otherwise persist;
 // the browser can also restore them on reopen. Cleared here (alongside the secret-wipe) and via autocomplete=off.
 function clearSendDrafts() {
   for (const id of ["s-to", "s-amt", "ts-to", "ts-amt"]) { const el = document.getElementById(id) as HTMLInputElement | null; if (el) { el.value = ""; el.disabled = false; } }
   // also tear down any FROZEN review (a primed Confirm panel must not survive the lock boundary, or a click on
-  // unlock would sign the stale snapshot). Null the snapshots + hide both confirm panels.
-  reviewed = null; reviewedSend = null; reviewedNameAct = null;
+  // unlock would sign the stale snapshot). Drop the snapshots + hide both confirm panels.
+  dropReviews();
   for (const id of ["send-confirm", "tsend-confirm"]) { const el = document.getElementById(id); if (el) (el as HTMLElement).hidden = true; }
   { const el = document.getElementById("name-action-form"); if (el) (el as HTMLElement).hidden = true; }   // the name renew/primary review panel signs real CSD — never let a primed one survive a lock
 }
@@ -190,7 +217,7 @@ async function renderAccts() {
     }
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
-      <div class="tx-sub"><span class="dim mono">${escapeHtml(a.addr)}</span></div>
+      <div class="tx-sub"><span class="dim">${escapeHtml(a.addr)}</span></div>
     </div>`;
   }).join("");
   const edit = (addr: string | undefined, mode: "rename" | "remove") => { if (addr) { acctEdit = { addr, mode }; renderAccts(); } };
@@ -218,7 +245,7 @@ async function renderHistory() {
     // token sends display the HUMAN token amount (decimals-aware), not base units as CSD
     const csd = t.type === "tokenSend"
       ? `${escapeHtml(String(t.human ?? t.amount ?? ""))} ${escapeHtml(String(t.ticker || ""))}`
-      : ((Number(t.amount ?? t.fee ?? 0)) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
+      : fmtBalance(Number(t.amount ?? t.fee ?? 0)) + " CSD";
     const kind = TX_LABEL[t.type] || t.type;
     const detail = (t.type === "send" || t.type === "fillOffer" || t.type === "tokenSend") ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`
       : t.title ? escapeHtml(String(t.title).slice(0, 28))
@@ -239,6 +266,8 @@ async function renderHistory() {
 let curAddr = "";
 let lastBal: number | null = null;
 let balSeq = 0;
+// tween-frame formatter over CSD-UNIT floats (the interpolated `from + (next-from)*e` values) — the
+// base-unit balance display everywhere else is clearsign's fmtBalance.
 const fmtBal = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
 // Identity avatar: a primary .csd name gets its CNS-parity gradient + monogram; a name-less
 // account gets the phosphor cairn mark (a bare gradient + hex nibble read as a placeholder).
@@ -390,19 +419,18 @@ async function renderAssets() {
 
 // One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
 // A name renew / set-primary spends real CSD, so it must be reviewable and declinable like every other
-// value-moving action — NOT signed from an easy-to-miss inline message. `reviewedNameAct` is the frozen
-// snapshot the Confirm button signs (torn down on lock by clearSendDrafts, so a primed panel can't survive
-// a lock/unlock — and wallet.must() throws if a click somehow lands while locked).
-let reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number } | null = null;
+// value-moving action — NOT signed from an easy-to-miss inline message. `reviewState.reviewedNameAct` is
+// the frozen snapshot the Confirm button signs (torn down on lock by clearSendDrafts, so a primed panel
+// can't survive a lock/unlock — and wallet.must() throws if a click somehow lands while locked).
 let nameActSeq = 0;   // QA #18: supersede stale async continuations — a newer invocation bumps this; older ones abort after their awaits
 async function confirmNameAction(kind: "renew" | "primary", name: string) {
   const seq = ++nameActSeq;
-  reviewedNameAct = null;
+  dropReviews();
   openPanel("name-action-form");
   ($("name-action-form") as HTMLElement).hidden = false;   // always SHOW the review — openPanel toggles, and a name action must never toggle the panel closed
   $("nc-action").textContent = kind === "renew" ? "Renew lease" : "Set primary name";
   $("nc-name").textContent = `${name}.csd`;
-  $("nc-anchor").textContent = (CAIRNX_FEE / 1e8) + " CSD";
+  $("nc-anchor").textContent = fmtCsd(CAIRNX_FEE);
   // renew also pays a height-gated registration fee to the treasury; set-primary is anchor-only. The fee is
   // priced at the CURRENT tip — the same one cairnxNameRenew signs (WL-V18-1: never show a stale fee curve).
   let renewFee = 0;
@@ -410,14 +438,14 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
     renewFee = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
     if (seq !== nameActSeq) return;   // a newer name action superseded this one — don't clobber its panel/snapshot
     ($("nc-fee-row") as HTMLElement).hidden = false;
-    $("nc-fee").textContent = renewFee ? (renewFee / 1e8) + " CSD" : "priced at confirm";
+    $("nc-fee").textContent = renewFee ? fmtCsd(renewFee) : "priced at confirm";
   } else {
     ($("nc-fee-row") as HTMLElement).hidden = true;
   }
   const total = CAIRNX_FEE + renewFee;
-  $("nc-total").textContent = (total / 1e8) + " CSD";
+  $("nc-total").textContent = fmtCsd(total);
   let after = "";
-  try { const b = await call("balance"); after = ((b.confirmed - total) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD"; } catch { /* offline */ }
+  try { const b = await call("balance"); after = fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
   if (seq !== nameActSeq) return;   // superseded after the balance fetch — abort before priming the snapshot
   $("nc-after").textContent = after || "—";
   $("nc-note").textContent = kind === "renew"
@@ -425,13 +453,13 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
     // QA #5: the wallet's set-primary is a single nset→self — it makes the name primary only if it's your
     // OLDEST self-pointing name. Switching from an older name needs the multi-step flow on the website.
     : "Points this name at you (its reverse record). If it's your oldest such name it becomes your primary; to switch from an older name, use cairn-substrate.com/names.";
-  reviewedNameAct = { kind, name, total, fee: renewFee };   // freeze the reviewed fee — doNameAction signs EXACTLY this
+  reviewState.reviewedNameAct = { kind, name, total, fee: renewFee };   // freeze the reviewed fee — doNameAction signs EXACTLY this
   msg("");
 }
 async function doNameAction() {
-  if (!reviewedNameAct) return;
-  const { kind, name, fee } = reviewedNameAct;
-  reviewedNameAct = null;                                   // consume the snapshot: one Confirm = one signature
+  if (!reviewState.reviewedNameAct) return;
+  const { kind, name, fee } = reviewState.reviewedNameAct;
+  dropReviews();                                            // consume the snapshot: one Confirm = one signature
   try {
     busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
     // WL-FEE-FREEZE-1: a renew signs EXACTLY the reviewed fee; the background throws FEE_CHANGED (without
@@ -444,7 +472,7 @@ async function doNameAction() {
     if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm — nothing was signed
       const newFee = Number(m.slice("FEE_CHANGED:".length));
       await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
-      msg(`renewal fee changed to ${(newFee / 1e8)} CSD since you reviewed — re-check and confirm again`, "err");  // …then explain
+      msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed — re-check and confirm again`, "err");  // …then explain
       return;
     }
     msg(m, "err");
@@ -460,9 +488,9 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
   // replay a cleared name to 0x000..0, and this blocks that burn. It does NOT cover releases predating this
   // guard (no 0x0 check -> they burn after V23); for those the only safeguard is the deploy discipline in
   // types.ts (set V23_HEIGHT only after wallet ADOPTION, not publication).
-  const isZero = (a: string) => /^0x0{40}$/i.test(a || "");
+  // isZeroAddr is the shared (0x)?-optional guard from clearsign.ts — one test for all three former copies.
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) {
-    if (isZero(r)) return { ok: false, error: "that is the zero address — sends there are burned and unrecoverable" };
+    if (isZeroAddr(r)) return { ok: false, error: "that is the zero address — sends there are burned and unrecoverable" };
     return { ok: true, addr: r.toLowerCase(), name: null, label: null };
   }
   if (looksLikeName(r)) {
@@ -475,7 +503,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // sources are currently CO-LOCATED (same operator/apex), so the badge does not claim "independent" — the
     // withholding residual is unchanged until a genuinely independent second source exists (red-team 2026-06-27).
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
-    if (isZero(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address — refusing (sends would be burned)` };
+    if (isZeroAddr(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address — refusing (sends would be burned)` };
     const verified = res.verified === true;
     const viaFill = res.viaFill === true;
     const conf = res.depth ? ` (${res.depth} conf)` : "";
@@ -505,13 +533,80 @@ function setNameRow(rowId: string, valId: string, label: string | null | undefin
 // ── send a CairnX token: recipient + amount → review (ticker/amount/to/fee) → sign ──
 // The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
 // the existing propose pipeline with the 0.25 CSD convention fee — no value outputs.
-const CAIRNX_FEE = 25_000_000; // 0.25 CSD (anchor fee, paid in CSD)
+const CAIRNX_FEE = CAIRNX_PROPOSE_FEE; // 0.25 CSD (anchor fee, paid in CSD) — the vendored MIN_FEE_PROPOSE, never a hand-typed literal
 let tsend: { ticker: string; decimals: number; available: string } | null = null;
-// the reviewed-and-frozen send: set when the confirm panel opens, signed verbatim on confirm.
-// `name` is the .csd name typed (if any) — re-resolved at confirm so it can't silently re-point.
-let reviewed: { to: string; base: string; name?: string | null; verified?: boolean } | null = null;
-// CSD-send reviewed snapshot (symmetry with token-send: sign exactly what was reviewed)
-let reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean } | null = null;
+
+// ── shared send-flow engine ───────────────────────────────────────────────────────────────────
+// The CSD and token send panels are deliberate twins with three real deltas, carried by a flow
+// DESCRIPTOR (the element ids are irregular — send-/s-/c- vs tsend-/ts-/tc- — so a prefix won't do):
+//   • refresh: a token send repaints the token balances too (renderAssets), a CSD send only the balance
+//     (naive sharing would mean a stale token row or a pointless extra fetch — both user-visible);
+//   • warning noun: "transfers" (token) vs "payments" (CSD) — DELIBERATE per-flow copy, not drift;
+//   • snapshot shape: reviewState.reviewed (token, base-unit string) vs .reviewedSend (CSD, number).
+// Only the SUCCESS path clears the typed recipient/amount (fail/catch keep the draft for a re-Review);
+// Back clears nothing and never refreshes.
+type SendFlow = { ids: { confirm: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: () => void };
+const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: () => { refreshBalance(); renderAssets(); } };
+const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: () => { refreshBalance(); } };
+// Hide the confirm card, drop every frozen snapshot, re-enable the inputs. Success alone clears the
+// typed values; every other exit (Back / fail / catch) keeps the draft.
+function teardownReview(f: SendFlow, clearValues: boolean) {
+  ($(f.ids.confirm) as HTMLElement).hidden = true;
+  dropReviews();
+  for (const id of [f.ids.to, f.ids.amt]) { const el = $(id) as HTMLInputElement; el.disabled = false; if (clearValues) el.value = ""; }
+}
+// Arm the review: disable the inputs the snapshot was read from and show the confirm card (editing
+// the form after "Review" must not let displayed values diverge from signed ones).
+function armReview(f: SendFlow) {
+  ($(f.ids.to) as HTMLInputElement).disabled = true;
+  ($(f.ids.amt) as HTMLInputElement).disabled = true;
+  ($(f.ids.confirm) as HTMLElement).hidden = false;
+  msg("");
+}
+// First-time-recipient + address-poisoning look-alike, computed from the SAME paid-recipient set on
+// every send surface (audit NSPV-POISON-FILTERS). History unavailable → treat as first time.
+async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookalike: string | null }> {
+  let firstTime = true, lookalike: string | null = null;
+  try {
+    const h: any[] = await call("history");
+    const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
+    firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
+    const st = await call("status");
+    lookalike = lookalikeOf(to, [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))]);
+  } catch { /* no history → treat as first time */ }
+  return { firstTime, lookalike };
+}
+// One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
+// flows ("transfers" for tokens, "payments" for CSD — deliberate per-flow copy); the strings are
+// otherwise the historical ones byte-for-byte. Empty return = nothing to warn about (box hidden).
+function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: string, noun: "transfers" | "payments"): string {
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
+  if (lookalike) return `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — ${noun} are irreversible.`;
+  if (firstTime) return `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. ${Noun} are irreversible.`;
+  return nameCaution;
+}
+function setWarn(el: HTMLElement, html: string) { if (html) { el.innerHTML = html; el.hidden = false; } else el.hidden = true; }
+// FOOT-3 double-send guard, shared by both flows' ok:false and thrown branches: a failed submit is
+// AMBIGUOUS — the tx may already have reached the mempool (lost response / timeout / 429 AFTER the
+// node ingested it). Do NOT leave Confirm armed on the same frozen snapshot (one more click selects a
+// DIFFERENT coin and double-pays): tear the review down (draft preserved) so resending takes a
+// deliberate re-Review, refresh, and tell the user to check first. Only the failure branches route
+// here — the happy path is untouched (no added send latency, nothing declined that would succeed).
+function sendDidntConfirm(f: SendFlow, thrownPrefix?: string) {
+  teardownReview(f, false);
+  f.refresh();
+  msg(thrownPrefix !== undefined
+    ? thrownPrefix + "send didn't confirm; it may already be in flight. Check history before resending."
+    : "send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.", "err");
+}
+// Success teardown: outcome message + hero glow first, then the one clear-the-draft path.
+function sentOk(f: SendFlow, text: string) {
+  msg(text, "ok sent");
+  celebrateSend();
+  teardownReview(f, true);
+  f.refresh();
+}
+
 function openTokenSend(ticker: string, decimals: number, available: string) {
   tsend = { ticker, decimals, available };
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
@@ -536,75 +631,33 @@ $("btn-tsend").addEventListener("click", async () => {
   try { avail = BigInt(tsend.available || "0"); } catch { avail = 0n; }
   if (BigInt(base) > avail) return msg(`amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)})`, "err");
   // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
-  let firstTime = true, lookalike: string | null = null;
-  try {
-    const h: any[] = await call("history");
-    const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
-    firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
-    const st = await call("status");
-    lookalike = lookalikeOf(to, [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))]);
-  } catch { /* no history → treat as first time */ }
+  const { firstTime, lookalike } = await recipientChecks(to);
   $("tc-ticker").textContent = tsend.ticker;
   $("tc-to").textContent = to.toLowerCase();              // FULL address, as it will appear in the signed record
   $("tc-amt").textContent = `${formatUnits(base, tsend.decimals)} ${tsend.ticker}`;
-  $("tc-fee").textContent = (CAIRNX_FEE / 1e8) + " CSD";
-  const warnEl = $("tc-warn") as HTMLElement;
+  $("tc-fee").textContent = fmtCsd(CAIRNX_FEE);
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
-  if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — transfers are irreversible.`; warnEl.hidden = false; }
-  else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Transfers are irreversible.`; warnEl.hidden = false; }
-  else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
-  else warnEl.hidden = true;
+  setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, TOKEN_FLOW.noun));
   // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
-  // (editing the form after "Review" must not let displayed values diverge from signed ones)
-  reviewed = { to, base, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
-  ($("ts-to") as HTMLInputElement).disabled = true;
-  ($("ts-amt") as HTMLInputElement).disabled = true;
-  ($("tsend-confirm") as HTMLElement).hidden = false;
-  msg("");
+  reviewState.reviewed = { to, base, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
+  armReview(TOKEN_FLOW);
 });
-$("btn-tsend-back").addEventListener("click", () => {
-  ($("tsend-confirm") as HTMLElement).hidden = true;
-  reviewed = null;
-  ($("ts-to") as HTMLInputElement).disabled = false;
-  ($("ts-amt") as HTMLInputElement).disabled = false;
-});
+// Back: keep the draft, refresh nothing (only success clears/refreshes)
+$("btn-tsend-back").addEventListener("click", () => teardownReview(TOKEN_FLOW, false));
 $("btn-tsend-confirm").addEventListener("click", async () => {
-  if (!tsend || !reviewed) return;
-  const { to, base, name, verified } = reviewed;
+  if (!tsend || !reviewState.reviewed) return;
+  const { to, base, name, verified } = reviewState.reviewed;
   // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1) or its
   // chain-verification regressed since review (L7).
   if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
-    if (r.ok) {
-      msg(`sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`, "ok sent");
-      celebrateSend();
-      ($("tsend-confirm") as HTMLElement).hidden = true;
-      reviewed = null;
-      ($("ts-to") as HTMLInputElement).disabled = false;
-      ($("ts-amt") as HTMLInputElement).disabled = false;
-      ($("ts-to") as HTMLInputElement).value = ""; ($("ts-amt") as HTMLInputElement).value = "";
-      refreshBalance(); renderAssets();
-    } else {
-      // Double-send guard (FOOT-3, token parity with the CSD send path): a failed submit is AMBIGUOUS — the tx
-      // may already be in the mempool. Don't leave Confirm armed on the same frozen snapshot; tear it down so
-      // resending takes a deliberate re-Review. Only this failure branch changes — the success path above is
-      // untouched (no added send latency, nothing declined that would have succeeded).
-      ($("tsend-confirm") as HTMLElement).hidden = true;
-      reviewed = null;
-      ($("ts-to") as HTMLInputElement).disabled = false; ($("ts-amt") as HTMLInputElement).disabled = false;
-      refreshBalance(); renderAssets();
-      msg("send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.", "err");
-    }
+    if (r.ok) sentOk(TOKEN_FLOW, `sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`);
+    else sendDidntConfirm(TOKEN_FLOW);                                       // FOOT-3 (token parity with the CSD path)
   } catch (e: any) {
-    // Same double-send guard for a thrown error (the bridge call failed; the tx may or may not have landed).
-    ($("tsend-confirm") as HTMLElement).hidden = true;
-    reviewed = null;
-    ($("ts-to") as HTMLInputElement).disabled = false; ($("ts-amt") as HTMLInputElement).disabled = false;
-    refreshBalance(); renderAssets();
-    msg((e?.message ? e.message + " — " : "") + "send didn't confirm; it may already be in flight. Check history before resending.", "err");
+    sendDidntConfirm(TOKEN_FLOW, e?.message ? e.message + " — " : "");       // thrown bridge error: same ambiguity
   }
 });
 
@@ -702,17 +755,18 @@ function resetPhrasePanel() {
   ($("phrase-actions") as HTMLElement).hidden = true; ($("phrase-pw") as HTMLInputElement).value = "";
 }
 // Close every panel + confirm sub-panel, drop primed value-moving snapshots, wipe revealed
-// secrets. EXACT statement order of the original openPanel body — this teardown is the
-// secret-wipe / WYSIWYS boundary and must stay byte-equivalent in behavior.
+// secrets. Statement order of the original openPanel body preserved (the two snapshot-null
+// statements collapsed into one dropReviews()) — this teardown is the secret-wipe / WYSIWYS
+// boundary and must stay byte-equivalent in behavior.
 function closeAllPanels() {
   for (const p of PANELS) ($(p) as HTMLElement).hidden = true;
   ($("send-confirm") as HTMLElement).hidden = true;
   ($("tsend-confirm") as HTMLElement).hidden = true;
-  reviewedNameAct = null;                        // switching views drops any primed name renew/set-primary snapshot
-  // armed send/token reviews die with their panels: drop the frozen snapshots AND re-enable the
-  // inputs that only btn-send-back/btn-tsend-back used to re-enable (a back/home exit otherwise
-  // left the forms disabled = bricked until lock/unlock)
-  reviewed = null; reviewedSend = null;
+  // switching views drops any primed name renew/set-primary snapshot, and armed send/token reviews
+  // die with their panels: drop the frozen snapshots AND re-enable the inputs that only
+  // btn-send-back/btn-tsend-back used to re-enable (a back/home exit otherwise left the forms
+  // disabled = bricked until lock/unlock)
+  dropReviews();
   for (const id of ["s-to", "s-amt", "ts-to", "ts-amt"]) { const el = document.getElementById(id) as HTMLInputElement | null; if (el) el.disabled = false; }
   resetRevealPanel(); resetPhrasePanel();
 }
@@ -851,30 +905,62 @@ $("btn-save-settings").addEventListener("click", async () => {
   msg("settings saved", "ok"); render();
 });
 
+// ── header dropdown menus (RPC + Explorer) — one builder, two configs ──────────────────────────
+// The two menus are the same visual component with different plumbing; the deltas ride in the config
+// so the row markup / add-row wiring can never drift between them again. Kept distinct: the data-*
+// hooks and input ids (DOM stability), the add flows (addExplorer validates → try/catch; addRpc does
+// not), and the value shape (RPC rows pick a URL, explorer presets pick an id). The ACCOUNT menu is a
+// different shape (identity dot, two-line rows) and stays bespoke.
+type MenuEntry = { value: string; label: string; hint: string; removable: boolean };
+function buildMenu(menu: HTMLElement, cfg: {
+  entries: MenuEntry[];
+  isActive: (v: string) => boolean;
+  pickAttr: string; delAttr: string;
+  addInputId: string; addBtnId: string; placeholder: string; badUrlMsg: string;
+  pick: (v: string) => void;
+  remove: (v: string) => Promise<void>;
+  rerender: () => void;
+  add: (u: string) => Promise<void> | void;
+}) {
+  const row = (e: MenuEntry) => `
+    <div class="rpc-row${cfg.isActive(e.value) ? " active" : ""}">
+      <button class="rpc-pick" ${cfg.pickAttr}="${escapeHtml(e.value)}">${cfg.isActive(e.value) ? "● " : ""}<span class="rpc-label">${escapeHtml(e.label)}</span><span class="rpc-url">${escapeHtml(e.hint)}</span></button>
+      ${e.removable ? `<button class="rpc-del mini" ${cfg.delAttr}="${escapeHtml(e.value)}" title="remove">×</button>` : ""}
+    </div>`;
+  menu.innerHTML = cfg.entries.map(row).join("")
+    + `<div class="rpc-add"><input id="${cfg.addInputId}" placeholder="${cfg.placeholder}" /><button id="${cfg.addBtnId}" class="mini">add</button></div>`;
+  menu.querySelectorAll<HTMLElement>(`[${cfg.pickAttr}]`).forEach((b) => b.onclick = () => cfg.pick(b.getAttribute(cfg.pickAttr)!));
+  menu.querySelectorAll<HTMLElement>(`[${cfg.delAttr}]`).forEach((b) => b.onclick = async (e) => { e.stopPropagation(); await cfg.remove(b.getAttribute(cfg.delAttr)!); cfg.rerender(); });
+  ($(cfg.addBtnId) as HTMLElement).onclick = async () => {
+    const u = (($(cfg.addInputId) as HTMLInputElement).value || "").trim();
+    if (!/^https?:\/\/.+/.test(u)) return msg(cfg.badUrlMsg, "err");
+    await cfg.add(u);
+  };
+}
+const noProto = (u: string) => u.replace(/^https?:\/\//, "");
+
 // ── RPC dropdown (header) — preset + user-added nodes, switch with one click ──
 const RPC_PRESETS = [
   { label: "Cairn proxy", url: "https://cairn-substrate.com/api/rpc" },
   { label: "Local node", url: "http://127.0.0.1:8789" },
 ];
 async function renderRpcMenu() {
-  const menu = $("rpc-menu");
   const customs: string[] = await call("rpcList").catch(() => []);
   const preset = (u: string) => RPC_PRESETS.find((p) => p.url === u)?.label;
-  const row = (url: string, label: string, removable: boolean) => `
-    <div class="rpc-row${url === currentRpc ? " active" : ""}">
-      <button class="rpc-pick" data-url="${escapeHtml(url)}">${url === currentRpc ? "● " : ""}<span class="rpc-label">${escapeHtml(label)}</span><span class="rpc-url">${escapeHtml(url.replace(/^https?:\/\//, ""))}</span></button>
-      ${removable ? `<button class="rpc-del mini" data-del="${escapeHtml(url)}" title="remove">×</button>` : ""}
-    </div>`;
-  const customRows = customs.filter((u) => !preset(u)).map((u) => row(u, "Custom", true)).join("");
-  menu.innerHTML = RPC_PRESETS.map((p) => row(p.url, p.label, false)).join("") + customRows
-    + `<div class="rpc-add"><input id="rpc-add-input" placeholder="https://your-node…" /><button id="rpc-add-btn" class="mini">add</button></div>`;
-  menu.querySelectorAll<HTMLElement>("[data-url]").forEach((b) => b.onclick = () => selectRpc(b.dataset.url!));
-  menu.querySelectorAll<HTMLElement>("[data-del]").forEach((b) => b.onclick = async (e) => { e.stopPropagation(); await call("removeRpc", b.dataset.del); renderRpcMenu(); });
-  ($("rpc-add-btn") as HTMLElement).onclick = async () => {
-    const u = (($("rpc-add-input") as HTMLInputElement).value || "").trim();
-    if (!/^https?:\/\/.+/.test(u)) return msg("enter a full RPC URL (http(s)://…)", "err");
-    await call("addRpc", u); await selectRpc(u);
-  };
+  buildMenu($("rpc-menu"), {
+    entries: [
+      ...RPC_PRESETS.map((p) => ({ value: p.url, label: p.label, hint: noProto(p.url), removable: false })),
+      ...customs.filter((u) => !preset(u)).map((u) => ({ value: u, label: "Custom", hint: noProto(u), removable: true })),
+    ],
+    isActive: (v) => v === currentRpc,
+    pickAttr: "data-url", delAttr: "data-del",
+    addInputId: "rpc-add-input", addBtnId: "rpc-add-btn", placeholder: "https://your-node…",
+    badUrlMsg: "enter a full RPC URL (http(s)://…)",
+    pick: (v) => selectRpc(v),
+    remove: (v) => call("removeRpc", v),
+    rerender: renderRpcMenu,
+    add: async (u) => { await call("addRpc", u); await selectRpc(u); },
+  });
 }
 async function selectRpc(url: string) {
   const granted = await ensureHostAccess([url]);
@@ -886,24 +972,21 @@ $("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLEl
 // ── Explorer dropdown (header, left of RPC) — choose the block explorer for activity/address links ──
 // Navigation-only: switching it changes where ↗ links point; it never grants fetch/host access (no ensureHostAccess).
 async function renderExplorerMenu() {
-  const menu = $("explorer-menu");
   const customs: string[] = await call("explorerList").catch(() => []);
-  const sel = (v: string) => v === currentExplorer;
-  const row = (val: string, label: string, hint: string, removable: boolean) => `
-    <div class="rpc-row${sel(val) ? " active" : ""}">
-      <button class="rpc-pick" data-exp="${escapeHtml(val)}">${sel(val) ? "● " : ""}<span class="rpc-label">${escapeHtml(label)}</span><span class="rpc-url">${escapeHtml(hint)}</span></button>
-      ${removable ? `<button class="rpc-del mini" data-delexp="${escapeHtml(val)}" title="remove">×</button>` : ""}
-    </div>`;
-  menu.innerHTML = EXPLORER_PRESETS.map((p) => row(p.id, p.label, p.base.replace(/^https?:\/\//, ""), false)).join("")
-    + customs.map((u) => row(u, "Custom", u.replace(/^https?:\/\//, ""), true)).join("")
-    + `<div class="rpc-add"><input id="exp-add-input" placeholder="https://your-explorer…" /><button id="exp-add-btn" class="mini">add</button></div>`;
-  menu.querySelectorAll<HTMLElement>("[data-exp]").forEach((b) => b.onclick = () => selectExplorer(b.dataset.exp!));
-  menu.querySelectorAll<HTMLElement>("[data-delexp]").forEach((b) => b.onclick = async (e) => { e.stopPropagation(); await call("removeExplorer", b.dataset.delexp); renderExplorerMenu(); });
-  ($("exp-add-btn") as HTMLElement).onclick = async () => {
-    const u = (($("exp-add-input") as HTMLInputElement).value || "").trim();
-    if (!/^https?:\/\/.+/.test(u)) return msg("enter a full explorer URL (https://…)", "err");
-    try { await call("addExplorer", u); await selectExplorer(u); } catch (e: any) { msg(e.message, "err"); }
-  };
+  buildMenu($("explorer-menu"), {
+    entries: [
+      ...EXPLORER_PRESETS.map((p) => ({ value: p.id, label: p.label, hint: noProto(p.base), removable: false })),
+      ...customs.map((u) => ({ value: u, label: "Custom", hint: noProto(u), removable: true })),
+    ],
+    isActive: (v) => v === currentExplorer,
+    pickAttr: "data-exp", delAttr: "data-delexp",
+    addInputId: "exp-add-input", addBtnId: "exp-add-btn", placeholder: "https://your-explorer…",
+    badUrlMsg: "enter a full explorer URL (https://…)",
+    pick: (v) => selectExplorer(v),
+    remove: (v) => call("removeExplorer", v),
+    rerender: renderExplorerMenu,
+    add: async (u) => { try { await call("addExplorer", u); await selectExplorer(u); } catch (e: any) { msg(e.message, "err"); } },
+  });
 }
 async function selectExplorer(v: string) {
   try { await call("setExplorer", v); } catch (e: any) { return msg(e.message, "err"); }
@@ -1010,81 +1093,41 @@ $("btn-send").addEventListener("click", async () => {
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
   setNameRow("c-name-row", "c-name", rr.label);
-  let firstTime = true, known: string[] = [], lookalike: string | null = null, after = "";
-  try {
-    const h: any[] = await call("history");
-    const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
-    firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
-    const st = await call("status"); known = [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))];
-    lookalike = lookalikeOf(to, known);
-  } catch { /* no history → treat as first time */ }
-  try { const b = await call("balance"); after = ((b.confirmed - amt - SEND_FEE) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD"; } catch { /* offline */ }
+  const { firstTime, lookalike } = await recipientChecks(to);
+  let after = "";
+  try { const b = await call("balance"); after = fmtBalance(b.confirmed - amt - SEND_FEE) + " CSD"; } catch { /* offline */ }
   $("c-to").textContent = to;                       // FULL address, not truncated
-  $("c-amt").textContent = (amt / 1e8) + " CSD";
-  $("c-fee").textContent = (SEND_FEE / 1e8) + " CSD";
+  $("c-amt").textContent = fmtCsd(amt);
+  $("c-fee").textContent = fmtCsd(SEND_FEE);
   $("c-after").textContent = after || "—";
-  const warnEl = $("c-warn") as HTMLElement;
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
-  if (lookalike) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — payments are irreversible.`; warnEl.hidden = false; }
-  else if (firstTime) { warnEl.innerHTML = `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. Payments are irreversible.`; warnEl.hidden = false; }
-  else if (nameCaution) { warnEl.innerHTML = nameCaution; warnEl.hidden = false; }
-  else warnEl.hidden = true;
+  setWarn($("c-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun));
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
-  reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
-  ($("s-to") as HTMLInputElement).disabled = true;
-  ($("s-amt") as HTMLInputElement).disabled = true;
-  ($("send-confirm") as HTMLElement).hidden = false;
-  msg("");
+  reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
+  armReview(CSD_FLOW);
 });
-$("btn-send-back").addEventListener("click", () => {
-  ($("send-confirm") as HTMLElement).hidden = true;
-  reviewedSend = null;
-  ($("s-to") as HTMLInputElement).disabled = false;
-  ($("s-amt") as HTMLInputElement).disabled = false;
-});
+// Back: keep the draft, refresh nothing (only success clears/refreshes)
+$("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
 $("btn-send-confirm").addEventListener("click", async () => {
-  if (!reviewedSend) return;
-  const { to, amt, name, verified } = reviewedSend;
+  if (!reviewState.reviewedSend) return;
+  const { to, amt, name, verified } = reviewState.reviewedSend;
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7) — fail-closed to a re-review either way.
   if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
-    if (r.ok) {
-      msg("sent " + (amt / 1e8) + " CSD · " + String(r.txid).slice(0, 12) + "…", "ok sent");
-      celebrateSend();
-      ($("send-confirm") as HTMLElement).hidden = true;
-      reviewedSend = null;
-      ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;
-      ($("s-to") as HTMLInputElement).value = ""; ($("s-amt") as HTMLInputElement).value = "";
-      refreshBalance();
-    } else {
-      // Double-send guard (FOOT-3): a failed submit is AMBIGUOUS — the tx may already have reached the mempool
-      // (lost response / timeout / 429 AFTER the node ingested it). Do NOT leave the Confirm button armed on the
-      // same frozen snapshot: one more click selects a DIFFERENT coin and double-pays. Tear the review down so
-      // resending takes a deliberate re-Review, and tell the user to check first. Only this failure branch
-      // changes — the happy path above is untouched (no added send latency, nothing declined that would succeed).
-      ($("send-confirm") as HTMLElement).hidden = true;
-      reviewedSend = null;
-      ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;
-      refreshBalance();
-      msg("send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.", "err");
-    }
+    if (r.ok) sentOk(CSD_FLOW, "sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
+    else sendDidntConfirm(CSD_FLOW);                                       // FOOT-3
   } catch (e: any) {
-    // Same double-send guard for a thrown error (the bridge call failed; the tx may or may not have landed).
-    ($("send-confirm") as HTMLElement).hidden = true;
-    reviewedSend = null;
-    ($("s-to") as HTMLInputElement).disabled = false; ($("s-amt") as HTMLInputElement).disabled = false;
-    refreshBalance();
-    msg((e?.message ? e.message + " — " : "") + "send didn't confirm; it may already be in flight. Check history before resending.", "err");
+    sendDidntConfirm(CSD_FLOW, e?.message ? e.message + " — " : "");       // thrown bridge error: same ambiguity
   }
 });
 $("btn-name-confirm").addEventListener("click", () => doNameAction());
 $("btn-name-cancel").addEventListener("click", () => {
   ($("name-action-form") as HTMLElement).hidden = true;
-  reviewedNameAct = null;
+  dropReviews();
   msg("");
 });
 $("btn-post").addEventListener("click", async () => {
@@ -1097,7 +1140,7 @@ $("btn-post").addEventListener("click", async () => {
     if (feeStr === null) return msg("enter a valid fee (e.g. 0.25)", "err");
     const feeNum = Number(feeStr);
     if (!Number.isSafeInteger(feeNum)) return msg("fee out of range", "err"); // parity with the send-amount path (safe-integer backstop)
-    const fee = Math.max(feeNum, 25000000);
+    const fee = Math.max(feeNum, CAIRNX_PROPOSE_FEE);
     busy("posting…");
     const r = await call("cairnPost", { domain, title: val("p-title"), body: val("p-body"), fee });
     if (r.ok) { msg("posted · " + String(r.txid).slice(0, 12) + "… (shows on Cairn after ~1 block)", "ok"); refreshBalance(); }

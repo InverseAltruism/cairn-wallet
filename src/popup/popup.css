@@ -59,7 +59,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;letter-spacing:.5px;color:var(--magenta)}
 .brand .dim{color:var(--cyan);font-weight:400}
 .brandlogo{height:30px;width:auto}
-.addr-row,.bal-row{display:flex;align-items:center;gap:6px;margin:6px 0}
+.addr-row{display:flex;align-items:center;gap:6px;margin:6px 0}
 .addr{color:var(--cyan);font-size:11px;word-break:break-all;flex:1}
 .bal{color:var(--green);font-weight:700;font-variant-numeric:tabular-nums}
 .actions{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -115,8 +115,6 @@ body:has(#view-main:not([hidden])) #msg:not(:empty){position:fixed;left:14px;rig
 .asset-bal{color:var(--green);font-weight:700;margin-left:auto}
 .asset-locked{color:var(--dim);font-size:10px;font-weight:400}
 .asset .mini{margin:0}
-.names-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-.name-chip{font-size:10px;color:var(--cyan);border:1px solid var(--line);border-radius:4px;padding:1px 6px}
 .assets-retry{font-size:11px;color:var(--dim)}
 .assets-retry a{color:var(--cyan);cursor:pointer;text-decoration:none}
 .assets-retry a:hover{color:#fff;text-decoration:underline}
@@ -174,7 +172,6 @@ body:has(#view-main:not([hidden])) #msg:not(:empty){position:fixed;left:14px;rig
 #accts-list .tx-kind{color:var(--magenta)}
 #accts-list .row{display:flex}
 .acct-rename-input{width:118px;margin:0;padding:3px 7px;font-size:11px}
-.mono{font-family:inherit}
 /* header RPC + explorer switchers */
 .hdr-tools{display:flex;gap:6px;align-items:center}
 .rpc-wrap{position:relative}
@@ -215,7 +212,6 @@ body:has(#view-main:not([hidden])) #msg:not(:empty){position:fixed;left:14px;rig
 #tsend-form:has(> #tsend-confirm:not([hidden])) > label,
 #tsend-form:has(> #tsend-confirm:not([hidden])) > #ts-avail,
 #tsend-form:has(> #tsend-confirm:not([hidden])) > #btn-tsend{display:none}
-#send-confirm{margin-top:0}
 /* review mode: the confirm card IS the screen — the account/identity/balance chrome steps
    aside so the full address, amounts, warnings and buttons all fit in one popup viewport.
    #pending stays visible (a hostile dApp request must never be maskable by a review). */
@@ -321,10 +317,12 @@ section[id^="view-"]:not([hidden]){animation:fadeIn var(--dur-2) var(--ease) bot
 #view-main:not([hidden]) > .bal-hero{animation:fadeIn var(--dur-2) var(--ease) both;animation-delay:80ms}
 #view-main:not([hidden]) > #home{animation:fadeIn var(--dur-2) var(--ease) both;animation-delay:120ms}
 
-/* panels + confirm cards slide up in place */
-.settings:not([hidden]),#pending:not([hidden]),#send-confirm:not([hidden]){animation:fadeIn .15s ease both}
-#layer > .settings:not([hidden]){animation:slideUp var(--dur-2) var(--ease) both}
-#send-confirm:not([hidden]),#tsend-confirm:not([hidden]){animation:slideUp var(--dur-2) var(--ease) both}
+/* panels + confirm cards slide up in place. (A former sibling rule here also gave
+   `#pending:not([hidden])` a bare fadeIn — by ID specificity that silently beat the
+   .pending fadeIn+pulseAmber rule in §8 and killed the toolbar pulse; every selector in it
+   was otherwise dead (all .settings are #layer children → the next line outranks;
+   #send-confirm is re-declared below, later wins), so it was removed 2026-07-06.) */
+#layer > .settings:not([hidden]),#send-confirm:not([hidden]),#tsend-confirm:not([hidden]){animation:slideUp var(--dur-2) var(--ease) both}
 
 /* list rows rise in with a short stagger (rows 9+ appear immediately) */
 .tx,.asset,.name-asset{animation:rowIn 180ms var(--ease) both}
@@ -363,7 +361,14 @@ button:active:not(:disabled){transform:translateY(1px)}
 .bal.flash{animation:flash .6s ease}
 .bal.loading{color:transparent;border-radius:4px;background:linear-gradient(90deg,#161616 25%,#222 37%,#161616 63%);background-size:200% 100%;animation:shimmer 1.1s linear infinite}
 
-/* a pending dApp approval gently pulses to draw the eye */
+/* a pending dApp approval gently pulses to draw the eye — popup.html keeps #pending outside the
+   #home/#layer swap because a hostile request "must pulse into view" even while a form panel is
+   open. CASCADE (verified 2026-07-06): this (0,2,0) rule is now what the toolbar #pending card
+   actually gets — the (1,1,0) `#pending:not([hidden])` fadeIn-only rule that used to outrank it
+   from §5 is gone, restoring the pulse. The APPROVE window stays pulse-free ON PURPOSE:
+   `.page-approve #req{animation:none}` (§6) outranks this by the same ID specificity, and its
+   comment is explicit — there the request IS the whole window (amber-accented card stack), so the
+   attention pulse adds nothing. Both documented intents now hold. */
 .pending:not([hidden]){animation:fadeIn .15s ease both,pulseAmber 2s ease-in-out infinite}
 
 /* copied! micro-confirmation on the copy buttons */

@@ -1,6 +1,9 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, TREASURY_ADDR, V25_HEIGHT } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, TREASURY_ADDR, V25_HEIGHT, finalizeWinnerCheck } from "../core/cairnx.js";
+// the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
+// them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
+import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS } from "../vendor/cairnx-spv.js";
 
 // WYSIWYS-BIDI-1: neutralize Unicode bidi-override + zero-width / BOM controls BEFORE HTML-escaping, so a
 // dApp can't visually REORDER or HIDE characters in a displayed field (making a name/address/memo read
@@ -45,6 +48,14 @@ export function fmtCsdBig(raw: any): string {
 // Finite base-unit number for sums / balance-after math (garbage → 0; the tx won't build anyway —
 // node.send/sendMany hard-reject non-numeric amounts, so this only keeps the DISPLAY sane).
 export function baseVal(raw: any): number { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
+// Locale-grouped base-units → CSD display (max 4 fraction digits, NO unit suffix) — the one format
+// the popup + approval window share for balance / balance-after lines. fmtCsd above stays the
+// exact-value formatter for amounts/fees; this one is for at-a-glance balances.
+export function fmtBalance(base: number): string { return (base / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }); }
+// The zero address is the un-spendable burn sink (and, on an nset, the V23 "un-point" sentinel).
+// 0x-OPTIONAL by design: resolver/record fields can carry bare-hex, and the stricter 0x-required
+// variant that lived in popup.ts silently missed those. One test, one threat model (3 former sites).
+export const isZeroAddr = (a: unknown): boolean => /^(0x)?0{40}$/i.test(String(a ?? ""));
 
 // WYSIWYS-TRUNC-1: render value outputs for clear-sign. Caps visible rows so the fee/total/buttons can't be
 // scrolled out of the window, but makes truncation LOUD and discloses the HIDDEN recipients' TOTAL — a dApp
@@ -148,7 +159,7 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
       // QA #4: a zero-address nset is the V23 "un-point" sentinel, NOT a send to 0x0 — render the clear
       // semantics so the clear-sign is honest. The wallet can't know the landing height at sign time, so
       // state both effects + the backstop (sends to a 0x0-resolving name are hard-refused regardless).
-      if (/^(0x)?0{40}$/i.test(String(r.addr ?? ""))) {
+      if (isZeroAddr(r.addr)) {
         return `<b>.csd un-point (clear address record)</b><br>clears the resolver record on <code>${esc(r.name)}.csd</code> — at the V23 upgrade it falls back to its owner and drops out of your primary name. <span class="dim">Before V23 it would set the literal zero address; either way the wallet refuses any send to a 0x0-resolving name.</span>`;
       }
       return `<b>.csd name → address record</b><br><code>${esc(r.name)}.csd</code> resolves to <code>${esc(r.addr)}</code>`;
@@ -281,7 +292,7 @@ export function describe(r: any): string {
     // hidden behind "domain + fee" (audit SEAL-1). The salt (nonce) stays local and is only published on reveal.
     const claim = p.claim != null ? String(p.claim) : "";
     const claimLine = claim ? `<br>claim: <code>${escapeHtml(claim.slice(0, 200))}${claim.length > 200 ? "…" : ""}</code>` : "";
-    return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code>${claimLine}<br>${feeLine(p.fee, 25000000)} · the salt stays in your wallet (the claim is published only when you reveal)`;
+    return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code>${claimLine}<br>${feeLine(p.fee, CAIRNX_PROPOSE_FEE)} · the salt stays in your wallet (the claim is published only when you reveal)`;
   }
   if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> — publish the preimage; it becomes public + provably committed earlier.<br>tx: <code>${escapeHtml(String(r.params || "").slice(0, 18))}…</code>`;
   // Send is the only dApp method that MOVES funds to a page-chosen recipient, so we
@@ -330,7 +341,7 @@ export function debitOf(r: any): number {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return 0;
   // a propose may carry protocol-fee outputs (CairnX deploy / name registration) → count them
   const outs = r.method === "propose" && Array.isArray(p.outputs) ? p.outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
-  return outs + baseVal(p.fee || (r.method === "sealClaim" ? 25000000 : 0));
+  return outs + baseVal(p.fee || (r.method === "sealClaim" ? CAIRNX_PROPOSE_FEE : 0));
 }
 
 // Address-poisoning lookalike: an attacker seeds your history with an address sharing the head+tail
@@ -396,6 +407,45 @@ export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: 
   return true;
 }
 
+// ── nfinalize finalize-window gate (Plan 63 carry-over; the approve-path backstop for the C1 burn class) ──
+// An `nfinalize` pays the registration fee (or recapture premium) for a reservation the signer holds.
+// The resolver only credits it while the reservation is still THE SIGNER'S and inside its finalize
+// window — a displaced or too-late finalize is no-oped on-chain AFTER the fee output left the wallet
+// (fee burned, no name). The site's register flow already carries this guard (the register-names.mjs
+// C1 winner re-check); this is the wallet-side backstop for any dApp-built nfinalize reaching the
+// approval window. Pure over the fetched /cairnx/name/:name result + tip so it is unit-testable;
+// approve.ts wires the live fetch. FAIL-OPEN by design: an unreachable name service / tip WARNS but
+// never blocks — approval must not gain a hard network dependency (same posture as the
+// CLEARSIGN-FEE-1 offline skip above). A clean 404 is NOT a fetch failure: it is a definitive
+// "no reservation" (wallet.fillOffer's 404-vs-5xx asymmetry) and refuses.
+export type NameFetchResult =
+  | { failed: true }                                        // 5xx / timeout / garbled — NOT definitive
+  | { failed?: false; record: Record<string, any> | null }; // null = clean 404 (name unknown to the resolver)
+export function nfinalizeApproveGate(fetched: NameFetchResult, me: string, tip: number | null): { block: boolean; note: string | null } {
+  if (fetched.failed || tip == null || !Number.isFinite(tip)) {
+    return { block: false, note: "could not verify this name reservation is still finalizable (name service or chain tip unreachable) — an expired or displaced reservation would burn the fee without registering the name. Approve only if the site shows your registration at the finalize step." };
+  }
+  const rec = fetched.record;
+  // v2.6 recapture: the reservation on a LAPSED name lives OUTSIDE canonical state (served as
+  // `.recapture` beside the stale lapsed record) — winner-check the live reservation, never the
+  // lapsed record itself; a lapsed record with NO reservation means there is nothing to finalize.
+  const resv: Record<string, any> | null = rec == null ? null
+    : rec.pending === true ? rec
+    : rec.recapture && typeof rec.recapture === "object" ? { ...rec.recapture, pending: true }
+    : rec.expired === true ? null
+    : rec;
+  // the vendored C1 check, reused verbatim (exists / owner / pending / displacement). The
+  // reservation's own effectiveHeight stands in for the commit height the wallet cannot know here,
+  // so displacement surfaces as an owner change rather than a height mismatch.
+  const w = finalizeWinnerCheck(resv as any, me, Number(resv?.effectiveHeight));
+  if (!w.safe) return { block: true, note: `refusing to approve — ${w.reason}.` };
+  const windowEnd = Number(resv!.effectiveHeight) + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS;
+  // 2-block safety margin (the bundle's FINALIZE_TIP_MARGIN): a finalize approved right at the edge
+  // still needs a block or two to mine inside the window.
+  if (tip > windowEnd - 2) return { block: true, note: `refusing to approve — this reservation's finalize window has closed (ends at block ${windowEnd}, chain tip ${tip}); the fee would leave your wallet without registering the name. Re-register on the site.` };
+  return { block: false, note: null };
+}
+
 // Cost summary line from the request's own params (no network).
 export function costLine(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return "no funds move — this only proves your address to the site.";
@@ -417,6 +467,6 @@ export function costLine(r: any): string {
       ? " PLUS tokens debited from your CairnX balance IF this attests an open offer (its ask + 1%)" : "";
     return `cost: ${fmtCsd(fee)} network fee${tok}.`;
   }
-  const fee = baseVal(r.params?.fee || (r.method === "sealClaim" ? 25000000 : 0));
+  const fee = baseVal(r.params?.fee || (r.method === "sealClaim" ? CAIRNX_PROPOSE_FEE : 0));
   return `cost: ${fmtCsd(fee)} network fee (paid to miners), + a tiny chain fee.`;
 }

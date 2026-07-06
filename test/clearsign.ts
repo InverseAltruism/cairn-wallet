@@ -1,8 +1,9 @@
 // Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine } from "../src/popup/clearsign.js";
+import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine, nfinalizeApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS } from "../src/vendor/cairnx-spv.js";
 declare const process: { exit(code: number): void };
 
 let pass = 0, fail = 0;
@@ -166,6 +167,56 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   ok("FEE-1: correctly-paid renewal (5 CSD at V24) does NOT warn", !/BELOW the current price/.test(mk(5e8, 49300)));
   ok("FEE-1: pre-V24 renewal paying the 3 CSD V18 price does NOT warn (no false alarm)", !/BELOW the current price/.test(mk(3e8, 44230)));
   ok("FEE-1: offline (no tip) skips the fee check (no false warning)", !/BELOW the current price/.test(mk(3e8, undefined)));
+}
+
+// NFIN-WINDOW-1 (Plan 63 carry-over, 0.2.54) — the approve-path nfinalize gate: a displaced or
+// out-of-window finalize burns the fee, so the gate must refuse those, pass a live in-window
+// reservation, and WARN (never block) when the name service / tip is unreachable (fail-open —
+// approval must not gain a hard network dependency; same posture as the FEE-1 offline skip).
+{
+  const ME = "0x" + "cd".repeat(20);
+  const OTHER = "0x" + "ee".repeat(20);
+  const EFF = 47000;
+  const winEnd = EFF + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS; // the resolver's own finalizeBy formula
+  const mine = { name: "audit", owner: ME, pending: true, effectiveHeight: EFF };
+  ok("NFIN: in-window live reservation passes (no note)", (() => {
+    const g = nfinalizeApproveGate({ record: mine }, ME, winEnd - 2);
+    return g.block === false && g.note === null;
+  })());
+  ok("NFIN: owner compare is case-insensitive (uppercase signer still passes)",
+    nfinalizeApproveGate({ record: mine }, ME.toUpperCase(), winEnd - 2).block === false);
+  ok("NFIN: out-of-window refuses (one block past the tip > windowEnd - 2 margin)", (() => {
+    const g = nfinalizeApproveGate({ record: mine }, ME, winEnd - 1);
+    return g.block === true && /window has closed/.test(g.note || "");
+  })());
+  ok("NFIN: displaced reservation (another owner holds the pending record) refuses", (() => {
+    const g = nfinalizeApproveGate({ record: { ...mine, owner: OTHER } }, ME, winEnd - 2);
+    return g.block === true && /earlier committer won/.test(g.note || "");
+  })());
+  ok("NFIN: no reservation at all (clean 404) refuses", (() => {
+    const g = nfinalizeApproveGate({ record: null }, ME, winEnd - 2);
+    return g.block === true && /no reservation on-chain/.test(g.note || "");
+  })());
+  ok("NFIN: already finalized (registered to me, not pending) refuses a second fee", (() => {
+    const g = nfinalizeApproveGate({ record: { ...mine, pending: false } }, ME, winEnd - 2);
+    return g.block === true && /no second finalize fee/.test(g.note || "");
+  })());
+  ok("NFIN: v2.6 recapture reservation (lapsed record + live .recapture for me) passes in-window",
+    nfinalizeApproveGate({ record: { name: "audit", owner: OTHER, expired: true, recapture: { owner: ME, effectiveHeight: EFF } } }, ME, winEnd - 2).block === false);
+  ok("NFIN: recapture displaced (someone else's .recapture) refuses",
+    nfinalizeApproveGate({ record: { name: "audit", owner: OTHER, expired: true, recapture: { owner: OTHER, effectiveHeight: EFF } } }, ME, winEnd - 2).block === true);
+  ok("NFIN: lapsed record with NO recapture reservation refuses as no-reservation", (() => {
+    const g = nfinalizeApproveGate({ record: { name: "audit", owner: ME, expired: true } }, ME, winEnd - 2);
+    return g.block === true && /no reservation on-chain/.test(g.note || "");
+  })());
+  ok("NFIN: fetch failure (5xx/timeout) WARNS but does NOT block (fail-open)", (() => {
+    const g = nfinalizeApproveGate({ failed: true }, ME, winEnd - 2);
+    return g.block === false && /could not verify/.test(g.note || "");
+  })());
+  ok("NFIN: tip unavailable WARNS but does NOT block (fail-open)", (() => {
+    const g = nfinalizeApproveGate({ record: mine }, ME, null);
+    return g.block === false && /could not verify/.test(g.note || "");
+  })());
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
