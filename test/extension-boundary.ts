@@ -57,10 +57,11 @@ let submitN = 0;
 // exercise the refusal paths (an unseeded id returns the generic {ok:true}, which the gate skips).
 const offerFixtures = new Map<string, any>();
 let tipDown = false; // simulate a node-RPC /tip blip (get() fails soft → tip reads 0, never throws)
+let tipHeight = 34000; // ≥ V13/V17 (open-lane heights); lower it to simulate a stale/hostile RPC
 (globalThis as any).fetch = async (url: string, init?: any) => {
   const u = String(url);
   if (u.includes("/utxos/")) return { ok: true, json: async () => ({ ok: true, confirmed_balance: MOCK_UTXO.value, utxos: [MOCK_UTXO] }) };
-  if (u.endsWith("/tip")) return tipDown ? { ok: false, status: 503, json: async () => ({}) } : { ok: true, json: async () => ({ ok: true, height: 34000 }) };  // ≥ V13/V17 (open-lane heights)
+  if (u.endsWith("/tip")) return tipDown ? { ok: false, status: 503, json: async () => ({}) } : { ok: true, json: async () => ({ ok: true, height: tipHeight }) };  // ≥ V13/V17 (open-lane heights)
   const om = u.match(/\/cairnx\/offer\/(0x[0-9a-fA-F]{64})/);
   if (om && offerFixtures.has(om[1].toLowerCase())) return { ok: true, status: 200, json: async () => offerFixtures.get(om[1].toLowerCase()) };
   const tr = txReply(u, [MC]); if (tr) return tr;
@@ -274,6 +275,18 @@ async function main() {
   check("fillOffer REFUSES an open-CSD fill when the tip cannot be fetched (F1 fail-closed, no payment signed)", rTipDown?.result?.ok === false && /chain tip/i.test(String(rTipDown?.result?.error)) && lastSubmit === null);
   check("WS5: the tip-unavailable refusal carries the retryable VERIFY_UNAVAILABLE code", rTipDown?.result?.code === "VERIFY_UNAVAILABLE");
   tipDown = false;
+  // (d2) RED-TEAM 2026-07-06: a stale/hostile RPC reporting a POSITIVE tip BELOW V13_HEIGHT (31,100)
+  // used to DISARM the open-CSD claim gate (isOpenClaimLane false → fillIsSafe skips the check), letting
+  // a fill through that the real chain (~47k) no-ops → whole payment lost. Even the LIVE CLAIMANT here
+  // must be refused, because the gate cannot be evaluated at a sub-V13 tip. The old `!(tip > 0)` guard
+  // missed this band; the fix fails closed on `!isOpenClaimLane(offer, tip)` for the open-CSD lane.
+  for (const staleTip of [1, 30000, 31099]) {
+    tipHeight = staleTip; lastSubmit = null;
+    const rStale = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
+    check(`fillOffer REFUSES an open-CSD fill at a sub-V13 reported tip (${staleTip}) — claim gate disarm closed, no payment`,
+      rStale?.result?.ok === false && /chain tip/i.test(String(rStale?.result?.error)) && rStale?.result?.code === "VERIFY_UNAVAILABLE" && lastSubmit === null);
+  }
+  tipHeight = 34000; // restore a healthy open-lane tip
   // (e) F2: resolver need-map — treasury fee output missing → on-chain "protocol fee unpaid" AFTER payment; refuse
   lastSubmit = null;
   const rNoFee = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }], fee: 5_000_000 });

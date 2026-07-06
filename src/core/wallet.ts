@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, requiredFillOutputs, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, requiredFillOutputs, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import type { CxOfferState } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
@@ -494,14 +494,17 @@ export class Wallet {
       const pay = sums.get(payto) ?? 0n;
       const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
       // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
-      // the live tip. this.tip() yields null on any RPC failure (node.get throws → the catch), and a
-      // degenerate 200-without-height reads as 0 — either way the value below lands at 0, and
-      // fillIsSafe(…, 0) would silently DISARM the claim gate (0 < V13_HEIGHT) — so a non-positive tip on
-      // exactly this lane fails CLOSED with the same retryable posture as the unreachable-resolver branch
-      // below. Taker-bound and token-priced lanes never consult the tip, so an RPC blip changes nothing
-      // for them (no false refusal on the common lane).
+      // a live tip. this.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
+      // as 0. But the disarm is NOT just tip==0: fillIsSafe only runs the claim check when
+      // isOpenClaimLane(offer, tip) is true, which requires tip >= V13_HEIGHT — so ANY reported tip in
+      // (0, V13_HEIGHT) (a grossly-stale or hostile RPC) silently SKIPS the claim gate and would let a
+      // non-claimant's open-CSD fill through, while the real chain (tip ~47k) no-ops it and the whole
+      // payment is lost (C2/C4). So: for this lane, if the claim gate is NOT active at the reported tip
+      // (isOpenClaimLane false — which, given taker===undefined && CSD want, can only be a too-low tip),
+      // fail CLOSED with the retryable posture. Red-team 2026-07-06 hardened the guard from `!(tip > 0)`
+      // to cover the full (0, V13) band. Taker-bound / token lanes never consult the tip (unaffected).
       const tip = (await this.tip()) ?? 0;
-      if (!(tip > 0) && offer.taker === undefined && isCsdWant)
+      if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))
         return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
       const verdict = fillIsSafe(offer, me, pay, tip);
       if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
