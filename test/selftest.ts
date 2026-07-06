@@ -234,6 +234,19 @@ async function main() {
     (globalThis as any).fetch = txStub(false); // node rejects submit
     const fr = await w.send(RCPT, 1e8, 1e6);
     check("failed tx is NOT recorded", fr.ok === false && (await w.history()).length === 0);
+
+    // WS1.5: the PROPORTIONAL fee cap (KEEP-IN-SYNC with csd-tx feeCap = max(1 CSD, 10% of inputs)),
+    // applied AFTER selection on the chain-verified input total — strictly tighter than the flat
+    // 100-CSD pre-check. With a single 100-CSD verified coin, propCap = max(1 CSD, 10 CSD) = 10 CSD:
+    // a 20-CSD fee clears the flat cap but must be refused here (a whale-coin dApp fee that the flat
+    // cap alone would have passed). The refusal names the 10% bound, not the flat "safety cap".
+    w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    (globalThis as any).fetch = txStub(true);
+    const overProp = await w.send(RCPT, 1e7, 20e8);   // 20 CSD fee, 0.1 CSD send, 100 CSD coin
+    check("send rejects a fee over 10% of the verified inputs (proportional cap)",
+      overProp.ok === false && /10% of the coins/i.test(overProp.error ?? "") && overProp.code === "FEE_CAP");
+    const okFee = await w.send(RCPT, 1e7, 5e8);        // 5 CSD fee < 10 CSD propCap → passes
+    check("send ACCEPTS a fee within the proportional cap (5 CSD < 10% of 100 CSD)", okFee.ok === true);
   } finally { (globalThis as any).fetch = of2; }
 
   // (h1) multi-input coin selection — aggregate several coins, prefer non-coinbase,
