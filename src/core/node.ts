@@ -108,14 +108,22 @@ function nodeTxToTx(j: any): Tx {
 // pull the next unclaimed index until the list is exhausted. fn's rejections propagate (verifyOne
 // never rejects — every failure is a verdict value — so verifyInputValues' semantics are unchanged
 // from the Promise.all it replaces, minus the unbounded burst).
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+// `decisive` (optional) short-circuits: once ANY completed result satisfies it, workers stop pulling
+// NEW items (in-flight ones finish, leaving later slots undefined). Used so a single tamper/transient
+// verdict doesn't force a black-holing node to grind through all 512 inputs 8-at-a-time (≈8.5 min of
+// timeouts) before refusing — the caller only needs to KNOW one exists (both are fail-closed refusals
+// that no later verdict can override into a success), so the undefined tail is never folded.
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (x: T) => Promise<R>, decisive?: (r: R) => boolean): Promise<R[]> {
   const out = new Array<R>(items.length);
-  let next = 0;
+  let next = 0, stop = false;
   const worker = async () => {
     for (;;) {
+      if (stop) return;
       const k = next++;
       if (k >= items.length) return;
-      out[k] = await fn(items[k]!);
+      const r = await fn(items[k]!);
+      out[k] = r;
+      if (decisive && decisive(r)) stop = true;
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
@@ -167,7 +175,13 @@ async function verifyInputValues(
     verified.set(opKey(i.txid, i.vout), v);
     return v;
   };
-  const verdicts = await mapLimit(inputs, VERIFY_CONCURRENCY, verifyOne);
+  // Short-circuit on the two DECISIVE refusal verdicts: tamper and transient both refuse the whole
+  // spend and neither can be overridden by a later verdict into a success, so once one appears there
+  // is no reason to keep verifying (a black-holing node otherwise makes a 512-input send time out
+  // 8-at-a-time for minutes). notfound must NOT short-circuit — every ghost has to be collected to
+  // exclude it. When we stop early, later slots are undefined, but the tamper/transient checks below
+  // fire before the fold, so the undefined tail is never summed.
+  const verdicts = await mapLimit(inputs, VERIFY_CONCURRENCY, verifyOne, (v) => v === "tamper" || v === "transient");
   // Severity order: any tamper refuses the whole spend immediately (never route around a forging RPC);
   // any transient refuses retryably without excluding anything; only pure not-founds are skippable.
   if (verdicts.includes("tamper")) return { ok: false, kind: "tamper" };

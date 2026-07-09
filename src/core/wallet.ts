@@ -665,7 +665,9 @@ export class Wallet {
       if (!r || !r.ok) {
         try {
           const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(6000) });
-          if (c.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
+          // Only accept a POSITIVE answer from the fallback; a 404 from a degraded/withholding second
+          // source is NOT trustworthy enough to definitively claim "not registered" (fail-closed to the
+          // retryable "name lookup failed" below instead — the primary being down is transient).
           if (c.ok) r = c;
         } catch { /* both sources down — fall through to the honest failure */ }
       }

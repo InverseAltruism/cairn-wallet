@@ -242,12 +242,17 @@ async function renderHistory() {
   const el = $("history-list");
   if (!h.length) { el.innerHTML = `<div class="dim" style="padding:8px 0">No transactions yet. Send, post, or support something and it'll appear here.</div>`; return; }
   el.innerHTML = h.map((t) => {
-    // token sends display the HUMAN token amount (decimals-aware), not base units as CSD
+    // token sends display the HUMAN token amount (decimals-aware), not base units as CSD; a coin
+    // merge only spends the fee (the total returns to self), so show the FEE as the amount so it
+    // doesn't read like a big outgoing payment.
     const csd = t.type === "tokenSend"
       ? `${escapeHtml(String(t.human ?? t.amount ?? ""))} ${escapeHtml(String(t.ticker || ""))}`
-      : fmtBalance(Number(t.amount ?? t.fee ?? 0)) + " CSD";
+      : t.type === "consolidate"
+        ? "fee " + fmtBalance(Number(t.fee ?? 0)) + " CSD"
+        : fmtBalance(Number(t.amount ?? t.fee ?? 0)) + " CSD";
     const kind = TX_LABEL[t.type] || t.type;
     const detail = (t.type === "send" || t.type === "fillOffer" || t.type === "tokenSend") ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`
+      : t.type === "consolidate" ? `${Number(t.merged) || "?"} coins → 1${t.amount ? ` · ${fmtBalance(Number(t.amount))} CSD` : ""}`
       : t.title ? escapeHtml(String(t.title).slice(0, 28))
       : t.domain ? escapeHtml(String(t.domain))
       : t.target ? `${escapeHtml(String(t.target).slice(0, 12))}…` : "";

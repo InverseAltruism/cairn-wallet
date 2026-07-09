@@ -166,6 +166,19 @@ try {
     check("node 500 during verify → VERIFY_UNAVAILABLE (retryable)", r.ok === false && r.code === "VERIFY_UNAVAILABLE");
     check("transient signed nothing", stats.submits.length === 0);
   }
+  {
+    // short-circuit: an ALL-transient node must refuse after ~one wave, NOT grind through every input
+    // (the ≈8.5-min-spinner fix). 30 coins, every /tx 500s → stop pulling after the first decisive verdict.
+    const coins = Array.from({ length: 30 }, (_, i) => mkCoin(67e8 + i * 1e6));
+    const overrides = {};
+    for (const c of coins) overrides[String(c.coin.txid).toLowerCase()] = () => ({ ok: false, status: 500, json: async () => ({}) });
+    const { fetch, stats } = mkStub({ coins, served: coins, overrides });
+    globalThis.fetch = fetch;
+    const { w } = await mkWallet();
+    const r = await w.consolidate(FEE);
+    check("all-transient node → VERIFY_UNAVAILABLE", r.ok === false && r.code === "VERIFY_UNAVAILABLE");
+    check(`short-circuited (fetched ${stats.tx} of 30, not all)`, stats.tx < 30);
+  }
 
   // ── 7. SUBMIT_MAYBE_INFLIGHT vs SUBMIT_REJECTED ──
   {
