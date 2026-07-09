@@ -200,6 +200,21 @@
         </div>
       </div>
 
+      <div id="consolidate-form" class="settings" hidden>
+        <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">merge coins</span></div>
+        <div class="confirm-box">
+          <div class="crow"><span class="label">Coins to merge</span><b id="cs-merge" class="bal"></b></div>
+          <div class="crow"><span class="label">Their value</span><b id="cs-total" class="bal"></b></div>
+          <div class="crow"><span class="label">Fee</span><span id="cs-fee"></span></div>
+          <div class="crow"><span class="label">You receive back</span><b id="cs-out" class="bal"></b></div>
+          <div id="cs-note" class="dim" style="font-size:11px"></div>
+        </div>
+        <div class="row">
+          <button id="btn-consolidate-confirm" class="primary">Merge into one coin</button>
+          <button id="btn-consolidate-back">Back</button>
+        </div>
+      </div>
+
       <div id="name-action-form" class="settings" hidden>
         <div class="panel-head"><button class="panel-back" aria-label="back">&#8592;</button><span class="panel-title">confirm name action</span></div>
         <div class="confirm-box">
@@ -261,6 +276,9 @@
         <label>CairnX API (token balances) <input id="set-tradeapi" /></label>
         <button id="btn-save-settings" class="mini">save</button>
         <div class="dim" style="font-size:11px;margin-top:6px">Switch the node RPC from the <b>RPC</b> menu (top right).</div>
+        <div class="dim" style="font-size:11px;margin-top:10px"><b>Coins</b>: your balance is made of individual on-chain coins. One transaction can spend at most 512 of them — many small coins (e.g. mining rewards) cap how much you can send at once. Merging is a normal self-send (fee 0.01 CSD).</div>
+        <div id="coins-info" class="dim" style="font-size:11px;margin-top:4px"></div>
+        <button id="btn-consolidate" class="mini" hidden>merge coins…</button>
         <div class="dim" style="font-size:11px;margin-top:10px"><b>Connected sites</b>: sites allowed to see your address. They can’t move funds; signing always asks you each time.</div>
         <div id="connected-sites" class="history"></div>
       </div>

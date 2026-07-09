@@ -236,7 +236,7 @@ async function renderAccts() {
   if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
 }
 
-const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Filled offer", tokenSend: "Sent token" };
+const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Filled offer", tokenSend: "Sent token", consolidate: "Merged coins" };
 async function renderHistory() {
   const h: any[] = await call("history");
   const el = $("history-list");
@@ -599,6 +599,21 @@ function sendDidntConfirm(f: SendFlow, thrownPrefix?: string) {
     ? thrownPrefix + "send didn't confirm; it may already be in flight. Check history before resending."
     : "send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.", "err");
 }
+// A structured {ok:false} from the send engine (2026-07-09): every code EXCEPT the genuinely
+// ambiguous SUBMIT_MAYBE_INFLIGHT is a CLEAN refusal — either pre-broadcast (INSUFFICIENT,
+// TOO_MANY_INPUTS, VERIFY_*, FEE_*, BAD_*, GHOST_INPUTS_SKIPPED: nothing was even signed) or a
+// definitive server rejection (SUBMIT_REJECTED: the node answered, the tx is NOT in the mempool).
+// The old routing collapsed ALL of these into sendDidntConfirm's alarming "may already be in
+// flight" copy, discarding the real r.error — a plain overspend read like a maybe-double-send.
+// Show the actual reason (the engine's errors are already user-facing copy) and reserve the
+// in-flight caution for SUBMIT_MAYBE_INFLIGHT and the thrown/catch branch only. Same FOOT-3
+// teardown either way: Confirm must never stay armed on a stale snapshot.
+function sendRefused(f: SendFlow, r: any) {
+  if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return sendDidntConfirm(f, r?.error ? String(r.error) + " — " : "");
+  teardownReview(f, false);
+  f.refresh();
+  msg((r?.error ? String(r.error) : "the send was refused") + " — nothing was sent.", "err");
+}
 // Success teardown: outcome message + hero glow first, then the one clear-the-draft path.
 function sentOk(f: SendFlow, text: string) {
   msg(text, "ok sent");
@@ -630,6 +645,15 @@ $("btn-tsend").addEventListener("click", async () => {
   let avail = 0n;
   try { avail = BigInt(tsend.available || "0"); } catch { avail = 0n; }
   if (BigInt(base) > avail) return msg(`amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)})`, "err");
+  // A token transfer still anchors on-chain via a Propose carrying the 0.25 CSD fee. "Received
+  // tokens but holds no CSD" is a completely normal account state, so pre-check the CSD side HERE
+  // with a message that names the actual problem — otherwise the engine's generic "insufficient
+  // confirmed balance" reads as nonsense to someone staring at a big token balance. Best-effort:
+  // offline skips the check and the engine still refuses cleanly at sign time.
+  try {
+    const b = await call("balance");
+    if (Number(b?.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} CSD for the on-chain anchor fee — your confirmed CSD balance is ${fmtBalance(Number(b?.confirmed ?? 0))} CSD`, "err");
+  } catch { /* offline — the engine's own check still refuses cleanly */ }
   // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
   const { firstTime, lookalike } = await recipientChecks(to);
   $("tc-ticker").textContent = tsend.ticker;
@@ -655,7 +679,7 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
     if (r.ok) sentOk(TOKEN_FLOW, `sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`);
-    else sendDidntConfirm(TOKEN_FLOW);                                       // FOOT-3 (token parity with the CSD path)
+    else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
   } catch (e: any) {
     sendDidntConfirm(TOKEN_FLOW, e?.message ? e.message + " — " : "");       // thrown bridge error: same ambiguity
   }
@@ -733,7 +757,7 @@ $("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
-const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
+const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "consolidate-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
 // Best-effort clipboard hygiene for a copied key/phrase (audit KEY-6): when the reveal panel closes
 // (switch/close/popup-unload), clear the clipboard IFF it still holds the secret we copied — so we never
@@ -847,7 +871,67 @@ $("btn-phrase-go").addEventListener("click", async () => {
 $("btn-phrase-show").addEventListener("click", () => { const o = $("phrase-out"); o.classList.toggle("shown"); o.classList.toggle("blur"); });
 $("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase)?.catch(() => {}); copiedSecret = revealedPhrase; flashBtn("btn-phrase-copy", "copied ✓ (auto-clears)"); });
 $("btn-phrase-close").addEventListener("click", () => { resetPhrasePanel(); ($("phrase-panel") as HTMLElement).hidden = true; });
-$("btn-settings").addEventListener("click", () => { if (openPanel("settings")) renderConnectedSites(); });
+$("btn-settings").addEventListener("click", () => { if (openPanel("settings")) { renderConnectedSites(); renderCoinsInfo(); } });
+
+// ── coins / consolidate (popup-only; see node.consolidate for the trust posture) ─────────────
+// Settings shows a live coin count; "merge coins…" appears only when a merge would actually help
+// (≥2 spendable coins). The confirm card previews REPORTED numbers; the spend itself re-verifies
+// every input against the chain (TXB-1) and refuses on any mismatch — a lying preview gains nothing.
+async function renderCoinsInfo() {
+  const info = $("coins-info") as HTMLElement, btn = $("btn-consolidate") as HTMLButtonElement;
+  info.textContent = "…"; btn.hidden = true;
+  try {
+    const p = await call("consolidatePreview", SEND_FEE);
+    if (!p?.ok) { info.textContent = "coin count unavailable (node unreachable)"; return; }
+    info.textContent = p.coins < 2
+      ? `you have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"} — nothing to merge`
+      : `you have ${p.coins} spendable coins · one merge combines ${p.merge} of them (${fmtBalance(p.total)} CSD) into a single coin`;
+    btn.hidden = p.coins < 2;
+  } catch { info.textContent = "coin count unavailable"; }
+}
+$("btn-consolidate").addEventListener("click", async () => {
+  if (!openPanel("consolidate-form")) return;
+  const note = $("cs-note") as HTMLElement;
+  ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = true;
+  note.textContent = "";
+  try {
+    const p = await call("consolidatePreview", SEND_FEE);
+    if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "nothing to merge — fewer than two spendable coins." : "node unreachable — try again in a moment."; return; }
+    $("cs-merge").textContent = String(p.merge) + (p.coins > p.merge ? ` of ${p.coins}` : "");
+    $("cs-total").textContent = fmtBalance(p.total) + " CSD";
+    $("cs-fee").textContent = fmtCsd(SEND_FEE);
+    $("cs-out").textContent = fmtBalance(p.out) + " CSD";
+    note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins — run the merge again afterwards for the rest. ` : "")
+      + "This is a normal payment to yourself: your balance only changes by the fee.";
+    ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;
+  } catch { note.textContent = "node unreachable — try again in a moment."; }
+});
+$("btn-consolidate-back").addEventListener("click", () => { openPanel("settings"); renderConnectedSites(); renderCoinsInfo(); });
+$("btn-consolidate-confirm").addEventListener("click", async () => {
+  const btn = $("btn-consolidate-confirm") as HTMLButtonElement;
+  if (btn.disabled) return;
+  btn.disabled = true; // latch: verifying up to 512 inputs takes ~10s — a second click must not double-fire
+  try {
+    busy("verifying & merging coins… (can take ~10s)");
+    const r = await call("consolidate", SEND_FEE);
+    if (r.ok) {
+      msg(`merged ${r.merged} coins into one · ${String(r.txid).slice(0, 12)}…` + (r.remaining > 1 ? ` — ${r.remaining} coins left, run again after this confirms` : ""), "ok sent");
+      ($("consolidate-form") as HTMLElement).hidden = true;
+      refreshBalance();
+    } else if (r?.code === "SUBMIT_MAYBE_INFLIGHT") {
+      msg((r.error ? String(r.error) + " — " : "") + "the merge didn't confirm; it may already be in flight. Check history before retrying.", "err");
+      ($("consolidate-form") as HTMLElement).hidden = true;
+      refreshBalance();
+    } else {
+      msg((r?.error ? String(r.error) : "the merge was refused") + " — nothing was sent.", "err");
+      btn.disabled = false;
+    }
+  } catch (e: any) {
+    msg((e?.message ? e.message + " — " : "") + "the merge didn't confirm; it may already be in flight. Check history before retrying.", "err");
+    ($("consolidate-form") as HTMLElement).hidden = true;
+    refreshBalance();
+  }
+});
 
 // Connected sites: list the origins the user has granted address-visibility to, each
 // with an instant Revoke. Revoking means that origin must prompt again on its next
@@ -1119,7 +1203,7 @@ $("btn-send-confirm").addEventListener("click", async () => {
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
     if (r.ok) sentOk(CSD_FLOW, "sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
-    else sendDidntConfirm(CSD_FLOW);                                       // FOOT-3
+    else sendRefused(CSD_FLOW, r);                    // structured refusal: show the REAL reason (FOOT-3 teardown inside)
   } catch (e: any) {
     sendDidntConfirm(CSD_FLOW, e?.message ? e.message + " — " : "");       // thrown bridge error: same ambiguity
   }

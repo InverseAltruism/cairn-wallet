@@ -83,6 +83,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "propose": return wallet.propose(args[0]);
     case "attest": return wallet.attest(args[0]);
     case "send": return wallet.send(args[0], args[1], args[2]);
+    // popup-only coin maintenance (deliberately NOT in DAPP_METHODS — a dApp must not restructure the user's coins)
+    case "consolidate": return wallet.consolidate(args[0]);
+    case "consolidatePreview": return wallet.consolidatePreview(args[0]);
     case "cairnPost": return wallet.cairnPost(args[0]);
     case "cairnSupport": return wallet.cairnSupport(args[0], args[1], args[2], args[3]);
     case "cairnxAssets": return wallet.cairnxAssets();

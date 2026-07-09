@@ -595,6 +595,10 @@ export class Wallet {
 
   // Plain CSD transfer to any address. fee default 0.01 CSD.
   async send(to: string, amount: number, fee = 1_000_000) { const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(r, { type: "send", to, amount, fee }); return r; }
+  // Merge small coins into one self-output (see node.consolidate for the full posture note).
+  // Popup-only — deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
+  async consolidate(fee = 1_000_000) { const r = await node.consolidate(this.rpc, { fee }, this.must().privkey); await this.maybeRecord(r, { type: "consolidate", merged: r.merged, amount: r.total, fee }); return r; }
+  consolidatePreview(fee = 1_000_000) { return node.consolidatePreview(this.rpc, this.addr(), fee); }
 
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
   // by node.sendMany; callers never supply UTXOs. History records the total + primary
@@ -650,9 +654,22 @@ export class Wallet {
     // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
     if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
     try {
-      const r = await this.tradeGet(`/cairnx/resolve/${encodeURIComponent(nm)}`); // 6s: recipient path fails clean
-      if (r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
-      if (!r.ok) return { ok: false, error: "name lookup failed" };
+      // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
+      // EVERY name send with "name lookup failed" even though the independent clarvis source could
+      // answer — and the SPV verifyName below is the trust anchor either way (the base answer is
+      // UNTRUSTED no matter which source served it, so falling back is no weaker). Only a definitive
+      // 404 from the source that answered short-circuits; network/5xx tries the second source.
+      let r: Response | null = null;
+      try { r = await this.tradeGet(`/cairnx/resolve/${encodeURIComponent(nm)}`); } catch { r = null; } // 6s: recipient path fails clean
+      if (r && r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
+      if (!r || !r.ok) {
+        try {
+          const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(6000) });
+          if (c.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
+          if (c.ok) r = c;
+        } catch { /* both sources down — fall through to the honest failure */ }
+      }
+      if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
       const j = await r.json();
       if (j?.lapsed) return { ok: false, error: `${nm}.csd lease has lapsed — can't send to it` };
       if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };

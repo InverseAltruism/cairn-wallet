@@ -5,8 +5,16 @@
 // onto a different transaction. The private key only ever lives in the wallet; nothing here sends it away.
 import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
 
+// Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
+// these fetches forever — the popup's "sending…" spinner never settled and there was no in-popup
+// recovery. A timeout converts the stall into the existing fail-closed error paths (get() throws →
+// caller catch; post() returns the maybeInflight-flagged failure below). Reads are short; submit is
+// generous (the node can be busy validating a 512-input tx).
+const GET_TIMEOUT_MS = 8_000;
+const POST_TIMEOUT_MS = 20_000;
 async function get(rpc: string, path: string): Promise<any> {
-  const r = await fetch(`${rpc}${path}`); if (!r.ok) throw new Error(`${path} -> ${r.status}`); return r.json();
+  const r = await fetch(`${rpc}${path}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+  if (!r.ok) throw new Error(`${path} -> ${r.status}`); return r.json();
 }
 // Symmetric with get(): a POST must NEVER throw out of the caller after a tx is already signed —
 // otherwise a non-JSON 4xx/5xx (e.g. an HTML error page from a proxy) on /tx/submit would surface as an
@@ -16,8 +24,14 @@ async function get(rpc: string, path: string): Promise<any> {
 // body is returned unchanged — this only converts the failure path from "throw" to "fail-closed value".
 async function post(rpc: string, path: string, body: unknown): Promise<any> {
   let r: Response;
-  try { r = await fetch(`${rpc}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
-  catch { return { ok: false, err: `${path} -> network error` }; }
+  try { r = await fetch(`${rpc}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
+  // `maybeInflight` classifies the AMBIGUITY of a failure, not its severity: a thrown fetch
+  // (network error / timeout) means the request may or may not have reached the server — a
+  // /tx/submit could already be in the mempool. A clean non-2xx below is the opposite: the server
+  // answered, so a submit was definitively NOT ingested. signAndSubmit maps this flag to
+  // SUBMIT_MAYBE_INFLIGHT vs SUBMIT_REJECTED so the popup only shows the scary "may already be
+  // in flight" copy when it is actually true (the old copy claimed it for EVERY failure).
+  catch { return { ok: false, err: `${path} -> network error`, maybeInflight: true }; }
   // Symmetric with get(): never let a non-JSON 4xx/5xx (e.g. an HTML proxy error page) throw out of a
   // caller AFTER a tx is already signed — parse defensively and return a structured {ok:false,err} on any
   // non-2xx or unparseable body (audit VAL-2). A 2xx JSON body is returned unchanged; every caller reads
@@ -25,7 +39,9 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
   let j: any;
   try { j = await r.json(); } catch { j = undefined; }
   if (!r.ok) return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${r.status}` };
-  if (j === undefined) return { ok: false, err: `${path} -> non-JSON response` };
+  // a 2xx we couldn't parse: the server DID process the request — a submit may have been ingested
+  // even though we can't read the answer, so this is ambiguous too.
+  if (j === undefined) return { ok: false, err: `${path} -> non-JSON response`, maybeInflight: true };
   return j;
 }
 
@@ -88,6 +104,24 @@ function nodeTxToTx(j: any): Tx {
 // Caveat: a node answering 2xx {ok:false,err:"db busy"} with no tx body is indistinguishable from a
 // miss and classifies "notfound"; the failure mode is an honest "couldn't cover after skipping" error
 // (bounded by the caller's short ghost-cache TTL), never an unverified spend.
+// Bounded-concurrency map preserving input order. A tiny shared-index worker pool: N workers each
+// pull the next unclaimed index until the list is exhausted. fn's rejections propagate (verifyOne
+// never rejects — every failure is a verdict value — so verifyInputValues' semantics are unchanged
+// from the Promise.all it replaces, minus the unbounded burst).
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const k = next++;
+      if (k >= items.length) return;
+      out[k] = await fn(items[k]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
+const VERIFY_CONCURRENCY = 8;
 type InputVerdict = number | "notfound" | "transient" | "tamper";
 type VerifyResult =
   | { ok: true; total: number }
@@ -103,15 +137,18 @@ async function verifyInputValues(
   // spend keeps the "always verify before signing" property trivially auditable).
   verified: Map<string, number> = new Map(),
 ): Promise<VerifyResult> {
-  // Each input is verified INDEPENDENTLY, so the per-input `/tx` fetches run in PARALLEL — an N-input
-  // send is one round-trip's latency, not N sequential ones. The browser's per-host connection cap
-  // bounds concurrency; the input set is already capped at MAX_TX_INPUTS.
+  // Each input is verified INDEPENDENTLY, so the per-input `/tx` fetches overlap — an N-input send
+  // is a few round-trips' latency, not N sequential ones. Concurrency is EXPLICITLY bounded by the
+  // mapLimit pool below (2026-07-09): the old unbounded Promise.all leaned on the browser's per-host
+  // connection cap, which fetch() queueing makes unreliable as a limiter and which hammers the shared
+  // /api/rpc proxy with a 100+-request burst on a large send. 8 workers keeps a 512-input verify at
+  // ~64 short rounds (~10s) without storming the proxy. The input set is capped at MAX_TX_INPUTS.
   const verifyOne = async (i: { txid: string; vout: number }): Promise<InputVerdict> => {
     const hit = verified.get(opKey(i.txid, i.vout));
     if (hit !== undefined) return hit;
     let body: any;
     try {
-      const r = await fetch(`${rpc}/tx/${i.txid}`);
+      const r = await fetch(`${rpc}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
       if (r.status === 404) return "notfound";
       if (!r.ok) return "transient";
       let j: any; try { j = await r.json(); } catch { return "transient"; }
@@ -130,7 +167,7 @@ async function verifyInputValues(
     verified.set(opKey(i.txid, i.vout), v);
     return v;
   };
-  const verdicts = await Promise.all(inputs.map(verifyOne));
+  const verdicts = await mapLimit(inputs, VERIFY_CONCURRENCY, verifyOne);
   // Severity order: any tamper refuses the whole spend immediately (never route around a forging RPC);
   // any transient refuses retryably without excluding anything; only pure not-founds are skippable.
   if (verdicts.includes("tamper")) return { ok: false, kind: "tamper" };
@@ -162,7 +199,13 @@ const GHOST_TTL_MS = 120_000;
 const ghostSeen = new Map<string, number>(); // outpoint -> expiry
 const fmtCsd = (v: number) => (v / 1e8).toLocaleString("en-US", { maximumFractionDigits: 8 });
 async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
-  const { utxos } = await balance(rpc, addr);
+  // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
+  // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
+  // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch —
+  // nothing has been signed at this point, so the outcome is definitively clean.
+  let utxos: any[];
+  try { ({ utxos } = await balance(rpc, addr)); }
+  catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
   for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
   const exclude = new Set<string>(ghostSeen.keys());
@@ -172,9 +215,10 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   // honest error (they are why the reported balance overstates what is spendable)
   let ghostCount = 0, ghostValue = 0;
   for (const k of exclude) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
+  let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const sel = selectInputs(utxos, need, exclude);
-    if (!sel) break;                        // remaining verifiable coins can't cover `need`
+    if (!sel) { selExhausted = true; break; } // remaining verifiable coins can't cover `need` — or can't within the input cap (diagnosed below)
     const ver = await verifyInputValues(rpc, sel.inputs, verified);
     if (ver.ok) {
       if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
@@ -190,6 +234,20 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
       exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS);
     }
     if (ghostSeen.size > 2048) ghostSeen.clear(); // hard cap: a hostile RPC can't grow this unboundedly
+  }
+  // TOO_MANY_INPUTS vs INSUFFICIENT (2026-07-09): selectInputs returns null BOTH when the balance
+  // genuinely can't cover `need` AND when it could but not within the MAX_TX_INPUTS cap — a
+  // pure-50-CSD-coinbase holder tops out at 512×50 = 25,600 CSD per tx, and telling them
+  // "insufficient confirmed balance" is false and alarming. Diagnose which it was: if the full
+  // spendable set (same predicate, ghosts excluded) covers `need`, the cap was the blocker.
+  if (selExhausted) {
+    let spendable = 0;
+    for (const c of spendableCoins(utxos, exclude)) {
+      spendable += c.value;
+      if (!Number.isSafeInteger(spendable)) { spendable = 0; break; } // beyond-supply garbage: fall through to INSUFFICIENT
+    }
+    if (spendable >= need)
+      return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows — send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
   }
   if (!ghostCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
   console.warn(`cairn-wallet: skipped ${ghostCount} coin(s) the node could not prove (source tx not found); reported balance may be overstated by ~${fmtCsd(ghostValue)} CSD`);
@@ -267,6 +325,28 @@ export function selectInputs(utxos: any[], need: number, exclude?: ReadonlySet<s
   return take(confirmed.filter((x: any) => !x.coinbase)) ?? take(confirmed);
 }
 
+// The spendability predicate, standalone: MIRRORS selectInputs' filter exactly (≥1 confirmation
+// with hostile-value coercion guards, positive safe-integer value, outpoint-deduped, ghost-
+// excluded) — ★KEEP-IN-SYNC with the filter inside selectInputs above; it exists so selectVerified
+// can DIAGNOSE a null selection (input-cap vs genuine shortfall) and consolidate() can pick
+// smallest-first, WITHOUT changing selectInputs' csd-tx-mirrored body (see the KEEP-IN-SYNC note
+// there — its signature/body must stay line-for-line equivalent to csd-tx's fork).
+function spendableCoins(utxos: any[], exclude?: ReadonlySet<string>): SelectedInput[] {
+  const seen = new Set<string>();
+  const out: SelectedInput[] = [];
+  for (const x of utxos ?? []) {
+    const c = Number(x?.confirmations ?? 0);
+    if (!Number.isFinite(c) || c < 1) continue;
+    const v = Number(x?.value);
+    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) continue;
+    const key = opKey(x.txid, x.vout);
+    if (exclude?.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ txid: x.txid, vout: Number(x.vout), value: v });
+  }
+  return out;
+}
+
 // Build the FULL tx locally (we set the app ourselves), sign OUR OWN codec sighash,
 // and submit. We never sign a hash a server handed us — so a malicious or MITM'd RPC
 // cannot trick the wallet into signing a different transaction; the node re-derives
@@ -279,7 +359,12 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   const scriptSig = buildScriptSig(sig64, pub33);
   for (const i of tx.inputs) i.scriptSig = scriptSig;
   const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true, code: sub.ok ? undefined : "SUBMIT_REJECTED" };
+  // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = the server ANSWERED with a
+  // rejection, so the tx is definitively NOT in the mempool (safe to say "nothing was sent");
+  // SUBMIT_MAYBE_INFLIGHT = the request itself failed/timed out/unreadable-2xx AFTER signing, so
+  // the tx MAY have been ingested — the only case where the popup's "may already be in flight"
+  // caution is truthful. post() sets maybeInflight on exactly those ambiguous branches.
+  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true, code: sub.ok ? undefined : (sub.maybeInflight ? "SUBMIT_MAYBE_INFLIGHT" : "SUBMIT_REJECTED") };
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).
@@ -430,6 +515,68 @@ export async function sendMany(rpc: string, p: { outputs: { to: string; value: n
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
   const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   return assembleValueTx(rpc, outputs, p.fee, { type: "None" }, priv);
+}
+
+// Merge many small coins into ONE output back to the wallet's own address, so a later large send
+// fits the MAX_TX_INPUTS per-transaction cap (a pure-50-CSD-coinbase holder otherwise tops out at
+// 512×50 = 25,600 CSD per tx and, worse, pays the fee on 500+ inputs every time). Same trust
+// posture as every other spend: every input CHAIN-VERIFIED before signing (TXB-1, verifyInputValues
+// unchanged), the single output goes ONLY to the address derived from the signing key (a caller/UI
+// cannot redirect it), signed locally via the shared signAndSubmit. Selection is SMALLEST-FIRST —
+// the deliberate opposite of send's largest-first cover-`need` — because the point is to retire
+// fragments; up to MAX_TX_INPUTS coins per run, callers re-run to merge the rest (`remaining`).
+// CSD has NO coinbase-maturity rule (verified against consensus params 2026-07-09), so any
+// ≥1-confirmation coin is mergeable. Popup-only (NOT in DAPP_METHODS — a dApp has no business
+// restructuring the user's coins; there is nothing to clear-sign that the preview doesn't show).
+export async function consolidate(rpc: string, p: { fee: number }, priv: string): Promise<SubmitResult & { merged?: number; remaining?: number; total?: number }> {
+  const fee = Number(p?.fee);
+  if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", sighashMatch: false, code: "BAD_FEE" };
+  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${MAX_FEE / 1e8} CSD safety cap — refusing`, sighashMatch: false, code: "FEE_CAP" };
+  const addr = addrFromPriv(priv);
+  let utxos: any[];
+  try { ({ utxos } = await balance(rpc, addr)); }
+  catch { return { ok: false, error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" }; }
+  // Same ghost handling as selectVerified: known-unprovable outpoints are pre-excluded, fresh
+  // ghosts exclude-and-retry within the same bounded round budget, and no coin is EVER spent
+  // unverified. tamper/transient verdicts refuse exactly as a send would.
+  const now = Date.now();
+  for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
+  const exclude = new Set<string>(ghostSeen.keys());
+  const verified = new Map<string, number>();
+  for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
+    const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
+    if (pool.length < 2) return { ok: false, error: "nothing to consolidate — fewer than two spendable coins", sighashMatch: false, code: "NOTHING_TO_CONSOLIDATE" };
+    const ver = await verifyInputValues(rpc, pool, verified);
+    if (!ver.ok) {
+      if (ver.kind === "tamper") return { ok: false, error: "could not verify selected coins against the chain (refusing to risk a burned fee)", sighashMatch: false, code: "VERIFY_TAMPER" };
+      if (ver.kind === "transient") return { ok: false, error: "couldn't fetch source transactions to verify coin values (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); }
+      if (ghostSeen.size > 2048) ghostSeen.clear();
+      continue;
+    }
+    const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
+    if (!(outValue > 0)) return { ok: false, error: "these coins are too small to cover the fee — nothing to gain by merging them", sighashMatch: false, code: "INSUFFICIENT" };
+    const remaining = spendableCoins(utxos, exclude).length - pool.length;
+    const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
+    const r = await signAndSubmit(rpc, tx, priv);
+    return { ...r, merged: pool.length, remaining, total: ver.total };
+  }
+  return { ok: false, error: "couldn't settle on a verifiable set of coins (unprovable coins kept appearing) — try again in a moment", sighashMatch: false, code: "GHOST_INPUTS_SKIPPED" };
+}
+
+// Read-only preview for the consolidate confirmation card: how many coins are spendable, how many
+// one run would merge, their REPORTED total and the resulting single-coin value. Display only —
+// consolidate() re-derives everything from chain-verified values before signing, so a hostile RPC
+// inflating this preview gains nothing (the signed tx uses verified totals or refuses).
+export async function consolidatePreview(rpc: string, addr: string, fee: number): Promise<{ ok: boolean; coins?: number; merge?: number; total?: number; out?: number; error?: string }> {
+  try {
+    const { utxos } = await balance(rpc, addr);
+    const pool = spendableCoins(utxos).sort((a, b) => a.value - b.value);
+    const merge = Math.min(pool.length, MAX_TX_INPUTS);
+    let total = 0;
+    for (const c of pool.slice(0, merge)) { total += c.value; if (!Number.isSafeInteger(total)) return { ok: false, error: "coin values out of range" }; }
+    return { ok: true, coins: pool.length, merge, total, out: Math.max(0, total - Number(fee)) };
+  } catch { return { ok: false, error: "node unreachable" }; }
 }
 
 // Fill an on-chain offer (CairnX-style atomic delivery-versus-payment): ONE transaction
