@@ -45,6 +45,7 @@ The strings are unchanged from earlier releases; only the machine `code` is new.
 | `VERIFY_UNAVAILABLE` | Couldn't fetch source txs / the chain tip / the resolver to verify before signing (node unreachable or erroring). | **Yes**: nothing was signed; try again shortly. | `node.ts` `selectVerified`, `wallet.ts` fillOffer preflight |
 | `VERIFY_TAMPER` | A served source-tx body failed txid recompute / output sanity (possible hostile RPC). | **No**: the whole spend is refused, no retry against a forging RPC. | `node.ts` `selectVerified` |
 | `INSUFFICIENT` | Insufficient confirmed balance for the spend. | No (until funded). | `node.ts` `selectVerified` |
+| `TOO_MANY_INPUTS` | The balance covers the amount but not within the 512-input per-transaction cap (common for a holder of many small coins). | No as-is: send a smaller amount, or consolidate coins first. | `node.ts` `selectVerified` (since 0.2.55) |
 | `FEE_TOO_LOW` | Fee is not positive (the node enforces a minimum). | No. | `node.ts` `assembleValueTx` |
 | `FEE_CAP` | Fee exceeds the flat 100 CSD cap or the 10%-of-selected-inputs cap. | No. | `node.ts` `assembleValueTx` |
 | `BAD_FEE` | Fee (or amount+fee) is out of the safe-integer range. | No. | `node.ts` send / sendMany / fillOffer / buildSignSubmit |
@@ -53,7 +54,9 @@ The strings are unchanged from earlier releases; only the machine `code` is new.
 | `NO_OUTPUTS` | The tx would have no outputs (nothing, incl. change, would be paid). | No. | `node.ts` `assembleValueTx` |
 | `BAD_REQUEST` | A propose/attest param failed its shape check (payloadHash / proposalId / expiresEpoch). | No. | `node.ts` `propose` / `attest` / `fillOffer` |
 | `FILL_UNSAFE` | The fillOffer fund-safety preflight refused (offer not open, undeliverable, or an underpaid seller/fee/rebate leg): the chain would take the payment and reject the fill. | No (rebuild the fill as quoted). | `wallet.ts` fillOffer preflight |
-| `SUBMIT_REJECTED` | The node rejected the submitted tx (or `/tx/submit` failed). | Depends; inspect `error`. | `node.ts` `signAndSubmit` |
+| `SUBMIT_REJECTED` | The submit was DEFINITIVELY rejected: the node answered a 4xx rejection (feerate/duplicate/etc.), or a pre-forward proxy 400/413 body cap or 429 rate limit. The tx is NOT in the mempool, so nothing was sent. | No (fix the cause, then resend); inspect `error`. | `node.ts` `signAndSubmit` (since 0.2.55: split from the ambiguous case below) |
+| `SUBMIT_MAYBE_INFLIGHT` | The submit outcome is AMBIGUOUS: the request threw / timed out, or hit a 5xx gateway failure (the cairn proxy 502s the node after ~4s, which can outrace a slow-but-successful mempool ingest), or returned an unreadable body. The tx MAY be in the mempool. | **Do NOT auto-retry.** Check the balance / explorer first; only resend if the tx did not confirm. | `node.ts` `signAndSubmit` (since 0.2.55) |
+| `NOTHING_TO_CONSOLIDATE` | `consolidate()` found fewer than two spendable coins to merge. Popup-only (not a dApp method). | No. | `node.ts` `consolidate` (since 0.2.55) |
 
 ## Code-less strings consumers must still know
 

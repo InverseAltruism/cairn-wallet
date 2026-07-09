@@ -655,12 +655,13 @@ $("btn-tsend").addEventListener("click", async () => {
   // with a message that names the actual problem — otherwise the engine's generic "insufficient
   // confirmed balance" reads as nonsense to someone staring at a big token balance. Best-effort:
   // offline skips the check and the engine still refuses cleanly at sign time.
-  try {
-    const b = await call("balance");
-    if (Number(b?.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} CSD for the on-chain anchor fee — your confirmed CSD balance is ${fmtBalance(Number(b?.confirmed ?? 0))} CSD`, "err");
-  } catch { /* offline — the engine's own check still refuses cleanly */ }
+  // Run the CSD-fee pre-check CONCURRENTLY with the recipient checks (both are best-effort network reads)
+  // so a slow node doesn't add serial latency before the review card arms. Offline -> b is null -> the fee
+  // check is skipped and the engine still refuses cleanly at sign time.
+  const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
+  if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} CSD for the on-chain anchor fee — your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD`, "err");
   // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
-  const { firstTime, lookalike } = await recipientChecks(to);
+  const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
   $("tc-to").textContent = to.toLowerCase();              // FULL address, as it will appear in the signed record
   $("tc-amt").textContent = `${formatUnits(base, tsend.decimals)} ${tsend.ticker}`;
@@ -894,6 +895,10 @@ async function renderCoinsInfo() {
     btn.hidden = p.coins < 2;
   } catch { info.textContent = "coin count unavailable"; }
 }
+// A single merge can be in flight for ~10s (verifying up to 512 inputs). `consolidating` latches ACROSS
+// a panel reopen so a second concurrent merge can't be fired (the reopen re-enables the confirm button);
+// two concurrent merges are self-conflicting and harmless, but this keeps a single, clean flow.
+let consolidating = false;
 $("btn-consolidate").addEventListener("click", async () => {
   if (!openPanel("consolidate-form")) return;
   const note = $("cs-note") as HTMLElement;
@@ -907,24 +912,24 @@ $("btn-consolidate").addEventListener("click", async () => {
     $("cs-fee").textContent = fmtCsd(SEND_FEE);
     $("cs-out").textContent = fmtBalance(p.out) + " CSD";
     note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins — run the merge again afterwards for the rest. ` : "")
-      + "This is a normal payment to yourself: your balance only changes by the fee.";
-    ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;
+      + (consolidating ? "a merge is already in progress; wait for it to confirm." : "This is a normal payment to yourself: your balance only changes by the fee.");
+    if (!consolidating) ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;   // keep it latched if a merge is already running
   } catch { note.textContent = "node unreachable — try again in a moment."; }
 });
 $("btn-consolidate-back").addEventListener("click", () => { openPanel("settings"); renderConnectedSites(); renderCoinsInfo(); });
 $("btn-consolidate-confirm").addEventListener("click", async () => {
   const btn = $("btn-consolidate-confirm") as HTMLButtonElement;
-  if (btn.disabled) return;
-  btn.disabled = true; // latch: verifying up to 512 inputs takes ~10s — a second click must not double-fire
+  if (btn.disabled || consolidating) return;
+  btn.disabled = true; consolidating = true; // latch across the ~10s verify AND any panel reopen
   try {
     busy("verifying & merging coins… (can take ~10s)");
     const r = await call("consolidate", SEND_FEE);
     if (r.ok) {
-      msg(`merged ${r.merged} coins into one · ${String(r.txid).slice(0, 12)}…` + (r.remaining > 1 ? ` — ${r.remaining} coins left, run again after this confirms` : ""), "ok sent");
+      msg(`merged ${r.merged} coins into one · ${String(r.txid).slice(0, 12)}…` + (r.remaining >= 1 ? ` — ${r.remaining} coin(s) left, run again after this confirms` : ""), "ok sent");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
     } else if (r?.code === "SUBMIT_MAYBE_INFLIGHT") {
-      msg((r.error ? String(r.error) + " — " : "") + "the merge didn't confirm; it may already be in flight. Check history before retrying.", "err");
+      msg((r.error ? String(r.error) + " — " : "") + "the merge didn't confirm; it may already be in flight. Check your balance/history before retrying.", "err");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
     } else {
@@ -932,10 +937,10 @@ $("btn-consolidate-confirm").addEventListener("click", async () => {
       btn.disabled = false;
     }
   } catch (e: any) {
-    msg((e?.message ? e.message + " — " : "") + "the merge didn't confirm; it may already be in flight. Check history before retrying.", "err");
+    msg((e?.message ? e.message + " — " : "") + "the merge didn't confirm; it may already be in flight. Check your balance/history before retrying.", "err");
     ($("consolidate-form") as HTMLElement).hidden = true;
     refreshBalance();
-  }
+  } finally { consolidating = false; }
 });
 
 // Connected sites: list the origins the user has granted address-visibility to, each

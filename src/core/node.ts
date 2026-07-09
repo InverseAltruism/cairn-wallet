@@ -27,10 +27,9 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
   try { r = await fetch(`${rpc}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
   // `maybeInflight` classifies the AMBIGUITY of a failure, not its severity: a thrown fetch
   // (network error / timeout) means the request may or may not have reached the server — a
-  // /tx/submit could already be in the mempool. A clean non-2xx below is the opposite: the server
-  // answered, so a submit was definitively NOT ingested. signAndSubmit maps this flag to
-  // SUBMIT_MAYBE_INFLIGHT vs SUBMIT_REJECTED so the popup only shows the scary "may already be
-  // in flight" copy when it is actually true (the old copy claimed it for EVERY failure).
+  // /tx/submit could already be in the mempool. signAndSubmit maps this flag to SUBMIT_MAYBE_INFLIGHT
+  // vs SUBMIT_REJECTED so the popup only shows the scary "may already be in flight" copy when it is
+  // actually true (the old copy claimed it for EVERY failure).
   catch { return { ok: false, err: `${path} -> network error`, maybeInflight: true }; }
   // Symmetric with get(): never let a non-JSON 4xx/5xx (e.g. an HTML proxy error page) throw out of a
   // caller AFTER a tx is already signed — parse defensively and return a structured {ok:false,err} on any
@@ -38,7 +37,20 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
   // {ok,txid,err}, so this only converts the failure path from "throw" to a fail-closed value.
   let j: any;
   try { j = await r.json(); } catch { j = undefined; }
-  if (!r.ok) return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${r.status}` };
+  if (!r.ok) {
+    // A non-2xx is NOT automatically "definitively rejected". A 4xx IS definitive: a node rejection
+    // (feerate/duplicate/etc.), a pre-forward proxy 400/413 body cap, or a 429 rate limit — the tx never
+    // reached the mempool, so "nothing was sent" is truthful. But a 5xx / gateway failure is AMBIGUOUS:
+    // the cairn proxy gives the node only ~4s (fallback ~6s) and returns a 502 "node unreachable" if both
+    // time out, yet a busy node can INGEST the POST and then be too slow to answer within that window, so
+    // the tx MAY be in the mempool. An unparseable error body (a Cloudflare/nginx HTML 5xx page) is the
+    // same class. Flag those maybeInflight so the popup shows the cautious "may already be in flight, check
+    // before resending" copy instead of a false "nothing was sent" that could drive a double-pay on resend
+    // (a resend re-reads /utxos, and if the ingested tx's inputs are now excluded it signs a DIFFERENT tx).
+    // Fable-5 money-path audit, 2026-07-09 (this was a 0.2.55 regression: 0.2.54 cautioned on every failure).
+    const ambiguous = r.status >= 500 || j === undefined;
+    return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${r.status}`, ...(ambiguous ? { maybeInflight: true } : {}) };
+  }
   // a 2xx we couldn't parse: the server DID process the request — a submit may have been ingested
   // even though we can't read the answer, so this is ambiguous too.
   if (j === undefined) return { ok: false, err: `${path} -> non-JSON response`, maybeInflight: true };
@@ -373,11 +385,13 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   const scriptSig = buildScriptSig(sig64, pub33);
   for (const i of tx.inputs) i.scriptSig = scriptSig;
   const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = the server ANSWERED with a
-  // rejection, so the tx is definitively NOT in the mempool (safe to say "nothing was sent");
-  // SUBMIT_MAYBE_INFLIGHT = the request itself failed/timed out/unreadable-2xx AFTER signing, so
-  // the tx MAY have been ingested — the only case where the popup's "may already be in flight"
-  // caution is truthful. post() sets maybeInflight on exactly those ambiguous branches.
+  // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = a DEFINITIVE 4xx rejection (node said no,
+  // or a pre-forward proxy 400/413/429), so the tx is not in the mempool (safe to say "nothing was sent");
+  // SUBMIT_MAYBE_INFLIGHT = the request threw / timed out / hit a 5xx gateway failure / had an unreadable
+  // body AFTER signing, so the tx MAY have been ingested — the only case where the popup's "may already be
+  // in flight" caution is truthful. post() sets maybeInflight on exactly those ambiguous branches (a 5xx is
+  // ambiguous because the cairn proxy 502s the node after only 4s, which can outrace a slow-but-successful
+  // mempool ingest).
   return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true, code: sub.ok ? undefined : (sub.maybeInflight ? "SUBMIT_MAYBE_INFLIGHT" : "SUBMIT_REJECTED") };
 }
 

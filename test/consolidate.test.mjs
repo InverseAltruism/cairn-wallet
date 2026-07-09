@@ -195,7 +195,27 @@ try {
     globalThis.fetch = fetch;
     const { w } = await mkWallet();
     const r = await w.consolidate(FEE);
-    check("answered rejection → SUBMIT_REJECTED with the server's reason", r.ok === false && r.code === "SUBMIT_REJECTED" && /feerate/.test(r.error));
+    check("node 4xx rejection → SUBMIT_REJECTED with the server's reason (definitive, not in mempool)", r.ok === false && r.code === "SUBMIT_REJECTED" && /feerate/.test(r.error));
+  }
+  {
+    // Fable-5 audit fix: a GATEWAY 5xx is AMBIGUOUS — the cairn proxy 502s the node after 4s, but the node
+    // may have ingested the POST. Must be SUBMIT_MAYBE_INFLIGHT (cautious copy), NOT SUBMIT_REJECTED, else a
+    // resend double-pays. Same for 503/504 and an unparseable non-2xx (a Cloudflare HTML error page).
+    for (const [status, label] of [[502, "502 node-unreachable"], [503, "503"], [504, "504 gateway timeout"]]) {
+      const a = mkCoin(70e8 + status), b = mkCoin(71e8 + status);
+      const { fetch } = mkStub({ coins: [a, b], served: [a, b], submit: () => ({ ok: false, status, json: async () => ({ ok: false, error: "node unreachable" }) }) });
+      globalThis.fetch = fetch;
+      const { w } = await mkWallet();
+      const r = await w.consolidate(FEE);
+      check(`gateway ${label} → SUBMIT_MAYBE_INFLIGHT (may be in mempool, not "nothing was sent")`, r.ok === false && r.code === "SUBMIT_MAYBE_INFLIGHT");
+    }
+    // unparseable non-2xx body (HTML error page) is ambiguous too
+    const a = mkCoin(90e8), b = mkCoin(91e8);
+    const { fetch } = mkStub({ coins: [a, b], served: [a, b], submit: () => ({ ok: false, status: 520, json: async () => { throw new Error("not json"); } }) });
+    globalThis.fetch = fetch;
+    const { w } = await mkWallet();
+    const r = await w.consolidate(FEE);
+    check("unparseable 5xx body → SUBMIT_MAYBE_INFLIGHT", r.ok === false && r.code === "SUBMIT_MAYBE_INFLIGHT");
   }
 
   // ── 8. cap: >512 coins merges exactly the 512 SMALLEST, reports the remainder ──
