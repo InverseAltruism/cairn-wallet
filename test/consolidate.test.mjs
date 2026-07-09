@@ -107,8 +107,14 @@ try {
     globalThis.fetch = fetch;
     const { w } = await mkWallet();
     check("fee 0 → BAD_FEE", (await w.consolidate(0)).code === "BAD_FEE");
-    check("fee > 100 CSD cap → FEE_CAP", (await w.consolidate(101 * 1e8)).code === "FEE_CAP");
-    check("no submit on refused fees", stats.submits.length === 0);
+    check("fee > 100 CSD flat cap → FEE_CAP", (await w.consolidate(101 * 1e8)).code === "FEE_CAP");
+    // proportional cap: these two coins total 87 CSD → propCap = max(1, 8.7) = 8.7 CSD; a 9 CSD
+    // fee is under the 100 CSD flat cap but over the 10%-of-inputs cap and must be refused (parity
+    // with assembleValueTx's single-fee-chokepoint invariant).
+    const rp = await w.consolidate(9 * 1e8);
+    check("fee over the 10%-of-inputs propCap → FEE_CAP", rp.ok === false && rp.code === "FEE_CAP");
+    check("fee just under propCap (8 CSD) is accepted", (await w.consolidate(8 * 1e8)).ok === true);
+    check("no submit on the refused-fee cases", stats.submits.length === 1); // only the 8-CSD one broadcast
   }
   {
     // coins too small to cover the fee: 2 dust coins of 100 base units each vs a 1e6 fee

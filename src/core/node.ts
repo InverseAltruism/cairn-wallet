@@ -556,6 +556,13 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
     if (!(outValue > 0)) return { ok: false, error: "these coins are too small to cover the fee — nothing to gain by merging them", sighashMatch: false, code: "INSUFFICIENT" };
+    // Same proportional fee cap assembleValueTx applies to every other value tx (min(100 CSD,
+    // max(1 CSD, 10% of the CHAIN-VERIFIED inputs)) — consolidate builds its tx directly rather than
+    // through assembleValueTx, so it MUST re-assert the single-fee-chokepoint invariant itself: a
+    // compromised UI must not be able to steer this into burning a huge fee past the 0.01 CSD the
+    // preview shows. No honest merge approaches it (the popup hardcodes 0.01 CSD).
+    const propCap = Math.max(100_000_000, Math.floor(ver.total * 0.10));
+    if (fee > propCap) return { ok: false, error: `fee exceeds ${propCap / 1e8} CSD (10% of the coins this merge uses) — refusing`, sighashMatch: false, code: "FEE_CAP" };
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
     const r = await signAndSubmit(rpc, tx, priv);
