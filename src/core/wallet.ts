@@ -960,7 +960,9 @@ export class Wallet {
     const set = new Set(spent.map((t) => String(t).toLowerCase()));
     let dirty = false;
     for (const e of h) {
-      if (e?.type === "consolidate" && !e.confirmed && set.has(String(e.txid).toLowerCase())) { e.confirmed = true; dirty = true; }
+      // spending the output proves the tx landed — that also RESOLVES a maybe flag (an entry can
+      // otherwise sit {maybe:true, confirmed:true} showing a stale "may be in flight" marker)
+      if (e?.type === "consolidate" && !e.confirmed && set.has(String(e.txid).toLowerCase())) { e.confirmed = true; delete e.maybe; dirty = true; }
     }
     if (dirty) await this.store.set(k, h);
   }

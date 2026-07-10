@@ -72,7 +72,8 @@ on all sites (like MetaMask) so any dApp can request a connection, but injection
 **not** the security boundary: the content script only relays requests, exposes no keys, and
 `host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
-sealed claims, and **send** (a plain CSD transfer).
+sealed claims, **send** (a plain CSD transfer), and **fillOffer** (an atomic CairnX
+delivery-versus-payment fill, preflighted against the resolver before anything is signed).
 
 **Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
 the first time an origin connects the user approves it, and the origin is recorded as a

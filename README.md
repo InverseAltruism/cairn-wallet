@@ -56,7 +56,7 @@ Your keys stay portable and are never locked to this wallet.
 * Keys are stored only as an AES-256-GCM vault, encrypted with a key derived from your password using PBKDF2-SHA256 (600,000 iterations). Nothing is uploaded.
 * Signing is local. The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node, so a malicious or intercepted RPC cannot make the wallet sign anything other than what you approved.
 * The unlocked key lives only in the background service worker and is cleared by a 15-minute idle auto-lock.
-* Web pages reach the wallet only through the `window.cairn` provider, limited to connect, sign-in, propose, attest, and sealed claims. Every request needs the wallet unlocked and an explicit approval in a separate popup. Key export and account management are never reachable from a page.
+* Web pages reach the wallet only through the `window.cairn` provider, limited to connect, sign-in, propose, attest, sealed claims, send, and offer fills. Every fund-moving request needs the wallet unlocked and an explicit approval in a separate clear-signing popup. Key export, account management, and coin maintenance are never reachable from a page.
 
 To report a security issue, see [SECURITY.md](SECURITY.md).
 

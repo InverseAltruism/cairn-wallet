@@ -372,15 +372,18 @@ try {
     const store = memoryStore();
     const w = new Wallet(store);
     const { addr } = await w.create("super-secret-pw");
-    // manufacture an unconfirmed merge entry whose output IS one of the coins the send will spend
+    // manufacture an unconfirmed MAYBE merge entry whose output IS one of the coins the send will
+    // spend (maybe:true so the latch's flag-resolution is pinned too)
     const mergedTxid = String(coins[2].coin.txid).toLowerCase(); // 53 CSD, selected largest-first
-    await store.set("txHistory:" + addr, [{ txid: mergedTxid, ts: Date.now(), type: "consolidate", merged: 400, amount: 53e8, fee: FEE }]);
+    await store.set("txHistory:" + addr, [{ txid: mergedTxid, ts: Date.now(), type: "consolidate", merged: 400, amount: 53e8, fee: FEE, maybe: true }]);
     const before = await w.pendingMerge([]);
     check("setup: entry derives pending before the spend", before.pending === true);
     const r = await w.send("0x" + "22".repeat(20), 50e8, FEE);
     check("send succeeded and reports its spent source txids", r.ok === true && Array.isArray(r.spentTxids) && r.spentTxids.includes(mergedTxid));
     const hist = await store.get("txHistory:" + addr);
-    check("spending the merge output LATCHED the entry", hist.find((x) => x.txid === mergedTxid)?.confirmed === true);
+    const latched = hist.find((x) => x.txid === mergedTxid);
+    check("spending the merge output LATCHED the entry", latched?.confirmed === true);
+    check("the spend-latch also resolved the maybe flag (no stale in-flight marker)", latched?.maybe === undefined);
     const after = await w.pendingMerge([]);
     check("no false pending line after the spend", after.pending === false);
   }
