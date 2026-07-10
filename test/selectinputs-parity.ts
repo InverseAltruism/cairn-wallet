@@ -6,7 +6,7 @@
 // coinbase fallback, maturity/dup/garbage hardening, the exclude outpoint key contract
 // (`${txid.toLowerCase()}:${vout}` — a mixed-case caller key excludes NOTHING by design), and the
 // null cases. Run: npx tsx test/selectinputs-parity.ts
-import { selectInputs } from "../src/core/node.js";
+import { selectInputs, spendableCoins } from "../src/core/node.js";
 
 declare const process: { exit(code: number): void };
 let pass = 0, fail = 0;
@@ -45,6 +45,33 @@ check("excluding everything spendable -> null",
 // 5. sufficiency edge: exact-need selection succeeds; one short fails
 check("exact need is sufficient", picked(selectInputs([u("0xaa", 0, 700)], 700)) === "0xaa:0");
 check("total one under need -> null", selectInputs([u("0xaa", 0, 699)], 700) === null);
+
+// 6. spendableCoins ↔ selectInputs FILTER parity (0.2.56): spendableCoins is a marked KEEP-IN-SYNC
+//    standalone of selectInputs' spendability predicate (it diagnoses TOO_MANY_INPUTS and feeds
+//    consolidate's smallest-first pool, WITHOUT touching the frozen csd-tx-mirrored body above).
+//    Oracle trick: selectInputs(need = full spendable sum) must take EVERY coin its filter accepts,
+//    so the two accepted-sets must be identical on every hardening edge. A drift in either body
+//    (0-conf, NaN-conf, garbage values, dedupe, exclude contract) breaks the set equality here.
+{
+  const setOf = (xs: { txid: string; vout: number }[]) => xs.map((i) => `${i.txid}:${i.vout}`).sort().join(",");
+  const filterParity = (name: string, utxos: unknown[], exclude?: ReadonlySet<string>) => {
+    const spend = spendableCoins(utxos as any[], exclude);
+    const total = spend.reduce((s, c) => s + c.value, 0);
+    const sel = total > 0 ? selectInputs(utxos as any[], total, exclude) : null;
+    const same = total === 0 ? spend.length === 0 : !!sel && setOf(sel.inputs) === setOf(spend);
+    check(`filter parity: ${name}`, same);
+  };
+  filterParity("clean mixed set (coinbase + plain)", [u("0xaa", 0, 900, { coinbase: true }), u("0xbb", 0, 800), u("0xcc", 1, 5)]);
+  filterParity("0-conf and NaN-conf dropped by both", [u("0xaa", 0, 900), u("0xbb", 0, 100, { confirmations: 0 }), u("0xcc", 0, 100, { confirmations: "abc" })]);
+  filterParity("garbage values dropped by both", [u("0xaa", 0, 900), u("0xbb", 0, -5), u("0xcc", 0, 0), u("0xdd", 0, 2 ** 53), u("0xee", 0, 1.5)]);
+  filterParity("mixed-case duplicate outpoint deduped by both", [u("0xAB", 1, 600), u("0xab", 1, 600), u("0xcc", 0, 40)]);
+  filterParity("exclude contract shared (lowercase key skips)", [u("0xaa", 0, 900), u("0xbb", 0, 800)], new Set(["0xaa:0"]));
+  filterParity("exclude contract shared (mixed-case key skips nothing)", [u("0xaa", 0, 900), u("0xbb", 0, 800)], new Set(["0xAA:0"]));
+  filterParity("all-garbage set is empty for both", [u("0xaa", 0, 0), u("0xbb", 0, 100, { confirmations: 0 })]);
+  check("spendableCoins preserves reported order (caller sorts; no hidden ordering contract)",
+    setOf(spendableCoins([u("0xbb", 0, 5), u("0xaa", 0, 900)])) === "0xaa:0,0xbb:0" &&
+    spendableCoins([u("0xbb", 0, 5), u("0xaa", 0, 900)])[0]!.txid === "0xbb");
+}
 
 console.log(`\nselectinputs-parity: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

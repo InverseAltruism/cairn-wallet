@@ -517,6 +517,23 @@ try {
     check("send-maybe reconciles against the supplied utxo set (no consolidate needed)", r1.pending === false);
     check("maybe flag cleared once the change output proves the send landed", (await store.get("txHistory:" + addr))[0].maybe === undefined);
   }
+  // ── 22. review-gap pins (0.2.56): a 2xx the wallet can't PARSE is ambiguous (the server DID
+  //        process the request), plus source pins for the POST timeout and the token-send CSD
+  //        anchor-fee pre-check ──
+  {
+    const coins = [mkCoin(95e8), mkCoin(96e8)];
+    const submit = async () => ({ ok: true, status: 200, json: async () => { throw new Error("truncated body"); } });
+    const { fetch } = mkStub({ coins, served: coins, submit });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore());
+    await w.create("super-secret-pw");
+    const r = await w.send("0x" + "77".repeat(20), 90e8, FEE);
+    check("unparseable 2xx submit answer classifies SUBMIT_MAYBE_INFLIGHT (server processed it)", r.ok === false && r.code === "SUBMIT_MAYBE_INFLIGHT" && !!r.txid);
+    const nodeSrc = readFileSync(new URL("../src/core/node.ts", import.meta.url), "utf8");
+    check("POST timeout pinned at 20s (submit must outwait the proxy's 4s+6s failover chain)", /POST_TIMEOUT_MS = 20_000/.test(nodeSrc));
+    const popupSrc = readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
+    check("token send pre-checks the CSD anchor fee with a message naming the actual problem", /needs \$\{fmtCsd\(CAIRNX_FEE\)\} CSD for the on-chain anchor fee/.test(popupSrc));
+  }
 } finally {
   globalThis.fetch = origFetch;
 }

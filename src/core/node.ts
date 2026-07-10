@@ -366,7 +366,9 @@ export function selectInputs(utxos: any[], need: number, exclude?: ReadonlySet<s
 // can DIAGNOSE a null selection (input-cap vs genuine shortfall) and consolidate() can pick
 // smallest-first, WITHOUT changing selectInputs' csd-tx-mirrored body (see the KEEP-IN-SYNC note
 // there — its signature/body must stay line-for-line equivalent to csd-tx's fork).
-function spendableCoins(utxos: any[], exclude?: ReadonlySet<string>): SelectedInput[] {
+// (exported for test/selectinputs-parity.ts, which pins the KEEP-IN-SYNC contract below — same
+// precedent as selectInputs itself; nothing outside tests imports it.)
+export function spendableCoins(utxos: any[], exclude?: ReadonlySet<string>): SelectedInput[] {
   const seen = new Set<string>();
   const out: SelectedInput[] = [];
   for (const x of utxos ?? []) {
