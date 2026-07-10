@@ -29,11 +29,28 @@ LWMA difficulty re-derivation), so storage tampering can at worst force a re-syn
 
 Signing is local and the RPC can never alter what you sign, but the wallet does trust the
 configured node/proxy for **state it displays and builds from**: balances, UTXO sets, history,
-and CairnX token state. A malicious RPC cannot redirect funds or forge your approval, but it
-could show a wrong balance, hide a transaction, or feed stale/false UTXOs (at worst causing a
-rejected transaction or a misleading display, not a key or fund compromise). If that matters
-for your threat model, point the wallet at your own node (`http://127.0.0.1:8789`) instead of
-the public proxy.
+and CairnX token state. For a plain **send** and a **send to a `.csd` name**, a malicious node
+RPC cannot redirect funds or forge your approval, but it could show a wrong balance, hide a
+transaction, or feed stale/false UTXOs (at worst causing a rejected transaction or a misleading
+display, not a key or fund compromise): inputs are re-verified against the chain before signing,
+change returns only to your own address, and a name resolves through the trustless SPV path
+below. If that matters for your threat model, point the wallet at your own node
+(`http://127.0.0.1:8789`) instead of the public proxy.
+
+## What the wallet trusts the CairnX resolver for (fill and name registration)
+
+The name-**send** path is trustless (SPV, below). The CairnX **settlement** paths are not yet:
+an atomic offer **fill** (`fillOffer`) and a name **finalize/renew/set-primary** are checked
+against the resolver's reported offer/name state, with no on-device proof of that state. A
+pre-flight computes the fill's required outputs from the offer's own fields and fails closed
+when the resolver does not report a settleable open offer, so a resolver that merely lies about
+status or feeds stale data cannot induce a loss. But a **coherently self-consistent lie** from a
+compromised or man-in-the-middled resolver (a fabricated open offer with an attacker payout, or
+an inflated reservation height) can still make the wallet sign a fill or finalize that the chain
+will not settle. The loss is **bounded** to that one action (a single fill's payment, or one
+registration fee) and never your keys or the rest of your balance, and it requires Cairn's own
+resolver infrastructure to be compromised. Client-side SPV for the fill and registration paths
+(offer inclusion proof + registration-state proof) is on the roadmap and will remove this trust.
 
 ### Sending to a `.csd` name
 
@@ -73,7 +90,8 @@ on all sites (like MetaMask) so any dApp can request a connection, but injection
 `host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
 sealed claims, **send** (a plain CSD transfer), and **fillOffer** (an atomic CairnX
-delivery-versus-payment fill, preflighted against the resolver before anything is signed).
+delivery-versus-payment fill; preflighted from the offer's own fields and fail-closed on an
+unsettleable offer, but its settlement is resolver-trusted, see the resolver-trust section above).
 
 **Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
 the first time an origin connects the user approves it, and the origin is recorded as a

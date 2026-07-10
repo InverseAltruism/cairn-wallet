@@ -98,6 +98,17 @@ intact, verified by a multi-agent regression + pentest QA):
    name-scope-prove. **Remaining residual (→ now the only open name-verify item):** a third source on a
    *different registrable domain* + per-source block bodies, to harden the withholding/competing-claim case
    beyond the same-apex two-source union. See `SECURITY.md` → "Sending to a `.csd` name".
+4. **Client-side SPV for CairnX settlement (fill + registration).** The name-*send* path is trustless
+   (item 3), but `fillOffer` settlement and the name finalize/renew/set-primary gate are still
+   resolver-trusted: the wallet computes the fill's required outputs from the offer's own fields and
+   fails closed on an unsettleable offer (which defeats a resolver lying about status), but it has no
+   on-device proof of the offer's or the reservation's on-chain state. A coherently self-consistent
+   lie from a compromised/MITM'd resolver can make the wallet sign a fill or finalize the chain will not
+   settle, burning a **bounded** amount (one fill's payment, or one registration fee; never keys or the
+   rest of the balance). Close it by proving offer inclusion (txid recompute + merkle-bind against the
+   verified header chain, the same machinery as item 3) and registration state before signing. Effort:
+   large (shared `verifyfill` in cairnx-core + both vendored bundles). See `SECURITY.md` →
+   "What the wallet trusts the CairnX resolver for".
 
 ### P1: defense-in-depth (below best-in-class; partly mitigated by CSD being contract-less)
 4. **Argon2id KDF for new vaults.** Memory-hard, vs PBKDF2's GPU/ASIC-friendliness for offline
