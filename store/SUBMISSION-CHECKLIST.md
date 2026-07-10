@@ -19,7 +19,7 @@ actions the build can't do); everything else is already prepared in this repo.
 - [ ] Put that URL in the dashboard **Privacy practices → Privacy policy** field.
 
 ## 3. Build the upload artifact
-- [x] `npm ci && npm test` — full gate passes (135 tests across 7 suites).
+- [x] `npm ci && npm test` — full gate passes (22 suites, 1000+ checks).
 - [x] `npm run build` — MV3 bundle, no remote code, strict CSP.
 - [ ] Produce the upload zip: `npm run package`. This emits TWO reproducible artifacts:
       **`cairn-wallet-store.zip`** (manifest.json at the ROOT — upload THIS one to the
@@ -32,7 +32,7 @@ actions the build can't do); everything else is already prepared in this repo.
 ## 4. Manifest / policy compliance  (already done in repo)
 - [x] `manifest_version: 3`.
 - [x] `description` = 124 chars (≤ 132).
-- [x] Minimal permissions: `storage`, `alarms`.
+- [x] Minimal permissions: `storage`, `unlimitedStorage`, `alarms`.
 - [x] Host permissions narrow; custom hosts via `optional_host_permissions` requested at
       user action.
 - [x] Strict CSP; no WASM ⇒ no `'wasm-unsafe-eval'` needed.
@@ -58,7 +58,7 @@ actions the build can't do); everything else is already prepared in this repo.
       "notes for review" text in STORE-LISTING.md pre-empts the common questions).
 
 ## Likely-rejection guardrails (already handled)
-- Over-broad permissions → we use only `storage`/`alarms` + narrow hosts. ✓
+- Over-broad permissions → we use only `storage`/`unlimitedStorage`/`alarms` + narrow hosts. ✓
 - Missing/weak privacy policy or Limited Use → policy written; certifications true. ✓
 - Suspected remote code → none; all bundled, reproducible. ✓
 - Obfuscation → none (readable/minified only). ✓

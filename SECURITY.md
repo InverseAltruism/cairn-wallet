@@ -17,9 +17,17 @@ are happy to credit you once it is resolved.
 * **Local signing.** The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node. The wallet never signs a digest handed to it by a server, so a malicious or intercepted RPC cannot redirect funds or change what you approved. The "sign in with CSD" digest is structurally distinct from a transaction sighash, so a hostile site cannot turn a sign-in into a spend.
 * **Deterministic, non-malleable signatures.** secp256k1 with RFC 6979 nonces and low-S enforcement.
 
+The wallet also declares the `unlimitedStorage` permission. Its trustless `.csd` name
+verification keeps a PoW-verified block-header snapshot in `chrome.storage.local`; the snapshot
+grows with the chain (multi-MB today) and shares the default 10 MB quota with the encrypted
+vault, so without the permission the header cache would eventually hit the quota and degrade
+verification. Everything stays local to the device and nothing is transmitted; the vault is
+unaffected. Nor can a poisoned snapshot forge verification: it is re-verified on load (PoW and
+LWMA difficulty re-derivation), so storage tampering can at worst force a re-sync.
+
 ## What the wallet trusts the RPC for
 
-Signing is local and the RPC can never alter what you sign — but the wallet does trust the
+Signing is local and the RPC can never alter what you sign, but the wallet does trust the
 configured node/proxy for **state it displays and builds from**: balances, UTXO sets, history,
 and CairnX token state. A malicious RPC cannot redirect funds or forge your approval, but it
 could show a wrong balance, hide a transaction, or feed stale/false UTXOs (at worst causing a
@@ -36,7 +44,7 @@ service as **untrusted** and verifies its answer against the chain itself:
   forward (PoW + LWMA difficulty + prev-link), and proves each name record's inclusion against the
   PoW-committed merkle root;
 * it **re-runs the audited CairnX resolver** over only those merkle-verified records and requires the
-  recomputed `(owner, address)` to equal what the service claimed — a fabricated redirect (the service
+  recomputed `(owner, address)` to equal what the service claimed, so a fabricated redirect (the service
   has no signed, mined events for the attacker's address) **fails closed**;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
@@ -46,12 +54,12 @@ service as **untrusted** and verifies its answer against the chain itself:
   defeated as long as one source is honest; a source whose answer disagrees with the proof is flagged;
 * it never shows a name as plain "verified" when ownership was decided by an on-chain **offer fill**
   whose validity depends on state outside the name's own history (an open-lane claim cap or a
-  name-for-token balance) — those show an explicit **caution**, not a green badge (NSPV-CLAIMCAP-1); and
+  name-for-token balance): those show an explicit **caution**, not a green badge (NSPV-CLAIMCAP-1); and
 * it still shows the **full, untruncated resolved address** as the recipient you confirm, and
   **re-resolves + re-verifies at confirm time**, refusing to sign on any address change *or* a drop in
   verification status between review and confirm.
 
-The honest residual: "verified" means **chain-backed as shown** — for a very high-value transfer it is
+The honest residual: "verified" means **chain-backed as shown**; for a very high-value transfer it is
 still prudent to confirm the `0x…` address out-of-band. (As with every send, the wallet selects its own
 inputs and returns change only to your own address.) See `SECURITY-ROADMAP.md` for the remaining
 hardening (a third, different-domain source; per-source block bodies).
@@ -60,7 +68,7 @@ hardening (a third, different-domain source; per-source block bodies).
 
 A web page interacts with the wallet only through the injected `window.cairn` provider,
 relayed to the background service worker over same-origin messages. The provider is injected
-on all sites (like MetaMask) so any dApp can request a connection — but injection scope is
+on all sites (like MetaMask) so any dApp can request a connection, but injection scope is
 **not** the security boundary: the content script only relays requests, exposes no keys, and
 `host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
@@ -73,8 +81,8 @@ may read the address without a fresh prompt. This is the **only** silent path, a
 the wallet is unlocked **and the currently-active address is the SAME one the user consented to
 share** (F11): consent is recorded against a specific address, so if the user has since switched
 accounts, the silent path falls through to a fresh approval prompt rather than disclose the new,
-unconsented address. **Every signing / fund-moving action — signin, send, propose, attest,
-sealClaim, revealClaim — ALWAYS opens the clear-signing approval window, every time,
+unconsented address. **Every signing / fund-moving action (signin, send, propose, attest,
+sealClaim, revealClaim) ALWAYS opens the clear-signing approval window, every time,
 regardless of connection state.** Being connected never pre-approves a signature (enforced by
 the fast-path guard in `background.ts` + the positive whitelist in `resolvePending`; proven by
 `test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15).
@@ -97,16 +105,16 @@ The wallet has a small, pinned dependency set (`@noble/curves`, `@noble/hashes`,
 lifecycle scripts run). The trust-sensitive SPV code is a **vendored bundle** of csd-sdk's audited
 dists (`src/vendor/cairnx-spv.js`); `PROVENANCE.json` pins its sha256, the exact `@noble` versions,
 the csd-sdk **version and source commit**, and a CI gate (`scripts/check-vendor-fresh.mjs`) rebuilds
-it from source and requires byte-identity — so it cannot be hand-edited or left stale. Releases are
+it from source and requires byte-identity, so it cannot be hand-edited or left stale. Releases are
 built in CI from tagged source with `npm ci` and a deterministic zip writer, so they are
 **byte-for-byte reproducible**: rebuild from the same source and the SHA-256 matches the published
 release. SLSA build-provenance is emitted when the source repo is public (it is a no-op on a private
-repo — see `store/PUBLISH-RUNBOOK.md`).
+repo; see `store/PUBLISH-RUNBOOK.md`).
 
 ## Publishing & updates
 
 The wallet's defenses (SPV name-verify, clear-signing, the dApp boundary) run **inside the
-extension**, so a malicious auto-update would disable them all at once — making the Chrome Web Store
+extension**, so a malicious auto-update would disable them all at once. That makes the Chrome Web Store
 publish credential the highest-blast-radius asset (cf. the Trust Wallet Dec-2025 leaked-CWS-key drain).
 The CWS upload is therefore kept a **manual operator step, deliberately off CI** (a CI-resident store
 key is exactly what supply-chain worms scrape), behind hardware-2FA, with reproduce-then-publish and

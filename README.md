@@ -15,6 +15,7 @@ and support items on [Cairn](https://cairn-substrate.com).
 * **CairnX tokens and `.csd` names.** The popup lists your token balances (decimals-aware, with locked amounts shown) and owned names, and sends tokens through the same reviewed confirmation as a CSD send. Transfer records are built and hashed inside the wallet, never fetched from a server.
 * **CairnX clear-signing.** The approval window decodes `cairnx:v1` proposals (token transfers, deploys, mints, offers, bids, cancels, name claims/transfers/renewals) into structured fields, for wallet- and dApp-initiated requests alike. Unrecognized record shapes still show the raw payload.
 * **Multi-account**, multi-input sends, transaction history, sealed claims, and an idle auto-lock.
+* **Coin consolidation.** Merge up to 512 of your smallest coins into one from Settings → Coins; every input is chain-verified before signing, for a flat 0.01 CSD fee.
 * **Open source**, with a reproducible build you can verify yourself.
 
 ## Install
@@ -129,7 +130,7 @@ The extension layer:
 
 Sending to a `.csd` name never trusts a resolver's word. The wallet:
 
-1. fetches the name's on-chain record **hints** from **two independent resolvers**,    `cairn-substrate.com` (primary) and `clarvis.cairn-substrate.com` (an independent second source running its
+1. fetches the name's on-chain record **hints** from **two independent resolvers**, `cairn-substrate.com` (primary) and `clarvis.cairn-substrate.com` (an independent second source running its
    own node→indexer→cairnx; see [cairn doc 36](https://github.com/InverseAltruism/cairn/blob/master/docs/ecosystem/36-clarvis-second-source-handoff.md));
 2. **unions** them and **SPV-verifies every event** against a PoW header chain the wallet builds itself
    (`src/core/namespv.ts` → vendored `LightClient`): full-block merkle-bind + per-record signer-auth, so a
@@ -159,3 +160,5 @@ Wallet's convention for CSD.
 ## License
 
 MIT
+
+[Terms of Use](https://cairn-substrate.com/terms.html) · [Privacy Policy](https://cairn-substrate.com/wallet-privacy.html), also linked from the wallet's Settings.

@@ -1,6 +1,6 @@
-# Cairn Wallet — Privacy Policy
+# Cairn Wallet: Privacy Policy
 
-_Last updated: 2026-06-01_
+_Last updated: 2026-07-10_
 
 Cairn Wallet ("the extension") is a non-custodial browser wallet for the Compute
 Substrate (CSD) network. This policy explains exactly what the extension does and does
@@ -17,7 +17,7 @@ It is open source: https://github.com/InverseAltruism/cairn-wallet
 The extension stores the following **only** in your browser's local extension storage
 (`chrome.storage.local`) on your own device:
 
-- Your **encrypted vault** — your recovery phrase and private keys, sealed with
+- Your **encrypted vault**: your recovery phrase and private keys, sealed with
   AES-256-GCM under a key derived from your password (PBKDF2-SHA256, 600,000 iterations).
   The unencrypted phrase and keys exist only in memory while the wallet is unlocked, and
   are wiped on lock (including a 15-minute idle auto-lock).
@@ -54,13 +54,16 @@ extension.
 
 ## Permissions and why they are needed
 
-- **storage** — to save your encrypted vault, account list, history, and settings on
+- **storage**: to save your encrypted vault, account list, history, and settings on
   your device.
-- **alarms** — to run the 15-minute idle auto-lock and to retry posting off-chain
+- **unlimitedStorage**: to let the local block-header cache used for trustless `.csd`
+  name verification grow with the chain without hitting the storage quota. The cache
+  lives only on your device; nothing is collected or transmitted.
+- **alarms**: to run the 15-minute idle auto-lock and to retry posting off-chain
   content after a transaction is mined, even if the service worker was suspended.
 - **Host access** to your configured node/API (`cairn-substrate.com` by default, plus a
   local node at `127.0.0.1:8789` if you run one; any custom host is requested only when
-  you set it in Settings) — to read chain data and submit the transactions you approve.
+  you set it in Settings): to read chain data and submit the transactions you approve.
 
 ## Data retention and deletion
 

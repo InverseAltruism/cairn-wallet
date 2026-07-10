@@ -47,6 +47,11 @@ Privacy practices tab → **Permission justification**, one field each.
 Stores the user's encrypted key vault, account list, transaction history, and settings locally on the user's own device via chrome.storage.local. None of this data is transmitted off the device.
 ```
 
+**unlimitedStorage**
+```
+The wallet's trustless .csd name verification keeps a proof-of-work-verified block-header snapshot in chrome.storage.local. That snapshot grows with the chain (multi-MB already) and shares the default 10MB quota with the user's encrypted key vault, so without unlimitedStorage the header cache would hit the quota and degrade verification. All of this data stays on the user's own device: nothing is collected or transmitted, and the vault is unaffected.
+```
+
 **alarms**
 ```
 Runs a periodic timer that automatically locks the wallet after 15 minutes of inactivity, and retries registering a post's off-chain content after its transaction is mined. Alarms are required because the Manifest V3 service worker is suspended when idle.
