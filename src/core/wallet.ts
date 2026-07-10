@@ -631,11 +631,21 @@ export class Wallet {
     const addr = this.addr(), k = histKey(addr); // captured once (F5): history, latch and balance stay on ONE account
     const h: any[] = (await this.store.get(k)) || [];
     const candidates = h.filter((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
-    if (!candidates.length) return { pending: false, amount: 0, maybe: false };
+    const maybes = h.filter((x) => x?.maybe);
+    // Nothing to derive AND nothing reconcilable against a caller-supplied utxo set → done. The
+    // maybe-reconcile below never triggers its own fetch: this method's zero-extra-requests
+    // property is load-bearing (B4), and flag hygiene is not worth a network call.
+    if (!candidates.length && !(maybes.length && utxos)) return { pending: false, amount: 0, maybe: false };
     let set = utxos;
     if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return { pending: false, amount: 0, maybe: false }; } }
     const present = new Set((set || []).map((u) => String(u.txid).toLowerCase()));
     let amount = 0, maybe = false, pending = false, dirty = false;
+    // Generic maybe-reconcile (0.2.56, review F2): an entry recorded maybe:true is RESOLVED the
+    // moment its txid shows up in the utxo set — a send's change output and a merge's self-output
+    // both carry the tx's own txid, so presence proves the ambiguous submit landed. (Blind spot,
+    // accepted: a change-less send never reconciles this way; the popup time-bounds its marker
+    // rather than trusting this pass.)
+    for (const e of maybes) if (present.has(String(e.txid).toLowerCase())) { delete e.maybe; dirty = true; }
     for (const e of candidates) {
       if (present.has(String(e.txid).toLowerCase())) {
         // merge output visible on-chain → latch confirmed IN PLACE (persisted below; the designed

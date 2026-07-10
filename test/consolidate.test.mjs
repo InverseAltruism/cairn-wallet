@@ -496,6 +496,27 @@ try {
     const sealed = await w.sealedClaims();
     check("maybe-inflight seal SAVED the reveal preimage (claim + nonce)", rs.code === "SUBMIT_MAYBE_INFLIGHT" && sealed.some((x) => x.txid === rs.txid && x.claim === "prediction: 42" && /^[0-9a-f]{64}$/.test(String(x.nonce).replace(/^0x/, ""))));
   }
+  // ── 21. F2 (0.2.56): the generic maybe-reconcile runs even with NO consolidate pending — a
+  //        send-maybe entry clears the moment its txid (via its change output) appears in the
+  //        utxo set the popup already fetched; and with no utxo set supplied, pendingMerge stays
+  //        zero-extra-requests (early return, no fetch, flag untouched) ──
+  {
+    const store = memoryStore();
+    const w = new Wallet(store);
+    let fetches = 0;
+    globalThis.fetch = async () => { fetches++; return { ok: false, status: 500, json: async () => ({}) }; };
+    const { addr } = await w.create("super-secret-pw");
+    const sendTxid = "0x" + "cd".repeat(32);
+    await store.set("txHistory:" + addr, [{ txid: sendTxid, ts: Date.now(), type: "send", to: "0x" + "66".repeat(20), amount: 5e8, fee: FEE, maybe: true }]);
+    // no utxo set supplied + no consolidate candidates → early return, NO network, flag intact
+    const r0 = await w.pendingMerge();
+    check("no-utxo call stays zero-extra-requests and returns quiet", r0.pending === false && fetches === 0);
+    check("flag untouched without evidence", (await store.get("txHistory:" + addr))[0].maybe === true);
+    // the popup's balance refresh hands over its utxo set: the change output carries the send txid
+    const r1 = await w.pendingMerge([{ txid: sendTxid }]);
+    check("send-maybe reconciles against the supplied utxo set (no consolidate needed)", r1.pending === false);
+    check("maybe flag cleared once the change output proves the send landed", (await store.get("txHistory:" + addr))[0].maybe === undefined);
+  }
 } finally {
   globalThis.fetch = origFetch;
 }
