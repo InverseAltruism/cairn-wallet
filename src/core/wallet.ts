@@ -446,16 +446,17 @@ export class Wallet {
   // CLEARSIGN-FEE-1: exact tip for the clear-sign fee-sufficiency check on a dApp-built name registration/
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
-  async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
-  async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
+  async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const hk = this.histKeyNow(); const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
+  async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const hk = this.histKeyNow(); const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number }) {
     const q = { proposalId: p.proposalId, score: (p.score ?? 100) >>> 0, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? ATTEST_FLOOR };
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs);
     if (refusal) return refusal;
+    const hk = this.histKeyNow(); // same tick as the privkey read below (F5) — after the preflight await
     const r = await node.fillOffer(this.rpc, q, this.must().privkey);
     const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
-    await this.maybeRecord(r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
+    await this.maybeRecord(hk, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
     return r;
   }
 
@@ -596,7 +597,7 @@ export class Wallet {
   }
 
   // Plain CSD transfer to any address. fee default 0.01 CSD.
-  async send(to: string, amount: number, fee = 1_000_000) { const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(r, { type: "send", to, amount, fee }); return r; }
+  async send(to: string, amount: number, fee = 1_000_000) { const hk = this.histKeyNow(); const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "send", to, amount, fee }); return r; }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
   // Popup-only — deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
   // Ambiguous outcomes (SUBMIT_MAYBE_INFLIGHT) are ALSO recorded, flagged maybe:true — the popup's
@@ -604,10 +605,11 @@ export class Wallet {
   // the merge was ingested but the answer was lost (that is when the balance dips with no
   // explanation). The txid is the locally computed consensus txid (Plans/66 B4).
   async consolidate(fee = 1_000_000) {
+    const hk = this.histKeyNow();
     const r = await node.consolidate(this.rpc, { fee }, this.must().privkey);
-    await this.maybeRecord(r, { type: "consolidate", merged: r.merged, amount: r.total, fee });
+    await this.maybeRecord(hk, r, { type: "consolidate", merged: r.merged, amount: r.total, fee });
     if (!r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
-      await this.recordTx({ txid: r.txid, ts: Date.now(), type: "consolidate", merged: r.merged, amount: r.total, fee, maybe: true });
+      await this.recordTx(hk, { txid: r.txid, ts: Date.now(), type: "consolidate", merged: r.merged, amount: r.total, fee, maybe: true });
     }
     return r;
   }
@@ -627,26 +629,28 @@ export class Wallet {
   // Multi-round aware: sums every in-flight round. `maybe` marks rounds whose submit answer was
   // lost (recorded maybe:true) so the copy can hedge.
   async pendingMerge(utxos?: { txid: string }[]): Promise<{ pending: boolean; amount: number; maybe: boolean }> {
-    const h = await this.history();
-    const candidates = (h as any[]).filter((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
+    const addr = this.addr(), k = histKey(addr); // captured once (F5): history, latch and balance stay on ONE account
+    const h: any[] = (await this.store.get(k)) || [];
+    const candidates = h.filter((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
     if (!candidates.length) return { pending: false, amount: 0, maybe: false };
     let set = utxos;
-    if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, this.addr())); } catch { return { pending: false, amount: 0, maybe: false }; } }
+    if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return { pending: false, amount: 0, maybe: false }; } }
     const present = new Set((set || []).map((u) => String(u.txid).toLowerCase()));
-    let amount = 0, maybe = false, pending = false;
+    let amount = 0, maybe = false, pending = false, dirty = false;
     for (const e of candidates) {
-      if (present.has(String(e.txid).toLowerCase())) { await this.latchMergeConfirmed(e.txid); continue; }
+      if (present.has(String(e.txid).toLowerCase())) {
+        // merge output visible on-chain → latch confirmed IN PLACE (persisted below; the designed
+        // next step SPENDS that output, and without the latch its later absence would re-derive
+        // "pending" forever after a popup reopen)
+        if (!e.confirmed) { e.confirmed = true; dirty = true; }
+        continue;
+      }
       // amount = what actually comes back next block: the merge OUTPUT (inputs minus fee) — the
       // recorded e.amount is the input total, which would overstate by the fee.
       pending = true; amount += Math.max(0, (Number(e.amount) || 0) - (Number(e.fee) || 0)); maybe = maybe || !!e.maybe;
     }
+    if (dirty) await this.store.set(k, h);
     return { pending, amount, maybe };
-  }
-  private async latchMergeConfirmed(txid: string) {
-    const k = histKey(this.addr());
-    const h: any[] = (await this.store.get(k)) || [];
-    const e = h.find((x) => x.txid === txid && x.type === "consolidate");
-    if (e && !e.confirmed) { e.confirmed = true; await this.store.set(k, h); }
   }
 
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
@@ -654,9 +658,10 @@ export class Wallet {
   // recipient (single-output sends record identically to send()).
   async sendMany(p: { outputs: { to: string; value: number }[]; fee?: number }) {
     const fee = p.fee ?? 1_000_000;
+    const hk = this.histKeyNow();
     const r = await node.sendMany(this.rpc, { outputs: p.outputs, fee }, this.must().privkey);
     const { total, to } = this.summarizeOutputs(p.outputs);
-    await this.maybeRecord(r, { type: "send", to, amount: total, fee });
+    await this.maybeRecord(hk, r, { type: "send", to, amount: total, fee });
     return r;
   }
 
@@ -664,15 +669,16 @@ export class Wallet {
   // (the content only "takes" once the tx mines, so we register in the background).
   async cairnPost(p: { domain: string; title: string; body?: string; links?: string[]; fee: number }) {
     const priv = this.must().privkey;
+    const hk = this.histKeyNow(); // captured with the signer (F5): the tip fetch below is an await
     const content = { v: 1, domain: p.domain, title: p.title, body: p.body ?? "", links: p.links ?? [] };
     const ph = cairnPayloadHash(content);
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
     if (r.ok && r.txid) { await this.addPending(content, r.txid); this.flushPending(); } // durable, alarm-driven
-    await this.maybeRecord(r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
+    await this.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
     return r;
   }
-  async cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { const r = await node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); await this.maybeRecord(r, { type: "support", target: proposalId, fee }); return r; }
+  async cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: proposalId, fee }); return r; }
 
   // ── CairnX tokens + .csd names ──────────────────────────────────────────────
   // READS go to the public CairnX resolver API and NEVER throw — the popup must keep
@@ -809,6 +815,7 @@ export class Wallet {
   // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
   async cairnxNameRenew(name: string, reviewedFee?: number) {
     const priv = this.must().privkey;
+    const hk = this.histKeyNow(); // captured with the signer (F5)
     const built = buildNameRenew({ name });
     const tip = await node.tip(this.rpc);
     const liveFee = nameRegFee(name, buildFeeHeight(tip));  // v1.8: height-gated; V18-1 boundary-safe build pricing
@@ -821,16 +828,17 @@ export class Wallet {
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
     const expiresEpoch = Math.floor(tip / BLOCKS_PER_EPOCH) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
-    await this.maybeRecord(r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
+    await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
     return r;
   }
   // Set a name you own as your PRIMARY identity = point it at your own address (nset → self).
   async cairnxSetPrimary(name: string) {
     const priv = this.must().privkey;
+    const hk = this.histKeyNow(); // captured with the signer (F5)
     const built = buildNameSet({ name, addr: this.addr() });
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + SET_PRIMARY_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
-    await this.maybeRecord(r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
+    await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;
   }
   async cairnxTokens(): Promise<{ ok: boolean; tokens?: { ticker: string; decimals: number; name?: string }[] }> {
@@ -846,12 +854,13 @@ export class Wallet {
   // LOCALLY (core/cairnx.ts) and validated before signing; `amount` is base units.
   async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number }) {
     const priv = this.must().privkey;
+    const hk = this.histKeyNow(); // captured with the signer (F5)
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
     if (fee < CAIRNX_PROPOSE_FEE) throw new Error("cairnx anchor fee must be ≥ 0.25 CSD");
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
-    await this.maybeRecord(r, {
+    await this.maybeRecord(hk, r, {
       type: "tokenSend", ticker: p.ticker, to: String(p.to).toLowerCase(), amount: p.amount,
       human: typeof p.decimals === "number" ? formatUnits(p.amount, p.decimals) : p.amount, fee,
     });
@@ -861,6 +870,7 @@ export class Wallet {
   // ── sealed claims (commit-reveal) — isolated per active account ─────────────
   async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
     const priv = this.must().privkey;
+    const hk = this.histKeyNow(), sk = sealKey(this.addr()); // captured with the signer (F5)
     const domain = (p.domain && p.domain.trim()) || "csd:sealed";
     const nonce = bytesToHex(randomBytes(32));
     const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
@@ -869,11 +879,10 @@ export class Wallet {
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE; // propose min 0.25 CSD
     const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
     if (r.ok && r.txid) {
-      const k = sealKey(this.addr());
-      const list: any[] = (await this.store.get(k)) || [];
+      const list: any[] = (await this.store.get(sk)) || [];
       if (!list.find((x) => x.txid === r.txid)) list.unshift({ txid: r.txid, domain, claim: p.claim, nonce, committedTs: Date.now(), revealed: false });
-      await this.store.set(k, list.slice(0, 500));
-      await this.maybeRecord(r, { type: "seal", domain, fee });
+      await this.store.set(sk, list.slice(0, 500));
+      await this.maybeRecord(hk, r, { type: "seal", domain, fee });
     }
     return r;
   }
@@ -889,16 +898,21 @@ export class Wallet {
   sealedClaims(): Promise<any[]> { if (!this.accts) return Promise.resolve([]); return this.store.get(sealKey(this.addr())).then((l: any[]) => l || []); }
 
   // ── transaction history — isolated per active account ──────────────────────
-  private async maybeRecord(r: { ok?: boolean; txid?: string; spentTxids?: string[] }, meta: Record<string, unknown>) {
-    if (r && r.ok && r.txid) await this.recordTx({ txid: r.txid, ts: Date.now(), ...meta });
+  // Pre-await key capture (0.2.56, review F5): every recording path must file under the account
+  // that SIGNED. Flows capture this in the same synchronous tick as their privkey read, BEFORE
+  // the awaited submit — the user can switch accounts while the network call is in flight, and a
+  // post-await histKey(this.addr()) would file the entry (and everything the pending-merge line
+  // derives from it) under the switched-to account.
+  private histKeyNow() { return histKey(this.addr()); }
+  private async maybeRecord(k: string, r: { ok?: boolean; txid?: string; spentTxids?: string[] }, meta: Record<string, unknown>) {
+    if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta });
     // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
     // this spend just consumed (Plans/66 review finding — the final combining pass spends earlier
     // rounds' outputs with no balance refresh in between, which otherwise left those entries
     // deriving a false "merging" line for up to an hour).
-    if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(r.spentTxids);
+    if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
   }
-  private async latchSpentMerges(spent: string[]) {
-    const k = histKey(this.addr());
+  private async latchSpentMerges(k: string, spent: string[]) {
     const h: any[] = (await this.store.get(k)) || [];
     const set = new Set(spent.map((t) => String(t).toLowerCase()));
     let dirty = false;
@@ -907,8 +921,7 @@ export class Wallet {
     }
     if (dirty) await this.store.set(k, h);
   }
-  private async recordTx(entry: Record<string, unknown>) {
-    const k = histKey(this.addr());
+  private async recordTx(k: string, entry: Record<string, unknown>) {
     const h: any[] = (await this.store.get(k)) || [];
     if (h.find((x) => x.txid === entry.txid)) return; // idempotent
     h.unshift(entry);

@@ -383,6 +383,33 @@ try {
     const after = await w.pendingMerge([]);
     check("no false pending line after the spend", after.pending === false);
   }
+  // ── 17. F5 (0.2.56): history files under the account that SIGNED, even when the user switches
+  //        accounts while the submit is in flight (histKey is captured pre-await, not re-derived) ──
+  {
+    const coins = [mkCoin(61e8), mkCoin(62e8)];
+    let releaseSubmit;
+    const gate = new Promise((r) => { releaseSubmit = r; });
+    const { fetch } = mkStub({
+      coins, served: coins,
+      submit: async () => { await gate; return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "bb".repeat(32) }) }; },
+    });
+    globalThis.fetch = fetch;
+    const store = memoryStore();
+    const w = new Wallet(store);
+    const { addr: addrA } = await w.create("super-secret-pw");
+    const { addr: addrB } = await w.addAccount("second");
+    await w.switchAccount(addrA);
+    const p = w.send("0x" + "33".repeat(20), 60e8, FEE); // signs as A; submit now parked on the gate
+    await new Promise((r) => setTimeout(r, 20));         // let the flow reach the parked submit
+    await w.switchAccount(addrB);                        // user switches accounts mid-flight
+    releaseSubmit();
+    const r = await p;
+    check("setup: the parked send completed ok", r.ok === true);
+    const histA = (await store.get("txHistory:" + addrA)) || [];
+    const histB = (await store.get("txHistory:" + addrB)) || [];
+    check("the entry filed under the SIGNING account (A)", histA.some((x) => x.type === "send" && x.txid === r.txid));
+    check("nothing filed under the switched-to account (B)", histB.length === 0);
+  }
 } finally {
   globalThis.fetch = origFetch;
 }
