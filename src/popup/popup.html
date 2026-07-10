@@ -280,11 +280,18 @@
         <label>CairnX API (token balances) <input id="set-tradeapi" /></label>
         <button id="btn-save-settings" class="mini">save</button>
         <div class="dim" style="font-size:11px;margin-top:6px">Switch the node RPC from the <b>RPC</b> menu (top right).</div>
-        <div class="dim" style="font-size:11px;margin-top:10px"><b>Coins</b>: your balance is made of individual on-chain coins. One transaction can spend at most 512 of them — many small coins (e.g. mining rewards) cap how much you can send at once. Merging is a normal self-send (fee 0.01 CSD).</div>
+        <div class="dim" style="font-size:11px;margin-top:10px"><b>Coins</b>: your balance is made of individual on-chain coins. One transaction can spend at most 512 of them, so many small coins (e.g. mining rewards) cap how much you can send at once. Merging is a normal self-send (fee 0.01 CSD).</div>
         <div id="coins-info" class="dim" style="font-size:11px;margin-top:4px"></div>
         <button id="btn-consolidate" class="mini" hidden>merge coins…</button>
         <div class="dim" style="font-size:11px;margin-top:10px"><b>Connected sites</b>: sites allowed to see your address. They can’t move funds; signing always asks you each time.</div>
         <div id="connected-sites" class="history"></div>
+        <!-- legal links: plain target=_blank anchors (the explorer-link pattern; a new-tab
+             navigation is not subject to this page's connect-src) -->
+        <div class="dim" style="font-size:11px;margin-top:12px">
+          <a href="https://cairn-substrate.com/terms.html" target="_blank" rel="noopener noreferrer">Terms of Use ↗</a>
+          &nbsp;·&nbsp;
+          <a href="https://cairn-substrate.com/wallet-privacy.html" target="_blank" rel="noopener noreferrer">Privacy ↗</a>
+        </div>
       </div>
 
       </div><!-- /#layer -->

@@ -86,7 +86,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS — a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
     case "consolidatePreview": return wallet.consolidatePreview(args[0]);
-    case "pendingMerge": return wallet.pendingMerge(args[0]); // read-only merge-in-flight probe (feeds the popup pending line)
+    case "pendingMerge": return wallet.pendingMerge(args[0]); // merge-in-flight probe (feeds the popup pending line); writes only its own bookkeeping latches — in READ_ONLY_METHODS because it must never extend the idle lock
     case "cairnPost": return wallet.cairnPost(args[0]);
     case "cairnSupport": return wallet.cairnSupport(args[0], args[1], args[2], args[3]);
     case "cairnxAssets": return wallet.cairnxAssets();

@@ -41,14 +41,14 @@ The strings are unchanged from earlier releases; only the machine `code` is new.
 
 | Code | Meaning | Retryable | Emitted from |
 |---|---|---|---|
-| `GHOST_INPUTS_SKIPPED` | Coins whose source tx the node couldn't prove were skipped and the rest couldn't cover the spend (the 0.2.53 per-coin ghost-skip). | **No**: the skipped coins stay excluded until the node can prove them; an immediate retry changes nothing. | `node.ts` `selectVerified` |
-| `VERIFY_UNAVAILABLE` | Couldn't fetch source txs / the chain tip / the resolver to verify before signing (node unreachable or erroring). | **Yes**: nothing was signed; try again shortly. | `node.ts` `selectVerified`, `wallet.ts` fillOffer preflight |
-| `VERIFY_TAMPER` | A served source-tx body failed txid recompute / output sanity (possible hostile RPC). | **No**: the whole spend is refused, no retry against a forging RPC. | `node.ts` `selectVerified` |
-| `INSUFFICIENT` | Insufficient confirmed balance for the spend. | No (until funded). | `node.ts` `selectVerified` |
+| `GHOST_INPUTS_SKIPPED` | Coins whose source tx the node couldn't prove were skipped and the rest couldn't cover the spend (the 0.2.53 per-coin ghost-skip). | **No**: the skipped coins stay excluded until the node can prove them; an immediate retry changes nothing. | `node.ts` `selectVerified`, `consolidate` |
+| `VERIFY_UNAVAILABLE` | Couldn't fetch source txs / the chain tip / the resolver to verify before signing (node unreachable or erroring). | **Yes**: nothing was signed; try again shortly. | `node.ts` `selectVerified`, `consolidate`, `wallet.ts` fillOffer preflight |
+| `VERIFY_TAMPER` | A served source-tx body failed txid recompute / output sanity (possible hostile RPC). | **No**: the whole spend is refused, no retry against a forging RPC. | `node.ts` `selectVerified`, `consolidate` |
+| `INSUFFICIENT` | Insufficient confirmed balance for the spend; from `consolidate` it means the selected coins cannot cover the fee. | No (until funded). | `node.ts` `selectVerified`, `consolidate` |
 | `TOO_MANY_INPUTS` | The balance covers the amount but not within the 512-input per-transaction cap (common for a holder of many small coins). | No as-is: send a smaller amount, or consolidate coins first. | `node.ts` `selectVerified` (since 0.2.55) |
 | `FEE_TOO_LOW` | Fee is not positive (the node enforces a minimum). | No. | `node.ts` `assembleValueTx` |
-| `FEE_CAP` | Fee exceeds the flat 100 CSD cap or the 10%-of-selected-inputs cap. | No. | `node.ts` `assembleValueTx` |
-| `BAD_FEE` | Fee (or amount+fee) is out of the safe-integer range. | No. | `node.ts` send / sendMany / fillOffer / buildSignSubmit |
+| `FEE_CAP` | Fee exceeds the flat 100 CSD cap or the 10%-of-selected-inputs cap. | No. | `node.ts` `assembleValueTx`, `consolidate` (re-asserts both caps itself) |
+| `BAD_FEE` | Fee (or amount+fee) is out of the safe-integer range; from `consolidate` it also covers a non-positive fee (the send path's `FEE_TOO_LOW` class; popup-only, and the popup hardcodes 0.01 CSD). | No. | `node.ts` send / sendMany / fillOffer / buildSignSubmit / `consolidate` |
 | `ZERO_ADDR_REFUSED` | An output pays the zero address (irrecoverable burn). | No. | `node.ts` `assembleValueTx` |
 | `BAD_OUTPUTS` | An output failed validation (count/cap, address shape, non-positive/unsafe value, sum overflow), incl. the fillOffer preflight's per-output integer check. | No. | `node.ts` `validateOutputs` / `send`, `wallet.ts` fillOffer preflight |
 | `NO_OUTPUTS` | The tx would have no outputs (nothing, incl. change, would be paid). | No. | `node.ts` `assembleValueTx` |
