@@ -282,7 +282,7 @@ try {
     check("merge recorded (setup)", r.ok === true && typeof r.txid === "string");
     // in the mempool: the merge output txid is NOT in the utxo set → pending, full amount
     const p1 = await w.pendingMerge([{ txid: coins[0].coin.txid }]);
-    check("output absent from utxos → pending, with the merged amount", p1.pending === true && p1.amount === r.total && p1.maybe === false);
+    check("output absent from utxos → pending, with the RETURNING amount (total minus fee)", p1.pending === true && p1.amount === r.total - FEE && p1.maybe === false);
     // confirmed: the txid APPEARS in the utxos → not pending, latch persisted on the entry
     const p2 = await w.pendingMerge([{ txid: r.txid }]);
     check("output present in utxos → not pending", p2.pending === false);
@@ -316,7 +316,7 @@ try {
     const h = await w.history();
     check("ambiguous merge recorded maybe:true", h.some((x) => x.type === "consolidate" && x.maybe === true && x.txid === r.txid));
     const p = await w.pendingMerge([]);
-    check("pendingMerge reports the ambiguous merge (maybe)", p.pending === true && p.maybe === true && p.amount === r.total);
+    check("pendingMerge reports the ambiguous merge (maybe)", p.pending === true && p.maybe === true && p.amount === r.total - FEE);
   }
 
   // ── 14. SUBMIT_DUPLICATE: "already present" is NOT "nothing was sent" (Plans/66 B6) ──
@@ -361,6 +361,27 @@ try {
     check("vendored CsdClient gets an explicit 12s bound (was a 10s-vs-10s tie)", /timeoutMs: 12_000/.test(nsv));
     const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
     check("tradeGet default raised above the trade proxy's 10s upstream", /timeoutMs = 12000/.test(walletSrc));
+  }
+  // ── 16. spend-latch chokepoint: SPENDING a merge's output proves it confirmed — the entry
+  //        latches even if no balance refresh ever saw the output (the final-combining-pass case) ──
+  {
+    const coins = [mkCoin(51e8), mkCoin(52e8), mkCoin(53e8)];
+    const { fetch } = mkStub({ coins, served: coins });
+    globalThis.fetch = fetch;
+    const store = memoryStore();
+    const w = new Wallet(store);
+    const { addr } = await w.create("super-secret-pw");
+    // manufacture an unconfirmed merge entry whose output IS one of the coins the send will spend
+    const mergedTxid = String(coins[2].coin.txid).toLowerCase(); // 53 CSD, selected largest-first
+    await store.set("txHistory:" + addr, [{ txid: mergedTxid, ts: Date.now(), type: "consolidate", merged: 400, amount: 53e8, fee: FEE }]);
+    const before = await w.pendingMerge([]);
+    check("setup: entry derives pending before the spend", before.pending === true);
+    const r = await w.send("0x" + "22".repeat(20), 50e8, FEE);
+    check("send succeeded and reports its spent source txids", r.ok === true && Array.isArray(r.spentTxids) && r.spentTxids.includes(mergedTxid));
+    const hist = await store.get("txHistory:" + addr);
+    check("spending the merge output LATCHED the entry", hist.find((x) => x.txid === mergedTxid)?.confirmed === true);
+    const after = await w.pendingMerge([]);
+    check("no false pending line after the spend", after.pending === false);
   }
 } finally {
   globalThis.fetch = origFetch;

@@ -291,7 +291,12 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
 // `sighashMatch` is DEPRECATED and vestigial — it is constant-equal to `ok` (true only when WE computed
 // and matched the sighash, which is the entire local-build flow) and no reader was found — but it is KEPT
 // on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string }
+// spentTxids: the source txids of the inputs this spend consumed (successful submits only) —
+// lets the wallet latch a pending-merge history entry the moment its output is SPENT (a spend
+// proves the merge confirmed even if no balance refresh ever saw the output; Plans/66 review
+// finding: the final combining pass spends earlier rounds' outputs directly, which otherwise
+// left their entries deriving a false "merging" line for up to an hour). Additive, internal.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[] }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 interface Selection { inputs: SelectedInput[]; total: number }
@@ -470,7 +475,8 @@ async function assembleValueTx(
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
   if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false, code: "NO_OUTPUTS" };
   const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
-  return signAndSubmit(rpc, tx, priv);
+  const r = await signAndSubmit(rpc, tx, priv);
+  return r.ok ? { ...r, spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : r;
 }
 
 // Per-output validation shared by buildSignSubmit / sendMany / fillOffer. The per-caller deltas are REAL
@@ -622,7 +628,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
     const r = await signAndSubmit(rpc, tx, priv);
-    return { ...r, merged: pool.length, remaining, total: ver.total };
+    return { ...r, merged: pool.length, remaining, total: ver.total, ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
   }
   return { ok: false, error: "couldn't settle on a verifiable set of coins (unprovable coins kept appearing) — try again in a moment", sighashMatch: false, code: "GHOST_INPUTS_SKIPPED" };
 }

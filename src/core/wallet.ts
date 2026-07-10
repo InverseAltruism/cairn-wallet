@@ -636,7 +636,9 @@ export class Wallet {
     let amount = 0, maybe = false, pending = false;
     for (const e of candidates) {
       if (present.has(String(e.txid).toLowerCase())) { await this.latchMergeConfirmed(e.txid); continue; }
-      pending = true; amount += Number(e.amount) || 0; maybe = maybe || !!e.maybe;
+      // amount = what actually comes back next block: the merge OUTPUT (inputs minus fee) — the
+      // recorded e.amount is the input total, which would overstate by the fee.
+      pending = true; amount += Math.max(0, (Number(e.amount) || 0) - (Number(e.fee) || 0)); maybe = maybe || !!e.maybe;
     }
     return { pending, amount, maybe };
   }
@@ -887,8 +889,23 @@ export class Wallet {
   sealedClaims(): Promise<any[]> { if (!this.accts) return Promise.resolve([]); return this.store.get(sealKey(this.addr())).then((l: any[]) => l || []); }
 
   // ── transaction history — isolated per active account ──────────────────────
-  private async maybeRecord(r: { ok?: boolean; txid?: string }, meta: Record<string, unknown>) {
+  private async maybeRecord(r: { ok?: boolean; txid?: string; spentTxids?: string[] }, meta: Record<string, unknown>) {
     if (r && r.ok && r.txid) await this.recordTx({ txid: r.txid, ts: Date.now(), ...meta });
+    // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
+    // this spend just consumed (Plans/66 review finding — the final combining pass spends earlier
+    // rounds' outputs with no balance refresh in between, which otherwise left those entries
+    // deriving a false "merging" line for up to an hour).
+    if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(r.spentTxids);
+  }
+  private async latchSpentMerges(spent: string[]) {
+    const k = histKey(this.addr());
+    const h: any[] = (await this.store.get(k)) || [];
+    const set = new Set(spent.map((t) => String(t).toLowerCase()));
+    let dirty = false;
+    for (const e of h) {
+      if (e?.type === "consolidate" && !e.confirmed && set.has(String(e.txid).toLowerCase())) { e.confirmed = true; dirty = true; }
+    }
+    if (dirty) await this.store.set(k, h);
   }
   private async recordTx(entry: Record<string, unknown>) {
     const k = histKey(this.addr());
