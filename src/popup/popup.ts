@@ -273,10 +273,16 @@ async function renderHistory() {
       : t.domain ? escapeHtml(String(t.domain))
       : t.target ? `${escapeHtml(String(t.target).slice(0, 12))}…` : "";
     const when = t.ts ? new Date(t.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    // maybe:true = the submit's answer was lost (recorded under the locally computed txid); honest
+    // while fresh, TIME-BOUNDED to the same 60min staleness rule as the pending-merge line — the
+    // utxo reconcile has a permanent blind spot (a change-less send), so the marker must expire
+    // rather than claim "may be in flight" forever about a tx that likely never landed.
+    const maybeMark = t.maybe && t.ts && Date.now() - t.ts <= 3_600_000
+      ? ` <span class="dim">· may be in flight — resolves next block</span>` : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
       <div class="tx-sub"><span class="dim">${detail}</span><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
-      <div class="tx-when dim">${when}</div>
+      <div class="tx-when dim">${when}${maybeMark}</div>
     </div>`;
   }).join("");
 }
@@ -631,12 +637,15 @@ function setWarn(el: HTMLElement, html: string) { if (html) { el.innerHTML = htm
 // DIFFERENT coin and double-pays): tear the review down (draft preserved) so resending takes a
 // deliberate re-Review, refresh, and tell the user to check first. Only the failure branches route
 // here — the happy path is untouched (no added send latency, nothing declined that would succeed).
-function sendDidntConfirm(f: SendFlow, thrownPrefix?: string) {
+function sendDidntConfirm(f: SendFlow, thrownPrefix?: string, txid?: string) {
   teardownReview(f, false);
   f.refresh();
-  msg(thrownPrefix !== undefined
+  // 0.2.56: the engine records the ambiguous outcome in history under its locally computed txid,
+  // so "check history" now points at a CONCRETE entry — name it here instead of asking for faith.
+  const where = txid ? ` It's in your history as ${String(txid).slice(0, 12)}…` : "";
+  msg((thrownPrefix !== undefined
     ? thrownPrefix + "send didn't confirm; it may already be in flight. Check history before resending."
-    : "send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.", "err");
+    : "send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.") + where, "err");
 }
 // A structured {ok:false} from the send engine (2026-07-09): every code EXCEPT the genuinely
 // ambiguous SUBMIT_MAYBE_INFLIGHT is a CLEAN refusal — either pre-broadcast (INSUFFICIENT,
@@ -648,7 +657,7 @@ function sendDidntConfirm(f: SendFlow, thrownPrefix?: string) {
 // in-flight caution for SUBMIT_MAYBE_INFLIGHT and the thrown/catch branch only. Same FOOT-3
 // teardown either way: Confirm must never stay armed on a stale snapshot.
 function sendRefused(f: SendFlow, r: any) {
-  if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return sendDidntConfirm(f, r?.error ? String(r.error) + " — " : "");
+  if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return sendDidntConfirm(f, r?.error ? String(r.error) + " — " : "", r?.txid);
   teardownReview(f, false);
   f.refresh();
   // SUBMIT_DUPLICATE: a tx spending these coins IS pending (usually this exact one — a resubmit
