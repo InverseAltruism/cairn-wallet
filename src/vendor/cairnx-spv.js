@@ -846,7 +846,17 @@ function rpcHeaderToHeader(h) {
 }
 
 // ../csd-sdk/packages/light/dist/index.js
-var POW_LIMIT_TARGET2 = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
+var TARGET_MEMO_CAP = 4096;
+var targetMemo = /* @__PURE__ */ new Map();
+function bitsToTargetBigInt(bits) {
+  const hit = targetMemo.get(bits);
+  if (hit !== void 0) return hit;
+  const v = targetToBigInt(bitsToTarget(bits));
+  if (targetMemo.size >= TARGET_MEMO_CAP) targetMemo.clear();
+  targetMemo.set(bits, v);
+  return v;
+}
+var POW_LIMIT_TARGET2 = bitsToTargetBigInt(POW_LIMIT_BITS);
 function expectedBitsFromWindow(window, height) {
   if (height === 0) return INITIAL_BITS;
   const parent = window[window.length - 1];
@@ -858,10 +868,10 @@ function expectedBitsFromWindow(window, height) {
   const times = [];
   const targets = [];
   for (const h of w) {
-    const tb = bitsToTarget(h.bits);
-    if (tb.every((b) => b === 0)) throw new Error("expectedBits: invalid compact bits in window");
+    const tg = bitsToTargetBigInt(h.bits);
+    if (tg === 0n) throw new Error("expectedBits: invalid compact bits in window");
     times.push(BigInt(h.time));
-    targets.push(targetToBigInt(tb));
+    targets.push(tg);
   }
   if (times.length < 2) return parent.bits;
   const m = times.length;
@@ -885,7 +895,7 @@ function expectedBitsFromWindow(window, height) {
   if (nextTarget > POW_LIMIT_TARGET2) nextTarget = POW_LIMIT_TARGET2;
   if (nextTarget === 0n || nextTarget >= 1n << 256n) return POW_LIMIT_BITS;
   const bits = targetToBits(bigIntToTarget(nextTarget));
-  if (targetToBigInt(bitsToTarget(bits)) > POW_LIMIT_TARGET2) return POW_LIMIT_BITS;
+  if (bitsToTargetBigInt(bits) > POW_LIMIT_TARGET2) return POW_LIMIT_BITS;
   return bits;
 }
 var satAddWork = (a, bits) => {
