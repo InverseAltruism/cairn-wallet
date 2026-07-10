@@ -140,9 +140,9 @@ let siteApi = "";   // the Cairn site base (for the /trade deep-link in the name
 // boundary), closeAllPanels (any panel switch) and the flow handlers — panels are mutually exclusive
 // via openPanel, so dropping all three is always equivalent to dropping the one that was armed.
 const reviewState: {
-  reviewed: { to: string; base: string; name?: string | null; verified?: boolean } | null;
-  reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean } | null;
-  reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number } | null;
+  reviewed: { to: string; base: string; name?: string | null; verified?: boolean; signer?: string | null } | null;
+  reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean; signer?: string | null } | null;
+  reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number; signer?: string | null } | null;
 } = { reviewed: null, reviewedSend: null, reviewedNameAct: null };
 function dropReviews() { reviewState.reviewed = null; reviewState.reviewedSend = null; reviewState.reviewedNameAct = null; }
 // Wipe any unsent recipient/amount draft on lock so it doesn't reappear pre-filled on the next unlock or
@@ -222,6 +222,14 @@ async function renderAccts() {
           <input class="acct-rename-input" data-addr="${escapeHtml(a.addr)}" value="${escapeHtml(a.label)}" />
           <button class="mini" data-save="${escapeHtml(a.addr)}">save</button>
           <button class="mini" data-cancel="1">cancel</button></span>`;
+    } else if (editing && a.imported) {
+      // A2 (Plans/68 F4): an imported key is NOT in the recovery phrase — a one-click remove was
+      // permanent fund loss. Removal is password-gated (the background enforces it; this UI collects
+      // it) with the irreversibility spelled out. HD accounts below keep the frictionless yes/no.
+      right = `<span class="row" style="gap:6px">
+          <input class="acct-remove-pw" type="password" data-addr="${escapeHtml(a.addr)}" placeholder="wallet password" style="width:110px" />
+          <button class="mini" data-confirm-remove="${escapeHtml(a.addr)}" data-imported="1">remove</button>
+          <button class="mini" data-cancel="1">no</button></span>`;
     } else if (editing) {
       right = `<span class="row" style="gap:6px"><span class="dim" style="font-size:11px">remove?</span>
           <button class="mini" data-confirm-remove="${escapeHtml(a.addr)}">yes</button>
@@ -231,9 +239,12 @@ async function renderAccts() {
           <button class="mini" data-rename="${escapeHtml(a.addr)}">rename</button>
           ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}</span>`;
     }
+    const removeWarn = editing && acctEdit!.mode === "remove" && a.imported
+      ? `<div class="tx-sub" style="color:var(--warn,#c90)">this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (Settings › export key), then enter your password to confirm.</div>`
+      : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
-      <div class="tx-sub"><span class="dim">${escapeHtml(a.addr)}</span></div>
+      <div class="tx-sub"><span class="dim">${escapeHtml(a.addr)}</span></div>${removeWarn}
     </div>`;
   }).join("");
   const edit = (addr: string | undefined, mode: "rename" | "remove") => { if (addr) { acctEdit = { addr, mode }; renderAccts(); } };
@@ -246,7 +257,16 @@ async function renderAccts() {
     try { await call("renameAccount", b.dataset.save, label); acctEdit = null; renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
   });
   el.querySelectorAll<HTMLElement>("[data-confirm-remove]").forEach((b) => b.onclick = async () => {
-    try { await call("removeAccount", b.dataset.confirmRemove); acctEdit = null; msg("account removed", "ok"); renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
+    // imported rows carry a password field (A2); HD rows pass no password and stay one-click.
+    const pwInp = b.dataset.imported ? el.querySelector(`.acct-remove-pw[data-addr="${b.dataset.confirmRemove}"]`) as HTMLInputElement | null : null;
+    if (b.dataset.imported && !pwInp?.value) return msg("enter your wallet password to remove an imported key", "err");
+    try {
+      await call("removeAccount", b.dataset.confirmRemove, ...(pwInp?.value ? [pwInp.value] : []));
+      acctEdit = null; msg("account removed", "ok"); renderAccts(); render();
+    } catch (e: any) {
+      const m = String(e?.message || e);
+      msg(m === "REMOVE_IMPORTED_REAUTH" ? "enter your wallet password to remove an imported key" : m, "err");
+    }
   });
   const ri = el.querySelector(".acct-rename-input") as HTMLInputElement | null;
   if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
@@ -277,8 +297,14 @@ async function renderHistory() {
     // while fresh, TIME-BOUNDED to the same 60min staleness rule as the pending-merge line — the
     // utxo reconcile has a permanent blind spot (a change-less send), so the marker must expire
     // rather than claim "may be in flight" forever about a tx that likely never landed.
-    const maybeMark = t.maybe && t.ts && Date.now() - t.ts <= 3_600_000
-      ? ` <span class="dim">· may be in flight — resolves next block</span>` : "";
+    // …and past the window, an HONEST tombstone (0.2.57, reviewer nit): the entry stayed maybe:true
+    // through an hour of utxo reconciles, so it almost certainly never landed — say so, instead of
+    // leaving an unexplained entry that reads like a confirmed payment.
+    const maybeMark = t.maybe && t.ts
+      ? (Date.now() - t.ts <= 3_600_000
+        ? ` <span class="dim">· may be in flight — resolves next block</span>`
+        : ` <span class="dim">· likely never landed (unresolved for &gt;1h) — check the explorer before resending</span>`)
+      : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
       <div class="tx-sub"><span class="dim">${detail}</span><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
@@ -498,18 +524,19 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
     // QA #5: the wallet's set-primary is a single nset→self — it makes the name primary only if it's your
     // OLDEST self-pointing name. Switching from an older name needs the multi-step flow on the website.
     : "Points this name at you (its reverse record). If it's your oldest such name it becomes your primary; to switch from an older name, use cairn-substrate.com/names.";
-  reviewState.reviewedNameAct = { kind, name, total, fee: renewFee };   // freeze the reviewed fee — doNameAction signs EXACTLY this
+  reviewState.reviewedNameAct = { kind, name, total, fee: renewFee, signer: curAddr };   // freeze the reviewed fee + signer — doNameAction signs EXACTLY this
   msg("");
 }
 async function doNameAction() {
   if (!reviewState.reviewedNameAct) return;
-  const { kind, name, fee } = reviewState.reviewedNameAct;
+  const { kind, name, fee, signer } = reviewState.reviewedNameAct;
   dropReviews();                                            // consume the snapshot: one Confirm = one signature
   try {
     busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
     // WL-FEE-FREEZE-1: a renew signs EXACTLY the reviewed fee; the background throws FEE_CHANGED (without
     // signing) if the tip crossed a fee-gate since review, so the user never signs a different amount.
-    const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee] : []));
+    // A1: the reviewed signer rides along — a mid-flight account switch refuses instead of signing.
+    const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee, signer ?? undefined] : [signer ?? undefined]));
     if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (settles ~1 block)`, "ok"); refreshBalance(); renderAssets(); }
     else msg(`${kind === "renew" ? "renew" : "set primary"} failed: ${r.error || "?"}`, "err");
   } catch (e: any) {
@@ -552,11 +579,17 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     const verified = res.verified === true;
     const viaFill = res.viaFill === true;
     const conf = res.depth ? ` (${res.depth} conf)` : "";
+    // C2 badge honesty (Plans/68 F2/F4): single-source is the EXACT posture where the documented
+    // competing-claim withholding redirect is live, so it must read visibly weaker than 2-source
+    // agreement, not like the same green check; and a barely-buried (1-2 conf) resolution gets a
+    // reorg caution instead of a plain check. Both stay informational — never a block.
+    const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < 3;
     const badge = !verified
       ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
       : res.disagree ? `⚠ chain-backed but a name source DISAGREED — verify the address${conf}`
-      : (res.sources ?? 1) >= 2 ? `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`
-      : `✓ chain-backed (1 source)${conf}`;
+      : (res.sources ?? 1) >= 2
+        ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree — only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
+        : `△ chain-backed but only 1 source answered — second server unreachable, weaker guarantee${conf}`;
     return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, agreed: res.agreed, disagree: res.disagree, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
@@ -731,20 +764,23 @@ $("btn-tsend").addEventListener("click", async () => {
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
   setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, TOKEN_FLOW.noun));
   // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
-  reviewState.reviewed = { to, base, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
+  // signer snapshot (A1/POPUP-SEND-RACE-2): the confirm's nameStillPointsTo await can park across an
+  // account switch; expectSigner makes the background refuse at the sign tick instead of signing from
+  // the switched-to account (the recipient stays correct but the WRONG account would pay).
+  reviewState.reviewed = { to, base, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
   armReview(TOKEN_FLOW);
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-tsend-back").addEventListener("click", () => teardownReview(TOKEN_FLOW, false));
 $("btn-tsend-confirm").addEventListener("click", async () => {
   if (!tsend || !reviewState.reviewed) return;
-  const { to, base, name, verified } = reviewState.reviewed;
+  const { to, base, name, verified, signer } = reviewState.reviewed;
   // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1) or its
   // chain-verification regressed since review (L7).
   if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…");
-    const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE });
+    const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
     if (r.ok) sentOk(TOKEN_FLOW, `sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`);
     else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
   } catch (e: any) {
@@ -805,8 +841,10 @@ $("setup-pw").addEventListener("input", () => {
   if (h) h.textContent = v ? `password strength: ${pwStrength(v)}` : "";
 });
 $("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
-$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); flashBtn("btn-copy-seed", "copied ✓"); });
-$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); flashBtn("btn-copy-priv", "copied ✓"); });
+// F-CLIP (Plans/68 A2 companion): the FIRST-backup copies get the same KEY-6 clipboard auto-clear the
+// export/reveal panels already have — the create-flow phrase/key is exactly as secret as a revealed one.
+$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); copiedSecret = backupPhrase; flashBtn("btn-copy-seed", "copied ✓ (auto-clears)"); });
+$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); copiedSecret = backupPriv; flashBtn("btn-copy-priv", "copied ✓ (auto-clears)"); });
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
 $("btn-backup-done").addEventListener("click", () => {
   backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = "";
@@ -1192,7 +1230,9 @@ $("btn-add-acct").addEventListener("click", async () => {
 });
 $("btn-imp-acct").addEventListener("click", async () => {
   const key = val("imp-acct-key").trim(); if (!key) return msg("paste a private key", "err");
-  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported", "ok"); render(); }
+  // A2 defense-in-depth: state the misconception up front — an imported key is NOT covered by the
+  // recovery phrase, so the user learns it at import time, not at (password-gated) removal time.
+  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported — note: imported keys are NOT in your recovery phrase; keep their own backup", "ok"); render(); }
   catch (e: any) { msg(e.message, "err"); }
 });
 
@@ -1235,7 +1275,10 @@ async function renderSealed() {
   if (!list.length) { el.innerHTML = `<div class="dim" style="padding:6px 0">No sealed claims yet. Seal one above; it stays secret until you reveal.</div>`; return; }
   el.innerHTML = list.map((s) => {
     const when = s.committedTs ? new Date(s.committedTs).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-    const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>` : `🔒 sealed`;
+    // a maybe-path seal's anchor may never have landed (0.2.57): say so — revealing it would fail
+    // its on-chain commit check, and the honest state is "verify the anchor first".
+    const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>`
+      : s.maybe ? `🔒 sealed <span class="dim">(anchor may not have landed — check the txid on the explorer)</span>` : `🔒 sealed`;
     const right = s.revealed
       ? `<a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(s.txid)))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
       : `<button class="mini" data-reveal="${escapeHtml(String(s.txid))}">Reveal</button>`;
@@ -1285,19 +1328,20 @@ $("btn-send").addEventListener("click", async () => {
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
   setWarn($("c-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun));
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
-  reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified }; // snapshot verified for the L7 confirm-time regression check
+  // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note — same race, same backstop.
+  reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
   armReview(CSD_FLOW);
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
 $("btn-send-confirm").addEventListener("click", async () => {
   if (!reviewState.reviewedSend) return;
-  const { to, amt, name, verified } = reviewState.reviewedSend;
+  const { to, amt, name, verified, signer } = reviewState.reviewedSend;
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7) — fail-closed to a re-review either way.
   if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
-    busy("sending…"); const r = await call("send", to, amt, SEND_FEE);
+    busy("sending…"); const r = await call("send", to, amt, SEND_FEE, signer ?? undefined);
     if (r.ok) sentOk(CSD_FLOW, "sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
     else sendRefused(CSD_FLOW, r);                    // structured refusal: show the REAL reason (FOOT-3 teardown inside)
   } catch (e: any) {

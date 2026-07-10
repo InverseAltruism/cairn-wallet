@@ -83,6 +83,17 @@ const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for d
 const histKey = (addr: string) => "txHistory:" + addr;
 const sealKey = (addr: string) => "sealedClaims:" + addr;
 
+// The frozen signing context captured before a flow's first await (A1, Plans/68): the account
+// slot, its address, its key, and the history key entries must file under. Immutable snapshot —
+// a later switchAccount cannot retro-change what was captured.
+interface SignerCtx { active: number; addr: string; priv: string; histKey: string }
+// Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
+// pre-dispatch M5 guard copy; same machine code, WALLET-ERROR-CODES.md).
+const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => ({
+  ok: false, sighashMatch: false, code: "ACCOUNT_CHANGED",
+  error: "the active account changed since you reviewed this request — reopen it and review again before approving",
+});
+
 // Epoch math + record-expiry windows (all in EPOCHS; one epoch = BLOCKS_PER_EPOCH blocks). BLOCKS_PER_EPOCH
 // mirrors the vendored cairnx-core EPOCH_LEN (30) — kept as a named local because the wallet .d.ts does not
 // yet export it. Each +N offset below sets a Propose's expiresEpoch = currentEpoch + window.
@@ -404,11 +415,22 @@ export class Wallet {
     if (!a) throw new Error("no such account");
     a.label = label.trim() || a.label; await this.persistVault();
   }
-  async removeAccount(addr: string): Promise<void> {
+  async removeAccount(addr: string, password?: string): Promise<void> {
     const accts = this.mustUnlocked();
     if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
     const i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
     if (i < 0) throw new Error("no such account");
+    // A2 (Plans/68 F4): an IMPORTED raw key is NOT derivable from the recovery phrase, so removing it
+    // without a backup is PERMANENT fund loss — and it was one click. Imported removal now requires a
+    // password re-auth through the same brute-guarded gate as export (openVaultDoc; the decrypted doc
+    // is discarded, nothing is revealed). HD accounts stay one-click: they re-derive from the phrase.
+    // REMOVE_IMPORTED_REAUTH is a popup-handled sentinel (FEE_CHANGED precedent), not a dApp code —
+    // removeAccount is popup-only (never in DAPP_METHODS).
+    if (accts[i].imported) {
+      if (!password) throw new Error("REMOVE_IMPORTED_REAUTH");
+      const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
+      await this.openVaultDoc(v, password); // throws "bad password" (and increments the guard) on failure
+    }
     const gone = accts[i].addr;
     accts.splice(i, 1);
     if (this.active >= accts.length) this.active = accts.length - 1;
@@ -420,6 +442,29 @@ export class Wallet {
 
   private must(): Acct { if (!this.accts) throw new Error("locked"); return this.accts[this.active]; }
   private addr(): string { return this.must().addr; }
+
+  // ── signing-context integrity (A1, Plans/68 FILL-RACE-1) ─────────────────────────────────────
+  // Every signing method captures its key SYNCHRONOUSLY at entry — except fillOffer, whose
+  // preflight awaits (offer fetch + tip) sit between validation and the key read, so a
+  // switchAccount parked in those awaits made the preflight validate account A while account B
+  // signed and paid (pay-without-delivery on a taker-bound offer; whole-payment loss on the
+  // open-CSD lane). captureSigner freezes the reviewed signer BEFORE the first await;
+  // signerUnchanged re-asserts it at the sign tick. Refusal-only: it can never widen what signs.
+  private captureSigner(): SignerCtx {
+    const a = this.must();
+    return { active: this.active, addr: a.addr, priv: a.privkey, histKey: histKey(a.addr) };
+  }
+  private signerUnchanged(ctx: SignerCtx): boolean {
+    const a = this.accts?.[ctx.active];
+    return this.active === ctx.active && !!a && a.addr.toLowerCase() === ctx.addr.toLowerCase();
+  }
+  // The expectSigner backstop (same WYSIWYS class): a caller that DISPLAYED a signer passes it in;
+  // a mismatch at the sign tick refuses instead of silently signing with the now-active account.
+  // Optional everywhere so no internal caller regresses. Returns the shared refusal, or null.
+  private expectSignerRefusal(expectSigner: string | undefined, actual: string): node.SubmitResult | null {
+    if (expectSigner && expectSigner.toLowerCase() !== actual.toLowerCase()) return ACCOUNT_CHANGED_REFUSAL();
+    return null;
+  }
 
   // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx — every caller
   // discriminates status / parses / catches itself, so each keeps its own fail-soft (display reads) vs
@@ -449,14 +494,22 @@ export class Wallet {
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const hk = this.histKeyNow(); const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
   async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const hk = this.histKeyNow(); const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
-  async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number }) {
+  // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
+  // Ordering is load-bearing: capture the signer BEFORE the preflight await (so the account the preflight
+  // validates IS the account that signs), re-assert it AFTER the last await and immediately before the
+  // sign, and sign/record with the CAPTURED key/histKey — a switchAccount parked in the preflight's offer
+  // or tip await now refuses (ACCOUNT_CHANGED) instead of paying from the wrong account.
+  async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string }) {
+    const ctx = this.captureSigner();
+    const early = this.expectSignerRefusal(p.expectSigner, ctx.addr);
+    if (early) return early;
     const q = { proposalId: p.proposalId, score: (p.score ?? 100) >>> 0, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? ATTEST_FLOOR };
-    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs);
+    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr);
     if (refusal) return refusal;
-    const hk = this.histKeyNow(); // same tick as the privkey read below (F5) — after the preflight await
-    const r = await node.fillOffer(this.rpc, q, this.must().privkey);
+    if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
+    const r = await node.fillOffer(this.rpc, q, ctx.priv);
     const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
-    await this.maybeRecord(hk, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
+    await this.maybeRecord(ctx.histKey, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
     return r;
   }
 
@@ -470,7 +523,9 @@ export class Wallet {
   //     fail CLOSED (refuse) when the offer can't be fetched/parsed (mirrors the website's verifyClaimSPV).
   //   • a taker-bound / status-only fill keeps today's best-effort posture (proceed on 404/unreachable), so a
   //     very recent or cross-resolver offer the tradeApi hasn't scanned yet is not false-refused.
-  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[]): Promise<node.SubmitResult | null> {
+  // `me` is the CAPTURED signer address from fillOffer's SignerCtx (A1) — never read live here, so the
+  // account this preflight validates is by construction the account whose key signs.
+  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string): Promise<node.SubmitResult | null> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return null; // not a well-formed id → the node guard handles it
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
@@ -481,7 +536,6 @@ export class Wallet {
     } catch { fetchFailed = true; }
     if (offer && typeof offer.status === "string") {
       if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false, code: "FILL_UNSAFE" };
-      const me = this.addr();
       // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
       // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
       // instead of letting BigInt() throw raw out of the preflight.
@@ -529,12 +583,19 @@ export class Wallet {
     } else if (fetchFailed) {
       // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
       // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
-      // This is narrow: it does not fire on a 404 (a very recent / cross-resolver offer the tradeApi hasn't
-      // scanned yet still proceeds below), only when the resolver is actually down — a clear retryable
-      // refusal instead of a possible silent loss.
       return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    } else {
+      // B1 (Plans/68 M-MKT-5 + N-1; the Plan 63 B2 flip, operator-approved): fail CLOSED unless the
+      // resolver POSITIVELY answered with a parseable CairnX offer. A clean 404 (a valid, unexpired L1
+      // proposal that is NOT an open CairnX offer — a board post, or a record resolve() rejected) and a
+      // 200 whose body lacks a parseable status (MITM / garbling proxy) both used to PROCEED here; the
+      // wallet signed Attest+payment, L1 moved the CSD, and resolve() ignored the attest — the whole
+      // payment burned to attacker-directed outputs. Honest cost: a brand-new offer inside the
+      // resolver's ~15s scan poll refuses ONCE with retryable copy. This closes the honest-resolver and
+      // MITM hole; a coherently LYING resolver is the B3 proof-bound fill-SPV item, not this guard.
+      return { ok: false, error: "this offer is not known to your resolver yet — retry in a few seconds (a brand-new offer appears after the resolver's next scan)", sighashMatch: false, code: "OFFER_UNKNOWN" };
     }
-    // offer === null via a clean 404 → proceed (a very recent/cross-resolver offer; clear-sign + node guard).
+    // a positively-parsed OPEN offer that cleared every check above → proceed to sign
     return null;
   }
   signIn() { return node.signIn(this.api, this.must().privkey); }
@@ -597,7 +658,14 @@ export class Wallet {
   }
 
   // Plain CSD transfer to any address. fee default 0.01 CSD.
-  async send(to: string, amount: number, fee = 1_000_000) { const hk = this.histKeyNow(); const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "send", to, amount, fee }); return r; }
+  async send(to: string, amount: number, fee = 1_000_000, expectSigner?: string) {
+    const ctx = this.captureSigner();
+    const early = this.expectSignerRefusal(expectSigner, ctx.addr);
+    if (early) return early;
+    const r = await node.send(this.rpc, { to, amount, fee }, ctx.priv);
+    await this.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee });
+    return r;
+  }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
   // Popup-only — deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
   // Ambiguous outcomes (SUBMIT_MAYBE_INFLIGHT) are ALSO recorded, flagged maybe:true — the popup's
@@ -638,7 +706,9 @@ export class Wallet {
     if (!candidates.length && !(maybes.length && utxos)) return { pending: false, amount: 0, maybe: false };
     let set = utxos;
     if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return { pending: false, amount: 0, maybe: false }; } }
-    const present = new Set((set || []).map((u) => String(u.txid).toLowerCase()));
+    // filter hostile/degenerate elements (0.2.57, reviewer nit): a null utxo entry from a hostile RPC
+    // used to throw here and land in the caller's ambiguous catch — a misleading "pending unknown".
+    const present = new Set((set || []).filter((u) => u && u.txid != null).map((u) => String(u.txid).toLowerCase()));
     let amount = 0, maybe = false, pending = false, dirty = false;
     // Generic maybe-reconcile (0.2.56, review F2): an entry recorded maybe:true is RESOLVED the
     // moment its txid shows up in the utxo set — a send's change output and a merge's self-output
@@ -665,12 +735,14 @@ export class Wallet {
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
   // by node.sendMany; callers never supply UTXOs. History records the total + primary
   // recipient (single-output sends record identically to send()).
-  async sendMany(p: { outputs: { to: string; value: number }[]; fee?: number }) {
+  async sendMany(p: { outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string }) {
     const fee = p.fee ?? 1_000_000;
-    const hk = this.histKeyNow();
-    const r = await node.sendMany(this.rpc, { outputs: p.outputs, fee }, this.must().privkey);
+    const ctx = this.captureSigner();
+    const early = this.expectSignerRefusal(p.expectSigner, ctx.addr);
+    if (early) return early;
+    const r = await node.sendMany(this.rpc, { outputs: p.outputs, fee }, ctx.priv);
     const { total, to } = this.summarizeOutputs(p.outputs);
-    await this.maybeRecord(hk, r, { type: "send", to, amount: total, fee });
+    await this.maybeRecord(ctx.histKey, r, { type: "send", to, amount: total, fee });
     return r;
   }
 
@@ -827,9 +899,11 @@ export class Wallet {
     return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
   }
   // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
-  async cairnxNameRenew(name: string, reviewedFee?: number) {
+  async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
+    // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
+    if (expectSigner && expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error("the active account changed since you reviewed this request — reopen it and review again before approving");
     const built = buildNameRenew({ name });
     const tip = await node.tip(this.rpc);
     const liveFee = nameRegFee(name, buildFeeHeight(tip));  // v1.8: height-gated; V18-1 boundary-safe build pricing
@@ -846,9 +920,10 @@ export class Wallet {
     return r;
   }
   // Set a name you own as your PRIMARY identity = point it at your own address (nset → self).
-  async cairnxSetPrimary(name: string) {
+  async cairnxSetPrimary(name: string, expectSigner?: string) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
+    if (expectSigner && expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error("the active account changed since you reviewed this request — reopen it and review again before approving");
     const built = buildNameSet({ name, addr: this.addr() });
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + SET_PRIMARY_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
@@ -866,9 +941,10 @@ export class Wallet {
   // Token transfer = a cairnx:v1 Propose whose uri is the canonical transfer record,
   // payload_hash = sha256(uri), fee 0.25 CSD, NO value outputs. The record is built
   // LOCALLY (core/cairnx.ts) and validated before signing; `amount` is base units.
-  async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number }) {
+  async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number; expectSigner?: string }) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
+    if (p.expectSigner && p.expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error("the active account changed since you reviewed this request — reopen it and review again before approving");
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
@@ -897,7 +973,9 @@ export class Wallet {
     // the cairnPost content fix). Saving locally is harmless when the tx never landed.
     if (r.txid && (r.ok || r.code === "SUBMIT_MAYBE_INFLIGHT")) {
       const list: any[] = (await this.store.get(sk)) || [];
-      if (!list.find((x) => x.txid === r.txid)) list.unshift({ txid: r.txid, domain, claim: p.claim, nonce, committedTs: Date.now(), revealed: false });
+      // maybe-path seals are FLAGGED (0.2.57, reviewer nit) so the sealed-claims UI can say the
+      // anchor may not have landed instead of listing it like a confirmed commit.
+      if (!list.find((x) => x.txid === r.txid)) list.unshift({ txid: r.txid, domain, claim: p.claim, nonce, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) });
       await this.store.set(sk, list.slice(0, 500));
     }
     await this.maybeRecord(hk, r, { type: "seal", domain, fee });
@@ -998,23 +1076,43 @@ export class Wallet {
     if (!list.find((x) => x.txid === txid)) list.push({ content, txid, ts: Date.now() });
     await this.store.set("pendingContent", list);
   }
+  // F-QUEUE-2 (Plans/68 A3): flushPending is a read-modify-write over pendingContent with awaits in
+  // between, and it fires from THREE triggers (startup, the 1-minute alarm, cairnPost's un-awaited
+  // kick) — two overlapping flushes, or a flush racing addPending, could clobber a just-queued entry
+  // with a stale list. The in-flight latch collapses overlaps; the final RE-READ + union-by-txid
+  // merge keeps any entry added while this flush was running.
+  private flushInFlight = false;
   async flushPending(): Promise<void> {
-    const list: any[] = (await this.store.get("pendingContent")) || [];
-    if (!list.length) return;
-    const keep: any[] = [];
-    for (const x of list) {
-      // 7 days, not 24h: content registration follows a PAID Propose/name tx, and the old 24h
-      // window silently dropped the content of anyone offline a day — user paid, body never
-      // landed, no error (Plans/66 B8). Content is self-certifying and re-POSTable, so a long
-      // retry window costs nothing; expiry still bounds the queue.
-      if (Date.now() - (x.ts || 0) > 7 * 86400000) continue;
-      try {
-        const p = await node.getProposal(this.rpc, x.txid);
-        if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later
-        await node.registerContent(this.api, x.content, x.txid); // mined: register (server self-certifies vs hash)
-      } catch { keep.push(x); }                                  // transient/network error → retry later
-    }
-    await this.store.set("pendingContent", keep);
+    if (this.flushInFlight) return;
+    this.flushInFlight = true;
+    try {
+      const list: any[] = (await this.store.get("pendingContent")) || [];
+      if (!list.length) return;
+      const keep: any[] = [];
+      const processed = new Set<string>();
+      for (const x of list) {
+        processed.add(String(x.txid).toLowerCase());
+        // 7 days, not 24h: content registration follows a PAID Propose/name tx, and the old 24h
+        // window silently dropped the content of anyone offline a day — user paid, body never
+        // landed, no error (Plans/66 B8). Content is self-certifying and re-POSTable, so a long
+        // retry window costs nothing; expiry still bounds the queue.
+        if (Date.now() - (x.ts || 0) > 7 * 86400000) continue;
+        try {
+          const p = await node.getProposal(this.rpc, x.txid);
+          if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later
+          // F-QUEUE-1 (Plans/68 A3): registerContent NEVER throws — it resolves {ok:false} on any
+          // refusal/outage (node.ts). Dropping the entry on that path silently lost the body of a
+          // tx the user PAID to anchor. Registration is idempotent and self-certifying, so a
+          // failed register keeps the entry for the next alarm tick instead.
+          const rr = await node.registerContent(this.api, x.content, x.txid);
+          if (!(rr && (rr as any).ok)) keep.push(x);
+        } catch { keep.push(x); }                                  // transient/network error → retry later
+      }
+      // re-read + merge (union by txid): entries queued DURING this flush survive the write-back.
+      const now: any[] = (await this.store.get("pendingContent")) || [];
+      const merged = [...keep, ...now.filter((x) => !processed.has(String(x.txid).toLowerCase()))];
+      await this.store.set("pendingContent", merged);
+    } finally { this.flushInFlight = false; }
   }
   hasPending(): Promise<boolean> { return this.store.get("pendingContent").then((l: any[]) => !!(l && l.length)); }
 

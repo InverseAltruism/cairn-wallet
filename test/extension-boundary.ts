@@ -211,6 +211,13 @@ async function main() {
   lastSubmit = null;
   const OFFER_ID = "0x" + "22".repeat(32);
   const SELLER = "0x" + "ee".repeat(20);
+  // B1 (0.2.57): the preflight now fails CLOSED unless the resolver positively parses to an open
+  // offer — the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
+  // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: token-want
+  // + taker-bound to this wallet, so the approved outputs (seller leg only) stay exactly what this
+  // block asserts (a token-want fill has no CSD need-map legs).
+  const fillerAddr = (await popup("status")).result.addr as string;
+  offerFixtures.set(OFFER_ID.toLowerCase(), { id: OFFER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { ticker: "USDX", amount: "40000000" }, taker: fillerAddr, height: 34000, feeBps: 150 });
   const winBeforeFill = windowsOpened;
   // hostile extras (inputs/change) must be ignored exactly like send
   const freq = dappAsync("fillOffer", {

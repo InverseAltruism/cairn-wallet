@@ -76,13 +76,13 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "importAccount": return wallet.importAccount(args[0], args[1]);
     case "switchAccount": { const r = await wallet.switchAccount(args[0]); await emitConnected("accountsChanged", []); return r; }
     case "renameAccount": return wallet.renameAccount(args[0], args[1]);
-    case "removeAccount": return wallet.removeAccount(args[0]);
+    case "removeAccount": return wallet.removeAccount(args[0], args[1]); // args[1] = password (A2: imported-key removal re-auth)
     case "balance": return wallet.balance();
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "propose": return wallet.propose(args[0]);
     case "attest": return wallet.attest(args[0]);
-    case "send": return wallet.send(args[0], args[1], args[2]);
+    case "send": return wallet.send(args[0], args[1], args[2], args[3]); // args[3] = expectSigner (A1 popup snapshot)
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS — a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
     case "consolidatePreview": return wallet.consolidatePreview(args[0]);
@@ -95,9 +95,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "resolveName": return wallet.resolveName(args[0]);
     case "verifyName": return wallet.verifyName(args[0]);
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
-    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1]);
+    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2]); // args[2] = expectSigner (A1)
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
-    case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0]);
+    case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
     case "setTradeApi": return wallet.setTradeApi(args[0]);
     case "signin": return wallet.signIn();
     case "export": return wallet.exportKey(args[0]);
@@ -191,14 +191,18 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // and fall through to the throw below, so a dApp can never reach them.
     else if (p.method === "send") {
       const x = p.params || {};
+      // A1: thread the DISPLAYED signer into the method so the check fires at the sign tick,
+      // not only at the pre-dispatch M5 guard above (fillOffer awaits between the two). Set from
+      // displayedSigner LAST so a dApp-supplied expectSigner in params can never substitute it.
+      const exp = typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined;
       result = Array.isArray(x.outputs)
-        ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee })
-        : await wallet.send(x.to, x.amount, x.fee);
+        ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee, expectSigner: exp })
+        : await wallet.send(x.to, x.amount, x.fee, exp);
     }
     // Atomic fill (Attest + payment in one tx — CairnX DvP). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
     // and change only ever returns to the wallet's own address.
-    else if (p.method === "fillOffer") result = await wallet.fillOffer(p.params);
+    else if (p.method === "fillOffer") result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined });
     else throw new Error("unsupported dApp method: " + p.method);
     return finish({ ok: true, result });
   } catch (e: any) { return finish({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
@@ -318,6 +322,12 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         // prompt needed (a read of / a self-revoke of one's own access). requestPermissions DOES prompt
         // (it grants address visibility) → it falls through to the approval queue below.
         if (msg.method === "getPermissions") {
+          // F-PERM-LOCKED (Plans/68 A3): the silent getAddress path requires UNLOCKED before it
+          // discloses the address; this read disclosed the consented addr even while LOCKED. Same
+          // posture now: a locked wallet answers "no permissions" (not an error — a page polling
+          // permissions must not learn the address, or that one exists, from a locked wallet).
+          const stp = await wallet.status();
+          if (!stp.unlocked) { sendResponse({ ok: true, result: [] }); return; }
           const c = (await getConsents())[origin];
           sendResponse({ ok: true, result: c ? [{ invoker: origin, accounts: [c.addr], grantedAt: c.ts }] : [] });
           return;

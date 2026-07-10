@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients, fmtBalance, isZeroAddr, nfinalizeApproveGate, type NameFetchResult } from "./clearsign.js";
+import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, type NameFetchResult } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -88,16 +88,32 @@ async function checkNfinalize(name: string, tradeApi: string, me: string): Promi
   const t = await bounded(call("tip"));
   return nfinalizeApproveGate(fetched, me, t == null ? null : Number(t));
 }
+// same fetch, lighter verdict: nrenew/nset existence + ownership (Plans/68 B2)
+async function checkNameAct(kind: "nrenew" | "nset", name: string, tradeApi: string, me: string): Promise<{ block: boolean; note: string | null }> {
+  let fetched: NameFetchResult = { failed: true };
+  try {
+    const res = await fetch(`${String(tradeApi || "").replace(/\/$/, "")}/cairnx/name/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
+    if (res.status === 404) fetched = { record: null };
+    else if (res.ok) { const j = await res.json().catch(() => null); if (j && typeof j === "object") fetched = { record: j }; }
+  } catch { /* unreachable → fail-open (gate warns, never blocks) */ }
+  return nameActApproveGate(kind, fetched, me);
+}
 function armNfinalizeGate(r: any, st: any) {
   if (nfinForId === r.id) return; nfinForId = r.id;
   nfinBlocked = false; nfinGate = null;
   const p = r.params || {};
   if (r.method !== "propose" || String(p.domain) !== CAIRNX_DOMAIN) return;
   const rec = decodeCairnxRecord(p.uri, p.payloadHash);
-  if (!rec || rec.t !== "nfinalize" || typeof rec.name !== "string") return;
+  if (!rec || typeof rec.name !== "string") return;
+  // Plans/68 B2: the gate now also covers nrenew and nset (set-primary / re-point) — both ride a fee
+  // that burns on a resolver no-op. nfinalize keeps the full winner+window verdict; nrenew/nset get
+  // the lighter existence/ownership verdict (nameActApproveGate). Same fail-open transport posture.
+  if (rec.t !== "nfinalize" && rec.t !== "nrenew" && rec.t !== "nset") return;
   // signer captured at arm time = the account this request is DISPLAYED as signing with (M5 pairing:
   // the background refuses the resolve anyway if the active account changed since render)
-  nfinGate = checkNfinalize(rec.name, String(st.tradeApi || ""), String(st.addr || ""));
+  nfinGate = rec.t === "nfinalize"
+    ? checkNfinalize(rec.name, String(st.tradeApi || ""), String(st.addr || ""))
+    : checkNameAct(rec.t, rec.name, String(st.tradeApi || ""), String(st.addr || ""));
   nfinGate.then((g) => {
     if (renderedId !== r.id) return;                 // superseded — never paint over a different request
     if (g.block) { nfinBlocked = true; ($("btn-approve") as HTMLButtonElement).disabled = true; }

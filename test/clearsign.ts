@@ -1,6 +1,6 @@
 // Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine, nfinalizeApproveGate } from "../src/popup/clearsign.js";
+import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS } from "../src/vendor/cairnx-spv.js";
@@ -215,6 +215,55 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   })());
   ok("NFIN: tip unavailable WARNS but does NOT block (fail-open)", (() => {
     const g = nfinalizeApproveGate({ record: mine }, ME, null);
+    return g.block === false && /could not verify/.test(g.note || "");
+  })());
+
+  // ── N-2 freeze half (Plans/68 B2; cairnx-core 0.1.36): a finalize raised BEFORE the displacement
+  //    contest froze is rejected by the resolver AFTER the fee moved — the gate must now refuse it.
+  //    MUTATION CONTRACT: the too-early case FAILS on 0.2.56 (the old gate had no freeze check).
+  const freezeGate = EFF + REG_COMMIT_MAX_BLOCKS + 2; // + FINALIZE_TIP_MARGIN; pass STRICTLY ABOVE
+  ok("NFIN-N2: a too-early finalize (contest not frozen) refuses", (() => {
+    const g = nfinalizeApproveGate({ record: mine }, ME, freezeGate);
+    return g.block === true && /too early/.test(g.note || "");
+  })());
+  ok("NFIN-N2: exactly one block past the freeze gate passes (no over-refusal at the boundary)", (() => {
+    const g = nfinalizeApproveGate({ record: mine }, ME, freezeGate + 1);
+    return g.block === false && g.note === null;
+  })());
+}
+
+// ── NACT (Plans/68 B2): the nrenew/nset approve gate — fee-bearing records that BURN on a resolver
+//    no-op. Block only on definitive no-ops (404; nset owner mismatch); warn on transport failure
+//    (fail-open, the F-FINALIZE non-goal) and on a lapsed renew (in-grace renewal is legal).
+{
+  const ME = "0x" + "cd".repeat(20);
+  const OTHER = "0x" + "ee".repeat(20);
+  ok("NACT: nrenew of an unknown name (clean 404) refuses (fee would burn)", (() => {
+    const g = nameActApproveGate("nrenew", { record: null }, ME);
+    return g.block === true && /not registered/.test(g.note || "");
+  })());
+  ok("NACT: nset on an unknown name (clean 404) refuses (anchor fee for nothing)", (() => {
+    const g = nameActApproveGate("nset", { record: null }, ME);
+    return g.block === true && /not registered/.test(g.note || "");
+  })());
+  ok("NACT: nset on a name owned by someone else refuses (resolver ignores a non-owner nset)", (() => {
+    const g = nameActApproveGate("nset", { record: { name: "gm", owner: OTHER } }, ME);
+    return g.block === true && /different address/.test(g.note || "");
+  })());
+  ok("NACT: nset on my own name passes clean", (() => {
+    const g = nameActApproveGate("nset", { record: { name: "gm", owner: ME } }, ME);
+    return g.block === false && g.note === null;
+  })());
+  ok("NACT: nrenew of someone ELSE'S live name passes (anyone may renew a live lease)", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: OTHER } }, ME);
+    return g.block === false && g.note === null;
+  })());
+  ok("NACT: nrenew of a LAPSED name WARNS but does not block (grace boundary is the resolver's call)", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, expired: true } }, ME);
+    return g.block === false && /LAPSED/.test(g.note || "");
+  })());
+  ok("NACT: transport failure WARNS but does NOT block (fail-open)", (() => {
+    const g = nameActApproveGate("nrenew", { failed: true }, ME);
     return g.block === false && /could not verify/.test(g.note || "");
   })());
 }

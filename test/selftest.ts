@@ -188,10 +188,14 @@ async function main() {
     await w.flushPending();
     check("flushPending: expires items older than 7 days", ((await s.get("pendingContent")) || []).length === 0);
 
-    (globalThis as any).fetch = fakeFetch(true, false); // mined but server rejects (hash mismatch)
+    // CONTRACT FLIPPED by Plans/68 F-QUEUE-1 (0.2.57): registerContent answers {ok:false} for BOTH a
+    // real rejection and a transient server refusal, and the wallet cannot tell them apart — dropping
+    // lost the paid-for body on any outage. A mined-but-refused item is now KEPT for retry;
+    // "no infinite retry" is preserved by the 7-day expiry above, not by dropping.
+    (globalThis as any).fetch = fakeFetch(true, false); // mined but server refuses ({ok:false})
     ({ w, s } = await mkWallet({ content: C, txid: "0xdd", ts: now }));
     await w.flushPending();
-    check("flushPending: drops mined-but-rejected (no infinite retry)", ((await s.get("pendingContent")) || []).length === 0);
+    check("flushPending: KEEPS a mined-but-refused item for retry (expiry bounds it)", ((await s.get("pendingContent")) || []).length === 1);
 
     ({ w, s } = await mkWallet({ content: C, txid: "0xee", ts: now }));
     check("hasPending true with queued item", (await w.hasPending()) === true);

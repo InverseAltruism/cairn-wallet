@@ -434,15 +434,42 @@ export function nfinalizeApproveGate(fetched: NameFetchResult, me: string, tip: 
     : rec.recapture && typeof rec.recapture === "object" ? { ...rec.recapture, pending: true }
     : rec.expired === true ? null
     : rec;
-  // the vendored C1 check, reused verbatim (exists / owner / pending / displacement). The
-  // reservation's own effectiveHeight stands in for the commit height the wallet cannot know here,
-  // so displacement surfaces as an owner change rather than a height mismatch.
-  const w = finalizeWinnerCheck(resv as any, me, Number(resv?.effectiveHeight));
+  // the vendored C1 check (exists / owner / pending / displacement) — and, since cairnx-core 0.1.36
+  // (Plans/68 B2), BOTH finalize-window sides when a tip is passed: the freeze/too-early half the old
+  // local check missed (a pre-freeze finalize is rejected by the resolver AFTER the fee moved — the
+  // same burn as too-late) and the expiry half that used to live in a hand-rolled windowEnd formula
+  // here. The helper derives the boundaries from the reservation's own finalizeBy with the shared
+  // FINALIZE_TIP_MARGIN band, so wallet and site refuse on identical block heights. The reservation's
+  // own effectiveHeight stands in for the commit height the wallet cannot know here, so displacement
+  // surfaces as an owner change rather than a height mismatch.
+  const w = finalizeWinnerCheck(resv as any, me, Number(resv?.effectiveHeight), tip);
   if (!w.safe) return { block: true, note: `refusing to approve — ${w.reason}.` };
-  const windowEnd = Number(resv!.effectiveHeight) + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS;
-  // 2-block safety margin (the bundle's FINALIZE_TIP_MARGIN): a finalize approved right at the edge
-  // still needs a block or two to mine inside the window.
-  if (tip > windowEnd - 2) return { block: true, note: `refusing to approve — this reservation's finalize window has closed (ends at block ${windowEnd}, chain tip ${tip}); the fee would leave your wallet without registering the name. Re-register on the site.` };
+  return { block: false, note: null };
+}
+
+// ── nrenew / nset approve gate (Plans/68 B2, the renew/set-primary wiring) ───────────────────────
+// Both records ride a fee (nrenew the treasury renewal fee, nset the 0.25 CSD anchor) that BURNS when
+// the resolver no-ops the record. Same posture as nfinalizeApproveGate: pure over the fetched record,
+// FAIL-OPEN on transport (warn, never block — the F-FINALIZE non-goal), BLOCK only on a definitive
+// on-chain no-op. Definitive cases: a clean 404 (nothing to renew / point), and for nset an owner
+// mismatch (only the owner's nset counts). A lapsed record only WARNS for nrenew: in-grace renewal is
+// legal and the grace boundary is the resolver's call, so uncertainty must not decline a legit renew.
+export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchResult, me: string): { block: boolean; note: string | null } {
+  if (fetched.failed) {
+    return { block: false, note: `could not verify this ${kind === "nrenew" ? "renewal" : "name record"} against the name service (unreachable) — a no-op ${kind === "nrenew" ? "renewal burns the renewal fee" : "record burns the anchor fee"}. Approve only if the site shows the action as available.` };
+  }
+  const rec = fetched.record;
+  if (rec == null) {
+    return { block: true, note: kind === "nrenew"
+      ? "refusing to approve — this name is not registered, so the renewal would be ignored on-chain and the fee burned."
+      : "refusing to approve — this name is not registered, so the record would be ignored on-chain and the anchor fee spent for nothing." };
+  }
+  if (kind === "nset" && typeof rec.owner === "string" && rec.owner.toLowerCase() !== me.toLowerCase()) {
+    return { block: true, note: "refusing to approve — this name is owned by a different address, so the resolver would ignore this record and the anchor fee would be spent for nothing. If you just bought it, wait for the purchase to settle and re-open." };
+  }
+  if (kind === "nrenew" && rec.expired === true) {
+    return { block: false, note: "this name appears LAPSED. A renewal is only honored within its grace period; past that the fee is burned. Verify on the site before approving." };
+  }
   return { block: false, note: null };
 }
 

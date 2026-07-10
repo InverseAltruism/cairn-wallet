@@ -1155,18 +1155,30 @@ var LightClient = class _LightClient {
     };
   }
   /**
-   * Restore from a snapshot. The load RE-VERIFIES — hash recomputation, prev links, PoW on every
-   * header, AND `bits` re-derived from the LWMA window for every NON-trusted (forward-synced)
-   * header, exactly as the live `sync`/`verifyOne` path accepted it. Only the original seed window
-   * (`trusted`) skips LWMA — the same posture `seedTrusted` allows for the checkpoint trade — but a
-   * snapshot cannot smuggle trust past the pinned checkpoint hash: if `checkpoints` is configured,
-   * any restored header at a pinned height must match. So a localStorage-poisoned snapshot that
-   * inserts a min-difficulty (POW_LIMIT) header is REJECTED here, not restored as verified.
-   * chainwork is recomputed, never read from the file.
+   * Restore from a snapshot. The load RE-VERIFIES — hash recomputation, prev links, timestamp
+   * rules, PoW on every header, AND `bits` re-derived from the LWMA window for every NON-trusted
+   * (forward-synced) header, exactly as the live `sync`/`verifyOne` path accepted it. Only the
+   * original seed window (`trusted`) skips the time/LWMA re-derivation — the same posture
+   * `seedTrusted` allows for the checkpoint trade. A checkpoint-configured client additionally
+   * refuses any snapshot (other than a genesis-rooted one, anchored by H4 below) that does not
+   * CONTAIN its lowest pinned checkpoint: the per-header pin can only assert the baked hash when
+   * the pinned height is inside the restored range, so without the containment rule a poisoned
+   * snapshot rooted ABOVE the checkpoint would carry no anchor at all and its `trusted` seed
+   * prefix would be honoured at face value (grindable at POW_LIMIT). So a localStorage-poisoned
+   * snapshot is REJECTED here, not restored as verified. chainwork is recomputed, never read
+   * from the file.
    */
   static fromSnapshot(s, opts = {}) {
     if (s.v !== 1 || !Array.isArray(s.headers) || !s.headers.length) throw new Error("bad snapshot");
     const lc = new _LightClient(opts);
+    const pinnedHeights = Object.keys(lc.checkpoints).map(Number);
+    if (pinnedHeights.length && s.baseHeight > 0) {
+      const cpMin = Math.min(...pinnedHeights);
+      const last = s.baseHeight + s.headers.length - 1;
+      if (s.baseHeight > cpMin || last < cpMin) {
+        throw new Error(`snapshot not anchored: range [${s.baseHeight}..${last}] does not contain checkpoint ${cpMin}`);
+      }
+    }
     lc.baseHeight = s.baseHeight;
     let prevHash = null;
     let work = 0n;
@@ -1180,12 +1192,15 @@ var LightClient = class _LightClient {
         if (e.header.bits !== INITIAL_BITS) throw new Error("snapshot genesis bits != INITIAL_BITS");
       }
       if (prevHash && e.header.prev.toLowerCase() !== prevHash) throw new Error(`snapshot prev link broken at ${e.height}`);
-      if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${e.height}`);
       const fullWindowAvailable = e.height - s.baseHeight >= LWMA_WINDOW;
       if (e.height > 0 && (!e.trusted || fullWindowAvailable)) {
-        const exp = expectedBitsFromWindow(lc.windowBefore(e.height), e.height);
+        const window = lc.windowBefore(e.height);
+        const parent = lc.chain[i - 1];
+        if (parent) lc.checkTimeRules(e.height, e.header, window, parent);
+        const exp = expectedBitsFromWindow(window, e.height);
         if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${e.height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
       }
+      if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${e.height}`);
       lc.pinCheckpoint(e.height, hash);
       work = satAddWork(work, e.header.bits);
       lc.chain.push({ height: e.height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
@@ -4597,13 +4612,24 @@ function fillIsSafe(offer2, me, pay, tip) {
   }
   return { safe: true, reason: "ok", preview };
 }
-function finalizeWinnerCheck(nameState, me, commitHeight) {
+function finalizeWinnerCheck(nameState, me, commitHeight, tip) {
   const m = me.toLowerCase();
   if (!nameState) return { safe: false, reason: "no reservation on-chain (displaced, swept, or never accepted) \u2014 a finalize now would burn the fee" };
   if (nameState.owner?.toLowerCase() !== m) return { safe: false, reason: "an earlier committer won this name \u2014 you were outbid" };
   if (nameState.pending !== true) return { safe: false, reason: "already registered to you \u2014 no second finalize fee is needed" };
   if (Number(nameState.effectiveHeight) !== Number(commitHeight))
     return { safe: false, reason: "your reservation was displaced (effective height changed) \u2014 a finalize now would burn the fee" };
+  if (tip !== void 0 && tip !== null && Number.isFinite(Number(tip))) {
+    const t = Number(tip);
+    const eff = Number(nameState.effectiveHeight);
+    const fin = nameState.finalizeBy !== void 0 && nameState.finalizeBy !== null ? Number(nameState.finalizeBy) : void 0;
+    const freezeEnd = fin !== void 0 ? fin - REG_FINALIZE_GRACE_BLOCKS : eff + REG_COMMIT_MAX_BLOCKS;
+    const closeAt = (fin !== void 0 ? fin : freezeEnd + REG_FINALIZE_GRACE_BLOCKS) - FINALIZE_TIP_MARGIN;
+    if (t <= freezeEnd + FINALIZE_TIP_MARGIN)
+      return { safe: false, reason: `too early \u2014 the displacement contest is not frozen yet (finalizable after block ${freezeEnd + FINALIZE_TIP_MARGIN}, chain tip ${t}); the resolver would reject the finalize after the fee moved, burning it` };
+    if (t > closeAt)
+      return { safe: false, reason: `this reservation's finalize window has closed (safe until block ${closeAt}, chain tip ${t}); a finalize now would mine past the deadline and burn the fee` };
+  }
   return { safe: true, reason: "ok" };
 }
 var primaryRankBefore = (a, b) => a.effectiveHeight < b.effectiveHeight || a.effectiveHeight === b.effectiveHeight && a.claimId < b.claimId;

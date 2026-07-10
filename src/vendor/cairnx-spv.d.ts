@@ -101,7 +101,7 @@ export function previewFill(offer: CxOfferState, pay: bigint | string | number):
 /** The C2/C3/C4 union: status open, deliverability ≥1, live-claim holdership for open-CSD, taker match. */
 export function fillIsSafe(offer: CxOfferState, me: string, pay: bigint | string | number, tip: number): FillSafety;
 /** The C1 registration-finalize gate — pass the AUTHORITATIVE (freshly re-fetched) name record. */
-export function finalizeWinnerCheck(nameState: CxNameState | null | undefined, me: string, commitHeight: number): { safe: boolean; reason: string };
+export function finalizeWinnerCheck(nameState: CxNameState | null | undefined, me: string, commitHeight: number, tip?: number | null): { safe: boolean; reason: string };
 export function isOpenClaimLane(offer: CxOfferState, tip: number): boolean;
 export function hasLiveClaim(offer: CxOfferState, me: string, tip: number): boolean;
 /** The resolver's fill value-gate need-map as a build-ready output list (2026-07-06 promotion —
