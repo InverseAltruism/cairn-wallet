@@ -38,6 +38,7 @@ function mkStub({ coins, served, overrides = {}, submit, txDelayMs = 0 }) {
     if (u.includes("/utxos/")) {
       return { ok: true, status: 200, json: async () => ({ confirmed_balance: coins.reduce((s, c) => s + c.coin.value, 0), utxos: coins.map((c) => c.coin) }) };
     }
+    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: 50_000 }) }; // cairnPost/seal expiry math
     const idm = u.match(/\/tx\/(0x[0-9a-fA-F]{64})\b/);
     if (idm) {
       stats.tx++;
@@ -409,6 +410,91 @@ try {
     const histB = (await store.get("txHistory:" + addrB)) || [];
     check("the entry filed under the SIGNING account (A)", histA.some((x) => x.type === "send" && x.txid === r.txid));
     check("nothing filed under the switched-to account (B)", histB.length === 0);
+  }
+  // ── 18. F1 (0.2.56): a maybe-inflight SEND records maybe:true with the local txid at the
+  //        maybeRecord chokepoint, and a later definitive answer clears the flag IN PLACE
+  //        (same entry object: ts and position survive — never a replace) ──
+  {
+    const coins = [mkCoin(71e8), mkCoin(72e8)];
+    let mode = "gateway502";
+    let okTxid; // set once the maybe result tells us the local consensus txid
+    const submit = async () => {
+      if (mode === "gateway502") return { ok: false, status: 502, json: async () => { throw new Error("html gateway page"); } };
+      if (mode === "dup") return { ok: false, status: 400, json: async () => ({ ok: false, err: "already present or mempool conflict" }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, txid: okTxid }) };
+    };
+    const { fetch } = mkStub({ coins, served: coins, submit });
+    globalThis.fetch = fetch;
+    const store = memoryStore();
+    const w = new Wallet(store);
+    const { addr } = await w.create("super-secret-pw");
+    const to = "0x" + "44".repeat(20);
+    const r1 = await w.send(to, 70e8, FEE);
+    check("gateway 5xx send classifies SUBMIT_MAYBE_INFLIGHT with a local txid", r1.ok === false && r1.code === "SUBMIT_MAYBE_INFLIGHT" && /^0x[0-9a-f]{64}$/.test(String(r1.txid)));
+    let hist = await store.get("txHistory:" + addr);
+    const entry = hist.find((x) => x.txid === r1.txid);
+    check("the maybe-inflight SEND is now in history (maybe:true, real meta)", entry?.type === "send" && entry?.maybe === true && entry?.to === to);
+    const origTs = entry.ts;
+    // park an older dummy BEHIND it so a replace (delete+unshift) would be visible as reordering
+    hist.push({ txid: "0x" + "99".repeat(32), ts: 1, type: "send", to, amount: 1, fee: FEE });
+    await store.set("txHistory:" + addr, hist);
+    // deterministic retry, same coins → same local txid; node now answers ok echoing it
+    okTxid = r1.txid; mode = "ok";
+    const r2 = await w.send(to, 70e8, FEE);
+    check("the byte-identical retry succeeds with the SAME txid", r2.ok === true && r2.txid === r1.txid);
+    hist = await store.get("txHistory:" + addr);
+    const resolved = hist.find((x) => x.txid === r1.txid);
+    check("ok resolution cleared maybe IN PLACE (ts and position survive, no duplicate entry)",
+      resolved && resolved.maybe === undefined && resolved.ts === origTs &&
+      hist.filter((x) => x.txid === r1.txid).length === 1 && hist[0].txid === r1.txid);
+  }
+  // ── 19. F1b: SUBMIT_DUPLICATE also resolves an earlier maybe entry (clears the flag) but NEVER
+  //        inserts a fresh entry when none exists (a dup can be a CONFLICTING tx on today's node) ──
+  {
+    const coins = [mkCoin(81e8), mkCoin(82e8)];
+    let mode = "gateway502";
+    const submit = async () => {
+      if (mode === "gateway502") return { ok: false, status: 502, json: async () => { throw new Error("html"); } };
+      return { ok: false, status: 400, json: async () => ({ ok: false, err: "already present or mempool conflict" }) };
+    };
+    const { fetch } = mkStub({ coins, served: coins, submit });
+    globalThis.fetch = fetch;
+    const store = memoryStore();
+    const w = new Wallet(store);
+    const { addr } = await w.create("super-secret-pw");
+    const to = "0x" + "55".repeat(20);
+    const r1 = await w.send(to, 80e8, FEE);
+    mode = "dup";
+    const r2 = await w.send(to, 80e8, FEE);
+    check("retry answers SUBMIT_DUPLICATE with the same local txid", r2.code === "SUBMIT_DUPLICATE" && r2.txid === r1.txid);
+    const hist = await store.get("txHistory:" + addr);
+    check("duplicate resolution cleared the maybe flag", hist.find((x) => x.txid === r1.txid)?.maybe === undefined);
+    // a dup with NO prior entry must not invent one
+    const store2 = memoryStore();
+    const w2 = new Wallet(store2);
+    const { addr: addr2 } = await w2.create("super-secret-pw");
+    const r3 = await w2.send(to, 80e8, FEE); // straight to dup (mode stays "dup")
+    const hist2 = (await store2.get("txHistory:" + addr2)) || [];
+    check("a dup with no prior maybe entry inserts NOTHING", r3.code === "SUBMIT_DUPLICATE" && hist2.length === 0);
+  }
+  // ── 20. F13: ambiguous outcomes keep their durable side-payloads — a maybe-inflight cairnPost
+  //        still queues its off-chain content; a maybe-inflight sealClaim still saves the reveal
+  //        preimage (both are lost forever if the tx mines and nothing was persisted) ──
+  {
+    const coins = [mkCoin(91e8), mkCoin(92e8)];
+    const submit = async () => ({ ok: false, status: 502, json: async () => { throw new Error("html"); } });
+    const { fetch } = mkStub({ coins, served: coins, submit });
+    globalThis.fetch = fetch;
+    const store = memoryStore();
+    const w = new Wallet(store);
+    await w.create("super-secret-pw");
+    const rp = await w.cairnPost({ domain: "csd:apps", title: "t", body: "b", fee: 25_000_000 });
+    check("maybe-inflight post classifies SUBMIT_MAYBE_INFLIGHT", rp.code === "SUBMIT_MAYBE_INFLIGHT");
+    const pend = (await store.get("pendingContent")) || [];
+    check("maybe-inflight post QUEUED its content for the alarm-driven flush", pend.some((x) => x.txid === rp.txid && x.content?.title === "t"));
+    const rs = await w.sealClaim({ claim: "prediction: 42", fee: 25_000_000 });
+    const sealed = await w.sealedClaims();
+    check("maybe-inflight seal SAVED the reveal preimage (claim + nonce)", rs.code === "SUBMIT_MAYBE_INFLIGHT" && sealed.some((x) => x.txid === rs.txid && x.claim === "prediction: 42" && /^[0-9a-f]{64}$/.test(String(x.nonce).replace(/^0x/, ""))));
   }
 } finally {
   globalThis.fetch = origFetch;

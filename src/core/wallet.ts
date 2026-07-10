@@ -607,10 +607,9 @@ export class Wallet {
   async consolidate(fee = 1_000_000) {
     const hk = this.histKeyNow();
     const r = await node.consolidate(this.rpc, { fee }, this.must().privkey);
+    // maybeRecord is the single chokepoint for ok / maybe-inflight / duplicate recording (0.2.56);
+    // the explicit maybe:true block that used to live here moved into it.
     await this.maybeRecord(hk, r, { type: "consolidate", merged: r.merged, amount: r.total, fee });
-    if (!r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
-      await this.recordTx(hk, { txid: r.txid, ts: Date.now(), type: "consolidate", merged: r.merged, amount: r.total, fee, maybe: true });
-    }
     return r;
   }
   consolidatePreview(fee = 1_000_000) { return node.consolidatePreview(this.rpc, this.addr(), fee); }
@@ -674,7 +673,12 @@ export class Wallet {
     const ph = cairnPayloadHash(content);
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
-    if (r.ok && r.txid) { await this.addPending(content, r.txid); this.flushPending(); } // durable, alarm-driven
+    // Queue the off-chain content on the ambiguous path too (0.2.56, review F13): a maybe-inflight
+    // propose that MINES would otherwise lose its body forever — the user paid, the content never
+    // lands, no error. flushPending already handles a never-mined txid safely (polls getProposal,
+    // registers only once mined, 7-day expiry bounds the queue), so queueing is harmless when the
+    // tx truly died.
+    if (r.txid && (r.ok || r.code === "SUBMIT_MAYBE_INFLIGHT")) { await this.addPending(content, r.txid); this.flushPending(); } // durable, alarm-driven
     await this.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
     return r;
   }
@@ -878,12 +882,15 @@ export class Wallet {
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE; // propose min 0.25 CSD
     const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
-    if (r.ok && r.txid) {
+    // A maybe-inflight seal may still MINE: persist the reveal preimage (claim+nonce) on the
+    // ambiguous path too, or a landed commit becomes forever unrevealable (0.2.56, same class as
+    // the cairnPost content fix). Saving locally is harmless when the tx never landed.
+    if (r.txid && (r.ok || r.code === "SUBMIT_MAYBE_INFLIGHT")) {
       const list: any[] = (await this.store.get(sk)) || [];
       if (!list.find((x) => x.txid === r.txid)) list.unshift({ txid: r.txid, domain, claim: p.claim, nonce, committedTs: Date.now(), revealed: false });
       await this.store.set(sk, list.slice(0, 500));
-      await this.maybeRecord(hk, r, { type: "seal", domain, fee });
     }
+    await this.maybeRecord(hk, r, { type: "seal", domain, fee });
     return r;
   }
   async revealClaim(txid: string) {
@@ -904,13 +911,39 @@ export class Wallet {
   // post-await histKey(this.addr()) would file the entry (and everything the pending-merge line
   // derives from it) under the switched-to account.
   private histKeyNow() { return histKey(this.addr()); }
-  private async maybeRecord(k: string, r: { ok?: boolean; txid?: string; spentTxids?: string[] }, meta: Record<string, unknown>) {
+  private async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[] }, meta: Record<string, unknown>) {
     if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta });
+    // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool — a timeout / gateway
+    // 5xx / unreadable answer AFTER signing. Record it maybe:true under the LOCALLY computed txid
+    // so the failure copy's "check history before resending" is actionable: this entry is what
+    // stands between an ingested-but-unanswered send and a blind resend double-pay (a resend picks
+    // DIFFERENT coins once the mempool-spent filter updates, so byte-identical dedupe does NOT
+    // backstop it). Previously only consolidate() did this; every value flow gets it here at the
+    // single chokepoint. Deliberate, accepted side-effect: the recipient joins paidRecipients
+    // (clearsign.ts), muting the first-time-recipient warning for an address the user already
+    // clear-signed once — entries only originate from the user's own reviewed sends, no poisoning
+    // vector.
+    else if (r && !r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
+      await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, maybe: true });
+    }
+    // A duplicate answer RESOLVES an earlier ambiguity — a tx spending these coins IS pending, and
+    // a deterministic retry of an ingested submit is byte-identical, so this is the common way a
+    // maybe:true entry turns out to have landed. Clear the flag in place; never INSERT on a dup
+    // (on the current node's conflated error a dup can also mean a DIFFERENT tx spends the coins,
+    // and a fresh entry under the local txid would then claim a send that never landed).
+    else if (r && !r.ok && r.code === "SUBMIT_DUPLICATE" && r.txid) {
+      await this.clearMaybe(k, r.txid);
+    }
     // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
     // this spend just consumed (Plans/66 review finding — the final combining pass spends earlier
     // rounds' outputs with no balance refresh in between, which otherwise left those entries
     // deriving a false "merging" line for up to an hour).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
+  }
+  private async clearMaybe(k: string, txid: string) {
+    const h: any[] = (await this.store.get(k)) || [];
+    const e = h.find((x) => x?.txid === txid && x.maybe);
+    if (e) { delete e.maybe; await this.store.set(k, h); }
   }
   private async latchSpentMerges(k: string, spent: string[]) {
     const h: any[] = (await this.store.get(k)) || [];
@@ -923,7 +956,15 @@ export class Wallet {
   }
   private async recordTx(k: string, entry: Record<string, unknown>) {
     const h: any[] = (await this.store.get(k)) || [];
-    if (h.find((x) => x.txid === entry.txid)) return; // idempotent
+    const e = h.find((x) => x?.txid === entry.txid);
+    if (e) {
+      // Idempotent by txid — but a DEFINITIVE record for a txid first recorded maybe:true resolves
+      // the ambiguity: clear the flag IN PLACE. Never re-insert or reorder — ts, position and the
+      // consolidate confirmed-latch must survive (a replace would resurrect the pending-forever
+      // bug the latch exists to prevent).
+      if (e.maybe && !entry.maybe) { delete e.maybe; await this.store.set(k, h); }
+      return;
+    }
     h.unshift(entry);
     await this.store.set(k, h.slice(0, 200));
   }
