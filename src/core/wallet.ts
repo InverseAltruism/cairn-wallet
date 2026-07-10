@@ -418,7 +418,7 @@ export class Wallet {
   async removeAccount(addr: string, password?: string): Promise<void> {
     const accts = this.mustUnlocked();
     if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
-    const i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
+    let i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
     if (i < 0) throw new Error("no such account");
     // A2 (Plans/68 F4): an IMPORTED raw key is NOT derivable from the recovery phrase, so removing it
     // without a backup is PERMANENT fund loss — and it was one click. Imported removal now requires a
@@ -430,6 +430,14 @@ export class Wallet {
       if (!password) throw new Error("REMOVE_IMPORTED_REAUTH");
       const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
       await this.openVaultDoc(v, password); // throws "bad password" (and increments the guard) on failure
+      // TOCTOU (fresh-eyes 0.2.57 finding 1): the KDF await above is the ONLY await between findIndex
+      // and splice, and a concurrent removal can mutate accts while this call is parked — splicing the
+      // pre-await index then removed the WRONG account (the next imported key, silently, history wiped).
+      // Re-derive the index after the await; a target already removed by the racing call is done
+      // (idempotent), and the last-account floor is re-asserted against the CURRENT list.
+      i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
+      if (i < 0) return;
+      if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
     }
     const gone = accts[i].addr;
     accts.splice(i, 1);

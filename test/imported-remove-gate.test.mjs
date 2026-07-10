@@ -57,6 +57,23 @@ console.log("A2 — imported-key removal gate:");
   check("…and wipes its history + sealed-claim keys", (await store.get("txHistory:" + imp)) == null && (await store.get("sealedClaims:" + imp)) == null);
 }
 
+console.log("A2 — concurrent double-remove cannot splice a stale index (fresh-eyes TOCTOU):");
+{
+  // The password re-auth KDF is an await BETWEEN findIndex and splice; two concurrent removals of the
+  // SAME imported account both pass findIndex, both park in the KDF, and pre-fix the second spliced a
+  // STALE index — silently removing the NEXT imported account (history wiped, both calls report ok).
+  const st0 = memoryStore(), se0 = memoryStore();
+  const w2 = new Wallet(st0, se0);
+  await w2.create(PW);
+  const { addr: impA } = await w2.importAccount("0x" + "5c".repeat(32), "imp-A");
+  const { addr: impB } = await w2.importAccount("0x" + "6d".repeat(32), "imp-B");
+  const results = await Promise.allSettled([w2.removeAccount(impA, PW), w2.removeAccount(impA, PW)]);
+  const st = await w2.status();
+  check("the targeted imported account is removed", !st.accounts.some((a) => a.addr.toLowerCase() === impA.toLowerCase()));
+  check("the OTHER imported account SURVIVES a concurrent double-remove", st.accounts.some((a) => a.addr.toLowerCase() === impB.toLowerCase()));
+  check("no call reported a wrong-account success (both settled without removing extra accounts)", st.accounts.length === 2 && results.every((r) => r.status === "fulfilled" || /no such|last account|bad password/i.test(String(r.reason?.message))));
+}
+
 console.log("A2 — removeAccount stays off the dApp surface:");
 {
   const src = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
