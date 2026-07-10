@@ -195,13 +195,31 @@ export class Wallet {
     };
   }
 
-  private async persistVault() {
+  // SERIALIZED (persistVault-race, fund-safety fresh-eyes): account-mgmt ops mutate this.accts
+  // SYNCHRONOUSLY, then await persistVault. Without serialization two overlapping calls could each
+  // seal a doc built at a different instant and let the STALE write land last — permanently dropping a
+  // just-added IMPORTED (non-seed-recoverable) key. Chaining every persist behind one promise makes the
+  // last write reflect the final account set (each queued persist re-reads this.accts, which by then
+  // holds every prior synchronous mutation). The cleartext mirror is captured from the SAME pre-await
+  // snapshot as the sealed doc, so the vault ciphertext and the mirror can never diverge intra-call.
+  // Throw-safe: the chain always continues (both settle paths run the next persist; persistChain is
+  // reset to an always-resolved promise) and each caller still observes its own rejection.
+  private persistChain: Promise<void> = Promise.resolve();
+  private persistVault(): Promise<void> {
+    const run = this.persistChain.then(() => this.doPersistVault(), () => this.doPersistVault());
+    this.persistChain = run.then(() => {}, () => {});
+    return run;
+  }
+  private async doPersistVault(): Promise<void> {
     if (!this.accts || !this.vaultKey) throw new Error("locked");
     const doc = this.buildDoc();
+    // capture the cleartext mirror from the SAME synchronous state as `doc`, BEFORE the async seal
+    const mirror = this.accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported }));
+    const active = this.active;
     const vault = await sealWith(JSON.stringify(doc), this.vaultKey, this.salt, this.iter);
     await this.store.set("vault", vault);
-    await this.store.set("wallets", this.accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported })));
-    await this.store.set("active", this.active);
+    await this.store.set("wallets", mirror);
+    await this.store.set("active", active);
   }
 
   private acct(priv: string, label: string, extra: { index?: number; imported?: boolean } = {}): Acct { return { ...fromPriv(priv), label, ...extra }; }
@@ -472,6 +490,11 @@ export class Wallet {
   private expectSignerRefusal(expectSigner: string | undefined, actual: string): node.SubmitResult | null {
     if (expectSigner && expectSigner.toLowerCase() !== actual.toLowerCase()) return ACCOUNT_CHANGED_REFUSAL();
     return null;
+  }
+  // Throwing variant for the name/token methods that surface refusals as thrown errors (FEE_CHANGED
+  // precedent) rather than a structured SubmitResult — same guard, single source for the copy.
+  private throwOnSignerChange(expectSigner: string | undefined): void {
+    if (expectSigner && expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error(ACCOUNT_CHANGED_REFUSAL().error);
   }
 
   // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx — every caller
@@ -913,7 +936,7 @@ export class Wallet {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
-    if (expectSigner && expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error("the active account changed since you reviewed this request — reopen it and review again before approving");
+    this.throwOnSignerChange(expectSigner);
     const built = buildNameRenew({ name });
     const tip = await node.tip(this.rpc);
     const liveFee = nameRegFee(name, buildFeeHeight(tip));  // v1.8: height-gated; V18-1 boundary-safe build pricing
@@ -933,7 +956,7 @@ export class Wallet {
   async cairnxSetPrimary(name: string, expectSigner?: string) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
-    if (expectSigner && expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error("the active account changed since you reviewed this request — reopen it and review again before approving");
+    this.throwOnSignerChange(expectSigner);
     const built = buildNameSet({ name, addr: this.addr() });
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + SET_PRIMARY_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
@@ -954,7 +977,7 @@ export class Wallet {
   async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number; expectSigner?: string }) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
-    if (p.expectSigner && p.expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error("the active account changed since you reviewed this request — reopen it and review again before approving");
+    this.throwOnSignerChange(p.expectSigner);
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;

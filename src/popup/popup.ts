@@ -848,6 +848,7 @@ $("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeT
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
 $("btn-backup-done").addEventListener("click", () => {
   backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = "";
+  clearCopiedSecret(); // F-CLIP: if the first-backup phrase/key was copied, clear it now rather than waiting for popup close
   msg("wallet ready", "ok"); render();
   // wallet-ready moment: one-shot ring pulse over the balance hero (CSS-only; killed by reduced-motion)
   const vm = $("view-main");

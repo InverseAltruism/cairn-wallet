@@ -437,10 +437,15 @@ export function nfinalizeApproveGate(fetched: NameFetchResult, me: string, tip: 
   // (Plans/68 B2), BOTH finalize-window sides when a tip is passed: the freeze/too-early half the old
   // local check missed (a pre-freeze finalize is rejected by the resolver AFTER the fee moved — the
   // same burn as too-late) and the expiry half that used to live in a hand-rolled windowEnd formula
-  // here. The helper derives the boundaries from the reservation's own finalizeBy with the shared
-  // FINALIZE_TIP_MARGIN band, so wallet and site refuse on identical block heights. The reservation's
-  // own effectiveHeight stands in for the commit height the wallet cannot know here, so displacement
-  // surfaces as an owner change rather than a height mismatch.
+  // here. The helper derives the window purely from the passed commit height (= effectiveHeight)
+  // against the shared FINALIZE_TIP_MARGIN band, so wallet and site refuse on identical heights for an
+  // HONEST record. TRUST SCOPE (be honest, per the SDK docstring): the wallet passes the reservation's
+  // OWN effectiveHeight as the commit height (it has no independent commit height and no SPV on this
+  // record), which makes the displacement guard a tautology — so this gate protects against an
+  // honest-but-stale resolver and displacement races, NOT against a Byzantine resolver that lies about
+  // effectiveHeight to widen the window. That closure is registration-state SPV, the same resolver-trust
+  // residual the fill path documents; this gate is best-effort within that posture, and it fails OPEN on
+  // transport so it never adds a hard network dependency.
   const w = finalizeWinnerCheck(resv as any, me, Number(resv?.effectiveHeight), tip);
   if (!w.safe) return { block: true, note: `refusing to approve — ${w.reason}.` };
   return { block: false, note: null };
