@@ -19,8 +19,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -52,7 +52,7 @@ jobs:
       - if: ${{ env.HAS_TOKEN != 'true' }}
         run: echo "ECOSYSTEM_RO_TOKEN not set — skipping the full rebuild-vs-source gate (cheap vendor gate in 'test' still runs)."
       - if: ${{ env.HAS_TOKEN == 'true' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: { path: cairn-wallet }
       # Pin the csd-sdk checkout to the EXACT commit the committed bundle records (PROVENANCE.csdSdkCommit),
       # NOT the moving master (audit M2). This makes the rebuild-vs-source byte-diff REPRODUCIBLE and turns the
@@ -64,14 +64,14 @@ jobs:
         id: prov
         run: echo "commit=$(node -p "require('./cairn-wallet/src/vendor/PROVENANCE.json').csdSdkCommit")" >> "$GITHUB_OUTPUT"
       - if: ${{ env.HAS_TOKEN == 'true' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           repository: InverseAltruism/csd-sdk
           ref: ${{ steps.prov.outputs.commit }}
           token: ${{ secrets.ECOSYSTEM_RO_TOKEN }}
           path: csd-sdk
       - if: ${{ env.HAS_TOKEN == 'true' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "22" }
       - if: ${{ env.HAS_TOKEN == 'true' }}
         # Install csd-sdk's OWN pinned pnpm directly (bypassing corepack). The runner's newer corepack ships a
