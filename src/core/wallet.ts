@@ -1172,6 +1172,18 @@ export class Wallet {
   async reset(): Promise<void> {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
+    // RESET-RESURRECT (fund-safety red-team): the wipe must not race a persist parked at its store.set —
+    // a STALE persist landing AFTER the deletes would resurrect the (still-encrypted) vault + the cleartext
+    // account mirror, silently defeating "wipe everything" and locking out create/restore. Serialize the
+    // wipe behind the SAME chain persistVault uses, so it runs only after every queued persist's writes
+    // have landed; lock() above already nulled this.accts, so no NEW persist can write (doPersistVault
+    // throws "locked"), making these deletes the last store ops.
+    const wipe = () => this.doReset(wallets);
+    const run = this.persistChain.then(wipe, wipe);
+    this.persistChain = run.then(() => {}, () => {});
+    return run;
+  }
+  private async doReset(wallets: PubAcct[]): Promise<void> {
     for (const w of wallets) { await this.store.del(histKey(w.addr)); await this.store.del(sealKey(w.addr)); }
     for (const k of ["vault", "wallets", "active", "addr", "txHistory", "sealedClaims", "pendingContent"]) await this.store.del(k);
   }

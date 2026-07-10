@@ -79,5 +79,30 @@ console.log("persistVault — a normal single persist still works (no serializat
   check("sequential add + import both persist and re-open cleanly", st.accounts.length === 3 && !!r.addr);
 }
 
+console.log("reset() must not race a persist and RESURRECT the wiped vault (RESET-RESURRECT, red-team):");
+{
+  // reset() deletes vault/wallets off the persist chain; a persist parked at its store.set could land
+  // AFTER the deletes and re-create the encrypted vault + cleartext mirror — defeating "wipe everything"
+  // and locking out create/restore. MUTATION CONTRACT: fails on the pre-fix reset (deletes not chained).
+  const g = gatedStore();
+  const w = new Wallet(g.store, memoryStore());
+  await w.create(PW);           // [A]; create's persist runs before arm
+  g.arm();                      // gate the next vault write
+  const p1 = w.addAccount("B"); // persist parks at the gated vault write ([A,B] sealed, held)
+  await g.hit;
+  const p2 = w.reset();         // lock() nulls accts; the wipe is routed through the same persist chain
+  await new Promise((r) => setTimeout(r, 0)); // let reset() reach its chained wipe
+  g.release();                  // p1's parked [A,B] write lands; then (post-fix) the chained wipe deletes it
+  await Promise.all([p1.catch(() => {}), p2]);
+
+  const vault = await g.store.get("vault");
+  const wallets = await g.store.get("wallets");
+  check("reset() leaves NO vault ciphertext after a racing persist (wipe holds)", vault === null);
+  check("reset() leaves NO cleartext account mirror", wallets === null || (Array.isArray(wallets) && wallets.length === 0));
+  let created = false;
+  try { const w2 = new Wallet(g.store, memoryStore()); await w2.create(PW); created = true; } catch { created = false; }
+  check("a fresh create() succeeds after reset (no 'wallet already exists' lockout)", created);
+}
+
 console.log(`\npersistvault-race: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
