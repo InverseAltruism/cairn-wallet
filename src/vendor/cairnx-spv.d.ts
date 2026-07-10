@@ -17,7 +17,7 @@ export interface VerifiedHeader { height: number; hash: string; header: { merkle
 export interface RpcBlock { ok: boolean; hash: string; height?: number; header: unknown; txs: (RpcTxJson & { txid: string })[] }
 
 export class CsdClient {
-  constructor(opts: { baseUrl: string; fetch?: typeof fetch });
+  constructor(opts: { baseUrl: string; fetch?: typeof fetch; timeoutMs?: number }); // timeoutMs: per-request AbortSignal bound (bundle default 10s)
   tip(): Promise<{ height: number; hash?: string }>;
   blockByHeight(h: number): Promise<RpcBlock>;
   blockByHash(hash: string): Promise<RpcBlock>;

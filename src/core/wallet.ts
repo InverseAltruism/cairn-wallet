@@ -424,9 +424,11 @@ export class Wallet {
   // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx — every caller
   // discriminates status / parses / catches itself, so each keeps its own fail-soft (display reads) vs
   // fail-closed (fillOffer/resolveName money paths) posture exactly. A network error / timeout abort throws
-  // out of fetch → the caller's own try/catch handles it. Timeouts bound the wait: 6s on recipient/fill
-  // paths (fail clean, never wrong), 12s on the slower display reads (bounded instead of hanging forever).
-  private tradeGet(path: string, timeoutMs = 6000): Promise<Response> {
+  // out of fetch → the caller's own try/catch handles it. The 12s default sits ABOVE the /trade/api
+  // proxy's 10s upstream wait (CAIRN_PROXY_TIMEOUT_MS) — the old 6s default aborted while the proxy
+  // was still legitimately waiting on a slow-but-working resolver, turning a survivable stall into a
+  // spurious fail-closed refusal on the fill/resolve money paths (timeout-inversion class, Plans/66 B1).
+  private tradeGet(path: string, timeoutMs = 12000): Promise<Response> {
     return fetch(this.tradeApi + path, { signal: AbortSignal.timeout(timeoutMs) });
   }
 
@@ -597,8 +599,53 @@ export class Wallet {
   async send(to: string, amount: number, fee = 1_000_000) { const r = await node.send(this.rpc, { to, amount, fee }, this.must().privkey); await this.maybeRecord(r, { type: "send", to, amount, fee }); return r; }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
   // Popup-only — deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
-  async consolidate(fee = 1_000_000) { const r = await node.consolidate(this.rpc, { fee }, this.must().privkey); await this.maybeRecord(r, { type: "consolidate", merged: r.merged, amount: r.total, fee }); return r; }
+  // Ambiguous outcomes (SUBMIT_MAYBE_INFLIGHT) are ALSO recorded, flagged maybe:true — the popup's
+  // pending-merge indicator derives from this history entry, and it must not be blind exactly when
+  // the merge was ingested but the answer was lost (that is when the balance dips with no
+  // explanation). The txid is the locally computed consensus txid (Plans/66 B4).
+  async consolidate(fee = 1_000_000) {
+    const r = await node.consolidate(this.rpc, { fee }, this.must().privkey);
+    await this.maybeRecord(r, { type: "consolidate", merged: r.merged, amount: r.total, fee });
+    if (!r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
+      await this.recordTx({ txid: r.txid, ts: Date.now(), type: "consolidate", merged: r.merged, amount: r.total, fee, maybe: true });
+    }
+    return r;
+  }
   consolidatePreview(fee = 1_000_000) { return node.consolidatePreview(this.rpc, this.addr(), fee); }
+
+  // Pending-merge detection (popup-only, Plans/66 B4). The moment a merge enters the mempool the
+  // node's available-utxo view drops its inputs AND doesn't yet show its output, so the balance
+  // hero visibly loses the whole merged amount until the next block — the single most alarming
+  // moment in the consolidate flow. This derives "a merge is confirming" from data the popup
+  // ALREADY holds (history + the utxo set from its balance fetch — zero extra requests, no
+  // dependency on the node's expensive /tx/:id not-found scan):
+  //   pending  = a consolidate history entry <60min whose merge-output txid is NOT in the utxos;
+  //   confirmed = the txid APPEARS in the utxos → latch `confirmed:true` ON the entry (persisted:
+  //     the designed next step SPENDS that output, and without the latch its later absence would
+  //     re-derive "pending" forever after a popup reopen);
+  //   stale    = >60min unconfirmed → stop claiming (a dropped merge returns its coins anyway).
+  // Multi-round aware: sums every in-flight round. `maybe` marks rounds whose submit answer was
+  // lost (recorded maybe:true) so the copy can hedge.
+  async pendingMerge(utxos?: { txid: string }[]): Promise<{ pending: boolean; amount: number; maybe: boolean }> {
+    const h = await this.history();
+    const candidates = (h as any[]).filter((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
+    if (!candidates.length) return { pending: false, amount: 0, maybe: false };
+    let set = utxos;
+    if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, this.addr())); } catch { return { pending: false, amount: 0, maybe: false }; } }
+    const present = new Set((set || []).map((u) => String(u.txid).toLowerCase()));
+    let amount = 0, maybe = false, pending = false;
+    for (const e of candidates) {
+      if (present.has(String(e.txid).toLowerCase())) { await this.latchMergeConfirmed(e.txid); continue; }
+      pending = true; amount += Number(e.amount) || 0; maybe = maybe || !!e.maybe;
+    }
+    return { pending, amount, maybe };
+  }
+  private async latchMergeConfirmed(txid: string) {
+    const k = histKey(this.addr());
+    const h: any[] = (await this.store.get(k)) || [];
+    const e = h.find((x) => x.txid === txid && x.type === "consolidate");
+    if (e && !e.confirmed) { e.confirmed = true; await this.store.set(k, h); }
+  }
 
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
   // by node.sendMany; callers never supply UTXOs. History records the total + primary
@@ -660,11 +707,12 @@ export class Wallet {
       // UNTRUSTED no matter which source served it, so falling back is no weaker). Only a definitive
       // 404 from the source that answered short-circuits; network/5xx tries the second source.
       let r: Response | null = null;
-      try { r = await this.tradeGet(`/cairnx/resolve/${encodeURIComponent(nm)}`); } catch { r = null; } // 6s: recipient path fails clean
+      try { r = await this.tradeGet(`/cairnx/resolve/${encodeURIComponent(nm)}`); } catch { r = null; } // 12s (> the proxy's 10s upstream): recipient path fails clean
       if (r && r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
       if (!r || !r.ok) {
         try {
-          const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(6000) });
+          // 12s like the primary: clarvis fronts the same cairn proxy shape (10s upstream wait).
+          const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(12000) });
           // Only accept a POSITIVE answer from the fallback; a 404 from a degraded/withholding second
           // source is NOT trustworthy enough to definitively claim "not registered" (fail-closed to the
           // retryable "name lookup failed" below instead — the primary being down is transient).
@@ -872,7 +920,11 @@ export class Wallet {
     if (!list.length) return;
     const keep: any[] = [];
     for (const x of list) {
-      if (Date.now() - (x.ts || 0) > 86400000) continue;        // expire after 24h
+      // 7 days, not 24h: content registration follows a PAID Propose/name tx, and the old 24h
+      // window silently dropped the content of anyone offline a day — user paid, body never
+      // landed, no error (Plans/66 B8). Content is self-certifying and re-POSTable, so a long
+      // retry window costs nothing; expiry still bounds the queue.
+      if (Date.now() - (x.ts || 0) > 7 * 86400000) continue;
       try {
         const p = await node.getProposal(this.rpc, x.txid);
         if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later

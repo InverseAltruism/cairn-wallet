@@ -349,14 +349,29 @@ export interface LiveSpvOpts {
 /** Build the live SPV source. The LightClient seeds at the baked checkpoint and verifies forward to tip. */
 export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   const boundFetch = (...a: Parameters<typeof fetch>) => fetch(...a);
-  const client = new CsdClient({ baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch });
+  // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
+  // default TIED the inner chain exactly — an abort could fire the instant the proxy's fallback
+  // would have answered (timeout-inversion class, docs/Plans/66 B2).
+  const client = new CsdClient({ baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000 });
   const headersBase = opts.headersBase.replace(/\/$/, "");
-  // The /api/headers endpoint is budget-limited (DOS-HDR-1). A legit cold sync paces itself: on a 429 we
-  // back off and retry a few times rather than fail the whole verify — an attacker is still bounded.
+  // The /api/headers endpoint is budget-limited (DOS-HDR-1) and deadline-bounded (it answers a clean
+  // 502 at ~10s instead of grinding on a slow indexer). A legit cold sync paces itself:
+  //  - 429 (budget) → sleep the server's own Retry-After hint (capped 15s; it says when the window
+  //    resets — the old fixed 1.2s×n ladder maxed ~25s and could NOT span a 60s budget window);
+  //  - 502/503 (deadline/data-availability hiccup) → short ladder retry: our aborted request left
+  //    stragglers warming the server's header cache, so the retry is cheap and usually instant.
+  // Every retried header is still fully re-verified (PoW/prev-link/LWMA) downstream — retrying
+  // transport carries zero trust. After bounded retries we still THROW → verify fails closed.
+  // Client timeout 15s sits ABOVE the server's 10s deadline (the server answers first by design).
   const headersBatch = async (from: number, count: number) => {
     for (let attempt = 0; ; attempt++) {
-      const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: AbortSignal.timeout(8000) });
-      if (r.status === 429 && attempt < 6) { await sleep(1200 * (attempt + 1)); continue; }
+      const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: AbortSignal.timeout(15_000) });
+      if (r.status === 429 && attempt < 6) {
+        const ra = Number(r.headers.get("retry-after")) || 0;
+        await sleep(Math.min(ra > 0 ? ra * 1000 : 1200 * (attempt + 1), 15_000));
+        continue;
+      }
+      if ((r.status === 502 || r.status === 503) && attempt < 6) { await sleep(1200 * (attempt + 1)); continue; }
       if (!r.ok) throw new Error(`/api/headers ${r.status}`);
       const rows = (await r.json())?.headers;
       if (!Array.isArray(rows) || rows.length !== count) throw new Error("/api/headers: non-dense range");
@@ -400,7 +415,12 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
       const cur = LC.baseHeight + LC.chain.length - 1;
       if (want > cur) {
         await LC.sync(want);                           // a lying-high header THROWS here (fail-closed)
-        if (opts.cache) { try { await opts.cache.set(LC.toSnapshot()); } catch { /* cache best-effort */ } }
+        // Snapshot write is best-effort (a failure only means the NEXT verify cold-syncs again),
+        // but never silent: the snapshot is multi-MB and shares chrome.storage.local's quota with
+        // the vault/history — a persistent write failure here is the early smoke of quota
+        // exhaustion (the manifest carries unlimitedStorage precisely to keep this from failing;
+        // if this warning ever fires, investigate storage pressure, don't ignore it).
+        if (opts.cache) { try { await opts.cache.set(LC.toSnapshot()); } catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); } }
       }
       // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
       return { verifiedTip: LC.baseHeight + LC.chain.length - 1, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0) };

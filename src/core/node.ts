@@ -10,7 +10,11 @@ import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txi
 // recovery. A timeout converts the stall into the existing fail-closed error paths (get() throws →
 // caller catch; post() returns the maybeInflight-flagged failure below). Reads are short; submit is
 // generous (the node can be busy validating a 512-input tx).
-const GET_TIMEOUT_MS = 8_000;
+// 12s, not 8s: the cairn proxy's failover chain worst-cases at 4s (routed backend) + 6s (fallback)
+// = 10s of legitimate inner wait — an 8s outer abort raced that chain and turned a survivable
+// one-backend outage into spurious VERIFY_UNAVAILABLE on every read (timeout-inversion class,
+// docs/Plans/66 B1). The outer timeout must sit ABOVE the inner worst case.
+const GET_TIMEOUT_MS = 12_000;
 const POST_TIMEOUT_MS = 20_000;
 async function get(rpc: string, path: string): Promise<any> {
   const r = await fetch(`${rpc}${path}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
@@ -384,6 +388,11 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
   const scriptSig = buildScriptSig(sig64, pub33);
   for (const i of tx.inputs) i.scriptSig = scriptSig;
+  // The consensus txid is known LOCALLY before submit (txid = sha256d over the scriptSig-stripped
+  // tx). On an ambiguous outcome the server's answer was lost, so this local txid is the only
+  // handle the caller has to later check whether the tx landed (the popup's pending-merge line
+  // depends on it; Plans/66 B4).
+  const localTxid = codecTxid(tx);
   const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
   // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = a DEFINITIVE 4xx rejection (node said no,
   // or a pre-forward proxy 400/413/429), so the tx is not in the mempool (safe to say "nothing was sent");
@@ -392,7 +401,26 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // in flight" caution is truthful. post() sets maybeInflight on exactly those ambiguous branches (a 5xx is
   // ambiguous because the cairn proxy 502s the node after only 4s, which can outrace a slow-but-successful
   // mempool ingest).
-  return { ok: !!sub.ok, txid: sub.txid, error: sub.err ?? (sub.ok ? undefined : "submit rejected"), sighashMatch: true, code: sub.ok ? undefined : (sub.maybeInflight ? "SUBMIT_MAYBE_INFLIGHT" : "SUBMIT_REJECTED") };
+  // "already present or mempool conflict" is NOT a plain rejection: the node's answer string
+  // conflates "this exact tx is already in the mempool" (a resubmit after an ambiguous failure —
+  // deterministic signing makes the retry byte-identical, so this is the COMMON resubmit outcome)
+  // with "a different tx spends these coins". Either way "nothing was sent" would be FALSE — a tx
+  // spending these coins IS pending. Own code (additive, per the error-contract rule) + hedged
+  // copy that is true in both cases; txid = the local txid (in the duplicate case that is exactly
+  // the pending tx).
+  const dup = !sub.ok && !sub.maybeInflight && /already present/i.test(String(sub.err ?? ""));
+  return {
+    ok: !!sub.ok,
+    // maybe-inflight: the answer was lost, so surface the locally computed txid (additive and
+    // honest — it lets the caller check whether the tx actually landed). Definitive rejections
+    // keep txid undefined: providing one would read as "it went through".
+    txid: sub.txid ?? (sub.maybeInflight || dup ? localTxid : undefined),
+    error: dup
+      ? "this transaction, or one spending the same coins, is already pending; it should settle within a block or two"
+      : (sub.err ?? (sub.ok ? undefined : "submit rejected")),
+    sighashMatch: true,
+    code: sub.ok ? undefined : (dup ? "SUBMIT_DUPLICATE" : (sub.maybeInflight ? "SUBMIT_MAYBE_INFLIGHT" : "SUBMIT_REJECTED")),
+  };
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).

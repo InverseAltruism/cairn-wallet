@@ -86,6 +86,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS — a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
     case "consolidatePreview": return wallet.consolidatePreview(args[0]);
+    case "pendingMerge": return wallet.pendingMerge(args[0]); // read-only merge-in-flight probe (feeds the popup pending line)
     case "cairnPost": return wallet.cairnPost(args[0]);
     case "cairnSupport": return wallet.cairnSupport(args[0], args[1], args[2], args[3]);
     case "cairnxAssets": return wallet.cairnxAssets();
@@ -214,7 +215,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote", "pendingMerge"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

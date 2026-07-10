@@ -269,6 +269,99 @@ try {
     check("no bare else sendDidntConfirm remains (in-flight copy reserved for catch/maybe-inflight)", !/else sendDidntConfirm\(/.test(popup));
     check("sendRefused reserves the in-flight copy for SUBMIT_MAYBE_INFLIGHT", /SUBMIT_MAYBE_INFLIGHT/.test(popup));
   }
+
+  // ── 12. pendingMerge: derive-from-utxos semantics + the persisted confirmed latch (Plans/66 B4) ──
+  {
+    const coins = [mkCoin(21e8), mkCoin(22e8), mkCoin(23e8)];
+    const { fetch } = mkStub({ coins, served: coins });
+    globalThis.fetch = fetch;
+    const store = memoryStore();
+    const w = new Wallet(store);
+    const { addr } = await w.create("super-secret-pw");
+    const r = await w.consolidate(FEE);
+    check("merge recorded (setup)", r.ok === true && typeof r.txid === "string");
+    // in the mempool: the merge output txid is NOT in the utxo set → pending, full amount
+    const p1 = await w.pendingMerge([{ txid: coins[0].coin.txid }]);
+    check("output absent from utxos → pending, with the merged amount", p1.pending === true && p1.amount === r.total && p1.maybe === false);
+    // confirmed: the txid APPEARS in the utxos → not pending, latch persisted on the entry
+    const p2 = await w.pendingMerge([{ txid: r.txid }]);
+    check("output present in utxos → not pending", p2.pending === false);
+    const hist = await store.get("txHistory:" + addr);
+    check("confirmed latch PERSISTED on the history entry", hist.find((x) => x.txid === r.txid)?.confirmed === true);
+    // confirmed-then-SPENT: the output vanishes again (the designed next step) — the latch must
+    // keep this from re-deriving "pending" after a popup reopen
+    const p3 = await w.pendingMerge([]);
+    check("spent-after-confirm stays not-pending (latch survives)", p3.pending === false);
+    // stale: an unconfirmed entry older than 60min stops claiming
+    const h2 = await store.get("txHistory:" + addr);
+    const e = h2.find((x) => x.txid === r.txid); e.confirmed = false; e.ts = Date.now() - 3_700_000;
+    await store.set("txHistory:" + addr, h2);
+    const p4 = await w.pendingMerge([]);
+    check("stale (>60min) unconfirmed merge stops claiming pending", p4.pending === false);
+  }
+
+  // ── 13. ambiguous merge is recorded maybe:true with the LOCAL txid (detection must not be blind
+  //        exactly when the balance dips with no answer) ──
+  {
+    const coins = [mkCoin(31e8), mkCoin(32e8), mkCoin(33e8)];
+    const { fetch } = mkStub({
+      coins, served: coins,
+      submit: () => ({ ok: false, status: 502, json: async () => ({ ok: false, error: "node unreachable" }) }),
+    });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore());
+    await w.create("super-secret-pw");
+    const r = await w.consolidate(FEE);
+    check("gateway-5xx merge → SUBMIT_MAYBE_INFLIGHT with a local txid", r.ok === false && r.code === "SUBMIT_MAYBE_INFLIGHT" && /^0x[0-9a-f]{64}$/.test(String(r.txid)));
+    const h = await w.history();
+    check("ambiguous merge recorded maybe:true", h.some((x) => x.type === "consolidate" && x.maybe === true && x.txid === r.txid));
+    const p = await w.pendingMerge([]);
+    check("pendingMerge reports the ambiguous merge (maybe)", p.pending === true && p.maybe === true && p.amount === r.total);
+  }
+
+  // ── 14. SUBMIT_DUPLICATE: "already present" is NOT "nothing was sent" (Plans/66 B6) ──
+  {
+    const coins = [mkCoin(41e8), mkCoin(42e8)];
+    const { fetch } = mkStub({
+      coins, served: coins,
+      submit: () => ({ ok: true, status: 200, json: async () => ({ ok: false, err: "already present or mempool conflict" }) }),
+    });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore());
+    await w.create("super-secret-pw");
+    const r = await w.consolidate(FEE);
+    check("duplicate answer → SUBMIT_DUPLICATE (own code, additive)", r.ok === false && r.code === "SUBMIT_DUPLICATE");
+    check("duplicate copy hedges (this tx OR one spending the same coins)", /already pending/.test(String(r.error)) && /same coins/.test(String(r.error)));
+    check("duplicate carries the local txid (it IS the pending tx in the resubmit case)", /^0x[0-9a-f]{64}$/.test(String(r.txid)));
+    const rs = await w.send("0x" + "22".repeat(20), 40e8, FEE);
+    check("send() classifies the duplicate identically", rs.ok === false && rs.code === "SUBMIT_DUPLICATE");
+  }
+
+  // ── 15. source + manifest guards for the 0.2.55 follow-ups (Plans/66 B1-B5) ──
+  {
+    const bg = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
+    const dappLine = bg.split("\n").find((l) => l.includes("const DAPP_METHODS"));
+    check("pendingMerge is NOT a dApp method", !!dappLine && !dappLine.includes("pendingMerge"));
+    const roLine = bg.split("\n").find((l) => l.includes("const READ_ONLY_METHODS"));
+    check("pendingMerge is a READ-ONLY popup method (must not reset the idle lock)", !!roLine && roLine.includes("pendingMerge"));
+    const popup = readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
+    check("TOO_MANY_INPUTS refusal offers the inline merge action", popup.includes('"Merge coins now"'));
+    check("popup treats SUBMIT_DUPLICATE as pending, never 'nothing was sent'", /SUBMIT_DUPLICATE/.test(popup));
+    check("balance hero has the pending-merge line wired", popup.includes('$("merge-pending")'));
+    const html = readFileSync(new URL("../src/popup/popup.html", import.meta.url), "utf8");
+    check("popup.html carries the merge-pending element", html.includes('id="merge-pending"'));
+    const manifest = JSON.parse(readFileSync(new URL("../public/manifest.json", import.meta.url), "utf8"));
+    check("manifest pins unlimitedStorage (the SPV snapshot is multi-MB and grows with the chain)", manifest.permissions.includes("unlimitedStorage"));
+    const nodeSrc = readFileSync(new URL("../src/core/node.ts", import.meta.url), "utf8");
+    check("GET timeout raised above the proxy's 10s failover chain", /GET_TIMEOUT_MS = 12_000/.test(nodeSrc));
+    const nsv = readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8");
+    check("namespv headers client sits above the server's 10s deadline", /AbortSignal\.timeout\(15_000\)/.test(nsv));
+    check("namespv honours Retry-After on 429", /retry-after/.test(nsv));
+    check("namespv retries 502/503 (the server's clean deadline answer)", /r\.status === 502 \|\| r\.status === 503/.test(nsv));
+    check("vendored CsdClient gets an explicit 12s bound (was a 10s-vs-10s tie)", /timeoutMs: 12_000/.test(nsv));
+    const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
+    check("tradeGet default raised above the trade proxy's 10s upstream", /timeoutMs = 12000/.test(walletSrc));
+  }
 } finally {
   globalThis.fetch = origFetch;
 }

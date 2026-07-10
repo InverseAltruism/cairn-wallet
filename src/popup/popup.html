@@ -99,6 +99,10 @@
       <div class="bal-hero">
         <span class="label">balance</span>
         <div class="bal-line"><span id="balance" class="bal bal-xl">—</span> <button id="btn-refresh" class="mini">↻</button></div>
+        <!-- pending-merge line (Plans/66 B4a): the ONE persistent explainer for the post-merge
+             balance dip — a submitted merge removes its input coins from the confirmed balance
+             until the next block, which otherwise looks like ~25k CSD vanishing. -->
+        <div id="merge-pending" class="dim" style="font-size:11px" hidden></div>
       </div>
 
       <!-- pending dApp approvals stay OUTSIDE the #home/#layer swap: a hostile request must

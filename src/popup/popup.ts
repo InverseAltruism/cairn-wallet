@@ -89,6 +89,22 @@ function msg(text: string, cls = "info") {
     msgFadeTimer = setTimeout(() => { m.textContent = ""; m.className = "msg"; }, 450);
   }, hold);
 }
+// Like msg(), plus ONE inline action button, and NO auto-fade — a refusal whose remedy is a click
+// away must stay actionable, not vanish mid-read (the old TOO_MANY_INPUTS toast pointed at a
+// settings breadcrumb and faded in 8s). Any later msg()/busy() replaces it, so it never overstays
+// a flow change. textContent + createElement only: r.error strings never touch innerHTML.
+function msgAction(text: string, label: string, fn: () => void, cls = "err") {
+  const m = $("msg");
+  clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
+  m.classList.remove("fade");
+  m.textContent = text + " ";
+  m.className = "msg " + cls;
+  const b = document.createElement("button");
+  b.className = "mini";
+  b.textContent = label;
+  b.addEventListener("click", () => { msg(""); fn(); });
+  m.appendChild(b);
+}
 // escapeHtml is imported from clearsign.ts - the hardened variant that ALSO neutralizes bidi/
 // zero-width controls (WYSIWYS-BIDI-1). A plain 5-char escape lived here until 2026-07-06, so
 // account labels/history were HTML-safe but not bidi-safe, silently weaker than the clear-sign
@@ -293,6 +309,23 @@ function paintAvatar(name: string | null, addr: string) {
     av.innerHTML = CAIRN_MARK_SVG; // static markup, no interpolation
   }
 }
+// Pending-merge state (Plans/66 B4): derived by the engine from history + the utxo set the
+// balance fetch ALREADY returned (zero extra requests). Cached module-level so the refusal copy
+// (sendRefused) can consult it synchronously; refreshed on every balance refresh, which runs on
+// open, after sends, and after merges — exactly the moments the state can change.
+let mergePendingNow: { pending: boolean; amount: number; maybe: boolean } = { pending: false, amount: 0, maybe: false };
+async function updateMergePending(utxos: unknown) {
+  const line = $("merge-pending") as HTMLElement;
+  try {
+    mergePendingNow = await call("pendingMerge", utxos);
+    if (mergePendingNow?.pending) {
+      line.textContent = mergePendingNow.maybe
+        ? `up to +${fmtBalance(mergePendingNow.amount)} CSD may be merging — back in your balance next block`
+        : `+${fmtBalance(mergePendingNow.amount)} CSD merging — back in your balance next block`;
+      line.hidden = false;
+    } else line.hidden = true;
+  } catch { line.hidden = true; mergePendingNow = { pending: false, amount: 0, maybe: false }; }
+}
 async function refreshBalance() {
   const el = $("balance");
   const seq = ++balSeq;
@@ -300,6 +333,7 @@ async function refreshBalance() {
   try {
     const b = await call("balance");
     if (seq !== balSeq) return;                // a newer refresh superseded this one
+    void updateMergePending(b.utxos);          // piggybacks the utxos this fetch already carried
     el.classList.remove("loading");
     const next = b.confirmed / 1e8;
     const from = lastBal;
@@ -617,7 +651,25 @@ function sendRefused(f: SendFlow, r: any) {
   if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return sendDidntConfirm(f, r?.error ? String(r.error) + " — " : "");
   teardownReview(f, false);
   f.refresh();
-  msg((r?.error ? String(r.error) : "the send was refused") + " — nothing was sent.", "err");
+  // SUBMIT_DUPLICATE: a tx spending these coins IS pending (usually this exact one — a resubmit
+  // after an ambiguous failure is byte-identical), so "nothing was sent" would be false. The
+  // engine's copy is already the truthful hedge; info-class, not an error.
+  if (r?.code === "SUBMIT_DUPLICATE") {
+    return msg(String(r?.error ?? "this transaction is already pending; it should settle within a block or two."), "info");
+  }
+  let text = (r?.error ? String(r.error) : "the send was refused") + " — nothing was sent.";
+  // Merge-aware refusals (Plans/66 B4b): right after a consolidate, the confirmed balance is
+  // legitimately short by the whole merging amount — say so instead of leaving "insufficient"
+  // to read as lost funds.
+  if ((r?.code === "INSUFFICIENT" || r?.code === "TOO_MANY_INPUTS") && mergePendingNow.pending) {
+    text += ` A coin merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming — retry after the next block.`;
+  }
+  // TOO_MANY_INPUTS: the remedy is one click away — surface it as an action, not a breadcrumb
+  // in a toast that fades mid-read (Plans/66 B5).
+  if (r?.code === "TOO_MANY_INPUTS") {
+    return msgAction(text, "Merge coins now", () => { void openConsolidatePanel(true); });
+  }
+  msg(text, "err");
 }
 // Success teardown: outcome message + hero glow first, then the one clear-the-draft path.
 function sentOk(f: SendFlow, text: string) {
@@ -899,8 +951,18 @@ async function renderCoinsInfo() {
 // a panel reopen so a second concurrent merge can't be fired (the reopen re-enables the confirm button);
 // two concurrent merges are self-conflicting and harmless, but this keeps a single, clean flow.
 let consolidating = false;
-$("btn-consolidate").addEventListener("click", async () => {
-  if (!openPanel("consolidate-form")) return;
+// Shared opener: the settings button (toggle semantics) and the TOO_MANY_INPUTS "Merge coins now"
+// action (force-open) both land here. The preview arms Confirm for every legitimate case —
+// including while an EARLIER round is still confirming: back-to-back rounds select disjoint coins
+// (the node's available-utxo view already excludes the in-flight round's inputs), so disarming
+// here would be a decline path on a designed flow. Only two things keep Confirm down: a merge
+// in flight in THIS popup (the double-fire latch) and a dust-only preview (out = 0 would just
+// burn the fee at the engine's INSUFFICIENT refusal).
+async function openConsolidatePanel(force = false) {
+  if (!openPanel("consolidate-form")) {
+    if (!force) return;                                        // settings-button toggle: closing is a valid click
+    ($("consolidate-form") as HTMLElement).hidden = false;     // action path: always end OPEN
+  }
   const note = $("cs-note") as HTMLElement;
   ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = true;
   note.textContent = "";
@@ -911,11 +973,18 @@ $("btn-consolidate").addEventListener("click", async () => {
     $("cs-total").textContent = fmtBalance(p.total) + " CSD";
     $("cs-fee").textContent = fmtCsd(SEND_FEE);
     $("cs-out").textContent = fmtBalance(p.out) + " CSD";
-    note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins — run the merge again afterwards for the rest. ` : "")
-      + (consolidating ? "a merge is already in progress; wait for it to confirm." : "This is a normal payment to yourself: your balance only changes by the fee.");
-    if (!consolidating) ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;   // keep it latched if a merge is already running
+    // Round plan: merging 512 coins into 1 retires 511 per pass, and intermediate outputs get
+    // swept into a later pass once confirmed — so ceil((coins-1)/511) covers the whole plan.
+    const rounds = Math.ceil((p.coins - 1) / 511);
+    note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins — about ${rounds} merges needed in total. You can run the next one right away; only the final combining pass needs the earlier merges confirmed (about a block). ` : "")
+      + (consolidating ? "a merge is already in progress in this window; wait for it to finish." : "")
+      + (!consolidating && mergePendingNow.pending ? `a previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming — merging more coins now is safe. ` : "")
+      + "This is a normal payment to yourself: your balance only changes by the fee.";
+    if (p.out <= 0) { note.textContent = "these coins are too small to cover the fee — nothing to gain by merging them."; return; } // keep Confirm down: the engine would refuse anyway
+    if (!consolidating) ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;   // keep it latched only while a merge runs in THIS popup
   } catch { note.textContent = "node unreachable — try again in a moment."; }
-});
+}
+$("btn-consolidate").addEventListener("click", () => { void openConsolidatePanel(); });
 $("btn-consolidate-back").addEventListener("click", () => { openPanel("settings"); renderConnectedSites(); renderCoinsInfo(); });
 $("btn-consolidate-confirm").addEventListener("click", async () => {
   const btn = $("btn-consolidate-confirm") as HTMLButtonElement;
@@ -925,11 +994,19 @@ $("btn-consolidate-confirm").addEventListener("click", async () => {
     busy("verifying & merging coins… (can take ~10s)");
     const r = await call("consolidate", SEND_FEE);
     if (r.ok) {
-      msg(`merged ${r.merged} coins into one · ${String(r.txid).slice(0, 12)}…` + (r.remaining >= 1 ? ` — ${r.remaining} coin(s) left, run again after this confirms` : ""), "ok sent");
+      // Honest cadence (Plans/66 B7): the next round selects DISJOINT coins (the node's available
+      // view excludes this round's inputs), so "run again right away" is true; only the final
+      // combining pass waits on confirmations.
+      msg(`merged ${r.merged} coins into one · ${String(r.txid).slice(0, 12)}…` + (r.remaining >= 1 ? ` — ${r.remaining} coin(s) left; you can run the next merge right away` : ""), "ok sent");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
-    } else if (r?.code === "SUBMIT_MAYBE_INFLIGHT") {
-      msg((r.error ? String(r.error) + " — " : "") + "the merge didn't confirm; it may already be in flight. Check your balance/history before retrying.", "err");
+    } else if (r?.code === "SUBMIT_MAYBE_INFLIGHT" || r?.code === "SUBMIT_DUPLICATE") {
+      // maybe-inflight: recorded maybe:true in history, so the pending line takes over from here.
+      // duplicate: the merge IS pending (a retry was byte-identical) — same treatment, calmer copy.
+      msg(r?.code === "SUBMIT_DUPLICATE"
+        ? String(r.error ?? "this merge is already pending; it should settle within a block or two.")
+        : (r.error ? String(r.error) + " — " : "") + "the merge didn't confirm; it may already be in flight. Check your balance/history before retrying.",
+        r?.code === "SUBMIT_DUPLICATE" ? "info" : "err");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
     } else {

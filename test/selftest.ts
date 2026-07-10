@@ -177,10 +177,16 @@ async function main() {
     await w.flushPending();
     check("flushPending: KEEPS a not-yet-mined item for later retry", ((await s.get("pendingContent")) || []).length === 1);
 
+    // Retention is 7 DAYS (Plans/66 B8; was 24h — which silently dropped the paid-for content of
+    // anyone offline a day). Just-under stays queued; just-over expires.
     (globalThis as any).fetch = fakeFetch(false);
-    ({ w, s } = await mkWallet({ content: C, txid: "0xcc", ts: now - 90_000_000 }));
+    ({ w, s } = await mkWallet({ content: C, txid: "0xcc", ts: now - (7 * 86_400_000 - 3_600_000) }));
     await w.flushPending();
-    check("flushPending: expires items older than 24h", ((await s.get("pendingContent")) || []).length === 0);
+    check("flushPending: KEEPS an item just under the 7-day retention", ((await s.get("pendingContent")) || []).length === 1);
+    (globalThis as any).fetch = fakeFetch(false);
+    ({ w, s } = await mkWallet({ content: C, txid: "0xcc", ts: now - (7 * 86_400_000 + 3_600_000) }));
+    await w.flushPending();
+    check("flushPending: expires items older than 7 days", ((await s.get("pendingContent")) || []).length === 0);
 
     (globalThis as any).fetch = fakeFetch(true, false); // mined but server rejects (hash mismatch)
     ({ w, s } = await mkWallet({ content: C, txid: "0xdd", ts: now }));
