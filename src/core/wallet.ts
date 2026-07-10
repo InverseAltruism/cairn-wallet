@@ -525,12 +525,14 @@ export class Wallet {
   // payment tx the resolver will reject AFTER the CSD moves (no escrow → the payment is lost). Re-fetch the
   // CURRENT offer record and run the shared cairnx-core pre-flight over it. The check is computed from the
   // offer's OWN give/want/min/claim fields (not a resolver boolean), so even a hostile resolver cannot induce
-  // a loss by lying about status. Returns a refusal SubmitResult, or null to PROCEED. Posture is asymmetric BY
-  // DESIGN:
-  //   • an OPEN (untaken) CSD offer uses claim-to-fill — a non-claimant fill loses the FULL payment, so we
-  //     fail CLOSED (refuse) when the offer can't be fetched/parsed (mirrors the website's verifyClaimSPV).
-  //   • a taker-bound / status-only fill keeps today's best-effort posture (proceed on 404/unreachable), so a
-  //     very recent or cross-resolver offer the tradeApi hasn't scanned yet is not false-refused.
+  // a loss by lying about status. Returns a refusal SubmitResult, or null to PROCEED. Posture (since B1,
+  // Plans/68): fail CLOSED unless the resolver POSITIVELY answers with a parseable open offer.
+  //   • a clean 404 OR a status-less/garbled 200 → OFFER_UNKNOWN (retryable): filling a proposal the
+  //     resolver will not settle burns the whole payment, so "no data" is never treated as "safe".
+  //   • a 5xx / timeout → VERIFY_UNAVAILABLE (retryable).
+  //   • a parsed open offer runs the shared cairnx-core preflight (fillIsSafe + the requiredFillOutputs
+  //     need-map) and proceeds only if every leg holds. Honest cost: one retry on a brand-new offer
+  //     inside the resolver's ~15s scan window. A coherently-lying resolver is the B3 fill-SPV item.
   // `me` is the CAPTURED signer address from fillOffer's SignerCtx (A1) — never read live here, so the
   // account this preflight validates is by construction the account whose key signs.
   private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string): Promise<node.SubmitResult | null> {
@@ -538,7 +540,7 @@ export class Wallet {
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
     try {
-      const r0 = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 6s: recipient path fails clean
+      const r0 = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): recipient path fails clean
       if (r0.ok) offer = (await r0.json().catch(() => null)) as any;
       else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
     } catch { fetchFailed = true; }
@@ -849,7 +851,7 @@ export class Wallet {
   async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string }> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
     try {
-      const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 6s: fill-quote read
+      const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): fill-quote read
       if (!r.ok) return { ok: false, error: "offer not found" };
       const o: any = await r.json().catch(() => null);
       if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };

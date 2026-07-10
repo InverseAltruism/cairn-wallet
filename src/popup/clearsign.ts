@@ -3,7 +3,6 @@
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, TREASURY_ADDR, V25_HEIGHT, finalizeWinnerCheck } from "../core/cairnx.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
-import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS } from "../vendor/cairnx-spv.js";
 
 // WYSIWYS-BIDI-1: neutralize Unicode bidi-override + zero-width / BOM controls BEFORE HTML-escaping, so a
 // dApp can't visually REORDER or HIDE characters in a displayed field (making a name/address/memo read

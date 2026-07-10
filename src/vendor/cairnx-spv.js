@@ -1160,23 +1160,23 @@ var LightClient = class _LightClient {
    * (forward-synced) header, exactly as the live `sync`/`verifyOne` path accepted it. Only the
    * original seed window (`trusted`) skips the time/LWMA re-derivation — the same posture
    * `seedTrusted` allows for the checkpoint trade. A checkpoint-configured client additionally
-   * refuses any snapshot (other than a genesis-rooted one, anchored by H4 below) that does not
-   * CONTAIN its lowest pinned checkpoint: the per-header pin can only assert the baked hash when
-   * the pinned height is inside the restored range, so without the containment rule a poisoned
-   * snapshot rooted ABOVE the checkpoint would carry no anchor at all and its `trusted` seed
-   * prefix would be honoured at face value (grindable at POW_LIMIT). So a localStorage-poisoned
-   * snapshot is REJECTED here, not restored as verified. chainwork is recomputed, never read
-   * from the file.
+   * refuses any snapshot (other than a genesis-rooted one, anchored by the H4 GENESIS_HASH check
+   * below) unless a pinned checkpoint COVERS the whole trusted seed prefix — `baseHeight +
+   * LWMA_WINDOW - 1 <= cp <= last` for some configured `cp` (see the containment block for why).
+   * Without that, a poisoned snapshot could place forged min-difficulty headers inside the
+   * LWMA-skipping prefix and restore them as verified (grindable at POW_LIMIT). With it, a
+   * localStorage-poisoned snapshot is REJECTED here, not restored as verified. chainwork is
+   * recomputed, never read from the file.
    */
   static fromSnapshot(s, opts = {}) {
     if (s.v !== 1 || !Array.isArray(s.headers) || !s.headers.length) throw new Error("bad snapshot");
     const lc = new _LightClient(opts);
     const pinnedHeights = Object.keys(lc.checkpoints).map(Number);
     if (pinnedHeights.length && s.baseHeight > 0) {
-      const cpMin = Math.min(...pinnedHeights);
       const last = s.baseHeight + s.headers.length - 1;
-      if (s.baseHeight > cpMin || last < cpMin) {
-        throw new Error(`snapshot not anchored: range [${s.baseHeight}..${last}] does not contain checkpoint ${cpMin}`);
+      const anchored = pinnedHeights.some((cp) => s.baseHeight + LWMA_WINDOW - 1 <= cp && cp <= last);
+      if (!anchored) {
+        throw new Error(`snapshot not anchored: no checkpoint in [${s.baseHeight + LWMA_WINDOW - 1}..${last}] to cover the trusted seed prefix`);
       }
     }
     lc.baseHeight = s.baseHeight;
@@ -4622,9 +4622,8 @@ function finalizeWinnerCheck(nameState, me, commitHeight, tip) {
   if (tip !== void 0 && tip !== null && Number.isFinite(Number(tip))) {
     const t = Number(tip);
     const eff = Number(nameState.effectiveHeight);
-    const fin = nameState.finalizeBy !== void 0 && nameState.finalizeBy !== null ? Number(nameState.finalizeBy) : void 0;
-    const freezeEnd = fin !== void 0 ? fin - REG_FINALIZE_GRACE_BLOCKS : eff + REG_COMMIT_MAX_BLOCKS;
-    const closeAt = (fin !== void 0 ? fin : freezeEnd + REG_FINALIZE_GRACE_BLOCKS) - FINALIZE_TIP_MARGIN;
+    const freezeEnd = eff + REG_COMMIT_MAX_BLOCKS;
+    const closeAt = eff + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS - FINALIZE_TIP_MARGIN;
     if (t <= freezeEnd + FINALIZE_TIP_MARGIN)
       return { safe: false, reason: `too early \u2014 the displacement contest is not frozen yet (finalizable after block ${freezeEnd + FINALIZE_TIP_MARGIN}, chain tip ${t}); the resolver would reject the finalize after the fee moved, burning it` };
     if (t > closeAt)
