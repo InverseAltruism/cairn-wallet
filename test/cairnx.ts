@@ -327,8 +327,8 @@ async function main() {
     // ── audit XREPO-1: .csd name resolution is server-trusted (the wallet has no light client) ──
     // The proportionate mitigation: (1) an unmissable "verify the full address — a malicious server
     // could substitute it" caution on every named send, and (2) a confirm-time re-resolve that REFUSES
-    // if the address changed between review and confirm. (Trustless resolution = the light client; see
-    // SECURITY-ROADMAP. This guard stops a server that RE-POINTS the name mid-flow, the realistic case.)
+    // if the address changed between review and confirm. (Trustless resolution = the light client / SPV
+    // name-verify path. This guard stops a server that RE-POINTS the name mid-flow, the realistic case.)
     const NAME = "alice";
     const REVIEWED = "0x" + "22".repeat(20);   // address the user reviewed
     const ATTACKER = "0x" + "11".repeat(20);   // where a hostile server later re-points the name

@@ -396,7 +396,7 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: { sourc
 // never be signed silently). Pure over the re-resolution RESULT so it's unit-testable; the popup wires
 // the live `resolveName` call. NOTE: this stops a server that re-points the name BETWEEN review and
 // confirm — it does NOT defend against a server that is CONSISTENTLY hostile (returns the same attacker
-// address both times). Closing that requires the light client (the real fix); see SECURITY-ROADMAP.
+// address both times). Closing that requires the light client (the real fix; see the SPV name-verify path).
 export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean } | null | undefined, reviewedVerified?: boolean): boolean {
   if (!(re && re.ok && typeof re.addr === "string" && (re.addr as string).toLowerCase() === reviewed.toLowerCase())) return false;
   // L7 (CONFIRMGUARD): also refuse a verification-status REGRESSION. If the name was chain-verified at

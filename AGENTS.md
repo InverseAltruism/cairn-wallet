@@ -7,7 +7,7 @@ The first non-custodial browser wallet for Compute Substrate (CSD): a Chrome MV3
 
 Distribution: Chrome Web Store (primary; extension id nnjiejlalkcfckfojhihbbcpfhimfemd) + reproducible GitHub release zips. Version state is ephemeral: see the dated State snapshot at the bottom. PUBLIC repo InverseAltruism/cairn-wallet, MIT.
 
-Security posture: non-custodial, no hand-rolled crypto (every primitive comes from the four exact-pinned @noble/@scure libraries). The threat model, what the wallet does and does not trust, and the remaining hardening roadmap are public in `SECURITY.md` and `SECURITY-ROADMAP.md`; read both before touching a money path. No external professional audit yet (it is the top P0 roadmap item).
+Security posture: non-custodial, no hand-rolled crypto (every primitive comes from the four exact-pinned @noble/@scure libraries). The threat model and what the wallet does and does not trust are public in `SECURITY.md`; read it before touching a money path. (The ranked hardening roadmap is maintained privately with the other audit docs.) No external professional audit yet (it is the top roadmap item).
 
 ## The stack around it
 

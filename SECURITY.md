@@ -61,8 +61,9 @@ service as **untrusted** and verifies its answer against the chain itself:
 
 The honest residual: "verified" means **chain-backed as shown**; for a very high-value transfer it is
 still prudent to confirm the `0x…` address out-of-band. (As with every send, the wallet selects its own
-inputs and returns change only to your own address.) See `SECURITY-ROADMAP.md` for the remaining
-hardening (a third, different-domain source; per-source block bodies).
+inputs and returns change only to your own address.) Planned hardening beyond the current same-apex
+two-source union: a third, independent name source on a different registrable domain, and per-source
+block bodies.
 
 ## dApp boundary
 
