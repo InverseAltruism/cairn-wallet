@@ -55,6 +55,29 @@ export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: 
   } as unknown as RpcTxJson;
 }
 
+// Build a SIGNED Attest tx in node-JSON (RpcTxJson) shape — for the fill / legacy-claim scan scenarios.
+// Registers its prevout like proposeTx so prevoutFor()/source() resolve the spent-coin owner (H3 bind); by
+// default the signer spends their OWN coin, and `prevScriptPubkey` overrides it to simulate a swapped scriptSig.
+export function attestTx(p: { proposalId: string; score: number; confidence?: number; priv: string; outputs?: Output[]; prevScriptPubkey?: string }): RpcTxJson {
+  const { proposalId, score, confidence = 0, priv, outputs = [], prevScriptPubkey } = p;
+  const prevTxid = "0x" + (++_utxoSeq).toString(16).padStart(64, "0");
+  PREVOUTS.set(prevTxid.toLowerCase(), String(prevScriptPubkey ?? addrFromPriv(priv)).toLowerCase());
+  const tx = {
+    version: 1, locktime: 0,
+    inputs: [{ prevTxid, vout: 0, scriptSig: "0x" }],
+    outputs: outputs.map((o) => ({ value: o.value, scriptPubkey: o.to })),
+    app: { type: "Attest" as const, proposalId, score, confidence },
+  };
+  const { sig64, pub33 } = signSighash(vSighash(tx as any), priv);
+  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
+  return {
+    version: 1, locktime: 0,
+    inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: tx.inputs[0].scriptSig }],
+    outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
+    app: { type: "Attest", proposal_id: proposalId, score, confidence },
+  } as unknown as RpcTxJson;
+}
+
 // place txs into blocks at given heights; return {blocks, hints} (hints = txid+height+pos per placed tx)
 export function world(placements: Placement[]): { blocks: Map<number, RpcTxJson[]>; hints: Hint[] } {
   const blocks = new Map<number, RpcTxJson[]>(), hints: Hint[] = [];

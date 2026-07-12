@@ -10,9 +10,10 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, requiredFillOutputs, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
-import type { CxOfferState } from "../vendor/cairnx-spv.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import { liveFillSpvSource } from "./fillspv.js";
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
@@ -105,6 +106,26 @@ const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived i
 const ATTEST_FLOOR = 5_000_000;
 // Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
 const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
+
+// The first VALUE field on which two independent resolvers disagree about an offer, or null when they agree
+// on every value-bearing field. The fclaim-lane 2nd-source (clarvis) cross-check refuses ONLY on a value
+// divergence; availability gaps (a 404 on a brand-new fclaim txid, a timeout) are fail-soft PROCEED, so an
+// honest buy is never blocked by clarvis lagging the primary. Display-only fields are deliberately ignored.
+const fieldStr = (v: unknown): string => String(v ?? "").toLowerCase();
+function divergentValueField(a: any, b: any): string | null {
+  const aw = a?.want ?? {}, bw = b?.want ?? {}, ag = a?.give ?? {}, bg = b?.give ?? {};
+  if (fieldStr(aw.payto) !== fieldStr(bw.payto)) return "recipient (want.payto)";
+  if (fieldStr(aw.value) !== fieldStr(bw.value)) return "price (want.value)";
+  if (fieldStr(aw.ticker) !== fieldStr(bw.ticker)) return "price token (want.ticker)";
+  if (fieldStr(aw.amount) !== fieldStr(bw.amount)) return "price amount (want.amount)";
+  if (fieldStr(ag.ticker) !== fieldStr(bg.ticker)) return "asset (give.ticker)";
+  if (fieldStr(ag.amount) !== fieldStr(bg.amount)) return "amount (give.amount)";
+  if (fieldStr(ag.name) !== fieldStr(bg.name)) return "asset (give.name)";
+  if (fieldStr(a?.feeBps) !== fieldStr(b?.feeBps)) return "fee (feeBps)";
+  if (fieldStr(a?.min) !== fieldStr(b?.min)) return "minimum (min)";
+  if (fieldStr(a?.status) !== fieldStr(b?.status)) return "status";
+  return null;
+}
 
 export class Wallet {
   // Unlocked state (memory only): the decrypted accounts, the active index, and the
@@ -583,6 +604,18 @@ export class Wallet {
       const payto = String((offer.want as any)?.payto || "").toLowerCase();
       const pay = sums.get(payto) ?? 0n;
       const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
+      // ── V28 open-lane (fclaim) STRUCTURAL routing to the grant-replay SPV boundary ─────────────────────
+      // The fill ATTESTS the fclaim txid, NEVER the offer id, so `proposalId !== offer.id` STRUCTURALLY IS a
+      // fclaim-lane fill and MUST clear the SPV boundary (verifyFillSpv). Crucially this does NOT trust the
+      // resolver-echoed `fclaimId`: a hostile primary that WITHHOLDS or alters fclaimId (while still echoing the
+      // linked offer id) would otherwise steer the fill into the resolver-trusted LEGACY lane and burn a denied
+      // fclaim. It is also tip-INDEPENDENT so a deflated node tip cannot steer the lane: below V28 every legit
+      // fill targets `offer.id` (this never mis-fires on an honest fill), and a below-V28 fill mis-served with
+      // `proposalId !== offer.id` fails CLOSED in verifyFillSpv (no fclaim exists below the gate).
+      // fclaimLanePreflight already fails closed on any unprovable/fabricated fclaim (it must be merkle-proven in
+      // the scan AND reference this offer). This makes the mandatory grant replay actually mandatory at V28.
+      if (String(proposalId).toLowerCase() !== String(offer.id ?? "").toLowerCase())
+        return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay);
       // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
       // a live tip. this.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
       // as 0. But the disarm is NOT just tip==0: fillIsSafe only runs the claim check when
@@ -594,6 +627,14 @@ export class Wallet {
       // fail CLOSED with the retryable posture. Red-team 2026-07-06 hardened the guard from `!(tip > 0)`
       // to cover the full (0, V13) band. Taker-bound / token lanes never consult the tip (unaffected).
       const tip = (await this.tip()) ?? 0;
+      // Correction 1 (RT3) mirror: reaching here means `proposalId === offer.id` (the fclaim lane already
+      // returned above). An offer-id fill DURING a live fclaim hold burns — the V28 resolver routes fills to the
+      // fclaim, so an offer-id attest mines with NO delivery, and fillIsSafe/hasLiveClaim PASS for the holder.
+      // `claimTxid` is set only at V28, so this is V28-scoped WITHOUT a deflatable tip gate; a deflated tip only
+      // makes hasLiveClaim MORE likely true (fires -> refuse), so it fails safe. A pre-V28 hold honored in the
+      // sunset has claimTxid undefined -> legacy path (correct, no false-refuse).
+      if (offer.claimTxid !== undefined && hasLiveClaim(offer, me, tip))
+        return { ok: false, error: "this offer has a live reservation — fill its reservation (fclaim) target, not the offer id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_WRONG_TARGET" };
       if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))
         return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
       const verdict = fillIsSafe(offer, me, pay, tip);
@@ -631,6 +672,88 @@ export class Wallet {
     // a positively-parsed OPEN offer that cleared every check above → proceed to sign
     return null;
   }
+
+  // ── V28 open-lane (fclaim) fill fund boundary ───────────────────────────────────────────────────────
+  // A resolver-DENIED fclaim is an L0-valid but delivery-less attest target, so a fill built on it BURNS the
+  // whole payment. This is a faithful resolve() mirror the STRONG way: it re-derives the ENTIRE grant + hold
+  // from PoW-buried, merkle-proven events (the vendored verifyFillSpv) and fails CLOSED on anything unproven —
+  // it only ever REJECTS MORE than resolve(), never accepts something resolve() would reject.
+  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint): Promise<node.SubmitResult | null> {
+    const offerId = String(offer?.id ?? "").toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(offerId))
+      return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
+    // 2nd-source (clarvis) VALUE cross-check. Fail-soft: a 404 (clarvis has not indexed this brand-new fclaim
+    // txid yet), an unreachable host, or a timeout PROCEEDS; ONLY a value-field divergence refuses.
+    const divergence = await this.clarvisFclaimDivergence(fclaimTxid, offer);
+    if (divergence) return divergence;
+    // Build the fail-closed SPV seam (PoW-verified tip + merkle-proven offer/fclaim/hold events + the computed
+    // cross-offer hold count). Any unverifiable read throws → refuse retryably (never proceed on an unproven grant).
+    let io: FillSpvIo & { myLiveHoldsAtGrant?: number };
+    try {
+      io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
+    } catch {
+      return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    }
+    // myLiveHoldsAtGrant is COMPUTED by the SPV source: a CONSERVATIVE OVER-count of my OTHER-offer fclaim holds
+    // live at this fclaim's grant height, from the same PoW-verified [fclaimHeight - MAX_SCAN, tip] scan. It is
+    // the cap defense: the lane-scoped replay cannot see other-offer holds, so an under-count would fail-OPEN the
+    // cross-offer MAX_ACTIVE_CLAIMS cap and BURN (a resolver that D2-aliases a cap-denied fclaim as "granted"
+    // would pass). Over-count only false-refuses (retryable). There is NO wallet create-side cap guard, and 0 is
+    // NEVER assumed — if the source could not compute the count, fail CLOSED here. The DEADLINE guard likewise
+    // rides INSIDE verifyFillSpv from the fclaim's OWN confirmed expiry epoch (fclaimHoldEnd), never epochOf(tip+45).
+    if (!Number.isInteger(io.myLiveHoldsAtGrant))
+      return { ok: false, error: "couldn't count your other open reservations to verify this one against the claim cap — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    let verdict: FillVerdict;
+    try {
+      verdict = await verifyFillSpv(offerId, fclaimTxid, me, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant as number, pay });
+    } catch {
+      return { ok: false, error: "couldn't verify this reservation against the chain yet — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    }
+    if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
+    // verifyFillSpv proves delivery >= 1 on the offer terms; the wallet ALSO pins its OWN outputs to the exact
+    // resolver need-map (payto >= want, treasury >= fee, seller >= rebate), identical to the legacy lane.
+    const need = requiredFillOutputs(offer, pay);
+    if (need === null)
+      return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
+    for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
+      const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
+      return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
+    }
+    return null;
+  }
+
+  // Optional 2nd-source (clarvis) value cross-check for an fclaim-lane fill. Returns a refusal ONLY on a
+  // value-field divergence; a clarvis 404 on the fclaim txid (not yet indexed / no D2 alias there), an
+  // unreachable host, a timeout, or an unparseable body are all fail-soft PROCEED (availability, not a value
+  // conflict) — the honest buy must never decline because the 2nd source lags. (B6-scoped to the fclaim lane;
+  // the A2 track generalizes the 2-source offer cross-check to the legacy lane.)
+  private async clarvisFclaimDivergence(fclaimTxid: string, primary: any): Promise<node.SubmitResult | null> {
+    let c: any = null;
+    try {
+      const r = await fetch(`${CLARVIS_TRADE_API}/cairnx/offer/${encodeURIComponent(fclaimTxid)}`, { signal: AbortSignal.timeout(12000) });
+      if (r.status === 404 || !r.ok) return null;  // brand-new/not-indexed, or unreachable/5xx → PROCEED
+      c = await r.json().catch(() => null);
+    } catch { return null; }                        // timeout / network → PROCEED
+    if (!c || typeof c !== "object") return null;   // unparseable 2nd source → single-source PROCEED
+    const field = divergentValueField(primary, c);
+    if (field) return { ok: false, error: `your two independent resolvers disagree on this offer's ${field} — refusing to sign until they agree (possible hostile source)`, sighashMatch: false, code: "SOURCE_DIVERGENCE" };
+    return null;
+  }
+
+  // Test seam (fill-SPV fund boundary): production leaves this undefined and builds the LIVE PoW-verified
+  // FillSpvIo; tests inject a synthetic (PoW/merkle pre-satisfied) io so the vendored verifyFillSpv boundary
+  // is exercised through the real preflight without a chain. The io carries the computed cap over-count.
+  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number }>;
+  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number }> {
+    if (this.fillSpvIoForTest) return await this.fillSpvIoForTest(offerId, fclaimTxid, me);
+    return await liveFillSpvSource({
+      rpcBase: this.rpc, headersBase: this.api,
+      cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
+      floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
+      hints: { offerId, fclaimTxid, me, offerHeight },
+    });
+  }
+
   signIn() { return node.signIn(this.api, this.must().privkey); }
 
   // Audience-bound "Sign in with CSD" (SIWC) for THIRD-PARTY sites — the secure replacement for the
