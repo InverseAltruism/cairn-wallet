@@ -89,6 +89,8 @@ export interface CxOfferState {
   taker?: string; status: string; height: number; feeBps: number;
   min?: string; paid?: string; delivered?: string; bid?: string;
   claimedBy?: string; claimUntilHeight?: number;
+  // v2.8 fclaim: the live routing target (Correction 1) + the D2 alias fields (served on a GET of the fclaim txid).
+  claimTxid?: string; fclaimId?: string; fclaimHeight?: number; fclaimExpiresEpoch?: number;
 }
 export interface CxNameState {
   name: string; owner: string; effectiveHeight: number; pending?: boolean;
@@ -117,3 +119,46 @@ export const FEE_GATE_MARGIN_BLOCKS: number;
 export function paidToFromOutputs(outputs: readonly { addr: string; value: number | bigint }[]): Record<string, string>;
 export const REG_COMMIT_MAX_BLOCKS: number;      // sealed-registration displacement freeze (v2.5)
 export const REG_FINALIZE_GRACE_BLOCKS: number;  // finalize window past the freeze (v2.5)
+
+// ── v2.8 fclaim fill-SPV fund boundary (§31, B4) — the shared client-side surface the open-lane (fclaim)
+// fill preflight MUST clear before signing. A resolver-DENIED fclaim is an L0-valid attest target, so this
+// re-derives the ENTIRE grant + hold from PoW-buried, MERKLE-PROVEN events (never a served "granted" flag).
+// The wallet builds the FillSpvIo from its PoW light client (core/fillspv.ts) and fails CLOSED on safe:false.
+export const V28_HEIGHT: number;              // open-lane fclaim gate (planning placeholder until Batch P)
+export const FILL_TIP_MARGIN: number;         // refuse a fill within this many blocks of the hold deadline
+export const MAX_ACTIVE_CLAIMS: number;       // cross-offer live-hold cap (the myLiveHoldsAtGrant clause)
+export const GAP_NEEDED: number;              // clean-start hold/cooldown scan bound (fund-safety, = 104)
+export const MAX_SCAN: number;                // GAP_NEEDED rounded up a full epoch (= 134)
+export const EPOCH_LEN: number;               // 30 blocks/epoch (fclaim hold-span math)
+export const FCLAIM_MAX_EPOCH_AHEAD: number;  // anti-squat: a hold spans at most (this+1) epochs
+export const SCORE_CLAIM: number;             // legacy pre-V28 claim attest score (transition-window cap count)
+export const CLAIM_WINDOW_BLOCKS_V20: number; // legacy claim window (V20 era)
+export const CLAIM_FILL_GRACE_BLOCKS: number; // legacy claim fill grace
+/** holdEnd (last L0-minable height for the fill) from an fclaim's confirmed expires_epoch. */
+export function fclaimHoldEnd(expiresEpoch: number): number;
+// A PoW-verified, MERKLE-PROVEN chain event (resolver ChainEvent + the verified burial `depth`).
+export interface ProvenPropose { kind: "propose"; id: string; proposer: string; uri: string; payloadHash: string; expiresEpoch: number; height: number; pos: number; paidTo: Record<string, string>; depth: number }
+export interface ProvenAttest { kind: "attest"; txid: string; proposalId: string; attester: string; score: number; confidence: number; height: number; pos: number; paidTo: Record<string, string>; depth: number }
+export type ProvenEvent = ProvenPropose | ProvenAttest;
+// The injected SPV seam (modeled on namespv.ts SpvSource): all chain access flows through it so the pure
+// surface runs identically in the wallet and site bundles and is test-injectable.
+export interface FillSpvIo {
+  tip(): Promise<number>;
+  offerEventIds(offerId: string, fclaimTxid: string): Promise<string[]>;
+  provenEvent(id: string): Promise<ProvenEvent | null>;
+}
+export interface FillVerdict { safe: boolean; reason: string }
+/** The fail-closed fund boundary: safe:true only when the offer + fclaim are merkle-proven + bound + buried,
+ *  the grant replays to a live hold that is MINE and routes to THIS fclaim, delivery >= 1, and the deadline
+ *  (from the fclaim's OWN confirmed expiry) has cushion. Refuses every doomed/forged case. */
+export function verifyFillSpv(offerId: string, fclaimTxid: string, me: string, io: FillSpvIo, opts: { myLiveHoldsAtGrant: number; pay?: bigint | string | number }): Promise<FillVerdict>;
+// v2.8 give-backing synthesis (core/fillspv.ts, the accepted N1 residual): the record builders + constants used
+// to synthesize an offer's resolver-trusted give-backing (token deploy+mint, or a name registration) so resolve()
+// materializes the offer without an unbounded lifecycle scan. The grant/denial VERDICT never rides the backing.
+export const DEPLOY_FEE: number;
+export const V11_HEIGHT: number;
+export const ACTIVATION_HEIGHT: number;   // tokens went live here; resolve() ignores every event below it
+export function deploy(p: { ticker: string; decimals: number; supply: string; mint: string; mintLimit?: string; name?: string }): { uri: string; payloadHash: string };
+export function mint(p: { ticker: string; amount?: string }): { uri: string; payloadHash: string };
+export function nameClaim(p: { name: string; salt?: string }): { uri: string; payloadHash: string };
+export function isNameGive(give: unknown): give is { name: string };

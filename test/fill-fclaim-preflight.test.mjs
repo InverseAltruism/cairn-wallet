@@ -1,0 +1,442 @@
+// B6 (Plans/69 V28 fclaim) — the wallet fclaim-lane fill preflight wires the vendored fail-closed fund
+// boundary (verifyFillSpv) and refuses a DENIED fclaim on the SHIPPED wallet artifact.
+//
+// Under V28 the open-lane claim is a short-expiry `fclaim` PROPOSE and the fill ATTESTS the fclaim txid.
+// A resolver-DENIED fclaim is still an L0-valid attest target, so building the fill on it BURNS the whole
+// payment. The wallet must refuse unless PoW-buried, merkle-proven events prove the fclaim was GRANTED to
+// this wallet as the offer's live routing target and both are buried. This drives the REAL wallet preflight
+// (through the vendored bundle's verifyFillSpv) with a synthetic PoW/merkle-pre-satisfied FillSpvIo, exactly
+// as the B4 core test and namespv test inject a chain-free seam.
+//
+// Proves: honest granted+buried fill ACCEPTED; denied-fclaim REFUSED; forged-holder (someone else's fclaim)
+// REFUSED; below-depth REFUSED; a clarvis 404 on a brand-new fclaim txid is fail-soft PROCEED; a clarvis VALUE
+// divergence REFUSES; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
+// ACCEPTED, adding a 3rd FLIPS to REFUSED, never hardcoded 0). The denied-fclaim guard is MUTATION-VERIFIED
+// (removed from the wallet source, the same forgery then SUBMITS, proving the guard is the sole rejecter).
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import path from "node:path";
+import { Wallet } from "../src/core/wallet.js";
+import { memoryStore } from "../src/core/storage.js";
+import { requiredFillOutputs } from "../src/core/cairnx.js";
+import { countMyOtherLiveHolds, liveFillSpvSource } from "../src/core/fillspv.js";
+import {
+  deploy, mint, offer, fclaim, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
+  SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
+} from "../src/vendor/cairnx-spv.js";
+import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { mkCoin, txReply } from "./_coin.js";
+
+let pass = 0, fail = 0;
+const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
+const origFetch = globalThis.fetch;
+
+const S = "0x" + "55".repeat(20);            // seller
+const OID = "0x" + "0f".repeat(32);
+const OID2 = "0x" + "e2".repeat(32), OID3 = "0x" + "e3".repeat(32), OID4 = "0x" + "e4".repeat(32);
+const id = (n) => "0x" + n.repeat(32);
+const H0 = V28_HEIGHT;                        // synthetic V28 height (never the real one)
+const V = 5_000_000;                          // want: 0.05 CSD (the mock coin covers it)
+const E = epochOf(H0 + 3) + 2;
+const HOLD_END = fclaimHoldEnd(E);
+const fc1 = id("fa"), fc2 = id("fb"), fcC = id("fc"), fcH = id("f1");
+const C = "0x" + "cc".repeat(20);            // a DIFFERENT holder (forged-holder case)
+
+const PE = (i, built, height, proposer, ee, pos = 0, paidTo = {}) =>
+  ({ kind: "propose", id: i, proposer, uri: built.uri, payloadHash: built.payloadHash, expiresEpoch: ee, height, pos, paidTo });
+
+// base backing: S deploys+mints AAA and posts an OPEN CSD-priced offer (10 AAA for V to S).
+const baseFor = () => [
+  PE(id("01"), deploy({ ticker: "AAA", decimals: 0, supply: "1000", mint: "issuer" }), H0, S, 9e9, 0, { [TREASURY_ADDR]: String(DEPLOY_FEE) }),
+  PE(id("02"), mint({ ticker: "AAA", amount: "1000" }), H0 + 1, S, 9e9),
+  PE(OID, offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S } }), H0 + 2, S, 9e9),
+];
+const fcFor = (txid, offerId, height, holder) => PE(txid, fclaim({ offer: offerId }), height, holder, E);
+
+// The synthetic seam: PoW/merkle already satisfied. depth = tip - height + 1 (the verified burial). The io
+// carries myLiveHoldsAtGrant COMPUTED by the SAME pure counter the live source uses (never hardcoded).
+const idOf = (e) => (e.kind === "propose" ? e.id : e.txid).toLowerCase();
+function makeIo(events, tip, me, fillFclaimHeight) {
+  return {
+    myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
+    async tip() { return tip; },
+    async offerEventIds() { return events.map(idOf); },
+    async provenEvent(x) { const e = events.find((y) => idOf(y) === String(x).toLowerCase()); return e ? { ...e, depth: tip - e.height + 1 } : null; },
+  };
+}
+
+// The D2-aliased offer the resolver serves on a GET of the fclaim txid (offer + fclaim link fields).
+const servedOffer = (fclaimTxid, fclaimHeight, extra = {}) => ({
+  id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S },
+  status: "open", height: H0 + 2, feeBps: 150,
+  fclaimId: fclaimTxid, fclaimHeight, fclaimExpiresEpoch: E, ...extra,
+});
+
+const coin = mkCoin(100_000_002);
+const served = [coin];
+// outputs are offer-term-derived (independent of the buyer), so the same list fills any scenario.
+const outputs = requiredFillOutputs(servedOffer(fcH, H0 + 3), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+
+function mkStub({ offerReply, clarvisReply = () => ({ ok: false, status: 404, json: async () => ({}) }), tip = 50_000 }) {
+  const stats = { submits: [] };
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/tx/submit")) { stats.submits.push(1); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
+    if (u.includes("clarvis") && u.includes("/cairnx/offer/")) return clarvisReply();
+    if (u.includes("/cairnx/offer/")) return offerReply();
+    if (u.match(/\/utxos\//)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
+    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: tip }) };
+    const t = txReply(u, served);
+    if (t) return t;
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  return stats;
+}
+
+async function freshWallet(pw) { const w = new Wallet(memoryStore()); const { addr } = await w.create(pw); return { w, addr }; }
+
+console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
+
+// 0. the cap over-count is a PURE function of the scanned events (not hardcoded).
+{
+  const meX = "0x" + "77".repeat(20);
+  const withOthers = (oids) => [...baseFor(), fcFor(fcH, OID, H0 + 3, meX), ...oids.map((o, i) => fcFor(id("d" + (i + 2)), o, H0 + 3, meX))];
+  check("count: 2 in-window other-offer holds by me -> 2", countMyOtherLiveHolds(withOthers([OID2, OID3]), OID, meX, H0 + 3) === 2);
+  check("count: adding a 3rd -> 3 (crosses MAX_ACTIVE_CLAIMS)", countMyOtherLiveHolds(withOthers([OID2, OID3, OID4]), OID, meX, H0 + 3) === MAX_ACTIVE_CLAIMS);
+  check("count: this offer's OWN fclaim is NOT counted", countMyOtherLiveHolds([...baseFor(), fcFor(fcH, OID, H0 + 3, meX)], OID, meX, H0 + 3) === 0);
+  check("count: another buyer's other-offer hold is NOT mine", countMyOtherLiveHolds([fcFor(id("d2"), OID2, H0 + 3, C)], OID, meX, H0 + 3) === 0);
+  check("count: an other-offer hold lapsed before my grant is NOT counted", countMyOtherLiveHolds([PE(id("d9"), fclaim({ offer: OID2 }), H0 + 3, meX, epochOf(H0 - 200))], OID, meX, H0 + 3) === 0);
+}
+
+// 1. HONEST granted + buried fclaim fill is ACCEPTED (no false refusal).
+{
+  const { w } = await freshWallet("pw-honest");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`honest granted+buried fclaim fill is ACCEPTED and submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+
+// 2. DENIED-fclaim fill is REFUSED (fc1 holds; fc2 posted while fc1's hold is live -> resolver DENIES fc2).
+{
+  const MB = "0x" + "b2".repeat(20);
+  const st = resolve([...baseFor(), fcFor(fc1, OID, H0 + 3, MB), fcFor(fc2, OID, H0 + 5, MB)], HOLD_END - 5);
+  check("sanity: fc2 is DENIED (fc1 stays the live routing target)", st.fclaims[fc1] !== undefined && st.fclaims[fc2] === undefined && st.offers[OID].claimTxid === fc1);
+  const { w } = await freshWallet("pw-denied");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fc1, OID, H0 + 3, me), fcFor(fc2, OID, H0 + 5, me)], HOLD_END - 5, me, H0 + 5);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fc2, H0 + 5) }) });
+  const r = await w.fillOffer({ proposalId: fc2, outputs });
+  check(`denied-fclaim fill is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE");
+  check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
+}
+
+// 3. FORGED-HOLDER fill is REFUSED (C holds fcC; this wallet is not the holder).
+{
+  const { w } = await freshWallet("pw-forged");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcC, OID, H0 + 3, C)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcC, H0 + 3, { claimedBy: C }) }) });
+  const r = await w.fillOffer({ proposalId: fcC, outputs });
+  check(`forged-holder (fill on someone else's fclaim) is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE");
+  check("…and nothing was submitted", s.submits.length === 0);
+}
+
+// 4. BELOW-DEPTH fclaim fill is REFUSED (fclaim mined at H0+3, tip H0+4 -> depth 2 < requiredClaimDepth).
+{
+  const { w } = await freshWallet("pw-shallow");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], H0 + 4, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`below-depth fclaim fill is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /buried/.test(r?.error ?? ""));
+  check("…and nothing was submitted", s.submits.length === 0);
+}
+
+// 5a. clarvis 404 on a brand-new fclaim txid is FAIL-SOFT PROCEED (an honest buy is never blocked by a lagging 2nd source).
+{
+  const { w } = await freshWallet("pw-clarvis404");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({
+    offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }),
+    clarvisReply: () => ({ ok: false, status: 404, json: async () => ({ error: "not found" }) }),
+  });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`clarvis 404 on the fclaim txid is fail-soft PROCEED (honest buy submits) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+
+// 5b. clarvis VALUE divergence REFUSES (a second source disagrees on want.payto), even though SPV would pass.
+{
+  const { w } = await freshWallet("pw-clarvisdiv");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({
+    offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }),
+    clarvisReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, { want: { value: String(V), payto: "0x" + "ee".repeat(20) } }) }),
+  });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`clarvis value divergence (want.payto) REFUSES (${r?.error})`, r?.ok === false && r?.code === "SOURCE_DIVERGENCE");
+  check("…and nothing was submitted", s.submits.length === 0);
+}
+
+// 5c. clarvis-OPTIONAL: a REACHABLE clarvis returning HTTP 200 with a degraded body that carries NO offer terms
+// (an error/aliased/unknown-offer body, no want AND no give) is fail-soft PROCEED, NOT a false value divergence.
+// This keeps clarvis a strictly-optional second source: a reachable-but-useless clarvis can never turn into a
+// hard blocker of a legit buy. (A reachable clarvis that DOES serve a real offer with a conflicting want/give
+// still REFUSES per 5b.)
+{
+  const { w } = await freshWallet("pw-clarvisdegraded");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({
+    offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }),
+    clarvisReply: () => ({ ok: true, status: 200, json: async () => ({ ok: false, error: "unknown offer" }) }), // 200, no want/give
+  });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`reachable clarvis with no offer terms is fail-soft PROCEED (honest buy submits) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+
+// 6. CROSS-OFFER cap: the count is COMPUTED from the scan. 2 other-offer holds ACCEPTS; adding a 3rd FLIPS to REFUSE.
+{
+  const { w } = await freshWallet("pw-cap-01");
+  const eventsWith = (me, oids) => [...baseFor(), fcFor(fcH, OID, H0 + 3, me), ...oids.map((o, i) => fcFor(id("d" + (i + 2)), o, H0 + 3, me))];
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo(eventsWith(me, [OID2, OID3]), HOLD_END - 5, me, H0 + 3);
+  const rUnder = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`cap: 2 computed other-offer holds (< MAX_ACTIVE_CLAIMS) is ACCEPTED (${rUnder?.error ?? "ok"})`, rUnder?.ok === true);
+  const n0 = s.submits.length;
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo(eventsWith(me, [OID2, OID3, OID4]), HOLD_END - 5, me, H0 + 3);   // one more hold, nothing else changed
+  const rOver = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`cap: adding a 3rd other-offer hold FLIPS to REFUSED (count computed, not hardcoded) (${rOver?.error})`, rOver?.ok === false && rOver?.code === "FILL_UNSAFE" && /cap/.test(rOver?.error ?? ""));
+  check("…and the cap-refused fill did NOT submit", s.submits.length === n0);
+}
+
+// 6b. a source that does not compute the count (no myLiveHoldsAtGrant) fails CLOSED (0 is NEVER assumed).
+{
+  const { w } = await freshWallet("pw-nocount");
+  w.fillSpvIoForTest = (oid, fc, me) => { const io = makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3); delete io.myLiveHoldsAtGrant; return io; };
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`no computed cap count -> fail CLOSED (never assume 0) (${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE");
+  check("…and nothing was submitted", s.submits.length === 0);
+}
+
+// ── DEFECT/OBS re-confirm: drive the REAL liveFillSpvSource (a synthetic PoW SpvSource over REAL signed txs).
+//    The chain-free injected seam above hands proposer + true height directly, so it exercises NEITHER the
+//    resolver-height path (DEFECT 1) nor the scriptSig-swap path (DEFECT 2). These drive the production count. ──
+const meKey = "0x" + "1a".repeat(32), foreignKey = "0x" + "2b".repeat(32);
+const ME = addrFromPriv(meKey).toLowerCase();
+const Hfc = H0 + 3, TIP = H0 + 10;
+const LEGACY_HOLD = CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS;
+const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
+// A synthetic SpvSource whose blocks carry a REAL merkle root (so bindBlock genuinely passes) and returns a
+// filler-only block for empty heights (the fill scan iterates every height in the tip-anchored window).
+function fillSource(blocks, tip) {
+  return {
+    async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
+    async blockAt(height) {
+      const txs = blocks.get(height) ?? [FILLER];
+      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs };
+    },
+    async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); },
+  };
+}
+const worldOf = (placements) => { const b = new Map(); for (const { height, tx } of placements) (b.get(height) ?? b.set(height, []).get(height)).push(tx); return b; };
+// A REAL offer (so the production io can prove + synthesize its give-backing, FIX B); the lane fclaims target it.
+const sellerKeyD = "0x" + "5e".repeat(32);
+const offTxD = proposeTx({ ...pick(offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: addrFromPriv(sellerKeyD) } })), priv: sellerKeyD, expiresEpoch: 9e9 });
+const LOID = ctxid(rpcTxToTx(offTxD)).toLowerCase();
+const withOffer = (placements) => worldOf([{ height: H0 + 2, tx: offTxD }, ...placements]);
+const runLive = (blocks, fclaimTxid, offerId = LOID) => liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, TIP), hints: { offerId, fclaimTxid, me: ME, offerHeight: H0 + 2 } });
+const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ offer: offerId })), priv, expiresEpoch: E });
+
+// DEFECT 1: the cap keys on the PROVEN mined grant height (from the scan), never a served/inflated one. 3
+// genuine me-holds live at the true grant height -> 3; keying on a height past their holdEnd would UNDER-count.
+{
+  const fill = fcTxFor();
+  const holds = [fcTxFor(OID2), fcTxFor(OID3), fcTxFor(OID4)];
+  const blocks = withOffer([fill, ...holds].map((tx) => ({ height: Hfc, tx })));
+  const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
+  check(`DEFECT1: cap counts 3 genuine me-holds on the PROVEN grant height (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 3);
+  const evs = holds.map((t) => { const x = rpcTxToTx(t); return { kind: "propose", proposer: ME, uri: x.app.uri, payloadHash: String(x.app.payloadHash), expiresEpoch: E }; });
+  check("DEFECT1: keying on an INFLATED height (> holdEnd) would UNDER-count to 0 (the burn the fix prevents)", countMyOtherLiveHolds(evs, LOID, ME, HOLD_END + 1) === 0 && countMyOtherLiveHolds(evs, LOID, ME, Hfc) === 3);
+}
+
+// DEFECT 2: authenticate each counted hold with the prevout-ownership bind. A me-hold whose scriptSig was SWAPPED
+// to a foreign valid signature (over the same sighash) but whose SPENT COIN is still mine is UNBINDABLE -> COUNTED
+// (over-count); a genuine stranger hold (foreign signs, foreign owns the coin) is bound to them -> NOT counted.
+{
+  const fill = fcTxFor();
+  const legit = fcTxFor(OID2);                                  // my coin, my sig
+  const swapped = JSON.parse(JSON.stringify(legit));
+  const sig = signSighash(vSighash(rpcTxToTx(legit)), foreignKey);
+  swapped.inputs[0].script_sig = buildScriptSig(sig.sig64, sig.pub33);   // re-attribute the author; txid unchanged
+  const stranger = fcTxFor(OID3, foreignKey);                  // foreign coin, foreign sig
+  const blocks = withOffer([{ height: Hfc, tx: fill }, { height: Hfc, tx: swapped }, { height: Hfc, tx: stranger }]);
+  const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
+  check(`DEFECT2: a scriptSig-swapped ME-hold is still COUNTED (bind rejects re-attribution) and a bound stranger is NOT (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 1);
+}
+
+// OBS 3: a still-live pre-V28 LEGACY hold (score=SCORE_CLAIM attest on another offer) by me counts toward the
+// cap in the ~45-block V28 transition; a stranger's and a provably-lapsed (older than LEGACY_HOLD) one do not.
+{
+  const fill = fcTxFor();
+  const legacyMine = attestTx({ proposalId: OID2, score: SCORE_CLAIM, priv: meKey });
+  const legacyStranger = attestTx({ proposalId: OID3, score: SCORE_CLAIM, priv: foreignKey });
+  const legacyOld = attestTx({ proposalId: OID4, score: SCORE_CLAIM, priv: meKey });
+  const blocks = withOffer([
+    { height: Hfc, tx: fill }, { height: Hfc, tx: legacyMine }, { height: Hfc, tx: legacyStranger },
+    { height: Hfc - LEGACY_HOLD - 1, tx: legacyOld },
+  ]);
+  const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
+  check(`OBS3: a live legacy me-hold counts; a stranger's and a lapsed one do not (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 1);
+}
+
+// DEFECT 1 backstop: the fclaim being filled MUST be merkle-proven in the scan window, else fail CLOSED
+// (an inflated/forged height can never anchor the cap on a non-proven target).
+{
+  const blocks = withOffer([{ height: Hfc, tx: fcTxFor(OID2) }]);   // no fclaim-for-LOID present at all
+  let threw = false;
+  try { await runLive(blocks, id("ab")); } catch { threw = true; }
+  check("DEFECT1: an unprovable fclaim-being-filled fails CLOSED (throws -> preflight VERIFY_UNAVAILABLE)", threw === true);
+}
+
+// DEFECT 3 (replay leg): an in-window LANE event the scan FOUND in a merkle-bound block but whose scriptSig was
+// swapped (unbindable) must FAIL CLOSED, not silently vanish from the grant replay (which would false-accept a
+// denied fclaim / cancelled offer -> BURN). Drive the REAL liveFillSpvSource scan with a real buildScriptSig swap.
+const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)); const s = signSighash(vSighash(rpcTxToTx(rpcTx)), newPriv); t.inputs[0].script_sig = buildScriptSig(s.sig64, s.pub33); return t; };
+{
+  // positive control: an HONEST competing prior hold binds fine -> no throw (the eager auth never false-refuses).
+  const fc2 = fcTxFor(), fc1 = fcTxFor(LOID, foreignKey);
+  let threw = false, io = null;
+  try { io = await runLive(withOffer([{ height: Hfc, tx: fc2 }, { height: Hfc, tx: fc1 }]), ctxid(rpcTxToTx(fc2))); } catch { threw = true; }
+  check("DEFECT3: an HONEST competing hold in-window binds fine (no false-refuse)", threw === false && io !== null);
+}
+{
+  // a competing prior HOLD fc1 present in a merkle-bound block with a SWAPPED scriptSig (author suppressed).
+  const fc2 = fcTxFor(), fc1swapped = swapSig(fcTxFor(LOID, foreignKey), meKey);
+  let threw = false;
+  try { await runLive(withOffer([{ height: Hfc, tx: fc2 }, { height: Hfc, tx: fc1swapped }]), ctxid(rpcTxToTx(fc2))); } catch { threw = true; }
+  check("DEFECT3: a scriptSig-suppressed competing HOLD fails the replay CLOSED (throws, not vanishes)", threw === true);
+}
+{
+  // an in-window maker CANCEL of the offer with a SWAPPED scriptSig (suppressed so the offer looks still open).
+  const fc = fcTxFor(), cancelSwapped = swapSig(attestTx({ proposalId: LOID, score: SCORE_CANCEL, priv: foreignKey }), meKey);
+  let threw = false;
+  try { await runLive(withOffer([{ height: Hfc, tx: fc }, { height: Hfc, tx: cancelSwapped }]), ctxid(rpcTxToTx(fc))); } catch { threw = true; }
+  check("DEFECT3: a scriptSig-suppressed in-window CANCEL fails the replay CLOSED (throws, not vanishes)", threw === true);
+}
+
+{
+  // wallet-level end-to-end: a source THROW (the DEFECT-3 suppression path) surfaces as retryable
+  // VERIFY_UNAVAILABLE, NEVER a signed fill — the fail-closed default holds through the whole preflight.
+  const { w } = await freshWallet("pw-throw01");
+  w.fillSpvIoForTest = () => { throw new Error("fill-SPV: a lane event could not be authorship-bound (possible scriptSig suppression) - refusing"); };
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`DEFECT3: a source suppression THROW surfaces as VERIFY_UNAVAILABLE at the wallet (never a signed fill) (${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE");
+  check("…and nothing was submitted", s.submits.length === 0);
+}
+
+// FIX A (RT3): an offer-txid fill during a LIVE fclaim hold at tip>=V28 must REFUSE (Correction 1 mirror), never
+// sign an SCORE_FILL on the offer id (the resolver routes fills to the fclaim; the offer-txid attest burns).
+{
+  const { w, addr: W } = await freshWallet("pw-wrongtarget");
+  const held = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: H0 + 2, feeBps: 150, claimTxid: fcH, claimedBy: W, claimUntilHeight: 100_200 };
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => held }), tip: 100_100 });   // GET on the OFFER id
+  const r = await w.fillOffer({ proposalId: OID, outputs });
+  check(`FIXA: offer-txid fill during a live fclaim hold is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_WRONG_TARGET");
+  check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
+}
+{
+  const { w, addr: W } = await freshWallet("pw-belowv28");
+  const taker = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => taker }), tip: 50_000 });
+  const r = await w.fillOffer({ proposalId: OID, outputs });
+  check(`FIXA: a below-V28 offer-txid fill is UNAFFECTED (no FILL_WRONG_TARGET false-refuse) (${r?.error ?? "ok"})`, r?.code !== "FILL_WRONG_TARGET" && r?.ok === true && s.submits.length === 1);
+}
+
+// RT-STEER (bypass close): the fclaim-lane routing is STRUCTURAL (proposalId != offer.id), NOT the resolver-echoed
+// fclaimId, so a hostile primary that WITHHOLDS/alters fclaimId cannot steer a denied-fclaim fill into the
+// resolver-trusted legacy lane. The served offer omits fclaimId AND crafts a legacy-passable open-CSD claim
+// (claimedBy=me): the OLD code would fall to legacy fillIsSafe and BURN; the fixed code STILL runs the SPV boundary.
+{
+  const { w, addr: W } = await freshWallet("pw-steer01");
+  const served = { id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S }, status: "open", height: H0 + 2, feeBps: 150, claimedBy: W, claimUntilHeight: 9e15 };   // NO fclaimId
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fc1, OID, H0 + 3, me), fcFor(fc2, OID, H0 + 5, me)], HOLD_END - 5, me, H0 + 5);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+  const r = await w.fillOffer({ proposalId: fc2, outputs });   // fc2 (DENIED) != offer.id -> MUST route to SPV
+  check(`RT-STEER: fclaimId withheld but proposalId != offer.id -> SPV STILL runs; DENIED fclaim REFUSED (bypass closed) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE");
+  check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
+}
+{
+  const { w } = await freshWallet("pw-steer02");
+  const served = { id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S }, status: "open", height: H0 + 2, feeBps: 150 };   // honest, NO fclaimId
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });   // honest fclaim != offer.id -> SPV -> ACCEPT
+  check(`RT-STEER: an honest fclaim-lane fill with fclaimId WITHHELD still ACCEPTS (structural routing) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+{
+  const { w, addr: W } = await freshWallet("pw-legacy01");
+  const taker = { id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => taker }), tip: 100_100 });
+  const r = await w.fillOffer({ proposalId: OID, outputs });   // proposalId === offer.id, no claimTxid -> legacy path
+  check(`RT-STEER: a legacy taker-bound fill (proposalId===offer.id, no claimTxid) proceeds via legacy at V28 (no false-refuse) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+
+// FIX B (RT2-secondary): the PRODUCTION io must MATERIALIZE a token/name offer (synthesize the give-backing the
+// scan drops) so an honest token/name fclaim fill is ACCEPTED, while the grant/denial VERDICT still rides the
+// PROVEN lane events. Drives the REAL liveFillSpvSource + the vendored verifyFillSpv (no deploy/mint in the blocks).
+{
+  const sellerKey = "0x" + "3c".repeat(32), seller = addrFromPriv(sellerKey).toLowerCase();
+  const offTx = proposeTx({ ...pick(offer({ give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: seller } })), priv: sellerKey, expiresEpoch: 9e9 });
+  const loid = ctxid(rpcTxToTx(offTx)).toLowerCase();
+  const fill = fcTxFor(loid), fid = ctxid(rpcTxToTx(fill)).toLowerCase();
+  const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(worldOf([{ height: H0 + 2, tx: offTx }, { height: Hfc, tx: fill }]), TIP), hints: { offerId: loid, fclaimTxid: fid, me: ME, offerHeight: H0 + 2 } });
+  const v = await verifyFillSpv(loid, fid, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant, pay: V });
+  check(`FIXB: an honest TOKEN-give fclaim fill is ACCEPTED via the REAL io (synthesized backing materializes the give) (${v.reason})`, v.safe === true);
+}
+{
+  const sellerKey = "0x" + "4d".repeat(32), seller = addrFromPriv(sellerKey).toLowerCase();
+  const offTx = proposeTx({ ...pick(offer({ give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: seller } })), priv: sellerKey, expiresEpoch: 9e9 });
+  const loid = ctxid(rpcTxToTx(offTx)).toLowerCase();
+  const fc1 = fcTxFor(loid), fc2 = fcTxFor(loid), fid2 = ctxid(rpcTxToTx(fc2)).toLowerCase();   // fc1 holds -> fc2 DENIED
+  const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(worldOf([{ height: H0 + 2, tx: offTx }, { height: Hfc, tx: fc1 }, { height: Hfc + 2, tx: fc2 }]), TIP), hints: { offerId: loid, fclaimTxid: fid2, me: ME, offerHeight: H0 + 2 } });
+  const v = await verifyFillSpv(loid, fid2, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant, pay: V });
+  check(`FIXB: a DENIED fclaim on a token-give offer is STILL refused (proven lane verdict, not the trusted backing) (${v.reason})`, v.safe === false);
+}
+{
+  // the flagship CNS NAME buy: a name-give offer (realistic near-tip expiry) also materializes via synthesized
+  // name backing, so the honest name fclaim fill is ACCEPTED (not falsely refused post-V28).
+  const sellerKey = "0x" + "6a".repeat(32), seller = addrFromPriv(sellerKey).toLowerCase();
+  const offTx = proposeTx({ ...pick(offer({ give: { name: "flagship" }, want: { value: String(V), payto: seller } })), priv: sellerKey, expiresEpoch: E });
+  const loid = ctxid(rpcTxToTx(offTx)).toLowerCase();
+  const fill = fcTxFor(loid), fid = ctxid(rpcTxToTx(fill)).toLowerCase();
+  const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(worldOf([{ height: H0 + 2, tx: offTx }, { height: Hfc, tx: fill }]), TIP), hints: { offerId: loid, fclaimTxid: fid, me: ME, offerHeight: H0 + 2 } });
+  const v = await verifyFillSpv(loid, fid, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant, pay: V });
+  check(`FIXB: an honest NAME-give (CNS) fclaim fill is ACCEPTED via the REAL io (synthesized name backing) (${v.reason})`, v.safe === true);
+}
+
+// 7. MUTATION VERIFICATION: remove the wallet's denied-fclaim guard from the SOURCE; the same forgery then SUBMITS.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const WSRC = path.join(here, "..", "src", "core", "wallet.ts");
+async function withGuardRemoved(marker, run) {
+  const src = readFileSync(WSRC, "utf8");
+  const lines = src.split("\n");
+  const kept = lines.filter((l) => !l.includes(marker));
+  if (kept.length !== lines.length - 1) throw new Error(`mutation marker ${marker} must match exactly one line (matched ${lines.length - kept.length})`);
+  const tmp = path.join(here, "..", "src", "core", `__mutant_wallet_${Date.now()}.ts`);
+  writeFileSync(tmp, kept.join("\n"));
+  try { return await run(await import(pathToFileURL(tmp).href)); }
+  finally { unlinkSync(tmp); }
+}
+
+const mut = await withGuardRemoved("MUTATE_FCLAIM_GUARD", async (mod) => {
+  const wm = new mod.Wallet(memoryStore());
+  await wm.create("pw-mutant");
+  wm.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fc1, OID, H0 + 3, me), fcFor(fc2, OID, H0 + 5, me)], HOLD_END - 5, me, H0 + 5);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fc2, H0 + 5) }) });
+  const r = await wm.fillOffer({ proposalId: fc2, outputs });
+  return { r, submits: s.submits.length };
+});
+check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves the guard is the sole rejecter)`, mut.r?.ok === true && mut.submits === 1);
+
+globalThis.fetch = origFetch;
+console.log(`\nfill-fclaim-preflight: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);

@@ -1,0 +1,314 @@
+// fillspv.ts — the LIVE production FillSpvIo for the V28 open-lane (fclaim) fill fund boundary.
+//
+// The pure fail-closed verdict lives in the vendored cairnx-core `verifyFillSpv` (src/vendor/cairnx-spv.js,
+// §31/B4): it re-derives the ENTIRE fclaim grant + hold from PoW-buried, MERKLE-PROVEN events and NEVER
+// trusts a served "granted" flag, because a resolver-DENIED fclaim is an L0-valid but delivery-less attest
+// target (filling it BURNS the payment). All of that surface's chain access flows through an injected
+// `FillSpvIo` seam; this file wires the REAL one over the wallet's PoW-verified light client, reusing the
+// audited namespv `liveSpvSource` (tip / merkle-verified block bodies / prevout-ownership bind) so the
+// crypto-critical header + merkle verification is the same reviewed code the name path already ships.
+//
+// COMPLETENESS is a seam obligation the pure layer cannot verify: a WITHHELD real event (a prior live hold,
+// a consuming fill, a cancel) makes the replay see the offer as MORE open than it is and would false-accept a
+// denied fclaim. So `offerEventIds` derives the evidence from PoW-verified BLOCK BODIES over a TIP-ANCHORED
+// window (never a resolver-supplied height, which a hostile source could inflate to shift the window past a
+// prior hold), NOT a resolver hint list. Any gap/mismatch/error THROWS → the preflight fails CLOSED.
+import {
+  rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
+  fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, SCORE_CLAIM, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
+  deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, V11_HEIGHT, ACTIVATION_HEIGHT,
+  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose,
+} from "../vendor/cairnx-spv.js";
+import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
+
+// A fclaim hold lasts at most MAX_HOLD_SPAN blocks past its grant (a grant at an epoch's first block with
+// ee = epochOf(h)+2 holds through h+89). A FILLABLE fclaim is within its hold (verifyFillSpv's deadline guard),
+// so its grant height is at most MAX_HOLD_SPAN below the tip. LEGACY_MAX_HOLD = the widest pre-V28 legacy claim
+// hold (window + fill grace); a legacy claim older than this is provably lapsed.
+const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;   // 89
+const LEGACY_MAX_HOLD = CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS;
+
+// The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so an event
+// whose authenticating input looks like one has no prevout owner to bind against. Mirrors namespv.ts.
+const COINBASE_TXID = "0x" + "00".repeat(32);
+const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
+  String(i.prevTxid).toLowerCase() === COINBASE_TXID && Number(i.vout) === 0xffffffff;
+
+// outputs → addr→sum(value) map via the vendored sink (the exact aggregation the resolver/scanner use).
+// SPV-specific glue only: raw outputs carry a scriptPubkey, not an addr. Mirrors namespv.ts outputsToPaidTo.
+function outputsToPaidTo(outputs: Tx["outputs"]): Record<string, string> {
+  const decoded: { addr: string; value: number }[] = [];
+  for (const o of outputs) {
+    const a = String(o.scriptPubkey ?? "").toLowerCase().replace(/^0x/, "");
+    if (!/^[0-9a-f]{40}$/.test(a)) continue;
+    decoded.push({ addr: "0x" + a, value: Number(o.value) });
+  }
+  return paidToFromOutputs(decoded);
+}
+
+// Recover + AUTHENTICATE a tx's signer (the merkle root commits the body but NOT the scriptSig). null on any
+// malformation / bad signature. Same strict vendored recoverSigner + sighash(tx) as namespv.ts.
+function recoverSigner(tx: Tx): string | null {
+  const ss = tx.inputs?.[0]?.scriptSig;
+  if (typeof ss !== "string") return null;
+  try { return recoverSig(ss, sighash(tx)); } catch { return null; }
+}
+
+// ★ KEEP-IN-SYNC with namespv.ts toChainEvent + the cairnx scanner: the emitted field shapes must match so
+// resolve()/verifyFillSpv produce identical state from either feed. Adds the PoW-verified burial `depth`.
+function toProvenEvent(tx: Tx, id: string, height: number, pos: number, signer: string, depth: number): ProvenEvent | null {
+  if (!tx.app || tx.app.type === "None") return null;
+  const paidTo = outputsToPaidTo(tx.outputs);
+  if (tx.app.type === "Propose") {
+    return { kind: "propose", id: id.toLowerCase(), proposer: signer, uri: tx.app.uri, payloadHash: String(tx.app.payloadHash).toLowerCase(), expiresEpoch: Number(tx.app.expiresEpoch), height, pos, paidTo, depth };
+  }
+  const conf = Number(tx.app.confidence);
+  return { kind: "attest", txid: id.toLowerCase(), proposalId: String(tx.app.proposalId).toLowerCase(), attester: signer, score: Number(tx.app.score), confidence: Number.isSafeInteger(conf) && conf >= 0 ? conf : 0, height, pos, paidTo, depth };
+}
+
+// Fetch a block, rebuild EVERY tx, and require merkleRoot(txids) == the PoW-verified header's merkle root, so
+// a lying node cannot omit/alter/add any committed body. THROWS (fail-closed) on any mismatch. A plain/coinbase
+// tx may carry no `app` → default {None} before decode so it can't DoS the whole verify by making rpcTxToTx throw.
+async function bindBlock(spv: SpvSource, height: number): Promise<{ ids: string[]; rebuilt: Tx[] }> {
+  const { merkle, txs } = await spv.blockAt(height);
+  const rebuilt = txs.map((t) => rpcTxToTx(t.app ? (t as RpcTxJson) : ({ ...t, app: { type: "None" } } as RpcTxJson)));
+  const ids = rebuilt.map(ctxid);
+  if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase())
+    throw new Error(`block ${height} does not match its PoW-verified merkle root (tampered read path)`);
+  return { ids, rebuilt };
+}
+
+export interface FillSpvHints { offerId: string; fclaimTxid: string; me: string; offerHeight: number; }
+
+// The cross-offer MAX_ACTIVE_CLAIMS count (`myLiveHoldsAtGrant` for verifyFillSpv): a CONSERVATIVE OVER-count
+// of the buyer's OTHER-offer fclaim holds that could be live at the grant height of the fclaim being filled.
+// verifyFillSpv's lane-scoped replay cannot see other-offer holds, and the cap is the ONE grant clause counted
+// across offers, so a wrong-LOW count fail-OPENS the cap and BURNS (a resolver that D2-aliases a cap-denied
+// fclaim as "granted" would pass); a wrong-HIGH count only false-refuses (retryable, at worst a wasted claim).
+// PURE so the live scan and the tests drive the identical predicate. The caller supplies AUTHENTICATED
+// proposers (production: prevout-ownership bound, with any UNBINDABLE hold attributed to `me` = over-count) and
+// the fclaim's PROVEN grant height (never a resolver-served height).
+export function countMyOtherLiveHolds(
+  events: readonly { kind?: string; proposer?: string; uri?: string; payloadHash?: string; expiresEpoch?: number }[],
+  offerId: string, me: string, grantHeight: number,
+): number {
+  const oid = String(offerId).toLowerCase(), meL = String(me).toLowerCase();
+  let n = 0;
+  for (const e of events) {
+    if (e?.kind !== "propose" || String(e.proposer ?? "").toLowerCase() !== meL) continue;
+    const rec = parseRecord(String(e.uri ?? ""), String(e.payloadHash ?? "")) as { t?: string; offer?: string } | null;
+    if (!rec || rec.t !== "fclaim") continue;
+    if (String(rec.offer ?? "").toLowerCase() === oid) continue;      // this offer's own holds do NOT count
+    if (fclaimHoldEnd(Number(e.expiresEpoch)) < grantHeight) continue; // lapsed before our grant height
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Build the live FillSpvIo over the wallet's PoW light client. Fails CLOSED (throws or yields null) on any
+ * unverifiable read, so a preflight that awaits it refuses rather than proceeds. `opts.spvSource` injects the
+ * seam for tests; production builds the real one from the light client. The returned io carries the computed
+ * `myLiveHoldsAtGrant` cross-offer cap over-count.
+ *
+ * Fund-safety scan design (all hint-independent, so a hostile resolver cannot narrow the evidence):
+ *  - The window is TIP-ANCHORED [tip - (MAX_SCAN + MAX_HOLD_SPAN), tip]; a fillable fclaim is within
+ *    MAX_HOLD_SPAN of the tip, so this always covers [true-grant - MAX_SCAN, tip] no matter what height the
+ *    resolver asserts. (Anchoring on the served height would let an inflated hint push a prior hold out.)
+ *  - The fclaim's grant height is its PROVEN mined height from the scan, never the served hint; the source
+ *    fails CLOSED if the fclaim is not merkle-proven in-window.
+ *  - Every counted OTHER-offer hold is authenticated by the prevout-ownership bind (a hostile node cannot swap
+ *    a scriptSig to strip my authorship); a hold that is mine OR cannot be bound is counted (over-count).
+ *
+ * IN-window suppression is CLOSED: every lane event this scan proved in a merkle-bound block is EAGERLY
+ * authorship-bound below and fails CLOSED if unbindable, so a scriptSig-swap cannot make an in-window prior
+ * hold / cancel / consuming fill vanish from the replay.
+ *
+ * RESIDUAL (precise, and ACCEPTED as resolver-compromise-bounded): the ONE leg left open is a hostile PRIMARY
+ * resolver WITHHOLDING a genuine PRE-window event (a cancel or consuming fill OLDER than the tip-anchored
+ * window), which only an unbounded anchor-to-tip body scan would surface, and that is hot-path-infeasible (a
+ * V22+ offer can be weeks old). None of the earlier "mitigations" close it -- Correction 2 only freezes a
+ * cancel landing DURING a live hold (a cancel BEFORE the grant is a real cancellation, not frozen); the B6
+ * clarvis cross-check gives ZERO protection (a cancel changes no value field, and an honest clarvis simply 404s
+ * the denied fclaim = fail-soft PROCEED); reorg depth is irrelevant to a genuinely-buried OLD cancel. Its only
+ * closure is the deferred B4 warm-snapshot + chunked lifecycle scan (verified-event proof cache), the same
+ * "as-shown" completeness limit namespv already accepts. B6 is a STRICT improvement over the pre-B6 fill, which
+ * trusted the resolver's ENTIRE answer; here only this bounded pre-window-withholding leg remains.
+ *
+ * GIVE-BACKING is separately RESOLVER-TRUSTED (the accepted N1 residual): the offer's token/name backing is
+ * synthesized from the merkle-proven offer record (see below) so the offer materializes, and it NEVER affects
+ * the grant/denial/holder/cancel verdict (which rides the proven lane events). Same trust as the pre-V28 fill.
+ *
+ * WHAT THIS BOUNDARY STOPS (stated exactly, no overstatement): once the wallet ROUTES to it (STRUCTURALLY, on
+ * `proposalId !== offer.id`, so a hostile PRIMARY can no longer WITHHOLD/alter the D2 `fclaimId` to steer the
+ * fill away from the boundary -- see wallet.ts fillOfferPreflight), it stops a denied / superseded / forged-holder
+ * / below-depth fclaim and an in-window scriptSig-suppressed hold/cancel/fill. It does NOT stop: (1) a PRE-window
+ * withheld cancel/consuming-fill (above); (2) resolver-trusted give-backing (above); (3) a fill the wallet routes
+ * to the LEGACY lane (`proposalId === offer.id` with no live fclaim hold -- a taker-bound fill or a pre-V28
+ * sunset hold), which stays resolver-trusted exactly as pre-V28 (N1). A hostile primary that also relabels
+ * `offer.id === proposalId` lands in that same pre-existing legacy N1 residual, not a new V28 lane.
+ */
+export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number }> {
+  const spv = opts.spvSource ?? await liveSpvSource(opts);
+  const offerId = String(opts.hints.offerId).toLowerCase();
+  const fclaimTxid = String(opts.hints.fclaimTxid).toLowerCase();
+  const me = String(opts.hints.me).toLowerCase();
+  const offerHeight = Math.floor(Number(opts.hints.offerHeight));
+  if (!Number.isFinite(offerHeight) || offerHeight < 0)
+    throw new Error("fill-SPV: the resolver gave no usable offer height to anchor its proof");
+
+  // Sync PoW-verified headers to the node tip (prepare caps its sync at the node tip, so a large target forces
+  // a full sync) — the fill needs burial-to-tip, not just headers up to a record. A lying-high header throws.
+  const { verifiedTip } = await spv.prepare(Number.MAX_SAFE_INTEGER);
+  if (!Number.isFinite(verifiedTip)) throw new Error("fill-SPV: no PoW-verified tip");
+
+  const heightOf = new Map<string, number>();
+  const ids = new Set<string>();                       // events for verifyFillSpv's offer replay
+  const scannedIds = new Set<string>();                // ids merkle-proven DURING the scan (TRUE mined height)
+  const laneProposals = new Set<string>([offerId]);    // the offer + every fclaim-for-this-offer
+  const attestBuf: { id: string; height: number; proposalId: string }[] = [];
+  const otherFclaims: { id: string; height: number; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
+  const legacyClaims: { id: string; height: number }[] = [];   // pre-V28 SCORE_CLAIM attests on OTHER offers
+  const add = (id: string, h: number) => { const k = id.toLowerCase(); if (!heightOf.has(k)) heightOf.set(k, h); ids.add(k); };
+  const markScanned = (id: string, h: number) => { scannedIds.add(id.toLowerCase()); add(id, h); };
+
+  const proven = new Map<string, ProvenEvent | null>();   // memoize per id (bind each block once)
+  async function proveEventAt(id: string, height: number): Promise<ProvenEvent | null> {
+    const k = id.toLowerCase();
+    if (proven.has(k)) return proven.get(k) ?? null;
+    let ev: ProvenEvent | null = null;
+    const { ids: bids, rebuilt } = await bindBlock(spv, height);
+    const pos = bids.findIndex((x) => x.toLowerCase() === k);
+    if (pos >= 0) {
+      const tx = rebuilt[pos];
+      const signer = recoverSigner(tx);
+      const in0 = tx.inputs?.[0];
+      // NSPV-SIGSUB-1: bind the recovered signer to the COIN it spends (the merkle root does not commit the
+      // scriptSig), so a hostile node cannot swap in a foreign valid signature to re-attribute a record's author.
+      if (signer && in0 && !isCoinbaseInput(in0)) {
+        const spk = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
+        if (spk && spk.toLowerCase() === signer) ev = toProvenEvent(tx, bids[pos], height, pos, signer, verifiedTip - height + 1);
+      }
+    }
+    proven.set(k, ev);
+    return ev;
+  }
+
+  // TIP-ANCHORED scan (FUND-SAFETY, not latency): surface every fclaim / offer / fill / cancel / legacy-claim
+  // bearing on this offer (or on the buyer's cap) from PoW-verified BLOCK BODIES, so neither a withheld prior
+  // hold nor an inflated served height can slip past the replay or the cap count.
+  const from = Math.max(0, verifiedTip - (MAX_SCAN + MAX_HOLD_SPAN));
+  for (let h = from; h <= verifiedTip; h++) {
+    const { ids: bids, rebuilt } = await bindBlock(spv, h);
+    for (let pos = 0; pos < rebuilt.length; pos++) {
+      const tx = rebuilt[pos];
+      const app = tx.app;
+      if (!app || app.type === "None") continue;
+      const id = bids[pos].toLowerCase();
+      if (app.type === "Propose") {
+        if (id === offerId) { markScanned(id, h); continue; }   // the offer, if it anchored in-window
+        const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; offer?: string } | null;
+        if (!rec || rec.t !== "fclaim") continue;
+        if (String(rec.offer).toLowerCase() === offerId) { laneProposals.add(id); markScanned(id, h); }
+        else otherFclaims.push({ id, height: h, uri: app.uri, payloadHash: String(app.payloadHash), expiresEpoch: Number(app.expiresEpoch) });
+      } else {
+        const proposalId = String(app.proposalId).toLowerCase();
+        attestBuf.push({ id, height: h, proposalId });
+        if (Number(app.score) === SCORE_CLAIM && proposalId !== offerId) legacyClaims.push({ id, height: h });
+      }
+    }
+  }
+  // Second pass: keep only the attests (fills / cancels) that reference the offer or a lane fclaim.
+  for (const a of attestBuf) if (laneProposals.has(a.proposalId)) markScanned(a.id, a.height);
+  // The offer may predate the window; prove it at the resolver-asserted height (fail-closed if lied).
+  add(offerId, offerHeight);
+
+  // DEFECT-1 fix: the cap keys on the fclaim's PROVEN mined height, never the served hint. Fail CLOSED if the
+  // fclaim being filled was not merkle-proven in-window (an inflated hint or a non-mined target).
+  if (!scannedIds.has(fclaimTxid)) throw new Error("fill-SPV: the fclaim being filled was not merkle-proven in the scan window");
+  const grantHeight = heightOf.get(fclaimTxid)!;
+
+  // DEFECT-2 fix: authenticate each in-window OTHER-offer fclaim's proposer with the prevout-ownership bind
+  // (recoverSigner alone is spoofable). Fail toward OVER-count: a hold that is MINE **or that cannot be bound**
+  // is counted (dropping a possibly-mine hold under-counts and burns); only a hold provably bound to ANOTHER
+  // address is excluded. Only holds still live at the grant height are considered.
+  const held: { kind: "propose"; proposer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
+  for (const c of otherFclaims) {
+    if (fclaimHoldEnd(c.expiresEpoch) < grantHeight) continue;      // provably lapsed before the grant
+    const ev = await proveEventAt(c.id, c.height);
+    const proposer = ev && ev.kind === "propose" ? ev.proposer : me;   // unbindable -> attribute to me (over-count)
+    held.push({ kind: "propose", proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch });
+  }
+  let myLiveHoldsAtGrant = countMyOtherLiveHolds(held, offerId, me, grantHeight);
+
+  // OBS-3 fix (V28 activation window): resolve()'s cap also counts a still-live pre-V28 LEGACY hold (a score-
+  // SCORE_CLAIM attest on an offer, 40+5-block window). New clients build none, so this only bites for the ~45
+  // blocks after the gate; count them the same over-count way (mine OR unbindable) so a live legacy hold on
+  // another offer at grant is not under-counted during the transition.
+  for (const c of legacyClaims) {
+    if (c.height < grantHeight - LEGACY_MAX_HOLD) continue;         // provably lapsed before the grant
+    const ev = await proveEventAt(c.id, c.height);
+    if (!ev || ev.kind !== "attest" || ev.attester === me) myLiveHoldsAtGrant++;   // mine OR unbindable -> count
+  }
+
+  // DEFECT-3 fix: EAGERLY authenticate every lane event the scan FOUND in a merkle-bound block, HERE (not in
+  // provenEvent alone). verifyFillSpv silently SKIPS a null provenEvent AND its per-event try/catch swallows a
+  // throw, so on the REPLAY leg a bind-failure = "the event never happened" (fail-OPEN). An event found in a
+  // merkle-bound body but whose authorship cannot be prevout-bound is a SUPPRESSION: a hostile node swapped its
+  // scriptSig (the txid strips it, so the merkle check still passes) to make a prior HOLD / CANCEL / consuming
+  // FILL vanish from the replay -> a denied-fclaim / cancelled-offer false-accept -> BURN. Fail CLOSED here (the
+  // wallet retries as VERIFY_UNAVAILABLE), mirroring namespv's fail-closed-on-unbindable. An honestly-mined tx
+  // always binds (L0 required the owner's valid signature to mine it), so an honest read never trips this. A
+  // genuinely-ADDED fake id (a lying resolver hint, absent from every block) is NOT here -- scannedIds holds
+  // ONLY events THIS independent scan proved in a merkle-bound block, so it correctly cannot be a suppression.
+  for (const wid of scannedIds) {
+    const h = heightOf.get(wid);
+    if (h !== undefined && (await proveEventAt(wid, h)) === null)
+      throw new Error("fill-SPV: a lane event could not be authorship-bound (possible scriptSig suppression) - refusing");
+  }
+
+  // GIVE-BACKING SYNTHESIS (accepted N1 residual): the scan drops the offer's give-backing (a token's deploy+mint,
+  // or a name's registration) because it is arbitrarily OLD (outside the tip-anchored window), so without this
+  // resolve() would hit "unknown ticker" / "you don't own this name" and verifyFillSpv would FALSELY REFUSE every
+  // honest token/name fclaim fill. Synthesize a minimal, generous backing from the MERKLE-PROVEN offer record so
+  // the offer MATERIALIZES and previewFill is deliverable. This backing is RESOLVER-TRUSTED (identical to the
+  // pre-V28 fill, which trusted the resolver's ENTIRE answer; N1), and it materializes the GIVE only -- the
+  // grant/denial/holder/cancel VERDICT rides the PROVEN lane events above and NEVER the synthesized backing (the
+  // synthetic ids are never in scannedIds, so they are neither eager-authed nor cap-counted). A forged give (a
+  // seller who never owned it) is the same N1 residual the pre-V28 wallet already carries, no worse.
+  const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
+  if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
+  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string } } | null;
+  const synthetic = new Map<string, ProvenEvent>();
+  const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
+    const sid = String(built.payloadHash).toLowerCase();   // the record's own payload_hash: a stable, unique id
+    synthetic.set(sid, { kind: "propose", id: sid, proposer: offerEv.proposer, uri: built.uri, payloadHash: sid, expiresEpoch: 9_000_000_000, height, pos: 0, paidTo, depth: verifiedTip - height + 1 } as ProvenPropose);
+  };
+  if (offerRec && offerRec.t === "offer" && offerRec.give) {
+    if (isNameGive(offerRec.give)) {
+      // a pre-V15 direct name registration by the seller: effHeight ~ V11 out-ages the sale embargo, and the
+      // no-lease default paidThrough (V15_EPOCH + NAME_TERM) covers any realistic near-tip offer window. (A name
+      // offer with an unusually far-future expiresEpoch beyond that default fail-safe REFUSES, never burns; the
+      // deferred lifecycle scan is the full fix.) Fee generously overpaid so the registration always clears.
+      synth(nameClaim({ name: offerRec.give.name! }), V11_HEIGHT + 1, { [TREASURY_ADDR]: String(MAX_AMOUNT) });
+    } else if (offerRec.give.ticker) {
+      // deploy (just above ACTIVATION_HEIGHT, below v1.1 so no fee gate; resolve() ignores anything below the
+      // activation floor) + an issuer mint of the max supply to the seller, so any give amount is available.
+      // resolve() processes these before the offer (lower heights), materializing the give.
+      synth(deploy({ ticker: offerRec.give.ticker, decimals: 0, supply: String(MAX_AMOUNT), mint: "issuer" }), ACTIVATION_HEIGHT + 1, { [TREASURY_ADDR]: String(DEPLOY_FEE) });
+      synth(mint({ ticker: offerRec.give.ticker, amount: String(MAX_AMOUNT) }), ACTIVATION_HEIGHT + 2, {});
+    }
+  }
+
+  return {
+    myLiveHoldsAtGrant,
+    async tip() { return verifiedTip; },
+    async offerEventIds() { return [...ids, ...synthetic.keys()]; },
+    async provenEvent(id: string) {
+      const k = String(id).toLowerCase();
+      if (synthetic.has(k)) return synthetic.get(k)!;
+      const h = heightOf.get(k);
+      return h === undefined ? null : await proveEventAt(id, h);
+    },
+  };
+}
