@@ -735,6 +735,7 @@ export class Wallet {
       c = await r.json().catch(() => null);
     } catch { return null; }                        // timeout / network → PROCEED
     if (!c || typeof c !== "object") return null;   // unparseable 2nd source → single-source PROCEED
+    if (!c.want && !c.give) return null;            // reachable clarvis with NO comparable offer terms (error/degraded/aliased body) → single-source PROCEED, never a false value conflict (keeps clarvis a strictly-OPTIONAL 2nd source)
     const field = divergentValueField(primary, c);
     if (field) return { ok: false, error: `your two independent resolvers disagree on this offer's ${field} — refusing to sign until they agree (possible hostile source)`, sighashMatch: false, code: "SOURCE_DIVERGENCE" };
     return null;

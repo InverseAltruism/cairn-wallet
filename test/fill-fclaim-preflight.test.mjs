@@ -175,6 +175,22 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
   check("…and nothing was submitted", s.submits.length === 0);
 }
 
+// 5c. clarvis-OPTIONAL: a REACHABLE clarvis returning HTTP 200 with a degraded body that carries NO offer terms
+// (an error/aliased/unknown-offer body, no want AND no give) is fail-soft PROCEED, NOT a false value divergence.
+// This keeps clarvis a strictly-optional second source: a reachable-but-useless clarvis can never turn into a
+// hard blocker of a legit buy. (A reachable clarvis that DOES serve a real offer with a conflicting want/give
+// still REFUSES per 5b.)
+{
+  const { w } = await freshWallet("pw-clarvisdegraded");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({
+    offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }),
+    clarvisReply: () => ({ ok: true, status: 200, json: async () => ({ ok: false, error: "unknown offer" }) }), // 200, no want/give
+  });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`reachable clarvis with no offer terms is fail-soft PROCEED (honest buy submits) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+
 // 6. CROSS-OFFER cap: the count is COMPUTED from the scan. 2 other-offer holds ACCEPTS; adding a 3rd FLIPS to REFUSE.
 {
   const { w } = await freshWallet("pw-cap-01");

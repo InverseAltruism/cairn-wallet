@@ -1108,7 +1108,19 @@ var LightClient = class _LightClient {
     for (const v of verified) this.chain.push(v);
     return { adopted: true, rolledBack, newTip: altTip.height };
   }
-  /** Verify a tx's inclusion against a verified header (merkle proof built from the block). */
+  /**
+   * Verify a tx's inclusion against a verified header (merkle proof built from the block).
+   *
+   * SG-CONTENT-BIND-1: the merkle branch is folded over a txid RE-DERIVED from each tx BODY
+   * (`codecTxid(rpcTxToTx(body))`), NEVER the server-reported `.txid` field. The txid commits to the
+   * whole tx (incl. `app.payload_hash`), so a body whose recomputed id folds to the PoW-verified merkle
+   * root is authentic byte-for-byte — a lying read path that swaps a body while keeping the reported
+   * `.txid` re-derives to a different id and fails closed (it neither matches the requested txid nor
+   * folds to the root). On a proven inclusion we SURFACE the proven tx (`tx`) and, for a Propose, its
+   * committed `appPayloadHash`, so a caller can bind an offer's terms to the ON-CHAIN commitment
+   * instead of a resolver-served `/proposal` (which the same routed backend controls). This mirrors the
+   * shipped `verifyClaimSPV` block re-derivation (cairn swapguard.js), made canonical here for A1/B4.
+   */
   async verifyTxInclusion(txidHex) {
     if (!this.client) return { trustLevel: "rpc-trusted", included: false, reason: "no client for proof fetch" };
     const t = await this.client.tx(txidHex);
@@ -1125,12 +1137,21 @@ var LightClient = class _LightClient {
     const verified = this.at(height);
     if (!verified) return { trustLevel: "rpc-trusted", included: false, reason: "could not verify the containing header" };
     const b = await this.client.blockByHeight(height);
-    const txids = b.txs.map((x) => x.txid);
-    const pos = txids.findIndex((x) => x.toLowerCase() === txidHex.toLowerCase());
-    if (pos < 0) return { trustLevel: "rpc-trusted", included: false, reason: "tx not listed in block" };
-    const ok = verifyMerkleProof(txidHex, pos, merkleBranch(txids, pos), verified.header.merkle);
+    const derivedIds = [];
+    for (const jt of b.txs) {
+      try {
+        derivedIds.push(txid(rpcTxToTx(jt)));
+      } catch {
+        return { trustLevel: "rpc-trusted", included: false, reason: "undecodable tx in block (tampered read path)" };
+      }
+    }
+    const pos = derivedIds.findIndex((x) => x.toLowerCase() === txidHex.toLowerCase());
+    if (pos < 0) return { trustLevel: "rpc-trusted", included: false, reason: "tx body not found in block (or re-derived txid mismatch)" };
+    const ok = verifyMerkleProof(derivedIds[pos], pos, merkleBranch(derivedIds, pos), verified.header.merkle);
     if (!ok) return { trustLevel: "rpc-trusted", included: false, reason: "merkle proof failed" };
-    return { trustLevel: "verified-inclusion", included: true, blockHeight: height, confirmations: tipHeight - height + 1 };
+    const provenTx = b.txs[pos];
+    const appPayloadHash = provenTx.app.type === "Propose" ? provenTx.app.payload_hash : void 0;
+    return { trustLevel: "verified-inclusion", included: true, blockHeight: height, confirmations: tipHeight - height + 1, tx: provenTx, appPayloadHash };
   }
   /**
    * Balance for an address. HONEST: `rpc-trusted` — a header chain cannot prove an output is still
@@ -3373,7 +3394,7 @@ var MAX_PENDING_REG = 3;
 var FINALIZE_TIP_MARGIN = 2;
 var V26_HEIGHT = 46480;
 var V27_HEIGHT = 46520;
-var V28_HEIGHT = 55e3;
+var V28_HEIGHT = 6e4;
 var epochOf = (height) => Math.floor(height / EPOCH_LEN);
 var claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
 var claimWindowOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
