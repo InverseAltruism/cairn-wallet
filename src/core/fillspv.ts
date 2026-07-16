@@ -28,7 +28,12 @@ export const feeBpsAt = (h: number): number => (h >= V11_HEIGHT ? (h >= V16_HEIG
 
 // The fee/rebate-relevant fields of an offer, derived from the MERKLE-PROVEN offer event (never the resolver-
 // served object). The caller binds the served offer's same fields to these before sizing requiredFillOutputs.
-export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; }
+// `min` is the ONLY on-chain partial-fill field (OFFER_KEYS in cairnx records.ts; copied verbatim onto
+// OfferState at offer creation). `paid`/`delivered` are resolver-derived RUNNING fill state (init 0, accumulated
+// per fill), NOT in the record and NOT merkle-provable, so they are deliberately absent here (binding them would
+// false-refuse every partially-filled offer). previewFill pivots partial-vs-whole SOLELY on `offer.min !==
+// undefined`, so binding `min` pins the client to the exact branch resolve() takes (F2 partial-fill leg).
+export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; min?: string; }
 
 // A fclaim hold lasts at most MAX_HOLD_SPAN blocks past its grant (a grant at an epoch's first block with
 // ee = epochOf(h)+2 holds through h+89). A FILLABLE fclaim is within its hold (verifyFillSpv's deadline guard),
@@ -303,7 +308,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // seller who never owned it) is the same N1 residual the pre-V28 wallet already carries, no worse.
   const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
   if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
-  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string }; want?: { payto?: string; value?: string }; taker?: string; bid?: string } | null;
+  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string }; want?: { payto?: string; value?: string }; taker?: string; bid?: string; min?: string } | null;
   // F2: the PAYMENT recipients, derived from the merkle-proven offer (never the resolver-served fields). The
   // seller (= the prevout-bound author) owns the rebate leg; the payment recipient is the record's explicit
   // want.payto (merkle-committed) or, absent, the seller. verifyFillSpv proves DELIVERY but not these, so the
@@ -322,6 +327,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
     value: offerRec?.want?.value !== undefined ? String(offerRec.want.value) : undefined,
     taker: offerRec?.taker !== undefined ? String(offerRec.taker).toLowerCase() : undefined,
     bid: offerRec?.bid !== undefined ? String(offerRec.bid).toLowerCase() : undefined,
+    min: offerRec?.min !== undefined ? String(offerRec.min) : undefined,
   };
   const synthetic = new Map<string, ProvenEvent>();
   const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
@@ -383,7 +389,7 @@ export async function provenOfferPayto(
     const tx = rebuilt[pos];
     const app = tx.app;
     if (!app || app.type !== "Propose") return null;
-    const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string }; taker?: string; bid?: string } | null;
+    const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string }; taker?: string; bid?: string; min?: string } | null;
     if (!rec || rec.t !== "offer") return null;
     const signer = recoverSigner(tx);
     const in0 = tx.inputs?.[0];
@@ -400,6 +406,7 @@ export async function provenOfferPayto(
       value: rec.want?.value !== undefined ? String(rec.want.value) : undefined,
       taker: rec.taker !== undefined ? String(rec.taker).toLowerCase() : undefined,
       bid: rec.bid !== undefined ? String(rec.bid).toLowerCase() : undefined,
+      min: rec.min !== undefined ? String(rec.min) : undefined,
     };
     return { payto, seller, terms };
   } catch { return null; }

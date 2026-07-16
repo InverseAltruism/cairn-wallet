@@ -21,13 +21,23 @@ import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fi
 // build an under-sized fill that resolve() (using the proven values) rejects AFTER the payment leg moved =
 // pay-without-delivery burn (theft if the attacker is the seller). Bind the served fields to the proven ones.
 function provenTermsMismatch(offer: unknown, t: ProvenOfferTerms): boolean {
-  const o = offer as { height?: unknown; feeBps?: unknown; want?: { value?: unknown }; taker?: unknown; bid?: unknown };
+  const o = offer as { height?: unknown; feeBps?: unknown; want?: { value?: unknown }; taker?: unknown; bid?: unknown; min?: unknown };
   const s = (v: unknown) => (v === undefined || v === null ? "" : String(v).toLowerCase());
   if (Number(o?.height) !== t.height) return true;
   if (Number(o?.feeBps) !== t.feeBps) return true;
   if (t.value !== undefined && String(o?.want?.value) !== t.value) return true;
   if (s(o?.taker) !== s(t.taker)) return true;
   if (s(o?.bid) !== s(t.bid)) return true;
+  // Partial-fill leg (F2, R1.1): bind `min` (the ONLY on-chain partial field; paid/delivered are resolver
+  // running state, deliberately NOT bound). A lying resolver ADDING a spurious `min` to a whole-fill open-CSD
+  // offer flips previewFill/requiredFillOutputs to the PARTIAL branch (rebate 0), so the wallet drops the maker-
+  // rebate output and resolve() rejects "maker rebate unpaid" AFTER the payment moved = full-payment burn;
+  // DEFLATING `min` on a genuine partial offer lets a sub-min payment settle then reject. Presence must match AND
+  // value must match. EXPLICIT presence (not s(): a served min="" must not slip past a proven-absent min, else
+  // previewFill's BigInt(offer.min) throws).
+  const om = o?.min;
+  if ((om !== undefined && om !== null) !== (t.min !== undefined)) return true;
+  if (t.min !== undefined && String(om) !== t.min) return true;
   return false;
 }
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
