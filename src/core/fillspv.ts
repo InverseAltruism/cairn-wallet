@@ -16,10 +16,19 @@
 import {
   rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, SCORE_CLAIM, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
-  deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, V11_HEIGHT, ACTIVATION_HEIGHT,
+  deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, V16_HEIGHT, FEE_BPS, FEE_BPS_V16, ACTIVATION_HEIGHT,
   type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
+
+// The treasury fee rate the resolver STAMPS on an offer at its creation height (resolve.ts: v11 ? (v16 ?
+// FEE_BPS_V16 : FEE_BPS) : 0). requiredFillOutputs sizes the treasury fee from offer.feeBps, so binding the
+// served feeBps to feeBpsAt(the MERKLE-PROVEN creation height) stops a lying resolver deflating it (F2 amount leg).
+export const feeBpsAt = (h: number): number => (h >= V11_HEIGHT ? (h >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS) : 0);
+
+// The fee/rebate-relevant fields of an offer, derived from the MERKLE-PROVEN offer event (never the resolver-
+// served object). The caller binds the served offer's same fields to these before sizing requiredFillOutputs.
+export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; }
 
 // A fclaim hold lasts at most MAX_HOLD_SPAN blocks past its grant (a grant at an epoch's first block with
 // ee = epochOf(h)+2 holds through h+89). A FILLABLE fclaim is within its hold (verifyFillSpv's deadline guard),
@@ -148,7 +157,7 @@ export function countMyOtherLiveHolds(
  * sunset hold), which stays resolver-trusted exactly as pre-V28 (N1). A hostile primary that also relabels
  * `offer.id === proposalId` lands in that same pre-existing legacy N1 residual, not a new V28 lane.
  */
-export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number }> {
+export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: ProvenOfferTerms }> {
   const spv = opts.spvSource ?? await liveSpvSource(opts);
   const offerId = String(opts.hints.offerId).toLowerCase();
   const fclaimTxid = String(opts.hints.fclaimTxid).toLowerCase();
@@ -207,8 +216,24 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       const id = bids[pos].toLowerCase();
       if (app.type === "Propose") {
         if (id === offerId) { markScanned(id, h); continue; }   // the offer, if it anchored in-window
+        // F8 (wallet-vs-site parity): only cairnx-domain Proposes bind the resolver's replay, mirroring the site
+        // swapguard.js:704 (`tx.app.domain !== DOMAIN && idl !== offerId`). Without this the scan is domain-blind:
+        // a SELLER-signed foreign-domain Propose whose uri parses as a cairnx ocancel/fclaim would be fed to
+        // resolve() and cancel/deny the offer in the WALLET's replay only (a hard FILL_UNSAFE the authoritative
+        // resolver and the /trade site ignore) = a wallet-vs-site false-refuse fork on an honest, open offer. The
+        // offer itself is exempt (handled by the id === offerId continue above), exactly as the site exempts it.
+        if (app.domain !== DOMAIN) continue;
         const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; offer?: string } | null;
-        if (!rec || rec.t !== "fclaim") continue;
+        if (!rec) continue;
+        // F8 (wallet-vs-site divergence fix): an ocancel (bulk offer-cancel-all) is a Propose resolve() ACTS on
+        // -- it cancels the seller's matching open offers (resolve.ts). An ocancel landing BEFORE the fclaim grant
+        // is a REAL cancellation the replay MUST see (Correction-2 only freezes an ocancel DURING a live hold), so
+        // dropping it here false-accepts a fill on a cancelled offer (buyer pays, receives 0). Feed it to the
+        // replay (ids) AND eager-auth-bind it (scannedIds), mirroring the site swapguard.js:707. A hostile-INJECTED
+        // ocancel cannot false-refuse: resolve() applies it only when o.seller === ocancel.proposer (prevout-bound),
+        // so a foreign/forged or wrong-ticker ocancel is simply ignored.
+        if (rec.t === "ocancel") { markScanned(id, h); continue; }
+        if (rec.t !== "fclaim") continue;
         if (String(rec.offer).toLowerCase() === offerId) { laneProposals.add(id); markScanned(id, h); }
         else otherFclaims.push({ id, height: h, uri: app.uri, payloadHash: String(app.payloadHash), expiresEpoch: Number(app.expiresEpoch) });
       } else {
@@ -278,7 +303,26 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // seller who never owned it) is the same N1 residual the pre-V28 wallet already carries, no worse.
   const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
   if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
-  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string } } | null;
+  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string }; want?: { payto?: string; value?: string }; taker?: string; bid?: string } | null;
+  // F2: the PAYMENT recipients, derived from the merkle-proven offer (never the resolver-served fields). The
+  // seller (= the prevout-bound author) owns the rebate leg; the payment recipient is the record's explicit
+  // want.payto (merkle-committed) or, absent, the seller. verifyFillSpv proves DELIVERY but not these, so the
+  // caller binds the resolver-served payto/seller to them (fail-closed) before sizing the fill.
+  const provenSeller = String(offerEv.proposer).toLowerCase();
+  const provenPayto = (offerRec?.want?.payto && /^0x[0-9a-f]{40}$/.test(String(offerRec.want.payto).toLowerCase()))
+    ? String(offerRec.want.payto).toLowerCase()
+    : provenSeller;
+  // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer. requiredFillOutputs sizes the
+  // treasury fee from feeBps (= feeBpsAt(creation height)) and the maker rebate from height/taker/bid + want.value;
+  // the caller binds the served offer's same fields to these so a deflated feeBps/height/value/taker cannot
+  // under-size a leg (which resolve() would reject AFTER the payment moved = pay-without-delivery burn).
+  const provenTerms: ProvenOfferTerms = {
+    height: offerEv.height,
+    feeBps: feeBpsAt(offerEv.height),
+    value: offerRec?.want?.value !== undefined ? String(offerRec.want.value) : undefined,
+    taker: offerRec?.taker !== undefined ? String(offerRec.taker).toLowerCase() : undefined,
+    bid: offerRec?.bid !== undefined ? String(offerRec.bid).toLowerCase() : undefined,
+  };
   const synthetic = new Map<string, ProvenEvent>();
   const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
     const sid = String(built.payloadHash).toLowerCase();   // the record's own payload_hash: a stable, unique id
@@ -302,6 +346,9 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 
   return {
     myLiveHoldsAtGrant,
+    provenPayto,
+    provenSeller,
+    provenTerms,
     async tip() { return verifiedTip; },
     async offerEventIds() { return [...ids, ...synthetic.keys()]; },
     async provenEvent(id: string) {
@@ -311,4 +358,49 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       return h === undefined ? null : await proveEventAt(id, h);
     },
   };
+}
+
+// F2-legacy: prove an offer's PAYMENT recipients (want.payto + the seller/rebate address) for the LEGACY /
+// dApp fill lane (fillOfferPreflight), which has no fclaim SPV io to source them from. Merkle-proves the offer
+// Propose tx at its confirmed height and derives: seller = the prevout-bound author (the coin can only be spent
+// by its owner's key, and the owner is txid-committed, NOT scriptSig-derived); payto = the record's explicit
+// want.payto (merkle-committed) or, absent, the seller. Returns { payto, seller } (lowercased 0x-addrs) or null
+// on ANY unprovable / tampered / unreachable read, so the caller fails CLOSED-RETRYABLE (never a hard decline on
+// an honest fill). Reuses the same audited light-client primitives (liveSpvSource, bindBlock, prevoutScriptPubkey).
+export async function provenOfferPayto(
+  opts: LiveSpvOpts & { offerId: string; offerHeight: number; spvSource?: SpvSource },
+): Promise<{ payto: string; seller: string; terms: ProvenOfferTerms } | null> {
+  const offerId = String(opts.offerId).toLowerCase();
+  const offerHeight = Math.floor(Number(opts.offerHeight));
+  if (!/^0x[0-9a-f]{64}$/.test(offerId) || !Number.isFinite(offerHeight) || offerHeight < 0) return null;
+  try {
+    const spv = opts.spvSource ?? await liveSpvSource(opts);
+    const { verifiedTip } = await spv.prepare(offerHeight);        // PoW-verify headers through the offer height
+    if (!Number.isFinite(verifiedTip) || verifiedTip < offerHeight) return null;   // couldn't reach it -> retry
+    const { ids: bids, rebuilt } = await bindBlock(spv, offerHeight);   // merkle-COMPLETE bodies; throws on tamper
+    const pos = bids.findIndex((x) => x.toLowerCase() === offerId);
+    if (pos < 0) return null;                                      // the offer is not in its claimed block (tampered)
+    const tx = rebuilt[pos];
+    const app = tx.app;
+    if (!app || app.type !== "Propose") return null;
+    const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string }; taker?: string; bid?: string } | null;
+    if (!rec || rec.t !== "offer") return null;
+    const signer = recoverSigner(tx);
+    const in0 = tx.inputs?.[0];
+    if (!signer || !in0 || isCoinbaseInput(in0)) return null;
+    const owner = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
+    if (!owner || owner.toLowerCase() !== signer) return null;     // authorship not prevout-bound (tampered)
+    const seller = signer;
+    const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase()))
+      ? String(rec.want.payto).toLowerCase()
+      : seller;
+    const terms: ProvenOfferTerms = {
+      height: offerHeight,   // the merkle-proven block the offer was found in (bindBlock verified it)
+      feeBps: feeBpsAt(offerHeight),
+      value: rec.want?.value !== undefined ? String(rec.want.value) : undefined,
+      taker: rec.taker !== undefined ? String(rec.taker).toLowerCase() : undefined,
+      bid: rec.bid !== undefined ? String(rec.bid).toLowerCase() : undefined,
+    };
+    return { payto, seller, terms };
+  } catch { return null; }
 }

@@ -19,9 +19,9 @@ import path from "node:path";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
-import { countMyOtherLiveHolds, liveFillSpvSource } from "../src/core/fillspv.js";
+import { countMyOtherLiveHolds, liveFillSpvSource, provenOfferPayto, feeBpsAt } from "../src/core/fillspv.js";
 import {
-  deploy, mint, offer, fclaim, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
+  deploy, mint, offer, fclaim, offerCancelAll, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
   SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
@@ -56,9 +56,20 @@ const fcFor = (txid, offerId, height, holder) => PE(txid, fclaim({ offer: offerI
 // The synthetic seam: PoW/merkle already satisfied. depth = tip - height + 1 (the verified burial). The io
 // carries myLiveHoldsAtGrant COMPUTED by the SAME pure counter the live source uses (never hardcoded).
 const idOf = (e) => (e.kind === "propose" ? e.id : e.txid).toLowerCase();
+// F2 (amount leg): the fee/rebate-relevant terms derived from an offer (matching what liveFillSpvSource proves).
+const termsFor = (o) => ({ height: Number(o.height), feeBps: feeBpsAt(Number(o.height)), value: o.want?.value !== undefined ? String(o.want.value) : undefined, taker: o.taker !== undefined ? String(o.taker).toLowerCase() : undefined, bid: o.bid !== undefined ? String(o.bid).toLowerCase() : undefined });
 function makeIo(events, tip, me, fillFclaimHeight) {
+  // F2: the proven payment recipients + fee/rebate terms, derived from the PROVEN offer event (never the
+  // resolver-served offer), exactly as the live source does. The synthetic offer (baseFor) has proposer S,
+  // want.payto S, height H0+2, no taker/bid.
+  const offerEv = events.find((e) => idOf(e) === OID.toLowerCase());
+  let seller = String(offerEv?.proposer ?? "").toLowerCase(), payto = seller, orec = {};
+  try { orec = JSON.parse(offerEv.uri); if (orec?.want?.payto) payto = String(orec.want.payto).toLowerCase(); } catch {}
   return {
     myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
+    provenPayto: payto,
+    provenSeller: seller,
+    provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined },
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },
     async provenEvent(x) { const e = events.find((y) => idOf(y) === String(x).toLowerCase()); return e ? { ...e, depth: tip - e.height + 1 } : null; },
@@ -216,6 +227,37 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
   check("…and nothing was submitted", s.submits.length === 0);
 }
 
+// F2. a lying resolver swaps the served want.payto (or seller) to an attacker while the PROVEN offer still pays
+// the real seller S. verifyFillSpv proves DELIVERY but NOT the payment recipients; the F2 bind must REFUSE and
+// nothing may submit. (clarvis is fail-soft 404 here, exactly the residual F2 closes at the fund boundary.)
+{
+  const ATT = "0x" + "a7".repeat(20);
+  const attackOffer = (extra = {}) => ({ ...servedOffer(fcH, H0 + 3), ...extra });
+  const io = (me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);   // PROVEN offer pays S
+  // (a) swapped want.payto -> the seller PAYMENT is redirected (theft)
+  {
+    const { w } = await freshWallet("pw-f2-payto");
+    const served = attackOffer({ want: { value: String(V), payto: ATT } });
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    w.fillSpvIoForTest = (oid, fc, me) => io(me);
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+    const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
+    check(`F2: a swapped served want.payto is REFUSED (proven author S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient/.test(r?.error ?? ""));
+    check("…and nothing was submitted (the payment did not go to the attacker)", s.submits.length === 0);
+  }
+  // (b) swapped seller -> the REBATE leg mis-sizes so resolve() would reject the fill (burn)
+  {
+    const { w } = await freshWallet("pw-f2-seller");
+    const served = attackOffer({ seller: ATT });
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    w.fillSpvIoForTest = (oid, fc, me) => io(me);
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+    const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
+    check(`F2: a swapped served seller (rebate leg) is REFUSED (proven seller S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient/.test(r?.error ?? ""));
+    check("…and nothing was submitted", s.submits.length === 0);
+  }
+}
+
 // ── DEFECT/OBS re-confirm: drive the REAL liveFillSpvSource (a synthetic PoW SpvSource over REAL signed txs).
 //    The chain-free injected seam above hands proposer + true height directly, so it exercises NEITHER the
 //    resolver-height path (DEFECT 1) nor the scriptSig-swap path (DEFECT 2). These drive the production count. ──
@@ -322,6 +364,54 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   check("DEFECT3: a scriptSig-suppressed in-window CANCEL fails the replay CLOSED (throws, not vanishes)", threw === true);
 }
 
+// F8 (wallet-vs-site divergence): an ocancel (bulk offer-cancel-all) by the offer's SELLER landing BEFORE the
+// fclaim grant CANCELS the offer, so a fill on it is a pay-without-delivery burn. The scan MUST collect the
+// ocancel and feed it to the grant replay (the pre-fix code dropped it at fillspv.ts:211 -> false-accept).
+{
+  const fill = fcTxFor();
+  const cancel = proposeTx({ ...pick(offerCancelAll({ ticker: "AAA" })), priv: sellerKeyD, expiresEpoch: 9e9 });  // the offer's own seller
+  const io = await runLive(withOffer([{ height: Hfc - 1, tx: cancel }, { height: Hfc, tx: fill }]), ctxid(rpcTxToTx(fill)));
+  const v = await verifyFillSpv(LOID, ctxid(rpcTxToTx(fill)).toLowerCase(), ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant, pay: BigInt(V) });
+  check(`F8: a pre-grant seller ocancel CANCELS the offer -> verifyFillSpv REFUSES safe:false (${v.reason ?? "safe"})`, v.safe === false);
+}
+{
+  // positive control: an ocancel for a DIFFERENT ticker does NOT cancel this offer -> still ACCEPTS (no over-refuse).
+  const fill = fcTxFor();
+  const otherCancel = proposeTx({ ...pick(offerCancelAll({ ticker: "ZZZ" })), priv: sellerKeyD, expiresEpoch: 9e9 });
+  const io = await runLive(withOffer([{ height: Hfc - 1, tx: otherCancel }, { height: Hfc, tx: fill }]), ctxid(rpcTxToTx(fill)));
+  const v = await verifyFillSpv(LOID, ctxid(rpcTxToTx(fill)).toLowerCase(), ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant, pay: BigInt(V) });
+  check(`F8: an ocancel for a DIFFERENT ticker does NOT cancel -> verifyFillSpv still ACCEPTS (${v.reason ?? "safe"})`, v.safe === true);
+}
+{
+  // F8 domain guard (wallet-vs-site parity): a seller-signed matching ocancel in a FOREIGN (non-cairnx) domain is
+  // IGNORED by the scan (mirroring swapguard.js:704), so the offer stays open and the honest fill still ACCEPTS.
+  // WITHOUT the domain guard the wallet would collect it, cancel the offer in its replay only, and HARD-decline an
+  // honest fill the authoritative resolver and the /trade site fill fine.
+  const fill = fcTxFor();
+  const foreignCancel = proposeTx({ ...pick(offerCancelAll({ ticker: "AAA" })), priv: sellerKeyD, expiresEpoch: 9e9, domain: "cairn:v1" });
+  const io = await runLive(withOffer([{ height: Hfc - 1, tx: foreignCancel }, { height: Hfc, tx: fill }]), ctxid(rpcTxToTx(fill)));
+  const v = await verifyFillSpv(LOID, ctxid(rpcTxToTx(fill)).toLowerCase(), ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant, pay: BigInt(V) });
+  check(`F8: a FOREIGN-domain seller ocancel is ignored -> honest fill still ACCEPTS (no wallet-vs-site false-refuse) (${v.reason ?? "safe"})`, v.safe === true);
+}
+
+// F2-legacy: the REAL provenOfferPayto (the legacy/dApp lane's payment-recipient SPV) over a synthetic PoW
+// SpvSource. Every legacy-lane preflight test STUBS this via provenPaytoForTest, so this pins the real
+// merkle-proving path: a null-returning bug would false-refuse EVERY honest legacy/dApp fill (the no-false-refuse
+// UX red line), and a wrong-owner bug would re-open the F2 theft. Honest -> correct {payto,seller,terms}; a
+// scriptSig-swapped author -> null (prevout-bound); a lied offer height -> null (no substitution).
+{
+  const sellerAddr = addrFromPriv(sellerKeyD).toLowerCase();
+  const src = fillSource(withOffer([]), TIP);   // just the honest offer offTxD at H0+2
+  const honest = await provenOfferPayto({ rpcBase: "http://x", headersBase: "http://x", spvSource: src, offerId: LOID, offerHeight: H0 + 2 });
+  check(`F2-legacy: provenOfferPayto proves the honest offer author + terms (no-false-refuse control) (${honest?.seller})`,
+    honest !== null && honest.seller === sellerAddr && honest.payto === sellerAddr && honest.terms.feeBps === 150 && honest.terms.height === H0 + 2 && honest.terms.value === String(V));
+  const wrongHeight = await provenOfferPayto({ rpcBase: "http://x", headersBase: "http://x", spvSource: src, offerId: LOID, offerHeight: H0 + 5 });
+  check("F2-legacy: provenOfferPayto with a LIED offer height fails CLOSED (null, no substitution)", wrongHeight === null);
+  const swappedOffer = swapSig(offTxD, meKey);   // re-sign the offer with a FOREIGN key (txid unchanged)
+  const swapped = await provenOfferPayto({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(worldOf([{ height: H0 + 2, tx: swappedOffer }]), TIP), offerId: ctxid(rpcTxToTx(swappedOffer)).toLowerCase(), offerHeight: H0 + 2 });
+  check("F2-legacy: provenOfferPayto rejects a scriptSig-swapped author (null, prevout-owner-bound)", swapped === null);
+}
+
 {
   // wallet-level end-to-end: a source THROW (the DEFECT-3 suppression path) surfaces as retryable
   // VERIFY_UNAVAILABLE, NEVER a signed fill — the fail-closed default holds through the whole preflight.
@@ -346,6 +436,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 {
   const { w, addr: W } = await freshWallet("pw-belowv28");
   const taker = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker) });   // F2-legacy: honest proven author + terms
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => taker }), tip: 50_000 });
   const r = await w.fillOffer({ proposalId: OID, outputs });
   check(`FIXA: a below-V28 offer-txid fill is UNAFFECTED (no FILL_WRONG_TARGET false-refuse) (${r?.error ?? "ok"})`, r?.code !== "FILL_WRONG_TARGET" && r?.ok === true && s.submits.length === 1);
@@ -375,9 +466,52 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 {
   const { w, addr: W } = await freshWallet("pw-legacy01");
   const taker = { id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker) });   // F2-legacy: honest proven author + terms
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => taker }), tip: 100_100 });
   const r = await w.fillOffer({ proposalId: OID, outputs });   // proposalId === offer.id, no claimTxid -> legacy path
   check(`RT-STEER: a legacy taker-bound fill (proposalId===offer.id, no claimTxid) proceeds via legacy at V28 (no false-refuse) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+// F2-legacy: the SPV-less legacy/dApp lane must ALSO bind the payment recipient. A lying resolver swaps the
+// served want.payto (or seller) on a taker-bound (proposalId===offer.id) fill; the F2-legacy bind must REFUSE.
+// The transient valve: an UNPROVABLE (null) proof yields retryable VERIFY_UNAVAILABLE, never a hard decline.
+{
+  const ATT = "0x" + "a8".repeat(20);
+  const { w, addr: W1 } = await freshWallet("pw-legacy-f2");
+  const taker = (extra) => ({ id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W1, ...extra });
+  // (a) swapped served want.payto -> REFUSED (proven author S)
+  {
+    const served = taker({ want: { value: String(V), payto: ATT } });
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker()) });
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
+    const r = await w.fillOffer({ proposalId: OID, outputs: outs });
+    check(`F2-legacy: a swapped served want.payto on the legacy lane is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient/.test(r?.error ?? ""));
+    check("…and nothing was submitted", s.submits.length === 0);
+  }
+  // (b) UNPROVABLE author (null) -> retryable VERIFY_UNAVAILABLE, NOT a hard decline (the transient valve)
+  {
+    const served = taker();
+    w.provenPaytoForTest = () => null;
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
+    const r = await w.fillOffer({ proposalId: OID, outputs });
+    check(`F2-legacy: an UNPROVABLE author fails SOFT (retryable VERIFY_UNAVAILABLE, not a hard decline) (${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE");
+    check("…and nothing was submitted", s.submits.length === 0);
+  }
+}
+
+// F2 (amount leg): a lying resolver serves HONEST payto/seller but a DEFLATED feeBps=0 while the offer's
+// merkle-proven creation height implies 150. requiredFillOutputs would size treasury=0; resolve() (using the
+// REAL proven fee) rejects the fill AFTER the payment leg moved = pay-without-delivery burn (theft if the
+// attacker is the seller). clarvis is fail-soft 404 here, so the SPV fee-terms bind is the sole robust defense.
+{
+  const { w } = await freshWallet("pw-f2-fee");
+  const served = servedOffer(fcH, H0 + 3, { feeBps: 0 });   // DEFLATED (proven feeBpsAt(H0+2) = 150)
+  const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
+  check(`F2: a DEFLATED served feeBps (0 vs proven 150) is REFUSED (pay-without-delivery burn averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
+  check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
 }
 
 // FIX B (RT2-secondary): the PRODUCTION io must MATERIALIZE a token/name offer (synthesize the give-backing the

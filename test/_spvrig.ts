@@ -35,15 +35,15 @@ export const feeOut = (v: number = REG_FEE): Output[] => [{ to: TREASURY_ADDR, v
 // Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape — exactly what SpvSource.blockAt returns. Each
 // tx references a UNIQUE prevout whose scriptPubkey is registered here; by default the signer spends their
 // OWN coin (the honest case), and `prevScriptPubkey` overrides it to simulate a swapped scriptSig.
-export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: number; priv: string; outputs?: Output[]; prevScriptPubkey?: string }): RpcTxJson {
-  const { uri, payloadHash, expiresEpoch = 9_999_999, priv, outputs = [], prevScriptPubkey } = p;
+export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: number; priv: string; outputs?: Output[]; prevScriptPubkey?: string; domain?: string }): RpcTxJson {
+  const { uri, payloadHash, expiresEpoch = 9_999_999, priv, outputs = [], prevScriptPubkey, domain = CAIRNX_DOMAIN } = p;
   const prevTxid = "0x" + (++_utxoSeq).toString(16).padStart(64, "0"); // a unique, real-looking prevout per tx
   PREVOUTS.set(prevTxid.toLowerCase(), String(prevScriptPubkey ?? addrFromPriv(priv)).toLowerCase());
   const tx = {
     version: 1, locktime: 0,
     inputs: [{ prevTxid, vout: 0, scriptSig: "0x" }],
     outputs: outputs.map((o) => ({ value: o.value, scriptPubkey: o.to })),
-    app: { type: "Propose" as const, domain: CAIRNX_DOMAIN, payloadHash, uri, expiresEpoch },
+    app: { type: "Propose" as const, domain, payloadHash, uri, expiresEpoch },
   };
   const { sig64, pub33 } = signSighash(vSighash(tx as any), priv); // sign the VENDORED sighash → verifyDigest accepts
   tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
@@ -51,7 +51,7 @@ export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: 
     version: 1, locktime: 0,
     inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: tx.inputs[0].scriptSig }],
     outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
-    app: { type: "Propose", domain: CAIRNX_DOMAIN, payload_hash: payloadHash, uri, expires_epoch: expiresEpoch },
+    app: { type: "Propose", domain, payload_hash: payloadHash, uri, expires_epoch: expiresEpoch },
   } as unknown as RpcTxJson;
 }
 

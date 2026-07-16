@@ -13,7 +13,23 @@ import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNE
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
-import { liveFillSpvSource } from "./fillspv.js";
+import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fillspv.js";
+
+// F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
+// requiredFillOutputs sizes the treasury fee from feeBps (= feeBpsAt(creation height)), the maker rebate from
+// height/taker/bid, and the payment from want.value; a lying resolver deflating any of them makes the wallet
+// build an under-sized fill that resolve() (using the proven values) rejects AFTER the payment leg moved =
+// pay-without-delivery burn (theft if the attacker is the seller). Bind the served fields to the proven ones.
+function provenTermsMismatch(offer: unknown, t: ProvenOfferTerms): boolean {
+  const o = offer as { height?: unknown; feeBps?: unknown; want?: { value?: unknown }; taker?: unknown; bid?: unknown };
+  const s = (v: unknown) => (v === undefined || v === null ? "" : String(v).toLowerCase());
+  if (Number(o?.height) !== t.height) return true;
+  if (Number(o?.feeBps) !== t.feeBps) return true;
+  if (t.value !== undefined && String(o?.want?.value) !== t.value) return true;
+  if (s(o?.taker) !== s(t.taker)) return true;
+  if (s(o?.bid) !== s(t.bid)) return true;
+  return false;
+}
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
@@ -646,6 +662,20 @@ export class Wallet {
       // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
       // this block hand-mirrored it. Pure local math over data already in hand — no added I/O.
       if (isCsdWant) {
+        // F2-legacy: this SPV-less LEGACY / dApp lane (window.cairn.fillOffer, no swapguard in the loop) sizes the
+        // payment against the resolver-served want.payto and the rebate against the served seller, so a lying read-
+        // path redirects the payment (theft) or mis-sizes the rebate so resolve() rejects the fill (burn). Bind both
+        // to the MERKLE-PROVEN offer author (prevout-owner, txid-committed). Fail CLOSED-RETRYABLE on an unprovable /
+        // transient read (never a hard decline on an honest fill), FILL_UNSAFE on a proven mismatch. Honest offers
+        // default payto/seller to the author, so no honest fill declines. // MUTATE_LEGACY_PAYTO_GUARD
+        const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
+        if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
+          return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+        if (payto !== proven.payto || String((offer as { seller?: string }).seller ?? "").toLowerCase() !== proven.seller)
+          return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" };
+        // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer (same as the fclaim lane).
+        if (provenTermsMismatch(offer, proven.terms))
+          return { ok: false, error: "refusing to sign: the offer's fee/rebate terms do not match its on-chain record (a lying resolver could under-size the fee, and the chain would reject the fill after your payment moved)", sighashMatch: false, code: "FILL_UNSAFE" };
         const need = requiredFillOutputs(offer, pay);
         if (need === null)
           return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
@@ -688,7 +718,7 @@ export class Wallet {
     if (divergence) return divergence;
     // Build the fail-closed SPV seam (PoW-verified tip + merkle-proven offer/fclaim/hold events + the computed
     // cross-offer hold count). Any unverifiable read throws → refuse retryably (never proceed on an unproven grant).
-    let io: FillSpvIo & { myLiveHoldsAtGrant?: number };
+    let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms };
     try {
       io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
     } catch {
@@ -710,6 +740,26 @@ export class Wallet {
       return { ok: false, error: "couldn't verify this reservation against the chain yet — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     }
     if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
+    // F2: bind the PAYMENT recipients to the MERKLE-PROVEN offer author. verifyFillSpv proves DELIVERY (the give)
+    // but not payment: requiredFillOutputs sizes the seller-payment leg to the resolver-served offer.want.payto
+    // and the rebate leg to the resolver-served offer.seller. A lying read-path swaps want.payto so the buyer
+    // pays an attacker while resolve() rejects the zero-recipient fill (theft), or swaps offer.seller so the
+    // rebate mis-sizes and resolve() rejects the fill (burn). The SPV source already re-derived both from the
+    // proven offer event. Fail CLOSED-retryable if unprovable, FILL_UNSAFE on a proven mismatch. An honest
+    // offer's payto/seller default to the author, so no honest fill is ever declined. // MUTATE_PAYTO_GUARD
+    const provenPayto = String((io as { provenPayto?: string }).provenPayto ?? "").toLowerCase();
+    const provenSeller = String((io as { provenSeller?: string }).provenSeller ?? "").toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(provenPayto) || !/^0x[0-9a-f]{40}$/.test(provenSeller))
+      return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    if (payto !== provenPayto || String(offer?.seller ?? "").toLowerCase() !== provenSeller)
+      return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" };
+    // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer so a deflated feeBps/height/
+    // value/taker cannot under-size a leg (which resolve() would reject AFTER payment = pay-without-delivery burn).
+    const terms = (io as { provenTerms?: ProvenOfferTerms }).provenTerms;
+    if (!terms)
+      return { ok: false, error: "couldn't prove this offer's on-chain fee terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    if (provenTermsMismatch(offer, terms))
+      return { ok: false, error: "refusing to sign: the offer's fee/rebate terms do not match its on-chain record (a lying resolver could under-size the fee, and the chain would reject the fill after your payment moved)", sighashMatch: false, code: "FILL_UNSAFE" };
     // verifyFillSpv proves delivery >= 1 on the offer terms; the wallet ALSO pins its OWN outputs to the exact
     // resolver need-map (payto >= want, treasury >= fee, seller >= rebate), identical to the legacy lane.
     const need = requiredFillOutputs(offer, pay);
@@ -744,14 +794,28 @@ export class Wallet {
   // Test seam (fill-SPV fund boundary): production leaves this undefined and builds the LIVE PoW-verified
   // FillSpvIo; tests inject a synthetic (PoW/merkle pre-satisfied) io so the vendored verifyFillSpv boundary
   // is exercised through the real preflight without a chain. The io carries the computed cap over-count.
-  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number }>;
-  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number }> {
+  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms }>;
+  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms }> {
     if (this.fillSpvIoForTest) return await this.fillSpvIoForTest(offerId, fclaimTxid, me);
     return await liveFillSpvSource({
       rpcBase: this.rpc, headersBase: this.api,
       cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
       hints: { offerId, fclaimTxid, me, offerHeight },
+    });
+  }
+
+  // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
+  // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
+  // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
+  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: ProvenOfferTerms } | null) | Promise<{ payto: string; seller: string; terms: ProvenOfferTerms } | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: ProvenOfferTerms } | null> {
+    if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
+    return await provenOfferPayto({
+      rpcBase: this.rpc, headersBase: this.api,
+      cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
+      floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
+      offerId, offerHeight,
     });
   }
 
