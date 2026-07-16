@@ -19,6 +19,10 @@ const origFetch = globalThis.fetch;
 
 const w = new Wallet(memoryStore());
 const { addr: A } = await w.create("super-secret-pw");
+// F2-legacy: the legacy CSD lane now binds the payment recipient to the merkle-proven offer author. The success
+// case's offer is honest (payto 0xce, seller 0xcd); inject the proven author so it is not falsely refused. The
+// fail-closed cases (404/garbled/status-less/5xx) refuse BEFORE this bind, so they are unaffected.
+w.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: "5000000", taker: String(A).toLowerCase(), bid: undefined } });
 const coin = mkCoin(100_000_002);
 const served = [coin];
 

@@ -10,6 +10,11 @@ const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
 try { (chrome as any).storage?.session?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }); } catch { /* older runtime */ }
 const wallet = new Wallet(chromeStore(), chromeSessionStore());
+// Test-only wallet handle: the E2E boundary suite (extension-boundary.ts) injects the documented Wallet test
+// seams (fillSpvIoForTest / provenPaytoForTest) through this. Guarded by a global the harness sets BEFORE
+// importing this module; the packaged extension never sets __CAIRN_TEST__, so the handle is never exposed in
+// production (build.mjs defines no such flag and the service-worker global is clean).
+if ((globalThis as { __CAIRN_TEST__?: unknown }).__CAIRN_TEST__) (globalThis as { __cairnBgWallet?: unknown }).__cairnBgWallet = wallet;
 const ready = wallet.init();
 
 // pending dApp approvals: id -> {origin, method, params, resolve}

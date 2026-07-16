@@ -88,6 +88,7 @@ const dappAsync = (method: string, params: any, origin = "https://evil.test") =>
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
 async function main() {
+  (globalThis as { __CAIRN_TEST__?: boolean }).__CAIRN_TEST__ = true; // expose the bg wallet for the F2-legacy seam
   await import("../src/background.js"); // registers the listener (side-effecting module)
   await tick();
 
@@ -211,6 +212,13 @@ async function main() {
   lastSubmit = null;
   const OFFER_ID = "0x" + "22".repeat(32);
   const SELLER = "0x" + "ee".repeat(20);
+  // F2-legacy: the legacy CSD lane now binds the payment recipient to the merkle-proven offer author. These
+  // fixtures are honest (payto == seller == SELLER), so inject the proven author on the background wallet so the
+  // downstream need-map (F2 output-sizing) assertions below are reached rather than short-circuited on the SPV read.
+  const bgWallet = (globalThis as { __cairnBgWallet?: { provenPaytoForTest?: unknown } }).__cairnBgWallet;
+  // MY_CLAIM_ID (the CSD offer that reaches the need-map): payto/seller = SELLER, height 34000 (feeBps 150),
+  // value 40000000, no taker. The proven terms mirror it so the F2 amount-bind passes on the honest fixture.
+  if (bgWallet) bgWallet.provenPaytoForTest = () => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined } });
   // B1 (0.2.57): the preflight now fails CLOSED unless the resolver positively parses to an open
   // offer — the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
   // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: token-want

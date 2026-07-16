@@ -61,6 +61,10 @@ function mkStub({ coinsByAddr, served, offer, parkFirstTip = false }) {
 // the fill submits from B instead of refusing).
 const w = new Wallet(memoryStore());
 const { addr: A } = await w.create("super-secret-pw");
+// F2-legacy: the legacy/dApp CSD lane now binds the payment recipient to the merkle-proven offer author. This
+// test's offer is honest (payto 0xce, seller 0xcd), so inject the proven author so the bind passes and the flow
+// reaches the account-switch (sign-tick) checks under test.
+w.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: "5000000", taker: String(A).toLowerCase(), bid: undefined } });
 const { addr: B } = await w.addAccount("second");
 await w.switchAccount(A);
 
