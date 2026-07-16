@@ -57,7 +57,7 @@ const fcFor = (txid, offerId, height, holder) => PE(txid, fclaim({ offer: offerI
 // carries myLiveHoldsAtGrant COMPUTED by the SAME pure counter the live source uses (never hardcoded).
 const idOf = (e) => (e.kind === "propose" ? e.id : e.txid).toLowerCase();
 // F2 (amount leg): the fee/rebate-relevant terms derived from an offer (matching what liveFillSpvSource proves).
-const termsFor = (o) => ({ height: Number(o.height), feeBps: feeBpsAt(Number(o.height)), value: o.want?.value !== undefined ? String(o.want.value) : undefined, taker: o.taker !== undefined ? String(o.taker).toLowerCase() : undefined, bid: o.bid !== undefined ? String(o.bid).toLowerCase() : undefined });
+const termsFor = (o) => ({ height: Number(o.height), feeBps: feeBpsAt(Number(o.height)), value: o.want?.value !== undefined ? String(o.want.value) : undefined, taker: o.taker !== undefined ? String(o.taker).toLowerCase() : undefined, bid: o.bid !== undefined ? String(o.bid).toLowerCase() : undefined, min: o.min !== undefined ? String(o.min) : undefined });
 function makeIo(events, tip, me, fillFclaimHeight) {
   // F2: the proven payment recipients + fee/rebate terms, derived from the PROVEN offer event (never the
   // resolver-served offer), exactly as the live source does. The synthetic offer (baseFor) has proposer S,
@@ -69,7 +69,7 @@ function makeIo(events, tip, me, fillFclaimHeight) {
     myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
     provenPayto: payto,
     provenSeller: seller,
-    provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined },
+    provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined, min: orec?.min !== undefined ? String(orec.min) : undefined },
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },
     async provenEvent(x) { const e = events.find((y) => idOf(y) === String(x).toLowerCase()); return e ? { ...e, depth: tip - e.height + 1 } : null; },
@@ -488,6 +488,25 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
     check(`F2-legacy: a swapped served want.payto on the legacy lane is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient/.test(r?.error ?? ""));
     check("…and nothing was submitted", s.submits.length === 0);
   }
+  // (a2) F2-legacy partial leg: a SPURIOUS served `min` on a whole-fill offer -> REFUSED (proven has no min)
+  {
+    const served = taker({ min: "1" });   // SPURIOUS min (proven offer has none)
+    const outs = requiredFillOutputs(taker(), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker()) });   // proven: NO min
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
+    const r = await w.fillOffer({ proposalId: OID, outputs: outs });
+    check(`F2-legacy: a SPURIOUS served min on the legacy lane is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
+    check("…and nothing was submitted", s.submits.length === 0);
+  }
+  // (a3) F2-legacy honest partial (served min == proven min) is NOT false-refused for a terms mismatch (UX valve)
+  {
+    const served = taker({ min: "50000000" });
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(served) });   // proven min == served min
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
+    const r = await w.fillOffer({ proposalId: OID, outputs: outs });
+    check(`F2-legacy: an honest partial offer (min matches on-chain) is NOT refused for a terms mismatch (${r?.code ?? "ok"})`, !(r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? "")));
+  }
   // (b) UNPROVABLE author (null) -> retryable VERIFY_UNAVAILABLE, NOT a hard decline (the transient valve)
   {
     const served = taker();
@@ -511,6 +530,23 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
   const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
   check(`F2: a DEFLATED served feeBps (0 vs proven 150) is REFUSED (pay-without-delivery burn averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
+  check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
+}
+
+// F2 (partial-fill leg): a lying resolver serves HONEST payto/seller/fee but ADDS a spurious `min` (absent
+// on-chain) to a whole-fill offer -> previewFill/requiredFillOutputs flip to the PARTIAL branch (rebate 0), the
+// fill drops the maker-rebate output, and resolve() (whole-fill branch on the REAL min-less offer) rejects
+// "maker rebate unpaid" AFTER the payment moved = full-payment burn. The `min` bind catches it (proven has no
+// min); paid/delivered stay resolver-trusted (running state, not bound). Mutation-sensitive: reverting the min
+// leg of provenTermsMismatch lets this served offer through (r.code != FILL_UNSAFE), so this test fails.
+{
+  const { w } = await freshWallet("pw-f2-min");
+  const served = servedOffer(fcH, H0 + 3, { min: "1" });   // SPURIOUS min (proven offer has none)
+  const outs = requiredFillOutputs(servedOffer(fcH, H0 + 3), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
+  check(`F2: a SPURIOUS served min on a whole-fill offer is REFUSED (maker-rebate-drop burn averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
   check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
 }
 
