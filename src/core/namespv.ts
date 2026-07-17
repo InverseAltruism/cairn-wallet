@@ -198,7 +198,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
       const in0 = tx.inputs?.[0];
       if (!in0 || isCoinbaseInput(in0)) return { ok: false, reason: `record ${hint.txid} has no spendable authenticating input` };
       const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-      if (!spk || spk.toLowerCase() !== signer) return { ok: false, reason: `record ${hint.txid} signer does not own the coin it spends (rejected possible scriptSig substitution)` };
+      if (!spk || spk.toLowerCase() !== signer) return { ok: false, reason: `record ${hint.txid} signer does not own the coin it spends (rejected possible scriptSig substitution)` }; // MUTATE_NSPV_PREVOUT_BIND
       const ev = toChainEvent(tx, ids[pos], height, pos, signer);
       if (!ev) return { ok: false, reason: `record ${hint.txid} is not a cairnx app record` };
       events.push(ev);
