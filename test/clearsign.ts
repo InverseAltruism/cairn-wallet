@@ -289,6 +289,20 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, expired: true } }, ME);
     return g.block === false && /LAPSED/.test(g.note || "");
   })());
+  // NRENEW-REJECT-AFTER-FEE (Plan 70 R2): fee-burning nrenew shapes WARN (never hard-block — resolver state
+  // may be stale). Mutation-sensitive: dropping either warn returns note:null and fails these.
+  ok("NRENEW-AFTER-FEE: nrenew of a PENDING reservation WARNS (renewal ignored on-chain, fee burned) — not blocked", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, pending: true } }, ME);
+    return g.block === false && /pending reservation/.test(g.note || "");
+  })());
+  ok("NRENEW-AFTER-FEE: nrenew of a GRACE-period (lapsed) name owned by someone else WARNS (in-grace renewal is owner-only) — not blocked", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: OTHER, expired: true } }, ME);
+    return g.block === false && /different address/.test(g.note || "");
+  })());
+  ok("NRENEW-AFTER-FEE: a legit OWNER renewal of a LIVE name does NOT warn (no fee-burn signal, no UX regression)", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME } }, ME);
+    return g.block === false && g.note === null;
+  })());
   ok("NACT: transport failure WARNS but does NOT block (fail-open)", (() => {
     const g = nameActApproveGate("nrenew", { failed: true }, ME);
     return g.block === false && /could not verify/.test(g.note || "");

@@ -1189,6 +1189,38 @@ export class Wallet {
   }
 
   // ── sealed claims (commit-reveal) — isolated per active account ─────────────
+  // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt — a force-revealable front-running lever if it
+  // is readable at rest. The vault key already lives only in memory (chrome.storage.session, not cold-disk-
+  // readable), so encrypt ONLY these two fields under it (fresh IV per seal) before persisting; txid/domain/
+  // committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
+  // primitives (keystore sealWith/openWith) — no new crypto. history/labels stay the documented local-disk
+  // residual (we do NOT encrypt all of chrome.storage.local; §5 constraint).
+  private async sealPreimage(claim: string, nonce: string): Promise<Vault> {
+    if (!this.vaultKey) throw new Error("locked");
+    return sealWith(JSON.stringify({ claim, nonce }), this.vaultKey, this.salt, this.iter);
+  }
+  // Recover a record's preimage: a v-L5 record carries an encrypted `enc` blob; a LEGACY plaintext record
+  // (pre-L5) still carries claim/nonce inline and keeps working (lazy migration re-encrypts it on next write).
+  private async openPreimage(rec: { enc?: Vault; claim?: string; nonce?: string }): Promise<{ claim: string; nonce: string }> {
+    if (rec?.enc) {
+      if (!this.vaultKey) throw new Error("locked");
+      const p = JSON.parse(await openWith(rec.enc, this.vaultKey));
+      return { claim: String(p.claim ?? ""), nonce: String(p.nonce ?? "") };
+    }
+    return { claim: String(rec?.claim ?? ""), nonce: String(rec?.nonce ?? "") };
+  }
+  // Lazy migration (L5): re-encrypt any legacy plaintext records in a list on the next write of that list, so
+  // an existing sealed claim keeps revealing but stops sitting in cleartext. No-op when locked or already
+  // encrypted. Mutates in place.
+  private async reencryptLegacyPreimages(list: { enc?: Vault; claim?: string; nonce?: string }[]): Promise<void> {
+    if (!this.vaultKey) return;
+    for (const rec of list) {
+      if (rec && !rec.enc && (rec.claim !== undefined || rec.nonce !== undefined)) {
+        rec.enc = await this.sealPreimage(String(rec.claim ?? ""), String(rec.nonce ?? ""));
+        delete rec.claim; delete rec.nonce;
+      }
+    }
+  }
   async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(), sk = sealKey(this.addr()); // captured with the signer (F5)
@@ -1206,7 +1238,12 @@ export class Wallet {
       const list: any[] = (await this.store.get(sk)) || [];
       // maybe-path seals are FLAGGED (0.2.57, reviewer nit) so the sealed-claims UI can say the
       // anchor may not have landed instead of listing it like a confirmed commit.
-      if (!list.find((x) => x.txid === r.txid)) list.unshift({ txid: r.txid, domain, claim: p.claim, nonce, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) });
+      // L5: persist the {claim, nonce} preimage ENCRYPTED at rest (fresh IV) — the front-running lever.
+      if (!list.find((x) => x.txid === r.txid)) {
+        const enc = await this.sealPreimage(p.claim, nonce);
+        list.unshift({ txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) });
+      }
+      await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
       await this.store.set(sk, list.slice(0, 500));
     }
     await this.maybeRecord(hk, r, { type: "seal", domain, fee });
@@ -1217,11 +1254,29 @@ export class Wallet {
     const list: any[] = (await this.store.get(k)) || [];
     const rec = list.find((x) => x.txid === txid);
     if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
-    const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim: rec.claim, nonce: rec.nonce }, txid);
-    if (r && r.ok) { rec.revealed = true; await this.store.set(k, list); }
+    // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
+    const { claim, nonce } = await this.openPreimage(rec);
+    const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);
+    if (r && r.ok) {
+      rec.revealed = true;
+      await this.reencryptLegacyPreimages(list); // lazy-migrate any legacy plaintext record on this write
+      await this.store.set(k, list);
+    }
     return r;
   }
-  sealedClaims(): Promise<any[]> { if (!this.accts) return Promise.resolve([]); return this.store.get(sealKey(this.addr())).then((l: any[]) => l || []); }
+  // Display view for the popup: decrypt the claim TEXT for the sealed-claims preview (unlocked, trusted UI)
+  // while the on-disk record stays encrypted; the nonce (reveal salt) is never surfaced to the list. A
+  // decrypt failure degrades to "no preview" rather than throwing (the list never breaks).
+  async sealedClaims(): Promise<any[]> {
+    if (!this.accts) return [];
+    const list: any[] = (await this.store.get(sealKey(this.addr()))) || [];
+    const out: any[] = [];
+    for (const rec of list) {
+      if (rec?.enc) { try { const { claim } = await this.openPreimage(rec); out.push({ ...rec, claim }); } catch { out.push({ ...rec }); } }
+      else out.push(rec);
+    }
+    return out;
+  }
 
   // ── transaction history — isolated per active account ──────────────────────
   // Pre-await key capture (0.2.56, review F5): every recording path must file under the account

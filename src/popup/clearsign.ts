@@ -455,9 +455,11 @@ export function nfinalizeApproveGate(fetched: NameFetchResult, me: string, tip: 
 // Both records ride a fee (nrenew the treasury renewal fee, nset the 0.25 CSD anchor) that BURNS when
 // the resolver no-ops the record. Same posture as nfinalizeApproveGate: pure over the fetched record,
 // FAIL-OPEN on transport (warn, never block — the F-FINALIZE non-goal), BLOCK only on a definitive
-// on-chain no-op. Definitive cases: a clean 404 (nothing to renew / point), and for nset an owner
-// mismatch (only the owner's nset counts). A lapsed record only WARNS for nrenew: in-grace renewal is
-// legal and the grace boundary is the resolver's call, so uncertainty must not decline a legit renew.
+// on-chain no-op. Definitive cases (BLOCK): a clean 404 (nothing to renew / point), and for nset an owner
+// mismatch (only the owner's nset counts). For nrenew the fee-burning shapes only WARN (NRENEW-REJECT-AFTER-
+// FEE) — a pending (not-yet-finalized) reservation, and a grace-period NON-owner renewal (in-grace renewal is
+// owner-only) — because the resolver state may be stale and the grace boundary is the resolver's call, so
+// uncertainty must never decline a legit owner renewal (warn over block per the standing rule).
 export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchResult, me: string): { block: boolean; note: string | null } {
   if (fetched.failed) {
     return { block: false, note: `could not verify this ${kind === "nrenew" ? "renewal" : "name record"} against the name service (unreachable) — a no-op ${kind === "nrenew" ? "renewal burns the renewal fee" : "record burns the anchor fee"}. Approve only if the site shows the action as available.` };
@@ -471,8 +473,19 @@ export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchRe
   if (kind === "nset" && typeof rec.owner === "string" && rec.owner.toLowerCase() !== me.toLowerCase()) {
     return { block: true, note: "refusing to approve — this name is owned by a different address, so the resolver would ignore this record and the anchor fee would be spent for nothing. If you just bought it, wait for the purchase to settle and re-open." };
   }
+  // NRENEW-REJECT-AFTER-FEE: an nrenew the resolver will no-op AFTER the fee output moves burns the renewal
+  // fee. WARN, never hard-block (the resolver state may be stale; warn over block per the standing rule).
+  if (kind === "nrenew" && rec.pending === true) {
+    // a pending reservation is not a finalized registration — a renewal is ignored on-chain and the fee burned.
+    return { block: false, note: "this name is a pending reservation, not a finalized registration — a renewal would be ignored on-chain and the fee burned. Finalize the registration first before renewing." };
+  }
   if (kind === "nrenew" && rec.expired === true) {
-    return { block: false, note: "this name appears LAPSED. A renewal is only honored within its grace period; past that the fee is burned. Verify on the site before approving." };
+    // in-grace renewal is legal ONLY for the current owner; a grace-period NON-owner nrenew is a no-op that
+    // burns the fee (past grace the name must be recaptured, not renewed).
+    const notOwner = typeof rec.owner === "string" && rec.owner.toLowerCase() !== me.toLowerCase();
+    return { block: false, note: notOwner
+      ? "this name has LAPSED and is owned by a different address — in the grace period only the owner can renew it, so the renewal fee would be burned; past grace it must be recaptured, not renewed. Verify on the site before approving."
+      : "this name appears LAPSED. A renewal is only honored within its grace period; past that the fee is burned. Verify on the site before approving." };
   }
   return { block: false, note: null };
 }

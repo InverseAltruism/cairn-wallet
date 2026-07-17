@@ -96,15 +96,17 @@ export function world(placements: Placement[]): { blocks: Map<number, RpcTxJson[
 export function source(
   blocks: Map<number, RpcTxJson[]>,
   tip: number,
-  opts: { tamperMerkle?: number | null; verifiedTip?: number; nodeTip?: number } = {},
+  opts: { tamperMerkle?: number | null; verifiedTip?: number; nodeTip?: number; floorTip?: number } = {},
 ): {
-  prepare(): Promise<{ verifiedTip: number; nodeTip: number }>;
+  prepare(): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number }>;
   blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
   prevoutScriptPubkey(prevTxid: string): Promise<string | null>;
 } {
-  const { tamperMerkle = null, verifiedTip = tip, nodeTip = tip } = opts;
+  // floorTip (WALLET-LAPSE-TIP-1): the persisted, trusted-across-sessions tip high-water used ONLY to
+  // corroborate a lease-lapse verdict. Omitted ⇒ uncorroborated (a single-source lapse degrades to caution).
+  const { tamperMerkle = null, verifiedTip = tip, nodeTip = tip, floorTip } = opts;
   return {
-    async prepare() { return { verifiedTip, nodeTip }; },
+    async prepare() { return { verifiedTip, nodeTip, ...(floorTip !== undefined ? { floorTip } : {}) }; },
     async blockAt(height: number) {
       const txs = blocks.get(height);
       if (!txs) throw new Error(`no verified header at ${height}`);

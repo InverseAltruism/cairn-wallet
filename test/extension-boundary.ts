@@ -26,6 +26,7 @@ Date.now = () => NOW;
 const mem = new Map<string, any>();
 let listener: (m: any, s: any, r: (v: any) => void) => any = () => {};
 let alarmHandler: (a: any) => any = () => {};
+let connectListener: (port: any) => any = () => {}; // L2: capture the onConnect handler (event ports)
 let windowsOpened = 0;
 (globalThis as any).chrome = {
   runtime: {
@@ -33,6 +34,7 @@ let windowsOpened = 0;
     lastError: undefined,
     getURL: (p: string) => "chrome-extension://x/" + p,
     onMessage: { addListener: (fn: any) => { listener = fn; } },
+    onConnect: { addListener: (fn: any) => { connectListener = fn; } },
   },
   storage: { local: {
     get: async (k: string) => ({ [k]: mem.get(k) }),
@@ -466,6 +468,39 @@ async function main() {
   check("F11: after an account switch, getAddress does NOT silently leak the NEW addr (re-prompts)", afterSwitch.done() === false && windowsOpened > winBeforeF11);
   await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, false);
   await tick();
+
+  console.log("\n=== L2: an opaque origin ('null') never gets stored consent, a silent path, or an event port ===");
+  // A top-level opaque-origin page (sandboxed iframe / data: / some file:) sends sender.origin === "null" — a
+  // SHARED, non-identifying string. It must NEVER be recorded as a connected site (no stable identity) and
+  // must NEVER hit the silent fast-path — otherwise one opaque page's consent would leak the address to ANY
+  // opaque-origin page. (The wallet is unlocked here.)
+  const winBeforeNull = windowsOpened;
+  const nullReq = dappAsync("getAddress", {}, "null");
+  await tick();
+  check("L2: getAddress from an opaque origin ('null') does NOT fast-path — it queues + opens a window", nullReq.done() === false && windowsOpened > winBeforeNull);
+  // approve it → recordConsent MUST refuse to store anything under the 'null' key
+  await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, true);
+  await tick();
+  const consentsAfterNull = (await popup("connectedSites")).result as any[];
+  check("L2: approving an opaque-origin request records NO 'null' consent key", !consentsAfterNull.some((s) => s.origin === "null"));
+  // a SECOND opaque-origin getAddress is STILL not silent (nothing was remembered to short-circuit on)
+  const winBeforeNull2 = windowsOpened;
+  const nullReq2 = dappAsync("getAddress", {}, "null");
+  await tick();
+  check("L2: a second opaque-origin getAddress is STILL not silent (nothing remembered → falls to the queue)", nullReq2.done() === false && windowsOpened > winBeforeNull2);
+  await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, false);
+  await tick();
+  // event-port registration: a 'null' (opaque) port must NOT be registered; a real-origin port IS. We probe
+  // registration via disconnectSite(origin), which emits accountsChanged+disconnect to that origin's ports.
+  const mkPort = (origin: string) => { const msgs: any[] = []; return { name: "cairn-events", sender: { origin }, postMessage: (m: any) => msgs.push(m), onDisconnect: { addListener: () => {} }, msgs }; };
+  const realPort = mkPort("https://reg.test");
+  const nullPort = mkPort("null");
+  connectListener(realPort);
+  connectListener(nullPort);
+  await popup("disconnectSite", "https://reg.test");
+  check("L2 control: a real-origin event port IS registered (receives its origin's events)", realPort.msgs.length > 0);
+  await popup("disconnectSite", "null");
+  check("L2: a 'null' (opaque) event port is NOT registered (receives nothing)", nullPort.msgs.length === 0);
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
