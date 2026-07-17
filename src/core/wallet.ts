@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fillspv.js";
@@ -20,25 +20,11 @@ import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fi
 // height/taker/bid, and the payment from want.value; a lying resolver deflating any of them makes the wallet
 // build an under-sized fill that resolve() (using the proven values) rejects AFTER the payment leg moved =
 // pay-without-delivery burn (theft if the attacker is the seller). Bind the served fields to the proven ones.
+// Plan 70 R2 Option B: delegate to the SINGLE vendored bindOfferTerms verdict (cairnx-core), retiring this
+// repo's hand-copy. It binds height/feeBps/value/taker/bid AND the R1.1 `min` presence+value leg exactly as
+// before (byte-identical behaviour, differential-locked by the WA-PARITY corpus across all three seams).
 function provenTermsMismatch(offer: unknown, t: ProvenOfferTerms): boolean {
-  const o = offer as { height?: unknown; feeBps?: unknown; want?: { value?: unknown }; taker?: unknown; bid?: unknown; min?: unknown };
-  const s = (v: unknown) => (v === undefined || v === null ? "" : String(v).toLowerCase());
-  if (Number(o?.height) !== t.height) return true;
-  if (Number(o?.feeBps) !== t.feeBps) return true;
-  if (t.value !== undefined && String(o?.want?.value) !== t.value) return true;
-  if (s(o?.taker) !== s(t.taker)) return true;
-  if (s(o?.bid) !== s(t.bid)) return true;
-  // Partial-fill leg (F2, R1.1): bind `min` (the ONLY on-chain partial field; paid/delivered are resolver
-  // running state, deliberately NOT bound). A lying resolver ADDING a spurious `min` to a whole-fill open-CSD
-  // offer flips previewFill/requiredFillOutputs to the PARTIAL branch (rebate 0), so the wallet drops the maker-
-  // rebate output and resolve() rejects "maker rebate unpaid" AFTER the payment moved = full-payment burn;
-  // DEFLATING `min` on a genuine partial offer lets a sub-min payment settle then reject. Presence must match AND
-  // value must match. EXPLICIT presence (not s(): a served min="" must not slip past a proven-absent min, else
-  // previewFill's BigInt(offer.min) throws).
-  const om = o?.min;
-  if ((om !== undefined && om !== null) !== (t.min !== undefined)) return true;
-  if (t.min !== undefined && String(om) !== t.min) return true;
-  return false;
+  return bindOfferTerms(offer, t);
 }
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 

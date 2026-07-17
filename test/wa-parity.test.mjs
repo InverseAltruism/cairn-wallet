@@ -57,7 +57,7 @@ console.log("WA-PARITY (wallet seam): the shared fill-boundary corpus driven ove
 // ── 0. corpus integrity: the freshness/byte-identity hash the vendored COPY must match (the I2 dead-green cure).
 // The hash is over the PARSED-then-canonicalised object via the wallet's OWN vendored codec (the same payloadHash
 // the wallet signs with), so a drifted copy FAILS here, never silently skips. A DIFFERENT codec would also red it.
-const WA_CORPUS_SHA = "0x0a4e1072ed97b1b08877fa1968154345508e514daeba854b8da560ffec25f047";
+const WA_CORPUS_SHA = "0x514874b3036a78e0b8429d44777da7a3d20793525c022b440868e4a720f78ffd";
 {
   const actual = payloadHash(corpus);
   check(`corpus byte-identity: vendored payloadHash == the WA_CORPUS_SHA pin (got ${actual})`, actual === WA_CORPUS_SHA);

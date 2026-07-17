@@ -6,7 +6,7 @@
     "EPOCH_LEN": 30,
     "FCLAIM_MAX_EPOCH_AHEAD": 2,
     "CLAIM_COOLDOWN_BLOCKS": 15,
-    "FILL_TIP_MARGIN": 2,
+    "FILL_TIP_MARGIN": 4,
     "TREASURY_ADDR": "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016",
     "FEE_BPS_V16": 150,
     "note": "Each adapter MUST assert its own vendored constants equal these before running, so a silent constant drift reds the corpus (not a false green)."
