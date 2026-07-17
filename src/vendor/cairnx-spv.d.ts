@@ -152,6 +152,21 @@ export interface FillVerdict { safe: boolean; reason: string }
  *  the grant replays to a live hold that is MINE and routes to THIS fclaim, delivery >= 1, and the deadline
  *  (from the fclaim's OWN confirmed expiry) has cushion. Refuses every doomed/forged case. */
 export function verifyFillSpv(offerId: string, fclaimTxid: string, me: string, io: FillSpvIo, opts: { myLiveHoldsAtGrant: number; pay?: bigint | string | number }): Promise<FillVerdict>;
+// Plan 70 R2 Option B: the SINGLE fill-boundary TERM-mismatch verdict (retiring the R1 wallet/site hand-copies).
+// The fee/rebate-sizing fields of an offer, derived from the MERKLE-PROVEN offer (never a served object). `min`
+// is the ONLY on-chain partial-fill field; paid/delivered are resolver running state, deliberately absent.
+export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; min?: string }
+/** The treasury fee rate stamped on an offer at its creation height (feeBpsAt): v11 ? (v16 ? 150 : 100) : 0. */
+export function feeBpsAt(height: number): number;
+/** Build the normalized ProvenOfferTerms from a merkle-proven offer record + its proven creation height. */
+export function provenOfferTerms(offerRec: unknown, provenHeight: number): ProvenOfferTerms;
+/** true iff any fee/rebate/partial-sizing field of the SERVED offer diverges from the merkle-proven terms `t`
+ *  (fail-closed: any divergence => the caller refuses). Binds height/feeBps/value/taker/bid + min presence AND
+ *  value. Byte-identical to the wallet's old provenTermsMismatch + the site's old inline amount-leg bind. */
+export function bindOfferTerms(servedOffer: unknown, t: ProvenOfferTerms): boolean;
+/** Derive {payto (want.payto or, absent, the author), seller (= the event's prevout-bound proposer), terms}
+ *  from a merkle-proven offer Propose event; null if the event does not bind to an offer record. */
+export function bindProvenOffer(offerEv: ProvenPropose): { payto: string; seller: string; terms: ProvenOfferTerms } | null;
 // v2.8 give-backing synthesis (core/fillspv.ts, the accepted N1 residual): the record builders + constants used
 // to synthesize an offer's resolver-trusted give-backing (token deploy+mint, or a name registration) so resolve()
 // materializes the offer without an unbounded lifecycle scan. The grant/denial VERDICT never rides the backing.

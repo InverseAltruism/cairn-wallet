@@ -3335,7 +3335,7 @@ var CLAIM_FILL_GRACE_BLOCKS = 5;
 var MAX_ACTIVE_CLAIMS = 3;
 var CLAIM_COOLDOWN_BLOCKS = 15;
 var FCLAIM_MAX_EPOCH_AHEAD = 2;
-var FILL_TIP_MARGIN = 2;
+var FILL_TIP_MARGIN = 4;
 var CONF_TOKEN_FILL = 1e6;
 var TREASURY_ADDR = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016";
 var FEE_BPS = 100;
@@ -4860,6 +4860,39 @@ async function verifyFillSpv(offerId, fclaimTxid, me, io, opts) {
   if (holdEnd < tip + FILL_TIP_MARGIN) return no(`too close to the hold deadline (holdEnd ${holdEnd}, tip ${tip}) - would strand`);
   return { safe: true, reason: "ok" };
 }
+var feeBpsAt = (height) => height >= V11_HEIGHT ? height >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS : 0;
+function provenOfferTerms(offerRec, provenHeight) {
+  const w = offerRec.want;
+  return {
+    height: Number(provenHeight),
+    feeBps: feeBpsAt(Number(provenHeight)),
+    value: w.value !== void 0 ? String(w.value) : void 0,
+    taker: offerRec.taker !== void 0 ? String(offerRec.taker).toLowerCase() : void 0,
+    bid: offerRec.bid !== void 0 ? String(offerRec.bid).toLowerCase() : void 0,
+    min: offerRec.min !== void 0 ? String(offerRec.min) : void 0
+  };
+}
+function bindOfferTerms(servedOffer, t) {
+  const o = servedOffer;
+  const s = (v) => v === void 0 || v === null ? "" : String(v).toLowerCase();
+  if (Number(o?.height) !== t.height) return true;
+  if (Number(o?.feeBps) !== t.feeBps) return true;
+  if (t.value !== void 0 && String(o?.want?.value) !== t.value) return true;
+  if (s(o?.taker) !== s(t.taker)) return true;
+  if (s(o?.bid) !== s(t.bid)) return true;
+  const om = o?.min;
+  if ((om !== void 0 && om !== null) !== (t.min !== void 0)) return true;
+  if (t.min !== void 0 && String(om) !== t.min) return true;
+  return false;
+}
+function bindProvenOffer(offerEv) {
+  const rec = bindRecord(offerEv);
+  if (!rec || rec.t !== "offer") return null;
+  const seller = String(offerEv.proposer).toLowerCase();
+  const w = rec.want;
+  const payto = w.payto && ADDR_RE.test(String(w.payto).toLowerCase()) ? String(w.payto).toLowerCase() : seller;
+  return { payto, seller, terms: provenOfferTerms(rec, offerEv.height) };
+}
 function paidToFromOutputs(outputs) {
   const m = /* @__PURE__ */ Object.create(null);
   for (const o of outputs) {
@@ -4960,6 +4993,8 @@ export {
   ZERO_ADDR,
   addrFromPub,
   bid,
+  bindOfferTerms,
+  bindProvenOffer,
   blockReward,
   buildFeeHeight,
   buildRecord,
@@ -4974,6 +5009,7 @@ export {
   fclaim,
   fclaimEpochFor,
   fclaimHoldEnd,
+  feeBpsAt,
   fillIsSafe,
   fillTargetId,
   finalizeWinnerCheck,
@@ -5004,6 +5040,7 @@ export {
   pickPrimaryName,
   previewFill,
   primaryRankBefore,
+  provenOfferTerms,
   recoverSigner,
   replayLiveHold,
   requiredClaimDepth,

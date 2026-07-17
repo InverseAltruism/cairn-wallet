@@ -31,7 +31,11 @@ const attack = await verifyName(NAME, { addr: TARGET, owner: A, via: "nset" }, h
 console.log("HONEST tip (lapsed):  verified=%s reason=%s", honest.verified, honest.reason);
 console.log("DEFLATED tip (MITM):  verified=%s addr=%s via=%s", attack.verified, attack.addr, attack.via);
 
-check("HONEST tip: a genuinely-lapsed lease is REFUSED (lapse detection intact — the loud guard)", honest.verified === false && /lapsed/i.test(honest.reason || ""));
+// WALLET-LAPSE-TIP-1 (Plan 70 R2): a SINGLE-source lapse with no floor corroboration now DEGRADES TO CAUTION
+// (verified=false, lapsed !== true, "may have lapsed") instead of a confident refusal — a fresh-install + MITM
+// inflating the tip must not assert a false confident lapse. Still fail-closed (verified stays false), and the
+// confident-lapse + two-source cases are pinned in test/name-lapse-tip.test.mjs.
+check("HONEST tip single-source: a genuine lapse DEGRADES TO CAUTION (verified=false, not a confident lapse)", honest.verified === false && honest.lapsed !== true && /lapsed/i.test(honest.reason || ""));
 check("DEFLATED tip: documented single-source residual (the floor lives in liveSpvSource, not replayName)", attack.verified === true && attack.addr === TARGET);
 
 done("name4-lapse");

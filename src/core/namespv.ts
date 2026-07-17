@@ -58,6 +58,12 @@ export interface NameVerification {
   sources?: number;
   agreed?: number;
   disagree?: boolean;
+  // WALLET-LAPSE-TIP-1: a lease-LAPSED verdict is only CONFIDENT (`lapsed:true`) when corroborated — a second
+  // independent name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
+  // past expiry. An UNCORROBORATED single-source lapse degrades to CAUTION: `verified:false` + `lapsed` falsy
+  // + a "may have lapsed" reason, so a fresh-install + MITM inflating the node tip cannot assert a false
+  // confident lapse that hard-blocks a legit send. Fail-soft (availability valve), never a false green.
+  lapsed?: boolean;
 }
 
 export interface NameClaim { addr?: string; owner?: string; via?: string; lapsed?: boolean }
@@ -81,7 +87,11 @@ export interface SpvSource {
   // sync the whole chain to tip for an old, sparse name). Returns the PoW-VERIFIED tip actually reached
   // AND the (untrusted) node-reported chain tip used ONLY for the lease-lapse epoch (a deflated value is
   // the documented stale residual; an inflated one is fail-closed-safe, since a higher epoch ⇒ "lapsed").
-  prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number }>;
+  // `floorTip` (optional, WALLET-LAPSE-TIP-1): the persisted monotonic tip high-water as seeded from PRIOR
+  // sessions — a tip we already trusted BEFORE this (possibly-MITM'd) session, EXCLUDING the current read.
+  // Used ONLY to CORROBORATE a lease-lapse verdict: a lapse that also holds at floorTip is confident; one
+  // that holds only at the current nodeTip degrades to caution. Omitted ⇒ no corroboration available.
+  prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number }>;
   // The PoW-VERIFIED merkle root for `height` + that block's node-JSON txs. THROWS if it cannot verify.
   blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
   // NSPV-SIGSUB-1 (H3): resolve the scriptPubkey of a record's spent prevout, BOUND to its txid — the
@@ -152,7 +162,11 @@ function toChainEvent(tx: Tx, id: string, height: number, pos: number, signer: s
 
 // Core SPV replay (no claim gate): SPV-verify `hints` against the chain and recompute the name's (owner,addr)
 // via the AUDITED resolver. Shared by the single-source verifyName and the multi-source verifyNameUnion.
-type Replay = { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number; viaFill: boolean } | { ok: false; reason: string };
+type Replay =
+  | { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number; viaFill: boolean }
+  // WALLET-LAPSE-TIP-1: a lease-lapse failure carries `lapsed` + whether the persisted floor corroborated it,
+  // so the caller can present a confident lapse vs a single-source caution. Other failures leave both unset.
+  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean };
 // Cap the hinted records a verify will SPV-prove (L8 / HINTDOS): each hint now also costs a prevout fetch
 // (H3), so an unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a
 // handful of records; 256 is far above any honest history and bounds a hostile source's fetch amplification.
@@ -169,7 +183,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     (byHeight.get(height) ?? byHeight.set(height, []).get(height)!).push(h);
     if (height > maxHeight) maxHeight = height;
   }
-  const { verifiedTip, nodeTip } = await src.prepare(maxHeight);
+  const { verifiedTip, nodeTip, floorTip } = await src.prepare(maxHeight);
   if (maxHeight > verifiedTip) return { ok: false, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
   const lapseTip = Math.max(verifiedTip, Number.isFinite(nodeTip) ? nodeTip : 0);
 
@@ -198,7 +212,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
       const in0 = tx.inputs?.[0];
       if (!in0 || isCoinbaseInput(in0)) return { ok: false, reason: `record ${hint.txid} has no spendable authenticating input` };
       const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-      if (!spk || spk.toLowerCase() !== signer) return { ok: false, reason: `record ${hint.txid} signer does not own the coin it spends (rejected possible scriptSig substitution)` };
+      if (!spk || spk.toLowerCase() !== signer) return { ok: false, reason: `record ${hint.txid} signer does not own the coin it spends (rejected possible scriptSig substitution)` }; // MUTATE_NSPV_PREVOUT_BIND
       const ev = toChainEvent(tx, ids[pos], height, pos, signer);
       if (!ev) return { ok: false, reason: `record ${hint.txid} is not a cairnx app record` };
       events.push(ev);
@@ -209,7 +223,16 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   const state = resolve(events, lapseTip);
   const rec = state.names[name];
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
-  if (rec.expired) return { ok: false, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
+  if (rec.expired) {
+    // WALLET-LAPSE-TIP-1: corroborate the lapse against the persisted tip FLOOR (a tip already trusted BEFORE
+    // this — possibly MITM'd — session). Re-running the AUDITED resolver at floorTip re-derives "expired"
+    // without any consensus math here; if the lease is expired even at that trusted lower-bound tip, the lapse
+    // is confident. If it is expired ONLY at the current (claimed) nodeTip, the caller degrades it to caution
+    // unless a second source corroborates — so an inflated fresh-install tip can't assert a false lapse.
+    const floor = Number.isFinite(floorTip as number) ? Number(floorTip) : 0;
+    const floorCorroborated = floor > 0 && resolve(events, floor).names[name]?.expired === true;
+    return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
+  }
   // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized —
   // it confers no address and is not an owned name yet. Fail CLOSED (never resolve it to the owner) so a name
   // that is only reserved, or whose promoting `nfinalize` is being withheld from the hint set, can never be a
@@ -229,7 +252,17 @@ export async function verifyName(name: string, claim: NameClaim, hints: NameHint
     if (!claim?.addr || !/^0x[0-9a-f]{40}$/.test(String(claim.addr).toLowerCase())) return fail("the resolver returned no usable address for this name");
     if (claim.lapsed) return fail(`${name}.csd lease has lapsed — refusing to send`);
     const r = await replayName(name, hints, src);
-    if (!r.ok) return fail(r.reason);
+    if (!r.ok) {
+      // WALLET-LAPSE-TIP-1: a SINGLE-source lapse is confident ONLY if the persisted floor corroborates it;
+      // otherwise degrade to CAUTION (verified:false, lapsed falsy, "may have lapsed") so a MITM-inflated tip
+      // on a fresh install cannot assert a false confident lapse and hard-block a legit send. Fail-soft.
+      if (r.lapsed) {
+        return r.floorCorroborated
+          ? { ...fail(r.reason), sources: 1, agreed: 0, disagree: false, lapsed: true }
+          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip — confirm out-of-band before sending`), sources: 1, agreed: 0, disagree: false, lapsed: false };
+      }
+      return fail(r.reason);
+    }
     if (r.addr !== String(claim.addr).toLowerCase())
       return fail("the resolver's address does NOT match what the chain proves — refusing (possible hostile resolver)");
     // NSPV-CLAIMCAP-1 (H1): a fill-acquired name can't be soundly proven from a name-scoped replay, and the
@@ -301,7 +334,19 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       else byTxid.set(k, h);
     }
     const rep = await replayName(name, [...byTxid.values()], src);
-    if (!rep.ok) return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
+    if (!rep.ok) {
+      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 independent name sources served the
+      // events establishing the lease, OR the persisted tip floor is also past expiry. A lone usable source
+      // with an uncorroborated (current-tip-only) lapse degrades to CAUTION, never a false confident lapse
+      // from a fresh-install + MITM-inflated tip. Fail-soft (availability valve), never a false green.
+      if (rep.lapsed) {
+        const confident = usable.length >= 2 || rep.floorCorroborated === true;
+        return confident
+          ? { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false, lapsed: true }
+          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip — confirm out-of-band before sending`), sources: usable.length, agreed: 0, disagree: false, lapsed: false };
+      }
+      return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
+    }
     // NSPV-CLAIMCAP-1 (H1): never present a fill-acquired ("viaFill") name — or a name any usable source
     // flagged scopedReplaySufficient:false — as plain verified. Its ownership can hinge on out-of-name-scope
     // state (the V17 open-lane claim cap is global over ALL offers; a name-for-token fill depends on the
@@ -403,6 +448,11 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   // the current session. Best-effort: a missing/garbage value just starts at 0 (the prior behaviour).
   let seenFloor = 0;
   if (opts.floor) { try { const f = Number(await opts.floor.get()); if (Number.isFinite(f) && f > 0) seenFloor = f; } catch { /* no persisted floor → start at 0 */ } }
+  // WALLET-LAPSE-TIP-1: freeze the floor as seeded from PRIOR sessions, BEFORE any current-session read
+  // advances seenFloor. This is the trusted-across-sessions tip used ONLY to corroborate a lease-lapse
+  // verdict (replayName re-runs the audited resolver at it). On a fresh install it is 0 → a lapse rests on
+  // the current node tip alone → caution; on an established install it is high → a genuine lapse is confident.
+  const persistedFloor = seenFloor;
 
   return {
     async prepare(maxEventHeight: number) {
@@ -423,7 +473,8 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
         if (opts.cache) { try { await opts.cache.set(LC.toSnapshot()); } catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); } }
       }
       // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
-      return { verifiedTip: LC.baseHeight + LC.chain.length - 1, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0) };
+      // floorTip is the PRIOR-session high-water (WALLET-LAPSE-TIP-1), for lapse corroboration only.
+      return { verifiedTip: LC.baseHeight + LC.chain.length - 1, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0), floorTip: persistedFloor };
     },
     async blockAt(height: number) {
       const vh = LC.chain[height - LC.baseHeight];

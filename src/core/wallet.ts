@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fillspv.js";
@@ -20,25 +20,11 @@ import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fi
 // height/taker/bid, and the payment from want.value; a lying resolver deflating any of them makes the wallet
 // build an under-sized fill that resolve() (using the proven values) rejects AFTER the payment leg moved =
 // pay-without-delivery burn (theft if the attacker is the seller). Bind the served fields to the proven ones.
+// Plan 70 R2 Option B: delegate to the SINGLE vendored bindOfferTerms verdict (cairnx-core), retiring this
+// repo's hand-copy. It binds height/feeBps/value/taker/bid AND the R1.1 `min` presence+value leg exactly as
+// before (byte-identical behaviour, differential-locked by the WA-PARITY corpus across all three seams).
 function provenTermsMismatch(offer: unknown, t: ProvenOfferTerms): boolean {
-  const o = offer as { height?: unknown; feeBps?: unknown; want?: { value?: unknown }; taker?: unknown; bid?: unknown; min?: unknown };
-  const s = (v: unknown) => (v === undefined || v === null ? "" : String(v).toLowerCase());
-  if (Number(o?.height) !== t.height) return true;
-  if (Number(o?.feeBps) !== t.feeBps) return true;
-  if (t.value !== undefined && String(o?.want?.value) !== t.value) return true;
-  if (s(o?.taker) !== s(t.taker)) return true;
-  if (s(o?.bid) !== s(t.bid)) return true;
-  // Partial-fill leg (F2, R1.1): bind `min` (the ONLY on-chain partial field; paid/delivered are resolver
-  // running state, deliberately NOT bound). A lying resolver ADDING a spurious `min` to a whole-fill open-CSD
-  // offer flips previewFill/requiredFillOutputs to the PARTIAL branch (rebate 0), so the wallet drops the maker-
-  // rebate output and resolve() rejects "maker rebate unpaid" AFTER the payment moved = full-payment burn;
-  // DEFLATING `min` on a genuine partial offer lets a sub-min payment settle then reject. Presence must match AND
-  // value must match. EXPLICIT presence (not s(): a served min="" must not slip past a proven-absent min, else
-  // previewFill's BigInt(offer.min) throws).
-  const om = o?.min;
-  if ((om !== undefined && om !== null) !== (t.min !== undefined)) return true;
-  if (t.min !== undefined && String(om) !== t.min) return true;
-  return false;
+  return bindOfferTerms(offer, t);
 }
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
@@ -1189,6 +1175,38 @@ export class Wallet {
   }
 
   // ── sealed claims (commit-reveal) — isolated per active account ─────────────
+  // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt — a force-revealable front-running lever if it
+  // is readable at rest. The vault key already lives only in memory (chrome.storage.session, not cold-disk-
+  // readable), so encrypt ONLY these two fields under it (fresh IV per seal) before persisting; txid/domain/
+  // committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
+  // primitives (keystore sealWith/openWith) — no new crypto. history/labels stay the documented local-disk
+  // residual (we do NOT encrypt all of chrome.storage.local; §5 constraint).
+  private async sealPreimage(claim: string, nonce: string): Promise<Vault> {
+    if (!this.vaultKey) throw new Error("locked");
+    return sealWith(JSON.stringify({ claim, nonce }), this.vaultKey, this.salt, this.iter);
+  }
+  // Recover a record's preimage: a v-L5 record carries an encrypted `enc` blob; a LEGACY plaintext record
+  // (pre-L5) still carries claim/nonce inline and keeps working (lazy migration re-encrypts it on next write).
+  private async openPreimage(rec: { enc?: Vault; claim?: string; nonce?: string }): Promise<{ claim: string; nonce: string }> {
+    if (rec?.enc) {
+      if (!this.vaultKey) throw new Error("locked");
+      const p = JSON.parse(await openWith(rec.enc, this.vaultKey));
+      return { claim: String(p.claim ?? ""), nonce: String(p.nonce ?? "") };
+    }
+    return { claim: String(rec?.claim ?? ""), nonce: String(rec?.nonce ?? "") };
+  }
+  // Lazy migration (L5): re-encrypt any legacy plaintext records in a list on the next write of that list, so
+  // an existing sealed claim keeps revealing but stops sitting in cleartext. No-op when locked or already
+  // encrypted. Mutates in place.
+  private async reencryptLegacyPreimages(list: { enc?: Vault; claim?: string; nonce?: string }[]): Promise<void> {
+    if (!this.vaultKey) return;
+    for (const rec of list) {
+      if (rec && !rec.enc && (rec.claim !== undefined || rec.nonce !== undefined)) {
+        rec.enc = await this.sealPreimage(String(rec.claim ?? ""), String(rec.nonce ?? ""));
+        delete rec.claim; delete rec.nonce;
+      }
+    }
+  }
   async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(), sk = sealKey(this.addr()); // captured with the signer (F5)
@@ -1206,7 +1224,12 @@ export class Wallet {
       const list: any[] = (await this.store.get(sk)) || [];
       // maybe-path seals are FLAGGED (0.2.57, reviewer nit) so the sealed-claims UI can say the
       // anchor may not have landed instead of listing it like a confirmed commit.
-      if (!list.find((x) => x.txid === r.txid)) list.unshift({ txid: r.txid, domain, claim: p.claim, nonce, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) });
+      // L5: persist the {claim, nonce} preimage ENCRYPTED at rest (fresh IV) — the front-running lever.
+      if (!list.find((x) => x.txid === r.txid)) {
+        const enc = await this.sealPreimage(p.claim, nonce);
+        list.unshift({ txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) });
+      }
+      await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
       await this.store.set(sk, list.slice(0, 500));
     }
     await this.maybeRecord(hk, r, { type: "seal", domain, fee });
@@ -1217,11 +1240,29 @@ export class Wallet {
     const list: any[] = (await this.store.get(k)) || [];
     const rec = list.find((x) => x.txid === txid);
     if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
-    const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim: rec.claim, nonce: rec.nonce }, txid);
-    if (r && r.ok) { rec.revealed = true; await this.store.set(k, list); }
+    // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
+    const { claim, nonce } = await this.openPreimage(rec);
+    const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);
+    if (r && r.ok) {
+      rec.revealed = true;
+      await this.reencryptLegacyPreimages(list); // lazy-migrate any legacy plaintext record on this write
+      await this.store.set(k, list);
+    }
     return r;
   }
-  sealedClaims(): Promise<any[]> { if (!this.accts) return Promise.resolve([]); return this.store.get(sealKey(this.addr())).then((l: any[]) => l || []); }
+  // Display view for the popup: decrypt the claim TEXT for the sealed-claims preview (unlocked, trusted UI)
+  // while the on-disk record stays encrypted; the nonce (reveal salt) is never surfaced to the list. A
+  // decrypt failure degrades to "no preview" rather than throwing (the list never breaks).
+  async sealedClaims(): Promise<any[]> {
+    if (!this.accts) return [];
+    const list: any[] = (await this.store.get(sealKey(this.addr()))) || [];
+    const out: any[] = [];
+    for (const rec of list) {
+      if (rec?.enc) { try { const { claim } = await this.openPreimage(rec); out.push({ ...rec, claim }); } catch { out.push({ ...rec }); } }
+      else out.push(rec);
+    }
+    return out;
+  }
 
   // ── transaction history — isolated per active account ──────────────────────
   // Pre-await key capture (0.2.56, review F5): every recording path must file under the account

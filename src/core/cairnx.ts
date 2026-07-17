@@ -31,6 +31,9 @@ import {
   // v2.8 open-lane (fclaim) fill fund boundary: the shared fail-closed grant-replay SPV surface the
   // fclaim-lane fillOffer preflight MUST clear before signing (wallet.ts fclaimLanePreflight).
   verifyFillSpv,
+  // Plan 70 R2 Option B: the SINGLE fill-boundary term-mismatch verdict (wallet.ts provenTermsMismatch
+  // delegates to it), single-sourced in cairnx-core to retire the R1 hand-copy.
+  bindOfferTerms,
 } from "../vendor/cairnx-spv.js";
 
 // ── app constants (re-exported under the wallet's historical names) ───────────
@@ -43,7 +46,7 @@ export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGH
 // inside the vendored requiredFillOutputs/previewFill, which is what the fillOffer preflight actually uses.)
 export const cairnxTradeFee = tradeFee;
 // Tier 1 pre-flight helpers, re-exported under the wallet surface (callers named in the import block above).
-export { previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv };
+export { previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms };
 export const cairnxPayloadHash = (record: unknown): string => payloadHash(record);
 export { nameRegFee };
 // buildFeeHeight (the approach-the-gate name-fee build heuristic) is VENDORED since cairnx-core 0.1.35 —

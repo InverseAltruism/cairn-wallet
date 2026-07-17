@@ -497,7 +497,14 @@ try {
     check("maybe-inflight post QUEUED its content for the alarm-driven flush", pend.some((x) => x.txid === rp.txid && x.content?.title === "t"));
     const rs = await w.sealClaim({ claim: "prediction: 42", fee: 25_000_000 });
     const sealed = await w.sealedClaims();
-    check("maybe-inflight seal SAVED the reveal preimage (claim + nonce)", rs.code === "SUBMIT_MAYBE_INFLIGHT" && sealed.some((x) => x.txid === rs.txid && x.claim === "prediction: 42" && /^[0-9a-f]{64}$/.test(String(x.nonce).replace(/^0x/, ""))));
+    const sealAddr = (await w.status()).addr;
+    const rawSealed = (await store.get("sealedClaims:" + sealAddr)) || [];
+    // L5: the maybe-inflight seal STILL persists the preimage so a landed commit is revealable — now ENCRYPTED
+    // at rest (enc blob, no plaintext claim/nonce on disk) while the display view decrypts the claim text.
+    check("maybe-inflight seal SAVED the reveal preimage (recoverable, encrypted at rest)",
+      rs.code === "SUBMIT_MAYBE_INFLIGHT"
+      && sealed.some((x) => x.txid === rs.txid && x.claim === "prediction: 42")
+      && rawSealed.some((x) => x.txid === rs.txid && !!x.enc && x.nonce === undefined && x.claim === undefined));
   }
   // ── 21. F2 (0.2.56): the generic maybe-reconcile runs even with NO consolidate pending — a
   //        send-maybe entry clears the moment its txid (via its change output) appears in the

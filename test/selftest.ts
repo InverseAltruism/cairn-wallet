@@ -349,15 +349,21 @@ async function main() {
     return { ok: false, status: 404, json: async () => ({}) };
   }; };
   try {
-    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const sealStore = memoryStore();
+    const w = new Wallet(sealStore); const sealAddr = (await w.create("super-secret-pw")).addr;
     (globalThis as any).fetch = sealStub();
     const r1 = await w.sealClaim({ claim: "ETH > $4000 by Friday" });
     const r2 = await w.sealClaim({ claim: "ETH > $4000 by Friday" }); // identical claim text
     check("sealClaim returns ok + txid", r1.ok === true && /^0x/.test(String(r1.txid)) && r2.ok === true);
     const sc = await w.sealedClaims();
     check("sealedClaims persists both", sc.length === 2);
-    check("sealed nonce is 32-byte hex (the salt)", /^[0-9a-f]{64}$/.test(sc[0].nonce));
-    check("same claim → different nonce (unguessable before reveal)", sc[0].nonce !== sc[1].nonce);
+    // L5: the reveal preimage ({claim,nonce}) is ENCRYPTED at rest — no plaintext nonce/claim on disk; the
+    // display view still decrypts the claim text (UX preserved). Fresh IV + fresh nonce per seal ⇒ two seals
+    // of the SAME claim produce DIFFERENT ciphertext (unguessable before reveal).
+    const rawSc = (await sealStore.get("sealedClaims:" + sealAddr)) as any[];
+    check("L5: sealed preimage is encrypted at rest (enc blob, no plaintext claim/nonce)", rawSc.every((x) => !!x.enc && x.nonce === undefined && x.claim === undefined));
+    check("L5: same claim → different ciphertext per seal (fresh IV + nonce, unguessable before reveal)", rawSc[0].enc.ct !== rawSc[1].enc.ct);
+    check("L5: the display view decrypts the claim text for the popup (UX preserved)", sc.every((x: any) => x.claim === "ETH > $4000 by Friday"));
     check("sealClaim defaults to the csd:sealed domain", sc[0].domain === "csd:sealed");
     const rv = await w.revealClaim(String(r1.txid));
     check("revealClaim succeeds", rv.ok === true);

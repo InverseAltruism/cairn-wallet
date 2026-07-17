@@ -3,7 +3,7 @@
 import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
-import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS } from "../src/vendor/cairnx-spv.js";
+import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck } from "../src/vendor/cairnx-spv.js";
 declare const process: { exit(code: number): void };
 
 let pass = 0, fail = 0;
@@ -173,6 +173,16 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
 // out-of-window finalize burns the fee, so the gate must refuse those, pass a live in-window
 // reservation, and WARN (never block) when the name service / tip is unreachable (fail-open —
 // approval must not gain a hard network dependency; same posture as the FEE-1 offline skip).
+//
+// TRUST SCOPE (Plan 70 R2 / L3, honest by design — see NFIN-DISPLACE-NOOP below): the gate's LIVE
+// checks are owner mismatch, already-registered, no-reservation, and the freeze/expiry window. The
+// effectiveHeight-DISPLACEMENT branch inside finalizeWinnerCheck is INERT in the wired path: the wallet
+// has no independent commit height and no SPV on this record, so nfinalizeApproveGate passes the
+// reservation's OWN effectiveHeight AS the commitHeight, making that branch X !== X. So this gate is
+// best-effort against an honest-but-stale resolver and displacement RACES (owner-change is caught by the
+// owner check), NOT against a Byzantine resolver that LIES about effectiveHeight. Its real closure is
+// registration-state SPV (deferred, same resolver-trust residual the fill path documents); the persist-
+// local-height idea was reviewed and DECLINED as false assurance against a consistent Byzantine resolver.
 {
   const ME = "0x" + "cd".repeat(20);
   const OTHER = "0x" + "ee".repeat(20);
@@ -189,9 +199,26 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     const g = nfinalizeApproveGate({ record: mine }, ME, winEnd - 1);
     return g.block === true && /window has closed/.test(g.note || "");
   })());
-  ok("NFIN: displaced reservation (another owner holds the pending record) refuses", (() => {
+  ok("NFIN: displaced reservation (another OWNER holds the pending record) refuses [the LIVE owner-check half]", (() => {
     const g = nfinalizeApproveGate({ record: { ...mine, owner: OTHER } }, ME, winEnd - 2);
     return g.block === true && /earlier committer won/.test(g.note || "");
+  })());
+  // ── NFIN-DISPLACE-NOOP (Plan 70 R2 / L3): the effectiveHeight-DISPLACEMENT branch is a NO-OP in the wired path.
+  //    Do NOT mistake this gate for live protection against a resolver that LIES about effectiveHeight to widen the
+  //    window: nfinalizeApproveGate passes resv.effectiveHeight AS the commitHeight, so finalizeWinnerCheck's
+  //    `effectiveHeight !== commitHeight` branch is X !== X — inert. This documents the true current behavior (the
+  //    replaced dead-green assertion had asserted a displacement refusal the wired path does NOT actually produce).
+  ok("NFIN-DISPLACE-NOOP: the wired gate does NOT fire on a lied effectiveHeight (commitHeight := effectiveHeight, X!==X) — an in-window reservation PASSES; a Byzantine effectiveHeight lie is NOT caught here (documented residual, pending registration-SPV)", (() => {
+    const g = nfinalizeApproveGate({ record: mine }, ME, winEnd - 2);
+    return g.block === false && g.note === null;   // passes DESPITE the displacement branch — because it can never fire in this wiring
+  })());
+  // Mutation-sensitive proof the branch is REAL but UNWIRED: fed an INDEPENDENT commit height (what a registration-
+  // SPV baseline would supply, and exactly what the wired path can never produce today), finalizeWinnerCheck DOES
+  // fire the displacement branch. If cairnx-core ever drops that branch, this flips to safe — so the assertion cannot
+  // dead-green. It is the reason the wired gate above is inert: the two heights are forced equal there, never here.
+  ok("NFIN-DISPLACE-NOOP: finalizeWinnerCheck WOULD block on a genuine (independent) commit-height mismatch — the guard is real, just unwired", (() => {
+    const w = finalizeWinnerCheck({ ...mine }, ME, EFF + 1, winEnd - 2);   // commitHeight EFF+1 != effectiveHeight EFF
+    return w.safe === false && /effective height changed|displaced/.test(w.reason || "");
   })());
   ok("NFIN: no reservation at all (clean 404) refuses", (() => {
     const g = nfinalizeApproveGate({ record: null }, ME, winEnd - 2);
@@ -261,6 +288,20 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   ok("NACT: nrenew of a LAPSED name WARNS but does not block (grace boundary is the resolver's call)", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, expired: true } }, ME);
     return g.block === false && /LAPSED/.test(g.note || "");
+  })());
+  // NRENEW-REJECT-AFTER-FEE (Plan 70 R2): fee-burning nrenew shapes WARN (never hard-block — resolver state
+  // may be stale). Mutation-sensitive: dropping either warn returns note:null and fails these.
+  ok("NRENEW-AFTER-FEE: nrenew of a PENDING reservation WARNS (renewal ignored on-chain, fee burned) — not blocked", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, pending: true } }, ME);
+    return g.block === false && /pending reservation/.test(g.note || "");
+  })());
+  ok("NRENEW-AFTER-FEE: nrenew of a GRACE-period (lapsed) name owned by someone else WARNS (in-grace renewal is owner-only) — not blocked", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: OTHER, expired: true } }, ME);
+    return g.block === false && /different address/.test(g.note || "");
+  })());
+  ok("NRENEW-AFTER-FEE: a legit OWNER renewal of a LIVE name does NOT warn (no fee-burn signal, no UX regression)", (() => {
+    const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME } }, ME);
+    return g.block === false && g.note === null;
   })());
   ok("NACT: transport failure WARNS but does NOT block (fail-open)", (() => {
     const g = nameActApproveGate("nrenew", { failed: true }, ME);

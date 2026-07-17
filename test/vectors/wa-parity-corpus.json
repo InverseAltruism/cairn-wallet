@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "note": "WA-PARITY: the SHARED hostile-case corpus that keeps the three fill-boundary seams from ever diverging (cairnx-core verifyFillSpv, cairn-wallet fillspv.ts, cairn public/trade/swapguard.js). Homed here in csd-sdk; each consumer repo vendors a byte-identity-checked copy (the I2 dead-green lesson: the freshness check FAILS, never skips, if a copy drifts). Record-level + seam-agnostic: every seam materializes the SAME scenario in its own injection shape (cairnx-core builds abstract ChainEvents; wallet/site build REAL signed txs + prevout binds), so a wallet-vs-site split goes red. Two families: 'replay' cases exercise the grant/hold/completeness replay that ALL THREE seams share; 'terms' cases exercise the served-offer vs merkle-proven-offer bind that only the CALLERS do (wallet provenTermsMismatch + site verifyOfferContent), because cairnx-core verifyFillSpv takes NO served offer and re-derives everything from proven events.",
+  "consts": {
+    "V28_HEIGHT": 60000,
+    "EPOCH_LEN": 30,
+    "FCLAIM_MAX_EPOCH_AHEAD": 2,
+    "CLAIM_COOLDOWN_BLOCKS": 15,
+    "FILL_TIP_MARGIN": 4,
+    "TREASURY_ADDR": "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016",
+    "FEE_BPS_V16": 150,
+    "note": "Each adapter MUST assert its own vendored constants equal these before running, so a silent constant drift reds the corpus (not a false green)."
+  },
+  "actors": {
+    "A": { "role": "seller" },
+    "B": { "role": "buyer" },
+    "C": { "role": "third-party" }
+  },
+  "backing": [
+    { "by": "A", "height": "H0",   "rec": { "t": "deploy", "ticker": "AAA", "decimals": 0, "supply": "1000", "mint": "issuer" }, "fee": "DEPLOY_FEE" },
+    { "by": "A", "height": "H0+1", "rec": { "t": "mint", "ticker": "AAA", "amount": "1000" } }
+  ],
+  "scenarios": [
+    {
+      "name": "honest-whole-fill",
+      "family": "replay",
+      "seams": ["cairnxCore", "wallet", "site"],
+      "desc": "The buyer holds a live granted fclaim on an open whole-fill CSD offer, both buried, delivery >= 1. Accepted by every seam (the no-false-refusal baseline).",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "none" },
+      "expect": "accept"
+    },
+    {
+      "name": "honest-partial-fill",
+      "family": "replay",
+      "seams": ["cairnxCore", "wallet", "site"],
+      "desc": "A partial-enabled offer (min set) with a buyer paying exactly min. Deliverable >= 1, accepted by every seam. Guards against a false-refuse of legitimate partials.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": "100000000" },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": "100000000" },
+      "attack": { "type": "none" },
+      "expect": "accept"
+    },
+    {
+      "name": "below-depth-fill",
+      "family": "replay",
+      "seams": ["cairnxCore", "wallet", "site"],
+      "desc": "The fclaim is not yet buried to requiredClaimDepth. Every seam REFUSES (fail-safe wait, not a burn).",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "absolute", "h": "H0+4" }, "pay": null },
+      "attack": { "type": "none" },
+      "expect": "reject"
+    },
+    {
+      "name": "denied-fclaim",
+      "family": "replay",
+      "seams": ["cairnxCore", "wallet", "site"],
+      "desc": "B holds fc1 (granted); B posts fc2 while fc1's hold is live -> the resolver DENIES fc2. A lying resolver aliases fc2 as granted. Filling fc2 attests an L0-valid but DELIVERY-LESS target = burn. Every seam re-derives the deny and REFUSES.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [
+        { "kind": "fclaim", "id": "F2", "by": "B", "offer": "OFFER", "height": "H0+5", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } }
+      ],
+      "fill": { "me": "B", "fclaim": "F2", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "none" },
+      "expect": "reject"
+    },
+    {
+      "name": "forged-cancel-holder",
+      "family": "replay",
+      "seams": ["cairnxCore", "wallet", "site"],
+      "desc": "C holds a valid fclaim fcC; B forges holdership and tries to fill fcC. resolve() would reject the payment (who !== claimedBy), burning it. Every seam re-derives that the hold is not mine and REFUSES.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "FC", "by": "C", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "FC", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "none" },
+      "expect": "reject"
+    },
+    {
+      "name": "ocancel-before-grant",
+      "family": "replay",
+      "seams": ["cairnxCore", "wallet", "site"],
+      "desc": "Seller A posts ocancel {AAA} with no live hold -> the offer is cancelled on-chain and any later fclaim is DENIED. A Byzantine/D2-aliasing resolver still reports the offer open and serves B's fclaim as the granted target. THE F8 CASE: the site includes the ocancel in its scan (swapguard.js) and refuses; the wallet's fillspv.ts must too (the R1 F8 fix). Every seam REFUSES; a wallet-vs-site split here goes red.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+5", "ee": { "kind": "epochOfPlus", "of": "H0+5", "plus": 2 } },
+      "extra": [
+        { "kind": "ocancel", "id": "OC", "by": "A", "ticker": "AAA", "height": "H0+3" }
+      ],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "none" },
+      "expect": "reject"
+    },
+    {
+      "name": "withheld-cancel",
+      "family": "replay",
+      "seams": ["wallet", "site"],
+      "desc": "Seller A posts ocancel {AAA} on-chain BEFORE the fclaim grant, but a lying resolver OMITS the ocancel from the event/hint list it serves (the F8 COMPLETENESS attack, distinct from ocancel-before-grant where the cancel IS in the served set). Each seam must find the cancel via its OWN PoW-verified block-body scan and REFUSE. cairnx-core verifyFillSpv canNOT catch a withheld event - its event set IS the seam's hint list (io.offerEventIds), so completeness is a SEAM obligation the pure layer cannot verify. Hence this scenario is wallet/site-only; the cairnx-core adapter demonstrates the gap by materialising the withheld cancel on-chain-but-excluded-from-hints and asserting verifyFillSpv ACCEPTS (safe), which is exactly why the seams do their own scan.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+5", "ee": { "kind": "epochOfPlus", "of": "H0+5", "plus": 2 } },
+      "extra": [
+        { "kind": "ocancel", "id": "OC", "by": "A", "ticker": "AAA", "height": "H0+3", "withheld": true }
+      ],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "withheld-event", "event": "OC" },
+      "expect": "reject"
+    },
+    {
+      "name": "payto-strip",
+      "family": "terms",
+      "seams": ["wallet", "site"],
+      "desc": "The open CSD offer is payto-LESS on-chain (recipient = the proven prevout owner A). A read-path attacker strips the funding tx scriptSig (recoverAttester -> null) and serves a /proposal whose want.payto is the attacker. The site + wallet bind the recipient to the MERKLE-PROVEN prevout owner and REFUSE. cairnxCore N/A: verifyFillSpv takes no served offer.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": null }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "payto-substitute", "servedPayto": "ATTACKER", "scriptSig": "strip" },
+      "expect": "reject"
+    },
+    {
+      "name": "payto-resign",
+      "family": "terms",
+      "seams": ["wallet", "site"],
+      "desc": "Same payto-less offer, but the attacker RE-SIGNS the funding tx with a throwaway key so recoverAttester returns the attacker (== served proposer). The bind derives the recipient from the merkle-proven PREVOUT OWNER (not the malleable scriptSig), so both seams still REFUSE.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": null }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "payto-substitute", "servedPayto": "ATTACKER", "scriptSig": "resign" },
+      "expect": "reject"
+    },
+    {
+      "name": "seller-swap",
+      "family": "terms",
+      "seams": ["wallet", "site"],
+      "desc": "The maker-rebate leg (offer.seller) is swapped to the attacker while want.payto stays honest. resolve() pays the rebate to the on-chain author; a mis-sized rebate leg makes resolve() reject AFTER payment = burn. Both seams bind offer.seller to the proven author and REFUSE.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "seller-substitute", "servedSeller": "ATTACKER" },
+      "expect": "reject"
+    },
+    {
+      "name": "spurious-min-whole-fill",
+      "family": "terms",
+      "seams": ["wallet", "site"],
+      "desc": "The offer is a whole-fill open-CSD offer (no on-chain min). A lying resolver ADDS a spurious min -> previewFill flips to the PARTIAL branch (rebate:0) -> requiredFillOutputs drops the maker-rebate leg -> resolve() rejects 'maker rebate unpaid' AFTER payment = full burn (the R1.1 min-bind case). Both seams bind min (present/absent) to the proven record and REFUSE.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "min-substitute", "servedMin": "100000000" },
+      "expect": "reject"
+    },
+    {
+      "name": "deflated-feeBps",
+      "family": "terms",
+      "seams": ["wallet", "site"],
+      "desc": "A lying resolver serves feeBps=0 for a >= V16 offer (real FEE_BPS_V16=150). requiredFillOutputs then under-sizes/omits the treasury fee leg -> resolve() rejects AFTER payment = burn. Both seams bind feeBps/height/taker/bid to the proven terms and REFUSE.",
+      "offer": { "id": "OFFER", "by": "A", "height": "H0+2", "give": { "ticker": "AAA", "amount": "10" }, "want": { "value": "500000000", "payto": "A" }, "min": null },
+      "fclaim": { "id": "F1", "by": "B", "offer": "OFFER", "height": "H0+3", "ee": { "kind": "epochOfPlus", "of": "H0+3", "plus": 2 } },
+      "extra": [],
+      "fill": { "me": "B", "fclaim": "F1", "tip": { "kind": "holdEndMinus", "n": 5 }, "pay": null },
+      "attack": { "type": "feeBps-substitute", "servedFeeBps": 0 },
+      "expect": "reject"
+    }
+  ]
+}

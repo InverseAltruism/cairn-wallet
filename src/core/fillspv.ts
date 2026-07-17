@@ -237,7 +237,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
         // replay (ids) AND eager-auth-bind it (scannedIds), mirroring the site swapguard.js:707. A hostile-INJECTED
         // ocancel cannot false-refuse: resolve() applies it only when o.seller === ocancel.proposer (prevout-bound),
         // so a foreign/forged or wrong-ticker ocancel is simply ignored.
-        if (rec.t === "ocancel") { markScanned(id, h); continue; }
+        if (rec.t === "ocancel") { markScanned(id, h); continue; } // MUTATE_OCANCEL_SCAN
         if (rec.t !== "fclaim") continue;
         if (String(rec.offer).toLowerCase() === offerId) { laneProposals.add(id); markScanned(id, h); }
         else otherFclaims.push({ id, height: h, uri: app.uri, payloadHash: String(app.payloadHash), expiresEpoch: Number(app.expiresEpoch) });
@@ -395,7 +395,7 @@ export async function provenOfferPayto(
     const in0 = tx.inputs?.[0];
     if (!signer || !in0 || isCoinbaseInput(in0)) return null;
     const owner = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-    if (!owner || owner.toLowerCase() !== signer) return null;     // authorship not prevout-bound (tampered)
+    if (!owner || owner.toLowerCase() !== signer) return null;     // authorship not prevout-bound (tampered) MUTATE_FILLSPV_PREVOUT_BIND
     const seller = signer;
     const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase()))
       ? String(rec.want.payto).toLowerCase()

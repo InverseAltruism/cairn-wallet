@@ -32,7 +32,13 @@ const CONSENT_KEY = "connectedOrigins";
 type ConsentMap = Record<string, { addr: string; ts: number }>;
 async function getConsents(): Promise<ConsentMap> { return (await consentStore.get(CONSENT_KEY)) || {}; }
 async function recordConsent(origin: string, addr: string): Promise<void> {
-  if (!origin || origin === "unknown") return;
+  // L2: an opaque origin (a sandboxed / data: / some file: page) sends sender.origin === "null" — a SHARED,
+  // non-identifying string, not a site. Never store consent under it: every opaque page would collide on the
+  // one "null" bucket, so the silent fast-path (and getPermissions) would return the consented address to ANY
+  // opaque-origin page — a silent cross-site disclosure. Reject it alongside "unknown"; the fast-path + get-
+  // Permissions then fall through to a fresh prompt for every opaque page (an opaque origin has no identity to
+  // remember). Deliberately NOT a per-frame ephemeral bucket — more machinery for no legitimate use.
+  if (!origin || origin === "unknown" || origin === "null") return;
   const c = await getConsents();
   c[origin] = { addr, ts: Date.now() };
   await consentStore.set(CONSENT_KEY, c);
@@ -58,6 +64,10 @@ const eventRegistry = new PortRegistry();
 chrome.runtime?.onConnect?.addListener((port: any) => {
   if (port?.name !== "cairn-events") return;
   const origin = port.sender?.origin || port.sender?.url || "unknown";
+  // L2: never register an event port for an opaque ("null") or unknown origin — it has no stable identity, so
+  // bucketing them together would let one opaque page receive another opaque page's lock/account-switch events
+  // (cross-frame timing). A page with a real origin re-establishes its port on the next connect().
+  if (origin === "null" || origin === "unknown") return;
   eventRegistry.add(origin, port);
   port.onDisconnect?.addListener(() => eventRegistry.remove(origin, port));
 });
