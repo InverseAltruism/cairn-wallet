@@ -47,7 +47,7 @@
   });
   const provider = Object.freeze({
     isCairn: true,
-    version: "0.2.61",
+    version: "0.2.62",
     connect: () => req("connect"),
     getAddress: () => req("getAddress"),
     signIn: () => req("signin"),
@@ -61,7 +61,7 @@
     // to removeListener. Cairn emits accountsChanged([]) on lock/account-switch/revoke (never a new addr).
     on: (event: string, handler: (d: any) => void) => { (handlers[event] ||= new Set()).add(handler); },
     removeListener: (event: string, handler: (d: any) => void) => { handlers[event]?.delete(handler); },
-    getCapabilities: () => Promise.resolve({ version: "0.2.61", siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
+    getCapabilities: () => Promise.resolve({ version: "0.2.62", siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
     // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which

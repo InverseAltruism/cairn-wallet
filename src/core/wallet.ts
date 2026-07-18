@@ -667,6 +667,14 @@ export class Wallet {
         const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
         if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
           return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+        // WANT-TYPE bind (mirrors the fclaim lane's isTokenWant rejection in verifyFillSpv): the MERKLE-PROVEN
+        // offer must actually be CSD-priced to take this CSD-fill branch. A token-priced offer carries no
+        // want.value, so provenOfferPayto leaves terms.value undefined and bindOfferTerms skips the value leg;
+        // without this a lying resolver could serve a token-priced offer as CSD-priced (drop want.ticker, add a
+        // fake want.value) and the wallet would sign a CSD payment that resolve() rejects (no delivery) =
+        // pay-without-delivery burn/theft. A genuine CSD offer always carries want.value, so no honest fill declines.
+        if (proven.terms.value === undefined)
+          return { ok: false, error: "refusing to sign: the on-chain offer is not CSD-priced (a lying resolver may be presenting a token-priced offer as a CSD sale)", sighashMatch: false, code: "FILL_UNSAFE" };
         if (payto !== proven.payto || String((offer as { seller?: string }).seller ?? "").toLowerCase() !== proven.seller)
           return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" };
         // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer (same as the fclaim lane).

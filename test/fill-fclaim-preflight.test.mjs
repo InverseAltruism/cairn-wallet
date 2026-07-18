@@ -442,6 +442,30 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   check(`FIXA: a below-V28 offer-txid fill is UNAFFECTED (no FILL_WRONG_TARGET false-refuse) (${r?.error ?? "ok"})`, r?.code !== "FILL_WRONG_TARGET" && r?.ok === true && s.submits.length === 1);
 }
 
+// WANT-TYPE (legacy lane, 2026-07-18): a hostile/MITM resolver serves a genuinely TOKEN-priced offer as
+// CSD-priced (drop want.ticker, add a fake want.value). The proven offer is token-priced (terms.value
+// undefined), so the wallet must REFUSE before signing a CSD payment that resolve() would reject (no delivery)
+// = pay-without-delivery burn/theft. Mirrors the fclaim lane's isTokenWant rejection.
+{
+  const { w, addr: W } = await freshWallet("pw-wanttype");
+  const servedCsd = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };   // SERVED as CSD-priced + taker-bound (legacy lane)
+  const provenTokenTerms = termsFor({ height: 47_000, want: { ticker: "BAR", amount: "1" }, taker: W });   // PROVEN offer is TOKEN-priced -> terms.value undefined (the hidden lie)
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: provenTokenTerms });
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedCsd }), tip: 50_000 });
+  const r = await w.fillOffer({ proposalId: OID, outputs });
+  check(`WANT-TYPE: a token-priced offer served as CSD-priced is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /not CSD-priced/i.test(String(r?.error)));
+  check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
+}
+{
+  // no-false-refuse control: the SAME served shape with a genuinely CSD-priced PROVEN offer (terms.value
+  // defined) is NOT refused by the want-type guard (proves it keys on the proven want-type, not the served one).
+  const { w, addr: W } = await freshWallet("pw-wanttype-ok");
+  const servedCsd = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(servedCsd) });   // honest CSD-priced proven (terms.value defined)
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedCsd }), tip: 50_000 });
+  const r = await w.fillOffer({ proposalId: OID, outputs });
+  check(`WANT-TYPE control: an honest CSD-priced offer is NOT want-type-refused (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
 // RT-STEER (bypass close): the fclaim-lane routing is STRUCTURAL (proposalId != offer.id), NOT the resolver-echoed
 // fclaimId, so a hostile primary that WITHHOLDS/alters fclaimId cannot steer a denied-fclaim fill into the
 // resolver-trusted legacy lane. The served offer omits fclaimId AND crafts a legacy-passable open-CSD claim
