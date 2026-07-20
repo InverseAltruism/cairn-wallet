@@ -68,6 +68,13 @@ export function truncLoud(s: unknown, cap: number): string {
   return `${escapeHtml(str.slice(0, cap))}<b class="err"> [truncated: showing the first ${cap} of ${str.length} characters]</b>`;
 }
 
+// G9 (B8w): the display cap for on-chain DOMAIN fields tracks the node's consensus byte cap
+// (MAX_DOMAIN_BYTES = 128; csd-sdk codec params + node params). A valid domain is <= 128 UTF-8 bytes, so
+// it is at most 128 characters, and this char cap therefore never loudly-truncates a valid domain (the
+// old 64 clipped legitimate 65-to-128-byte domains). Single-sourced so the two domain describe() sites
+// cannot drift; the uri cap stays the literal 512 at its own site (MAX_URI_BYTES) for the same reason.
+const DOMAIN_CAP = 128;
+
 // W8 + F12 (B5g): token amounts on the popup's own send surfaces render BOTH scales, single-sourced here.
 // The human-scaled number rides resolver-served `decimals` (untrusted: a decimals lie rescales it by up to
 // 10^8, and the balance guard compares against the SAME resolver's `available`, so it is no backstop),
@@ -328,7 +335,7 @@ export function describe(r: any): string {
     // 512 (the node's own on-chain uri cap), so no VALID record's uri is ever cut; only oversized text
     // the chain would reject anyway gets the loud marker.
     return `<b>Post a proposal</b><br>${feeLine(p.fee, 1000000)}${exp}${xfer}`
-      + `<br>domain: <code>${truncLoud(String(p.domain), 64)}</code>`
+      + `<br>domain: <code>${truncLoud(String(p.domain), DOMAIN_CAP)}</code>`
       + `<br>payload hash: <code>${truncLoud(String(p.payloadHash || "(none)"), 80)}</code>`
       + `<br>uri: <code>${truncLoud(String(p.uri || "(none)"), 512)}</code>`;
   }
@@ -369,7 +376,7 @@ export function describe(r: any): string {
     // capped-and-LOUD (truncLoud) instead of a quiet ellipsis.
     const claim = p.claim != null ? String(p.claim) : "";
     const claimLine = claim ? `<br>claim: <code>${truncLoud(claim, 200)}</code>` : "";
-    return `<b>Seal a claim</b> - commit a hidden claim on-chain (reveal later).<br>domain: <code>${truncLoud(String(p.domain || "csd:sealed"), 64)}</code><br>${feeLine(p.fee, CAIRNX_PROPOSE_FEE)} · the salt stays in your wallet (the claim is published only when you reveal)${claimLine}`;
+    return `<b>Seal a claim</b> - commit a hidden claim on-chain (reveal later).<br>domain: <code>${truncLoud(String(p.domain || "csd:sealed"), DOMAIN_CAP)}</code><br>${feeLine(p.fee, CAIRNX_PROPOSE_FEE)} · the salt stays in your wallet (the claim is published only when you reveal)${claimLine}`;
   }
   // M14 (B5h): a reveal PUBLISHES a secret - show the FULL seal txid (18 characters invited approving the
   // wrong reveal) and mount #reveal-preview, which approve.ts fills with the domain + claim text from the

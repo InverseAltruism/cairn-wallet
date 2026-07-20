@@ -7,7 +7,10 @@ import { cpSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync } from "
 // F12 tripwire: the popup-isolation argument rests on the extension having NO external message
 // surface. Fail the build HARD if anything re-introduces one, so the assertion in background.ts
 // can never quietly become load-bearing-but-false. (Mirrored as a test in extension-boundary.ts.)
-const FORBIDDEN = ["externally" + "_connectable", "onMessage" + "External"]; // split so this guard never self-trips
+// onConnectExternal is the PORT-based sibling of onMessageExternal: both are external-message entrypoints
+// enabled by externally_connectable, and either one re-opens the surface the popup-isolation argument
+// rests on. B8w adds it so a future port-based external listener is a hard build failure too.
+const FORBIDDEN = ["externally" + "_connectable", "onMessage" + "External", "onConnect" + "External"]; // split so this guard never self-trips
 for (const dir of ["src", "public"]) {
   const walk = (p) => { for (const e of readdirSync(p)) { const f = p + "/" + e; if (statSync(f).isDirectory()) walk(f); else {
     const txt = readFileSync(f, "utf8");

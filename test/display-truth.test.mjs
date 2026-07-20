@@ -93,8 +93,10 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("M15: the fee row renders ABOVE the dApp domain + uri", html.indexOf("fee:") < html.indexOf("domain:") && html.indexOf("fee:") < html.indexOf("uri:"));
   ok("M15: a valid-length uri gets NO truncation marker (no false alarm)",
     !describe({ method: "propose", params: { domain: "evil:site", fee: 1_000_000, uri: "B".repeat(512) } }).includes("truncated"));
+  // G9 (B8w): the domain display cap now tracks the node's MAX_DOMAIN_BYTES (128), so a 300-char domain
+  // (well over the on-chain cap) still truncates LOUDLY, now at 128 rather than the old 64.
   const bigDomain = describe({ method: "propose", params: { domain: "D".repeat(300), fee: 1_000_000, uri: "u" } });
-  ok("M15: an oversized dApp domain is truncated LOUDLY", bigDomain.includes("showing the first 64 of 300"));
+  ok("M15: an oversized dApp domain is truncated LOUDLY", bigDomain.includes("showing the first 128 of 300"));
   const seal = describe({ method: "sealClaim", params: { domain: "csd:sealed", claim: "C".repeat(500), fee: 25_000_000 } });
   ok("M15: sealClaim fee row renders ABOVE the dApp claim text", seal.indexOf("fee:") !== -1 && seal.indexOf("fee:") < seal.indexOf("claim:"));
   ok("M15: sealClaim claim text is truncated LOUDLY (no quiet ellipsis)", seal.includes("showing the first 200 of 500"));

@@ -148,6 +148,24 @@ ok("lookalikeOf does NOT flag an identical address", lookalikeOf(real, [real]) =
     /NOT shown/i.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), outputs: manyOuts, fee: 5e6 } })));
 }
 
+// DOMAIN-CAP (G9, B8w): the clear-sign DOMAIN display cap tracks the node's MAX_DOMAIN_BYTES (128), so a
+// VALID domain (<= 128 bytes, hence <= 128 chars) is NEVER loudly-truncated; only oversized text the chain
+// rejects anyway gets the marker. The old cap was 64, which clipped legitimate 65-to-128-byte domains.
+{
+  const raw = (domain: string) => describe({ method: "propose", params: { domain, fee: 1 } });
+  ok("DOMAIN-CAP: a 65-char domain is NOT truncated (the old 64 cap would have clipped it)",
+    !/\[truncated/.test(raw("d".repeat(65))));
+  ok("DOMAIN-CAP: a 128-char domain (the node's byte cap) is NOT truncated",
+    !/\[truncated/.test(raw("d".repeat(128))));
+  ok("DOMAIN-CAP: a 129-char domain IS loudly truncated at 128 (over the on-chain cap)",
+    /\[truncated: showing the first 128 of 129 characters\]/.test(raw("d".repeat(129))));
+  // the sealClaim domain shares the SAME cap via the single-sourced DOMAIN_CAP constant
+  ok("DOMAIN-CAP: sealClaim's 128-char domain is NOT truncated (same cap)",
+    !/\[truncated/.test(describe({ method: "sealClaim", params: { domain: "d".repeat(128), fee: 1 } })));
+  ok("DOMAIN-CAP: sealClaim's 129-char domain IS truncated at 128 (same cap)",
+    /\[truncated: showing the first 128 of 129 characters\]/.test(describe({ method: "sealClaim", params: { domain: "d".repeat(129), fee: 1 } })));
+}
+
 // WYSIWYS-BIDI-1 — escapeHtml neutralizes Unicode bidi-override / zero-width controls to a VISIBLE \uXXXX
 // token, so a dApp can't reorder or hide characters in a displayed name/address/memo vs the signed bytes.
 ok("BIDI-1: a bidi-override (U+202E) is neutralized to a visible token (not passed through)",

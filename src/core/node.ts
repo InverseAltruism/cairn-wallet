@@ -442,6 +442,28 @@ export function spendableCoins(utxos: any[], exclude?: ReadonlySet<string>): Sel
   return out;
 }
 
+// N18 (B8w): the SUBMIT_DUPLICATE classification couples to the NODE's tx_submit error wording, a
+// string this wallet does not control. The coupling is deliberate but was inlined as a bare
+// `/already present/i` at the classification site, so a reword (here OR in the node) would silently
+// reopen the failure class it fixes. Make it EXPLICIT (named + documented) and pin it with a test.
+//
+// The node contract (compute-substrate api/mod.rs tx_submit) returns TWO distinct Ok(false) strings and
+// downstream consumers MUST tell them apart (the node's own comment documents this and pins the
+// substring for exactly this match):
+//   • "already present in mempool"  -> this EXACT tx is held (a byte-identical resubmit after an
+//     ambiguous failure; deterministic signing makes the retry identical). A tx spending these coins IS
+//     pending, so "nothing was sent" would be FALSE -> SUBMIT_DUPLICATE.
+//   • "mempool conflict: a different pending transaction spends these coins" -> a DIFFERENT tx already
+//     spends an input. This is a real, definitive rejection; classifying it as a duplicate would tell
+//     the user their payment "should settle" when it never will -> must fall through to SUBMIT_REJECTED.
+// Matching the NARROW substring "already present" (not the whole phrase) keeps older / re-wrapped
+// proxies matching, and is why the node pins that exact token. A match MISS is fail-safe here: a real
+// duplicate misclassified as REJECTED shows the honest "submit rejected" copy for a byte-identical tx
+// whose eventual resubmit is itself idempotent (same txid), never a double-spend or fund loss. The
+// dangerous direction (a CONFLICT read as a duplicate) is closed by the node emitting a string that does
+// NOT contain "already present". Pinned by test/submit-classify.test.mjs (reds on either drift).
+export const isSubmitDuplicateErr = (err: unknown): boolean => /already present/i.test(String(err ?? ""));
+
 // Build the FULL tx locally (we set the app ourselves), sign OUR OWN codec sighash,
 // and submit. We never sign a hash a server handed us — so a malicious or MITM'd RPC
 // cannot trick the wallet into signing a different transaction; the node re-derives
@@ -473,7 +495,7 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // spending these coins IS pending. Own code (additive, per the error-contract rule) + hedged
   // copy that is true in both cases; txid = the local txid (in the duplicate case that is exactly
   // the pending tx).
-  const dup = !sub.ok && !sub.maybeInflight && /already present/i.test(String(sub.err ?? ""));
+  const dup = !sub.ok && !sub.maybeInflight && isSubmitDuplicateErr(sub.err);
   // W6 (B5c): signing is deterministic and the txid does not even depend on the signature (sha256d over
   // the scriptSig-stripped serialization), so localTxid is not a fallback — it IS the answer, and the
   // server echo carries no information the wallet does not already hold with certainty. Preferring the

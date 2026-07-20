@@ -35,11 +35,17 @@ held by no single party, resident in no CI, may publish unilaterally.**
    the `csdSdkCommit` provenance match (set `ECOSYSTEM_RO_TOKEN` in CI so the cross-repo rebuild job runs;
    without it the full diff self-skips).
 3. **Green gate** — `npm run typecheck && npm test` (full suite) must pass; CI must be green on the tag.
-4. **Reproducible build** — `npm ci && npm run package`. This emits `cairn-wallet-store.zip` + its `.sha256`
-   via a deterministic (fixed-timestamp, sorted, STORE) zip writer — byte-identical across machines.
+4. **Reproducible build.** Run `npm ci && npm run package`. This emits the version-STAMPED upload artifact
+   `cairn-wallet-store-<version>.zip` (e.g. `cairn-wallet-store-0.2.64.zip`) + its `.sha256`, plus a
+   byte-identical stable-named `cairn-wallet-store.zip` (kept for CI/back-compat), via a deterministic
+   (fixed-timestamp, sorted, STORE) zip writer, byte-identical across machines. The packager also
+   HARD-FAILS if the manifest baked into the zip does not match `package.json`, so a stale `dist/` can
+   never be packaged silently.
 5. **Cross-check the artifact** — an independent maintainer reproduces step 4 and confirms an **identical
    sha256** before anyone uploads (this is the dual-control checkpoint).
-6. **Upload manually** to the CWS dashboard (hardware-2FA), from the reviewed `cairn-wallet-store.zip`.
+6. **Upload manually** to the CWS dashboard (hardware-2FA), from the reviewed **version-stamped**
+   `cairn-wallet-store-<version>.zip`. The version in the filename is what makes a stale local file
+   self-evident, so upload that one, never an unversioned copy.
 7. **Post-publish hash verification** — once the new version is live, fetch the published CRX and confirm it
    corresponds to the reviewed/attested zip. Any divergence ⇒ an out-of-band/unauthorized upload ⇒ pull the
    listing + rotate credentials immediately.

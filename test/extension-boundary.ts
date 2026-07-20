@@ -389,9 +389,11 @@ async function main() {
   const realApprovalWin = await popupAs({ id: "cairnwallettestid", url: "chrome-extension://x/approve.html", tab: { id: 3 } }, "status");
   check("the real approval window (extension origin, WITH a tab) works — F12 no longer breaks connect", realApprovalWin?.ok === true && realApprovalWin.result?.unlocked === true);
 
-  console.log("\n=== F12 build/CI tripwire: externally_connectable / onMessageExternal must NEVER appear ===");
+  console.log("\n=== F12 build/CI tripwire: externally_connectable / onMessageExternal / onConnectExternal must NEVER appear ===");
   // If a future edit re-introduces an external message surface, the popup-isolation argument collapses.
-  // Fail HARD if either string shows up anywhere in src/ or the manifest.
+  // Fail HARD if any of the three strings shows up anywhere in src/ or the manifest. onConnectExternal is
+  // the PORT-based sibling of onMessageExternal (B8w): both are external-message entrypoints and either
+  // one re-opens the surface, so both must be covered here as well as in build.mjs's FORBIDDEN tripwire.
   const SCAN = [
     "../src/background.ts", "../src/content.ts", "../src/inpage.ts",
     "../src/popup/popup.ts", "../src/popup/approve.ts", "../src/popup/clearsign.ts",
@@ -399,6 +401,7 @@ async function main() {
   ].map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).join("\n");
   check("no `externally_connectable` anywhere in src/ or manifest", !/externally_connectable/.test(SCAN));
   check("no `onMessageExternal` anywhere in src/ or manifest", !/onMessageExternal/.test(SCAN));
+  check("no `onConnectExternal` anywhere in src/ or manifest (port-based external surface)", !/onConnectExternal/.test(SCAN));
 
   console.log("\n=== CQ-4: every dApp-allowlisted method has a handler (no allowlist↔dispatch drift) ===");
   // The dApp surface is defined by FOUR hand-synced lists (DAPP_METHODS, the resolvePending if-chain, the

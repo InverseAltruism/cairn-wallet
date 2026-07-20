@@ -12,6 +12,7 @@
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 const ROOT = join(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -78,6 +79,43 @@ function emit(outName, prefix) {
   return sha;
 }
 
-// the upload artifact (manifest at root) FIRST — it's the one that matters for the store
-emit("cairn-wallet-store.zip", "");      // → upload this to the Chrome Web Store
-emit("cairn-wallet.zip", "cairn-wallet"); // → nested, for `Load unpacked`
+// package.json is the single source of truth for the release version (build.mjs enforces the
+// manifest/inpage lockstep at build time).
+export const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+
+// B8w: the CWS upload artifact carries the version IN ITS FILENAME. The old stable name
+// `cairn-wallet-store.zip` carried no version, so a stale LOCAL copy from an earlier build looked
+// identical to a fresh one and nothing stopped an operator uploading it by mistake (audit LOW; the
+// OP-01/OP-14 near-miss where a v0.2.63 tag was first cut on the 0.2.62 tree is exactly this class).
+// A version-stamped name makes a stale file self-evident.
+export const storeZipName = (version) => `cairn-wallet-store-${version}.zip`;
+
+// B8w packaging assertion: the manifest.json that lands at the ROOT of the store zip is what the Chrome
+// Web Store shows as the version. It MUST equal package.json. build.mjs already checks this at build
+// time, but package.mjs can be pointed at a stale dist/ when run standalone (OP-01 prep packaged an
+// existing dist), so this is the backstop that turns "package a stale build" into a hard failure rather
+// than a silent wrong-version zip. Pinned by test/package-assert.test.mjs.
+export function manifestVersionInDist(distDir) {
+  return JSON.parse(readFileSync(join(distDir, "manifest.json"), "utf8")).version;
+}
+export function assertVersionLockstep(pkgVersion, distManifestVersion) {
+  if (pkgVersion !== distManifestVersion) {
+    throw new Error(`✗ package aborted: dist/manifest.json is ${distManifestVersion} but package.json is ${pkgVersion}; rebuild (npm run build) before packaging; do not ship a stale dist.`);
+  }
+}
+
+function main() {
+  // fail HARD before writing any artifact if the built manifest drifted from package.json
+  assertVersionLockstep(PKG_VERSION, manifestVersionInDist(DIST));
+  // the CWS upload artifact (manifest at root) FIRST, version-STAMPED so a stale local file can't be
+  // silently uploaded. The stable name stays too (release.yml attaches it), byte-identical to the stamped
+  // copy since both zip the SAME dist with the empty prefix.
+  const stampedSha = emit(storeZipName(PKG_VERSION), "");   // → upload THIS to the Chrome Web Store
+  emit("cairn-wallet-store.zip", "");                        // stable name (CI/back-compat; identical bytes)
+  emit("cairn-wallet.zip", "cairn-wallet");                 // → nested, for `Load unpacked`
+  console.log(`\n✓ CWS upload target: ${storeZipName(PKG_VERSION)}\n  sha256: ${stampedSha}`);
+}
+
+// Run the packaging only when invoked directly (`node scripts/package.mjs`); importing this module (the
+// test) gets the pure helpers without writing any artifact or touching dist/.
+if (import.meta.url === pathToFileURL(process.argv[1] || "").href) main();
