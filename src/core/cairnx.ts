@@ -16,6 +16,7 @@ import {
   // constants
   DOMAIN, MIN_FEE_PROPOSE, TREASURY_ADDR,
   FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT,
+  CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
   // functions
@@ -39,7 +40,7 @@ import {
 // ── app constants (re-exported under the wallet's historical names) ───────────
 export const CAIRNX_DOMAIN = DOMAIN;                 // "cairnx:v1"
 export const CAIRNX_PROPOSE_FEE = MIN_FEE_PROPOSE;   // 0.25 CSD — the convention's anchor fee floor
-export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, NAME_RE, canonicalJson };
+export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, NAME_RE, canonicalJson };
 // v1.6 fee: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; this just
 // computes the trade fee for clear-sign display. Byte-identical to cairnx-core (callers pass bigint). (The
 // cairnxMakerRebate re-export was removed 2026-07-06 — it had zero callers anywhere; the rebate is computed
@@ -53,6 +54,19 @@ export { nameRegFee };
 // the core owns the gate list, so a future fee tier (V28+) arrives by re-vendoring instead of a hand edit
 // here + in the trade UI. A local copy of the gates + margin lived here until 2026-07-06.
 export { buildFeeHeight } from "../vendor/cairnx-spv.js";
+// M11 (B5b): ONE tip clamp for name-fee pricing, used at BUILD time (wallet.ts renew/renewFee) AND at
+// REVIEW time (clearsign.ts fee warning) so the two sides can never disagree — a clamp applied at build
+// but not review (or the reverse) manufactures spurious FEE_CHANGED refusals / false fee warnings at a
+// fee-gate boundary. The raw tip is an unauthenticated RPC read a hostile proxy can DEFLATE so the wallet
+// prices an obsolete cheaper tier: the resolver then rejects the record and the fee BURNS, while the
+// deflated tip simultaneously silences the CLEARSIGN-FEE-1 underpayment warning. Clamp UP with the
+// PoW-backed persisted floor (M9/B5a bounds its inflation to verifiedTip + slack); an over-tier fee only
+// ever overpays (accepted on-chain), never burns. NOT consensus math — a policy compose over the vendored
+// buildFeeHeight/nameRegFee, which stay the only fee authorities.
+export function feePricingTip(rawTip: number | null | undefined, floor: number | null | undefined): number {
+  const t = Number(rawTip), f = Number(floor);
+  return Math.max(Number.isFinite(t) && t > 0 ? t : 0, Number.isFinite(f) && f > 0 ? f : 0);
+}
 
 // Single source of truth for the .csd name syntax. `isPlainName` is the syntax-only check used before a name
 // reaches a URL (NO reserved-name check — that is the registrar's, not the parser's).

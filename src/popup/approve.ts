@@ -42,9 +42,10 @@ async function render() {
     // These are the ONLY network awaits before the request paints. Bound (module-level `bounded`) and
     // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
     // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
-    const [e, t] = await Promise.all([bounded(call("epoch")), bounded(call("tip"))]);
+    const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
     if (e != null) current.currentEpoch = e;
     if (t != null) current.currentTip = t;
+    if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
   }
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE

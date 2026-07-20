@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fillspv.js";
@@ -555,6 +555,11 @@ export class Wallet {
   // CLEARSIGN-FEE-1: exact tip for the clear-sign fee-sufficiency check on a dApp-built name registration/
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
+  // M9/M11/W5 (B5b): the persisted PoW-backed tip floor (advanced only by namespv floorAdvance after a
+  // successful sync — see B5a). Guards clamp the raw served tip UP with it so a deflating RPC cannot roll
+  // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE — stated
+  // coverage limit, not assumed away). Popup-only read; never a dApp method.
+  async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const hk = this.histKeyNow(); const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
   async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const hk = this.histKeyNow(); const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
@@ -647,6 +652,21 @@ export class Wallet {
       // sunset has claimTxid undefined -> legacy path (correct, no false-refuse).
       if (offer.claimTxid !== undefined && hasLiveClaim(offer, me, tip))
         return { ok: false, error: "this offer has a live reservation — fill its reservation (fclaim) target, not the offer id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_WRONG_TARGET" };
+      // W5 (B5b): LEGACY-SUNSET arithmetic refuse. Placed AFTER the Correction-1 mirror deliberately: a
+      // served live-hold offer gets the more SPECIFIC actionable refusal (FILL_WRONG_TARGET) first, and the
+      // W5 forgery (claimTxid OMITTED) never fires the mirror, so this guard still closes it.
+      // The last possible legacy grant is at V28-1 and its hold
+      // (window + fill grace) ends at V28 + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS - 1 = 60,044,
+      // so AT or ABOVE 60,045 every offer-id fill of an open CSD offer is rejected on-chain AFTER the
+      // payment moved (pay-without-delivery). The W5 attack forges/omits the SERVED claim fields to steer a
+      // genuine fclaim holder into this lane — so the refuse keys on NOTHING served: pure gate arithmetic
+      // over the tip, clamped UP with the PoW-backed floor (M9/B5a) so a deflating RPC cannot disarm it
+      // once the wallet has PoW-seen the band. Below 60,045 the honored pre-V28 sunset (resolve.ts:182-183)
+      // still admits legacy fills — a flat V28 cut was DECLINED as over-refusal (strategy decline 1); the
+      // headline test pins ACCEPTS at 60,010. Taker-bound and token lanes are exempt: both fields are bound
+      // on those lanes and neither routes through the open-lane claim machinery.
+      if (offer.taker === undefined && isCsdWant && Math.max(tip, await this.tipFloor()) >= V28_HEIGHT + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS)
+        return { ok: false, error: "past the V28 sunset an open offer can only be filled through its reservation (fclaim) target — ask the marketplace for the reservation id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_LEGACY_SUNSET" };
       if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))
         return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
       const verdict = fillIsSafe(offer, me, pay, tip);
@@ -1045,7 +1065,21 @@ export class Wallet {
       }
       if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
       const j = await r.json();
-      if (j?.lapsed) return { ok: false, error: `${nm}.csd lease has lapsed — can't send to it` };
+      if (j?.lapsed) {
+        // N19 (B5b): do NOT hard-refuse on a single source's SERVED `lapsed` flag — that short-circuit
+        // fired BEFORE the SPV union, so the two-source lapse corroboration (WALLET-LAPSE-TIP-1) could
+        // never see the claim it exists to corroborate, and one hostile/buggy primary could permanently
+        // block sends to a healthy name. Consult the union: chain proves the lease CURRENT -> serve the
+        // PROVEN answer (the served flag was false); union corroborates the lapse -> refuse with
+        // confidence; union unavailable -> keep today's fail-closed refusal, with honest uncorroborated
+        // copy. A real lapse still refuses exactly as before — this only removes the FALSE refusal.
+        const lv = await this.verifyName(nm).catch(() => null);
+        if (lv?.verified && lv.addr)
+          return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, agreed: lv.agreed, disagree: lv.disagree };
+        return lv?.lapsed === true
+          ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed — can't send to it` }
+          : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain — refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
+      }
       if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
       const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
       // XREPO-1 cure: independently SPV-verify the name → address against the chain. The resolver's
@@ -1132,7 +1166,10 @@ export class Wallet {
   // v1.8: the height-gated renewal fee priced at the CURRENT tip — for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.
   async cairnxNameRenewFee(name: string): Promise<number> {
-    const fee = nameRegFee(name, buildFeeHeight(await node.tip(this.rpc)));
+    // M11 (B5b): price from the floor-CLAMPED tip (feePricingTip) — a deflated RPC tip must not price an
+    // obsolete cheaper tier the resolver rejects (fee burns). Same clamp at BOTH build sites + the
+    // clearsign review warning, through the ONE shared helper, so build and review can never disagree.
+    const fee = nameRegFee(name, buildFeeHeight(feePricingTip(await node.tip(this.rpc), await this.tipFloor())));
     return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
   }
   // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
@@ -1142,7 +1179,8 @@ export class Wallet {
     // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
     this.throwOnSignerChange(expectSigner);
     const built = buildNameRenew({ name });
-    const tip = await node.tip(this.rpc);
+    // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee — the ONE shared helper (see there).
+    const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
     const liveFee = nameRegFee(name, buildFeeHeight(tip));  // v1.8: height-gated; V18-1 boundary-safe build pricing
     if (liveFee > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("renewal fee too large for the UI");
     // WL-FEE-FREEZE-1 (WYSIWYS): sign EXACTLY the fee the user reviewed. If the chain tip crossed a fee-gate

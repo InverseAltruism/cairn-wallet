@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, TREASURY_ADDR, V25_HEIGHT, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, feePricingTip, TREASURY_ADDR, V25_HEIGHT, finalizeWinnerCheck } from "../core/cairnx.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -244,7 +244,11 @@ export function describe(r: any): string {
         // under v2.5 the `name` reveal is PAYMENT-FREE (the fee moves to `nfinalize`), so the fee-bearing record
         // is nrenew, nfinalize, or a PRE-v2.5 `name`. An underpaid nfinalize burns exactly like an underpaid
         // pre-v2.5 registration (the fee leaves, the name is not registered), so it gets the same loud warning.
-        const tipNow = r.currentTip != null ? Number(r.currentTip) : null;
+        // M11 (B5b): the review-side tip is clamped with the PoW-backed floor via the ONE shared helper
+        // (cairnx.ts feePricingTip) — the same clamp the build sites apply — so a deflating RPC cannot
+        // price a cheaper tier here while silencing this very warning. Floor-only (tip read failed but a
+        // floor exists) still arms the warning; both absent keeps today's skip-when-offline behavior.
+        const tipNow = r.currentTip != null || Number(r.tipFloor) > 0 ? feePricingTip(r.currentTip, r.tipFloor) : null;
         const feeBearing = !!rec && typeof rec.name === "string" && tipNow != null &&
           (rec.t === "nrenew" || rec.t === "nfinalize" || (rec.t === "name" && tipNow < V25_HEIGHT));
         if (feeBearing && rec) {
