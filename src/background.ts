@@ -201,7 +201,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // (p.origin) and signs it; it never mints a session, so it is safe for any origin.
     else if (p.method === "signinWithCsd") result = await wallet.signInWithCsd(p.params, p.origin);
     else if (p.method === "propose") result = await wallet.propose(p.params);
-    else if (p.method === "attest") result = await wallet.attest(p.params);
+    else if (p.method === "attest") result = await wallet.attest({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined }); // W4 (B5d): thread the reviewed signer so a token-fill-confidence attest gets the fill path's ACCOUNT_CHANGED cross-check
     else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
     else if (p.method === "revealClaim") result = await wallet.revealClaim(p.params);
     // Plain transfer. Reachable from a dApp ONLY through this approval path (the user

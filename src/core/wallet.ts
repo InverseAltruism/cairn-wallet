@@ -116,6 +116,10 @@ const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
 // Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
 const ATTEST_FLOOR = 5_000_000;
+// The app-layer confidence SENTINEL for a token-priced fill (mirrors clearsign.ts/approve.ts's literal
+// 1_000_000). NOT consensus math - it is the value the trade UI stamps so a fill against a token-want
+// offer is distinguishable from a board-support attest (70/80). W4 (B5d) routes on it.
+const CONF_TOKEN_FILL = 1_000_000;
 // Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
 const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
 
@@ -561,7 +565,18 @@ export class Wallet {
   // coverage limit, not assumed away). Popup-only read; never a dApp method.
   async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const hk = this.histKeyNow(); const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
-  async attest(p: { proposalId: string; score: number; confidence: number; fee: number }) { const hk = this.histKeyNow(); const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: p.fee }); return r; }
+  async attest(p: { proposalId: string; score: number; confidence: number; fee: number; outputs?: { to: string; value: number }[]; expectSigner?: string }) {
+    // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
+    // App=Attest expression, outputs:[]), so an attest(score, confidence=CONF_TOKEN_FILL) was the fill
+    // path stripped of its preflight - no OFFER_UNKNOWN gate, no captureSigner, paying into a proposal the
+    // resolver may never settle. Route on the ARTIFACT SHAPE, never the method name: any token-fill-
+    // confidence attest goes through the SAME gated fill path fillOffer uses (which runs fillOfferPreflight
+    // + signer capture and files a truthful `fillOffer` history entry). A board-support attest (confidence
+    // 70/80) is untouched. This is the cheap half of W1; it does not depend on W2's term binds.
+    if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
+      return this.fillOffer({ proposalId: p.proposalId, outputs: Array.isArray(p.outputs) ? p.outputs : [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner });
+    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: p.fee }); return r;
+  }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
   // Ordering is load-bearing: capture the signer BEFORE the preflight await (so the account the preflight
