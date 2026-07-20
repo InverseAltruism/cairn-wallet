@@ -17,7 +17,7 @@ import {
   rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, SCORE_CLAIM, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
-  provenOfferTerms, feeBpsAt,
+  provenOfferTerms,
   type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
