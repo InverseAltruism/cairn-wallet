@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, type NameFetchResult } from "./clearsign.js";
+import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, type NameFetchResult } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -46,6 +46,14 @@ async function render() {
     if (e != null) current.currentEpoch = e;
     if (t != null) current.currentTip = t;
     if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
+  } else if (current.method === "attest"
+      && (Number((current.params || {}).score) >>> 0) === 50 && (Number((current.params || {}).confidence) >>> 0) === 0) {
+    // B5h (score-50 V28 truth): thread the PoW-backed tip floor so describe() can warn that a legacy
+    // SCORE_CLAIM past the V28 gate is a guaranteed on-chain no-op. tipFloor is a wallet-store read
+    // (READ_ONLY, no network), so the attest paint gains no network dependency; a miss degrades to no
+    // warning (today's behavior).
+    const f = await bounded(call("tipFloor"));
+    if (f != null) current.tipFloor = f;
   }
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
@@ -66,6 +74,7 @@ async function render() {
   fillBalance(current);
   fillSendWarning(current);
   fillTokenSim(current);
+  fillRevealPreview(current); // M14: which secret a revealClaim makes public (local sealedClaims read)
   armNfinalizeGate(current, st);
 }
 
@@ -124,10 +133,13 @@ function armNfinalizeGate(r: any, st: any) {
   });
 }
 
-// M3 (token-fill simulation): for a TOKEN-priced fill (confidence===1e6 on fillOffer/attest), show the actual
-// token DEBIT the convention will take (ask + 1% fee), fetched from the resolver — closing the "not visible
-// here" gap in the clear-sign. Fail-CLOSED: if it can't be computed, ESCALATE to a "do NOT approve unless
-// verified" caution rather than leave the amount quietly unknown. Once per request (render doesn't rebuild each tick).
+// M3 (token-fill simulation): for a TOKEN-priced fill (confidence===1e6 on fillOffer/attest), show the token
+// DEBIT the offer service quotes (ask + the FEE_BPS_V16 protocol fee), fetched from the resolver — closing
+// the "not visible here" gap in the clear-sign. The number is resolver-served and unverifiable here, so the
+// copy ATTRIBUTES it to the offer service (clearsign.tokenQuoteHtml) instead of asserting a first-person
+// debit (B5g re-framing; a second price source was DECLINED, Plan 71 section 8 decline 6). Fail-CLOSED: if
+// it can't be computed, ESCALATE to a "do NOT approve unless verified" caution rather than leave the amount
+// quietly unknown. Once per request (render doesn't rebuild each tick).
 let tokenSimForId: string | null = null;
 async function fillTokenSim(r: any) {
   const conf = Number((r.params || {}).confidence ?? 100) >>> 0;
@@ -137,11 +149,32 @@ async function fillTokenSim(r: any) {
   const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };
   try {
     const q = await call("tokenFillQuote", (r.params || {}).proposalId);
-    if (q && q.ok) show(`<b>You will pay ${escapeHtml(String(q.total))} base units of ${escapeHtml(String(q.ticker))}</b> <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span> — confirm this token + amount on the site/explorer.`);
-    else show(`<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). Do NOT approve unless you have verified the exact token + amount on the site/explorer.</b>`);
+    show(tokenQuoteHtml(q));
   } catch {
-    show(`<b class="err">⚠ could not compute the token debit. Do NOT approve unless you have verified the exact token + amount on the site/explorer.</b>`);
+    show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
   }
+}
+
+// M14 (B5h): a revealClaim approval must show WHICH secret goes public. The claim text + domain live in
+// the wallet's own sealedClaims store (READ_ONLY_METHODS; vault-decrypted locally — no network read).
+// Pure rendering in clearsign.revealPreviewHtml; a missing or undecryptable record shows a LOUD caution
+// instead of silently narrowing the review to a txid. Once per request (render doesn't rebuild each tick).
+let revealForId: string | null = null;
+async function fillRevealPreview(r: any) {
+  if (r.method !== "revealClaim" || revealForId === r.id) return; revealForId = r.id;
+  const el = document.getElementById("reveal-preview");
+  if (!el) return;
+  let html: string;
+  try {
+    const list = await call("sealedClaims");
+    const txid = String(r.params || "");
+    html = revealPreviewHtml((Array.isArray(list) ? list : []).find((x: any) => x && String(x.txid) === txid) ?? null);
+  } catch {
+    html = revealPreviewHtml({ failed: true }); // lookup failed ≠ "no such claim" — distinct honest caution
+  }
+  if (renderedId !== r.id) return; // superseded — never paint over a different request
+  el.innerHTML = html;
+  (el as HTMLElement).hidden = false;
 }
 
 // Fetch the signer's balance once per request and show the projected balance-after so

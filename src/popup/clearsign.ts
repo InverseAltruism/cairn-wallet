@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, feePricingTip, TREASURY_ADDR, V25_HEIGHT, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, finalizeWinnerCheck } from "../core/cairnx.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -55,6 +55,49 @@ export function fmtBalance(base: number): string { return (base / 1e8).toLocaleS
 // 0x-OPTIONAL by design: resolver/record fields can carry bare-hex, and the stricter 0x-required
 // variant that lived in popup.ts silently missed those. One test, one threat model (3 former sites).
 export const isZeroAddr = (a: unknown): boolean => /^(0x)?0{40}$/i.test(String(a ?? ""));
+
+// M15 / WYSIWYS-TRUNC-2 (B5i): capped-and-LOUD truncation for dApp-supplied FREE TEXT (uri, ids, claim
+// text). Unbounded text under the sticky Approve button can scroll the money rows and the cost line out
+// of view, turning the clear-sign into a rubber stamp. Same posture as renderOutputs (WYSIWYS-TRUNC-1):
+// never a quiet ellipsis - the marker states the cap AND the real length, so a hidden tail is impossible
+// to miss. Truncate-then-escape (the established idiom: a control char can never split mid-entity).
+// dApp-text allowlist/reputation machinery was considered and DECLINED (Plan 71 section 8, decline 7).
+export function truncLoud(s: unknown, cap: number): string {
+  const str = String(s ?? "");
+  if (str.length <= cap) return escapeHtml(str);
+  return `${escapeHtml(str.slice(0, cap))}<b class="err"> [truncated: showing the first ${cap} of ${str.length} characters]</b>`;
+}
+
+// W8 + F12 (B5g): token amounts on the popup's own send surfaces render BOTH scales, single-sourced here.
+// The human-scaled number rides resolver-served `decimals` (untrusted: a decimals lie rescales it by up to
+// 10^8, and the balance guard compares against the SAME resolver's `available`, so it is no backstop),
+// while the base-unit integer is the value that actually gets SIGNED. Neither scale may appear alone:
+// human-only can hide a rescale, base-only mismatches the "5 TOK" idiom every other panel uses (F12).
+export function tokenAmountBothScales(base: unknown, decimals: unknown, ticker: unknown): string {
+  return `${formatUnits(base, decimals)} ${String(ticker)} = ${String(base)} base units`;
+}
+
+// M3 (B5g): the token-fill debit preview is a RESOLVER-SERVED number (wallet.ts tokenFillQuote re-reads
+// the same single offer service that shaped the fill; no SPV, no second source). The copy must therefore
+// ATTRIBUTE the number to the offer service, never assert it as a first-person debit ("You will pay").
+// Re-framing only, by decision: a second price source for a display string was DECLINED as
+// disproportionate (Plan 71 section 8, decline 6); the real number is bound at the fund boundary.
+export function tokenQuoteHtml(q: any): string {
+  if (!(q && q.ok)) return `<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). Do NOT approve unless you have verified the exact token + amount on the site/explorer.</b>`;
+  return `<b>Per the offer service, filling this debits ${escapeHtml(String(q.total))} base units of ${escapeHtml(String(q.ticker))}</b> <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span> - the wallet cannot verify this number; confirm the token + amount on the site/explorer before approving.`;
+}
+
+// M14 (B5h): a revealClaim PUBLISHES the decrypted preimage of an earlier sealed commit - the user must
+// see WHICH secret goes public, not 18 characters of txid. The record comes from the wallet's own
+// sealedClaims store (already in READ_ONLY_METHODS; a local, vault-decrypted read - no network). Pure
+// over the looked-up record so it is unit-testable; approve.ts wires the live lookup (fillRevealPreview).
+export function revealPreviewHtml(rec: { domain?: unknown; claim?: unknown; failed?: boolean } | null | undefined): string {
+  if (rec && rec.failed === true) return `<b class="err">⚠ could not load the sealed claim for preview - approving still PUBLISHES whatever this txid seals. Only approve if you know which claim it is.</b>`;
+  if (!rec) return `<b class="err">⚠ the active account holds NO sealed claim with this txid - there is nothing to reveal here, and approving will fail without publishing anything. If you expected a reveal, check you are on the account that sealed it.</b>`;
+  const domain = `domain: <code>${escapeHtml(String(rec.domain ?? "csd:sealed"))}</code>`;
+  if (typeof rec.claim !== "string") return `${domain}<br><b class="err">⚠ the sealed text could not be decrypted for preview - approving still PUBLISHES it. Only approve if you know which claim this txid seals.</b>`;
+  return `approving makes this PUBLIC:<br>${domain}<br>claim: <code>${truncLoud(rec.claim, 300)}</code>`;
+}
 
 // WYSIWYS-TRUNC-1: render value outputs for clear-sign. Caps visible rows so the fee/total/buttons can't be
 // scrolled out of the window, but makes truncation LOUD and discloses the HIDDEN recipients' TOTAL — a dApp
@@ -127,7 +170,12 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
       return `<b>CairnX token transfer</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${baseAmt(r.amount)}<br>to: <code>${esc(r.to)}</code>${memo}`;
     case "deploy": {
       const limit = r.mint === "open" ? ` · mint limit ${esc(r.mintLimit)}/tx` : "";
-      return `<b>CairnX token deploy</b><br>ticker: <b>${esc(r.ticker)}</b>${r.name !== undefined ? ` (${esc(r.name)})` : ""}<br>supply: ${baseAmt(r.supply)} · decimals: ${esc(r.decimals)}<br>minting: ${esc(r.mint)}${limit}`;
+      // N22 counter-case (B5g): THIS record's decimals are part of the signed bytes (schema: integer 0..8),
+      // so scaling the supply by them is proven-value-derived - the one token surface where a human scale
+      // cannot be lied into existence. Everywhere else decimals are resolver state and base units stay
+      // the authoritative render.
+      const supplyHuman = ` (= ${esc(formatUnits(r.supply, r.decimals))} at ${esc(r.decimals)} decimals)`;
+      return `<b>CairnX token deploy</b><br>ticker: <b>${esc(r.ticker)}</b>${r.name !== undefined ? ` (${esc(r.name)})` : ""}<br>supply: ${baseAmt(r.supply)}${supplyHuman} · decimals: ${esc(r.decimals)}<br>minting: ${esc(r.mint)}${limit}`;
     }
     case "mint":
       return `<b>CairnX token mint</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${r.amount !== undefined ? baseAmt(r.amount) : `<span class="dim">default lot</span>`}`;
@@ -182,6 +230,12 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
     }
     case "tmeta":
       return `<b>CairnX token metadata</b> (issuer-only)<br>token: <b>${esc(r.ticker)}</b><br>content: <code>${esc(r.hash)}</code>`;
+    case "fclaim":
+      // B5h (audit LOW): the v2.8 open-lane claim. Without this case a live V28 reservation fell through
+      // to the raw canonical-JSON fallback - the rubber-stamp failure mode this function exists to
+      // prevent. Payment-free like the legacy claim; the hold rides the carrying Propose's expiry
+      // (surfaced by the expiry line below the record).
+      return `<b>Reserve an open offer</b> - v2.8 open-lane claim. This <b>moves no money</b>: it reserves the offer so only you can fill it while the hold lasts (the hold rides this proposal's expiry, shown below); you pay only when you complete the purchase.<br>offer: <code>${esc(r.offer)}</code>`;
     default:
       return null;
   }
@@ -261,43 +315,66 @@ export function describe(r: any): string {
             if (need > 0 && paid < need) feeWarn = `<br><b class="err">⚠ the ${noun} fee here (${fmtCsd(paid)}) is BELOW the current price (${fmtCsd(need)}). If you sign this, the fee LEAVES your wallet but the name is NOT ${verb} — an underpaid record is rejected on-chain. Use the wallet's own button (it prices this correctly).</b>`;
           } catch { /* tip/fee unavailable → no warning */ }
         }
+        // The decoded record (cx) is schema-BOUNDED text (regex-constrained tickers/names/addresses,
+        // memo <= 64, profile values sliced), so it cannot scroll the money rows away; the hash echo is
+        // capped anyway (a decoded record implies a canonical 66-char hash, so the cap is inert here).
         return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, 1000000)}`
-          + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code>${exp}${xfer}${feeWarn}`;
+          + `<br>payload hash: <code>${truncLoud(String(p.payloadHash || "(none)"), 80)}</code>${exp}${xfer}${feeWarn}`;
       }
     }
-    return `<b>Post a proposal</b><br>domain: <code>${escapeHtml(String(p.domain))}</code><br>${feeLine(p.fee, 1000000)}`
-      + `<br>payload hash: <code>${escapeHtml(String(p.payloadHash || "—"))}</code><br>uri: <code>${escapeHtml(String(p.uri || "—"))}</code>${exp}${xfer}`;
+    // M15 (B5i): the raw (non-cairnx) branch renders dApp-supplied free text. Money rows FIRST (the fee
+    // and any funds leaving the wallet), THEN the capped-and-loud domain/hash/uri - unbounded text under
+    // the sticky Approve button must never be able to scroll what-this-costs out of view. The uri cap is
+    // 512 (the node's own on-chain uri cap), so no VALID record's uri is ever cut; only oversized text
+    // the chain would reject anyway gets the loud marker.
+    return `<b>Post a proposal</b><br>${feeLine(p.fee, 1000000)}${exp}${xfer}`
+      + `<br>domain: <code>${truncLoud(String(p.domain), 64)}</code>`
+      + `<br>payload hash: <code>${truncLoud(String(p.payloadHash || "(none)"), 80)}</code>`
+      + `<br>uri: <code>${truncLoud(String(p.uri || "(none)"), 512)}</code>`;
   }
   // score/confidence are serialized as u32 (>>>0); display the SAME value that will be
   // signed so a negative/oversized input can't show one thing and commit another.
   if (r.method === "attest") {
     const score = Number(p.score) >>> 0, conf = Number(p.confidence) >>> 0;
-    // CairnX v1.7: score 50 / confidence 0 is a claim-to-fill RESERVATION on an open CSD offer — a
+    // CairnX v1.7: score 50 / confidence 0 is a claim-to-fill RESERVATION on an open CSD offer - a
     // payment-free attest (the attest method carries NO value outputs) that reserves the offer so only
-    // the claimer can fill it for ~15 blocks. Label it plainly: it moves NO money (just the network
-    // fee), so the user can tell it apart from the fill that follows.
+    // the claimer can fill it for the legacy claim window (CLAIM_WINDOW_BLOCKS_V20 = 40 blocks; the copy
+    // said "~15" for weeks, an audit LOW). From V28 the chain REJECTS every new legacy SCORE_CLAIM, so
+    // when the PoW-backed floor proves the gate has passed, WARN that this is a guaranteed on-chain
+    // no-op that still costs the network fee (warn, never block - the floor is threaded by approve.ts
+    // from the wallet store, a local read, no added network dependency; when it is absent or below the
+    // gate the warning stays silent, which is exactly today's behavior).
     if (score === 50 && conf === 0) {
-      return `<b>Reserve an open offer</b> — v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~15 blocks; you pay only when you complete the purchase.<br>offer: <code>${escapeHtml(String(p.proposalId || "—"))}</code><br>${feeLine(p.fee)} · score 50 (claim) · no payment`;
+      const v28warn = (Number(r.tipFloor) || 0) >= V28_HEIGHT
+        ? `<br><b class="err">⚠ the chain has passed the v2.8 upgrade (block ${V28_HEIGHT}): this legacy reservation type is REJECTED on-chain, so approving would be a no-op that still costs the network fee. Use the site's current buy flow instead.</b>`
+        : "";
+      return `<b>Reserve an open offer</b> - v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~${CLAIM_WINDOW_BLOCKS_V20} blocks; you pay only when you complete the purchase.<br>offer: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code><br>${feeLine(p.fee)} · score 50 (claim) · no payment${v28warn}`;
     }
     // CairnX v1.2: confidence 1 000 000 is the TOKEN-PRICED-FILL marker. A bare Attest carrying
     // it is BYTE-IDENTICAL to a fillOffer with empty outputs (the resolver cannot tell them
     // apart), so it can debit the user's CairnX token balance with NO visible output. Treat the
     // reserved value the same on EITHER path — never let a dApp route a token spend through the
-    // unwarned attest method (security review HIGH-1, 2026-06-12).
+    // unwarned attest method (security review HIGH-1, 2026-06-12). The fee rate renders from the
+    // imported FEE_BPS_V16 (150 bps = 1.5%); the string said "1%" for weeks, an audit LOW.
     const tokenFill = conf === 1_000_000
-      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + 1% protocol fee (computed below when available). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
+      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
       : "";
-    return `<b>Support / review</b><br>target: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${score} · confidence ${conf}`;
+    return `<b>Support / review</b><br>target: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${score} · confidence ${conf}`;
   }
   if (r.method === "sealClaim") {
     // Show the actual claim TEXT being committed: sealClaim hashes {domain,claim,nonce} into the on-chain
-    // payloadHash, so a dApp-supplied `claim` is what the user's key commits to — it must be visible, not
-    // hidden behind "domain + fee" (audit SEAL-1). The salt (nonce) stays local and is only published on reveal.
+    // payloadHash, so a dApp-supplied `claim` is what the user's key commits to - it must be visible, not
+    // hidden behind "domain + fee" (audit SEAL-1). The salt (nonce) stays local and is only published on
+    // reveal. M15 (B5i): the fee row renders ABOVE the dApp-supplied claim text, and the text is
+    // capped-and-LOUD (truncLoud) instead of a quiet ellipsis.
     const claim = p.claim != null ? String(p.claim) : "";
-    const claimLine = claim ? `<br>claim: <code>${escapeHtml(claim.slice(0, 200))}${claim.length > 200 ? "…" : ""}</code>` : "";
-    return `<b>Seal a claim</b> — commit a hidden claim on-chain (reveal later).<br>domain: <code>${escapeHtml(String(p.domain || "csd:sealed"))}</code>${claimLine}<br>${feeLine(p.fee, CAIRNX_PROPOSE_FEE)} · the salt stays in your wallet (the claim is published only when you reveal)`;
+    const claimLine = claim ? `<br>claim: <code>${truncLoud(claim, 200)}</code>` : "";
+    return `<b>Seal a claim</b> - commit a hidden claim on-chain (reveal later).<br>domain: <code>${truncLoud(String(p.domain || "csd:sealed"), 64)}</code><br>${feeLine(p.fee, CAIRNX_PROPOSE_FEE)} · the salt stays in your wallet (the claim is published only when you reveal)${claimLine}`;
   }
-  if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> — publish the preimage; it becomes public + provably committed earlier.<br>tx: <code>${escapeHtml(String(r.params || "").slice(0, 18))}…</code>`;
+  // M14 (B5h): a reveal PUBLISHES a secret - show the FULL seal txid (18 characters invited approving the
+  // wrong reveal) and mount #reveal-preview, which approve.ts fills with the domain + claim text from the
+  // wallet's own sealedClaims store (a READ_ONLY local read), so the user sees WHICH secret goes public.
+  if (r.method === "revealClaim") return `<b>Reveal a sealed claim</b> - publish the sealed text; it becomes public + provably committed earlier.<br>seal tx: <code>${truncLoud(String(r.params || ""), 80)}</code><div id="reveal-preview" class="req" style="margin-top:6px" hidden></div>`;
   // Send is the only dApp method that MOVES funds to a page-chosen recipient, so we
   // clear-sign the FULL (untruncated) recipient address(es) + each amount + total + fee.
   // #send-warn is populated async by fillSendWarning (first-time / address-poisoning).
@@ -319,14 +396,15 @@ export function describe(r: any): string {
     const rows = renderOutputs(outs); // capped+LOUD-on-truncation, single-sourced (WYSIWYS-TRUNC-1)
     const totalLine = outs.length > 1 ? `<br>total: <b>${fmtCsd(total)}</b> to ${outs.length} recipients` : "";
     // CairnX v1.2: confidence 1 000 000 is the TOKEN-PRICED-FILL marker — approving it lets the
-    // convention debit the user's CairnX token balance (offer ask + 1% fee) with NO CSD output
-    // visible here. The wallet can't see which token/how much (resolver-level), so it must say
-    // so loudly: an outputs-free fill would otherwise clear-sign as "free".
+    // convention debit the user's CairnX token balance (offer ask + the FEE_BPS_V16 protocol fee) with
+    // NO CSD output visible here. The wallet can't see which token/how much (resolver-level), so it must
+    // say so loudly: an outputs-free fill would otherwise clear-sign as "free". Fee rate rendered from
+    // the imported FEE_BPS_V16 (150 bps = 1.5%); the string said "1%" for weeks, an audit LOW.
     const tokenFill = (Number(p.confidence ?? 100) >>> 0) === 1_000_000
-      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> — the offer's asking amount + 1% protocol fee, debited by the trading convention (computed below when available). Verify the offer's price on the site/explorer before approving.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
+      ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - the offer's asking amount + ${FEE_BPS_V16 / 100}% protocol fee, debited by the trading convention (computed below when available). Verify the offer's price on the site/explorer before approving.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
       : "";
     return `<b>Fill offer</b> — pay + attest in ONE atomic transaction<br>`
-      + `offer: <code>${escapeHtml(String(p.proposalId || "—"))}</code>${tokenFill}<br>${rows}<br>`
+      + `offer: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>${tokenFill}<br>${rows}<br>`
       + `${feeLine(p.fee, 5000000)} · score ${(Number(p.score ?? 100) >>> 0)} · confidence ${(Number(p.confidence ?? 100) >>> 0)}${totalLine}`
       + `<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
   }
@@ -512,7 +590,7 @@ export function costLine(r: any): string {
   if (r.method === "attest") {
     const fee = baseVal(r.params?.fee || 5_000_000);
     const tok = (Number(r.params?.confidence ?? 100) >>> 0) === 1_000_000
-      ? " PLUS tokens debited from your CairnX balance IF this attests an open offer (its ask + 1%)" : "";
+      ? ` PLUS tokens debited from your CairnX balance IF this attests an open offer (its ask + ${FEE_BPS_V16 / 100}%)` : "";
     return `cost: ${fmtCsd(fee)} network fee${tok}.`;
   }
   const fee = baseVal(r.params?.fee || (r.method === "sealClaim" ? CAIRNX_PROPOSE_FEE : 0));

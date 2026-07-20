@@ -4,7 +4,7 @@
 import { Wallet, explorerLink, EXPLORER_PRESETS } from "../core/wallet.js";
 import { localStore } from "../core/storage.js";
 import { formatUnits, parseUnits, isPlainName, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr } from "./clearsign.js";
+import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
 
@@ -297,16 +297,18 @@ async function renderHistory() {
       : t.target ? `${escapeHtml(String(t.target).slice(0, 12))}…` : "";
     const when = t.ts ? new Date(t.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     // maybe:true = the submit's answer was lost (recorded under the locally computed txid); honest
-    // while fresh, TIME-BOUNDED to the same 60min staleness rule as the pending-merge line — the
-    // utxo reconcile has a permanent blind spot (a change-less send), so the marker must expire
-    // rather than claim "may be in flight" forever about a tx that likely never landed.
-    // …and past the window, an HONEST tombstone (0.2.57, reviewer nit): the entry stayed maybe:true
-    // through an hour of utxo reconciles, so it almost certainly never landed — say so, instead of
-    // leaving an unexplained entry that reads like a confirmed payment.
+    // while fresh, TIME-BOUNDED to the same 60min staleness rule as the pending-merge line. Past the
+    // window the marker goes honest-UNKNOWN, not the old affirmative it-is-dead verdict (M10, B5g,
+    // pinned by test/display-truth.test.mjs): the utxo reconcile
+    // can only ever confirm a send whose CHANGE returned to this wallet, so a change-less send that
+    // LANDED looks identical here to one that never did — this device cannot tell them apart, and the
+    // old copy affirmatively called a possibly-landed payment dead. No chain read is added (Plan 71
+    // section 8 decline 10: a passive history render must not gain network latency, and the node's
+    // /tx/:id goes permanently not-found past its 100k scan horizon anyway — W9).
     const maybeMark = t.maybe && t.ts
       ? (Date.now() - t.ts <= 3_600_000
         ? ` <span class="dim">· may be in flight — resolves next block</span>`
-        : ` <span class="dim">· likely never landed (unresolved for &gt;1h) — check the explorer before resending</span>`)
+        : ` <span class="dim">· unconfirmed: this device only sees a send once change returns to it, so a send with no change output cannot be confirmed from here - check this txid in the explorer before resending</span>`)
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
@@ -761,7 +763,12 @@ $("btn-tsend").addEventListener("click", async () => {
   const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
   $("tc-to").textContent = to.toLowerCase();              // FULL address, as it will appear in the signed record
-  $("tc-amt").textContent = `${formatUnits(base, tsend.decimals)} ${tsend.ticker}`;
+  // W8 (B5g): BOTH scales on the review card. `decimals` is resolver-served (the popup token list), so a
+  // decimals lie rescales the human number by up to 10^8 while the balance guard compares against the SAME
+  // resolver's `available` — the card alone could confirm a rescaled amount back to the user. The base-unit
+  // integer IS the value that gets signed; rendering it beside the scaled number makes any rescale visible
+  // at review time (F12: both scales, never either alone).
+  $("tc-amt").textContent = tokenAmountBothScales(base, tsend.decimals, tsend.ticker);
   $("tc-fee").textContent = fmtCsd(CAIRNX_FEE);
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
@@ -784,7 +791,7 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
   try {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
-    if (r.ok) sentOk(TOKEN_FLOW, `sent ${formatUnits(base, tsend.decimals)} ${tsend.ticker} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`);
+    if (r.ok) sentOk(TOKEN_FLOW, `sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`); // W8: both scales here too
     else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
   } catch (e: any) {
     sendDidntConfirm(TOKEN_FLOW, e?.message ? e.message + " — " : "");       // thrown bridge error: same ambiguity
