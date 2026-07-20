@@ -83,6 +83,12 @@ async function bindBlock(spv: SpvSource, height: number): Promise<{ ids: string[
   const { merkle, txs } = await spv.blockAt(height);
   const rebuilt = txs.map((t) => rpcTxToTx(t.app ? (t as RpcTxJson) : ({ ...t, app: { type: "None" } } as RpcTxJson)));
   const ids = rebuilt.map(ctxid);
+  // M7 (B5e, CVE-2012-2459): merkleRoot self-pairs an odd final row, so a served body whose LAST tx is
+  // duplicated hashes to the SAME root as the honest body. A real block can never contain a duplicate
+  // txid (double-spend of the coinbase output within one block), so reject it BEFORE the root compare -
+  // otherwise a hostile read path could smuggle a duplicated filler tx past the merkle bind.
+  if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length)
+    throw new Error(`block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)`);
   if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase())
     throw new Error(`block ${height} does not match its PoW-verified merkle root (tampered read path)`);
   return { ids, rebuilt };

@@ -194,6 +194,10 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     // `app` on one filler tx to make rpcTxToTx throw and DoS the whole verify. A None tx still has a real txid.
     const rebuilt = txs.map((t) => rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }));
     const ids = rebuilt.map(ctxid);
+    // M7/F11 (B5e, CVE-2012-2459): reject a duplicated txid BEFORE the root compare - merkleRoot self-pairs
+    // an odd final row, so a body whose last tx is duplicated shares the honest root. A real block can never
+    // hold a duplicate txid. Same one-line defense as fillspv.ts bindBlock (F11: this is the second site).
+    if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length) return { ok: false, reason: `block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)` };
     // FULL-block bind: the entire tx-set must hash to the verified header's merkle root, so the node cannot
     // have omitted/altered/added any committed body within this block (completeness-in-block).
     if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase()) return { ok: false, reason: `block ${height} doesn't match its verified merkle root (tampered read path)` };
@@ -345,6 +349,33 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           ? { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false, lapsed: true }
           : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip — confirm out-of-band before sending`), sources: usable.length, agreed: 0, disagree: false, lapsed: false };
       }
+      // M12 (B5e): the UNIONED replay failed. A single hostile source can poison the combined hint set
+      // with ONE junk hint (a txid not in its claimed block, an unauthenticated record), aborting the whole
+      // replay — after which resolveName drops to the served address with only a caution badge, and that
+      // address can come from the very source that poisoned it. Retry EACH source's hints ALONE (this runs
+      // ONLY on the already-failed path, so it slows nothing that was working): a poisoned source still
+      // fails on its own junk and drops out, while an honest source's own complete history replays to the
+      // true winner. Honor it ONLY if every recovered source AGREES on the address (a genuine two-source
+      // disagreement stays fail-closed) and none is a lapse/viaFill/scope-insufficient result (those keep
+      // their own fail-closed handling). This cannot re-open the withholding gap: a source serving a
+      // stale-but-clean subset that replays to a WRONG winner produces a disagreement and is refused.
+      if (usable.length > 1) {
+        type OkReplay = Extract<Replay, { ok: true }>;
+        const recovered: { label: string; rep: OkReplay; claim?: NameClaim }[] = [];
+        for (const r of usable) {
+          const solo = await replayName(name, r.hints, src).catch(() => ({ ok: false as const, reason: "solo replay threw" }));
+          if (solo.ok && !solo.viaFill && r.scopedReplaySufficient !== false) recovered.push({ label: r.label, rep: solo, claim: r.claim });
+        }
+        const addrs = new Set(recovered.map((p) => p.rep.addr));
+        if (recovered.length >= 1 && addrs.size === 1) {
+          const win = recovered[0].rep;
+          let agreed = 0; for (const r of usable) { const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null; if (c === win.addr) agreed++; }
+          // A recovery ALWAYS flags disagree: a source that failed to replay cleanly (the poisoner) or whose
+          // stated claim differs from the proven winner is misbehaving, and the badge must stay cautious even
+          // though the name is provably resolved. Never a hard veto (the M12 fix), never a silent green.
+          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, scope: "as-shown", sources: usable.length, agreed, disagree: recovered.length < usable.length || agreed < usable.length, viaFill: false };
+        }
+      }
       return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
     }
     // NSPV-CLAIMCAP-1 (H1): never present a fill-acquired ("viaFill") name — or a name any usable source
@@ -453,7 +484,9 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
     lc = new LightClient({ client, headersBatchProvider: headersBatch, checkpoints });
     await lc.syncFromCheckpoint(CP.height, CP.hash);
   }
-  const LC = lc;
+  // M8 (B5e): `let`, not `const`, so a STRUCTURAL sync break (a reorg orphaned our tip) can drop the
+  // wedged snapshot and reseed this client from the baked checkpoint in place (below).
+  let LC = lc;
   // Monotonic tip floor (audit NSPV-STALE-LAPSE): a hostile/MITM resolver can DEFLATE the reported tip so a
   // genuinely-lapsed lease's expiry epoch is under-computed and an old-but-real mapping looks current. We
   // never let the tip used for the lapse epoch REGRESS below the highest value this source has already
@@ -493,7 +526,27 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
       await serializeSync(async () => {
         const cur = LC.baseHeight + LC.chain.length - 1;
         if (want <= cur) return;
-        await LC.sync(want);                           // a lying-high header THROWS here (fail-closed)
+        try {
+          await LC.sync(want);                         // a lying-high header THROWS here (fail-closed)
+        } catch (e) {
+          // M8 (B5e): port swapguard's transient-vs-STRUCTURAL split (ensureSyncedTo, DOS-HDR-3). The
+          // wallet only ever appended headers and NEVER cleared the cached snapshot on a prev-link break,
+          // so a header later orphaned by a reorg wedged the chain PERMANENTLY: every future session
+          // restored the orphaned tip via fromSnapshot and this sync threw forever. Distinguish a
+          // TRANSIENT transport failure (rate limit / gateway / timeout / non-dense range - data
+          // availability, NOT a chain fault) from a STRUCTURAL break (broken prev-link). On transient:
+          // KEEP the cache and rethrow fail-closed (the caller retries) - wiping here would turn one
+          // /api/headers 429 into a cache-nuking cold-resync STORM. Only a structural break drops the
+          // snapshot and reseeds from the baked checkpoint ONCE (rate-limited by being structural-only, so
+          // a transient flood can never drive the multi-MB cold-sync write loop).
+          const msg = String((e as Error)?.message || e);
+          if (/\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i.test(msg)) throw e;
+          if (opts.cache) { try { await opts.cache.set(null); } catch { /* best-effort drop */ } } // next boot cold-syncs, not restore-the-wedge
+          const fresh = new LightClient({ client, headersBatchProvider: headersBatch, checkpoints });
+          await fresh.syncFromCheckpoint(CP.height, CP.hash);
+          await fresh.sync(want);                       // a genuinely lying-high header still THROWS here (fail-closed)
+          LC = fresh;                                   // adopt the reseeded chain (blockAt reads LC at call time)
+        }
         // Snapshot write is best-effort (a failure only means the NEXT verify cold-syncs again),
         // but never silent: the snapshot is multi-MB and shares chrome.storage.local's quota with
         // the vault/history — a persistent write failure here is the early smoke of quota
