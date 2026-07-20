@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -363,7 +363,7 @@ export function describe(r: any): string {
     // reserved value the same on EITHER path — never let a dApp route a token spend through the
     // unwarned attest method (security review HIGH-1, 2026-06-12). The fee rate renders from the
     // imported FEE_BPS_V16 (150 bps = 1.5%); the string said "1%" for weeks, an audit LOW.
-    const tokenFill = conf === 1_000_000
+    const tokenFill = conf === CONF_TOKEN_FILL
       ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
       : "";
     return `<b>Support / review</b><br>target: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${score} · confidence ${conf}`;
@@ -407,7 +407,7 @@ export function describe(r: any): string {
     // NO CSD output visible here. The wallet can't see which token/how much (resolver-level), so it must
     // say so loudly: an outputs-free fill would otherwise clear-sign as "free". Fee rate rendered from
     // the imported FEE_BPS_V16 (150 bps = 1.5%); the string said "1%" for weeks, an audit LOW.
-    const tokenFill = (Number(p.confidence ?? 100) >>> 0) === 1_000_000
+    const tokenFill = (Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL
       ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - the offer's asking amount + ${FEE_BPS_V16 / 100}% protocol fee, debited by the trading convention (computed below when available). Verify the offer's price on the site/explorer before approving.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
       : "";
     return `<b>Fill offer</b> — pay + attest in ONE atomic transaction<br>`
@@ -585,7 +585,7 @@ export function costLine(r: any): string {
   if (r.method === "send") { const fee = baseVal(r.params?.fee || 1_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
   if (r.method === "fillOffer") {
     const fee = baseVal(r.params?.fee || 5_000_000); const sent = debitOf(r) - fee;
-    const tok = (Number(r.params?.confidence ?? 100) >>> 0) === 1_000_000 ? " PLUS tokens debited from your CairnX balance per the offer's terms" : "";
+    const tok = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL ? " PLUS tokens debited from your CairnX balance per the offer's terms" : "";
     return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee${tok} — atomic with the fill.`;
   }
   if (r.method === "propose") {
@@ -596,7 +596,7 @@ export function costLine(r: any): string {
   }
   if (r.method === "attest") {
     const fee = baseVal(r.params?.fee || 5_000_000);
-    const tok = (Number(r.params?.confidence ?? 100) >>> 0) === 1_000_000
+    const tok = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL
       ? ` PLUS tokens debited from your CairnX balance IF this attests an open offer (its ask + ${FEE_BPS_V16 / 100}%)` : "";
     return `cost: ${fmtCsd(fee)} network fee${tok}.`;
   }

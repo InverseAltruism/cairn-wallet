@@ -40,7 +40,7 @@ ok("canonical provenOfferTerms matches the frozen historical semantics for EVERY
 // ── 2. source pins on src/core/fillspv.ts ──
 const src = readFileSync(join(ROOT, "src/core/fillspv.ts"), "utf8");
 ok("no local feeBpsAt DECLARATION in fillspv.ts (re-export pointer only)",
-  !/const feeBpsAt\s*=|function feeBpsAt/.test(src) && /export \{ feeBpsAt, type ProvenOfferTerms \} from "\.\.\/vendor\/cairnx-spv\.js"/.test(src));
+  !/const feeBpsAt\s*=|function feeBpsAt/.test(src) && /export \{ feeBpsAt, type ProvenOfferTerms, type MintedProvenOfferTerms \} from "\.\.\/vendor\/cairnx-spv\.js"/.test(src));
 ok("no object-literal ProvenOfferTerms construction in fillspv.ts (no `feeBps:` field writes)",
   !/feeBps:\s*/.test(src.replace(/\/\/[^\n]*/g, "")));
 ok("exactly two provenOfferTerms call sites (fclaim + legacy lanes)",

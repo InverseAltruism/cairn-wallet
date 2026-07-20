@@ -64,7 +64,7 @@ const { addr: A } = await w.create("super-secret-pw");
 // F2-legacy: the legacy/dApp CSD lane now binds the payment recipient to the merkle-proven offer author. This
 // test's offer is honest (payto 0xce, seller 0xcd), so inject the proven author so the bind passes and the flow
 // reaches the account-switch (sign-tick) checks under test.
-w.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: "5000000", taker: String(A).toLowerCase(), bid: undefined } });
+w.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: "5000000", taker: String(A).toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "csd" } });   // B7e: proven give matches the served offer (give leg passes)
 const { addr: B } = await w.addAccount("second");
 await w.switchAccount(A);
 

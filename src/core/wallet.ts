@@ -10,10 +10,10 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
-import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fillspv.js";
+import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
 // requiredFillOutputs sizes the treasury fee from feeBps (= feeBpsAt(creation height)), the maker rebate from
@@ -23,8 +23,13 @@ import { liveFillSpvSource, provenOfferPayto, type ProvenOfferTerms } from "./fi
 // Plan 70 R2 Option B: delegate to the SINGLE vendored bindOfferTerms verdict (cairnx-core), retiring this
 // repo's hand-copy. It binds height/feeBps/value/taker/bid AND the R1.1 `min` presence+value leg exactly as
 // before (byte-identical behaviour, differential-locked by the WA-PARITY corpus across all three seams).
-function provenTermsMismatch(offer: unknown, t: ProvenOfferTerms): boolean {
-  return bindOfferTerms(offer, t);
+// B7e (REBIND W7 + W1 wallet half): the give legs (give.ticker/amount/name, explicit-presence + verbatim
+// string equality — closes the W7 give-inflation shortchange) AND the symmetric want-type refusal are now
+// FLIPPED ON via the opt-in 3-arg overload. `t` MUST be a MintedProvenOfferTerms (produced only by the
+// vendored provenOfferTerms via fillspv.ts) — a hand-built terms object is a compile error exactly where it
+// would false-refuse every honest fill (the W2 trap the brand exists to make unrepresentable).
+function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean {
+  return bindOfferTerms(offer, t, { give: true, wantType: true });
 }
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
@@ -116,10 +121,10 @@ const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
 // Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
 const ATTEST_FLOOR = 5_000_000;
-// The app-layer confidence SENTINEL for a token-priced fill (mirrors clearsign.ts/approve.ts's literal
-// 1_000_000). NOT consensus math - it is the value the trade UI stamps so a fill against a token-want
-// offer is distinguishable from a board-support attest (70/80). W4 (B5d) routes on it.
-const CONF_TOKEN_FILL = 1_000_000;
+// The app-layer confidence SENTINEL for a token-priced fill. NOT consensus math - it is the value the trade
+// UI stamps so a fill against a token-want offer is distinguishable from a board-support attest (70/80). W4
+// (B5d) routes on it. B7e: SINGLE-SOURCED from the vendored cairnx-core (imported above) instead of a local
+// literal, so the wallet, the clearsign/approve popup formatters and the resolver all read the same value.
 // Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
 const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
 
@@ -766,7 +771,7 @@ export class Wallet {
     if (divergence) return divergence;
     // Build the fail-closed SPV seam (PoW-verified tip + merkle-proven offer/fclaim/hold events + the computed
     // cross-offer hold count). Any unverifiable read throws → refuse retryably (never proceed on an unproven grant).
-    let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms };
+    let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms };
     try {
       io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
     } catch {
@@ -781,9 +786,16 @@ export class Wallet {
     // rides INSIDE verifyFillSpv from the fclaim's OWN confirmed expiry epoch (fclaimHoldEnd), never epochOf(tip+45).
     if (!Number.isInteger(io.myLiveHoldsAtGrant))
       return { ok: false, error: "couldn't count your other open reservations to verify this one against the claim cap — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    // W3 (B7e): the OPT-IN payment bind. verifyFillSpv re-runs requiredFillOutputs over the merkle-proven,
+    // REPLAYED offer (the chain's OWN paid/delivered, never a served lie) and requires our PLANNED per-address
+    // CSD sums to match it EXACTLY — closing the whole->partial overpay (a resolver serving paid:"0" for a
+    // 90%-filled partial made us size the FULL want; the surplus past the real remainder is unrecoverable). We
+    // pass the SAME per-address `sums` map the outputs were summed into (payto + treasury fee + maker rebate,
+    // MERGED per address); previewFill CLAMPS p.pay to want for a whole fill, so payto === seller (pay carrying
+    // the merged rebate) matches the proven need-map exactly and never false-refuses that real honest shape.
     let verdict: FillVerdict;
     try {
-      verdict = await verifyFillSpv(offerId, fclaimTxid, me, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant as number, pay });
+      verdict = await verifyFillSpv(offerId, fclaimTxid, me, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant as number, pay, sums: Object.fromEntries(sums) });
     } catch {
       return { ok: false, error: "couldn't verify this reservation against the chain yet — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     }
@@ -803,7 +815,7 @@ export class Wallet {
       return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" };
     // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer so a deflated feeBps/height/
     // value/taker cannot under-size a leg (which resolve() would reject AFTER payment = pay-without-delivery burn).
-    const terms = (io as { provenTerms?: ProvenOfferTerms }).provenTerms;
+    const terms = (io as { provenTerms?: MintedProvenOfferTerms }).provenTerms;
     if (!terms)
       return { ok: false, error: "couldn't prove this offer's on-chain fee terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     if (provenTermsMismatch(offer, terms))
@@ -842,8 +854,8 @@ export class Wallet {
   // Test seam (fill-SPV fund boundary): production leaves this undefined and builds the LIVE PoW-verified
   // FillSpvIo; tests inject a synthetic (PoW/merkle pre-satisfied) io so the vendored verifyFillSpv boundary
   // is exercised through the real preflight without a chain. The io carries the computed cap over-count.
-  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms }>;
-  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: ProvenOfferTerms }> {
+  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms }>;
+  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms }> {
     if (this.fillSpvIoForTest) return await this.fillSpvIoForTest(offerId, fclaimTxid, me);
     // BP4/N11: reuse the wallet's ONE PoW light client (its restored + synced header chain) instead of building
     // a fresh one per fill attempt (each fresh build re-pays the O(chain) snapshot restore). Same rpc/api/cache/
@@ -860,8 +872,8 @@ export class Wallet {
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
-  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: ProvenOfferTerms } | null) | Promise<{ payto: string; seller: string; terms: ProvenOfferTerms } | null>;
-  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: ProvenOfferTerms } | null> {
+  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: MintedProvenOfferTerms } | null) | Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms } | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms } | null> {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({

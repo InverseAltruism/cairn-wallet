@@ -214,7 +214,7 @@ function makeIo(events, tip, me, fillFclaimHeight) {
   return {
     myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
     provenPayto: payto, provenSeller: seller,
-    provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined, min: orec?.min !== undefined ? String(orec.min) : undefined },
+    provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined, min: orec?.min !== undefined ? String(orec.min) : undefined, giveTicker: orec?.give?.ticker !== undefined ? String(orec.give.ticker) : undefined, giveAmount: orec?.give?.amount !== undefined ? String(orec.give.amount) : undefined, giveName: orec?.give?.name !== undefined ? String(orec.give.name) : undefined, wantType: typeof orec?.want?.ticker === "string" ? "token" : "csd" },   // B7e: full shape so the flipped give/wantType binds see the honest proven give
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },
     async provenEvent(x) { const e = events.find((y) => idOf(y) === String(x).toLowerCase()); return e ? { ...e, depth: tip - e.height + 1 } : null; },
@@ -289,9 +289,11 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 }
 {
   // deflated-feeBps: served feeBps=0 for a >= V16 offer (proven feeBpsAt(H0+2)=150). feeBps bound -> REFUSE.
+  // B7e: on the fclaim lane the sums seam (flipped on) zeroes the treasury leg mismatch and catches this FIRST
+  // (proven fill progress); either it or the downstream feeBps terms bind is a correct FILL_UNSAFE, nothing submits.
   const served = servedOffer({ feeBps: 0 });
   const r = await driveTermsFclaim("wa-deflated-fee", served, served);
-  check(`[deflated-feeBps] a deflated served feeBps (0 vs proven 150) is REFUSED (pay-without-delivery burn averted) (${r.r?.error})`, r.r?.ok === false && r.r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r.r?.error ?? "") && r.submits === 0);
+  check(`[deflated-feeBps] a deflated served feeBps (0 vs proven 150) is REFUSED (pay-without-delivery burn averted) (${r.r?.error})`, r.r?.ok === false && r.r?.code === "FILL_UNSAFE" && /fee\/rebate terms|proven fill progress/.test(r.r?.error ?? "") && r.submits === 0);
 }
 
 // ── 5. MUTATION GATE (load-bearing): neutralise the F8 ocancel-scan line in the REAL fillspv.ts source and confirm

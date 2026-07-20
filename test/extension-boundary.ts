@@ -220,7 +220,7 @@ async function main() {
   const bgWallet = (globalThis as { __cairnBgWallet?: { provenPaytoForTest?: unknown } }).__cairnBgWallet;
   // MY_CLAIM_ID (the CSD offer that reaches the need-map): payto/seller = SELLER, height 34000 (feeBps 150),
   // value 40000000, no taker. The proven terms mirror it so the F2 amount-bind passes on the honest fixture.
-  if (bgWallet) bgWallet.provenPaytoForTest = () => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined } });
+  if (bgWallet) bgWallet.provenPaytoForTest = () => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } });   // B7e: give matches the CSD fixtures (give TKN/1) so the flipped give leg passes on the honest need-map fill
   // B1 (0.2.57): the preflight now fails CLOSED unless the resolver positively parses to an open
   // offer — the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
   // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: token-want

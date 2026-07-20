@@ -57,7 +57,7 @@ const openOffer = (me, claimUntil) => ({
   status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150,
   claimedBy: me, claimUntilHeight: claimUntil,
 });
-const provenOpenTerms = { height: 47_000, feeBps: 150, value: "5000000", taker: undefined, bid: undefined };
+const provenOpenTerms = { height: 47_000, feeBps: 150, value: "5000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "csd" };   // B7e: give matches openOffer's give (give leg passes)
 
 async function freshWallet(pw, floor = 0) {
   const st = memoryStore();

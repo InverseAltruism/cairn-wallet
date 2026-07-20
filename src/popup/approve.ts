@@ -2,7 +2,7 @@
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
 import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, type NameFetchResult } from "./clearsign.js";
-import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR, CONF_TOKEN_FILL } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
@@ -143,7 +143,7 @@ function armNfinalizeGate(r: any, st: any) {
 let tokenSimForId: string | null = null;
 async function fillTokenSim(r: any) {
   const conf = Number((r.params || {}).confidence ?? 100) >>> 0;
-  if ((r.method !== "fillOffer" && r.method !== "attest") || conf !== 1_000_000 || tokenSimForId === r.id) return; tokenSimForId = r.id;
+  if ((r.method !== "fillOffer" && r.method !== "attest") || conf !== CONF_TOKEN_FILL || tokenSimForId === r.id) return; tokenSimForId = r.id;
   const el = document.getElementById("token-sim");
   if (!el) return;
   const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };

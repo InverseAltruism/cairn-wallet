@@ -18,7 +18,7 @@ import {
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, SCORE_CLAIM, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
   provenOfferTerms,
-  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms,
+  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 
@@ -29,7 +29,7 @@ import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 // synthetic envelope variants proved the old copies byte-identical to canonical before the swap
 // (test/proven-terms-corpus.test.mjs pins it forever). Re-exported so tests and wallet.ts keep one
 // import site; the re-export is a POINTER, never a re-declaration.
-export { feeBpsAt, type ProvenOfferTerms } from "../vendor/cairnx-spv.js";
+export { feeBpsAt, type ProvenOfferTerms, type MintedProvenOfferTerms } from "../vendor/cairnx-spv.js";
 
 // A fclaim hold lasts at most MAX_HOLD_SPAN blocks past its grant (a grant at an epoch's first block with
 // ee = epochOf(h)+2 holds through h+89). A FILLABLE fclaim is within its hold (verifyFillSpv's deadline guard),
@@ -175,7 +175,7 @@ export function countMyOtherLiveHolds(
  * sunset hold), which stays resolver-trusted exactly as pre-V28 (N1). A hostile primary that also relabels
  * `offer.id === proposalId` lands in that same pre-existing legacy N1 residual, not a new V28 lane.
  */
-export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: ProvenOfferTerms }> {
+export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: MintedProvenOfferTerms }> {
   const spv = opts.spvSource ?? await liveSpvSource(opts);
   const offerId = String(opts.hints.offerId).toLowerCase();
   const fclaimTxid = String(opts.hints.fclaimTxid).toLowerCase();
@@ -354,7 +354,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // producer (B4a; the proven CREATION height is the input, never a served height - a lying resolver
   // deflating feeBps/height/value/taker cannot under-size a leg, which resolve() would reject AFTER the
   // payment moved = pay-without-delivery burn).
-  const provenTerms: ProvenOfferTerms = provenOfferTerms(offerRec, offerEv.height);
+  const provenTerms: MintedProvenOfferTerms = provenOfferTerms(offerRec, offerEv.height);
   const synthetic = new Map<string, ProvenEvent>();
   const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
     const sid = String(built.payloadHash).toLowerCase();   // the record's own payload_hash: a stable, unique id
@@ -401,7 +401,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 // an honest fill). Reuses the same audited light-client primitives (liveSpvSource, bindBlock, prevoutScriptPubkey).
 export async function provenOfferPayto(
   opts: LiveSpvOpts & { offerId: string; offerHeight: number; spvSource?: SpvSource },
-): Promise<{ payto: string; seller: string; terms: ProvenOfferTerms } | null> {
+): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms } | null> {
   const offerId = String(opts.offerId).toLowerCase();
   const offerHeight = Math.floor(Number(opts.offerHeight));
   if (!/^0x[0-9a-f]{64}$/.test(offerId) || !Number.isFinite(offerHeight) || offerHeight < 0) return null;
@@ -428,7 +428,7 @@ export async function provenOfferPayto(
       : seller;
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.
-    const terms: ProvenOfferTerms = provenOfferTerms(rec, offerHeight);
+    const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight);
     return { payto, seller, terms };
   } catch { return null; }
 }

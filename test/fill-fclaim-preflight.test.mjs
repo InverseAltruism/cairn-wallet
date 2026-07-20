@@ -72,7 +72,7 @@ function makeIo(events, tip, me, fillFclaimHeight) {
     myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
     provenPayto: payto,
     provenSeller: seller,
-    provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined, min: orec?.min !== undefined ? String(orec.min) : undefined },
+    provenTerms: termsFor({ ...orec, height: Number(offerEv?.height) }),   // B7e: full shape (give legs + wantType), single-sourced through termsFor so the flipped give/wantType binds see the honest proven give
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },
     async provenEvent(x) { const e = events.find((y) => idOf(y) === String(x).toLowerCase()); return e ? { ...e, depth: tip - e.height + 1 } : null; },
@@ -245,7 +245,11 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
     w.fillSpvIoForTest = (oid, fc, me) => io(me);
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
     const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
-    check(`F2: a swapped served want.payto is REFUSED (proven author S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient/.test(r?.error ?? ""));
+    // B7e: with the sums seam flipped ON, a payto swap changes the per-address distribution, so verifyFillSpv's
+    // sums bind catches it FIRST (proven fill progress) before the downstream payto bind (payment recipient) even
+    // runs. Either layer is a correct FILL_UNSAFE refusal with nothing submitted; the dedicated payto bind stays
+    // load-bearing and is still proven as the SOLE rejecter by the legacy-lane F2 tests below (no sums seam there).
+    check(`F2: a swapped served want.payto is REFUSED (proven author S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient|proven fill progress/.test(r?.error ?? ""));
     check("…and nothing was submitted (the payment did not go to the attacker)", s.submits.length === 0);
   }
   // (b) swapped seller -> the REBATE leg mis-sizes so resolve() would reject the fill (burn)
@@ -256,7 +260,7 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
     w.fillSpvIoForTest = (oid, fc, me) => io(me);
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
     const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
-    check(`F2: a swapped served seller (rebate leg) is REFUSED (proven seller S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient/.test(r?.error ?? ""));
+    check(`F2: a swapped served seller (rebate leg) is REFUSED (proven seller S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient|proven fill progress/.test(r?.error ?? ""));
     check("…and nothing was submitted", s.submits.length === 0);
   }
 }
@@ -568,7 +572,10 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
   const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
-  check(`F2: a DEFLATED served feeBps (0 vs proven 150) is REFUSED (pay-without-delivery burn averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
+  // B7e: a deflated feeBps zeros the treasury leg, changing the per-address distribution, so the sums seam
+  // catches it FIRST (proven fill progress) before the fee/rebate terms bind. Either is a correct FILL_UNSAFE
+  // refusal; the terms bind stays load-bearing and is still proven the SOLE rejecter by the legacy-lane F2 fee test.
+  check(`F2: a DEFLATED served feeBps (0 vs proven 150) is REFUSED (pay-without-delivery burn averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms|proven fill progress/.test(r?.error ?? ""));
   check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
 }
 
@@ -587,6 +594,43 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
   check(`F2: a SPURIOUS served min on a whole-fill offer is REFUSED (maker-rebate-drop burn averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
   check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
+}
+
+// W7 (B7e give leg): a lying resolver serves the SAME offer but with give.amount inflated a millionfold. The CSD
+// outputs are unchanged (give is the asset DELIVERED, not a CSD leg), so the sums seam + payto bind + delivery
+// all PASS - the give leg of provenTermsMismatch is the SOLE rejecter. Without it the buyer pays V and the chain
+// delivers only the PROVEN 10 units (shortchange). The honest control (give matches) must still ACCEPT.
+{
+  const { w } = await freshWallet("pw-w7-give");
+  const served = servedOffer(fcH, H0 + 3, { give: { ticker: "AAA", amount: "10000000" } });   // INFLATED give (proven = 10)
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);   // PROVEN give = AAA/10
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`W7: an inflated served give.amount (10000000 vs proven 10) is REFUSED (give-leg, shortchange averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
+  check("…and nothing was submitted (the buyer did not overpay for undelivered units)", s.submits.length === 0);
+}
+{
+  // W7 no-false-refuse control: the honest offer (give matches on-chain) is NOT give-leg-refused and submits.
+  const { w } = await freshWallet("pw-w7-give-ok");
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });   // give AAA/10 == proven
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`W7 control: an honest give (matches on-chain) is NOT give-leg-refused and submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+
+// W3 (B7e sums seam): an OVERPAY past the real remainder. The caller pads the payto leg by 1000 base units. The
+// wallet's own need-map is a `>=` check so the overpay PASSES it, but verifyFillSpv's exact per-address sums bind
+// REFUSES (the surplus past the proven requirement is unrecoverable = the W3 whole->partial overpay class + N26
+// smuggle). The give/payto/terms all match the proven offer, so the sums seam is the SOLE rejecter here.
+{
+  const { w } = await freshWallet("pw-w3-overpay");
+  const honest = requiredFillOutputs(servedOffer(fcH, H0 + 3), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+  const overpaid = honest.map((o) => (o.to === S.toLowerCase() || o.to === S ? { ...o, value: o.value + 1000 } : o));   // pad the seller/payto leg
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs: overpaid });
+  check(`W3: an overpay past the proven remainder is REFUSED by the sums seam (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /proven fill progress/.test(r?.error ?? ""));
+  check("…and nothing was submitted (the unrecoverable overpay did not go out)", s.submits.length === 0);
 }
 
 // FIX B (RT2-secondary): the PRODUCTION io must MATERIALIZE a token/name offer (synthesize the give-backing the
