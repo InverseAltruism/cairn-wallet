@@ -533,15 +533,21 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
           // wallet only ever appended headers and NEVER cleared the cached snapshot on a prev-link break,
           // so a header later orphaned by a reorg wedged the chain PERMANENTLY: every future session
           // restored the orphaned tip via fromSnapshot and this sync threw forever. Distinguish a
-          // TRANSIENT transport failure (rate limit / gateway / timeout / non-dense range - data
-          // availability, NOT a chain fault) from a STRUCTURAL break (broken prev-link). On transient:
-          // KEEP the cache and rethrow fail-closed (the caller retries) - wiping here would turn one
-          // /api/headers 429 into a cache-nuking cold-resync STORM. Only a structural break drops the
-          // snapshot and reseeds from the baked checkpoint ONCE (rate-limited by being structural-only, so
-          // a transient flood can never drive the multi-MB cold-sync write loop).
+          // TRANSIENT transport failure (rate limit / gateway / timeout / non-dense range / a 200 with a
+          // non-JSON body - a CF interstitial served 200 - i.e. data availability, NOT a chain fault) from a
+          // STRUCTURAL break (broken prev-link / bad PoW / hash mismatch). On transient: KEEP the cache and
+          // rethrow fail-closed (the caller retries) - wiping here would turn one /api/headers 429 or a CF
+          // 200-HTML blip into a cache-nuking cold-resync STORM. Only a structural break reseeds from the
+          // baked checkpoint. The JSON-parse markers matter: headersBatch does `(await r.json()).headers`, so
+          // a 200 with a bad body throws "Unexpected end of JSON input"/"Unexpected token" - a transport
+          // fault, never a chain one (structural errors say prev/PoW/bits/hash, never json). (G8 review.)
           const msg = String((e as Error)?.message || e);
-          if (/\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i.test(msg)) throw e;
-          if (opts.cache) { try { await opts.cache.set(null); } catch { /* best-effort drop */ } } // next boot cold-syncs, not restore-the-wedge
+          if (/\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i.test(msg) || /unexpected (token|end)|json/i.test(msg)) throw e;
+          // Do NOT drop the snapshot before the reseed: a structurally-lying feed would nuke an HONEST
+          // snapshot and, if the reseed then fails, force a full cold sync every session (N10 budget
+          // pressure). On reseed SUCCESS the post-catch snapshot write below replaces it with the fresh
+          // chain (clearing any real wedge); on reseed FAILURE we keep the old snapshot and heal on the next
+          // healthy prepare(). (G8 review: the set(null)-before-reseed hazard.)
           const fresh = new LightClient({ client, headersBatchProvider: headersBatch, checkpoints });
           await fresh.syncFromCheckpoint(CP.height, CP.hash);
           await fresh.sync(want);                       // a genuinely lying-high header still THROWS here (fail-closed)

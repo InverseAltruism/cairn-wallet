@@ -31,18 +31,27 @@ const prep = src.slice(prepStart, prepEnd);
 check("prepare() wraps LC.sync in a try/catch (M8 self-heal)", /try \{[\s\S]*await LC\.sync\(want\)[\s\S]*\} catch/.test(prep));
 
 // (3) TRANSIENT failures rethrow (keep the cache); only a STRUCTURAL break reseeds.
-check("a transient class rethrows (KEEP the cache, DOS-HDR-3)", /if \(\/\\b\(429\|50\[0-9\][\s\S]*\)\s*throw e;/.test(prep));
-check("a structural break drops the snapshot (opts.cache.set(null)) before reseeding", prep.indexOf("opts.cache.set(null)") > 0);
+check("a transient class rethrows (KEEP the cache, DOS-HDR-3)", /test\(msg\)[\s\S]*?\)\s*throw e;/.test(prep));
+// FIX-1b (G8 review): the snapshot is NOT dropped before the reseed - a set(null)-before-reseed would nuke
+// an honest snapshot if the reseed then failed. On reseed SUCCESS the post-catch toSnapshot write replaces
+// it; on FAILURE the old snapshot is kept and heals next prepare(). So the catch must NOT call cache.set(null).
+check("the reseed does NOT drop the snapshot before syncing (no set(null)-before-reseed nuke)", !/cache\.set\(null\)/.test(prep));
 check("the reseed builds a fresh client from the baked checkpoint", /new LightClient\(\{ client, headersBatchProvider: headersBatch, checkpoints \}\)[\s\S]*syncFromCheckpoint\(CP\.height/.test(prep));
 check("the reseed re-syncs to `want` (a lying-high header still throws -> fail-closed)", /await fresh\.sync\(want\);[\s\S]*LC = fresh;/.test(prep));
 check("the reseed adopts the fresh client (LC = fresh)", prep.indexOf("LC = fresh;") > prep.indexOf("await fresh.sync(want)"));
 
 // (4) the classifier regex behaves: transient markers match, a prev-link break does NOT.
-const CLASSIFIER = /\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i;
-check("classifier: '/api/headers 429' is TRANSIENT (keep cache)", CLASSIFIER.test("/api/headers 429"));
-check("classifier: '502 gateway' is TRANSIENT", CLASSIFIER.test("HTTP 502 bad gateway"));
-check("classifier: a prev-link break is STRUCTURAL (reseed)", !CLASSIFIER.test("header 40123 prev-link mismatch (reorg)"));
-check("classifier: 'invalid prev hash' is STRUCTURAL", !CLASSIFIER.test("invalid prev hash at 51000"));
+const CLASSIFIER = (m) => /\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i.test(m) || /unexpected (token|end)|json/i.test(m);
+check("classifier: '/api/headers 429' is TRANSIENT (keep cache)", CLASSIFIER("/api/headers 429"));
+check("classifier: '502 gateway' is TRANSIENT", CLASSIFIER("HTTP 502 bad gateway"));
+// G8 review (Opus-A): a 200 with a non-JSON body (a CF interstitial) throws a JSON parse error - a
+// transport fault, NOT a chain fault. It must classify TRANSIENT so it keeps the cache instead of
+// gratuitously reseeding.
+check("classifier: 'Unexpected end of JSON input' is TRANSIENT (CF 200-HTML blip)", CLASSIFIER("Unexpected end of JSON input"));
+check("classifier: 'Unexpected token < in JSON' is TRANSIENT", CLASSIFIER("Unexpected token < in JSON at position 0"));
+check("classifier: a prev-link break is STRUCTURAL (reseed)", !CLASSIFIER("header 40123 prev-link mismatch (reorg)"));
+check("classifier: 'invalid prev hash' is STRUCTURAL", !CLASSIFIER("invalid prev hash at 51000"));
+check("classifier: 'bad bits at' is STRUCTURAL", !CLASSIFIER("bad bits at 51000"));
 
 // M12 source-shape pin (behavioral coverage is name2-union-poc [B]/[B2]).
 console.log("M12 (B5e) - union per-source recovery:");

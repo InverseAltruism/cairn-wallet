@@ -565,7 +565,7 @@ export class Wallet {
   // coverage limit, not assumed away). Popup-only read; never a dApp method.
   async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const hk = this.histKeyNow(); const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
-  async attest(p: { proposalId: string; score: number; confidence: number; fee: number; outputs?: { to: string; value: number }[]; expectSigner?: string }) {
+  async attest(p: { proposalId: string; score: number; confidence: number; fee: number; expectSigner?: string }) {
     // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
     // App=Attest expression, outputs:[]), so an attest(score, confidence=CONF_TOKEN_FILL) was the fill
     // path stripped of its preflight - no OFFER_UNKNOWN gate, no captureSigner, paying into a proposal the
@@ -573,8 +573,15 @@ export class Wallet {
     // confidence attest goes through the SAME gated fill path fillOffer uses (which runs fillOfferPreflight
     // + signer capture and files a truthful `fillOffer` history entry). A board-support attest (confidence
     // 70/80) is untouched. This is the cheap half of W1; it does not depend on W2's term binds.
+    //
+    // OUTPUTS FORCED EMPTY (G8 Opus-B HIGH): the attest method must NEVER carry CSD outputs. A token fill's
+    // payment is the off-ledger token debit; its on-chain tx is the Attest with outputs:[] (requiredFill-
+    // Outputs returns [] for a token want). Threading a caller's `outputs` through here would let a dApp
+    // pay arbitrary CSD to any address via the attest method, whose clear-sign window renders NO outputs
+    // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
+    // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
     if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
-      return this.fillOffer({ proposalId: p.proposalId, outputs: Array.isArray(p.outputs) ? p.outputs : [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner });
+      return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner });
     const hk = this.histKeyNow(); const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: p.fee }); return r;
   }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
@@ -678,8 +685,10 @@ export class Wallet {
       // over the tip, clamped UP with the PoW-backed floor (M9/B5a) so a deflating RPC cannot disarm it
       // once the wallet has PoW-seen the band. Below 60,045 the honored pre-V28 sunset (resolve.ts:182-183)
       // still admits legacy fills — a flat V28 cut was DECLINED as over-refusal (strategy decline 1); the
-      // headline test pins ACCEPTS at 60,010. Taker-bound and token lanes are exempt: both fields are bound
-      // on those lanes and neither routes through the open-lane claim machinery.
+      // headline test pins ACCEPTS at 60,010. Taker-bound and token lanes are exempt (neither routes through
+      // the open-lane claim machinery): the CSD lane's taker IS bound (provenTermsMismatch below), but the
+      // token lane's content bind is DEFERRED to B7 - until then the token exemption inherits W1's tracked
+      // residual, so this exemption is not claiming a bind the token lane does not yet have.
       if (offer.taker === undefined && isCsdWant && Math.max(tip, await this.tipFloor()) >= V28_HEIGHT + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS)
         return { ok: false, error: "past the V28 sunset an open offer can only be filled through its reservation (fclaim) target — ask the marketplace for the reservation id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_LEGACY_SUNSET" };
       if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))

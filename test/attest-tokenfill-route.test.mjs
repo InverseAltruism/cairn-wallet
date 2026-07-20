@@ -77,6 +77,25 @@ console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fi
   check(`token-fill attest on a FILLED offer is refused (${r?.code})`, r?.ok === false && s.submits.length === 0);
 }
 
+// 3b. THE THEFT REGRESSION (G8 Opus-B HIGH): a hostile dApp cannot smuggle arbitrary CSD outputs through
+//     the attest method. A token-fill-confidence attest carrying outputs:[{to:ATTACKER,value:BIG}] must
+//     force outputs:[] (a token fill has no CSD outputs) - the attacker address must NEVER appear in the
+//     signed tx. Pre-fix (outputs threaded through) this paid ATTACKER while the clear-sign showed a token
+//     buy. REDS if the route stops hardcoding outputs:[].
+{
+  const w = await freshWallet("pw-theft-12345");
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => tokenOffer }) });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, outputs: [{ to: "0x" + "ee".repeat(20), value: 90_000_000 }] });
+  const outs = s.submits[0]?.tx?.outputs ?? [];
+  // the attacker's addr 0xee..ee encodes to an all-238 script_pubkey byte array; a token fill has NO CSD
+  // outputs, so the ONLY output is change back to SELF (never all-238, never the 90M value).
+  const paysAttacker = outs.some((o) => Array.isArray(o.script_pubkey) && o.script_pubkey.length === 20 && o.script_pubkey.every((b) => b === 238));
+  const carries90M = outs.some((o) => Number(o.value) === 90_000_000);
+  check(`token-fill attest ignores caller outputs - NO output pays the attacker (${r?.ok ? "submitted" : r?.code})`, r?.ok === true && !paysAttacker);
+  check("...and no output carries the attacker's 90M value (only change to SELF)", !carries90M);
+  check("...the signed tx has exactly ONE output (change to self), no smuggled recipient", outs.length === 1);
+}
+
 // 4. A BOARD-SUPPORT attest (confidence 80) is UNTOUCHED: it still routes to the plain attest, submits,
 //    and files a 'support' entry - no offer fetch required, no over-refusal.
 {
