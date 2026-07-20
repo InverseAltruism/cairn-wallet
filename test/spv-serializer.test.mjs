@@ -1,11 +1,17 @@
 // BP4/N11: makeSerializer - the single-flight primitive that serializes LC.sync so two concurrent consumers
 // of the wallet's SHARED light client cannot interleave ingests (LightClient.ingest throws "out-of-order
-// ingest" on an interleave -> a spurious fail-closed decline on a legitimate fill/name-verify). This unit
-// test drives the exported primitive directly; the serialization's USE around LC.sync is in namespv.ts
-// liveSpvSource.prepare and is exercised end-to-end by the fill-fclaim-preflight suite.
+// ingest" on an interleave -> a spurious fail-closed decline on a legitimate fill/name-verify). This file
+// covers BOTH halves of the fix: (1) a BEHAVIORAL unit test that the exported primitive actually serializes,
+// and (2) a SOURCE guard that the primitive is APPLIED at its one use-site (liveSpvSource.prepare wraps
+// LC.sync in serializeSync). Half (2) exists because the G3-review found that removing the wrapper while
+// keeping the primitive left the whole suite GREEN (the "guard-of-the-guard" gap, N24 class). A live
+// concurrent-prepare() test is not offline-runnable: liveSpvSource builds its OWN vendored LightClient (real
+// PoW headers) with no injection seam, and bolting a test-only seam onto a fund path is exactly the
+// over-engineering the wallet's rules forbid - so the wiring is pinned at the source, in the repo's own
+// source-scan idiom (cf. test/pentest.ts).
 //
 // Run: node --import tsx test/spv-serializer.test.mjs   (offline)
-import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { makeSerializer } from "../src/core/namespv.ts";
 
 let pass = 0, fail = 0;
@@ -63,6 +69,30 @@ await okA("MUTATION[no chaining -> immediate run]: concurrent ops now OVERLAP (p
   await Promise.all([s(op), s(op), s(op)]);
   return maxInFlight > 1;   // the real makeSerializer keeps this at 1; the mutant overlaps
 });
+
+// USE-SITE GUARD (N24 guard-of-the-guard). The primitive above is only worth anything if prepare() actually
+// WRAPS LC.sync in it. The G3 review's MUT-G stripped the wrapper (keeping the primitive) and the entire
+// behavioral suite stayed GREEN - the exact failure class this campaign keeps re-learning. liveSpvSource
+// constructs the real vendored LightClient (real PoW), so we pin the wiring at the source instead of mocking
+// a money path. These are the assertions that RED on that mutation.
+console.log("\nliveSpvSource.prepare use-site (BP4/N11 wiring, source-pinned):");
+const nspvSrc = readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8");
+const wrapped = /serializeSync\(\s*async[\s\S]{0,600}?await LC\.sync\(/;   // serializeSync(async ... await LC.sync( in order
+const syncCount = (nspvSrc.match(/await LC\.sync\(/g) || []).length;
+
+ok("prepare() WRAPS LC.sync in serializeSync (the fix is APPLIED, not merely defined)", wrapped.test(nspvSrc));
+ok("exactly one LC.sync call-site (a new, unwrapped sync would escape the serializer - re-audit if this trips)", syncCount === 1);
+ok("the sync call sits AFTER the serializer is constructed (no un-serialized sync path)",
+   nspvSrc.indexOf("await LC.sync(") > nspvSrc.indexOf("const serializeSync = makeSerializer()") &&
+   nspvSrc.indexOf("const serializeSync = makeSerializer()") !== -1);
+
+// MUTATION (mirrors the G3 MUT-G): a prepare() body with the wrapper stripped MUST fail the guard. Inline
+// fixtures (repo idiom, cf. the primitive mutation above) so the guard's failability is self-evident and
+// robust to reindentation of the real source.
+const wrappedFixture = "      await serializeSync(async () => {\n        const cur = 0;\n        await LC.sync(want);\n      });";
+const nakedFixture   = "        const cur = 0;\n        await LC.sync(want);";
+ok("guard PASSES on wrapped source", wrapped.test(wrappedFixture));
+ok("MUTATION[wrapper stripped -> naked LC.sync]: guard REDS (proves it covers the G3/MUT-G gap the suite missed)", !wrapped.test(nakedFixture));
 
 console.log(`\nspv-serializer: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
