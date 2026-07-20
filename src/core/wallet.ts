@@ -803,13 +803,14 @@ export class Wallet {
     if (this.fillSpvIoForTest) return await this.fillSpvIoForTest(offerId, fclaimTxid, me);
     // BP4/N11: reuse the wallet's ONE PoW light client (its restored + synced header chain) instead of building
     // a fresh one per fill attempt (each fresh build re-pays the O(chain) snapshot restore). Same rpc/api/cache/
-    // floor as the singleton, so this only changes transport, never what is verified.
-    return await this.withSharedSpv((spvSource) => liveFillSpvSource({
+    // floor as the singleton, so this only changes transport, never what is verified. The source's prepare()
+    // serializes LC.sync, so sharing it with a concurrent name verify cannot interleave ingests.
+    return await liveFillSpvSource({
       rpcBase: this.rpc, headersBase: this.api,
       cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
-      hints: { offerId, fclaimTxid, me, offerHeight }, spvSource,
-    }));
+      hints: { offerId, fclaimTxid, me, offerHeight }, spvSource: await this.spvSource(),
+    });
   }
 
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
@@ -819,12 +820,12 @@ export class Wallet {
   private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: ProvenOfferTerms } | null> {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
-    return await this.withSharedSpv((spvSource) => provenOfferPayto({
+    return await provenOfferPayto({
       rpcBase: this.rpc, headersBase: this.api,
       cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
-      offerId, offerHeight, spvSource,
-    }));
+      offerId, offerHeight, spvSource: await this.spvSource(),
+    });
   }
 
   signIn() { return node.signIn(this.api, this.must().privkey); }
@@ -1100,7 +1101,7 @@ export class Wallet {
       // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
       // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
       const sources: ResolverSource[] = [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
-      const res = await this.withSharedSpv((spv) => verifyNameUnion(nm, sources, spv));
+      const res = await verifyNameUnion(nm, sources, await this.spvSource());
       return { ...res, name: nm };
     } catch (e) {
       return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, scope: "as-shown", name: nm };
@@ -1121,26 +1122,12 @@ export class Wallet {
     }
     return this._spvSrc;
   }
-  // BP4/N11: the shared light client is now used by BOTH name verification AND the fill lanes. spvSource()'s
-  // catch clears the singleton only on a BUILD failure; a source that builds and then starts failing its
-  // prepare()/sync mid-life would otherwise WEDGE every later fill and name verify. So run every consumer
-  // through here: on ANY throw, if the singleton is still the source we handed out, clear it so the next call
-  // rebuilds (mirrors the build-failure catch). Transport-safety only -- a rebuild re-restores the persisted
-  // snapshot; it never changes what gets verified. Prewarm (below) is the same reset discipline.
-  private async withSharedSpv<T>(fn: (s: SpvSource) => Promise<T>): Promise<T> {
-    const srcP = this.spvSource();
-    try {
-      return await fn(await srcP);
-    } catch (e) {
-      if (this._spvSrc === srcP) this._spvSrc = null;
-      throw e;
-    }
-  }
   // Prewarm the shared light client off the click path (popup open): the first fill/name verify then skips the
-  // O(chain) snapshot restore. Fire-and-forget and self-healing; a failed warm clears the singleton so the
-  // real call rebuilds rather than inheriting a rejected promise.
+  // O(chain) snapshot restore. Fire-and-forget; a failed BUILD clears the singleton via spvSource()'s own catch
+  // so the real call rebuilds rather than inheriting a rejected promise. Popup-only + in READ_ONLY_METHODS, so
+  // it never extends the idle-lock (opening the popup is not a spend gesture).
   prewarmSpv(): void {
-    void this.withSharedSpv(async () => undefined).catch(() => { /* best-effort; the real call retries */ });
+    void this.spvSource().catch(() => { /* best-effort; the real call retries and spvSource() self-resets on a build failure */ });
   }
   // v1.8: the height-gated renewal fee priced at the CURRENT tip — for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.

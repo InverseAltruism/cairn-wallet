@@ -96,6 +96,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     // BP4/N11: prewarm the shared PoW light client off the click path (popup open), so the first fill or name
     // verify skips the O(chain) snapshot restore. Popup-only (never in DAPP_METHODS): it spends no funds and
     // reveals nothing, and a dApp has no business driving the wallet's header sync. Fire-and-forget, self-healing.
+    // It is ALSO in READ_ONLY_METHODS so merely opening the popup does not extend the idle auto-lock (WL-1/R19).
     case "prewarmSpv": { wallet.prewarmSpv(); return { ok: true }; }
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
@@ -238,7 +239,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote", "pendingMerge"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote", "pendingMerge", "prewarmSpv"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

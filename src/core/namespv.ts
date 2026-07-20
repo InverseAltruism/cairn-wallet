@@ -453,6 +453,8 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   // verdict (replayName re-runs the audited resolver at it). On a fresh install it is 0 → a lapse rests on
   // the current node tip alone → caution; on an established install it is high → a genuine lapse is confident.
   const persistedFloor = seenFloor;
+  // BP4/N11: serialize LC.sync so concurrent consumers of this SHARED source never interleave ingests.
+  const serializeSync = makeSerializer();
 
   return {
     async prepare(maxEventHeight: number) {
@@ -462,8 +464,13 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
       // Inclusion only needs headers up to the record + cushion (kept cheap; an old, sparse name does not
       // pay a full chain sync). LC.sync re-derives PoW+LWMA per header, so a lying-high cushion fails closed.
       const want = Math.min(Number.isFinite(nodeTip) && nodeTip > 0 ? nodeTip : maxEventHeight + CONF_BUFFER, maxEventHeight + CONF_BUFFER);
-      const cur = LC.baseHeight + LC.chain.length - 1;
-      if (want > cur) {
+      // Run the sync inside the serializer, and re-read the tip INSIDE the critical section so a redundant sync
+      // (another consumer already advanced the chain) is a cheap no-op. A sync throw still propagates to THIS
+      // caller (fail-closed); a prior consumer's failure never wedges the chain (makeSerializer swallows it for
+      // chaining only). blockAt (below) never syncs, so block reads stay fully parallel.
+      await serializeSync(async () => {
+        const cur = LC.baseHeight + LC.chain.length - 1;
+        if (want <= cur) return;
         await LC.sync(want);                           // a lying-high header THROWS here (fail-closed)
         // Snapshot write is best-effort (a failure only means the NEXT verify cold-syncs again),
         // but never silent: the snapshot is multi-MB and shares chrome.storage.local's quota with
@@ -471,7 +478,7 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
         // exhaustion (the manifest carries unlimitedStorage precisely to keep this from failing;
         // if this warning ever fires, investigate storage pressure, don't ignore it).
         if (opts.cache) { try { await opts.cache.set(LC.toSnapshot()); } catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); } }
-      }
+      });
       // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
       // floorTip is the PRIOR-session high-water (WALLET-LAPSE-TIP-1), for lapse corroboration only.
       return { verifiedTip: LC.baseHeight + LC.chain.length - 1, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0), floorTip: persistedFloor };
@@ -503,3 +510,19 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// Serialize async operations so they never OVERLAP, while each caller still awaits its own operation and sees
+// its own result/error. A prior rejection is swallowed for chaining ONLY (the rejecting caller still gets its
+// error); it never wedges the chain. BP4/N11: the wallet shares ONE light client across name-verify AND the
+// fill lanes, so two consumers can call prepare() -> LC.sync() concurrently; LightClient.ingest asserts strict
+// height order and THROWS "out-of-order ingest" on an interleave -> a spurious fail-closed decline on a
+// legitimate action. Serializing the SYNC (not the whole consumer) removes the interleave while keeping the
+// block reads (blockAt, which never syncs) fully parallel. EXPORTED for a direct unit test.
+export function makeSerializer(): <T>(op: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(op: () => Promise<T>): Promise<T> => {
+    const run = tail.then(op, op);   // run AFTER the prior settles, regardless of its outcome
+    tail = run.catch(() => {});      // the chain never rejects, so a failed op cannot block later ops
+    return run;                      // the caller sees THIS op's own result/error
+  };
+}

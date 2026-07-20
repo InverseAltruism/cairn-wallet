@@ -663,6 +663,30 @@ check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves th
   check(`BP4: verdict byte-identical under the parallel+memo scan (cap still 3 genuine me-holds)`, io.myLiveHoldsAtGrant === 3);
 }
 
+// BP4/N11 (G3 F1): fail-closed-under-parallelism. A tampered block anywhere in the pooled window (served txs
+// that do NOT fold to the PoW-verified merkle root) must make the WHOLE preflight throw - the worker pool must
+// propagate the merkle-mismatch, never swallow it. The scan rig computes roots FROM the served txs, so we
+// override ONE mid-window block to serve a real body with a MISMATCHED root.
+{
+  const fill = fcTxFor();
+  const blocks = withOffer([{ height: Hfc, tx: fill }]);
+  const base = fillSource(blocks, TIP);
+  const tamperH = TIP - 3;   // mid-window, well inside [fclaimHeight - SCAN, tip]
+  const tampering = {
+    prepare: () => base.prepare(),
+    prevoutScriptPubkey: (p) => base.prevoutScriptPubkey(p),
+    async blockAt(height) {
+      const b = await base.blockAt(height);
+      if (height === tamperH) return { merkle: "0x" + "ee".repeat(32), txs: b.txs };   // real body, wrong root
+      return b;
+    },
+  };
+  let threw = false, msg = "";
+  try { await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: tampering, hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } }); }
+  catch (e) { threw = true; msg = String(e?.message || e); }
+  check(`BP4: a tampered block in the POOLED window fails the whole preflight CLOSED (throws: ${msg.slice(0, 48)})`, threw === true && /merkle root|tampered/i.test(msg));
+}
+
 globalThis.fetch = origFetch;
 console.log(`\nfill-fclaim-preflight: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
