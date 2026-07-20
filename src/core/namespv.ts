@@ -506,6 +506,11 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   const persistedFloor = seenFloor;
   // BP4/N11: serialize LC.sync so concurrent consumers of this SHARED source never interleave ingests.
   const serializeSync = makeSerializer();
+  // BP8b (N10 wallet-half / N14): the partial-progress persist hook for LONG syncs. Invoked ONLY from
+  // inside the serialized critical section below (so no torn snapshot: nothing mutates LC while it
+  // serializes), and best-effort by contract (syncWithPartialPersist and the catch below swallow its
+  // failures): losing a checkpoint write degrades to a re-sync, never a refusal.
+  const persistSnap = opts.cache ? (s: unknown) => opts.cache!.set(s) : null;
 
   return {
     async prepare(maxEventHeight: number) {
@@ -527,8 +532,25 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
         const cur = LC.baseHeight + LC.chain.length - 1;
         if (want <= cur) return;
         try {
+          // BP8b: a long sync checkpoints verified progress every SYNC_PERSIST_WINDOW headers
+          // (see syncWithPartialPersist below); the final leg to `want` then lands here.
+          await syncWithPartialPersist(LC, want, persistSnap);
           await LC.sync(want);                         // a lying-high header THROWS here (fail-closed)
         } catch (e) {
+          // BP8b (N10 wallet-half / N14 "hard wall, not a slow retry"): BEFORE classifying the failure,
+          // persist whatever this attempt already ingested, so a 429'd cold bootstrap RESUMES from here
+          // on the next attempt instead of restarting at zero forever. Safe by construction: every
+          // header in LC.chain was PoW/LWMA-verified at ingest, and a restored snapshot is RE-VERIFIED
+          // on load (LightClient.fromSnapshot recomputes hashes, prev links, PoW and LWMA bits,
+          // checkpoint-anchored), so this changes WHEN the wallet writes, never what a restore trusts
+          // (the storage-poisoning defense is untouched). INVARIANT (composes with B5a floorAdvance):
+          // a partial persist NEVER advances the lapse floor. The floor advances only after a FULLY
+          // successful sync, because floorAdvance runs after this serialized block completes and the
+          // rethrow / a failed reseed below skips it, so the floor can never exceed what was actually
+          // verified. Fail-soft: a persist failure only means the next attempt re-syncs.
+          if (opts.cache && LC.baseHeight + LC.chain.length - 1 > cur) {
+            try { await opts.cache.set(LC.toSnapshot()); } catch { /* fail-soft: next attempt re-syncs */ }
+          }
           // M8 (B5e): port swapguard's transient-vs-STRUCTURAL split (ensureSyncedTo, DOS-HDR-3). The
           // wallet only ever appended headers and NEVER cleared the cached snapshot on a prev-link break,
           // so a header later orphaned by a reorg wedged the chain PERMANENTLY: every future session
@@ -614,4 +636,37 @@ export function makeSerializer(): <T>(op: () => Promise<T>) => Promise<T> {
     tail = run.catch(() => {});      // the chain never rejects, so a failed op cannot block later ops
     return run;                      // the caller sees THIS op's own result/error
   };
+}
+
+// BP8b (N10 wallet-half / N14): partial-progress snapshot persistence for LONG header syncs. namespv
+// used to persist its snapshot only after a FULLY successful LC.sync, so a rate-limited (429'd) cold
+// bootstrap persisted nothing and every retry restarted from the baked checkpoint: the exact N10
+// "hard wall, not a slow retry" shape (and the same defect B0b fixed in the test cache). This helper
+// syncs toward `want` in bounded windows, persisting the verified chain after each fully synced
+// window, so the next attempt (even in a fresh MV3 service worker killed mid-backoff) restores the
+// partial chain and bills only the REMAINING span. The final leg (the last partial window up to
+// `want`) stays at the call site, whose catch persists a mid-window tail before failing closed.
+// Trust posture (ZERO verification change): every persisted header was already PoW/LWMA-verified by
+// LC.sync's ingest, and a restored snapshot is re-verified by LightClient.fromSnapshot exactly as
+// before; only the persistence TIMING changes, never what a restore trusts (storage-poisoning
+// defense intact). This function never touches the lapse floor: floorAdvance runs in prepare() only
+// after a fully successful sync, and a throw here propagates past it (see the invariant comment
+// there). Persist failures are swallowed: fail-soft, the worst case is the pre-BP8b behavior (a
+// re-sync from the last good snapshot), never a refusal.
+// Window sizing: a fresh-install cold span (~28k headers today) checkpoints a handful of times
+// (each persist rewrites the multi-MB snapshot, so per-batch persistence would be pure overhead),
+// while an incremental daily sync (~720 headers) never enters the loop: the warm hot path pays
+// ZERO extra writes. EXPORTED (with a structural lc type) for a direct behavioral unit test; the
+// vendored LightClient satisfies the type, and its sync() ingests header-by-header, so on a throw
+// the already-verified prefix is retained in memory (vendor bundle LightClient.sync/ingest).
+export const SYNC_PERSIST_WINDOW = 8192;
+export async function syncWithPartialPersist(
+  lc: { baseHeight: number; chain: { length: number }; sync(to: number): Promise<unknown>; toSnapshot(): unknown },
+  want: number,
+  persist: ((snapshot: unknown) => Promise<void>) | null,
+): Promise<void> {
+  for (let next = lc.baseHeight + lc.chain.length - 1 + SYNC_PERSIST_WINDOW; next < want; next += SYNC_PERSIST_WINDOW) {
+    await lc.sync(next);              // throws on any verify/transport failure (fail-closed, caller classifies)
+    if (persist) { try { await persist(lc.toSnapshot()); } catch { /* fail-soft: keep syncing */ } }
+  }
 }
