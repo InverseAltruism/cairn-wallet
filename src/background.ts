@@ -93,6 +93,10 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "renameAccount": return wallet.renameAccount(args[0], args[1]);
     case "removeAccount": return wallet.removeAccount(args[0], args[1]); // args[1] = password (A2: imported-key removal re-auth)
     case "balance": return wallet.balance();
+    // BP4/N11: prewarm the shared PoW light client off the click path (popup open), so the first fill or name
+    // verify skips the O(chain) snapshot restore. Popup-only (never in DAPP_METHODS): it spends no funds and
+    // reveals nothing, and a dApp has no business driving the wallet's header sync. Fire-and-forget, self-healing.
+    case "prewarmSpv": { wallet.prewarmSpv(); return { ok: true }; }
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "propose": return wallet.propose(args[0]);

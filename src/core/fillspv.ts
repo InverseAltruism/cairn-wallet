@@ -92,6 +92,17 @@ async function bindBlock(spv: SpvSource, height: number): Promise<{ ids: string[
   return { ids, rebuilt };
 }
 
+// Bounded-concurrency block fetch preserving fail-closed semantics (BP4/N11): mirrors node.ts mapLimit -- a
+// tiny shared-index worker pool so the window is fetched with at most `limit` in flight (bounding the burst
+// against the per-IP proxy budget) while any thrown tamper rejects the whole pool. Order of COMPLETION does
+// not matter: `fn` only populates the per-height memo; the caller reads it back in strict height order.
+const SCAN_POOL = 12;
+async function bindBlockPool(heights: readonly number[], limit: number, fn: (h: number) => Promise<unknown>): Promise<void> {
+  let i = 0;
+  const worker = async () => { while (i < heights.length) { const idx = i++; await fn(heights[idx]!); } };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, heights.length || 1)) }, worker));
+}
+
 export interface FillSpvHints { offerId: string; fclaimTxid: string; me: string; offerHeight: number; }
 
 // The cross-offer MAX_ACTIVE_CLAIMS count (`myLiveHoldsAtGrant` for verifyFillSpv): a CONSERVATIVE OVER-count
@@ -186,12 +197,24 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const add = (id: string, h: number) => { const k = id.toLowerCase(); if (!heightOf.has(k)) heightOf.set(k, h); ids.add(k); };
   const markScanned = (id: string, h: number) => { scannedIds.add(id.toLowerCase()); add(id, h); };
 
-  const proven = new Map<string, ProvenEvent | null>();   // memoize per id (bind each block once)
+  // Per-HEIGHT bind memo (BP4/N11): bindBlock (fetch + merkle-verify a whole block) is the scan's cost. The
+  // scan populates this once per height; proveEventAt and step 3 then reuse those bodies instead of re-fetching,
+  // so no block is bound twice per preflight. A tamper still THROWS (fail-closed) on first bind, verified once.
+  const blockMemo = new Map<number, { ids: string[]; rebuilt: Tx[] }>();
+  async function bindBlockMemo(height: number): Promise<{ ids: string[]; rebuilt: Tx[] }> {
+    const hit = blockMemo.get(height);
+    if (hit) return hit;
+    const b = await bindBlock(spv, height);
+    blockMemo.set(height, b);
+    return b;
+  }
+
+  const proven = new Map<string, ProvenEvent | null>();   // memoize per id; blockMemo binds each block once
   async function proveEventAt(id: string, height: number): Promise<ProvenEvent | null> {
     const k = id.toLowerCase();
     if (proven.has(k)) return proven.get(k) ?? null;
     let ev: ProvenEvent | null = null;
-    const { ids: bids, rebuilt } = await bindBlock(spv, height);
+    const { ids: bids, rebuilt } = await bindBlockMemo(height);
     const pos = bids.findIndex((x) => x.toLowerCase() === k);
     if (pos >= 0) {
       const tx = rebuilt[pos];
@@ -212,8 +235,16 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // bearing on this offer (or on the buyer's cap) from PoW-verified BLOCK BODIES, so neither a withheld prior
   // hold nor an inflated served height can slip past the replay or the cap count.
   const from = Math.max(0, verifiedTip - (MAX_SCAN + MAX_HOLD_SPAN));
-  for (let h = from; h <= verifiedTip; h++) {
-    const { ids: bids, rebuilt } = await bindBlock(spv, h);
+  const heights: number[] = [];
+  for (let h = from; h <= verifiedTip; h++) heights.push(h);
+  // TRANSPORT ONLY (BP4/N11): fetch + merkle-verify the whole window with a bounded worker pool (the sequential
+  // walk was ~224 by-height reads, the multi-second fclaim-fill delay). Every block is still independently bound
+  // to its PoW-verified merkle root inside bindBlock, and the RESULTS are then processed STRICTLY in ascending
+  // height order below, so the first-set semantics (heightOf/markScanned) and every buffer are byte-identical to
+  // the old sequential walk. A tamper throws inside a worker and rejects the pool -> the preflight fails closed.
+  await bindBlockPool(heights, SCAN_POOL, bindBlockMemo);
+  for (const h of heights) {
+    const { ids: bids, rebuilt } = blockMemo.get(h)!;   // populated by the pool above; present or the pool threw
     for (let pos = 0; pos < rebuilt.length; pos++) {
       const tx = rebuilt[pos];
       const app = tx.app;

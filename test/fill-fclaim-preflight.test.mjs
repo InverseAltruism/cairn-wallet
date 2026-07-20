@@ -631,6 +631,38 @@ const mut = await withGuardRemoved("MUTATE_FCLAIM_GUARD", async (mod) => {
 });
 check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves the guard is the sole rejecter)`, mut.r?.ok === true && mut.submits === 1);
 
+// ── BP4/N11 (REQUEST-BUDGET): the scan is transport-parallelized with a per-height memo. Pin: every window
+//    height fetched EXACTLY ONCE (no duplicate re-fetch by proveEventAt = the memo), the window is a
+//    contiguous ascending range covering the offer height, blocks are fetched with BOUNDED CONCURRENCY > 1
+//    (not the old sequential walk), and the VERDICT is byte-identical to the sequential fetch order. ──
+{
+  // count + concurrency-instrument the SpvSource the real liveFillSpvSource drives.
+  const fill = fcTxFor();
+  const holds = [fcTxFor(OID2), fcTxFor(OID3), fcTxFor(OID4)];
+  const blocks = withOffer([fill, ...holds].map((tx) => ({ height: Hfc, tx })));
+  const base = fillSource(blocks, TIP);
+  const fetched = [];
+  let inFlight = 0, maxInFlight = 0;
+  const counting = {
+    prepare: () => base.prepare(),
+    prevoutScriptPubkey: (p) => base.prevoutScriptPubkey(p),
+    async blockAt(height) {
+      fetched.push(height);
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+      try { await Promise.resolve(); return await base.blockAt(height); }   // yield so the pool window is observable
+      finally { inFlight--; }
+    },
+  };
+  const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: counting, hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
+  const uniq = new Set(fetched);
+  const min = Math.min(...fetched), max = Math.max(...fetched);
+  const contiguous = max - min + 1 === uniq.size && max === TIP;
+  check(`BP4: NO block fetched twice per preflight (memo) - ${fetched.length} fetches, ${uniq.size} unique`, fetched.length === uniq.size);
+  check(`BP4: the scan window is a contiguous ascending range ending at the tip, covering the offer height ${H0 + 2}`, contiguous && min <= H0 + 2);
+  check(`BP4: blocks fetched with BOUNDED concurrency > 1 (parallel, not sequential) - maxInFlight ${maxInFlight}`, maxInFlight > 1 && maxInFlight <= 16);
+  check(`BP4: verdict byte-identical under the parallel+memo scan (cap still 3 genuine me-holds)`, io.myLiveHoldsAtGrant === 3);
+}
+
 globalThis.fetch = origFetch;
 console.log(`\nfill-fclaim-preflight: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

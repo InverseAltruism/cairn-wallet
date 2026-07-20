@@ -177,6 +177,9 @@ async function render() {
   refreshBalance();
   renderAssets();
   renderPending();
+  // BP4/N11: warm the SPV light client now, off the click path, so a first fill/name-verify isn't slow.
+  // Fire-and-forget; the wallet self-heals a failed warm on the real call.
+  void call("prewarmSpv").catch(() => { /* best-effort */ });
   // keep open per-account panels in sync after a switch
   if (!($("activity") as HTMLElement).hidden) renderHistory();
   if (!($("seal-form") as HTMLElement).hidden) renderSealed();
