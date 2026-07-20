@@ -391,6 +391,24 @@ export interface LiveSpvOpts {
   floor?: { get(): Promise<number | null>; set(v: number): Promise<void> };
 }
 
+// M9 (B5a): the lapse-floor advance rule, ONE pure function so the clamp and its use-site cannot drift.
+// The floor is a cross-session HIGH-WATER of the node tip whose job is to stop lapse-state ROLLBACK (a
+// deflated tip on a fresh session). Persisting the RAW served tip made it hostile-INFLATABLE: one lying
+// read became an unbounded monotonic lie, persisted forever, driving every later lease-expiry epoch and
+// every guard the wallet clamps with the floor. The candidate is therefore clamped to
+// verifiedTip + FLOOR_SLACK: the floor may never exceed PoW-verified evidence by more than the sync
+// cushion the client already targets. Callers advance the floor only AFTER a successful LC.sync (a
+// failed or lying sync advances nothing — a lying-high header chain throws in LC.sync, fail-closed).
+// Coverage limit, stated not assumed away: the floor advances only inside prepare(), so a fresh install
+// has floor 0 and any guard clamped by it is disarmed until the first successful verify — fail-open in
+// the SAFE direction (no false refusal), same posture as WALLET-LAPSE-TIP-1.
+export const FLOOR_SLACK = CONF_BUFFER;
+export function floorAdvance(seenFloor: number, nodeTip: number, verifiedTip: number): number {
+  const raw = Number.isFinite(nodeTip) ? nodeTip : 0;
+  const cand = Math.min(raw, (Number.isFinite(verifiedTip) ? verifiedTip : 0) + FLOOR_SLACK);
+  return cand > seenFloor ? cand : seenFloor;
+}
+
 /** Build the live SPV source. The LightClient seeds at the baked checkpoint and verifies forward to tip. */
 export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   const boundFetch = (...a: Parameters<typeof fetch>) => fetch(...a);
@@ -460,7 +478,11 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
     async prepare(maxEventHeight: number) {
       let nodeTip = 0;
       try { nodeTip = Number((await client.tip())?.height); } catch { /* node tip unknown → lapse uses the floor / verified tip */ }
-      if (Number.isFinite(nodeTip) && nodeTip > seenFloor) { seenFloor = nodeTip; if (opts.floor) { try { await opts.floor.set(seenFloor); } catch { /* persist best-effort */ } } } // monotonic — never regress; persist the high-water across SW restarts
+      // M9 (B5a): the floor advance moved BELOW the sync — it is PoW-clamped and sync-gated now (see
+      // floorAdvance). Persisting the raw served tip here made the floor hostile-INFLATABLE: an unbounded
+      // lie, persisted forever (monotonic), driving every later lease-expiry epoch and every guard the
+      // wallet clamps with the floor (W5 legacy-sunset, M11 fee tier). Deflation was always floored;
+      // inflation is now bounded by PoW evidence + FLOOR_SLACK.
       // Inclusion only needs headers up to the record + cushion (kept cheap; an old, sparse name does not
       // pay a full chain sync). LC.sync re-derives PoW+LWMA per header, so a lying-high cushion fails closed.
       const want = Math.min(Number.isFinite(nodeTip) && nodeTip > 0 ? nodeTip : maxEventHeight + CONF_BUFFER, maxEventHeight + CONF_BUFFER);
@@ -479,9 +501,17 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
         // if this warning ever fires, investigate storage pressure, don't ignore it).
         if (opts.cache) { try { await opts.cache.set(LC.toSnapshot()); } catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); } }
       });
+      // M9 (B5a): advance + persist the floor ONLY after the sync above succeeded (a throw skips this),
+      // and never above verifiedTip + FLOOR_SLACK (floorAdvance). The RETURNED nodeTip still carries the
+      // raw served tip for THIS session's lapse epoch (pre-existing design: a lying-high tip only makes
+      // leases look expired sooner, over-caution; deflation is floored) — only what the wallet TRUSTS
+      // ACROSS SESSIONS is clamped to PoW evidence.
+      const verifiedTip = LC.baseHeight + LC.chain.length - 1;
+      const cand = floorAdvance(seenFloor, nodeTip, verifiedTip);
+      if (cand > seenFloor) { seenFloor = cand; if (opts.floor) { try { await opts.floor.set(seenFloor); } catch { /* persist best-effort */ } } }
       // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
       // floorTip is the PRIOR-session high-water (WALLET-LAPSE-TIP-1), for lapse corroboration only.
-      return { verifiedTip: LC.baseHeight + LC.chain.length - 1, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0), floorTip: persistedFloor };
+      return { verifiedTip, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0), floorTip: persistedFloor };
     },
     async blockAt(height: number) {
       const vh = LC.chain[height - LC.baseHeight];
