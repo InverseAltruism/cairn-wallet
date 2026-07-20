@@ -129,18 +129,19 @@ console.log("W5 (B5b) - legacy-sunset arithmetic refuse:");
   check(`exempt: taker-bound fill past the sunset still ACCEPTS (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
 }
 
-// 6. EXEMPT: a TOKEN-want offer past the sunset never returns FILL_LEGACY_SUNSET (the token lane has
-//    its own binds; whatever it returns, it is not this guard).
+// 6. EXEMPT: an HONEST TOKEN-want offer past the sunset never returns FILL_LEGACY_SUNSET and ACCEPTS (the
+//    token lane runs its own give/want content bind - B7e-FIX - not the sunset guard). The proven terms
+//    carry the give legs + wantType + want ticker/amount that resolve() materializes, so the bind passes.
 {
   const st = memoryStore(); const w = new Wallet(st); const { addr } = await w.create("pw-token-12345");
   const offer = {
     id: OID, seller: "0x" + "cd".repeat(20), give: { ticker: "TKN", amount: "5" },
     want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150,
   };
-  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined } });
+  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => offer }), tip: 60_050 });
   const r = await w.fillOffer({ proposalId: OID, outputs: [] });
-  check(`exempt: token-want past the sunset is not sunset-refused (got ${r?.code ?? "ok"})`, r?.code !== "FILL_LEGACY_SUNSET");
+  check(`exempt: honest token-want past the sunset ACCEPTS, not sunset-refused (got ${r?.error ?? r?.code ?? "ok"})`, r?.ok === true && s.submits.length === 1 && r?.code !== "FILL_LEGACY_SUNSET");
 }
 
 globalThis.fetch = origFetch;

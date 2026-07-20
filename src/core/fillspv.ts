@@ -401,7 +401,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 // an honest fill). Reuses the same audited light-client primitives (liveSpvSource, bindBlock, prevoutScriptPubkey).
 export async function provenOfferPayto(
   opts: LiveSpvOpts & { offerId: string; offerHeight: number; spvSource?: SpvSource },
-): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms } | null> {
+): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null> {
   const offerId = String(opts.offerId).toLowerCase();
   const offerHeight = Math.floor(Number(opts.offerHeight));
   if (!/^0x[0-9a-f]{64}$/.test(offerId) || !Number.isFinite(offerHeight) || offerHeight < 0) return null;
@@ -415,7 +415,7 @@ export async function provenOfferPayto(
     const tx = rebuilt[pos];
     const app = tx.app;
     if (!app || app.type !== "Propose") return null;
-    const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string }; taker?: string; bid?: string; min?: string } | null;
+    const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string; ticker?: string; amount?: string }; taker?: string; bid?: string; min?: string } | null;
     if (!rec || rec.t !== "offer") return null;
     const signer = recoverSigner(tx);
     const in0 = tx.inputs?.[0];
@@ -429,6 +429,12 @@ export async function provenOfferPayto(
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.
     const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight);
-    return { payto, seller, terms };
+    // B7e-FIX (REBIND W1 token-lane close): surface the merkle-proven token WANT (the ticker + amount the
+    // buyer PAYS). bindOfferTerms binds the want TYPE only, and provenOfferTerms drops the token ticker/amount,
+    // so the token-lane content bind (wallet.ts fillOfferPreflight) needs these directly to mirror the site
+    // swapguard verifyOfferContent want.ticker/want.amount bind. Undefined on a CSD-priced offer (no want.ticker).
+    const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined;
+    const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined;
+    return { payto, seller, terms, wantTicker, wantAmount };
   } catch { return null; }
 }

@@ -218,15 +218,20 @@ async function main() {
   // fixtures are honest (payto == seller == SELLER), so inject the proven author on the background wallet so the
   // downstream need-map (F2 output-sizing) assertions below are reached rather than short-circuited on the SPV read.
   const bgWallet = (globalThis as { __cairnBgWallet?: { provenPaytoForTest?: unknown } }).__cairnBgWallet;
-  // MY_CLAIM_ID (the CSD offer that reaches the need-map): payto/seller = SELLER, height 34000 (feeBps 150),
-  // value 40000000, no taker. The proven terms mirror it so the F2 amount-bind passes on the honest fixture.
-  if (bgWallet) bgWallet.provenPaytoForTest = () => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } });   // B7e: give matches the CSD fixtures (give TKN/1) so the flipped give leg passes on the honest need-map fill
+  const fillerAddr = (await popup("status")).result.addr as string;
+  // The proven terms are offer-id-aware (provenPaytoForTest receives the offerId): the token-want SMOKE offer
+  // OFFER_ID gets token-consistent terms (B7e-FIX: the token lane now merkle-binds give/want CONTENT, so a
+  // csd-typed mock would false-refuse it), and every CSD fixture (MY_CLAIM_ID etc.: payto/seller = SELLER,
+  // height 34000 feeBps 150, value 40000000, no taker) gets the CSD terms the F2 amount-bind mirrors.
+  if (bgWallet) bgWallet.provenPaytoForTest = (offerId: string) =>
+    String(offerId).toLowerCase() === OFFER_ID.toLowerCase()
+      ? ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: undefined, taker: fillerAddr.toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "token" }, wantTicker: "USDX", wantAmount: "40000000" })
+      : ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } });   // B7e: give matches the CSD fixtures (give TKN/1) so the flipped give leg passes on the honest need-map fill
   // B1 (0.2.57): the preflight now fails CLOSED unless the resolver positively parses to an open
   // offer — the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
   // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: token-want
   // + taker-bound to this wallet, so the approved outputs (seller leg only) stay exactly what this
   // block asserts (a token-want fill has no CSD need-map legs).
-  const fillerAddr = (await popup("status")).result.addr as string;
   offerFixtures.set(OFFER_ID.toLowerCase(), { id: OFFER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { ticker: "USDX", amount: "40000000" }, taker: fillerAddr, height: 34000, feeBps: 150 });
   const winBeforeFill = windowsOpened;
   // hostile extras (inputs/change) must be ignored exactly like send

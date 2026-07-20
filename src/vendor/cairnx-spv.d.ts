@@ -154,8 +154,8 @@ export interface FillVerdict { safe: boolean; reason: string }
  *  (from the fclaim's OWN confirmed expiry) has cushion. Refuses every doomed/forged case.
  *  B6a (REBIND W3) `opts.sums` (OPT-IN, default OFF = byte-identical verdicts): the caller's PLANNED per-address
  *  CSD sums must EXACTLY match requiredFillOutputs re-run over the merkle-proven, replayed offer (the chain's own
- *  paid/delivered, not a served lie) — closes the whole->partial overpay. Pass the SAME per-address need-map you
- *  will build (payto + treasury fee + maker rebate, MERGED per address — payto === seller merges the rebate leg). */
+ *  paid/delivered, not a served lie), closing the whole->partial overpay. Pass the SAME per-address need-map you
+ *  will build (payto + treasury fee + maker rebate, MERGED per address; payto === seller merges the rebate leg). */
 export function verifyFillSpv(offerId: string, fclaimTxid: string, me: string, io: FillSpvIo, opts: { myLiveHoldsAtGrant: number; pay?: bigint | string | number; sums?: Record<string, bigint | string | number> }): Promise<FillVerdict>;
 // Plan 70 R2 Option B: the SINGLE fill-boundary TERM-mismatch verdict (retiring the R1 wallet/site hand-copies).
 // The fee/rebate-sizing fields of an offer, derived from the MERKLE-PROVEN offer (never a served object). `min`
@@ -167,7 +167,7 @@ export function verifyFillSpv(offerId: string, fclaimTxid: string, me: string, i
 export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; min?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantType?: "csd" | "token" }
 // ── the ProvenOfferTerms BRAND (B6a rider, LTS G6 cure): a nominal brand minted ONLY by provenOfferTerms, so
 // the opt-in 3-arg bindOfferTerms cannot be fed a hand-built terms object that leaves the new give/wantType
-// fields undefined (that shape would false-refuse every honest fill — the W2 trap). Type-level only; no byte of
+// fields undefined (that shape would false-refuse every honest fill, the W2 trap). Type-level only; no byte of
 // output changes and every STRUCTURAL use of ProvenOfferTerms still compiles (the 2-arg overload keeps taking it).
 declare const PROVEN_TERMS_MINT: unique symbol;
 export type MintedProvenOfferTerms = ProvenOfferTerms & { readonly [PROVEN_TERMS_MINT]: "cairnx-core/provenOfferTerms" };

@@ -44,6 +44,10 @@ async function freshWallet(pw) { const w = new Wallet(memoryStore()); await w.cr
 
 // An open TOKEN-want offer (the token fill lane; outputs:[] because the buyer routes no on-chain value).
 const tokenOffer = { id: OID, seller: SELLER, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 };
+// The B7e-FIX token-lane content bind merkle-proves the offer record; inject the proven give/want that
+// resolve() would materialize from the same on-chain record so an HONEST token fill proceeds (the live SPV
+// path is unavailable under the stubbed fetch, so an honest fill without this would fail closed-retryable).
+const honestTokenProven = () => ({ payto: SELLER, seller: SELLER, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
 
 console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fill path:");
 
@@ -62,6 +66,7 @@ console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fi
 //    a truthful fillOffer-shaped history entry.
 {
   const w = await freshWallet("pw-open-12345");
+  w.provenPaytoForTest = honestTokenProven;
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => tokenOffer }) });
   const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000 });
   check(`honest token-fill attest PROCEEDS and submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
@@ -84,6 +89,7 @@ console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fi
 //     buy. REDS if the route stops hardcoding outputs:[].
 {
   const w = await freshWallet("pw-theft-12345");
+  w.provenPaytoForTest = honestTokenProven;
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => tokenOffer }) });
   const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, outputs: [{ to: "0x" + "ee".repeat(20), value: 90_000_000 }] });
   const outs = s.submits[0]?.tx?.outputs ?? [];

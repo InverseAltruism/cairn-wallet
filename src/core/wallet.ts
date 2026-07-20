@@ -24,10 +24,15 @@ import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from
 // repo's hand-copy. It binds height/feeBps/value/taker/bid AND the R1.1 `min` presence+value leg exactly as
 // before (byte-identical behaviour, differential-locked by the WA-PARITY corpus across all three seams).
 // B7e (REBIND W7 + W1 wallet half): the give legs (give.ticker/amount/name, explicit-presence + verbatim
-// string equality — closes the W7 give-inflation shortchange) AND the symmetric want-type refusal are now
+// string equality, closing the W7 give-inflation shortchange) AND the symmetric want-type refusal are
 // FLIPPED ON via the opt-in 3-arg overload. `t` MUST be a MintedProvenOfferTerms (produced only by the
-// vendored provenOfferTerms via fillspv.ts) — a hand-built terms object is a compile error exactly where it
+// vendored provenOfferTerms via fillspv.ts), so a hand-built terms object is a compile error exactly where it
 // would false-refuse every honest fill (the W2 trap the brand exists to make unrepresentable).
+// B7e-FIX (W1 token-lane close): this predicate now runs on the TOKEN-priced lane too (the else branch in
+// fillOfferPreflight), not only the CSD lane. On the token lane the give leg is the load-bearing content bind
+// and the want-type leg is a real rejecter (on the CSD lane the pre-existing value leg shadows it). The
+// want-type leg binds only the want TYPE (token vs CSD), so the token lane binds want.ticker/want.amount
+// separately: bindOfferTerms carries no token-want ticker/amount leg (see the else branch below).
 function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean {
   return bindOfferTerms(offer, t, { give: true, wantType: true });
 }
@@ -691,9 +696,9 @@ export class Wallet {
       // once the wallet has PoW-seen the band. Below 60,045 the honored pre-V28 sunset (resolve.ts:182-183)
       // still admits legacy fills — a flat V28 cut was DECLINED as over-refusal (strategy decline 1); the
       // headline test pins ACCEPTS at 60,010. Taker-bound and token lanes are exempt (neither routes through
-      // the open-lane claim machinery): the CSD lane's taker IS bound (provenTermsMismatch below), but the
-      // token lane's content bind is DEFERRED to B7 - until then the token exemption inherits W1's tracked
-      // residual, so this exemption is not claiming a bind the token lane does not yet have.
+      // the open-lane claim machinery): the CSD lane's taker IS bound (provenTermsMismatch below), and the
+      // token lane now binds its give/want CONTENT (B7e-FIX, the else branch below), so the token exemption
+      // is not claiming an unbound residual - a token-priced offer simply is not an open-CSD claim-lane fill.
       if (offer.taker === undefined && isCsdWant && Math.max(tip, await this.tipFloor()) >= V28_HEIGHT + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS)
         return { ok: false, error: "past the V28 sunset an open offer can only be filled through its reservation (fclaim) target — ask the marketplace for the reservation id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_LEGACY_SUNSET" };
       if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))
@@ -736,6 +741,32 @@ export class Wallet {
           const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
           return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
         }
+      } else {
+        // B7e-FIX (REBIND W1 token-lane close): a TOKEN-want fill (attest CONF_TOKEN_FILL -> fillOffer,
+        // outputs:[]) never routes to the fclaim SPV boundary (verifyFillSpv rejects a token want as "CSD-priced
+        // offers only"), and until now this lane skipped every content bind, so a hostile resolver could serve a
+        // bait-and-switch give/want the user clear-signs and the wallet would proceed (both proof seams never
+        // consulted). Merkle-prove the offer RECORD and bind its give/want CONTENT before signing, mirroring the
+        // site swapguard verifyOfferContent (which binds want.ticker/want.amount + give from the proven record for
+        // a token want). Fail CLOSED-RETRYABLE on an unprovable/transient read (same posture as the CSD lane,
+        // never a hard decline on an honest fill); FILL_UNSAFE on a proven content mismatch. An honest token
+        // offer's served give/want equal the proven ones (resolve() materializes both from the same on-chain
+        // record), so no honest token fill declines. No CSD payto/need-map bind here: a token fill routes no CSD
+        // (outputs:[], N26), so the payment legs do not apply.
+        const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
+        if (!proven)
+          return { ok: false, error: "couldn't prove this token offer's on-chain terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+        // give legs (give.ticker/amount/name) + the symmetric want-TYPE refusal, via the SAME vendored predicate
+        // the CSD lane uses. The want-type leg also refuses a proven CSD offer served as a token offer, so once
+        // this passes the proven offer is genuinely token-priced (proven.wantTicker is defined).
+        if (provenTermsMismatch(offer, proven.terms))
+          return { ok: false, error: "refusing to sign: the offer's asset (give) or want-type does not match its on-chain record (a lying resolver may be misrepresenting what you receive)", sighashMatch: false, code: "FILL_UNSAFE" };
+        // The token ticker/amount you PAY is bound explicitly: bindOfferTerms binds the want TYPE but carries no
+        // token want ticker/amount leg. A deflated want.amount or a swapped want.ticker would otherwise let the
+        // resolver understate your cost for what you receive. Mirrors swapguard verifyOfferContent's want leg.
+        const w = (offer.want as { ticker?: string; amount?: string }) ?? {};
+        if (String(w.ticker) !== String(proven.wantTicker ?? "") || String(w.amount) !== String(proven.wantAmount ?? ""))
+          return { ok: false, error: "refusing to sign: the token or amount you would pay does not match the offer's on-chain record (a lying resolver may be understating your cost)", sighashMatch: false, code: "FILL_UNSAFE" };
       }
     } else if (fetchFailed) {
       // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
@@ -788,7 +819,7 @@ export class Wallet {
       return { ok: false, error: "couldn't count your other open reservations to verify this one against the claim cap — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     // W3 (B7e): the OPT-IN payment bind. verifyFillSpv re-runs requiredFillOutputs over the merkle-proven,
     // REPLAYED offer (the chain's OWN paid/delivered, never a served lie) and requires our PLANNED per-address
-    // CSD sums to match it EXACTLY — closing the whole->partial overpay (a resolver serving paid:"0" for a
+    // CSD sums to match it EXACTLY, closing the whole->partial overpay (a resolver serving paid:"0" for a
     // 90%-filled partial made us size the FULL want; the surplus past the real remainder is unrecoverable). We
     // pass the SAME per-address `sums` map the outputs were summed into (payto + treasury fee + maker rebate,
     // MERGED per address); previewFill CLAMPS p.pay to want for a whole fill, so payto === seller (pay carrying
@@ -872,8 +903,8 @@ export class Wallet {
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
-  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: MintedProvenOfferTerms } | null) | Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms } | null>;
-  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms } | null> {
+  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null) | Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null> {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({
