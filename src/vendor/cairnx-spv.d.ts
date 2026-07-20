@@ -126,6 +126,7 @@ export const REG_FINALIZE_GRACE_BLOCKS: number;  // finalize window past the fre
 // The wallet builds the FillSpvIo from its PoW light client (core/fillspv.ts) and fails CLOSED on safe:false.
 export const V28_HEIGHT: number;              // open-lane fclaim gate (planning placeholder until Batch P)
 export const FILL_TIP_MARGIN: number;         // refuse a fill within this many blocks of the hold deadline
+export const CONF_TOKEN_FILL: number;         // the app-layer confidence SENTINEL for a token-priced fill (= 1_000_000)
 export const MAX_ACTIVE_CLAIMS: number;       // cross-offer live-hold cap (the myLiveHoldsAtGrant clause)
 export const GAP_NEEDED: number;              // clean-start hold/cooldown scan bound (fund-safety, = 104)
 export const MAX_SCAN: number;                // GAP_NEEDED rounded up a full epoch (= 134)
@@ -150,23 +151,47 @@ export interface FillSpvIo {
 export interface FillVerdict { safe: boolean; reason: string }
 /** The fail-closed fund boundary: safe:true only when the offer + fclaim are merkle-proven + bound + buried,
  *  the grant replays to a live hold that is MINE and routes to THIS fclaim, delivery >= 1, and the deadline
- *  (from the fclaim's OWN confirmed expiry) has cushion. Refuses every doomed/forged case. */
-export function verifyFillSpv(offerId: string, fclaimTxid: string, me: string, io: FillSpvIo, opts: { myLiveHoldsAtGrant: number; pay?: bigint | string | number }): Promise<FillVerdict>;
+ *  (from the fclaim's OWN confirmed expiry) has cushion. Refuses every doomed/forged case.
+ *  B6a (REBIND W3) `opts.sums` (OPT-IN, default OFF = byte-identical verdicts): the caller's PLANNED per-address
+ *  CSD sums must EXACTLY match requiredFillOutputs re-run over the merkle-proven, replayed offer (the chain's own
+ *  paid/delivered, not a served lie) — closes the whole->partial overpay. Pass the SAME per-address need-map you
+ *  will build (payto + treasury fee + maker rebate, MERGED per address — payto === seller merges the rebate leg). */
+export function verifyFillSpv(offerId: string, fclaimTxid: string, me: string, io: FillSpvIo, opts: { myLiveHoldsAtGrant: number; pay?: bigint | string | number; sums?: Record<string, bigint | string | number> }): Promise<FillVerdict>;
 // Plan 70 R2 Option B: the SINGLE fill-boundary TERM-mismatch verdict (retiring the R1 wallet/site hand-copies).
 // The fee/rebate-sizing fields of an offer, derived from the MERKLE-PROVEN offer (never a served object). `min`
 // is the ONLY on-chain partial-fill field; paid/delivered are resolver running state, deliberately absent.
-export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; min?: string }
+// B6a (REBIND W2/W7): the give legs (giveTicker/giveAmount/giveName, verbatim strings) + wantType ("token" iff
+// the proven want is token-priced, else "csd"). Emitted bit-identically for the legacy fields, so a 2-arg
+// bindOfferTerms over a produced terms object returns the SAME verdict it always did; they participate ONLY
+// under the opt-in legs of the 3-arg overload below.
+export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; min?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantType?: "csd" | "token" }
+// ── the ProvenOfferTerms BRAND (B6a rider, LTS G6 cure): a nominal brand minted ONLY by provenOfferTerms, so
+// the opt-in 3-arg bindOfferTerms cannot be fed a hand-built terms object that leaves the new give/wantType
+// fields undefined (that shape would false-refuse every honest fill — the W2 trap). Type-level only; no byte of
+// output changes and every STRUCTURAL use of ProvenOfferTerms still compiles (the 2-arg overload keeps taking it).
+declare const PROVEN_TERMS_MINT: unique symbol;
+export type MintedProvenOfferTerms = ProvenOfferTerms & { readonly [PROVEN_TERMS_MINT]: "cairnx-core/provenOfferTerms" };
+/** UNSAFE escape hatch, TESTS ONLY: brand a hand-built terms object. Production must never call it. */
+export function unsafeMintProvenOfferTerms(t: ProvenOfferTerms): MintedProvenOfferTerms;
 /** The treasury fee rate stamped on an offer at its creation height (feeBpsAt): v11 ? (v16 ? 150 : 100) : 0. */
 export function feeBpsAt(height: number): number;
-/** Build the normalized ProvenOfferTerms from a merkle-proven offer record + its proven creation height. */
-export function provenOfferTerms(offerRec: unknown, provenHeight: number): ProvenOfferTerms;
+/** Build the normalized (BRANDED) ProvenOfferTerms from a merkle-proven offer record + its proven creation
+ *  height. The sole minter of MintedProvenOfferTerms. Legacy fields emitted bit-identically to pre-B6. */
+export function provenOfferTerms(offerRec: unknown, provenHeight: number): MintedProvenOfferTerms;
+/** OPT-IN legs for the 3-arg bindOfferTerms (default OFF: a 2-arg call is byte-identical to the pre-B6 predicate).
+ *  give: bind give.ticker/give.amount/give.name (explicit-presence + verbatim string equality; closes the W7
+ *  give-inflation shortchange). wantType: the SYMMETRIC want-type refusal (served want type must equal the proven
+ *  type; closes proven-token-served-as-CSD, which the value leg only catches one-sidedly). */
+export interface BindTermsOpts { give?: boolean; wantType?: boolean }
 /** true iff any fee/rebate/partial-sizing field of the SERVED offer diverges from the merkle-proven terms `t`
  *  (fail-closed: any divergence => the caller refuses). Binds height/feeBps/value/taker/bid + min presence AND
- *  value. Byte-identical to the wallet's old provenTermsMismatch + the site's old inline amount-leg bind. */
+ *  value. The 2-arg overload is byte-identical to the wallet's old provenTermsMismatch + the site's old inline
+ *  amount-leg bind. The 3-arg overload adds the opt-in give/wantType legs and requires MINTED terms (the brand). */
 export function bindOfferTerms(servedOffer: unknown, t: ProvenOfferTerms): boolean;
+export function bindOfferTerms(servedOffer: unknown, t: MintedProvenOfferTerms, opts: BindTermsOpts): boolean;
 /** Derive {payto (want.payto or, absent, the author), seller (= the event's prevout-bound proposer), terms}
  *  from a merkle-proven offer Propose event; null if the event does not bind to an offer record. */
-export function bindProvenOffer(offerEv: ProvenPropose): { payto: string; seller: string; terms: ProvenOfferTerms } | null;
+export function bindProvenOffer(offerEv: ProvenPropose): { payto: string; seller: string; terms: MintedProvenOfferTerms } | null;
 // v2.8 give-backing synthesis (core/fillspv.ts, the accepted N1 residual): the record builders + constants used
 // to synthesize an offer's resolver-trusted give-backing (token deploy+mint, or a name registration) so resolve()
 // materializes the offer without an unbounded lifecycle scan. The grant/denial VERDICT never rides the backing.

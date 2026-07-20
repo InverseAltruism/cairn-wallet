@@ -57,7 +57,10 @@ const fcFor = (txid, offerId, height, holder) => PE(txid, fclaim({ offer: offerI
 // carries myLiveHoldsAtGrant COMPUTED by the SAME pure counter the live source uses (never hardcoded).
 const idOf = (e) => (e.kind === "propose" ? e.id : e.txid).toLowerCase();
 // F2 (amount leg): the fee/rebate-relevant terms derived from an offer (matching what liveFillSpvSource proves).
-const termsFor = (o) => ({ height: Number(o.height), feeBps: feeBpsAt(Number(o.height)), value: o.want?.value !== undefined ? String(o.want.value) : undefined, taker: o.taker !== undefined ? String(o.taker).toLowerCase() : undefined, bid: o.bid !== undefined ? String(o.bid).toLowerCase() : undefined, min: o.min !== undefined ? String(o.min) : undefined });
+// B6a (REBIND W2/W7 re-vendor): mirror provenOfferTerms exactly, INCLUDING the give legs + wantType (verbatim
+// strings; want-type is token iff want.ticker is a string). Same key order the producer emits so JSON.stringify
+// equality (the use-site provenance pin below) still holds against the live source's minted terms.
+const termsFor = (o) => ({ height: Number(o.height), feeBps: feeBpsAt(Number(o.height)), value: o.want?.value !== undefined ? String(o.want.value) : undefined, taker: o.taker !== undefined ? String(o.taker).toLowerCase() : undefined, bid: o.bid !== undefined ? String(o.bid).toLowerCase() : undefined, min: o.min !== undefined ? String(o.min) : undefined, giveTicker: o.give?.ticker !== undefined ? String(o.give.ticker) : undefined, giveAmount: o.give?.amount !== undefined ? String(o.give.amount) : undefined, giveName: o.give?.name !== undefined ? String(o.give.name) : undefined, wantType: typeof o.want?.ticker === "string" ? "token" : "csd" });
 function makeIo(events, tip, me, fillFclaimHeight) {
   // F2: the proven payment recipients + fee/rebate terms, derived from the PROVEN offer event (never the
   // resolver-served offer), exactly as the live source does. The synthetic offer (baseFor) has proposer S,
@@ -294,7 +297,7 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
 {
   const fill = fcTxFor();
   const io = await runLive(withOffer([{ height: Hfc, tx: fill }]), ctxid(rpcTxToTx(fill)));
-  const expected = termsFor({ height: H0 + 2, want: { value: String(V) } });
+  const expected = termsFor({ height: H0 + 2, give: { ticker: "AAA", amount: "10" }, want: { value: String(V) } });
   check(`B4a: live provenTerms == independent termsFor at the PROVEN height (got ${JSON.stringify(io.provenTerms)})`,
     JSON.stringify(io.provenTerms) === JSON.stringify(expected));
 }

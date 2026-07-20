@@ -597,22 +597,26 @@ function merkleRoot(txidsHex) {
   return hx(layer[0]);
 }
 function verifyMerkleProof(txidHex, pos, branchHex, merkleRootHex) {
-  let cur = hb(txidHex);
-  let idx = pos;
-  for (const sibHex of branchHex) {
-    const sib = hb(sibHex);
-    const buf = new Uint8Array(64);
-    if (idx & 1) {
-      buf.set(sib, 0);
-      buf.set(cur, 32);
-    } else {
-      buf.set(cur, 0);
-      buf.set(sib, 32);
+  try {
+    let cur = hb(txidHex);
+    let idx = pos;
+    for (const sibHex of branchHex) {
+      const sib = hb(sibHex);
+      const buf = new Uint8Array(64);
+      if (idx & 1) {
+        buf.set(sib, 0);
+        buf.set(cur, 32);
+      } else {
+        buf.set(cur, 0);
+        buf.set(sib, 32);
+      }
+      cur = sha256d(buf);
+      idx >>= 1;
     }
-    cur = sha256d(buf);
-    idx >>= 1;
+    return hx(cur) === hx(hb(merkleRootHex));
+  } catch {
+    return false;
   }
-  return hx(cur) === hx(hb(merkleRootHex));
 }
 function merkleBranch(txidsHex, pos) {
   let layer = txidsHex.map(hb);
@@ -3395,9 +3399,14 @@ var FINALIZE_TIP_MARGIN = 2;
 var V26_HEIGHT = 46480;
 var V27_HEIGHT = 46520;
 var V28_HEIGHT = 6e4;
+var V29_HEIGHT = 88e3;
 var epochOf = (height) => Math.floor(height / EPOCH_LEN);
 var claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
-var claimWindowOf = (claimUntilHeight) => claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
+var FCLAIM_WINDOW_MIN = CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS + 1;
+var claimWindowOf = (claimUntilHeight, claimTxid) => {
+  if (claimTxid !== void 0) return FCLAIM_WINDOW_MIN;
+  return claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
+};
 var claimGraceOf = (claimUntilHeight, claimTxid) => claimTxid !== void 0 ? 0 : claimUntilHeight - CLAIM_WINDOW_BLOCKS_V20 >= V20_HEIGHT ? CLAIM_FILL_GRACE_BLOCKS : 0;
 var fclaimEpochFor = (tipHeight, offerExpiresEpoch) => Math.min(epochOf(tipHeight + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS), offerExpiresEpoch);
 var fclaimHoldEnd = (expiresEpoch) => (expiresEpoch + 1) * EPOCH_LEN - 1;
@@ -3654,6 +3663,17 @@ function resolve(events, tipHeight) {
       b.kind === "propose" ? b.id : b.txid
     )
   );
+  const eid = (e) => e.kind === "propose" ? e.id : e.txid;
+  const seenIds = /* @__PURE__ */ new Set();
+  const applied = [];
+  for (const e of ordered) {
+    if (e.height >= V29_HEIGHT) {
+      const k = eid(e);
+      if (seenIds.has(k)) continue;
+      seenIds.add(k);
+    }
+    applied.push(e);
+  }
   const tokens = /* @__PURE__ */ new Map();
   const balances = /* @__PURE__ */ new Map();
   const names = /* @__PURE__ */ new Map();
@@ -3762,7 +3782,7 @@ function resolve(events, tipHeight) {
     bal(t, who).available += amt;
     offerLock.delete(o.id);
   };
-  for (const ev of ordered) {
+  for (const ev of applied) {
     if (ev.height < ACTIVATION_HEIGHT) continue;
     if (ev.height !== pendingBlock) {
       applyPendingCancels();
@@ -4321,7 +4341,7 @@ function resolve(events, tipHeight) {
           continue;
         }
         let liveN = 0;
-        for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, ev.height)) liveN++;
+        for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, ev.height) && (ev.height < V29_HEIGHT || x.status === "open")) liveN++;
         if (liveN >= MAX_ACTIVE_CLAIMS) {
           deny(`max ${MAX_ACTIVE_CLAIMS} live claims per address`);
           continue;
@@ -4575,7 +4595,7 @@ function resolve(events, tipHeight) {
           continue;
         }
         let liveN = 0;
-        for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, ev.height)) liveN++;
+        for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, ev.height) && (ev.height < V29_HEIGHT || x.status === "open")) liveN++;
         if (liveN >= MAX_ACTIVE_CLAIMS) {
           note(ev, ev.txid, "claim", false, `max ${MAX_ACTIVE_CLAIMS} live claims per address`);
           continue;
@@ -4704,6 +4724,17 @@ function requiredFillOutputs(offer2, payRaw) {
   add(offer2.seller, p.rebate);
   return [...need].map(([to, value]) => ({ to, value }));
 }
+function fillOutputPlan(offer2, payRaw) {
+  const preview = previewFill(offer2, payRaw);
+  if (isTokenWant(offer2.want)) {
+    if (offer2.status !== "open") return { kind: "undeliverable", reason: "not-open", preview };
+    return { kind: "token-settled", outputs: [], confidence: CONF_TOKEN_FILL, preview };
+  }
+  if (!preview.deliverable) return { kind: "undeliverable", reason: preview.reason === "not-open" || preview.reason === "below-min" ? preview.reason : "zero-delivery", preview };
+  const outputs = requiredFillOutputs(offer2, payRaw);
+  if (outputs === null) return { kind: "undeliverable", reason: "zero-delivery", preview };
+  return { kind: "csd-outputs", outputs, preview };
+}
 var FEE_GATE_MARGIN_BLOCKS = 5;
 var NAME_FEE_GATES = [V18_HEIGHT, V24_HEIGHT];
 var buildFeeHeight = (tip) => {
@@ -4738,6 +4769,29 @@ function fillIsSafe(offer2, me, pay, tip) {
     return { safe: false, reason: "this payment would deliver 0 tokens \u2014 refusing (the CSD would be lost)", preview };
   }
   return { safe: true, reason: "ok", preview };
+}
+function fillEndorsement(offer2, me, pay, tip, opts) {
+  const preview = previewFill(offer2, pay);
+  const refuse = (reason) => ({ verdict: "refused", reason, preview });
+  if (offer2.status !== "open") return refuse(`offer is ${offer2.status}`);
+  if (offer2.taker !== void 0 && offer2.taker.toLowerCase() !== me.toLowerCase())
+    return refuse("taker-bound offer - not bound to you");
+  if (isOpenClaimLane(offer2, tip) && !hasLiveClaim(offer2, me, tip))
+    return refuse("open CSD offer - claim it first and fill while your claim is live");
+  const expected = fillTargetId(offer2, tip);
+  const holdRouted = expected.toLowerCase() !== offer2.id.toLowerCase();
+  if (opts?.fillTargetId !== void 0) {
+    if (String(opts.fillTargetId).toLowerCase() !== expected.toLowerCase()) return refuse(holdRouted ? "v2.8: a live fclaim hold routes this fill - the attest must target the fclaim txid, not the offer id (an offer-txid fill is chain-rejected after the payment moved)" : "the attested fill target does not match this offer's routing (attest the offer id)");
+  } else if (holdRouted) {
+    return refuse("v2.8: a live fclaim hold routes this fill - pass opts.fillTargetId (use fillTargetId(offer, tip)) so the endorsement can verify what your attest targets");
+  }
+  if (isTokenWant(offer2.want))
+    return { verdict: "not-endorsable", reason: "token-priced want - deliverability is the attester's token balance, which a pure record predicate cannot see; NOT an endorsement and NOT a refusal (verify your token balance + proven terms, then proceed)", preview };
+  if (!preview.deliverable) {
+    if (preview.reason === "below-min") return refuse("payment is below the offer minimum");
+    return refuse("this payment would deliver 0 tokens - refusing (the CSD would be lost)");
+  }
+  return { verdict: "endorsed", reason: "ok", preview };
 }
 function finalizeWinnerCheck(nameState, me, commitHeight, tip) {
   const m = me.toLowerCase();
@@ -4856,23 +4910,45 @@ async function verifyFillSpv(offerId, fclaimTxid, me, io, opts) {
   }
   const dp = previewFill({ ...r.offer, status: "open" }, pay);
   if (!dp.deliverable || dp.got < 1n) return no("this fill would deliver 0 units - refusing (the CSD would be lost)");
+  if (opts.sums !== void 0) {
+    const req = requiredFillOutputs({ ...r.offer, status: "open" }, pay);
+    if (req === null) return no("the proven offer state cannot size this payment - refusing");
+    const proven2 = new Map(req.map((o) => [o.to, o.value]));
+    const planned = /* @__PURE__ */ new Map();
+    try {
+      for (const [a, v] of Object.entries(opts.sums)) {
+        const k = String(a).toLowerCase();
+        planned.set(k, (planned.get(k) ?? 0n) + BigInt(v));
+      }
+    } catch {
+      return no("invalid sums (amounts must be base-unit integers)");
+    }
+    const sumsKeys = /* @__PURE__ */ new Set([...proven2.keys(), ...planned.keys()]);
+    for (const k of sumsKeys) if ((proven2.get(k) ?? 0n) !== (planned.get(k) ?? 0n)) return no(`payment does not match the proven fill progress (${k}: planned ${(planned.get(k) ?? 0n).toString()}, proven state requires ${(proven2.get(k) ?? 0n).toString()}) - refusing (an overpay past the real remainder is unrecoverable)`);
+  }
   const holdEnd = fclaimHoldEnd(E);
   if (holdEnd < tip + FILL_TIP_MARGIN) return no(`too close to the hold deadline (holdEnd ${holdEnd}, tip ${tip}) - would strand`);
   return { safe: true, reason: "ok" };
 }
+var unsafeMintProvenOfferTerms = (t) => t;
 var feeBpsAt = (height) => height >= V11_HEIGHT ? height >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS : 0;
 function provenOfferTerms(offerRec, provenHeight) {
   const w = offerRec.want;
+  const g = offerRec.give;
   return {
     height: Number(provenHeight),
     feeBps: feeBpsAt(Number(provenHeight)),
     value: w.value !== void 0 ? String(w.value) : void 0,
     taker: offerRec.taker !== void 0 ? String(offerRec.taker).toLowerCase() : void 0,
     bid: offerRec.bid !== void 0 ? String(offerRec.bid).toLowerCase() : void 0,
-    min: offerRec.min !== void 0 ? String(offerRec.min) : void 0
+    min: offerRec.min !== void 0 ? String(offerRec.min) : void 0,
+    giveTicker: g.ticker !== void 0 ? String(g.ticker) : void 0,
+    giveAmount: g.amount !== void 0 ? String(g.amount) : void 0,
+    giveName: g.name !== void 0 ? String(g.name) : void 0,
+    wantType: isTokenWant(offerRec.want) ? "token" : "csd"
   };
 }
-function bindOfferTerms(servedOffer, t) {
+function bindOfferTerms(servedOffer, t, opts) {
   const o = servedOffer;
   const s = (v) => v === void 0 || v === null ? "" : String(v).toLowerCase();
   if (Number(o?.height) !== t.height) return true;
@@ -4883,6 +4959,15 @@ function bindOfferTerms(servedOffer, t) {
   const om = o?.min;
   if ((om !== void 0 && om !== null) !== (t.min !== void 0)) return true;
   if (t.min !== void 0 && String(om) !== t.min) return true;
+  if (opts?.wantType) {
+    if (t.wantType === void 0 || typeof o?.want?.ticker === "string" !== (t.wantType === "token")) return true;
+  }
+  if (opts?.give) {
+    const g = o?.give;
+    if ((g?.ticker !== void 0 && g?.ticker !== null) !== (t.giveTicker !== void 0) || t.giveTicker !== void 0 && String(g?.ticker) !== t.giveTicker) return true;
+    if ((g?.amount !== void 0 && g?.amount !== null) !== (t.giveAmount !== void 0) || t.giveAmount !== void 0 && String(g?.amount) !== t.giveAmount) return true;
+    if ((g?.name !== void 0 && g?.name !== null) !== (t.giveName !== void 0) || t.giveName !== void 0 && String(g?.name) !== t.giveName) return true;
+  }
   return false;
 }
 function bindProvenOffer(offerEv) {
@@ -4922,6 +5007,7 @@ export {
   EPOCH_LEN,
   FCLAIM_KEYS,
   FCLAIM_MAX_EPOCH_AHEAD,
+  FCLAIM_WINDOW_MIN,
   FEE_BPS,
   FEE_BPS_V16,
   FEE_GATE_MARGIN_BLOCKS,
@@ -4990,6 +5076,7 @@ export {
   V26_HEIGHT,
   V27_HEIGHT,
   V28_HEIGHT,
+  V29_HEIGHT,
   ZERO_ADDR,
   addrFromPub,
   bid,
@@ -5010,7 +5097,9 @@ export {
   fclaimEpochFor,
   fclaimHoldEnd,
   feeBpsAt,
+  fillEndorsement,
   fillIsSafe,
+  fillOutputPlan,
   fillTargetId,
   finalizeWinnerCheck,
   hasLiveClaim,
@@ -5052,6 +5141,7 @@ export {
   tradeFee,
   transfer,
   txid,
+  unsafeMintProvenOfferTerms,
   verifyDigest,
   verifyFillSpv,
   verifyMerkleProof
