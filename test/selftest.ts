@@ -235,10 +235,38 @@ async function main() {
     check("history newest-first (last send on top)", h[0].amount === 5e8 && h[1].amount === 2e8);
     check("history entry has type/to/txid", h[0].type === "send" && h[0].to === RCPT && /^0x/.test(h[0].txid));
 
+    // W6/F10 (B5c): the wallet's txid is LOCALLY COMPUTED; the server echo is IGNORED (cross-check
+    // only). Two genuinely DIFFERENT sends whose submit echoes the SAME constant txid must file as
+    // TWO history entries under their own local txids — the pre-B5c code preferred the echo, so a
+    // constant echo deduped every send after the first out of existence (and this very test codified
+    // that bug by asserting the collapse). REDS on pre-B5c code.
     w = new Wallet(memoryStore()); await w.create("super-secret-pw");
-    (globalThis as any).fetch = txStub(true, "0x" + "ff".repeat(32)); // same txid twice
+    (globalThis as any).fetch = txStub(true, "0x" + "ff".repeat(32)); // hostile/buggy constant echo
+    const sA = await w.send(RCPT, 1e8, 1e6); const sB = await w.send(RCPT, 2e8, 1e6);
+    check("ok-path txid is the LOCAL txid, never the server echo", sA.ok === true && sA.txid !== "0x" + "ff".repeat(32) && /^0x[0-9a-f]{64}$/.test(String(sA.txid)));
+    check("two different sends under a constant echoed txid file as TWO entries", (await w.history()).length === 2);
+    const hDup = await w.history();
+    check("…each under its own local txid", sA.txid !== sB.txid && hDup.some((e: any) => e.txid === sA.txid) && hDup.some((e: any) => e.txid === sB.txid));
+    // A byte-identical RESUBMIT (same coin, same amount, deterministic signature ⇒ same LOCAL txid)
+    // still dedupes in place — the honest half of the old assertion, now keyed on the local txid.
+    w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    (globalThis as any).fetch = txStub(true, "0x" + "ff".repeat(32));
     await w.send(RCPT, 1e8, 1e6); await w.send(RCPT, 1e8, 1e6);
-    check("history idempotent on duplicate txid", (await w.history()).length === 1);
+    check("history idempotent on a byte-identical resubmit (same local txid)", (await w.history()).length === 1);
+    // W6 (B5c) second half: `maybeInflight` is post()'s OWN transport classification — a parsed 2xx
+    // body cannot inject it. A hostile proxy answering HTTP 200 {ok:false, maybeInflight:true} must
+    // classify as a DEFINITIVE rejection (no txid, no scary "may be in flight" copy). REDS if the
+    // post() strip is removed.
+    w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    (globalThis as any).fetch = (async (url: any) => {
+      const u = String(url);
+      if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 100e8, utxos: [COIN] }) };
+      const tr = txReply(u, [CS]); if (tr) return tr;
+      if (u.includes("/tx/submit")) return { ok: true, status: 200, json: async () => ({ ok: false, err: "nope", maybeInflight: true }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    }) as any;
+    const sI = await w.send(RCPT, 1e8, 1e6);
+    check("2xx body-supplied maybeInflight is STRIPPED (definitive rejection, no txid)", sI.ok === false && (sI as any).code === "SUBMIT_REJECTED" && sI.txid === undefined);
 
     w = new Wallet(memoryStore()); await w.create("super-secret-pw");
     (globalThis as any).fetch = txStub(false); // node rejects submit

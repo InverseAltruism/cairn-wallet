@@ -58,6 +58,11 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
   // a 2xx we couldn't parse: the server DID process the request — a submit may have been ingested
   // even though we can't read the answer, so this is ambiguous too.
   if (j === undefined) return { ok: false, err: `${path} -> non-JSON response`, maybeInflight: true };
+  // W6 (B5c): `maybeInflight` is THIS function's transport-ambiguity classification, set only on the
+  // branches above. Never accept it off a parsed 2xx body — a hostile proxy answering HTTP 200 with
+  // {ok:false, maybeInflight:true} could otherwise steer the caller's SUBMIT_MAYBE_INFLIGHT copy and
+  // history dedupe. Body fields stay body fields; the flag stays ours.
+  if (j && typeof j === "object" && "maybeInflight" in j) delete j.maybeInflight;
   return j;
 }
 
@@ -416,12 +421,21 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // copy that is true in both cases; txid = the local txid (in the duplicate case that is exactly
   // the pending tx).
   const dup = !sub.ok && !sub.maybeInflight && /already present/i.test(String(sub.err ?? ""));
+  // W6 (B5c): signing is deterministic and the txid does not even depend on the signature (sha256d over
+  // the scriptSig-stripped serialization), so localTxid is not a fallback — it IS the answer, and the
+  // server echo carries no information the wallet does not already hold with certainty. Preferring the
+  // echo let a hostile/buggy proxy answering a constant txid dedupe every later send out of history,
+  // file sealed-claim reveal preimages under the wrong key, poison flushPending/pendingMerge, and point
+  // the explorer link (the user's one independent check) at an attacker-chosen transaction. The echo is
+  // kept only as a FREE CROSS-CHECK on the deliberately forked codec: a mismatch logs loudly, is never
+  // trusted.
+  if (sub.txid && String(sub.txid).toLowerCase() !== localTxid.toLowerCase())
+    console.warn(`[node] submit echoed txid ${sub.txid} != locally computed ${localTxid} — using local (codec cross-check)`);
   return {
     ok: !!sub.ok,
-    // maybe-inflight: the answer was lost, so surface the locally computed txid (additive and
-    // honest — it lets the caller check whether the tx actually landed). Definitive rejections
-    // keep txid undefined: providing one would read as "it went through".
-    txid: sub.txid ?? (sub.maybeInflight || dup ? localTxid : undefined),
+    // LOCAL txid whenever a tx may exist on the network (ok / ambiguous / duplicate). Definitive
+    // rejections keep txid undefined: providing one would read as "it went through".
+    txid: sub.ok || sub.maybeInflight || dup ? localTxid : undefined,
     error: dup
       ? "this transaction, or one spending the same coins, is already pending; it should settle within a block or two"
       : (sub.err ?? (sub.ok ? undefined : "submit rejected")),
