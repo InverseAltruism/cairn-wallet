@@ -16,24 +16,20 @@
 import {
   rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, SCORE_CLAIM, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
-  deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, V16_HEIGHT, FEE_BPS, FEE_BPS_V16, ACTIVATION_HEIGHT,
-  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose,
+  deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
+  provenOfferTerms, feeBpsAt,
+  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 
-// The treasury fee rate the resolver STAMPS on an offer at its creation height (resolve.ts: v11 ? (v16 ?
-// FEE_BPS_V16 : FEE_BPS) : 0). requiredFillOutputs sizes the treasury fee from offer.feeBps, so binding the
-// served feeBps to feeBpsAt(the MERKLE-PROVEN creation height) stops a lying resolver deflating it (F2 amount leg).
-export const feeBpsAt = (h: number): number => (h >= V11_HEIGHT ? (h >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS) : 0);
-
-// The fee/rebate-relevant fields of an offer, derived from the MERKLE-PROVEN offer event (never the resolver-
-// served object). The caller binds the served offer's same fields to these before sizing requiredFillOutputs.
-// `min` is the ONLY on-chain partial-fill field (OFFER_KEYS in cairnx records.ts; copied verbatim onto
-// OfferState at offer creation). `paid`/`delivered` are resolver-derived RUNNING fill state (init 0, accumulated
-// per fill), NOT in the record and NOT merkle-provable, so they are deliberately absent here (binding them would
-// false-refuse every partially-filled offer). previewFill pivots partial-vs-whole SOLELY on `offer.min !==
-// undefined`, so binding `min` pins the client to the exact branch resolve() takes (F2 partial-fill leg).
-export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; min?: string; }
+// B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
+// (`provenOfferTerms` + `feeBpsAt`, verifyfill.ts) - this file used to carry its own hand copies of
+// both (a fifth `feeBpsAt` duplication and one of four hand-built ProvenOfferTerms producers), the
+// exact drift class W2 exists to kill. Corpus-equivalence over every real on-chain offer (55) plus
+// synthetic envelope variants proved the old copies byte-identical to canonical before the swap
+// (test/proven-terms-corpus.test.mjs pins it forever). Re-exported so tests and wallet.ts keep one
+// import site; the re-export is a POINTER, never a re-declaration.
+export { feeBpsAt, type ProvenOfferTerms } from "../vendor/cairnx-spv.js";
 
 // A fclaim hold lasts at most MAX_HOLD_SPAN blocks past its grant (a grant at an epoch's first block with
 // ee = epochOf(h)+2 holds through h+89). A FILLABLE fclaim is within its hold (verifyFillSpv's deadline guard),
@@ -348,18 +344,11 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const provenPayto = (offerRec?.want?.payto && /^0x[0-9a-f]{40}$/.test(String(offerRec.want.payto).toLowerCase()))
     ? String(offerRec.want.payto).toLowerCase()
     : provenSeller;
-  // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer. requiredFillOutputs sizes the
-  // treasury fee from feeBps (= feeBpsAt(creation height)) and the maker rebate from height/taker/bid + want.value;
-  // the caller binds the served offer's same fields to these so a deflated feeBps/height/value/taker cannot
-  // under-size a leg (which resolve() would reject AFTER the payment moved = pay-without-delivery burn).
-  const provenTerms: ProvenOfferTerms = {
-    height: offerEv.height,
-    feeBps: feeBpsAt(offerEv.height),
-    value: offerRec?.want?.value !== undefined ? String(offerRec.want.value) : undefined,
-    taker: offerRec?.taker !== undefined ? String(offerRec.taker).toLowerCase() : undefined,
-    bid: offerRec?.bid !== undefined ? String(offerRec.bid).toLowerCase() : undefined,
-    min: offerRec?.min !== undefined ? String(offerRec.min) : undefined,
-  };
+  // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer, via the ONE vendored
+  // producer (B4a; the proven CREATION height is the input, never a served height - a lying resolver
+  // deflating feeBps/height/value/taker cannot under-size a leg, which resolve() would reject AFTER the
+  // payment moved = pay-without-delivery burn).
+  const provenTerms: ProvenOfferTerms = provenOfferTerms(offerRec, offerEv.height);
   const synthetic = new Map<string, ProvenEvent>();
   const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
     const sid = String(built.payloadHash).toLowerCase();   // the record's own payload_hash: a stable, unique id
@@ -431,14 +420,9 @@ export async function provenOfferPayto(
     const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase()))
       ? String(rec.want.payto).toLowerCase()
       : seller;
-    const terms: ProvenOfferTerms = {
-      height: offerHeight,   // the merkle-proven block the offer was found in (bindBlock verified it)
-      feeBps: feeBpsAt(offerHeight),
-      value: rec.want?.value !== undefined ? String(rec.want.value) : undefined,
-      taker: rec.taker !== undefined ? String(rec.taker).toLowerCase() : undefined,
-      bid: rec.bid !== undefined ? String(rec.bid).toLowerCase() : undefined,
-      min: rec.min !== undefined ? String(rec.min) : undefined,
-    };
+    // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
+    // the offer was found in (bindBlock verified it), never a served height.
+    const terms: ProvenOfferTerms = provenOfferTerms(rec, offerHeight);
     return { payto, seller, terms };
   } catch { return null; }
 }

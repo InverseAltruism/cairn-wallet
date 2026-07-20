@@ -287,6 +287,18 @@ const withOffer = (placements) => worldOf([{ height: H0 + 2, tx: offTxD }, ...pl
 const runLive = (blocks, fclaimTxid, offerId = LOID) => liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, TIP), hints: { offerId, fclaimTxid, me: ME, offerHeight: H0 + 2 } });
 const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ offer: offerId })), priv, expiresEpoch: E });
 
+// B4a (REBIND W2): the LIVE source's provenTerms must derive from the PROVEN offer height (the block the
+// scan actually found the offer in), via the single vendored producer. termsFor() above is this suite's
+// INDEPENDENT hand-derivation of the same semantics, so this is a use-site provenance pin, not canonical-vs-
+// canonical. Mutation: passing offerEv.height+1 (or any served height) into the producer call reds this.
+{
+  const fill = fcTxFor();
+  const io = await runLive(withOffer([{ height: Hfc, tx: fill }]), ctxid(rpcTxToTx(fill)));
+  const expected = termsFor({ height: H0 + 2, want: { value: String(V) } });
+  check(`B4a: live provenTerms == independent termsFor at the PROVEN height (got ${JSON.stringify(io.provenTerms)})`,
+    JSON.stringify(io.provenTerms) === JSON.stringify(expected));
+}
+
 // DEFECT 1: the cap keys on the PROVEN mined grant height (from the scan), never a served/inflated one. 3
 // genuine me-holds live at the true grant height -> 3; keying on a height past their holdEnd would UNDER-count.
 {
