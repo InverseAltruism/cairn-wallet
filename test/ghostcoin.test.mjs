@@ -158,6 +158,92 @@ try {
     const probes2 = stats.txByIds[ghost.coin.txid.toLowerCase()] || 0;
     check("ghost probed exactly once across two sends (session cache)", probes1 === 1 && probes2 === 1);
   }
+  // ── 9. BN0w (W9): 503 + SCAN_HORIZON skips PER COIN; the partial send still completes ──
+  // Wire contract (node v0.1.6, compute-substrate README normative table): HTTP 503 + Retry-After +
+  // {ok:false, code:"SCAN_HORIZON"} means "scan budget exhausted, absence NOT proved": the coin is
+  // real, the node just cannot look back far enough. Inert until such a node ships.
+  const horizonReply = () => ({ ok: false, status: 503, json: async () => ({ ok: false, code: "SCAN_HORIZON", scanned: 100000, stopped_at_height: 12, retry_after_secs: 30 }) });
+  {
+    const hz = mkCoin(41e8);
+    const a = mkCoin(5.5e8), b = mkCoin(4.5e8);
+    const { fetch, stats } = mkStub({ coins: [hz, a, b], served: [hz, a, b], overrides: { [String(hz.coin.txid).toLowerCase()]: horizonReply } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 6e8, 1e6);
+    check("horizon among many: send succeeds (skippable per coin, like a ghost)", r.ok === true);
+    const ins = submittedInputTxids(stats.submits[0]);
+    check("horizon outpoint not in the submitted inputs", ins.length > 0 && !ins.includes(hz.coin.txid.toLowerCase()));
+    const outs = stats.submits[0]?.tx?.outputs ?? [];
+    check("change equals verified-total minus amount minus fee (horizon coin never counted)", outs.some((o) => o.value === 5.5e8 + 4.5e8 - 6e8 - 1e6));
+  }
+
+  // ── 10. BN0w: horizon + shortfall → VERIFY_HORIZON with HONEST copy (never defames the coin) ──
+  {
+    const hz = mkCoin(42e8);
+    const small = mkCoin(1.5e8);
+    const { fetch, stats } = mkStub({ coins: [hz, small], served: [hz, small], overrides: { [String(hz.coin.txid).toLowerCase()]: horizonReply } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 5e8, 1e6);
+    check("horizon + shortfall: send fails", r.ok === false);
+    check("…with the distinct VERIFY_HORIZON code (severity above notfound, below transient/tamper)", r.code === "VERIFY_HORIZON");
+    check("…with honest copy: the node cannot look back far enough", /cannot look back far enough to prove 1 coin\(s\) totalling 42 CSD/.test(r.error || ""));
+    check("…which affirms the coins are real and will be spendable", /they are real and will be spendable once the node is upgraded/.test(r.error || ""));
+    check("…and NEVER the defaming ghost copy", !/could not be verified/.test(r.error || ""));
+    check("…and nothing was submitted", stats.submits.length === 0);
+  }
+
+  // ── 11. BN0w: a PLAIN 503 (no code) still refuses the WHOLE spend as transient, and heals ──
+  {
+    const c = mkCoin(43e8);
+    const id = String(c.coin.txid).toLowerCase();
+    let broken = true;
+    const { fetch, stats } = mkStub({ coins: [c], served: [c], overrides: { [id]: () => broken ? { ok: false, status: 503, json: async () => ({ ok: false, err: "unavailable" }) } : txReply(`/tx/${id}`, [c]) } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r1 = await w.send(RCPT, 1e8, 1e6);
+    check("plain 503: whole spend refused retryably (transient, fielded behavior unchanged)", r1.ok === false && r1.code === "VERIFY_UNAVAILABLE" && /try again in a moment/.test(r1.error || ""));
+    broken = false;
+    const r2 = await w.send(RCPT, 1e8, 1e6);
+    check("plain 503 heals: SAME coin spends after recovery (no horizon/ghost cache pollution)", r2.ok === true && submittedInputTxids(stats.submits[0]).includes(id));
+  }
+
+  // ── 12. BN0w: 503 with a DIFFERENT code (SCAN_INCOMPLETE) stays transient too ──
+  {
+    const c = mkCoin(44e8);
+    const { fetch } = mkStub({ coins: [c], served: [c], overrides: { [String(c.coin.txid).toLowerCase()]: () => ({ ok: false, status: 503, json: async () => ({ ok: false, code: "SCAN_INCOMPLETE", at: "0x" + "00".repeat(32), why: "missing body" }) }) } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 1e8, 1e6);
+    check("SCAN_INCOMPLETE: NOT a horizon; whole spend refused as transient (the walk broke, retry)", r.ok === false && r.code === "VERIFY_UNAVAILABLE");
+  }
+
+  // ── 13. BN0w: mixed 404-ghost + horizon in ONE spend; each classifies per coin, send completes ──
+  {
+    const ghost = mkCoin(45e8); ghost.coin.txid = "0x" + "8f".repeat(32); // never served → 404-path ghost
+    const hz = mkCoin(46e8);
+    const good = mkCoin(3.3e8);
+    const { fetch, stats } = mkStub({ coins: [ghost, hz, good], served: [hz, good], overrides: { [String(hz.coin.txid).toLowerCase()]: horizonReply } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 3e8, 1e6);
+    check("mixed ghost+horizon: send completes on the provable coin (0.2.53 per-coin rule intact)", r.ok === true);
+    const ins = submittedInputTxids(stats.submits[stats.submits.length - 1]);
+    check("…spending ONLY the provable coin", ins.length === 1 && ins[0] === String(good.coin.txid).toLowerCase());
+  }
+
+  // ── 14. BN0w: shortfall with BOTH classes skipped → VERIFY_HORIZON copy also owns the ghosts ──
+  {
+    const ghost = mkCoin(37e8); ghost.coin.txid = "0x" + "8e".repeat(32); // never served
+    const hz = mkCoin(38e8);
+    const { fetch, stats } = mkStub({ coins: [ghost, hz], served: [hz], overrides: { [String(hz.coin.txid).toLowerCase()]: horizonReply } });
+    globalThis.fetch = fetch;
+    const w = new Wallet(memoryStore()); await w.create("super-secret-pw");
+    const r = await w.send(RCPT, 5e8, 1e6);
+    check("both-classes shortfall: VERIFY_HORIZON outranks the ghost code in reporting", r.ok === false && r.code === "VERIFY_HORIZON");
+    check("…and the copy still accounts for the skipped ghost honestly", /1 other coin\(s\) totalling 37 CSD could not be found on the chain and were also skipped/.test(r.error || ""));
+    check("…and nothing was submitted", stats.submits.length === 0);
+  }
 } finally { globalThis.fetch = origFetch; }
 
 console.log(`\nghostcoin: ${pass} passed, ${fail} failed`);

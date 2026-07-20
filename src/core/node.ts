@@ -151,11 +151,19 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (x: T) => 
   return out;
 }
 const VERIFY_CONCURRENCY = 8;
-type InputVerdict = number | "notfound" | "transient" | "tamper";
+// BN0w (W9 wallet half): "horizon" is the fourth verdict, for a node v0.1.6+ answering 503 with body
+// code SCAN_HORIZON on /tx/:id: its bounded back-scan ran out of budget BEFORE proving presence OR
+// absence. The coin is REAL (the node's own utxo index reported it); this node just cannot look back
+// far enough to prove it right now. Severity sits BELOW tamper and transient (neither refusal class
+// may be weakened) and ABOVE notfound (a proved absence). Like notfound it is skippable PER COIN
+// (the 0.2.53 rule: a partial send still completes) and NON-decisive in the verify pool. Inert until
+// a node emitting the signal ships; a plain 503 keeps classifying "transient" exactly as fielded.
+type InputVerdict = number | "notfound" | "transient" | "tamper" | "horizon";
 type VerifyResult =
   | { ok: true; total: number }
   | { ok: false; kind: "tamper" }
   | { ok: false; kind: "transient" }
+  | { ok: false; kind: "horizon"; horizons: { txid: string; vout: number }[]; ghosts: { txid: string; vout: number }[] }
   | { ok: false; kind: "notfound"; ghosts: { txid: string; vout: number }[] };
 const opKey = (txid: unknown, vout: unknown) => `${String(txid).toLowerCase()}:${Number(vout)}`;
 async function verifyInputValues(
@@ -179,6 +187,15 @@ async function verifyInputValues(
     try {
       const r = await fetch(`${rpc}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
       if (r.status === 404) return "notfound";
+      // BN0w (W9): ONLY the exact 503 + body code SCAN_HORIZON pair classifies "horizon" (the node
+      // v0.1.6 scan-outcome wire contract, normative in the compute-substrate README: 503 +
+      // Retry-After + {ok:false, code:"SCAN_HORIZON"}). A plain 503, an unreadable body, or any
+      // OTHER code (SCAN_INCOMPLETE / SCAN_DECODE mean the walk broke, not that it ran long) stays
+      // "transient": refuse the whole spend retryably, the fielded fail-closed behavior.
+      if (r.status === 503) {
+        try { const j: any = await r.json(); if (j?.code === "SCAN_HORIZON") return "horizon"; } catch { /* unreadable body: transient below */ }
+        return "transient";
+      }
       if (!r.ok) return "transient";
       let j: any; try { j = await r.json(); } catch { return "transient"; }
       body = j?.tx;
@@ -202,12 +219,18 @@ async function verifyInputValues(
   // 8-at-a-time for minutes). notfound must NOT short-circuit — every ghost has to be collected to
   // exclude it. When we stop early, later slots are undefined, but the tamper/transient checks below
   // fire before the fold, so the undefined tail is never summed.
+  // BN0w: "horizon" is NON-decisive exactly like notfound: every horizon coin must be collected so
+  // the caller can skip it per coin; it must never short-circuit the bounded pool.
   const verdicts = await mapLimit(inputs, VERIFY_CONCURRENCY, verifyOne, (v) => v === "tamper" || v === "transient");
   // Severity order: any tamper refuses the whole spend immediately (never route around a forging RPC);
   // any transient refuses retryably without excluding anything; only pure not-founds are skippable.
+  // BN0w extends it: tamper > transient > horizon > notfound. Horizon and notfound are BOTH per-coin
+  // skips; horizon outranks notfound only in REPORTING (the refusal copy must never defame a real coin).
   if (verdicts.includes("tamper")) return { ok: false, kind: "tamper" };
   if (verdicts.includes("transient")) return { ok: false, kind: "transient" };
   const ghosts = inputs.filter((_, k) => verdicts[k] === "notfound");
+  const horizons = inputs.filter((_, k) => verdicts[k] === "horizon");
+  if (horizons.length) return { ok: false, kind: "horizon", horizons, ghosts };
   if (ghosts.length) return { ok: false, kind: "notfound", ghosts };
   // Fold the verified values in input order; the running sum must stay in the safe-integer range so a
   // hostile RPC can't push it past 2^53 (addition is commutative, the parallel fetch changes nothing).
@@ -232,6 +255,12 @@ async function verifyInputValues(
 const MAX_SELECT_ROUNDS = 3;      // bounds /tx traffic: at most 3 selections per spend attempt
 const GHOST_TTL_MS = 120_000;
 const ghostSeen = new Map<string, number>(); // outpoint -> expiry
+// BN0w: horizon outpoints (real coins the node's bounded scan could not reach; see verifyInputValues)
+// are cached like ghosts so an immediate retry pre-excludes them without re-probing, but tracked
+// SEPARATELY: the refusal copy for a horizon coin must say the node cannot look back far enough,
+// never that the coin "could not be verified". An outpoint lives in exactly ONE of the two caches
+// (each classification event moves it), so the honest counts below cannot double-book a coin.
+const horizonSeen = new Map<string, number>(); // outpoint -> expiry
 const fmtCsd = (v: number) => (v / 1e8).toLocaleString("en-US", { maximumFractionDigits: 8 });
 async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
@@ -243,13 +272,17 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
   for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
-  const exclude = new Set<string>(ghostSeen.keys());
+  for (const [k, exp] of horizonSeen) if (exp <= now) horizonSeen.delete(k);
+  const exclude = new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys()]);
   const verified = new Map<string, number>();
   const reportedVal = new Map<string, number>(utxos.map((u: any) => [opKey(u.txid, u.vout), Number(u.value) || 0]));
   // ghosts already known from the session cache that are present in THIS utxo set count toward the
-  // honest error (they are why the reported balance overstates what is spendable)
+  // honest error (they are why the reported balance overstates what is spendable); BN0w counts the
+  // horizon class separately for the same reason with its own honest copy.
   let ghostCount = 0, ghostValue = 0;
-  for (const k of exclude) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
+  let horizonCount = 0, horizonValue = 0;
+  for (const k of ghostSeen.keys()) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
+  for (const k of horizonSeen.keys()) if (reportedVal.has(k)) { horizonCount++; horizonValue += reportedVal.get(k)!; }
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const sel = selectInputs(utxos, need, exclude);
@@ -263,12 +296,22 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
       return { error: "could not verify selected inputs against the chain (refusing to risk a burned fee)", code: "VERIFY_TAMPER" };
     if (ver.kind === "transient")
       return { error: "couldn't fetch source transactions to verify input values (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" };
+    // BN0w: horizon coins are skipped per coin exactly like ghosts (exclude and re-select; an
+    // unproved coin is NEVER spent) but booked separately so the final copy stays honest.
+    if (ver.kind === "horizon") {
+      for (const h of ver.horizons) {
+        const k = opKey(h.txid, h.vout);
+        if (!exclude.has(k)) { horizonCount++; horizonValue += reportedVal.get(k) ?? 0; }
+        exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k);
+      }
+    }
     for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
       const k = opKey(g.txid, g.vout);
       if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
-      exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS);
+      exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); horizonSeen.delete(k);
     }
     if (ghostSeen.size > 2048) ghostSeen.clear(); // hard cap: a hostile RPC can't grow this unboundedly
+    if (horizonSeen.size > 2048) horizonSeen.clear();
   }
   // TOO_MANY_INPUTS vs INSUFFICIENT (2026-07-09): selectInputs returns null BOTH when the balance
   // genuinely can't cover `need` AND when it could but not within the MAX_TX_INPUTS cap — a
@@ -284,7 +327,17 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
     if (spendable >= need)
       return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows — send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
   }
-  if (!ghostCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
+  if (!ghostCount && !horizonCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
+  // BN0w (W9): horizon outranks ghost in reporting (severity below tamper/transient, above notfound).
+  // The copy must stay honest: these coins are REAL and belong to this wallet; the node's bounded
+  // back-scan just cannot reach their source txs yet. Never say "could not be verified" about them.
+  // Not retryable as-is (same posture as GHOST_INPUTS_SKIPPED): the coins stay excluded until the
+  // node's index converges or it is upgraded; a smaller spend covered by provable coins works now.
+  if (horizonCount) {
+    console.warn(`cairn-wallet: skipped ${horizonCount} coin(s) beyond the node's scan horizon (real, provable once the node is upgraded); spendable balance is temporarily lower by ~${fmtCsd(horizonValue)} CSD`);
+    const alsoGhosts = ghostCount ? `; ${ghostCount} other coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be found on the chain and were also skipped` : "";
+    return { error: `your node cannot look back far enough to prove ${horizonCount} coin(s) totalling ${fmtCsd(horizonValue)} CSD; they are real and will be spendable once the node is upgraded${alsoGhosts}. The remaining provable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)`, code: "VERIFY_HORIZON" };
+  }
   console.warn(`cairn-wallet: skipped ${ghostCount} coin(s) the node could not prove (source tx not found); reported balance may be overstated by ~${fmtCsd(ghostValue)} CSD`);
   // Non-retryable: the skipped coins stay excluded until the node can PROVE them, so an immediate retry
   // changes nothing (distinct from the retryable VERIFY_UNAVAILABLE transient class above).
@@ -619,7 +672,8 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   // unverified. tamper/transient verdicts refuse exactly as a send would.
   const now = Date.now();
   for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
-  const exclude = new Set<string>(ghostSeen.keys());
+  for (const [k, exp] of horizonSeen) if (exp <= now) horizonSeen.delete(k);
+  const exclude = new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys()]);
   const verified = new Map<string, number>();
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
@@ -628,8 +682,12 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     if (!ver.ok) {
       if (ver.kind === "tamper") return { ok: false, error: "could not verify selected coins against the chain (refusing to risk a burned fee)", sighashMatch: false, code: "VERIFY_TAMPER" };
       if (ver.kind === "transient") return { ok: false, error: "couldn't fetch source transactions to verify coin values (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); }
+      // BN0w: both skip classes (ghost + horizon) exclude-and-retry alike here; consolidate simply
+      // merges what THIS node can prove today (the send path owns the distinct honest refusal copy).
+      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k); }
+      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); horizonSeen.delete(k); }
       if (ghostSeen.size > 2048) ghostSeen.clear();
+      if (horizonSeen.size > 2048) horizonSeen.clear();
       continue;
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
