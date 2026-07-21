@@ -27,7 +27,6 @@ function walk(dir) {
   }
   return out;
 }
-const distFiles = walk(DIST);
 
 // CRC-32 (IEEE)
 const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
@@ -37,6 +36,7 @@ const DOS_TIME = 0, DOS_DATE = 0x21; // fixed 1980-01-01 00:00:00 → determinis
 
 // Build one deterministic STORE zip from dist/, optionally under a path prefix.
 function buildZip(prefix) {
+  const distFiles = walk(DIST);   // lazy: only the packaging path touches dist/, so importing this module (the test) never does
   const files = distFiles.map((abs) => ({
     name: (prefix ? prefix + "/" : "") + relative(DIST, abs).split("\\").join("/"),
     data: readFileSync(abs),
