@@ -22,7 +22,7 @@ import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { countMyOtherLiveHolds, liveFillSpvSource, provenOfferPayto, feeBpsAt } from "../src/core/fillspv.js";
 import {
   deploy, mint, offer, fclaim, offerCancelAll, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
-  SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
+  SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
@@ -346,6 +346,21 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
   ]);
   const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
   check(`OBS3: a live legacy me-hold counts; a stranger's and a lapsed one do not (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 1);
+}
+
+// OBS 3 BP6 SUNSET TOMBSTONE: the SAME live legacy me-hold is NO LONGER counted once the verified tip reaches
+// V28_HEIGHT + LEGACY_MAX_HOLD + MAX_HOLD_SPAN (60,134). OBS-3's scan+count (and its hostile-minable prevout
+// fetch) is skipped, because no legacy hold can be live at any FILLABLE fclaim grant that far past the gate (a
+// fillable fclaim's grant is at most MAX_HOLD_SPAN below the tip, and a pre-V28 legacy hold lapses <=
+// LEGACY_HOLD past its < V28 grant). This is the wallet half's true crossing (higher than the site's 60,045).
+{
+  const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;
+  const POST_GATE = H0 + LEGACY_HOLD + MAX_HOLD_SPAN;   // == V28_HEIGHT + LEGACY_MAX_HOLD + MAX_HOLD_SPAN (60,134)
+  const fill = fcTxFor();
+  const legacyMine = attestTx({ proposalId: OID2, score: SCORE_CLAIM, priv: meKey });
+  const blocks = withOffer([{ height: Hfc, tx: fill }, { height: Hfc, tx: legacyMine }]);
+  const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, POST_GATE), hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
+  check(`OBS3 BP6 tombstone: at tip 60,134 the SAME legacy me-hold is NO LONGER counted (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 0);
 }
 
 // DEFECT 1 backstop: the fclaim being filled MUST be merkle-proven in the scan window, else fail CLOSED
