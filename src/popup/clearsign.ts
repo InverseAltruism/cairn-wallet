@@ -284,9 +284,10 @@ export function describe(r: any): string {
     const outs = Array.isArray(p.outputs) ? p.outputs : [];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
     const rows = renderOutputs(outs);
-    const xfer = outs.length
-      ? `<br><b>⚠ this proposal also transfers funds OUT of your wallet:</b><br>${rows}<br>total out: <b>${fmtCsd(total)}</b><div id="send-warn" class="err" style="margin-top:8px" hidden></div>`
-      : "";
+    const xfer = (outs.length
+      ? `<br><b>⚠ this proposal also transfers funds OUT of your wallet:</b><br>${rows}<br>total out: <b>${fmtCsd(total)}</b>`
+      : "")
+      + `<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;   // NXFER-POISON-DROP: the poisoning mount renders even when a cairnx repoint (nxfer/nset) carries no CSD outputs
     // cairnx:v1 proposes are ACTIONS (token transfer / offer / name claim…): decode the
     // record and clear-sign its fields instead of a raw JSON blob. Falls through to the
     // raw uri for anything that doesn't decode (which the resolver would no-op anyway).
@@ -441,6 +442,27 @@ export function lookalikeOf(to: string, known: string[]): string | null {
   return null;
 }
 
+// NXFER-POISON-DROP (Part B) — pure poisoning/first-time warning computation (approve.ts owns only the DOM
+// read + mount). The first-time check keys on `known` (paid recipients PLUS the wallet's OWN account
+// addresses), NOT paidRecipients alone: the site pre-fills an nset with the user's own address ("set as
+// primary" right after registration), so keying on sends-only would warn every new name-holder about THEIR
+// OWN address on an operation that sends nothing. An exact own address is suppressed; a LOOK-ALIKE of one of
+// yours still fires (lookalikeOf runs against `known` and short-circuits before the first-time check); a
+// genuinely-new external recipient is in neither set and still warns.
+export function sendWarnings(recipients: string[], sentTo: string[], ownAddrs: string[]): string[] {
+  const known = [...sentTo, ...ownAddrs];
+  const warns: string[] = [];
+  for (const raw of recipients) {
+    const to = String(raw || "");
+    if (to.toLowerCase() === TREASURY_ADDR) continue;          // fixed protocol sink, never a user recipient
+    const tag = `<code>${escapeHtml(to.slice(0, 10))}…${escapeHtml(to.slice(-6))}</code>`;
+    const la = lookalikeOf(to, known);
+    if (la) warns.push(`⚠ <b>Possible address-poisoning:</b> ${tag} resembles <code>${escapeHtml(la.slice(0, 10))}…${escapeHtml(la.slice(-6))}</code> you've seen before but is NOT identical. Verify every character — payments are irreversible.`);
+    else if (!known.some((a) => a.toLowerCase() === to.toLowerCase())) warns.push(`⚠ First time sending to ${tag} — verify every character. Payments are irreversible.`);
+  }
+  return warns;
+}
+
 // XREPO-1. Sending to "<name>.csd" resolves the address through a configurable / MITM-able name service.
 // The wallet now SPV-verifies that mapping against a PoW header chain it checks itself (core/namespv.ts),
 // so the banner is VERIFIED-AWARE: when the chain backs the address it says so (and notes the honest
@@ -448,7 +470,7 @@ export function lookalikeOf(to: string, known: string[]): string | null {
 // (resolver offline, service not yet upgraded, or a proven mismatch already refused upstream) it carries
 // the original strong caution. Either way the resolved FULL address stays the unmissable thing the user
 // confirms. (The name is regex-constrained at resolution, but escape it anyway — defense in depth.)
-export function nameCautionHtml(name: string, verified?: boolean, info?: { sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }): string {
+export function nameCautionHtml(name: string, verified?: boolean, info?: { sources?: number; agreed?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }): string {
   const n = escapeHtml(String(name));
   // Checked BEFORE the verified branch (and independent of `verified`) so a viaFill name can NEVER render a
   // green badge — defense-in-depth even though the verifier already forces viaFill ⇒ verified:false.
@@ -460,6 +482,13 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: { sourc
     return `⚠ <b><code>${n}.csd</code> was acquired by an on-chain purchase (offer fill).</b> The wallet SPV-verified the records, but ownership set by a fill can hinge on chain state <b>outside</b> this name's own history, which a name-scoped proof cannot verify — so the address is <b>not</b> shown as chain-verified. Confirm the <b>To</b> address out-of-band before sending.`;
   }
   if (verified) {
+    // NS-1: only ONE source solo-recovered the winner (the union failed) — a lone, possibly-hostile source
+    // alone decided the target, NOT independently corroborated. Checked BEFORE disagree/≥2-agree so it can
+    // never read as "servers agree". The address shown is still the chain-PROVEN winner (never the served
+    // one); this only stops the badge from asserting multi-source verification (mitigation by disclosure).
+    if (info?.soleSource) {
+      return `⚠ <b><code>${n}.csd</code>: only ONE name source could prove this address.</b> The wallet SPV-verified the records, but a single source (which could be hostile or stale) alone decided the address and it is <b>not</b> independently corroborated. Confirm the <b>To</b> address out-of-band before sending.`;
+    }
     // A source's stated claim disagreed with the SPV-proven union winner (NSPV-COMPLETE-1): one resolver may
     // be hostile/stale. The address shown IS the chain-proven winner across all sources, but flag it loudly.
     if (info?.disagree) {

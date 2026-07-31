@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
@@ -106,6 +106,21 @@ const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for d
 const histKey = (addr: string) => "txHistory:" + addr;
 const sealKey = (addr: string) => "sealedClaims:" + addr;
 
+// SEAL-EVICT-01 (P75-6 F2): the sealed-claims cap must never evict an UNREVEALED preimage; it is the only
+// copy of the reveal nonce for a PAID commit (unrecoverable from phrase or chain). Evict oldest REVEALED
+// entries first; an all-unrevealed list is kept whole (bounded in practice by the 0.25 CSD per-commit fee).
+const SEAL_CAP = 500;
+function capSeals(list: any[]): any[] {
+  if (list.length <= SEAL_CAP) return list;
+  let over = list.length - SEAL_CAP;
+  const out: any[] = [];
+  for (let i = list.length - 1; i >= 0; i--) {  // walk oldest to newest (list is newest-first)
+    if (over > 0 && list[i]?.revealed) { over--; continue; }
+    out.unshift(list[i]);
+  }
+  return out;
+}
+
 // The frozen signing context captured before a flow's first await (A1, Plans/68): the account
 // slot, its address, its key, and the history key entries must file under. Immutable snapshot —
 // a later switchAccount cannot retro-change what was captured.
@@ -116,6 +131,11 @@ const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => ({
   ok: false, sighashMatch: false, code: "ACCOUNT_CHANGED",
   error: "the active account changed since you reviewed this request — reopen it and review again before approving",
 });
+// XR-1/FL-1: a fill whose on-chain score is present but is not the marketplace-required SCORE_FILL (100).
+// The real cairnx resolve() silently NO-OPS any other score AFTER the payment moved (the SCORE-BURN class),
+// so we refuse (not coerce) a present-and-wrong caller score before signing. The site never passes a score
+// (CSD lanes default; the token lane passes 100), so this declines no honest fill (WALLET-ERROR-CODES.md).
+const SCORE_FILL_REFUSAL = (): node.SubmitResult => ({ ok: false, error: "refusing to sign: this fill's score is not the value the marketplace requires, so the chain would ignore it and your payment would be lost. Retry the purchase from the site's Buy button.", sighashMatch: false, code: "FILL_UNSAFE" });
 
 // Epoch math + record-expiry windows (all in EPOCHS; one epoch = BLOCKS_PER_EPOCH blocks). BLOCKS_PER_EPOCH
 // mirrors the vendored cairnx-core EPOCH_LEN (30) — kept as a named local because the wallet .d.ts does not
@@ -268,6 +288,36 @@ export class Wallet {
     await this.store.set("wallets", mirror);
     await this.store.set("active", active);
   }
+
+  // Class A durability (P75-6): two more write chains on the persistChain idiom above.
+  // EVERY read-modify-write of a per-account history / sealed-claims list rides its chain, so two
+  // writers can never interleave a get..set and clobber each other. The idiom's discipline is
+  // load-bearing: both settle paths run the next work item, the chain field is reassigned to an
+  // ALWAYS-RESOLVED promise (a rejection can never poison the queue), and the rejecting `run` is
+  // returned so each caller still observes its own outcome.
+  // Boundary rule: a chain callback contains STORAGE ops only, never a network await (send()
+  // awaits maybeRecord, so anything inside histChain sits on the send hot path). WRITE callbacks
+  // bail on !this.accts (a write parked across lock()/reset() must not land on a wiped wallet);
+  // DELETE callbacks do not bail (deletes are teardown and safe while locked).
+  private histChain: Promise<void> = Promise.resolve();
+  private inHistChain<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.histChain.then(work, work);
+    this.histChain = run.then(() => {}, () => {});
+    return run;
+  }
+  private sealChain: Promise<void> = Promise.resolve();
+  private inSealChain<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.sealChain.then(work, work);
+    this.sealChain = run.then(() => {}, () => {});
+    return run;
+  }
+  // Parked writes (PCD-2 / SEAL-WRITE-02): when a post-broadcast history/seal write fails, the
+  // entry is parked here (RAM only), merged into history()/sealedClaims() reads so the user still
+  // sees it, and retried on the next write to the same list. NOT durable across a service-worker
+  // teardown; that residual is stated at the write sites. Cleared in lock()/doReset()/
+  // removeAccount: the reset discipline is exactly "clear the array".
+  private pendingHist: { k: string; entry: Record<string, unknown> }[] = [];
+  private pendingSeals: { k: string; rec: any }[] = [];
 
   private acct(priv: string, label: string, extra: { index?: number; imported?: boolean } = {}): Acct { return { ...fromPriv(priv), label, ...extra }; }
 
@@ -442,6 +492,7 @@ export class Wallet {
 
   async lock(): Promise<void> {
     this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; this.mnemonic = null; this.nextIndex = 0;
+    this.pendingHist = []; this.pendingSeals = []; // parked retries must not outlive the unlocked session (reset() calls lock() first; the reset discipline is exactly this clear)
     await this.clearSession(); // wipe the in-RAM session key BEFORE returning, so "locked" can't race a still-persisted key (audit LOCK-ASYNC)
   }
 
@@ -509,7 +560,11 @@ export class Wallet {
     if (this.active >= accts.length) this.active = accts.length - 1;
     else if (this.active > i) this.active -= 1;
     // wipe the removed account's isolated data so it can't resurface.
-    await this.store.del(histKey(gone)); await this.store.del(sealKey(gone));
+    // P75-6: ride the chains so a parked write for this account cannot land AFTER these deletes
+    // and resurrect a removed account's history or sealed preimages; purge its parked retries too.
+    const hk2 = histKey(gone), sk2 = sealKey(gone);
+    await this.inHistChain(async () => { this.pendingHist = this.pendingHist.filter((p) => p.k !== hk2); await this.store.del(hk2); });
+    await this.inSealChain(async () => { this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk2); await this.store.del(sk2); });
     await this.persistVault();
   }
 
@@ -604,7 +659,13 @@ export class Wallet {
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(p.expectSigner, ctx.addr);
     if (early) return early;
-    const q = { proposalId: p.proposalId, score: (p.score ?? 100) >>> 0, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? ATTEST_FLOOR };
+    // XR-1/FL-1: a fill's on-chain score MUST be SCORE_FILL (100). The real cairnx resolve() silently
+    // NO-OPS any other score AFTER the payment moved (the SCORE-BURN class). The site never passes a
+    // score (CSD lanes use the default; the token lane passes 100), so refusing a caller score that is
+    // present-and-not-100 breaks no honest fill. Refuse, do not coerce, so a mis-built dApp fill fails
+    // loudly instead of burning; the SIGNED score is hardcoded below regardless.
+    if (p.score !== undefined && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
+    const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? ATTEST_FLOOR };
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr);
     if (refusal) return refusal;
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
@@ -717,7 +778,7 @@ export class Wallet {
         // path redirects the payment (theft) or mis-sizes the rebate so resolve() rejects the fill (burn). Bind both
         // to the MERKLE-PROVEN offer author (prevout-owner, txid-committed). Fail CLOSED-RETRYABLE on an unprovable /
         // transient read (never a hard decline on an honest fill), FILL_UNSAFE on a proven mismatch. Honest offers
-        // default payto/seller to the author, so no honest fill declines. // MUTATE_LEGACY_PAYTO_GUARD
+        // default payto/seller to the author, so no honest fill declines.
         const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
         if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
           return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
@@ -729,8 +790,7 @@ export class Wallet {
         // pay-without-delivery burn/theft. A genuine CSD offer always carries want.value, so no honest fill declines.
         if (proven.terms.value === undefined)
           return { ok: false, error: "refusing to sign: the on-chain offer is not CSD-priced (a lying resolver may be presenting a token-priced offer as a CSD sale)", sighashMatch: false, code: "FILL_UNSAFE" };
-        if (payto !== proven.payto || String((offer as { seller?: string }).seller ?? "").toLowerCase() !== proven.seller)
-          return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" };
+        if (payto !== proven.payto || String((offer as { seller?: string }).seller ?? "").toLowerCase() !== proven.seller) return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_LEGACY_PAYTO_GUARD
         // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer (same as the fclaim lane).
         if (provenTermsMismatch(offer, proven.terms))
           return { ok: false, error: "refusing to sign: the offer's fee/rebate terms do not match its on-chain record (a lying resolver could under-size the fee, and the chain would reject the fill after your payment moved)", sighashMatch: false, code: "FILL_UNSAFE" };
@@ -742,6 +802,11 @@ export class Wallet {
           return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
         }
       } else {
+        // XR-1 (N26): a token-priced fill routes NO CSD - its on-chain tx is the Attest with outputs:[].
+        // The attest->fillOffer reroute hardcodes outputs:[] (in attest()), but a DIRECT dApp fillOffer
+        // on a token-priced served offer can still carry CSD outputs, which this lane never checks. `sums`
+        // holds only positive, validated outputs (BAD_OUTPUTS ran above), so a non-empty map is real CSD.
+        if (sums.size > 0) return { ok: false, error: "refusing to sign: a token purchase is paid in tokens, not CSD, so it must move no CSD. This fill tried to send CSD (a lying resolver or dApp may be trying to move CSD through a token fill). Retry the purchase from the site's Buy button.", sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_TOKEN_OUTPUTS_GUARD
         // B7e-FIX (REBIND W1 token-lane close): a TOKEN-want fill (attest CONF_TOKEN_FILL -> fillOffer,
         // outputs:[]) never routes to the fclaim SPV boundary (verifyFillSpv rejects a token want as "CSD-priced
         // offers only"), and until now this lane skipped every content bind, so a hostile resolver could serve a
@@ -830,20 +895,24 @@ export class Wallet {
     } catch {
       return { ok: false, error: "couldn't verify this reservation against the chain yet — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     }
-    if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
+    // FILLSPV-01: when the reported tip had to be floor-clamped UP (a deep reorg OR an active served-tip
+    // deflation), the wallet genuinely could not confirm burial-to-true-tip this call, so the vendor's
+    // factually-wrong "would strand"/lapsed-shaped reason is replaced with honest, retryable copy. Both
+    // branches REFUSE (fail-closed either way); this only fixes which reason the user sees. `tipFloored` is
+    // undefined/falsy under the fillSpvIoForTest synthetic io, so every existing denial keeps FILL_UNSAFE.
+    if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
     // F2: bind the PAYMENT recipients to the MERKLE-PROVEN offer author. verifyFillSpv proves DELIVERY (the give)
     // but not payment: requiredFillOutputs sizes the seller-payment leg to the resolver-served offer.want.payto
     // and the rebate leg to the resolver-served offer.seller. A lying read-path swaps want.payto so the buyer
     // pays an attacker while resolve() rejects the zero-recipient fill (theft), or swaps offer.seller so the
     // rebate mis-sizes and resolve() rejects the fill (burn). The SPV source already re-derived both from the
     // proven offer event. Fail CLOSED-retryable if unprovable, FILL_UNSAFE on a proven mismatch. An honest
-    // offer's payto/seller default to the author, so no honest fill is ever declined. // MUTATE_PAYTO_GUARD
+    // offer's payto/seller default to the author, so no honest fill is ever declined.
     const provenPayto = String((io as { provenPayto?: string }).provenPayto ?? "").toLowerCase();
     const provenSeller = String((io as { provenSeller?: string }).provenSeller ?? "").toLowerCase();
     if (!/^0x[0-9a-f]{40}$/.test(provenPayto) || !/^0x[0-9a-f]{40}$/.test(provenSeller))
       return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-    if (payto !== provenPayto || String(offer?.seller ?? "").toLowerCase() !== provenSeller)
-      return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" };
+    if (payto !== provenPayto || String(offer?.seller ?? "").toLowerCase() !== provenSeller) return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_PAYTO_GUARD
     // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer so a deflated feeBps/height/
     // value/taker cannot under-size a leg (which resolve() would reject AFTER payment = pay-without-delivery burn).
     const terms = (io as { provenTerms?: MintedProvenOfferTerms }).provenTerms;
@@ -885,8 +954,8 @@ export class Wallet {
   // Test seam (fill-SPV fund boundary): production leaves this undefined and builds the LIVE PoW-verified
   // FillSpvIo; tests inject a synthetic (PoW/merkle pre-satisfied) io so the vendored verifyFillSpv boundary
   // is exercised through the real preflight without a chain. The io carries the computed cap over-count.
-  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms }>;
-  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms }> {
+  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }>;
+  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }> {
     if (this.fillSpvIoForTest) return await this.fillSpvIoForTest(offerId, fclaimTxid, me);
     // BP4/N11: reuse the wallet's ONE PoW light client (its restored + synced header chain) instead of building
     // a fresh one per fill attempt (each fresh build re-pays the O(chain) snapshot restore). Same rpc/api/cache/
@@ -1012,41 +1081,52 @@ export class Wallet {
   //   stale    = >60min unconfirmed → stop claiming (a dropped merge returns its coins anyway).
   // Multi-round aware: sums every in-flight round. `maybe` marks rounds whose submit answer was
   // lost (recorded maybe:true) so the copy can hedge.
+  // The RMW rides histChain and the balance fetch sits strictly OUTSIDE it (a network call inside the
+  // chain would park send()'s own history write behind a hung RPC).
   async pendingMerge(utxos?: { txid: string }[]): Promise<{ pending: boolean; amount: number; maybe: boolean }> {
     const addr = this.addr(), k = histKey(addr); // captured once (F5): history, latch and balance stay on ONE account
-    const h: any[] = (await this.store.get(k)) || [];
-    const candidates = h.filter((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
-    const maybes = h.filter((x) => x?.maybe);
+    // pre-read ONLY for the early return + the fetch decision; the chained work RE-READS fresh (below).
+    const peek: any[] = (await this.store.get(k)) || [];
+    const hasCandidates = peek.some((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
+    const hasMaybes = peek.some((x) => x?.maybe);
     // Nothing to derive AND nothing reconcilable against a caller-supplied utxo set → done. The
     // maybe-reconcile below never triggers its own fetch: this method's zero-extra-requests
     // property is load-bearing (B4), and flag hygiene is not worth a network call.
-    if (!candidates.length && !(maybes.length && utxos)) return { pending: false, amount: 0, maybe: false };
+    if (!hasCandidates && !(hasMaybes && utxos)) return { pending: false, amount: 0, maybe: false };
     let set = utxos;
     if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return { pending: false, amount: 0, maybe: false }; } }
     // filter hostile/degenerate elements (0.2.57, reviewer nit): a null utxo entry from a hostile RPC
     // used to throw here and land in the caller's ambiguous catch — a misleading "pending unknown".
     const present = new Set((set || []).filter((u) => u && u.txid != null).map((u) => String(u.txid).toLowerCase()));
-    let amount = 0, maybe = false, pending = false, dirty = false;
-    // Generic maybe-reconcile (0.2.56, review F2): an entry recorded maybe:true is RESOLVED the
-    // moment its txid shows up in the utxo set — a send's change output and a merge's self-output
-    // both carry the tx's own txid, so presence proves the ambiguous submit landed. (Blind spot,
-    // accepted: a change-less send never reconciles this way; the popup time-bounds its marker
-    // rather than trusting this pass.)
-    for (const e of maybes) if (present.has(String(e.txid).toLowerCase())) { delete e.maybe; dirty = true; }
-    for (const e of candidates) {
-      if (present.has(String(e.txid).toLowerCase())) {
-        // merge output visible on-chain → latch confirmed IN PLACE (persisted below; the designed
-        // next step SPENDS that output, and without the latch its later absence would re-derive
-        // "pending" forever after a popup reopen)
-        if (!e.confirmed) { e.confirmed = true; dirty = true; }
-        continue;
+    return this.inHistChain(async () => {
+      if (!this.accts) return { pending: false, amount: 0, maybe: false };
+      // RE-READ inside the chain: the pre-network read above is stale across the balance RPC, and
+      // writing it back clobbered anything recorded during the fetch (P75-6 correction 1).
+      const h: any[] = (await this.store.get(k)) || [];
+      const candidates = h.filter((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
+      const maybes = h.filter((x) => x?.maybe);
+      let amount = 0, maybe = false, pending = false, dirty = false;
+      // Generic maybe-reconcile (0.2.56, review F2): an entry recorded maybe:true is RESOLVED the
+      // moment its txid shows up in the utxo set — a send's change output and a merge's self-output
+      // both carry the tx's own txid, so presence proves the ambiguous submit landed. (Blind spot,
+      // accepted: a change-less send never reconciles this way; the popup time-bounds its marker
+      // rather than trusting this pass.)
+      for (const e of maybes) if (present.has(String(e.txid).toLowerCase())) { delete e.maybe; dirty = true; }
+      for (const e of candidates) {
+        if (present.has(String(e.txid).toLowerCase())) {
+          // merge output visible on-chain → latch confirmed IN PLACE (persisted below; the designed
+          // next step SPENDS that output, and without the latch its later absence would re-derive
+          // "pending" forever after a popup reopen)
+          if (!e.confirmed) { e.confirmed = true; dirty = true; }
+          continue;
+        }
+        // amount = what actually comes back next block: the merge OUTPUT (inputs minus fee) — the
+        // recorded e.amount is the input total, which would overstate by the fee.
+        pending = true; amount += Math.max(0, (Number(e.amount) || 0) - (Number(e.fee) || 0)); maybe = maybe || !!e.maybe;
       }
-      // amount = what actually comes back next block: the merge OUTPUT (inputs minus fee) — the
-      // recorded e.amount is the input total, which would overstate by the fee.
-      pending = true; amount += Math.max(0, (Number(e.amount) || 0) - (Number(e.fee) || 0)); maybe = maybe || !!e.maybe;
-    }
-    if (dirty) await this.store.set(k, h);
-    return { pending, amount, maybe };
+      if (dirty) await this.store.set(k, h);
+      return { pending, amount, maybe };
+    }).catch(() => ({ pending: false, amount: 0, maybe: false }));
   }
 
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
@@ -1077,7 +1157,13 @@ export class Wallet {
     // lands, no error. flushPending already handles a never-mined txid safely (polls getProposal,
     // registers only once mined, 7-day expiry bounds the queue), so queueing is harmless when the
     // tx truly died.
-    if (r.txid && (r.ok || r.code === "SUBMIT_MAYBE_INFLIGHT")) { await this.addPending(content, r.txid); this.flushPending(); } // durable, alarm-driven
+    if (r.txid && (r.ok || r.code === "SUBMIT_MAYBE_INFLIGHT")) {
+      // PCD-2 class (P75-6 F5): a content-queue write failure after a PAID, broadcast propose must not
+      // make cairnPost reject and skip the history record below. The propose is broadcast and recorded;
+      // the body can be re-posted (registration is idempotent).
+      try { await this.addPending(content, r.txid); } catch { /* content queue write failed; propose is broadcast + recorded below */ }
+      this.flushPending();
+    } // durable, alarm-driven
     await this.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
     return r;
   }
@@ -1105,7 +1191,7 @@ export class Wallet {
   // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
   // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
   // owner (so a name works as a recipient even before its holder sets a resolver record).
-  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }> {
+  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; agreed?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
     const nm = normName(name);
     // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
     // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
@@ -1142,7 +1228,7 @@ export class Wallet {
         // copy. A real lapse still refuses exactly as before — this only removes the FALSE refusal.
         const lv = await this.verifyName(nm).catch(() => null);
         if (lv?.verified && lv.addr)
-          return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, agreed: lv.agreed, disagree: lv.disagree };
+          return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, agreed: lv.agreed, disagree: lv.disagree, soleSource: lv.soleSource };
         return lv?.lapsed === true
           ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed — can't send to it` }
           : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain — refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
@@ -1154,9 +1240,16 @@ export class Wallet {
       // (the chain says a different address) REFUSES; an unavailable verifier returns the address with a
       // caution flag (today's behaviour + a signal), never silently "verified".
       const v = await this.verifyName(nm).catch(() => null);
-      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, agreed: v.agreed, disagree: v.disagree };
+      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, agreed: v.agreed, disagree: v.disagree, soleSource: v.soleSource };
       if (v && /does NOT match|hostile/i.test(v.reason ?? ""))
         return { ok: false, error: `${nm}.csd: the resolver's address contradicts the chain — refusing (possible hostile resolver)`, verified: false };
+      // NS-2: gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but serves an
+      // address for a genuinely-lapsed name reaches here; verifyName's union already computed the lapse
+      // (resolve(events, lapseTip).expired, corroborated by the persisted floor at namespv.ts). Refuse a
+      // CONFIDENT lapse exactly as the served-flag branch does. An UNCORROBORATED lapse is left to the
+      // fall-through caution below (the WALLET-LAPSE-TIP-1 availability valve: never hard-block on an
+      // uncorroborated lapse that could be a MITM-inflated tip on a fresh install).
+      if (v?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd has lapsed, so we did not send. Send to the owner's 0x address directly, or ask them to renew the name before sending again.` }; // MUTATE_NS2_PROVEN_LAPSE
       // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill — not name-scope
       // provable" caution rather than the generic "couldn't verify" one. Still verified:false (fail-closed).
       return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable", viaFill: v?.viaFill === true };
@@ -1333,6 +1426,10 @@ export class Wallet {
     }
   }
   async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
+    // CSDTX-SIWC-01: a non-string claim would be hashed as-is into the on-chain commitment but
+    // String()-normalized on reveal, so the paid commit could never be revealed. dApp-reachable,
+    // so the .d.ts type cannot be trusted at runtime. Refuse BEFORE any fee is spent.
+    if (typeof p?.claim !== "string" || !p.claim) throw new Error("sealClaim: claim must be a non-empty string");
     const priv = this.must().privkey;
     const hk = this.histKeyNow(), sk = sealKey(this.addr()); // captured with the signer (F5)
     const domain = (p.domain && p.domain.trim()) || "csd:sealed";
@@ -1346,16 +1443,35 @@ export class Wallet {
     // ambiguous path too, or a landed commit becomes forever unrevealable (0.2.56, same class as
     // the cairnPost content fix). Saving locally is harmless when the tx never landed.
     if (r.txid && (r.ok || r.code === "SUBMIT_MAYBE_INFLIGHT")) {
-      const list: any[] = (await this.store.get(sk)) || [];
       // maybe-path seals are FLAGGED (0.2.57, reviewer nit) so the sealed-claims UI can say the
       // anchor may not have landed instead of listing it like a confirmed commit.
       // L5: persist the {claim, nonce} preimage ENCRYPTED at rest (fresh IV) — the front-running lever.
-      if (!list.find((x) => x.txid === r.txid)) {
+      // Encrypt BEFORE entering the chain (vault crypto, no list dependency); the parked record
+      // then carries ciphertext, so a retry is a pure store write needing no key. A locked-vault
+      // throw here is caught: the commit already broadcast, so we must still record history and
+      // return the result (the nonce is lost in that sub-ms window; stated residual, not new).
+      let rec: any = null;
+      try {
         const enc = await this.sealPreimage(p.claim, nonce);
-        list.unshift({ txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) });
-      }
-      await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
-      await this.store.set(sk, list.slice(0, 500));
+        rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) };
+      } catch { /* locked between broadcast and seal: history row below still records the commit */ }
+      if (rec) await this.inSealChain(async () => {
+        if (!this.accts) return; // locked/reset mid-flight: do not write; lock()/reset() own the discipline
+        try {
+          const list: any[] = (await this.store.get(sk)) || [];
+          for (const p of this.pendingSeals) // retry parked records first (drain rides this write)
+            if (p.k === sk && !list.find((x) => x.txid === p.rec.txid)) list.unshift(p.rec);
+          if (!list.find((x) => x.txid === rec.txid)) list.unshift(rec);
+          await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
+          await this.store.set(sk, capSeals(list));
+          this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk);
+        } catch {
+          // SEAL-WRITE-02 guard: the commit fee is PAID and the tx is broadcast; a storage failure
+          // must neither throw out of sealClaim nor lose the only copy of the nonce. Park the
+          // encrypted record: sealedClaims()/revealClaim see it; the next seal-list write retries.
+          if (!this.pendingSeals.some((p) => p.k === sk && p.rec.txid === rec.txid)) this.pendingSeals.push({ k: sk, rec });
+        }
+      });
     }
     await this.maybeRecord(hk, r, { type: "seal", domain, fee });
     return r;
@@ -1363,15 +1479,29 @@ export class Wallet {
   async revealClaim(txid: string) {
     const k = sealKey(this.addr());
     const list: any[] = (await this.store.get(k)) || [];
-    const rec = list.find((x) => x.txid === txid);
+    const rec = list.find((x) => x.txid === txid)
+      ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec; // a parked seal is revealable too
     if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
     // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
     const { claim, nonce } = await this.openPreimage(rec);
     const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);
     if (r && r.ok) {
-      rec.revealed = true;
-      await this.reencryptLegacyPreimages(list); // lazy-migrate any legacy plaintext record on this write
-      await this.store.set(k, list);
+      // Chained write-back on a FRESH read (the list above is stale across the registerContent
+      // network await; writing it back would erase a seal recorded meanwhile). A storage failure
+      // is swallowed: the reveal itself succeeded and registration is idempotent.
+      await this.inSealChain(async () => {
+        if (!this.accts) return;
+        try {
+          for (const p of this.pendingSeals) if (p.k === k && p.rec.txid === txid) p.rec.revealed = true;
+          const fresh: any[] = (await this.store.get(k)) || [];
+          const fr = fresh.find((x) => x.txid === txid);
+          if (fr) {
+            fr.revealed = true;
+            await this.reencryptLegacyPreimages(fresh); // lazy-migrate any legacy plaintext record on this write
+            await this.store.set(k, fresh);
+          }
+        } catch { /* revealed flag is display state; a later reveal or seal write retries it */ }
+      });
     }
     return r;
   }
@@ -1380,7 +1510,11 @@ export class Wallet {
   // decrypt failure degrades to "no preview" rather than throwing (the list never breaks).
   async sealedClaims(): Promise<any[]> {
     if (!this.accts) return [];
-    const list: any[] = (await this.store.get(sealKey(this.addr()))) || [];
+    const kk = sealKey(this.addr());
+    const stored: any[] = (await this.store.get(kk)) || [];
+    // merge parked (write-failed) seals so a paid-but-unpersisted commit still shows in the list
+    const parked = this.pendingSeals.filter((p) => p.k === kk && !stored.some((x) => x?.txid === p.rec.txid)).map((p) => p.rec);
+    const list = parked.length ? [...parked, ...stored] : stored;
     const out: any[] = [];
     for (const rec of list) {
       if (rec?.enc) { try { const { claim } = await this.openPreimage(rec); out.push({ ...rec, claim }); } catch { out.push({ ...rec }); } }
@@ -1397,6 +1531,7 @@ export class Wallet {
   // derives from it) under the switched-to account.
   private histKeyNow() { return histKey(this.addr()); }
   private async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[] }, meta: Record<string, unknown>) {
+    // PCD-2: every branch below is non-rejecting (chained + guarded), so an awaiting flow can never report a succeeded broadcast as a failure.
     if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta });
     // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool — a timeout / gateway
     // 5xx / unreadable answer AFTER signing. Record it maybe:true under the LOCALLY computed txid
@@ -1425,23 +1560,35 @@ export class Wallet {
     // deriving a false "merging" line for up to an hour).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
   }
-  private async clearMaybe(k: string, txid: string) {
-    const h: any[] = (await this.store.get(k)) || [];
-    const e = h.find((x) => x?.txid === txid && x.maybe);
-    if (e) { delete e.maybe; await this.store.set(k, h); }
+  private clearMaybe(k: string, txid: string): Promise<void> {
+    // a definitive record can also supersede a parked maybe twin for the same txid
+    for (const p of this.pendingHist) if (p.k === k && p.entry.txid === txid) delete p.entry.maybe;
+    return this.inHistChain(async () => {
+      if (!this.accts) return;
+      try {
+        const h: any[] = (await this.store.get(k)) || [];
+        const e = h.find((x) => x?.txid === txid && x.maybe);
+        if (e) { delete e.maybe; await this.store.set(k, h); }
+      } catch { /* flag hygiene only: a stale maybe marker self-heals via the pendingMerge reconcile and the spend latch */ }
+    });
   }
-  private async latchSpentMerges(k: string, spent: string[]) {
-    const h: any[] = (await this.store.get(k)) || [];
-    const set = new Set(spent.map((t) => String(t).toLowerCase()));
-    let dirty = false;
-    for (const e of h) {
-      // spending the output proves the tx landed — that also RESOLVES a maybe flag (an entry can
-      // otherwise sit {maybe:true, confirmed:true} showing a stale "may be in flight" marker)
-      if (e?.type === "consolidate" && !e.confirmed && set.has(String(e.txid).toLowerCase())) { e.confirmed = true; delete e.maybe; dirty = true; }
-    }
-    if (dirty) await this.store.set(k, h);
+  private latchSpentMerges(k: string, spent: string[]): Promise<void> {
+    return this.inHistChain(async () => {
+      if (!this.accts) return;
+      try {
+        const h: any[] = (await this.store.get(k)) || [];
+        const set = new Set(spent.map((t) => String(t).toLowerCase()));
+        let dirty = false;
+        for (const e of h) {
+          // spending the output proves the tx landed — that also RESOLVES a maybe flag (an entry can
+          // otherwise sit {maybe:true, confirmed:true} showing a stale "may be in flight" marker)
+          if (e?.type === "consolidate" && !e.confirmed && set.has(String(e.txid).toLowerCase())) { e.confirmed = true; delete e.maybe; dirty = true; }
+        }
+        if (dirty) await this.store.set(k, h);
+      } catch { /* flag hygiene only: a stale maybe marker self-heals via the pendingMerge reconcile and the spend latch */ }
+    });
   }
-  private async recordTx(k: string, entry: Record<string, unknown>) {
+  private async doRecordTx(k: string, entry: Record<string, unknown>) {
     const h: any[] = (await this.store.get(k)) || [];
     const e = h.find((x) => x?.txid === entry.txid);
     if (e) {
@@ -1455,7 +1602,43 @@ export class Wallet {
     h.unshift(entry);
     await this.store.set(k, h.slice(0, 200));
   }
-  history(): Promise<any[]> { if (!this.accts) return Promise.resolve([]); return this.store.get(histKey(this.addr())).then((h: any[]) => h || []); }
+  // PCD-2: recordTx NEVER rejects. send() awaits maybeRecord before returning, so a storage throw
+  // AFTER a successful broadcast used to make send() throw and tell the user their send FAILED
+  // when it succeeded, driving a real double-pay on retry. The RMW rides histChain (no interleaved
+  // clobber); a failed write PARKS the entry for retry on the next recordTx and stays visible via
+  // the history() merge. The drain rides BEHIND the caller's own write and is never awaited by it,
+  // so a recovered store cannot make one legitimate send pay off the whole backlog.
+  private recordTx(k: string, entry: Record<string, unknown>): Promise<void> {
+    const own = this.inHistChain(async () => {
+      if (!this.accts) return; // locked/reset mid-flight: deliberate teardown, do not write or park
+      try {
+        // a definitive record supersedes a parked maybe twin for the same txid
+        this.pendingHist = this.pendingHist.filter(
+          (p) => !(p.k === k && p.entry.txid === entry.txid && p.entry.maybe && !entry.maybe));
+        await this.doRecordTx(k, entry);
+      } catch { this.pendingHist.push({ k, entry }); }
+    });
+    if (this.pendingHist.length) void this.inHistChain(() => this.drainPendingHist()).catch(() => {});
+    return own;
+  }
+  private async drainPendingHist(): Promise<void> {
+    if (!this.accts) return;
+    const parked = this.pendingHist; this.pendingHist = [];
+    for (const p of parked) {
+      try { await this.doRecordTx(p.k, p.entry); } catch { this.pendingHist.push(p); }
+    }
+  }
+  history(): Promise<any[]> {
+    if (!this.accts) return Promise.resolve([]);
+    const k = histKey(this.addr());
+    return this.store.get(k).then((h: any[]) => {
+      const stored = h || [];
+      const parked = this.pendingHist
+        .filter((p) => p.k === k && !stored.some((x: any) => x?.txid === p.entry.txid))
+        .map((p) => p.entry);
+      return parked.length ? [...parked, ...stored] : stored;
+    });
+  }
 
   // ── idle auto-lock ───────────────────────────────────────────────────────
   private lastActive = Date.now();
@@ -1465,7 +1648,14 @@ export class Wallet {
     // SW restarts (genuine activity extends the unlocked session; pure reads never call touch()).
     if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => {});
   }
-  async autoLock(maxIdleMs: number) { if (this.accts && Date.now() - this.lastActive > maxIdleMs) await this.lock(); } // await: the idle-lock race LOCK-ASYNC targets
+  async autoLock(maxIdleMs: number) {
+    // CLK-1: a backward wall-clock jump (NTP/manual) leaves lastActive in the future, making
+    // now - lastActive negative forever and the vault never auto-locks. Clamp: a backward jump
+    // RESTARTS the idle window (never locks instantly, no UX regression; never extends the
+    // window beyond maxIdleMs of post-jump time).
+    if (Date.now() < this.lastActive) this.lastActive = Date.now();
+    if (this.accts && Date.now() - this.lastActive > maxIdleMs) await this.lock(); // await: the idle-lock race LOCK-ASYNC targets
+  }
 
   // ── durable off-chain content registration (account-agnostic) ──────────────
   private async addPending(content: unknown, txid: string) {
@@ -1533,21 +1723,22 @@ export class Wallet {
 
   // Wipe ALL wallet state — every account's vault, history, and sealed-claim
   // preimages — so a freshly-created wallet can't surface a prior owner's data.
+  // RESET-RESURRECT (fund-safety red-team + P75-6): the wipe must not race ANY parked write. It is
+  // serialized behind ALL THREE write chains (vault, history, seals); lock() above nulled
+  // this.accts and cleared the pending arrays, and every chained WRITE callback bails on
+  // !this.accts, so nothing queued after this point can land, and everything queued before it
+  // settles before the deletes run.
   async reset(): Promise<void> {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
-    // RESET-RESURRECT (fund-safety red-team): the wipe must not race a persist parked at its store.set —
-    // a STALE persist landing AFTER the deletes would resurrect the (still-encrypted) vault + the cleartext
-    // account mirror, silently defeating "wipe everything" and locking out create/restore. Serialize the
-    // wipe behind the SAME chain persistVault uses, so it runs only after every queued persist's writes
-    // have landed; lock() above already nulled this.accts, so no NEW persist can write (doPersistVault
-    // throws "locked"), making these deletes the last store ops.
     const wipe = () => this.doReset(wallets);
-    const run = this.persistChain.then(wipe, wipe);
-    this.persistChain = run.then(() => {}, () => {});
+    const run = Promise.allSettled([this.persistChain, this.histChain, this.sealChain]).then(wipe);
+    const settled = run.then(() => {}, () => {});
+    this.persistChain = settled; this.histChain = settled; this.sealChain = settled;
     return run;
   }
   private async doReset(wallets: PubAcct[]): Promise<void> {
+    this.pendingHist = []; this.pendingSeals = []; // belt: a park that raced lock
     for (const w of wallets) { await this.store.del(histKey(w.addr)); await this.store.del(sealKey(w.addr)); }
     for (const k of ["vault", "wallets", "active", "addr", "txHistory", "sealedClaims", "pendingContent"]) await this.store.del(k);
   }

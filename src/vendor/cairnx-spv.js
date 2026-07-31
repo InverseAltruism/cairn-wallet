@@ -866,7 +866,8 @@ function expectedBitsFromWindow(window, height) {
   const parent = window[window.length - 1];
   if (!parent) throw new Error(`expectedBits: empty window for height ${height}`);
   if (height < 2) return parent.bits;
-  const n = Math.min(LWMA_WINDOW, height, window.length);
+  const n = Math.min(LWMA_WINDOW, height);
+  if (window.length < n) throw new Error(`expectedBits: short window at height ${height} (have ${window.length}, need ${n})`);
   if (n < 2) return parent.bits;
   const w = window.slice(window.length - n);
   const times = [];
@@ -1051,7 +1052,8 @@ var LightClient = class _LightClient {
   }
   /** Fetch + seed the LWMA window ending at `checkpointHeight`, asserting its hash, then ready to sync forward. */
   async syncFromCheckpoint(checkpointHeight, checkpointHash, context = LWMA_WINDOW) {
-    const start = Math.max(0, checkpointHeight - context);
+    const ctx = Math.min(context, LWMA_WINDOW);
+    const start = Math.max(0, checkpointHeight - ctx);
     let seed = [];
     if (this.batch) {
       try {
@@ -1185,9 +1187,9 @@ var LightClient = class _LightClient {
    * (forward-synced) header, exactly as the live `sync`/`verifyOne` path accepted it. Only the
    * original seed window (`trusted`) skips the time/LWMA re-derivation — the same posture
    * `seedTrusted` allows for the checkpoint trade. A checkpoint-configured client additionally
-   * refuses any snapshot (other than a genesis-rooted one, anchored by the H4 GENESIS_HASH check
-   * below) unless a pinned checkpoint COVERS the whole trusted seed prefix — `baseHeight +
-   * LWMA_WINDOW - 1 <= cp <= last` for some configured `cp` (see the containment block for why).
+   * refuses ANY snapshot, genesis-rooted included, unless a pinned checkpoint COVERS the whole
+   * trusted seed prefix: `baseHeight + LWMA_WINDOW - 1 <= cp <= last` for some configured `cp`
+   * (see the containment block for why, and for what it means for a genesis-rooted file).
    * Without that, a poisoned snapshot could place forged min-difficulty headers inside the
    * LWMA-skipping prefix and restore them as verified (grindable at POW_LIMIT). With it, a
    * localStorage-poisoned snapshot is REJECTED here, not restored as verified. chainwork is
@@ -1196,39 +1198,43 @@ var LightClient = class _LightClient {
   static fromSnapshot(s, opts = {}) {
     if (s.v !== 1 || !Array.isArray(s.headers) || !s.headers.length) throw new Error("bad snapshot");
     const lc = new _LightClient(opts);
+    const baseHeight = Number(s.baseHeight);
+    if (!Number.isSafeInteger(baseHeight) || baseHeight < 0) throw new Error(`snapshot bad baseHeight: ${baseHeight}`);
     const pinnedHeights = Object.keys(lc.checkpoints).map(Number);
-    if (pinnedHeights.length && s.baseHeight > 0) {
-      const last = s.baseHeight + s.headers.length - 1;
-      const anchored = pinnedHeights.some((cp) => s.baseHeight + LWMA_WINDOW - 1 <= cp && cp <= last);
+    if (pinnedHeights.length) {
+      const last = baseHeight + s.headers.length - 1;
+      const anchored = pinnedHeights.some((cp) => baseHeight + LWMA_WINDOW - 1 <= cp && cp <= last);
       if (!anchored) {
-        throw new Error(`snapshot not anchored: no checkpoint in [${s.baseHeight + LWMA_WINDOW - 1}..${last}] to cover the trusted seed prefix`);
+        throw new Error(`snapshot not anchored: no checkpoint in [${baseHeight + LWMA_WINDOW - 1}..${last}] to cover the trusted seed prefix`);
       }
     }
-    lc.baseHeight = s.baseHeight;
+    lc.baseHeight = baseHeight;
     let prevHash = null;
     let work = 0n;
     for (let i = 0; i < s.headers.length; i++) {
       const e = s.headers[i];
-      if (e.height !== s.baseHeight + i) throw new Error(`snapshot not contiguous at ${e.height}`);
+      const height = Number(e.height);
+      if (!Number.isSafeInteger(height) || height < 0) throw new Error(`snapshot bad height at index ${i}: ${height}`);
+      if (height !== baseHeight + i) throw new Error(`snapshot not contiguous at ${height}`);
       const hash = headerHash(e.header);
-      if (hash.toLowerCase() !== e.hash.toLowerCase()) throw new Error(`snapshot hash mismatch at ${e.height}`);
-      if (i === 0 && s.baseHeight === 0) {
+      if (hash.toLowerCase() !== e.hash.toLowerCase()) throw new Error(`snapshot hash mismatch at ${height}`);
+      if (i === 0 && baseHeight === 0) {
         if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`snapshot foreign genesis: ${hash}`);
         if (e.header.bits !== INITIAL_BITS) throw new Error("snapshot genesis bits != INITIAL_BITS");
       }
-      if (prevHash && e.header.prev.toLowerCase() !== prevHash) throw new Error(`snapshot prev link broken at ${e.height}`);
-      const fullWindowAvailable = e.height - s.baseHeight >= LWMA_WINDOW;
-      if (e.height > 0 && (!e.trusted || fullWindowAvailable)) {
-        const window = lc.windowBefore(e.height);
+      if (prevHash && e.header.prev.toLowerCase() !== prevHash) throw new Error(`snapshot prev link broken at ${height}`);
+      const fullWindowAvailable = baseHeight === 0 || height - baseHeight >= LWMA_WINDOW;
+      if (height > 0 && (!e.trusted || fullWindowAvailable)) {
+        const window = lc.windowBefore(height);
         const parent = lc.chain[i - 1];
-        if (parent) lc.checkTimeRules(e.height, e.header, window, parent);
-        const exp = expectedBitsFromWindow(window, e.height);
-        if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${e.height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
+        if (parent) lc.checkTimeRules(height, e.header, window, parent);
+        const exp = expectedBitsFromWindow(window, height);
+        if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
       }
-      if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${e.height}`);
-      lc.pinCheckpoint(e.height, hash);
+      if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
+      lc.pinCheckpoint(height, hash);
       work = satAddWork(work, e.header.bits);
-      lc.chain.push({ height: e.height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
+      lc.chain.push({ height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
       prevHash = hash.toLowerCase();
     }
     return lc;
@@ -4304,6 +4310,10 @@ function resolve(events, tipHeight) {
           fclaims.set(ev.id, { offer: rec.offer, proposer: who, expiresEpoch: E, height: ev.height, granted: false });
           note(ev, ev.id, "fclaim", false, why);
         };
+        if (!Number.isSafeInteger(E)) {
+          deny("expiresEpoch out of safe-integer range");
+          continue;
+        }
         if (!target) {
           deny("unknown offer");
           continue;
@@ -4739,6 +4749,7 @@ var FEE_GATE_MARGIN_BLOCKS = 5;
 var NAME_FEE_GATES = [V18_HEIGHT, V24_HEIGHT];
 var buildFeeHeight = (tip) => {
   const t = Number(tip);
+  if (!Number.isSafeInteger(t) || t < 0) throw new RangeError(`buildFeeHeight: tip must be a non-negative safe integer, got ${String(tip)}`);
   for (const g of NAME_FEE_GATES) if (t < g && t >= g - FEE_GATE_MARGIN_BLOCKS) return g;
   return t;
 };

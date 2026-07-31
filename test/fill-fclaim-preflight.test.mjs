@@ -705,6 +705,28 @@ const mut = await withGuardRemoved("MUTATE_FCLAIM_GUARD", async (mod) => {
 });
 check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves the guard is the sole rejecter)`, mut.r?.ok === true && mut.submits === 1);
 
+// TSA-2 (Plan 75 P75-7): the LEGACY-lane payto guard (MUTATE_LEGACY_PAYTO_GUARD, now on its own load-bearing
+// code line) is the SOLE rejecter of a served want.payto redirect on the SPV-less legacy/dApp CSD lane. The
+// need-map is sized over the SERVED (redirected) offer, so a served-payto redirect satisfies the need-map;
+// only this bind (served payto vs merkle-proven author) rejects it. Baseline REFUSE is pinned above by the
+// F2-legacy pw-legacy-f2 (a) case + pw-legacy01 (honest fill submits); this adds the submit-flip mutation.
+{
+  const ATT_L = "0x" + "a9".repeat(20);
+  const takerFor = (me, extra) => ({ id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: me, ...extra });
+  const mutL = await withGuardRemoved("MUTATE_LEGACY_PAYTO_GUARD", async (mod) => {
+    const wm = new mod.Wallet(memoryStore());
+    const { addr } = await wm.create("pw-legacy-payto-mut");
+    const me = addr.toLowerCase();
+    const served = takerFor(me, { want: { value: String(V), payto: ATT_L } });   // REDIRECTED served want.payto (attacker)
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));   // built from the redirected need-map
+    wm.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(takerFor(me)) });   // the REAL merkle-proven author is S
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
+    const r = await wm.fillOffer({ proposalId: OID, outputs: outs });   // outs pay the attacker ATT_L (the redirected need-map)
+    return { r, submits: s.submits.length };
+  });
+  check("MUTATION[MUTATE_LEGACY_PAYTO_GUARD removed]: a redirected legacy want.payto fill now SUBMITS to the attacker payto (guard is the sole rejecter)", mutL.r?.ok === true && mutL.submits === 1);
+}
+
 // ── BP4/N11 (REQUEST-BUDGET): the scan is transport-parallelized with a per-height memo. Pin: every window
 //    height fetched EXACTLY ONCE (no duplicate re-fetch by proveEventAt = the memo), the window is a
 //    contiguous ascending range covering the offer height, blocks are fetched with BOUNDED CONCURRENCY > 1

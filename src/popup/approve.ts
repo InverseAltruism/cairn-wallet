@@ -1,8 +1,8 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, lookalikeOf, costLine, escapeHtml, paidRecipients, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, type NameFetchResult } from "./clearsign.js";
-import { decodeCairnxRecord, CAIRNX_DOMAIN, TREASURY_ADDR, CONF_TOKEN_FILL } from "../core/cairnx.js";
+import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, type NameFetchResult } from "./clearsign.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
@@ -34,6 +34,12 @@ async function render() {
   // wipe the async-filled balance-after AND the security warning — so we don't.
   if (renderedId === current.id) return;
   renderedId = current.id;
+  // AW-1: disable BOTH buttons the instant a NEW request is detected, BEFORE the pre-paint RPC await, so a
+  // click landing during that await cannot resolve the new request against the still-visible OLD paint. Split
+  // from armButtons deliberately: hoisting armButtons ENTIRE would start its 700ms re-enable timer DURING the
+  // ~2.5s await, re-enabling the buttons well before the new request paints (relocating the very window this
+  // closes). The re-enable timer still fires only from the armButtons call AFTER the paint below.
+  disableButtons();
   // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
   // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
   // before building the request HTML (not per ~1.2s tick — this block runs once per new request).
@@ -65,17 +71,22 @@ async function render() {
   const connectNote = (current.method === "connect" || current.method === "getAddress")
     ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings → Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
     : "";
-  $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>${queued}`
-    + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
-    + connectNote
-    + `<div class="req dim" id="cost">${costLine(current)}</div>`;
-  msg(""); // clear any stale "approved"/"rejected" from a previous request
-  armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
-  fillBalance(current);
-  fillSendWarning(current);
-  fillTokenSim(current);
-  fillRevealPreview(current); // M14: which secret a revealClaim makes public (local sealedClaims read)
-  armNfinalizeGate(current, st);
+  try {
+    $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>${queued}`
+      + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
+      + connectNote
+      + `<div class="req dim" id="cost">${costLine(current)}</div>`;
+    msg(""); // clear any stale "approved"/"rejected" from a previous request
+    armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
+    fillBalance(current);
+    fillSendWarning(current);
+    fillTokenSim(current);
+    fillRevealPreview(current); // M14: which secret a revealClaim makes public (local sealedClaims read)
+    armNfinalizeGate(current, st);
+  } catch (e) {
+    renderedId = null;   // AW-1: a describe()/paint throw must NOT latch renderedId, or `if (renderedId === current.id) return` (above) leaves the request permanently unpaintable AND (disableButtons ran, armButtons did not) unapprovable/unrejectable. Reset so the next tick retries.
+    throw e;
+  }
 }
 
 // ── nfinalize finalize-window gate (Plan 63 carry-over, shipped with 0.2.54) ──────────────────
@@ -221,19 +232,11 @@ async function fillSendWarning(r: any) {
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
     const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
-    const known = [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))];
-    const warns: string[] = [];
-    for (const o of outs) {
-      const to = String(o.to || "");
-      // The protocol fee/rebate sink is a FIXED, known convention address (CONVENTION §10; v1.6 1.5%
-      // treasury + maker rebate ride a fill as outputs to it / the maker) — not a user-chosen recipient,
-      // so it must not raise a first-time / address-poisoning warning. Skip it.
-      if (to.toLowerCase() === TREASURY_ADDR) continue;
-      const tag = `<code>${escapeHtml(to.slice(0, 10))}…${escapeHtml(to.slice(-6))}</code>`;
-      const la = lookalikeOf(to, known);
-      if (la) warns.push(`⚠ <b>Possible address-poisoning:</b> ${tag} resembles <code>${escapeHtml(la.slice(0, 10))}…${escapeHtml(la.slice(-6))}</code> you've seen before but is NOT identical. Verify every character — payments are irreversible.`);
-      else if (!sentTo.some((a) => a.toLowerCase() === to.toLowerCase())) warns.push(`⚠ First time sending to ${tag} — verify every character. Payments are irreversible.`);
-    }
+    // NXFER-POISON-DROP (Part B): the first-time / poisoning computation is the pure clearsign.sendWarnings
+    // (approve.ts owns only the DOM read + mount). It keys the first-time check on `known` = paid recipients
+    // PLUS the wallet's OWN account addresses, so an nset pre-filled with the user's own address (the "set as
+    // primary" prompt right after registration) no longer warns about the user's own address on a no-CSD op.
+    const warns = sendWarnings(outs.map((o: any) => String(o.to || "")), sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
     const el = document.getElementById("send-warn");
     if (el && warns.length) { el.innerHTML = warns.join("<br>"); (el as HTMLElement).hidden = false; }
   } catch { /* no history → no warning */ }
@@ -242,12 +245,15 @@ async function fillSendWarning(r: any) {
 // buttons for a beat so a click already in motion (or a reflexive double-click after a
 // prior "approved") cannot resolve a request the user hasn't actually looked at. Defeats
 // the approval-swap hijack where a second request is queued behind the one on screen.
+function disableButtons() {
+  ($("btn-approve") as HTMLButtonElement).disabled = true;
+  ($("btn-reject") as HTMLButtonElement).disabled = true;
+}
 function armButtons() {
-  const ap = $("btn-approve") as HTMLButtonElement, rj = $("btn-reject") as HTMLButtonElement;
-  ap.disabled = true; rj.disabled = true;
+  disableButtons();  // AW-1: same immediate disable; the 700ms RE-ENABLE timer stays here, after the paint
   // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
   // AFTER this timer disables it directly in armNfinalizeGate).
-  setTimeout(() => { ap.disabled = nfinBlocked; rj.disabled = false; }, 700);
+  setTimeout(() => { ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked; ($("btn-reject") as HTMLButtonElement).disabled = false; }, 700);
 }
 async function resolve(approve: boolean) {
   if (!current) return;

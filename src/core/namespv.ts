@@ -64,6 +64,12 @@ export interface NameVerification {
   // + a "may have lapsed" reason, so a fresh-install + MITM inflating the node tip cannot assert a false
   // confident lapse that hard-blocks a legit send. Fail-soft (availability valve), never a false green.
   lapsed?: boolean;
+  // NS-1 (HIGH, RESIDUAL — not a closed defense): true when the union failed and only ONE source solo-
+  // recovered the winner, so a lone (possibly hostile) source alone decided the send target — NOT
+  // independently corroborated. Surfaced so the badge stops asserting multi-source "chain-verified"; the
+  // send still goes to the PROVEN winner (vetoing would drop back to the resolver-served address = the B5e
+  // single-source DoS/trust regression). Real closure remains a genuinely-independent second source.
+  soleSource?: boolean;
 }
 
 export interface NameClaim { addr?: string; owner?: string; via?: string; lapsed?: boolean }
@@ -370,10 +376,14 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
         if (recovered.length >= 1 && addrs.size === 1) {
           const win = recovered[0].rep;
           let agreed = 0; for (const r of usable) { const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null; if (c === win.addr) agreed++; }
-          // A recovery ALWAYS flags disagree: a source that failed to replay cleanly (the poisoner) or whose
-          // stated claim differs from the proven winner is misbehaving, and the badge must stay cautious even
-          // though the name is provably resolved. Never a hard veto (the M12 fix), never a silent green.
-          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, scope: "as-shown", sources: usable.length, agreed, disagree: recovered.length < usable.length || agreed < usable.length, viaFill: false };
+          // NS-1: keep verified:true + the PROVEN winner addr (vetoing would drop resolveName back to the
+          // RESOLVER-SERVED address = the B5e single-source DoS/trust regression, D2 K.5#3). But when only ONE
+          // source solo-recovered the winner, that lone source (possibly the poisoner) alone decided the
+          // target - it is NOT independently corroborated. Surface `soleSource` so the badge stops asserting
+          // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
+          // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
+          const soleSource = recovered.length === 1;
+          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, scope: "as-shown", sources: usable.length, agreed, disagree: recovered.length < usable.length || agreed < usable.length, soleSource, viaFill: false };
         }
       }
       return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
@@ -438,6 +448,15 @@ export function floorAdvance(seenFloor: number, nodeTip: number, verifiedTip: nu
   const raw = Number.isFinite(nodeTip) ? nodeTip : 0;
   const cand = Math.min(raw, (Number.isFinite(verifiedTip) ? verifiedTip : 0) + FLOOR_SLACK);
   return cand > seenFloor ? cand : seenFloor;
+}
+
+// M8 (B5e): the transient-vs-STRUCTURAL sync-failure classifier, ONE exported source so prepare()'s catch
+// and the test cannot drift. Transient (rate limit / gateway / timeout / non-dense range / a 200 with a
+// non-JSON body) KEEPS the cache and rethrows fail-closed; a STRUCTURAL break (prev-link / PoW / bits / hash)
+// reseeds. See prepare()'s catch for why the JSON-parse markers are transport, not chain, faults.
+export function isTransientSyncError(msg: string): boolean {
+  return /\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i.test(msg)
+    || /unexpected (token|end)|json/i.test(msg);
 }
 
 /** Build the live SPV source. The LightClient seeds at the baked checkpoint and verifies forward to tip. */
@@ -564,7 +583,7 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
           // a 200 with a bad body throws "Unexpected end of JSON input"/"Unexpected token" - a transport
           // fault, never a chain one (structural errors say prev/PoW/bits/hash, never json). (G8 review.)
           const msg = String((e as Error)?.message || e);
-          if (/\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i.test(msg) || /unexpected (token|end)|json/i.test(msg)) throw e;
+          if (isTransientSyncError(msg)) throw e;
           // Do NOT drop the snapshot before the reseed: a structurally-lying feed would nuke an HONEST
           // snapshot and, if the reseed then fails, force a full cold sync every session (N10 budget
           // pressure). On reseed SUCCESS the post-catch snapshot write below replaces it with the fresh

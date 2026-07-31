@@ -175,7 +175,7 @@ export function countMyOtherLiveHolds(
  * sunset hold), which stays resolver-trusted exactly as pre-V28 (N1). A hostile primary that also relabels
  * `offer.id === proposalId` lands in that same pre-existing legacy N1 residual, not a new V28 lane.
  */
-export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: MintedProvenOfferTerms }> {
+export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: MintedProvenOfferTerms; tipFloored: boolean }> {
   const spv = opts.spvSource ?? await liveSpvSource(opts);
   const offerId = String(opts.hints.offerId).toLowerCase();
   const fclaimTxid = String(opts.hints.fclaimTxid).toLowerCase();
@@ -186,8 +186,19 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 
   // Sync PoW-verified headers to the node tip (prepare caps its sync at the node tip, so a large target forces
   // a full sync) — the fill needs burial-to-tip, not just headers up to a record. A lying-high header throws.
-  const { verifiedTip } = await spv.prepare(Number.MAX_SAFE_INTEGER);
+  const { verifiedTip, floorTip: rawFloorTip } = await spv.prepare(Number.MAX_SAFE_INTEGER);
   if (!Number.isFinite(verifiedTip)) throw new Error("fill-SPV: no PoW-verified tip");
+  const floorTip = Number.isFinite(rawFloorTip as number) ? Number(rawFloorTip) : 0;
+  // FILLSPV-01: the deadline/hold-liveness guards in verifyFillSpv read io.tip(). A DEFLATED served tip
+  // under-states verifiedTip (prepare syncs only to the served tip), so a hold that has ACTUALLY lapsed can
+  // read as still live -> the fill signs -> the chain rejects it -> the payment burns. Clamp the reported tip
+  // UP to the PoW-backed cross-session floor: both terms are PoW evidence, so the max can only OVER-state by
+  // reorg depth (fail-closed, more refusals) and never under-state. NEVER the served nodeTip (attacker-settable
+  // upward). ev.depth is computed from raw verifiedTip below, and verifyFillSpv's depthOf takes min(ev.depth,
+  // tip-height+1), so raising the reported tip cannot weaken burial depth (still the conservative raw depth).
+  let reportedTip = verifiedTip;
+  if (floorTip > reportedTip) reportedTip = floorTip;   // MUTATE_FILLSPV_TIP_FLOOR
+  const tipFloored = floorTip > verifiedTip;            // the floor had to override a lower verified tip (deep reorg OR active deflation) -> a resulting refusal is "could not confirm", not a factual "lapsed"
 
   const heightOf = new Map<string, number>();
   const ids = new Set<string>();                       // events for verifyFillSpv's offer replay
@@ -364,15 +375,13 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // seller (= the prevout-bound author) owns the rebate leg; the payment recipient is the record's explicit
   // want.payto (merkle-committed) or, absent, the seller. verifyFillSpv proves DELIVERY but not these, so the
   // caller binds the resolver-served payto/seller to them (fail-closed) before sizing the fill.
-  const provenSeller = String(offerEv.proposer).toLowerCase();
-  const provenPayto = (offerRec?.want?.payto && /^0x[0-9a-f]{40}$/.test(String(offerRec.want.payto).toLowerCase()))
-    ? String(offerRec.want.payto).toLowerCase()
-    : provenSeller;
+  const provenSeller = String(offerEv.proposer).toLowerCase(); // MUTATE_LIVE_PROVEN_SELLER
+  const provenPayto = (offerRec?.want?.payto && /^0x[0-9a-f]{40}$/.test(String(offerRec.want.payto).toLowerCase())) ? String(offerRec.want.payto).toLowerCase() : provenSeller; // MUTATE_LIVE_PROVEN_PAYTO
   // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer, via the ONE vendored
   // producer (B4a; the proven CREATION height is the input, never a served height - a lying resolver
   // deflating feeBps/height/value/taker cannot under-size a leg, which resolve() would reject AFTER the
   // payment moved = pay-without-delivery burn).
-  const provenTerms: MintedProvenOfferTerms = provenOfferTerms(offerRec, offerEv.height);
+  const provenTerms: MintedProvenOfferTerms = provenOfferTerms(offerRec, offerEv.height); // MUTATE_LIVE_PROVEN_TERMS
   const synthetic = new Map<string, ProvenEvent>();
   const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
     const sid = String(built.payloadHash).toLowerCase();   // the record's own payload_hash: a stable, unique id
@@ -399,7 +408,8 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
     provenPayto,
     provenSeller,
     provenTerms,
-    async tip() { return verifiedTip; },
+    tipFloored,
+    async tip() { return reportedTip; },
     async offerEventIds() { return [...ids, ...synthetic.keys()]; },
     async provenEvent(id: string) {
       const k = String(id).toLowerCase();
@@ -441,18 +451,16 @@ export async function provenOfferPayto(
     const owner = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
     if (!owner || owner.toLowerCase() !== signer) return null;     // authorship not prevout-bound (tampered) MUTATE_FILLSPV_PREVOUT_BIND
     const seller = signer;
-    const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase()))
-      ? String(rec.want.payto).toLowerCase()
-      : seller;
+    const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase())) ? String(rec.want.payto).toLowerCase() : seller; // MUTATE_PROVEN_PAYTO_DERIVE
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.
-    const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight);
+    const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
     // B7e-FIX (REBIND W1 token-lane close): surface the merkle-proven token WANT (the ticker + amount the
     // buyer PAYS). bindOfferTerms binds the want TYPE only, and provenOfferTerms drops the token ticker/amount,
     // so the token-lane content bind (wallet.ts fillOfferPreflight) needs these directly to mirror the site
     // swapguard verifyOfferContent want.ticker/want.amount bind. Undefined on a CSD-priced offer (no want.ticker).
-    const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined;
-    const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined;
+    const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined; // MUTATE_PROVEN_WANT_TICKER
+    const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined; // MUTATE_PROVEN_WANT_AMOUNT
     return { payto, seller, terms, wantTicker, wantAmount };
   } catch { return null; }
 }

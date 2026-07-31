@@ -1,8 +1,8 @@
 // Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
+import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
-import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { buildNameRenew, buildNameSet, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck } from "../src/vendor/cairnx-spv.js";
 declare const process: { exit(code: number): void };
 
@@ -325,6 +325,61 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     const g = nameActApproveGate("nrenew", { failed: true }, ME);
     return g.block === false && /could not verify/.test(g.note || "");
   })());
+}
+
+// ── NXFER-POISON-DROP (Plan 75 P75-7): the #send-warn poisoning MOUNT must render even when a cairnx repoint
+// (nxfer / nset) carries NO CSD outputs. Pre-fix the mount lived inside the "transfers OUT" ternary, so an
+// empty-outputs propose dropped it and approve.ts silently discarded the computed warning. RED-FIRST: against
+// the pre-fix ternary this assertion is false (the mount was absent for outputs:[]). ──
+{
+  const nsetBuilt = buildNameSet({ name: "alice", addr: "0x" + "cd".repeat(20) });
+  const nsetReq = { method: "propose", params: { domain: CAIRNX_DOMAIN, uri: nsetBuilt.uri, payloadHash: nsetBuilt.payloadHash, fee: 25000000, outputs: [] } };
+  const html = describe(nsetReq);
+  ok("NXFER-POISON-DROP: an nset propose with EMPTY outputs still mounts #send-warn (poisoning warning survives)", html.includes('id="send-warn"'));
+  // exactly one mount per rendered request (the ternary preamble is gone, one mount is appended once).
+  ok("NXFER-POISON-DROP: exactly one #send-warn mount is rendered", (html.match(/id="send-warn"/g) || []).length === 1);
+}
+
+// ── NXFER-POISON-DROP (Part B): the pure first-time / poisoning computation keys the first-time check on
+// `known` = paid recipients PLUS the wallet's OWN account addresses, so an nset pre-filled with the user's own
+// address (the "set as primary" prompt right after registration) warns NOTHING. RED-FIRST: with the pre-fix
+// sentTo-keyed check (own address NOT in sentTo) the own-address case returns a first-time warning. ──
+{
+  const MY = "0x" + "11".repeat(20);
+  const STRANGER = "0x" + "22".repeat(20);
+  const PAID = "0x" + "33".repeat(20);
+  const MY_LOOKALIKE = "0x" + "111111" + "44".repeat(15) + "1111";   // shares MY's head8 + tail4, differs in the middle
+  // (a) the MANDATORY paired happy-path: an nset targeting one of the WALLET'S OWN accounts renders NO warning.
+  ok("NS own-account: sending to the user's OWN address renders NO first-time warning (own-account suppression)", sendWarnings([MY], [], [MY]).length === 0);
+  // (b) a genuinely-new EXTERNAL recipient still warns (the defense is preserved for real strangers).
+  {
+    const w = sendWarnings([STRANGER], [], [MY]);
+    ok("NS own-account: a genuinely-new external recipient STILL gets a first-time warning", w.length === 1 && /First time sending/.test(w[0]));
+  }
+  // (c) a LOOK-ALIKE of one of your own addresses STILL fires the poisoning warning (the delicate half).
+  {
+    const w = sendWarnings([MY_LOOKALIKE], [], [MY]);
+    ok("NS own-account: a look-alike of your OWN address still fires the address-poisoning warning", w.length === 1 && /address-poisoning/.test(w[0]));
+  }
+  // (d) a PRIOR paid recipient is not re-warned.
+  ok("NS own-account: a prior paid recipient is not re-warned", sendWarnings([PAID], [PAID], [MY]).length === 0);
+  // MUT control (non-vacuity): keying the first-time check on paidRecipients ALONE (own addr NOT in the set)
+  // WOULD warn on the own address — the pre-fix behavior this suppression fixes.
+  ok("NS own-account MUT control: keying on sends-only (own addr absent) WOULD warn (proves the fix is load-bearing)", sendWarnings([MY], [], []).length === 1);
+}
+
+// ── NS-1 (Plan 75 P75-7) badge: a verified result whose winner was decided by a LONE source (soleSource) must
+// render the "only ONE name source" caution and NOT the multi-source "servers agree" copy. Checked BEFORE the
+// disagree / ≥2-agree branches. RED-FIRST: against the pre-fix nameCautionHtml (no soleSource branch), a
+// {verified:true, soleSource:true, sources:2, disagree:true} result renders the disagree copy, so "only ONE
+// name source" is ABSENT. ──
+{
+  const badge = nameCautionHtml("alice", true, { soleSource: true, sources: 2, disagree: true });
+  ok("NS-1 badge: a soleSource verified result renders the 'only ONE name source' copy", /only ONE name source/i.test(badge));
+  ok("NS-1 badge: ...and does NOT read as multi-source 'servers agree'", !/servers agree/i.test(badge));
+  // happy control: a genuine 2-source agreement (no soleSource) keeps the strong 'servers agree' badge.
+  const strong = nameCautionHtml("alice", true, { sources: 2, disagree: false });
+  ok("NS-1 badge control: a real 2-source agreement still reads 'servers agree' (strong badge unchanged)", /servers agree/i.test(strong) && !/only ONE name source/i.test(strong));
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);

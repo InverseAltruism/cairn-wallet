@@ -30,6 +30,7 @@ const sources = [{ label: "primary", base: PRIM }, { label: "clarvis", base: CLA
   const r = await verifyNameUnion(NAME, sources, source(blocks, 33800), mkFetch({ [PRIM]: evilHistory, [CLAR]: evilHistory }));
   console.log("[C] identical apex records on both hosts: verified=%s addr=%s sources=%s disagree=%s", r.verified, r.addr, r.sources, r.disagree);
   check("[C] union routes to the SPV-proven on-chain owner (never an unproven addr)", r.verified === true && r.addr === ATTACKER && r.sources === 2 && r.disagree === false);
+  check("[C] NS-1 happy-path: a clean union (no recovery) is NOT flagged soleSource (strong 2-source badge unchanged)", !r.soleSource);
 }
 
 // [B] clarvis (the 2nd source) is COMPROMISED and poisons the union with one bogus hint above the tip.
@@ -44,6 +45,7 @@ const sources = [{ label: "primary", base: PRIM }, { label: "clarvis", base: CLA
   console.log("[B] clarvis poisons the union: verified=%s addr=%s sources=%s disagree=%s", r.verified, r.addr, r.sources, r.disagree);
   check("[B] M12: the honest source's proof RECOVERS the true on-chain winner (no DoS-downgrade)", r.verified === true && r.addr === ATTACKER);
   check("[B] M12: a poisoning 2nd source is FLAGGED (disagree), never a silent green", r.disagree === true);
+  check("[B] NS-1: a lone-source recovery is flagged soleSource (badge stops asserting multi-source verified)", r.soleSource === true);
 }
 
 // [B2] the REAL defense M12 must preserve: the poisoner's CLAIMED (unproven) address must NEVER win. The
@@ -72,6 +74,26 @@ const sources = [{ label: "primary", base: PRIM }, { label: "clarvis", base: CLA
   const r = await verifyNameUnion(NAME, [{ label: "primary", base: CLAR }, { label: "clarvis", base: CLAR }], source(blocks, 33800), mkFetch({ [CLAR]: evilHistory }));
   console.log("[D] both sources same base: sources=%s", r.sources);
   check("[D] identical bases de-dup to a single source (no phantom independence)", r.sources === 1);
+}
+
+// [E] NS-1 (HIGH residual): a HOSTILE LONE survivor. The name's FULL history repoints alice -> FINAL, but the
+// honest primary poisons its OWN hints (a junk above-tip hint) so its solo replay fails, while the hostile
+// clarvis serves a CLEAN but STALE subset (omitting the later nset) that solo-replays to the older ATTACKER.
+// With the honest source out, the lone hostile source ALONE decides the send target. NS-1 keeps verified:true
+// + the PROVEN winner (never dropping to the resolver-served addr = the B5e single-source DoS/trust regression)
+// but FLAGS soleSource so the badge stops asserting multi-source "chain-verified". This closes NOTHING: the
+// send still goes to the lone source's chosen (stale) address -- mitigation by disclosure, the recorded residual.
+{
+  const FINAL = "0x" + "f0".repeat(20);   // the TRUE current target the FULL history proves
+  const laterNset = proposeTx({ ...pick(buildNameSet({ name: NAME, addr: FINAL })), priv: keyEvil });
+  const w2 = world([{ height: 33700, tx: evilClaim }, { height: 33710, tx: evilNset }, { height: 33720, tx: laterNset }]);
+  const primHints = [...w2.hints, { txid: "0x" + "ba".repeat(32), height: 999999, pos: 0, kind: "name" }];   // primary poisons its OWN hints
+  const primPoison = { ok: true, events: primHints, resolve: { addr: FINAL, owner: EVIL, via: "nset" } };
+  const clarStale = { ok: true, events: w2.hints.slice(0, 2), resolve: { addr: ATTACKER, owner: EVIL, via: "nset" }, scopedReplaySufficient: true };   // clean but STALE subset
+  const r = await verifyNameUnion(NAME, sources, source(w2.blocks, 33800), mkFetch({ [PRIM]: primPoison, [CLAR]: clarStale }));
+  console.log("[E] hostile lone survivor: verified=%s addr=%s soleSource=%s disagree=%s", r.verified, r.addr, r.soleSource, r.disagree);
+  check("[E] NS-1: the lone hostile survivor decides the target (addr = stale ATTACKER, not the true FINAL)", r.verified === true && r.addr === ATTACKER && r.addr !== FINAL);
+  check("[E] NS-1: and the lone-source recovery is FLAGGED soleSource (the send still goes there — recorded residual)", r.soleSource === true);
 }
 
 done("name2-union");

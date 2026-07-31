@@ -29,6 +29,22 @@ for (const f of readdirSync(here).sort()) {
 }
 tests.unshift(join("test", FIRST));
 
+// TSA-1: a committed lower bound on discovered test files. A rename/exclusion/merge that DROPS a
+// fund-boundary gate must fail the runner, never silently print "ALL TEST FILES PASS" (Wave 0 observed
+// 47/47 after removing one). COMMITTED_EXPECTED_MIN is the exact discovered count at commit; it is a
+// MINIMUM, so ADDING files never false-fails, only a DROP fails. CI and release run bare `npm test` and
+// set NO env (mechanically pinned by the workflow scan in test/pentest.ts), so they always get the
+// committed floor and a dropped gate reds the runner. Only a test harness (runner-guards) may set
+// CAIRN_TEST_EXPECTED_MIN, to exercise the gate against a throwaway sandbox; when set to a positive
+// integer it is the floor for THAT run. (A workflow can therefore never disarm this — see pentest.ts.)
+const COMMITTED_EXPECTED_MIN = 52;
+const envMin = Number(process.env.CAIRN_TEST_EXPECTED_MIN);
+const EXPECTED_MIN = Number.isFinite(envMin) && envMin > 0 ? envMin : COMMITTED_EXPECTED_MIN;
+if (tests.length < EXPECTED_MIN) {
+  process.stderr.write(`test/run.mjs: discovered ${tests.length} test files, expected at least ${EXPECTED_MIN}: a test file (possibly a fund-boundary gate) may have been dropped. Refusing to run.\n`);
+  process.exit(2);
+}
+
 // A test that exits 0 after printing a `SKIP:` line (an unmet optional prereq) is NOT a
 // pass; counting it as one is the dead-green class that hides an unrun test. No wallet
 // test skips today, but the classification is kept so a future skip is visible, never a

@@ -35,8 +35,12 @@ function sandbox(files) {
   for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, "test", name), body);
   return dir;
 }
+// TSA-1: the sandboxes hold only ~1-3 files, so they set a low CAIRN_TEST_EXPECTED_MIN by default to clear the
+// committed file-count floor in the copied run.mjs. A TEST may set this env (it is NOT a workflow); test/pentest.ts
+// pins that no CI/release workflow sets it, so the committed floor always governs the real suite. A per-case env
+// override (spread last) still wins, for GUARD 5's floor-breach cases.
 const runRunner = (dir, env = {}) =>
-  spawnSync(process.execPath, [join(dir, "test", "run.mjs")], { cwd: dir, encoding: "utf8", env: { ...process.env, ...env }, timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
+  spawnSync(process.execPath, [join(dir, "test", "run.mjs")], { cwd: dir, encoding: "utf8", env: { ...process.env, CAIRN_TEST_EXPECTED_MIN: "1", ...env }, timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
 
 console.log("test/run.mjs guards:");
 
@@ -95,6 +99,29 @@ ok("CAIRN_E2E_REQUIRED=1 turns a SKIP into a hard failure", () => {
     const r = runRunner(dir, { CAIRN_E2E_REQUIRED: "1" });
     assert.equal(r.status, 1);
     assert.match(r.stdout, /SKIPPED but CAIRN_E2E_REQUIRED=1/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// GUARD 5 (TSA-1): a discovered-file count BELOW the committed floor must FAIL the runner with exit 2 — the
+// dead-green defense (Wave 0 observed 47/47 after removing a fund gate, still exit 0 + "ALL TEST FILES PASS").
+// The check fires BEFORE any test runs and independent of individual outcomes, so it belongs with exit 2 (the
+// pre-run "misconfigured/discovery" class), kept distinct from exit 1 ("a test failed") and exit 0.
+ok("a discovered-file count below the floor fails with exit 2 (not a silent ALL PASS)", () => {
+  const dir = sandbox({ "a.test.mjs": "console.log('A');\n" });          // selftest + a = 2 files
+  const r = runRunner(dir, { CAIRN_TEST_EXPECTED_MIN: "5" });            // floor ABOVE the sandbox count
+  try {
+    assert.equal(r.status, 2, "a file-floor breach exits 2");
+    assert.match(r.stdout + r.stderr, /expected at least 5/);
+    assert.doesNotMatch(r.stdout, /ALL TEST FILES PASS/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+// happy control: meeting the floor runs normally (exit 0, ALL PASS) — the gate does not false-fail.
+ok("meeting the floor runs normally", () => {
+  const dir = sandbox({ "a.test.mjs": "console.log('A');\n", "b.test.mjs": "console.log('B');\n" });
+  const r = runRunner(dir, { CAIRN_TEST_EXPECTED_MIN: "2" });
+  try {
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /ALL TEST FILES PASS/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

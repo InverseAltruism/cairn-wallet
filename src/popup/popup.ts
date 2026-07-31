@@ -558,7 +558,7 @@ async function doNameAction() {
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
-async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; agreed?: number; disagree?: boolean; viaFill?: boolean }> {
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; agreed?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
   const r = (raw || "").trim();
   // Refuse the zero address outright: a send there is an irrecoverable burn. Defense-in-depth for the V23
   // transition: a wallet that CARRIES this guard but whose vendored core still lacked the v23 branch would
@@ -591,11 +591,12 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < 3;
     const badge = !verified
       ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
+      : res.soleSource ? `⚠ only ONE name source could prove this address and it isn't independently corroborated: confirm it out-of-band before sending${conf}`
       : res.disagree ? `⚠ chain-backed but a name source DISAGREED — verify the address${conf}`
       : (res.sources ?? 1) >= 2
         ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree — only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
         : `△ chain-backed but only 1 source answered — second server unreachable, weaker guarantee${conf}`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, agreed: res.agreed, disagree: res.disagree, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, agreed: res.agreed, disagree: res.disagree, soleSource: res.soleSource, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
@@ -771,7 +772,7 @@ $("btn-tsend").addEventListener("click", async () => {
   $("tc-amt").textContent = tokenAmountBothScales(base, tsend.decimals, tsend.ticker);
   $("tc-fee").textContent = fmtCsd(CAIRNX_FEE);
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
   setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, TOKEN_FLOW.noun));
   // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): the confirm's nameStillPointsTo await can park across an
@@ -1336,7 +1337,7 @@ $("btn-send").addEventListener("click", async () => {
   $("c-after").textContent = after || "—";
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, viaFill: rr.viaFill }) : "";
+  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, agreed: rr.agreed, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
   setWarn($("c-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun));
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note — same race, same backstop.
