@@ -133,6 +133,7 @@ export const MAX_SCAN: number;                // GAP_NEEDED rounded up a full ep
 export const EPOCH_LEN: number;               // 30 blocks/epoch (fclaim hold-span math)
 export const FCLAIM_MAX_EPOCH_AHEAD: number;  // anti-squat: a hold spans at most (this+1) epochs
 export const SCORE_CLAIM: number;             // legacy pre-V28 claim attest score (transition-window cap count)
+export const SCORE_FILL: number;              // the required on-chain score for a fill attest (100); any other score is a resolve() no-op
 export const CLAIM_WINDOW_BLOCKS_V20: number; // legacy claim window (V20 era)
 export const CLAIM_FILL_GRACE_BLOCKS: number; // legacy claim fill grace
 /** holdEnd (last L0-minable height for the fill) from an fclaim's confirmed expires_epoch. */

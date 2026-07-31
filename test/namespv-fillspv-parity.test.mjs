@@ -15,9 +15,9 @@ import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { verifyName } from "../src/core/namespv.js";
-import { provenOfferPayto } from "../src/core/fillspv.js";
-import { offer } from "../src/vendor/cairnx-spv.js";
-import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx } from "./_spvrig.ts";
+import { provenOfferPayto, liveFillSpvSource, feeBpsAt } from "../src/core/fillspv.js";
+import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
+import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor } from "./_spvrig.ts";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -99,6 +99,75 @@ async function withMutant(file, marker, run) {
   const oid = ctxid(rpcTxToTx(offerSwapped)).toLowerCase();
   const r = await withMutant("fillspv.ts", "MUTATE_FILLSPV_PREVOUT_BIND", (mod) => mod.provenOfferPayto({ rpcBase: "http://x", headersBase: "http://x", spvSource: source(blocks, TIP), offerId: oid, offerHeight: H }));
   check("MUTATION[fillspv bind removed]: the substituted author now PROVES as attacker B (provenOfferPayto non-null) — bind is load-bearing", r !== null && r.seller === B);
+}
+
+// ── MPB-1 (Plan 75 P75-7): mutation coverage for the merkle-proven-value PRODUCERS. The sole producers of
+// every value the fill binds against — provenOfferPayto (legacy lane) and liveFillSpvSource (fclaim lane) —
+// had coverage only for the prevout bind (#1 MUTATE_FILLSPV_PREVOUT_BIND, above). Output-pin, non-vacuous:
+// drive each producer over a KNOWN synthetic offer and pin the returned fields against baked ground truth;
+// removing any producer marker fails the producer closed (null / throw), reding that field's pin. Acceptance:
+// 8 producer mutations (1 above + 7 here) all observed RED, the un-mutated baseline pins all pass.
+console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpvSource):");
+
+// #2-#5 (provenOfferPayto): a TOKEN offer with an explicit want.payto (payto != author) so payto/seller are
+// distinct pinnable values, plus feeBps + wantTicker/wantAmount. Each marker's removal nulls the producer.
+{
+  const PAYTO = "0x" + "d0".repeat(20);
+  const tokOfferTx = proposeTx({ ...pick(offer({ give: { ticker: "AAA", amount: "10" }, want: { ticker: "USDX", amount: "7", payto: PAYTO } })), priv: keyA, expiresEpoch: 9e9 });
+  const tokOid = ctxid(rpcTxToTx(tokOfferTx)).toLowerCase();
+  const { blocks } = world([{ height: H, tx: tokOfferTx }]);
+  const drive = (mod) => (mod ?? { provenOfferPayto }).provenOfferPayto({ rpcBase: "http://x", headersBase: "http://x", spvSource: source(blocks, TIP), offerId: tokOid, offerHeight: H }).catch(() => null);
+  const base = await drive();
+  check(`MPB-1 baseline: provenOfferPayto over the known token offer pins its fields (payto ${base?.payto === PAYTO}, feeBps ${base?.terms?.feeBps})`,
+    base !== null && base.payto === PAYTO && base.seller === A && base.terms.feeBps === 150 && base.wantTicker === "USDX" && base.wantAmount === "7");
+  const cases = [
+    ["MUTATE_PROVEN_PAYTO_DERIVE", "payto", PAYTO, (r) => r?.payto],
+    ["MUTATE_PROVEN_TERMS_HEIGHT", "terms.feeBps", 150, (r) => r?.terms?.feeBps],
+    ["MUTATE_PROVEN_WANT_TICKER", "wantTicker", "USDX", (r) => r?.wantTicker],
+    ["MUTATE_PROVEN_WANT_AMOUNT", "wantAmount", "7", (r) => r?.wantAmount],
+  ];
+  for (const [marker, field, expect, get] of cases) {
+    const mutated = await withMutant("fillspv.ts", marker, (mod) => drive(mod));
+    check(`MPB-1 MUT[${marker}]: the ${field} pin REDS (baseline ${JSON.stringify(expect)}, mutant ${JSON.stringify(get(mutated))})`, get(mutated) !== expect);
+  }
+}
+
+// #6-#8 (liveFillSpvSource): the fclaim lane's proven producers, driven over a fill-style source (FILLER for
+// empty heights, since liveFillSpvSource scans the whole tip-anchored window). offer with want.payto != author.
+{
+  const H0 = V28_HEIGHT;
+  const meKey = "0x" + "3f".repeat(32), MEL = addrFromPriv(meKey).toLowerCase();
+  const sK = "0x" + "7a".repeat(32), SL = addrFromPriv(sK).toLowerCase();
+  const PAYTO2 = "0x" + "e1".repeat(20);
+  const offTx = proposeTx({ ...pick(offer({ give: { ticker: "AAA", amount: "10" }, want: { value: "500000000", payto: PAYTO2 } })), priv: sK, expiresEpoch: 9e9 });
+  const loid = ctxid(rpcTxToTx(offTx)).toLowerCase();
+  const E = epochOf(H0 + 3) + 2;
+  const fcTx = proposeTx({ ...pick(fclaim({ offer: loid })), priv: meKey, expiresEpoch: E });
+  const fid = ctxid(rpcTxToTx(fcTx)).toLowerCase();
+  const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
+  const worldOf = (ps) => { const b = new Map(); for (const { height, tx } of ps) (b.get(height) ?? b.set(height, []).get(height)).push(tx); return b; };
+  const blocks = worldOf([{ height: H0 + 2, tx: offTx }, { height: H0 + 3, tx: fcTx }]);
+  const TIP2 = fclaimHoldEnd(E) - 5;
+  const fillSource = (tip) => ({
+    async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
+    async blockAt(height) { const txs = blocks.get(height) ?? [FILLER]; return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs }; },
+    async prevoutScriptPubkey(p) { return prevoutFor(p); },
+  });
+  const drive = (mod) => (mod ?? { liveFillSpvSource }).liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(TIP2), hints: { offerId: loid, fclaimTxid: fid, me: MEL, offerHeight: H0 + 2 } });
+  const base = await drive();
+  const EFEE = feeBpsAt(H0 + 2);
+  check(`MPB-1 baseline: liveFillSpvSource pins provenSeller/provenPayto/provenTerms.feeBps (seller ${base.provenSeller === SL}, payto ${base.provenPayto === PAYTO2})`,
+    base.provenSeller === SL && base.provenPayto === PAYTO2 && base.provenTerms.feeBps === EFEE);
+  const cases = [
+    ["MUTATE_LIVE_PROVEN_SELLER", "provenSeller", SL, (r) => r?.provenSeller],
+    ["MUTATE_LIVE_PROVEN_PAYTO", "provenPayto", PAYTO2, (r) => r?.provenPayto],
+    ["MUTATE_LIVE_PROVEN_TERMS", "provenTerms.feeBps", EFEE, (r) => r?.provenTerms?.feeBps],
+  ];
+  for (const [marker, field, expect, get] of cases) {
+    let mutated = null;
+    await withMutant("fillspv.ts", marker, async (mod) => { try { mutated = await drive(mod); } catch { mutated = null; } });
+    check(`MPB-1 MUT[${marker}]: the ${field} pin REDS (baseline ${JSON.stringify(expect)}, mutant ${JSON.stringify(get(mutated))})`, get(mutated) !== expect);
+  }
 }
 
 console.log(`\nnamespv-fillspv-parity: ${pass} passed, ${fail} failed`);

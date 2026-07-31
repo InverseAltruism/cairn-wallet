@@ -56,6 +56,15 @@ ok("the persist sits AFTER the clamped advance", prep.indexOf("opts.floor.set(")
 const RAW_PERSIST = /seenFloor\s*=\s*nodeTip\b/;
 ok("the raw-tip floor assignment (the M9 defect) is gone from prepare()", !RAW_PERSIST.test(prep));
 
+// TSA-4 (Plan 75 P75-7): pin the floorAdvance ARGUMENT ORDER at the call site. floorAdvance(seenFloor, nodeTip,
+// verifiedTip) clamps the advance to verifiedTip + FLOOR_SLACK (PoW evidence). Swapping the 3rd arg to nodeTip
+// (floorAdvance(seenFloor, nodeTip, nodeTip)) re-arms the hostile-INFLATABLE floor while every behavioral unit
+// above still passes, so the call site itself must be pinned — with a NON-VACUITY control proving the regex
+// rejects the disarm shape (not merely that a floorAdvance call exists).
+const CALL = /floorAdvance\(\s*seenFloor\s*,\s*nodeTip\s*,\s*verifiedTip\s*\)/;
+ok("the floorAdvance call site passes verifiedTip (not nodeTip) as the PoW-clamp arg", CALL.test(prep));
+ok("MUT control: the pin REDS on the disarm shape (verifiedTip replaced by nodeTip)", !CALL.test("const cand = floorAdvance(seenFloor, nodeTip, nodeTip);"));
+
 // Inline MUT fixture: the pre-fix line, verbatim shape - proves the detector regex is non-vacuous
 // (reintroducing the old persist-at-read line would trip RAW_PERSIST).
 const OLD_LINE = "if (Number.isFinite(nodeTip) && nodeTip > seenFloor) { seenFloor = nodeTip; if (opts.floor) { try { await opts.floor.set(seenFloor); } catch { } } }";

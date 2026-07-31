@@ -16,7 +16,7 @@ import {
   // constants
   DOMAIN, MIN_FEE_PROPOSE, TREASURY_ADDR,
   FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT,
-  CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL,
+  CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
   // functions
@@ -40,7 +40,7 @@ import {
 // ── app constants (re-exported under the wallet's historical names) ───────────
 export const CAIRNX_DOMAIN = DOMAIN;                 // "cairnx:v1"
 export const CAIRNX_PROPOSE_FEE = MIN_FEE_PROPOSE;   // 0.25 CSD — the convention's anchor fee floor
-export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, NAME_RE, canonicalJson };
+export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL, NAME_RE, canonicalJson };
 // v1.6 fee: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; this just
 // computes the trade fee for clear-sign display. Byte-identical to cairnx-core (callers pass bigint). (The
 // cairnxMakerRebate re-export was removed 2026-07-06 — it had zero callers anywhere; the rebate is computed

@@ -219,24 +219,25 @@ async function main() {
   // downstream need-map (F2 output-sizing) assertions below are reached rather than short-circuited on the SPV read.
   const bgWallet = (globalThis as { __cairnBgWallet?: { provenPaytoForTest?: unknown } }).__cairnBgWallet;
   const fillerAddr = (await popup("status")).result.addr as string;
-  // The proven terms are offer-id-aware (provenPaytoForTest receives the offerId): the token-want SMOKE offer
-  // OFFER_ID gets token-consistent terms (B7e-FIX: the token lane now merkle-binds give/want CONTENT, so a
-  // csd-typed mock would false-refuse it), and every CSD fixture (MY_CLAIM_ID etc.: payto/seller = SELLER,
-  // height 34000 feeBps 150, value 40000000, no taker) gets the CSD terms the F2 amount-bind mirrors.
+  // The proven terms are offer-id-aware (provenPaytoForTest receives the offerId): the SMOKE offer OFFER_ID is a
+  // CSD-priced TAKER-BOUND offer (XR-1/N26: a token-priced offer may carry NO CSD outputs, so a DvP smoke that
+  // pays the seller a CSD leg must be a CSD offer), and every other CSD fixture (MY_CLAIM_ID etc.: payto/seller
+  // = SELLER, height 34000 feeBps 150, value 40000000, no taker) gets the CSD terms the F2 amount-bind mirrors.
   if (bgWallet) bgWallet.provenPaytoForTest = (offerId: string) =>
     String(offerId).toLowerCase() === OFFER_ID.toLowerCase()
-      ? ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: undefined, taker: fillerAddr.toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "token" }, wantTicker: "USDX", wantAmount: "40000000" })
+      ? ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: fillerAddr.toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } })
       : ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } });   // B7e: give matches the CSD fixtures (give TKN/1) so the flipped give leg passes on the honest need-map fill
   // B1 (0.2.57): the preflight now fails CLOSED unless the resolver positively parses to an open
   // offer — the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
-  // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: token-want
-  // + taker-bound to this wallet, so the approved outputs (seller leg only) stay exactly what this
-  // block asserts (a token-want fill has no CSD need-map legs).
-  offerFixtures.set(OFFER_ID.toLowerCase(), { id: OFFER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { ticker: "USDX", amount: "40000000" }, taker: fillerAddr, height: 34000, feeBps: 150 });
+  // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: CSD-priced
+  // (want.value, XR-1/N26 requires a token offer to move NO CSD) + taker-bound to this wallet, so the
+  // approved outputs are the honest whole-fill need-map (seller payment + treasury fee).
+  const SMOKE_TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR — the whole-fill fee leg
+  offerFixtures.set(OFFER_ID.toLowerCase(), { id: OFFER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: fillerAddr, height: 34000, feeBps: 150 });
   const winBeforeFill = windowsOpened;
   // hostile extras (inputs/change) must be ignored exactly like send
   const freq = dappAsync("fillOffer", {
-    proposalId: OFFER_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000,
+    proposalId: OFFER_ID, outputs: [{ to: SELLER, value: 40_000_000 }, { to: SMOKE_TREASURY, value: 600_000 }], fee: 5_000_000,
     inputs: [{ txid: "0x" + "ff".repeat(32), vout: 9 }], change: "0x" + "de".repeat(20),
   });
   await tick();
@@ -254,8 +255,8 @@ async function main() {
   const fins = lastSubmit?.tx?.inputs ?? [];
   check("fillOffer paid the seller exactly the approved amount IN THE SAME TX as the attest", fouts.some((o: any) => spkHex(o.script_pubkey) === SELLER && Number(o.value) === 40_000_000));
   check("fillOffer used the wallet's OWN input (smuggled `inputs` ignored)", fins.length === 1 && spkHex(fins[0].prevout.txid) === MOCK_UTXO.txid);
-  check("fillOffer change returned only to the wallet's own address", fouts.every((o: any) => spkHex(o.script_pubkey) === SELLER || spkHex(o.script_pubkey) === addr));
-  check("fillOffer recorded in history as a fill with seller + amount", ((await popup("history")).result as any[]).some((t) => t.type === "fillOffer" && t.target === OFFER_ID && t.to === SELLER && t.amount === 40_000_000));
+  check("fillOffer change returned only to the wallet's own address", fouts.every((o: any) => spkHex(o.script_pubkey) === SELLER || spkHex(o.script_pubkey) === SMOKE_TREASURY || spkHex(o.script_pubkey) === addr));
+  check("fillOffer recorded in history as a fill with the offer target + total spent", ((await popup("history")).result as any[]).some((t) => t.type === "fillOffer" && t.target === OFFER_ID && t.to === "2 recipients" && t.amount === 40_600_000));
 
   console.log("\n=== fillOffer C2/C3/C4 pre-flight REFUSES a doomed value tx (deep-review 2026-07-03) ===");
   // helper: approve a queued fillOffer and return the dApp response (refusals arrive as {ok:false,error})
