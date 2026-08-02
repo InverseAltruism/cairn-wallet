@@ -63,9 +63,26 @@ export { buildFeeHeight } from "../vendor/cairnx-spv.js";
 // PoW-backed persisted floor (M9/B5a bounds its inflation to verifiedTip + slack); an over-tier fee only
 // ever overpays (accepted on-chain), never burns. NOT consensus math — a policy compose over the vendored
 // buildFeeHeight/nameRegFee, which stay the only fee authorities.
-export function feePricingTip(rawTip: number | null | undefined, floor: number | null | undefined): number {
+// W5 (Q-02): each input is normalized with Number.isSafeInteger, not Number.isFinite, and the helper
+// returns null when NEITHER input is usable. A served tip of 65100.5 or 1e16 is finite but is not a
+// height: it reached the vendored buildFeeHeight, which threw RangeError, which clearsign.ts swallowed in
+// a bare catch, so the CLEARSIGN-FEE-1 underpayment warning went silently absent on a third-party-built
+// nrenew/nfinalize. NORMALIZING TO 0 WOULD BE WORSE THAN THE BUG, at both kinds of call site, which is
+// why the return type is `number | null` and every caller is forced to handle it:
+//   review side  (clearsign): tipNow 0 keeps feeBearing true, prices the CHEAPEST tier, paid < need is
+//                             false, and the dialog affirmatively shows NO warning on a genuinely
+//                             underpaid record.
+//   build sides  (wallet.ts renew/renewFee): buildFeeHeight(0) does NOT throw, so the wallet's own Renew
+//                             button would build an underpaid record and BURN the fee. Today a hostile
+//                             non-integer tip makes buildFeeHeight throw, i.e. it fails closed; the only
+//                             input whose behavior changes is the degenerate "no usable tip at all",
+//                             where refusing beats burning.
+export function feePricingTip(rawTip: number | null | undefined, floor: number | null | undefined): number | null {
   const t = Number(rawTip), f = Number(floor);
-  return Math.max(Number.isFinite(t) && t > 0 ? t : 0, Number.isFinite(f) && f > 0 ? f : 0);
+  const rt = Number.isSafeInteger(t) && t > 0 ? t : null;
+  const fl = Number.isSafeInteger(f) && f > 0 ? f : null;
+  if (rt === null && fl === null) return null;
+  return Math.max(rt ?? 0, fl ?? 0);
 }
 
 // Single source of truth for the .csd name syntax. `isPlainName` is the syntax-only check used before a name

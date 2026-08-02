@@ -310,7 +310,11 @@ export function describe(r: any): string {
         // (cairnx.ts feePricingTip) — the same clamp the build sites apply — so a deflating RPC cannot
         // price a cheaper tier here while silencing this very warning. Floor-only (tip read failed but a
         // floor exists) still arms the warning; both absent keeps today's skip-when-offline behavior.
-        const tipNow = r.currentTip != null || Number(r.tipFloor) > 0 ? feePricingTip(r.currentTip, r.tipFloor) : null;
+        // W5 (Q-02): the outer "is there anything to price with" gate is GONE, because feePricingTip now
+        // owns that question and answers it with null. It also answers null for a served tip that is
+        // finite but not a height (65100.5, 1e16), which previously slipped through to buildFeeHeight and
+        // threw into the bare catch below, silently disarming this very warning.
+        const tipNow = feePricingTip(r.currentTip, r.tipFloor);
         const feeBearing = !!rec && typeof rec.name === "string" && tipNow != null &&
           (rec.t === "nrenew" || rec.t === "nfinalize" || (rec.t === "name" && tipNow < V25_HEIGHT));
         if (feeBearing && rec) {

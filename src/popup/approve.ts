@@ -72,6 +72,15 @@ async function render() {
     ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings → Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
     : "";
   try {
+    // W1 (AW-4): this assignment DESTROYS every element describe() emits (#send-warn, #token-sim,
+    // #reveal-preview) and the #cost row. It runs on a new request AND on the unlock repaint after an
+    // idle auto-lock (render() returns early while locked and nulls renderedId, and `status` is in
+    // READ_ONLY_METHODS so the 1.2s poll does not defer the lock). The once-per-request latches below
+    // would then keep the async fillers from refilling, leaving the approval signable with the
+    // address-poisoning and first-time-recipient warnings silently ABSENT and the token debit quote an
+    // empty box. Reset them exactly HERE, where the rebuild happens, and nowhere else: resetting on the
+    // 1.2s tick would refetch balance and history twice a second per open approval window.
+    balForId = warnForId = tokenSimForId = revealForId = null;
     $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>${queued}`
       + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
       + connectNote
@@ -160,6 +169,11 @@ async function fillTokenSim(r: any) {
   const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };
   try {
     const q = await call("tokenFillQuote", (r.params || {}).proposalId);
+    // W2 (AW-3), the same rule applied uniformly: any async filler that writes into the DOM after an
+    // await carries the guard. This one is defense in depth rather than a live hole (`el` is resolved
+    // BEFORE the await, so a superseded write lands on the detached old node, not on the request now on
+    // screen); keeping the shape identical across all fillers is what stops the next one from drifting.
+    if (renderedId !== r.id) return;
     show(tokenQuoteHtml(q));
   } catch {
     show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
@@ -196,6 +210,7 @@ async function fillBalance(r: any) {
   if (balForId === r.id) return; balForId = r.id;
   try {
     const b = await call("balance");
+    if (renderedId !== r.id) return; // W2 (AW-3): superseded, never paint a resolved request's money row over the one now on screen
     const el = document.getElementById("cost");
     if (el) el.textContent = `${costLine(r)}  balance: ${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`;
   } catch { /* offline — leave the static cost line */ }
@@ -231,6 +246,7 @@ async function fillSendWarning(r: any) {
   }
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
+    if (renderedId !== r.id) return; // W2 (AW-3): superseded, never paint a resolved request's warnings over the one now on screen
     const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
     // NXFER-POISON-DROP (Part B): the first-time / poisoning computation is the pure clearsign.sendWarnings
     // (approve.ts owns only the DOM read + mount). It keys the first-time check on `known` = paid recipients

@@ -88,6 +88,30 @@ function txToNodeJson(tx: Tx): any {
   };
 }
 
+// W6 (ND-1): a stranger can anchor one tx carrying `expires_epoch: 9007199254740993` and 1 sat to a
+// victim. Consensus puts NO upper bound on expires_epoch (app_state.rs compares it only against the
+// current epoch), so the node serves it verbatim; JSON.parse silently rounds it to 9007199254740992, the
+// recomputed codecTxid therefore differs, and that classified "tamper", which is DECISIVE for the whole
+// spend. consolidate() selects smallest-first, so the dust coin sits in every pool: VERIFY_TAMPER forever,
+// permanently, for the price of one dust tx, on the documented remedy for the large-send class.
+// The scan runs over the RAW body BEFORE nodeTxToTx/codecTxid, because once JSON.parse has run the wallet
+// can no longer distinguish "the node served an exactly representable u64" from "JSON.parse lost
+// precision". Fields are exactly the codec-serialized numerics: version, locktime, output value, and the
+// app legs expires_epoch (Propose) and score/confidence (Attest).
+// THE OBJECTION, PRE-ANSWERED: this lets a forging node make a coin SKIPPABLE rather than decisively
+// refused. It grants no new power. A forging node can ALREADY make any coin skippable by answering
+// {ok:false}, which classifies "notfound". What must not weaken is the well-formed case, and it does not:
+// a body whose numbers are all exactly representable and whose recomputed txid differs is still "tamper".
+const representableNum = (v: unknown): boolean => typeof v !== "number" || Number.isSafeInteger(v);
+function bodyNumbersRepresentable(body: any): boolean {
+  if (!representableNum(body?.version) || !representableNum(body?.locktime)) return false;
+  const a = body?.app;
+  if (a && typeof a === "object"
+      && (!representableNum(a.expires_epoch) || !representableNum(a.score) || !representableNum(a.confidence))) return false;
+  for (const o of Array.isArray(body?.outputs) ? body.outputs : []) if (!representableNum(o?.value)) return false;
+  return true;
+}
+
 // Map a node-JSON tx body (from /tx or /block) back into our codec Tx so we can recompute its txid.
 function nodeTxToTx(j: any): Tx {
   const a = j.app || {};
@@ -158,12 +182,18 @@ const VERIFY_CONCURRENCY = 8;
 // may be weakened) and ABOVE notfound (a proved absence). Like notfound it is skippable PER COIN
 // (the 0.2.53 rule: a partial send still completes) and NON-decisive in the verify pool. Inert until
 // a node emitting the signal ships; a plain 503 keeps classifying "transient" exactly as fielded.
-type InputVerdict = number | "notfound" | "transient" | "tamper" | "horizon";
+// W6 (ND-1): "unrepresentable" is the FIFTH verdict, for a body whose codec-serialized numbers cannot
+// survive JSON.parse exactly (see bodyNumbersRepresentable). It mirrors "horizon": non-decisive, skippable
+// PER COIN, its own array and its own reporting line. It is deliberately NOT aliased to "notfound", whose
+// copy says the coin "could not be found on the chain" about a coin that demonstrably exists, and NOT to
+// "tamper", which would keep the whole spend refused.
+type InputVerdict = number | "notfound" | "transient" | "tamper" | "horizon" | "unrepresentable";
 type VerifyResult =
   | { ok: true; total: number }
   | { ok: false; kind: "tamper" }
   | { ok: false; kind: "transient" }
   | { ok: false; kind: "horizon"; horizons: { txid: string; vout: number }[]; ghosts: { txid: string; vout: number }[] }
+  | { ok: false; kind: "unrepresentable"; unrepresentables: { txid: string; vout: number }[]; ghosts: { txid: string; vout: number }[] }
   | { ok: false; kind: "notfound"; ghosts: { txid: string; vout: number }[] };
 const opKey = (txid: unknown, vout: unknown) => `${String(txid).toLowerCase()}:${Number(vout)}`;
 async function verifyInputValues(
@@ -201,6 +231,9 @@ async function verifyInputValues(
       body = j?.tx;
     } catch { return "transient"; }
     if (!body) return "notfound"; // the node's canonical 2xx miss: {ok:false,err:"not found"}, no tx
+    // W6 (ND-1): classify BEFORE nodeTxToTx/codecTxid. After JSON.parse the precision loss is invisible,
+    // so the recomputed txid would differ and the coin would read "tamper" (decisive for the whole spend).
+    if (!bodyNumbersRepresentable(body)) return "unrepresentable";
     let tx: Tx, recomputed: string;
     // robustness nit (audit D): codecTxid itself can throw on a malformed body, so decode AND
     // recompute inside one try — any failure is a fail-closed reject, never an uncaught throw.
@@ -230,7 +263,12 @@ async function verifyInputValues(
   if (verdicts.includes("transient")) return { ok: false, kind: "transient" };
   const ghosts = inputs.filter((_, k) => verdicts[k] === "notfound");
   const horizons = inputs.filter((_, k) => verdicts[k] === "horizon");
+  // W6 (ND-1): its own array and its own REPORTING rung, after horizon and before notfound. The decisive
+  // fold above (tamper, then transient, and mapLimit's short-circuit predicate) is untouched: this verdict
+  // is per-coin skippable, so it must never be able to refuse a whole spend.
+  const unrepresentables = inputs.filter((_, k) => verdicts[k] === "unrepresentable");
   if (horizons.length) return { ok: false, kind: "horizon", horizons, ghosts };
+  if (unrepresentables.length) return { ok: false, kind: "unrepresentable", unrepresentables, ghosts };
   if (ghosts.length) return { ok: false, kind: "notfound", ghosts };
   // Fold the verified values in input order; the running sum must stay in the safe-integer range so a
   // hostile RPC can't push it past 2^53 (addition is commutative, the parallel fetch changes nothing).
@@ -281,6 +319,7 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   // horizon class separately for the same reason with its own honest copy.
   let ghostCount = 0, ghostValue = 0;
   let horizonCount = 0, horizonValue = 0;
+  let unrepCount = 0, unrepValue = 0;   // W6 (ND-1): booked separately so the final copy stays honest
   for (const k of ghostSeen.keys()) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
   for (const k of horizonSeen.keys()) if (reportedVal.has(k)) { horizonCount++; horizonValue += reportedVal.get(k)!; }
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
@@ -305,6 +344,17 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
         exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k);
       }
     }
+    // W6 (ND-1): unrepresentable coins exclude-and-retry per coin exactly like ghosts and horizons (an
+    // unproved coin is NEVER spent). No session cache: the classification costs nothing beyond the /tx
+    // read this loop already makes, and the bounded round budget re-derives it, so a third unbounded map
+    // would buy one saved round at the cost of the memory class this file already caps twice.
+    if (ver.kind === "unrepresentable") {
+      for (const u of ver.unrepresentables) {
+        const k = opKey(u.txid, u.vout);
+        if (!exclude.has(k)) { unrepCount++; unrepValue += reportedVal.get(k) ?? 0; }
+        exclude.add(k);
+      }
+    }
     for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
       const k = opKey(g.txid, g.vout);
       if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
@@ -327,7 +377,7 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
     if (spendable >= need)
       return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows — send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
   }
-  if (!ghostCount && !horizonCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
+  if (!ghostCount && !horizonCount && !unrepCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
   // BN0w (W9): horizon outranks ghost in reporting (severity below tamper/transient, above notfound).
   // The copy must stay honest: these coins are REAL and belong to this wallet; the node's bounded
   // back-scan just cannot reach their source txs yet. Never say "could not be verified" about them.
@@ -337,6 +387,14 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
     console.warn(`cairn-wallet: skipped ${horizonCount} coin(s) beyond the node's scan horizon (real, provable once the node is upgraded); spendable balance is temporarily lower by ~${fmtCsd(horizonValue)} CSD`);
     const alsoGhosts = ghostCount ? `; ${ghostCount} other coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be found on the chain and were also skipped` : "";
     return { error: `your node cannot look back far enough to prove ${horizonCount} coin(s) totalling ${fmtCsd(horizonValue)} CSD; they are real and will be spendable once the node is upgraded${alsoGhosts}. The remaining provable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)`, code: "VERIFY_HORIZON" };
+  }
+  // W6 (ND-1): reported AFTER horizon and BEFORE notfound. The copy must never say "could not be found"
+  // (the coin demonstrably exists) and never say "tampered" (nothing was proved either way): the honest
+  // statement is that this wallet cannot represent a number in the source transaction exactly.
+  if (unrepCount) {
+    console.warn(`cairn-wallet: skipped ${unrepCount} coin(s) whose source transaction carries a number this wallet cannot represent exactly; spendable balance is temporarily lower by ~${fmtCsd(unrepValue)} CSD`);
+    const alsoGhosts = ghostCount ? `; ${ghostCount} other coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be found on the chain and were also skipped` : "";
+    return { error: `${unrepCount} coin(s) totalling ${fmtCsd(unrepValue)} CSD were skipped because their source transaction carries a number this wallet cannot represent exactly, so it cannot be proved either way${alsoGhosts}. The remaining provable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)`, code: "VERIFY_UNREPRESENTABLE" };
   }
   console.warn(`cairn-wallet: skipped ${ghostCount} coin(s) the node could not prove (source tx not found); reported balance may be overstated by ~${fmtCsd(ghostValue)} CSD`);
   // Non-retryable: the skipped coins stay excluded until the node can PROVE them, so an immediate retry
@@ -707,6 +765,10 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
       // BN0w: both skip classes (ghost + horizon) exclude-and-retry alike here; consolidate simply
       // merges what THIS node can prove today (the send path owns the distinct honest refusal copy).
       if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k); }
+      // W6 (ND-1): the same exclude-and-retry, and THIS is the line that unbricks consolidate() against a
+      // single dust coin from a stranger. The pool is smallest-first, so the poison coin was in every
+      // round and its "tamper" verdict refused the whole merge, permanently.
+      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) exclude.add(opKey(u.txid, u.vout));
       for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); horizonSeen.delete(k); }
       if (ghostSeen.size > 2048) ghostSeen.clear();
       if (horizonSeen.size > 2048) horizonSeen.clear();
