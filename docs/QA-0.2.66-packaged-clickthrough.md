@@ -4,9 +4,9 @@ Operator script. Follow it literally, in order, and record a PASS or FAIL per nu
 
 This is the only control on a vehicle with no rollback: the Chrome Web Store has no undo, only a forward
 0.2.67. It is also the named interim control for the largest instrument blind spot in this repo, which is
-that nothing verifies the clear-sign at the DOM level in a real browser. Two of the six 0.2.66 fixes (W1
-and W2) are DOM-behavior defects, which is exactly the class a source-only pass misses, so steps 2 and 3
-are not optional.
+that nothing verifies the clear-sign at the DOM level in a real browser. Three of the seven 0.2.66 fixes
+(W1, W2 and W8) are DOM-behavior defects, which is exactly the class a source-only pass misses, so steps 2,
+3 and 7 are not optional.
 
 ## Before you start
 
@@ -28,7 +28,7 @@ Load the PACKAGED artifact, not `dist/` directly, so what is clicked is what is 
 Endpoints stay at their defaults (`https://cairn-substrate.com/api/rpc`, `/trade/api`, clarvis). Steps 5
 and 6 spend real CSD, a few hundredths of a CSD in total; step 6 needs at least two spendable coins.
 
-## The six scenarios
+## The seven scenarios
 
 ### 1. Two queued dApp requests, resolved in sequence (W2)
 
@@ -94,6 +94,26 @@ healthy node, stop and report it: that is the refusal firing on an honest path, 
   for coins this wallet visibly holds. If a coin IS skipped, the message must say the source transaction
   carries a number this wallet cannot represent exactly (`VERIFY_UNREPRESENTABLE`), never that the coin is
   missing and never that it is tampered.
+
+### 7. The name approve-gate note across a lock and unlock (W8)
+
+The gate that warns a renewal or a set-primary would be a no-op and burn its fee writes its note into the
+same element the repaint rebuilds. This is the fifth latch W1 did not cover.
+
+- From `/names`, start a renewal (or a set-primary) of a `.csd` name in a state the gate has something to
+  say about: a name whose registration is still a pending reservation, a lapsed name, or a name that is
+  not registered at all. The approval window opens with a note under the request details.
+- **ASSERT**: the note is there before you do anything else. If it is not, this step cannot test anything
+  and you should record it as N/A rather than as a PASS.
+- If the note is the red refusing-to-approve kind, **ASSERT** the Approve button is disabled.
+- Wait for the idle auto-lock as in scenario 2, then unlock in place.
+- **ASSERT**: the note is still there after the repaint.
+- **ASSERT**: if it was the red refusing kind, Approve is STILL disabled, and it never flickers to enabled
+  during the second or so after the unlock. A flicker there is the exact regression W8 was written to
+  avoid, and it blocks the upload.
+- Reject. Nothing should have been signed and no fee should have moved.
+
+The DOM-level pin for this is `test/approve-repaint-dom.test.mjs` cases 5 to 7.
 
 ## Record
 

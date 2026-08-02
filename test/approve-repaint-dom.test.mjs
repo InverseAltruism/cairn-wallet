@@ -26,8 +26,22 @@
 //   B's 900 CSD row).
 //   PAIRED HAPPY-PATH: case (4), a single request renders the exact same balance-after string as before.
 //
+// W8 (AW-4, the FIFTH latch, FEE BURN): armNfinalizeGate's verdict note is written with
+// insertAdjacentHTML into $("req") — the very element the rebuild destroys — and its latch (nfinForId) is
+// NOT in W1's reset line. So the nfinalize/nrenew/nset fee-burn warning ("this name is a pending
+// reservation … the fee burned") was still silently lost across an idle auto-lock and unlock, inside W1's
+// own stated rule. The fix re-attaches the ALREADY-SETTLED verdict; it must NOT re-arm the gate, because
+// re-arming re-runs the 6s name fetch on every repaint AND clears nfinBlocked, which would let armButtons'
+// 700ms timer RE-ENABLE Approve on a request the gate had already BLOCKED.
+//   RED-FIRST: delete the `if (nfinSettled) paintNfinNote(nfinSettled);` re-attach in armNfinalizeGate and
+//   case (5b) goes red (the gate note is gone after the unlock repaint).
+//   PAIRED HAPPY-PATH, three, because this fix is mostly about what it must NOT do: case (6) a BLOCKED
+//   nrenew still has Approve disabled after the repaint's own 700ms re-enable timer; case (5c)/(6c) the
+//   repaint fires ZERO new gate fetches; case (7) an ungated request is unchanged and inherits no note.
+//
 // Run: node --import tsx test/approve-repaint-dom.test.mjs   (offline)
 import { costLine, debitOf, fmtBalance } from "../src/popup/clearsign.js";
+import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -70,10 +84,11 @@ const RCPT_A = "0x" + "31".repeat(20);
 const RCPT_B = "0x" + "52".repeat(20);
 const counts = { balance: 0, history: 0 };
 const state = { unlocked: true, pending: [] };
+let tradeApi = "";   // set for the W8 section; the gate is the only reader and it returns early before this on a `send`
 let nextBalance = 100_00000000;
 let holdNextBalance = false, releaseHeldBalance = null;
 const handlers = {
-  status: () => ({ unlocked: state.unlocked, accounts: [{ label: "Main", addr: ME }], active: 0, addr: ME, tradeApi: "" }),
+  status: () => ({ unlocked: state.unlocked, accounts: [{ label: "Main", addr: ME }], active: 0, addr: ME, tradeApi }),
   pending: () => state.pending,
   balance: () => {
     counts.balance++;
@@ -101,6 +116,20 @@ globalThis.chrome = {
       });
     },
   },
+};
+
+// The name-service fetch behind the nfinalize/nrenew/nset approve gate (W8). It is the gate's ONLY
+// network call, so counting it is how "the repaint fires zero new gate fetches" is asserted.
+let nameFetches = 0;
+let nameRecord = null;      // null → a clean 404 (the definitive "no such name" the gate BLOCKS on)
+let fetchDelayMs = 0;       // a REAL gate fetch is bounded at 6s, i.e. far slower than armButtons' 700ms
+globalThis.fetch = async (url) => {
+  nameFetches++;
+  if (!/\/cairnx\/name\//.test(String(url))) throw new Error("unexpected fetch: " + url);
+  if (fetchDelayMs) await new Promise((r) => setTimeout(r, fetchDelayMs));
+  return nameRecord == null
+    ? { status: 404, ok: false, json: async () => null }
+    : { status: 200, ok: true, json: async () => nameRecord };
 };
 
 // setInterval is captured, not scheduled: `tick()` IS the 1.2s poll, driven deterministically.
@@ -183,6 +212,78 @@ const expected = `${costLine(S)}  balance: ${fmtBalance(nextBalance)} → ~${fmt
 check(`(4) the rendered money row is exactly the pre-fix string (${JSON.stringify(registry.get("cost").textContent)})`,
   registry.get("cost").textContent === expected);
 check("(4) the window was never closed during any of this", closes === 0);
+
+// ── 5. W8: the nrenew/nfinalize/nset gate note across an idle auto-lock ────────────────────────────────
+// Production's exact call shape for this lane: the /names site raises a `propose` on the cairnx:v1 domain
+// carrying the canonical record + its payload hash and the treasury fee output. The record here is built
+// by the wallet's own builder, so the uri/payloadHash pair is the one the resolver would accept.
+console.log("\nW8 (AW-4, the fifth latch): the fee-burn gate note across a lock and unlock");
+tradeApi = "https://cairn-substrate.com/trade/api";
+const RENEW = buildNameRenew({ name: "satoshi" });
+const nrenewReq = (id) => ({
+  id, method: "propose", origin: "https://cairn-substrate.com",
+  // the treasury output value is not under test here (the underpayment warning needs a live tip and this
+  // request carries none) — it is present because production's nrenew propose always carries it
+  params: { domain: CAIRNX_DOMAIN, uri: RENEW.uri, payloadHash: RENEW.payloadHash, fee: 1_000_000, outputs: [{ to: TREASURY_ADDR, value: 100_000_000 }] },
+});
+const noteRe = /pending reservation, not a finalized registration/;
+const settle = async (ms = 800) => { await new Promise((r) => setTimeout(r, ms)); await flush(); };  // 800ms = just past armButtons' 700ms re-enable timer
+
+// 5a. a WARN-only verdict (the name is a pending reservation → a renewal is a no-op and the fee burns)
+nameRecord = { name: "satoshi", owner: ME, pending: true };
+state.pending = [nrenewReq("g1")];
+await tick(); await flush(); await settle();
+check("(5a) baseline: the nrenew approve gate paints its fee-burn note into #req", noteRe.test(registry.get("req").innerHTML));
+check("(5a) the gate fetched the name record exactly once", nameFetches === 1);
+check("(5a) a WARN-only verdict leaves Approve ENABLED (warn over block)", registry.get("btn-approve").disabled === false);
+
+state.unlocked = false; await tick(); await flush();              // the idle auto-lock fires while the approval is open
+state.unlocked = true;  await tick(); await flush(); await settle();  // the user unlocks; the poll repaints (settle = past armButtons' 700ms re-enable)
+check("(5b) W8: the fee-burn gate note is STILL THERE after the unlock repaint (pre-fix it is silently gone)",
+  noteRe.test(registry.get("req").innerHTML));
+check("(5c) HAPPY-PATH: the unlock repaint fired ZERO new gate fetches (no re-arm, no second 6s name fetch)", nameFetches === 1);
+check("(5c) HAPPY-PATH: a WARN-only verdict still leaves Approve enabled after the repaint", registry.get("btn-approve").disabled === false);
+
+// 6. a BLOCKING verdict (clean 404 → the name is not registered, the renewal fee would burn for nothing)
+// The fetch is SLOWED to 1.2s here, which is the whole point of the instrument: the real gate fetch is
+// bounded at 6s, so it lands well AFTER armButtons' 700ms re-enable timer. With an instant stub the
+// re-armed verdict beats the timer and the regression this case exists to catch is invisible.
+console.log("\nPAIRED HAPPY-PATH (W8): a BLOCKED nrenew must stay blocked across the repaint");
+nameRecord = null;                       // clean 404
+nameFetches = 0;
+fetchDelayMs = 1200;
+state.pending = [nrenewReq("g2")];
+await tick(); await flush(); await settle();
+const blockRe = /not registered, so the renewal would be ignored on-chain/;
+check("(6a) setup: on a FIRST paint Approve is live at the 700ms timer while the verdict is still in flight (the gate fails OPEN by design: approval never gains a hard network dependency, and resolve() awaits the verdict as the belt)",
+  registry.get("btn-approve").disabled === false);
+await settle(700);                       // the verdict lands (1.2s fetch)
+check("(6a) baseline: a 404 nrenew paints the BLOCKING note", blockRe.test(registry.get("req").innerHTML));
+check("(6a) baseline: and the landed verdict DISABLES Approve", registry.get("btn-approve").disabled === true);
+check("(6a) the gate fetched once", nameFetches === 1);
+
+state.unlocked = false; await tick(); await flush();
+state.unlocked = true;  await tick(); await flush(); await settle();   // 800ms: past the 700ms timer, INSIDE the window a re-armed 1.2s fetch would still be in flight
+check("(6b) W8: the BLOCKING note is re-attached after the unlock repaint", blockRe.test(registry.get("req").innerHTML));
+check("(6b) HAPPY-PATH: Approve is STILL DISABLED at the repaint's own 700ms re-enable timer (THE TRAP: re-arming the gate here would clear nfinBlocked, and this button would go live on a request the gate had already BLOCKED until a fresh verdict landed)",
+  registry.get("btn-approve").disabled === true);
+check("(6c) HAPPY-PATH: the unlock repaint fired ZERO new gate fetches", nameFetches === 1);
+await settle(700);                       // drain any verdict a mutation may have put in flight
+fetchDelayMs = 0;
+
+// 7. no leak onto a different request, and a genuinely NEW gated request still re-arms
+console.log("\nPAIRED HAPPY-PATH (W8): an ungated request is unchanged and inherits no note");
+state.pending = [sendReq("g3", RCPT_B, 1_00000000)];
+await tick(); await flush(); await settle();
+check("(7) a plain send after a gated request carries NO gate note", !blockRe.test(registry.get("req").innerHTML) && !noteRe.test(registry.get("req").innerHTML));
+check("(7) ...fires no gate fetch", nameFetches === 1);
+check("(7) ...and Approve is enabled again (the block belonged to the previous request)", registry.get("btn-approve").disabled === false);
+nameRecord = { name: "satoshi", owner: ME, pending: true };
+state.pending = [nrenewReq("g4")];
+await tick(); await flush(); await settle();
+check("(7) a genuinely NEW nrenew request DOES re-arm the gate (one new fetch)", nameFetches === 2);
+check("(7) ...and paints its own verdict", noteRe.test(registry.get("req").innerHTML));
+check("(7) the window was never closed during the W8 section", closes === 0);
 
 console.log(`\napprove-repaint-dom: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

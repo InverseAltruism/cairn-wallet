@@ -107,11 +107,12 @@ field version is **0.2.64** (the listing has read 0.2.64 since 2026-07-23); the 
 are at 0.2.65, which was minted by Plan 75 and never reached the store, so this ships as 0.2.66 and the
 store jumps 0.2.64 to 0.2.66. Rollback on this vehicle is FORWARD ONLY, as 0.2.67.
 
-What 0.2.66 carries (Plan 75-B C2, items W1 to W7, six code edits):
-W1 (AW-4) the approval window resets its four once-per-request latches at the `$("req").innerHTML`
+What 0.2.66 carries (Plan 75-B C2, items W1 to W8, seven code edits):
+W1 (AW-4) the approval window resets four of its five once-per-request latches at the `$("req").innerHTML`
 rebuild, so an approval left open across an idle auto-lock repaints its address-poisoning and
 first-time-recipient warnings and its token debit quote instead of showing empty boxes; the 1.2s poll adds
-zero fetches (pinned by `test/approve-repaint-dom.test.mjs`).
+zero fetches (pinned by `test/approve-repaint-dom.test.mjs`). The FIFTH latch is the approve-gate latch and
+is deliberately not reset; it is W8 below.
 W2 (AW-3) the async DOM fillers (`fillBalance`, `fillSendWarning`, `fillTokenSim`) carry the
 `renderedId !== r.id` guard after their await, so a superseded request's late balance fetch can no longer
 repaint the money row of the request now on screen.
@@ -144,6 +145,19 @@ W7 the four version literals (`package.json`, `public/manifest.json`, `src/inpag
 this snapshot. No new version tripwire was built: `build.mjs:32-38` already matches EVERY `version:`
 string in `inpage.ts` and was re-verified live by mutating the manifest and the second inpage literal
 (both aborted the build).
+W8 (AW-4, the fifth latch) the nfinalize/nrenew/nset approve-gate note survives the unlock repaint. Its
+latch (`nfinForId`) was outside W1's reset line while its output is written with `insertAdjacentHTML` into
+the very element the rebuild destroys, so a FEE-BURN warning (for example that the name is a pending
+reservation rather than a finalized registration, so the renewal would be ignored on-chain and the fee
+burned) was still silently lost across an idle auto-lock, inside W1's own stated rule. The fix RE-ATTACHES the already-settled verdict and
+nothing else. Adding `nfinForId` to W1's reset line instead would have AUTHORED A NEW DEFECT: it re-runs
+the bounded 6s name fetch on every repaint AND resets `nfinBlocked` to false with a fresh in-flight
+verdict, so `armButtons`' 700ms timer re-enables Approve on a request the gate had already BLOCKED until
+the new verdict lands. Both shapes are pinned in `test/approve-repaint-dom.test.mjs` (cases 5 to 7): the
+naive reset is what turns the blocked-button assertion red. Not handled and stated plainly rather than
+left implied: a verdict that settles WHILE the wallet is locked is still dropped by the `renderedId` guard,
+so it has no note to re-attach and `nfinBlocked` stays false; `resolve()` still awaits `nfinGate` and
+refuses a blocking verdict at the click, which is the fund-safety belt in that corner.
 
 Gate as run 2026-08-02 on this branch: `npm run typecheck` clean, `npm test` **57/57 files** (up from 54;
 three new files: `approve-repaint-dom`, `seal-lock-park`, `unrepresentable-coin`), `npm run build` green

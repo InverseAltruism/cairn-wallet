@@ -108,6 +108,9 @@ async function render() {
 let nfinForId: string | null = null;
 let nfinBlocked = false;   // read by armButtons' re-enable + belt for the resolve() gate
 let nfinGate: Promise<{ block: boolean; note: string | null }> | null = null;
+// W8 (AW-4, the fifth latch): the SETTLED verdict for nfinForId, retained for one reason only — so a
+// repaint can put its note back. Never read by the approve/refuse path (that still awaits nfinGate).
+let nfinSettled: { block: boolean; note: string | null } | null = null;
 async function checkNfinalize(name: string, tradeApi: string, me: string): Promise<{ block: boolean; note: string | null }> {
   let fetched: NameFetchResult = { failed: true };
   try {
@@ -128,9 +131,32 @@ async function checkNameAct(kind: "nrenew" | "nset", name: string, tradeApi: str
   } catch { /* unreachable → fail-open (gate warns, never blocks) */ }
   return nameActApproveGate(kind, fetched, me);
 }
+// The gate's note is written INTO $("req"), so the innerHTML rebuild in render() destroys it exactly like
+// #send-warn. One emitter, used by both the settle path and the repaint re-attach.
+function paintNfinNote(g: { block: boolean; note: string | null }) {
+  if (!g.note) return;
+  $("req").insertAdjacentHTML("beforeend",
+    g.block ? `<div class="req"><b class="err">⚠ ${escapeHtml(g.note)}</b></div>`
+            : `<div class="req dim">⚠ ${escapeHtml(g.note)}</div>`);
+}
 function armNfinalizeGate(r: any, st: any) {
-  if (nfinForId === r.id) return; nfinForId = r.id;
-  nfinBlocked = false; nfinGate = null;
+  if (nfinForId === r.id) {
+    // W8 (AW-4, the fifth latch): SAME request, repainted — the unlock-after-idle-auto-lock rebuild just
+    // destroyed this gate's note, and that note is a FEE-BURN warning. Re-attach the ALREADY-SETTLED
+    // verdict and return. This latch is deliberately NOT in W1's reset line: clearing it would RE-ARM,
+    // i.e. re-run the ≤6s name fetch on every repaint AND reset nfinBlocked to false with a fresh
+    // in-flight verdict, so armButtons' 700ms timer would RE-ENABLE Approve on a request this gate had
+    // already BLOCKED, until the new verdict landed. Re-attaching makes no network call and touches no
+    // latch, so a blocked request stays blocked (armButtons still reads the unchanged nfinBlocked).
+    // NOT handled here, stated plainly rather than left implied: a verdict that settles WHILE the wallet
+    // is locked is still dropped by the renderedId guard below (renderedId is null while locked), so
+    // there is nothing to re-attach and nfinBlocked stays false. resolve() still awaits nfinGate and
+    // refuses a blocking verdict at the click, which is the fund-safety belt in that corner.
+    if (nfinSettled) paintNfinNote(nfinSettled);
+    return;
+  }
+  nfinForId = r.id;
+  nfinBlocked = false; nfinGate = null; nfinSettled = null;
   const p = r.params || {};
   if (r.method !== "propose" || String(p.domain) !== CAIRNX_DOMAIN) return;
   const rec = decodeCairnxRecord(p.uri, p.payloadHash);
@@ -146,10 +172,9 @@ function armNfinalizeGate(r: any, st: any) {
     : checkNameAct(rec.t, rec.name, String(st.tradeApi || ""), String(st.addr || ""));
   nfinGate.then((g) => {
     if (renderedId !== r.id) return;                 // superseded — never paint over a different request
+    nfinSettled = g;                                 // W8: retained for a later repaint. Recorded AFTER the guard on purpose: a superseded verdict must not be re-attached to the request now on screen (the AW-3 class).
     if (g.block) { nfinBlocked = true; ($("btn-approve") as HTMLButtonElement).disabled = true; }
-    if (g.note) $("req").insertAdjacentHTML("beforeend",
-      g.block ? `<div class="req"><b class="err">⚠ ${escapeHtml(g.note)}</b></div>`
-              : `<div class="req dim">⚠ ${escapeHtml(g.note)}</div>`);
+    paintNfinNote(g);
   });
 }
 
