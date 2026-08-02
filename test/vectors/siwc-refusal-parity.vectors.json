@@ -1,0 +1,162 @@
+{
+  "family": "siwc",
+  "revision": 1,
+  "purpose": "REFUSAL-parity vectors for the hand-maintained SIWC twin family (Plan 75-A section 7.3). Three copies: csd-sdk/packages/siwc/src/index.ts, cairn/src/lib/siwc.ts, cairn-wallet/src/core/siwc.ts. This file is DUPLICATED byte-for-byte into each repo (cross-repo checkouts do not exist in CI, the MF-27 lesson) and every copy's test pins sha256 of these bytes, so a drifted COPY reds. It pins test DATA across repos, never implementation bytes.",
+  "surfaces": {
+    "build": "buildSiwcMessage(fields). Present in all three twins. A refusal means buildSiwcMessage THROWS; an acceptance means it returns exactly `build.message` and siwcDigest returns exactly `build.digest`.",
+    "verify": "verifySiwc({message,sig64,pub33}, expected). Present in csd-siwc and cairn only; the wallet twin is a BUILDER (it signs, the relying party verifies), so a build-only twin skips every verify leg and pins the skipped ids."
+  },
+  "vectors": [
+    {
+      "id": "SIWC-R1",
+      "kind": "refusal",
+      "label": "lone surrogate in a signed field",
+      "why": "utf8ToBytes maps an unpaired surrogate to U+FFFD, so two DIFFERENT messages collapse onto ONE digest and a signature over one verifies the other (siwcDigest is non-injective over arbitrary strings). The Python reference cannot encode one at all, which is the C1 cross-language class. Audit note: the wallet twin is KNOWN to lack this guard.",
+      "build": {
+        "fields": {
+          "domain": "casino.example",
+          "account": "0xfc7250a211deddc70ee5a2738de5f07817351cef",
+          "uri": "https://casino.example/login",
+          "version": "1",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "nonce": "abc123def456",
+          "issuedAt": "2026-06-17T12:00:00Z",
+          "expirationTime": "2026-06-17T12:10:00Z",
+          "statement": "Sign in \ud800 now."
+        }
+      },
+      "verify": {
+        "message": "casino.example wants you to sign in with your Compute Substrate account:\n0xfc7250a211deddc70ee5a2738de5f07817351cef\n\nSign in \ud800 now.\n\nURI: https://casino.example/login\nVersion: 1\nChain ID: csd:00000052c2821f71b19c3d79dfabfb12\nNonce: abc123def456\nIssued At: 2026-06-17T12:00:00Z\nExpiration Time: 2026-06-17T12:10:00Z",
+        "sig64": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "pub33": "0x020000000000000000000000000000000000000000000000000000000000000000",
+        "expected": {
+          "domain": "casino.example",
+          "nonce": "abc123def456",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "now": 1781697601000
+        },
+        "reason": "malformed-message"
+      }
+    },
+    {
+      "id": "SIWC-R2",
+      "kind": "refusal",
+      "label": "embedded newline in a signed field",
+      "why": "A newline in a field value forges an extra message line, so a signed artifact can DISPLAY differently than it verifies. The build guard blocks every line terminator (\\n \\r U+2028 U+2029 U+0085 \\v \\f), and the parser's canonical round-trip refuses the forged message.",
+      "build": {
+        "fields": {
+          "domain": "casino.example",
+          "account": "0xfc7250a211deddc70ee5a2738de5f07817351cef",
+          "uri": "https://casino.example/login",
+          "version": "1",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "nonce": "abc123def456",
+          "issuedAt": "2026-06-17T12:00:00Z",
+          "expirationTime": "2026-06-17T12:10:00Z",
+          "statement": "Sign in.\nExtra: line"
+        }
+      },
+      "verify": {
+        "message": "casino.example wants you to sign in with your Compute Substrate account:\n0xfc7250a211deddc70ee5a2738de5f07817351cef\n\nSign in.\nExtra: line\n\nURI: https://casino.example/login\nVersion: 1\nChain ID: csd:00000052c2821f71b19c3d79dfabfb12\nNonce: abc123def456\nIssued At: 2026-06-17T12:00:00Z\nExpiration Time: 2026-06-17T12:10:00Z",
+        "sig64": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "pub33": "0x020000000000000000000000000000000000000000000000000000000000000000",
+        "expected": {
+          "domain": "casino.example",
+          "nonce": "abc123def456",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "now": 1781697601000
+        },
+        "reason": "malformed-message"
+      }
+    },
+    {
+      "id": "SIWC-R3",
+      "kind": "refusal",
+      "label": "out-of-range time in Issued At",
+      "why": "The RFC3339 shape regex passes 25:61:61 but Date.parse returns NaN, and every time bound is a > / >= comparison that is FALSE against NaN. Without the explicit NaN refusal one unparseable timestamp disables all of the clock bounds at once. Verify surface only: the builder deliberately does not range-check time values, so a build-only twin cannot carry this leg.",
+      "verify": {
+        "message": "casino.example wants you to sign in with your Compute Substrate account:\n0xfc7250a211deddc70ee5a2738de5f07817351cef\n\n\nURI: https://casino.example/login\nVersion: 1\nChain ID: csd:00000052c2821f71b19c3d79dfabfb12\nNonce: abc123def456\nIssued At: 2026-06-17T25:61:61Z\nExpiration Time: 2026-06-17T12:10:00Z",
+        "sig64": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "pub33": "0x020000000000000000000000000000000000000000000000000000000000000000",
+        "expected": {
+          "domain": "casino.example",
+          "nonce": "abc123def456",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "now": 1781697601000
+        },
+        "reason": "bad-issued-at"
+      }
+    },
+    {
+      "id": "SIWC-A1",
+      "kind": "accept",
+      "label": "canonical minimal sign-in (no statement)",
+      "why": "The paired happy path for R2 and R3: the exact call shape a relying party sends. Pins the canonical bytes AND the digest across all three twins, so a builder that drifts one byte reds here instead of shipping a signature no verifier accepts.",
+      "build": {
+        "fields": {
+          "domain": "casino.example",
+          "account": "0xfc7250a211deddc70ee5a2738de5f07817351cef",
+          "uri": "https://casino.example/login",
+          "version": "1",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "nonce": "abc123def456",
+          "issuedAt": "2026-06-17T12:00:00Z",
+          "expirationTime": "2026-06-17T12:10:00Z"
+        },
+        "message": "casino.example wants you to sign in with your Compute Substrate account:\n0xfc7250a211deddc70ee5a2738de5f07817351cef\n\n\nURI: https://casino.example/login\nVersion: 1\nChain ID: csd:00000052c2821f71b19c3d79dfabfb12\nNonce: abc123def456\nIssued At: 2026-06-17T12:00:00Z\nExpiration Time: 2026-06-17T12:10:00Z",
+        "digest": "0x719306c8b9d67525c1a53e11a6c8a027572a5ed919db64543f6f3a0fafa83839"
+      },
+      "verify": {
+        "message": "casino.example wants you to sign in with your Compute Substrate account:\n0xfc7250a211deddc70ee5a2738de5f07817351cef\n\n\nURI: https://casino.example/login\nVersion: 1\nChain ID: csd:00000052c2821f71b19c3d79dfabfb12\nNonce: abc123def456\nIssued At: 2026-06-17T12:00:00Z\nExpiration Time: 2026-06-17T12:10:00Z",
+        "sig64": "0xc5b166a42d14e8ad6f90bb1b2c77ef025d5ad3c0634c82a0e95bf3f64128fd460aa071eb69f1c53d14038f7b1d7e116d5782c9058571c9cdea655e7bea4c8e1f",
+        "pub33": "0x034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "expected": {
+          "domain": "casino.example",
+          "nonce": "abc123def456",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "now": 1781697601000
+        },
+        "account": "0xfc7250a211deddc70ee5a2738de5f07817351cef"
+      }
+    },
+    {
+      "id": "SIWC-A2",
+      "kind": "accept",
+      "label": "astral text (a valid surrogate PAIR) plus every optional field",
+      "why": "The paired happy path for R1: the lone-surrogate refusal must not cost real emoji. The statement carries U+1F984, which IS a surrogate pair, and the message carries Not Before, Request ID and Resources so the optional-field layout is pinned too.",
+      "build": {
+        "fields": {
+          "domain": "casino.example",
+          "account": "0xfc7250a211deddc70ee5a2738de5f07817351cef",
+          "uri": "https://casino.example/login",
+          "version": "1",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "nonce": "abc123def456",
+          "issuedAt": "2026-06-17T12:00:00Z",
+          "expirationTime": "2026-06-17T12:10:00Z",
+          "statement": "Sign in 🦄 to CSD Casino.",
+          "notBefore": "2026-06-17T12:00:00Z",
+          "requestId": "req-42",
+          "resources": [
+            "https://casino.example/play",
+            "https://casino.example/wallet"
+          ]
+        },
+        "message": "casino.example wants you to sign in with your Compute Substrate account:\n0xfc7250a211deddc70ee5a2738de5f07817351cef\n\nSign in 🦄 to CSD Casino.\n\nURI: https://casino.example/login\nVersion: 1\nChain ID: csd:00000052c2821f71b19c3d79dfabfb12\nNonce: abc123def456\nIssued At: 2026-06-17T12:00:00Z\nExpiration Time: 2026-06-17T12:10:00Z\nNot Before: 2026-06-17T12:00:00Z\nRequest ID: req-42\nResources:\n- https://casino.example/play\n- https://casino.example/wallet",
+        "digest": "0xe8519994f37aef2b65bd7c9a768b26471c36bdba73ef0d8524f0a4a5ade306aa"
+      },
+      "verify": {
+        "message": "casino.example wants you to sign in with your Compute Substrate account:\n0xfc7250a211deddc70ee5a2738de5f07817351cef\n\nSign in 🦄 to CSD Casino.\n\nURI: https://casino.example/login\nVersion: 1\nChain ID: csd:00000052c2821f71b19c3d79dfabfb12\nNonce: abc123def456\nIssued At: 2026-06-17T12:00:00Z\nExpiration Time: 2026-06-17T12:10:00Z\nNot Before: 2026-06-17T12:00:00Z\nRequest ID: req-42\nResources:\n- https://casino.example/play\n- https://casino.example/wallet",
+        "sig64": "0xd75e78cc5da62b95eff76a15042059ecf8970a27f37ab375a547eb0a4dae92d7570f86a6e81d8a150a2c943b44059cbd78f4ee1bfbb65331dc96130a275b3b06",
+        "pub33": "0x034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "expected": {
+          "domain": "casino.example",
+          "nonce": "abc123def456",
+          "chainId": "csd:00000052c2821f71b19c3d79dfabfb12",
+          "now": 1781697601000
+        },
+        "account": "0xfc7250a211deddc70ee5a2738de5f07817351cef"
+      }
+    }
+  ]
+}

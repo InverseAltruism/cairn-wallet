@@ -22,6 +22,16 @@ const NONCE_RE = /^[A-Za-z0-9]{8,}$/;
 // Block ALL line terminators (incl. Unicode U+2028/U+2029/U+0085 + \v/\f), lockstep with csd-siwc (audit L17):
 // otherwise the wallet could build+sign a field that an RP's csd-siwc verifier rejects as malformed.
 const hasLF = (s: string) => /[\n\r\u2028\u2029\u0085\u000b\u000c]/.test(s);
+// A7 (Plan 75-A section 7.3): KEEP-IN-SYNC with csd-siwc hasLoneSurrogate. This twin carried hasLF but
+// never this check, so the wallet would BUILD and SIGN a message the canonical verifier then refuses as
+// malformed. An unpaired surrogate is not representable in UTF-8: TextEncoder replaces it with U+FFFD, so
+// two different field strings canonicalise to the SAME bytes and therefore the same signing digest. A
+// hardened relying party rejects the message while an un-upgraded one accepts it under a digest that does
+// not uniquely identify what the user saw. Refusal-parity vector SIWC-R1 pins this across all three copies
+// (csd-siwc, cairn/src/lib/siwc.ts, here); drift any one and that repo parity test reds.
+const hasLoneSurrogate = (s: string): boolean =>
+  /[\uD800-\uDFFF]/.test(s) && /[\uD800-\uDFFF]/.test(s.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ""));
+const badField = (s: string) => hasLF(s) || hasLoneSurrogate(s);
 
 export interface SiwcFields {
   domain: string; account: string; statement?: string; uri: string; version: string;
@@ -31,17 +41,17 @@ export interface SiwcFields {
 
 /** Build the canonical SIWC message (the exact bytes that get signed). Mirrors csd-siwc exactly. */
 export function buildSiwcMessage(f: SiwcFields): string {
-  if (!f.domain || hasLF(f.domain)) throw new Error("siwc: bad domain");
+  if (!f.domain || badField(f.domain)) throw new Error("siwc: bad domain");
   if (!ADDR_RE.test(f.account)) throw new Error("siwc: bad account");
-  if (!f.uri || hasLF(f.uri)) throw new Error("siwc: bad uri");
+  if (!f.uri || badField(f.uri)) throw new Error("siwc: bad uri");
   if (f.version !== SIWC_VERSION) throw new Error("siwc: bad version");
-  if (!f.chainId || hasLF(f.chainId)) throw new Error("siwc: bad chainId");
+  if (!f.chainId || badField(f.chainId)) throw new Error("siwc: bad chainId");
   if (!NONCE_RE.test(f.nonce)) throw new Error("siwc: nonce must be >=8 alphanumeric");
-  if (!f.issuedAt || hasLF(f.issuedAt)) throw new Error("siwc: bad issuedAt");
+  if (!f.issuedAt || badField(f.issuedAt)) throw new Error("siwc: bad issuedAt");
   const stmt = f.statement != null && f.statement !== "" ? f.statement : undefined;
-  if (stmt !== undefined && hasLF(stmt)) throw new Error("siwc: statement must be one line");
-  for (const v of [f.expirationTime, f.notBefore, f.requestId]) if (v !== undefined && hasLF(v)) throw new Error("siwc: newline in field");
-  if (f.resources) for (const r of f.resources) if (hasLF(r)) throw new Error("siwc: newline in resource");
+  if (stmt !== undefined && badField(stmt)) throw new Error("siwc: statement must be one line");
+  for (const v of [f.expirationTime, f.notBefore, f.requestId]) if (v !== undefined && badField(v)) throw new Error("siwc: newline in field");
+  if (f.resources) for (const r of f.resources) if (badField(r)) throw new Error("siwc: newline in resource");
 
   const lines: string[] = [f.domain + HEADER_SUFFIX, f.account, ""];
   if (stmt !== undefined) lines.push(stmt);

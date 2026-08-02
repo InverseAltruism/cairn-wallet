@@ -455,7 +455,7 @@ export function floorAdvance(seenFloor: number, nodeTip: number, verifiedTip: nu
 // non-JSON body) KEEPS the cache and rethrows fail-closed; a STRUCTURAL break (prev-link / PoW / bits / hash)
 // reseeds. See prepare()'s catch for why the JSON-parse markers are transport, not chain, faults.
 export function isTransientSyncError(msg: string): boolean {
-  return /\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|networkerror|load failed)\b/i.test(msg)
+  return /\b(429|50[0-9]|timeout|timed out|abort|aborted|headers|non-dense|failed to fetch|fetch failed|networkerror|load failed)\b/i.test(msg)
     || /unexpected (token|end)|json/i.test(msg);
 }
 
