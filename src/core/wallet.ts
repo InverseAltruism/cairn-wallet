@@ -492,7 +492,14 @@ export class Wallet {
 
   async lock(): Promise<void> {
     this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; this.mnemonic = null; this.nextIndex = 0;
-    this.pendingHist = []; this.pendingSeals = []; // parked retries must not outlive the unlocked session (reset() calls lock() first; the reset discipline is exactly this clear)
+    // W4 (AW-SEAL-LOCK-1): lock() no longer wipes the parked arrays. `pendingSeals` holds a PAID commit's
+    // reveal nonce (already vault ciphertext at the park site) and `pendingHist` holds the parked history
+    // rows behind the double-pay backstop; both are the only copy after a failed storage write, so an idle
+    // auto-lock destroyed a paid commit's only reveal secret. Neither carries key material, so surviving a
+    // lock leaks nothing. doReset() still clears both independently (its own comment calls that the belt for
+    // a park that raced lock), so reset discipline is unchanged. HONESTY: both arrays are RAM on the MV3
+    // service worker and die at SW idle kill regardless, so this buys survival across lock/unlock inside ONE
+    // service-worker lifetime, and is not durability.
     await this.clearSession(); // wipe the in-RAM session key BEFORE returning, so "locked" can't race a still-persisted key (audit LOCK-ASYNC)
   }
 
@@ -664,7 +671,11 @@ export class Wallet {
     // score (CSD lanes use the default; the token lane passes 100), so refusing a caller score that is
     // present-and-not-100 breaks no honest fill. Refuse, do not coerce, so a mis-built dApp fill fails
     // loudly instead of burning; the SIGNED score is hardcoded below regardless.
-    if (p.score !== undefined && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
+    // W3 (N-05): `!= null` covers BOTH undefined and null. `!== undefined` alone caught null, and
+    // `null >>> 0` is 0 != SCORE_FILL, so a caller passing an explicit `score: null` (a shape store
+    // 0.2.64 accepted, since this guard has never shipped) was refused for no reason. Absent means
+    // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
+    if (p.score != null && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
     const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? ATTEST_FLOOR };
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr);
     if (refusal) return refusal;
@@ -1329,7 +1340,14 @@ export class Wallet {
     // M11 (B5b): price from the floor-CLAMPED tip (feePricingTip) — a deflated RPC tip must not price an
     // obsolete cheaper tier the resolver rejects (fee burns). Same clamp at BOTH build sites + the
     // clearsign review warning, through the ONE shared helper, so build and review can never disagree.
-    const fee = nameRegFee(name, buildFeeHeight(feePricingTip(await node.tip(this.rpc), await this.tipFloor())));
+    // W5 (Q-02): feePricingTip returns null when NEITHER the served tip nor the persisted floor is a
+    // usable height. Refuse rather than price: a zero tip does NOT throw inside the vendored fee-height
+    // helper, it prices the CHEAPEST tier, so a norm-to-0 would quote (and, at the sign site below,
+    // build) an underpaid record whose fee LEAVES the wallet while the resolver no-ops it. This is the
+    // same refusal class the vendored helper already throws for a non-integer tip.
+    const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
+    if (tip == null) throw new RangeError("cannot price this renewal: no usable chain tip (the node returned no valid height). Nothing was signed.");
+    const fee = nameRegFee(name, buildFeeHeight(tip));
     return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
   }
   // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
@@ -1341,6 +1359,10 @@ export class Wallet {
     const built = buildNameRenew({ name });
     // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee — the ONE shared helper (see there).
     const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
+    // W5 (Q-02): the null refusal at the BUILD site is the one that matters. Without it a degenerate tip
+    // read prices the cheapest tier and this method signs a treasury output the resolver rejects: the fee
+    // burns. See cairnxNameRenewFee above and the helper's own comment for why 0 is not an option.
+    if (tip == null) throw new RangeError("cannot price this renewal: no usable chain tip (the node returned no valid height). Nothing was signed.");
     const liveFee = nameRegFee(name, buildFeeHeight(tip));  // v1.8: height-gated; V18-1 boundary-safe build pricing
     if (liveFee > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("renewal fee too large for the UI");
     // WL-FEE-FREEZE-1 (WYSIWYS): sign EXACTLY the fee the user reviewed. If the chain tip crossed a fee-gate
@@ -1725,9 +1747,11 @@ export class Wallet {
   // preimages — so a freshly-created wallet can't surface a prior owner's data.
   // RESET-RESURRECT (fund-safety red-team + P75-6): the wipe must not race ANY parked write. It is
   // serialized behind ALL THREE write chains (vault, history, seals); lock() above nulled
-  // this.accts and cleared the pending arrays, and every chained WRITE callback bails on
-  // !this.accts, so nothing queued after this point can land, and everything queued before it
-  // settles before the deletes run.
+  // this.accts, and every chained WRITE callback bails on !this.accts, so nothing queued after this
+  // point can land, and everything queued before it settles before the deletes run. doReset() below
+  // clears the parked arrays itself. (W4: lock() no longer clears them, because an idle auto-lock is
+  // not a reset and destroying a PAID commit's only reveal nonce was the defect; the reset path's
+  // clear was already independent, which is why the deletion did not touch this property.)
   async reset(): Promise<void> {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();

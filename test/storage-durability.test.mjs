@@ -304,8 +304,19 @@ await runCase("H", async () => {
   check("H: the wallet stays wiped after the late submit", (await sc.store.get("vault")) === null);
 });
 
-// ── Case I (pinned by M9): parked retries are cleared in lock(); an entry parked pre-lock must not resurface
-//    after unlock + the next send's drain. ──
+// ── Case I. REVISED by W4 (AW-SEAL-LOCK-1), and the reversal is deliberate, so it is stated here rather
+//    than quietly deleted. M9 pinned "a parked retry is cleared in lock(), so it cannot resurface after an
+//    unlock". That was a SIDE EFFECT of `lock()` wiping pendingHist/pendingSeals, not an independent
+//    property, and the wipe cost more than it bought: an idle auto-lock is an ordinary timer event, and it
+//    destroyed the ONLY copy of a record whose on-chain fee was ALREADY PAID (a sealClaim's reveal nonce,
+//    and the history row the double-pay backstop reads). The two properties M9 was standing in for are
+//    both still asserted, elsewhere and directly:
+//      reset discipline: doReset() clears BOTH arrays itself (test/seal-lock-park.test.mjs case 3), and
+//                        case H above pins that a write landing after reset() cannot re-create history.
+//      account removal:  removeAccount purges that account's parked retry (case O-purge / M10 below).
+//    So a parked row now SURVIVES a lock and unlock and drains on the next write of its kind. HONESTY:
+//    both arrays are RAM on the MV3 service worker and still die at SW idle kill; this is survival inside
+//    ONE service-worker lifetime, not durability.
 await runCase("I", async () => {
   const coins = [bigCoin(), bigCoin()];
   const { fetch } = mkStub({ coins, served: coins });
@@ -319,9 +330,10 @@ await runCase("I", async () => {
   sc.healSet("txHistory:");
   await w.lock();
   await w.unlock(PW);
-  await w.send(TO("33"), 4e8, FEE); // its drain (under M9) would flush the pre-lock parked entry
+  const rOk = await w.send(TO("33"), 4e8, FEE); // its drain flushes the pre-lock parked entry
   const hist = (await sc.store.get(hk(addr))) || [];
-  check("I (M9): a parked entry cleared at lock() does NOT resurface after unlock + next send", !hist.some((x) => x.txid === rFail.txid));
+  check("I (W4): a row parked before an idle lock SURVIVES the unlock and drains on the next send", hist.some((x) => x.txid === rFail.txid));
+  check("I: and the post-unlock send's own row is recorded too (the drain rides behind it, never replaces it)", hist.some((x) => x.txid === rOk.txid));
 });
 
 // ── Case J (C3 + pinned by M4): pendingMerge re-reads history INSIDE the chain and keeps the balance fetch

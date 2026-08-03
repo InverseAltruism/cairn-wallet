@@ -78,6 +78,24 @@ console.log("XR-1/FL-1 - fill score guard + token-lane CSD-output (N26) guard:\n
   check(`a fill with score:80 (present, != 100) is REFUSED with FILL_UNSAFE (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE");
   check("...and nothing was submitted (the SCORE-BURN did not happen)", s.submits.length === 0);
 }
+{
+  // W3 (N-05) half one: the guard must still refuse a present-and-wrong score. Both halves are asserted
+  // or the fix is a hole: widening `!== undefined` to `!= null` must not widen it to "any falsy score".
+  const { w, addr, s } = await freshWallet("pw-score7-1234");
+  const r = await w.fillOffer({ proposalId: OID, outputs: csdOuts(addr), score: 7 });
+  check(`a fill with score:7 is still REFUSED with FILL_UNSAFE (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE");
+  check("...and nothing was submitted", s.submits.length === 0);
+}
+{
+  // W3 (N-05) half two, the UX-REGRESSION half: `score: null` means ABSENT, however it is spelled.
+  // `p.score !== undefined` missed null and `null >>> 0` is 0 != SCORE_FILL, so this shape was refused
+  // for no reason. It has never shipped (git show v0.2.64:src/core/wallet.ts has no SCORE_FILL_REFUSAL),
+  // and the store still serves 0.2.64, so 0.2.66 must not be the release that introduces the refusal.
+  const { w, addr, s } = await freshWallet("pw-scorenull-123");
+  const r = await w.fillOffer({ proposalId: OID, outputs: csdOuts(addr), score: null });
+  check(`a fill with score:null is ACCEPTED and submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+  check("...and the SIGNED score is SCORE_FILL (100), never the caller's null", Number(s.submits[0]?.tx?.app?.Attest?.score) === 100);
+}
 
 // ── 2. TOKEN-outputs (N26) guard: a token fill carrying CSD outputs is REFUSED. ──
 {
@@ -107,6 +125,13 @@ console.log("\nPAIRED HAPPY-PATH (honest fills still submit):");
   const { w, s } = await freshWallet("pw-tokhonest-123");
   const r = await w.fillOffer({ proposalId: TOID, outputs: [] });
   check(`an honest token fill (outputs:[]) still submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+{
+  // (d) W3's paired happy-path, the site's TOKEN-lane call shape verbatim: score:100 with outputs:[].
+  const { w, s } = await freshWallet("pw-tok100-123");
+  const r = await w.fillOffer({ proposalId: TOID, outputs: [], score: 100 });
+  check(`the token lane's score:100 call shape still submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+  check("...signing SCORE_FILL (100)", Number(s.submits[0]?.tx?.app?.Attest?.score) === 100);
 }
 
 // ── RED-FIRST: source-line removal of each guard's marker makes the matching attack SUBMIT. ──

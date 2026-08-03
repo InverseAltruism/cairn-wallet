@@ -24,12 +24,12 @@ Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runt
   - `keystore.ts`: AES-256-GCM vault; PBKDF2-SHA256 600k iters; MIN_ITERS=100k downgrade floor + MAX_ITERS=30M DoS ceiling.
   - `account.ts`: BIP-39/32/44, coin type 7779.
   - `csdtx.ts`: DELIBERATE browser twin of the server tx codec (bincode, txid=sha256d, sighash CSD_SIG_V1, low-S; loginDigest structurally disjoint from a tx sighash). Do NOT dedupe into an import.
-  - `node.ts` (~788 lines): the send engine. `assembleValueTx` is the single chokepoint for EVERY value tx: fee>0, flat MAX_FEE=100 CSD, zero-address refusal, selectVerified -> selectInputs (greedy largest-first, MAX_TX_INPUTS=512; a marked KEEP-IN-SYNC fork of csd-tx's selectInputs) -> verifyInputValues (TXB-1: fetch each source tx, recompute txid with the consensus codec; verdicts number/notfound/transient/tamper/horizon; the fourth-class "horizon" is BN0w, classified ONLY on the node v0.1.6 exact 503 + body code SCAN_HORIZON pair and per-coin-skippable exactly like notfound, so a node cold-index window skips coins instead of refusing the whole spend; inert until the node emits it; bounded pool VERIFY_CONCURRENCY=8 with decisive short-circuit) -> ghost re-select loop -> proportional fee cap max(1 CSD, 10% of verified inputs) -> change to self only -> signAndSubmit (SUBMIT_REJECTED vs SUBMIT_MAYBE_INFLIGHT vs SUBMIT_DUPLICATE disambiguation). `consolidate()` merges dust: up to 512 smallest coins into one self-output, TXB-1-verified, both fee caps apply (popup-only, NOT in DAPP_METHODS; `consolidatePreview()` feeds the settings ▸ coins UI). `spendableCoins()` is the standalone spendability predicate, ★KEEP-IN-SYNC with selectInputs' filter and pinned by test/selectinputs-parity.ts.
+  - `node.ts` (~788 lines): the send engine. `assembleValueTx` is the single chokepoint for EVERY value tx: fee>0, flat MAX_FEE=100 CSD, zero-address refusal, selectVerified -> selectInputs (greedy largest-first, MAX_TX_INPUTS=512; a marked KEEP-IN-SYNC fork of csd-tx's selectInputs) -> verifyInputValues (TXB-1: fetch each source tx, recompute txid with the consensus codec; verdicts number/notfound/transient/tamper/horizon/unrepresentable; the fourth-class "horizon" is BN0w, classified ONLY on the node v0.1.6 exact 503 + body code SCAN_HORIZON pair and per-coin-skippable exactly like notfound, so a node cold-index window skips coins instead of refusing the whole spend; inert until the node emits it; the fifth-class "unrepresentable" is W6/ND-1 in 0.2.66, classified on the RAW body before the txid recompute when a codec-serialized number cannot survive JSON.parse exactly, and per-coin-skippable exactly like horizon so one dust coin from a stranger can no longer brick consolidate(); NEITHER adds a rung to the decisive tamper/transient fold; bounded pool VERIFY_CONCURRENCY=8 with decisive short-circuit) -> ghost re-select loop -> proportional fee cap max(1 CSD, 10% of verified inputs) -> change to self only -> signAndSubmit (SUBMIT_REJECTED vs SUBMIT_MAYBE_INFLIGHT vs SUBMIT_DUPLICATE disambiguation). `consolidate()` merges dust: up to 512 smallest coins into one self-output, TXB-1-verified, both fee caps apply (popup-only, NOT in DAPP_METHODS; `consolidatePreview()` feeds the settings ▸ coins UI). `spendableCoins()` is the standalone spendability predicate, ★KEEP-IN-SYNC with selectInputs' filter and pinned by test/selectinputs-parity.ts.
   - `wallet.ts` (~1,045 lines): vault lifecycle, multi-account, chrome.storage.session key rehydrate (fail-closed), brute-force auth guard (5 failures -> exponential lockout), send/token/name/seal orchestration, fillOffer preflight, SPV wiring, history. maybeRecord is the single history chokepoint: ok records, SUBMIT_MAYBE_INFLIGHT records maybe:true under the LOCAL txid, SUBMIT_DUPLICATE clears an earlier maybe in place (never inserts); every flow captures its histKey PRE-await so entries file under the account that signed.
   - `cairnx.ts`: CairnX record builders over the vendored core; consensus rules IMPORTED never re-typed; pre-spend parseRecord round-trip so build-success implies resolver-acceptance. NO on-device registration flow (commit/reveal/finalize builders removed 2026-07-06; the /names site drives registration via dApp propose, always clear-signed).
   - `namespv.ts` (~672 lines): trustless name verification: PoW light client from baked checkpoint (height 29960), full-block merkle bind, signer auth + prevout-ownership bind, TWO-SOURCE UNION (verifyNameUnion: primary + clarvis, union by txid, SPV-prove every event, replay the audited resolver), fail-closed everywhere; viaFill names NEVER show green. BP8b: long cold syncs persist verified header PREFIXES mid-sync (partial-progress snapshots, header-chain key ONLY), so a 429'd/interrupted bootstrap RESUMES instead of restarting from zero; the lapse floor NEVER advances on a partial persist (floorAdvance runs only after a fully successful serialized sync); restore still re-verifies everything (the storage-poisoning defense is untouched).
 - `src/popup/`: popup.ts (~1,334 lines, main UI + shared send-flow engine), approve.ts (clear-signing window), clearsign.ts (pure formatters + lookalike detection + the nfinalize approve gate: re-fetches the reservation and runs finalizeWinnerCheck before allowing a fee-burning finalize), identicon, QR.
-- `src/vendor/cairnx-spv.js`: vendored esbuild bundle of csd-sdk's audited dists. PROVENANCE.json pins bundleSha256 + csdSdkVersion + csdSdkCommit + noble versions (currently csd-sdk @94cd992 = the cairnx-core 0.1.40-to-be tree; the csdSdkVersion FIELD reads 0.1.38 until the close-out R3 bump + `--write` regen, same bundle sha); scripts/check-vendor-fresh.mjs enforces integrity; CI rebuilds byte-identical from the pinned commit.
+- `src/vendor/cairnx-spv.js`: vendored esbuild bundle of csd-sdk's audited dists. PROVENANCE.json pins bundleSha256 + csdSdkVersion + csdSdkCommit + noble versions (currently csdSdkVersion 0.1.41 at csd-sdk commit 82175f98, bundle sha f34994f2c58c; the gate warns when csd-sdk HEAD has moved past that commit and the byte-diff stays authoritative); scripts/check-vendor-fresh.mjs enforces integrity; CI rebuilds byte-identical from the pinned commit.
 - `public/manifest.json`: permissions only storage+alarms+unlimitedStorage (the SPV header snapshot outgrows the default quota); CSP connect-src limited to cairn-substrate.com, clarvis, localhost; web_accessible_resources only inpage.js; NO externally_connectable.
 - `store/`: CWS listing kit incl. PUBLISH-RUNBOOK.md (security-critical). `WALLET-ERROR-CODES.md`: the dApp error contract (codes are the contract, strings are UX copy).
 
@@ -63,7 +63,7 @@ Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runt
 
 ```bash
 npm ci                        # CI uses --ignore-scripts
-npm test                      # test/run.mjs glob runner (48 files at this writing), sequential
+npm test                      # test/run.mjs glob runner (57 files at this writing), sequential
 npm run typecheck
 npm run build                 # tripwires run here -> dist/
 npm run package               # deterministic zips + sha256
@@ -74,7 +74,7 @@ Load dist/ unpacked at chrome://extensions. Rebuild the vendored SPV bundle only
 
 ## Testing
 
-`npm test` = `test/run.mjs`, a GLOB runner (B0c: new test files are auto-discovered, never hand-listed; 48 files green at this writing; run one with `npx tsx test/<file>`). The runner itself is guarded: `test/runner-guards.test.mjs` (B8w, the N24 guard-of-the-guard) drives the REAL runner against throwaway sandboxes, incl. the 3-file middle-fails fixture proving a mid-suite failure still runs the remaining files AND forces a non-zero exit. Highlights: selftest.ts (golden vectors, real on-chain sig vs recomputed sighash, vault downgrade resistance, HD derivation, fee-cap lock), pentest.ts (source-scan tripwires), extension-boundary.ts (the REAL background message gate), poc-signin-oracle.ts, multiwallet.ts, bruteforce, csdtx-boundary, clearsign.ts, cairnx.ts (byte-for-byte vs cairnx-core), siwc.ts, events.test.ts, namespv.test.mjs (+ PoCs: union withholding, stale-tip lapse, srs escape, v23 burn guard), ghostcoin.test.mjs, consolidate.test.mjs (incl. the maybe-inflight record/clear/reconcile matrix and account-switch filing), resolve-fallback.test.mjs (clarvis base-claim source selection), persistvault-race.test.mjs (concurrent account-mgmt cannot drop an imported key), selectinputs-parity.ts (also pins spendableCoins filter parity), identicon, qr. CI: typecheck + suite + build + verify:vendor + a token-gated vendor-fresh-full job (byte-identity rebuild from the PROVENANCE-pinned csd-sdk commit).
+`npm test` = `test/run.mjs`, a GLOB runner (B0c: new test files are auto-discovered, never hand-listed; 57 files green at this writing; run one with `npx tsx test/<file>`). The runner itself is guarded: `test/runner-guards.test.mjs` (B8w, the N24 guard-of-the-guard) drives the REAL runner against throwaway sandboxes, incl. the 3-file middle-fails fixture proving a mid-suite failure still runs the remaining files AND forces a non-zero exit. Highlights: selftest.ts (golden vectors, real on-chain sig vs recomputed sighash, vault downgrade resistance, HD derivation, fee-cap lock), pentest.ts (source-scan tripwires), extension-boundary.ts (the REAL background message gate), poc-signin-oracle.ts, multiwallet.ts, bruteforce, csdtx-boundary, clearsign.ts, cairnx.ts (byte-for-byte vs cairnx-core), siwc.ts, events.test.ts, namespv.test.mjs (+ PoCs: union withholding, stale-tip lapse, srs escape, v23 burn guard), ghostcoin.test.mjs, consolidate.test.mjs (incl. the maybe-inflight record/clear/reconcile matrix and account-switch filing), resolve-fallback.test.mjs (clarvis base-claim source selection), persistvault-race.test.mjs (concurrent account-mgmt cannot drop an imported key), selectinputs-parity.ts (also pins spendableCoins filter parity), identicon, qr. CI: typecheck + suite + build + verify:vendor + a token-gated vendor-fresh-full job (byte-identity rebuild from the PROVENANCE-pinned csd-sdk commit).
 
 ## Release and deploy
 
@@ -100,7 +100,79 @@ SPV snapshot growth (the honest picture, established 2026-07-10): the baked chec
 - fillOffer once trusted a caller-supplied verified flag and could underpay a maker on a partial fill; both closed by the BigInt exact-compare need-map preflight in fillOffer and fail-closed registered-vs-unregistered handling in the union path. These guards are load-bearing; keep them.
 - Misc: rename/removeAccount take an ADDRESS not an index; sighashMatch in SubmitResult is vestigial but dApp-visible, keep it; a .csd recipient must never reach a URL un-validated (NAME_RE first); Google Safe Browsing once flagged the sites for self-serving the zip (site-side; wallet distribution is CWS + GH only).
 
-## State snapshot (2026-07-23, post-REBIND LTS baseline; verify with `git log` and the GitHub releases page before trusting)
+## State snapshot (2026-08-02, Plan 75-B batch C2; verify with `git log` and the GitHub releases page before trusting)
+
+**Version 0.2.66 on branch `plan75b/c2-wallet`, NOT yet tagged, NOT yet uploaded.** The Chrome Web Store
+field version is **0.2.64** (the listing has read 0.2.64 since 2026-07-23); the repo and the GitHub release
+are at 0.2.65, which was minted by Plan 75 and never reached the store, so this ships as 0.2.66 and the
+store jumps 0.2.64 to 0.2.66. Rollback on this vehicle is FORWARD ONLY, as 0.2.67.
+
+What 0.2.66 carries (Plan 75-B C2, items W1 to W8, seven code edits):
+W1 (AW-4) the approval window resets four of its five once-per-request latches at the `$("req").innerHTML`
+rebuild, so an approval left open across an idle auto-lock repaints its address-poisoning and
+first-time-recipient warnings and its token debit quote instead of showing empty boxes; the 1.2s poll adds
+zero fetches (pinned by `test/approve-repaint-dom.test.mjs`). The FIFTH latch is the approve-gate latch and
+is deliberately not reset; it is W8 below.
+W2 (AW-3) the async DOM fillers (`fillBalance`, `fillSendWarning`, `fillTokenSim`) carry the
+`renderedId !== r.id` guard after their await, so a superseded request's late balance fetch can no longer
+repaint the money row of the request now on screen.
+W3 (N-05) `fillOffer`'s score guard uses `!= null`, so an explicit `score: null` is treated as absent
+again (it never shipped; the store still serves 0.2.64, and this release must not be the one that
+introduces the refusal). A present-and-not-100 score is still refused.
+W4 (AW-SEAL-LOCK-1) `lock()` no longer wipes `pendingHist`/`pendingSeals`. An idle auto-lock destroyed a
+PAID commit's only reveal nonce and the parked history rows behind the double-pay backstop. `doReset()`
+still clears both, so reset discipline is unchanged, and `test/storage-durability.test.mjs` case I is
+revised (with its reasoning) from M9's old pin. HONESTY: both arrays are RAM on the MV3 service worker and
+still die at SW idle kill; this buys survival across a lock and unlock inside ONE service-worker lifetime,
+not durability.
+W5 (Q-02) `feePricingTip` normalizes with `Number.isSafeInteger` and returns `number | null`. A served tip
+of `65100.5` or `1e16` is finite but is not a height: it used to reach the vendored `buildFeeHeight`, throw
+RangeError, and be swallowed by clearsign's bare catch, silently disarming the CLEARSIGN-FEE-1
+underpayment warning. Normalizing to 0 would have been WORSE (it prices the cheapest tier, so the wallet's
+own Renew would build an underpaid record and BURN the fee), so both build sites refuse on null. That
+refusal IS UX-6's refusal and is recorded as such; the paired happy-path (fresh install, live tip, floor 0)
+prices and signs unchanged.
+W6 (ND-1) a fifth input verdict, `unrepresentable`, with code `VERIFY_UNREPRESENTABLE`. There is no upper
+bound on `expires_epoch` in consensus, so a stranger could anchor one tx with
+`expires_epoch = 9007199254740993` and 1 sat to a victim: `JSON.parse` rounds it, the recomputed txid
+differs, the coin classified `tamper`, and tamper is decisive for the whole spend. `consolidate()` selects
+smallest-first, so that dust coin bricked the documented remedy for the large-send class, permanently. The
+new verdict is classified on the RAW body before `nodeTxToTx`, mirrors `horizon` (per-coin skippable, own
+array, own reporting rung after horizon and before notfound), adds NO rung to the decisive fold, and is
+never aliased to `notfound` (that copy would call a real coin missing). A well-formed body with a wrong
+txid is still `tamper`.
+W7 the four version literals (`package.json`, `public/manifest.json`, `src/inpage.ts` x2) at 0.2.66, and
+this snapshot. No new version tripwire was built: `build.mjs:32-38` already matches EVERY `version:`
+string in `inpage.ts` and was re-verified live by mutating the manifest and the second inpage literal
+(both aborted the build).
+W8 (AW-4, the fifth latch) the nfinalize/nrenew/nset approve-gate note survives the unlock repaint. Its
+latch (`nfinForId`) was outside W1's reset line while its output is written with `insertAdjacentHTML` into
+the very element the rebuild destroys, so a FEE-BURN warning (for example that the name is a pending
+reservation rather than a finalized registration, so the renewal would be ignored on-chain and the fee
+burned) was still silently lost across an idle auto-lock, inside W1's own stated rule. The fix RE-ATTACHES the already-settled verdict and
+nothing else. Adding `nfinForId` to W1's reset line instead would have AUTHORED A NEW DEFECT: it re-runs
+the bounded 6s name fetch on every repaint AND resets `nfinBlocked` to false with a fresh in-flight
+verdict, so `armButtons`' 700ms timer re-enables Approve on a request the gate had already BLOCKED until
+the new verdict lands. Both shapes are pinned in `test/approve-repaint-dom.test.mjs` (cases 5 to 7): the
+naive reset is what turns the blocked-button assertion red. Not handled and stated plainly rather than
+left implied: a verdict that settles WHILE the wallet is locked is still dropped by the `renderedId` guard,
+so it has no note to re-attach and `nfinBlocked` stays false; `resolve()` still awaits `nfinGate` and
+refuses a blocking verdict at the click, which is the fund-safety belt in that corner.
+
+Gate as run 2026-08-02 on this branch: `npm run typecheck` clean, `npm test` **57/57 files** (up from 54;
+three new files: `approve-repaint-dom`, `seal-lock-park`, `unrepresentable-coin`), `npm run build` green
+with all three tripwires, `npm run verify:vendor` PASSES byte-identically against csd-sdk 0.1.41 dists.
+Vendored bundle: `csdSdkVersion 0.1.41`, `csdSdkCommit 82175f98`, `bundleSha256 f34994f2c58c`. The gate
+prints a standing commit-mismatch warning because csd-sdk HEAD has advanced past that pin; the byte-diff
+is authoritative and passes. **OWED before tagging:** re-run `node scripts/check-vendor-fresh.mjs --write`
+after Plan 75-B batch C0 lands on csd-sdk master, so the PROVENANCE pin names csd-sdk HEAD, and commit the
+bundle and PROVENANCE together. **OWED before uploading:** the packaged-zip human click-through,
+`docs/QA-0.2.66-packaged-clickthrough.md`, which is the only control on a vehicle with no rollback.
+Also known and deliberately NOT shipped here: the namespv checkpoint at `src/core/namespv.ts:40` stays
+29,960 (a checkpoint is a trust decision, not a perf knob, and the diff on this vehicle is kept minimal);
+`package-lock.json` still records 0.2.60 and is not one of the four lockstep literals.
+
+The paragraph below is the 2026-07-23 snapshot, retained as release narrative.
 
 Version 0.2.64 on master, RELEASED: tag v0.2.64 (6ff9615), PROVENANCE byte-verified at csd-sdk 0.1.40/722b427, CI GitHub release built, and the CWS upload is DONE (0.2.64 live in the Chrome Web Store as of 2026-07-23; field adoption feeds the ~tip-80,000 V29 checkpoint). Master is one merge ahead of the tag: rebind/bp6-wallet (BP6 wallet half, the OBS-3 legacy-claim tombstone) was rebased onto 0.2.64 and merged 2026-07-23 once the tip passed 60,134 (below that the tombstone would have shipped a burn window); it rides the NEXT wallet vehicle, suite 48/48 at merge. What shipped IN 0.2.64 (the S-06 mega-vehicle): B4a (single-source), the B5 WALLET-HARDEN chain B5a..B5f + B5g/h/i, BP8b (namespv partial-progress snapshot persistence, see the namespv bullet: partial persists write the header-chain key only, the lapse floor never advances on one), BP8-design (docs/DESIGN-namespv-scaling.md, the N14 scaling roadmap), BN0w (the node SCAN_HORIZON 503 consumed as a fourth per-coin-skippable "horizon" verify verdict; inert until node v0.1.6 emits it), B8w (the runner-guards N24 guard-of-the-guard + lazy dist walk + the N18 pin), the re-vendor to cairnx-core 0.1.40 (PROVENANCE re-pinned at release per R3), and B7e + B7e-FIX (BOTH fill lanes bind; the token lane now merkle-proves the offer record and binds give/want content, see the trust-model bullet; CONF_TOKEN_FILL de-duped across its 5 sites). 0.2.64 carried ~15 batches in one CWS upload (the named mega-vehicle risk, accepted in writing; upload completed 2026-07-23). M3 residual, accepted in writing: the tokenFillQuote clear-sign DISPLAY number stays resolver-served and explicitly unverified (bounded: the fill itself is content-bound, so the worst case is a warning-ignoring user overpaying up to the genuine on-chain price, not theft; loud verify-on-explorer warning; recorded cheap tightening = echo the preflight's proven wantAmount into the clear-sign). History below this line is prior-release narrative, not the current tree.
 
