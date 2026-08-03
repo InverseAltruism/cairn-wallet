@@ -102,7 +102,20 @@ SPV snapshot growth (the honest picture, established 2026-07-10): the baked chec
 
 ## State snapshot (2026-08-02, Plan 75-B batch C2; verify with `git log` and the GitHub releases page before trusting)
 
-**Version 0.2.66 on branch `plan75b/c2-wallet`, NOT yet tagged, NOT yet uploaded.** The Chrome Web Store
+**Version 0.2.66, MERGED to master `a036261`, TAGGED `v0.2.66`, GitHub release built by `release.yml`
+with all four assets (2026-08-03). The Chrome Web Store upload is the ONE remaining action.** Store-zip
+sha256 `5446a71bedab8072dc6742c61c2c81d017c119d0bc1fdfd41e1df92b44db0870`, matching the released
+`.sha256` asset byte for byte; the manifest inside the zip reads 0.2.66.
+★**The packaged-artifact QA PASSED** (see cairn/docs/Plans/75-TRACKER.md section L): 5 of 7 scenarios
+executed in real headed Chrome against the PACKAGED zip on the live chain, 43 assertions, 0 FAIL, and the
+three lock-dependent ones (W1, poisoning, W8) driven by the REAL 15-minute idle auto-lock timer rather
+than a scripted `lock()`. W2 was proven by forcing the race with a 6 s CDP request pause, because at real
+network speed the window does not exist and the test would be vacuous. S4 (token fill) is N-A, no live
+subject exists; S5 (Renew) is N-A, register-then-renew costs 6.00 CSD against the 2.00 CSD test ceiling,
+so **W5's Renew happy path is untested on the packaged artifact** and is covered instead by
+`test/fee-tier-clamp.test.mjs`, which pins that a fractional tip returns null and is NOT normalized to 0.
+★**ROLLBACK, corrected by the operator 2026-08-03:** the Chrome Web Store IS rollback-capable, and nobody
+installs from the GitHub release. Any doc saying "no rollback, only a forward 0.2.67" is wrong. The Chrome Web Store
 field version is **0.2.64** (the listing has read 0.2.64 since 2026-07-23); the repo and the GitHub release
 are at 0.2.65, which was minted by Plan 75 and never reached the store, so this ships as 0.2.66 and the
 store jumps 0.2.64 to 0.2.66. Rollback on this vehicle is FORWARD ONLY, as 0.2.67.
