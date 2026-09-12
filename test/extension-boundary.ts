@@ -359,6 +359,8 @@ async function main() {
   await tick(); await tick();
   check("propose with >8 outputs is refused (anti-flood)", flood.get()?.ok === true && flood.get()?.result?.ok === false && /too many outputs/.test(JSON.stringify(flood.get())));
   check("WS5: the >8-outputs refusal carries the BAD_OUTPUTS code (node validateOutputs)", flood.get()?.result?.code === "BAD_OUTPUTS");
+  // D7: the collapsed message interpolates the cap itself (the prose table is gone)
+  check("D7: the cap is interpolated into the single generic message", /max 8/.test(JSON.stringify(flood.get())));
 
   console.log("\n=== while LOCKED, an approved dApp request cannot act ===");
   await popup("lock");

@@ -647,27 +647,25 @@ async function assembleValueTx(
   return r.ok ? { ...r, spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : r;
 }
 
-// Per-output validation shared by buildSignSubmit / sendMany / fillOffer. The per-caller deltas are REAL
-// and preserved exactly: sendMany requires ≥1 output while buildSignSubmit/fillOffer deliberately allow an
-// empty set (a token-priced fill carries NO CSD outputs); the caps differ (8 / 500 / 100); and the error
-// STRINGS cross the dApp trust boundary, so each caller supplies its own `messages` text — this helper
-// unifies the LOOP, never the prose (the machine `code` is what unifies the class, WS5). Returns {sumOut}
-// (safe-integer-guarded); the isSafeInteger(sumOut + fee) coupling STAYS at the call site (buildSignSubmit
-// intentionally lacks one). buildSignSubmit combined its positive+safe-integer check into ONE message, so
-// its notPositive and notSafe strings are identical — byte-for-byte equivalent to the old combined guard.
-interface OutputMessages { tooMany: string; minOne?: string; badAddr: string; notPositive: string; notSafe: string; sumOverflow: string }
-function validateOutputs(outs: { to: string; value: number }[], opts: { max: number; minOne: boolean; messages: OutputMessages }): SubmitResult | { sumOut: number } {
-  const m = opts.messages;
-  if (opts.minOne && outs.length < 1) return { ok: false, error: m.minOne!, sighashMatch: false, code: "BAD_OUTPUTS" };
-  if (outs.length > opts.max) return { ok: false, error: m.tooMany, sighashMatch: false, code: "BAD_OUTPUTS" };
+// Per-output validation shared by buildSignSubmit / sendMany / fillOffer. D7 (register §3,
+// 2026-09-12): the per-site prose table is COLLAPSED — 16 hand-written strings across three call
+// sites, all carrying the same BAD_OUTPUTS code and differing only in the cap number and trivial
+// wording. The helper now interpolates the cap itself, one accurate generic message per failure
+// mode. The per-caller deltas that are REAL stay: the caps (8/500/100) and minOne (sendMany
+// requires ≥1 output; buildSignSubmit/fillOffer deliberately allow an empty set — a token-priced
+// fill carries NO CSD outputs). The machine `code` is what unifies the class (WS5). Returns
+// {sumOut} (safe-integer-guarded); the isSafeInteger(sumOut + fee) coupling STAYS at the call site
+// (buildSignSubmit intentionally lacks one).
+function validateOutputs(outs: { to: string; value: number }[], opts: { max: number; minOne: boolean }): SubmitResult | { sumOut: number } {
+  if (opts.minOne && outs.length < 1) return { ok: false, error: "at least one output is required", sighashMatch: false, code: "BAD_OUTPUTS" };
+  if (outs.length > opts.max) return { ok: false, error: `too many outputs (max ${opts.max})`, sighashMatch: false, code: "BAD_OUTPUTS" };
   let sumOut = 0;
   for (const o of outs) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: m.badAddr, sighashMatch: false, code: "BAD_OUTPUTS" };
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
     const v = Number(o.value);
-    if (!(v > 0)) return { ok: false, error: m.notPositive, sighashMatch: false, code: "BAD_OUTPUTS" };
-    if (!Number.isSafeInteger(v)) return { ok: false, error: m.notSafe, sighashMatch: false, code: "BAD_OUTPUTS" };
+    if (!(v > 0) || !Number.isSafeInteger(v)) return { ok: false, error: "each amount must be a positive safe integer", sighashMatch: false, code: "BAD_OUTPUTS" };
     sumOut += v;
-    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: m.sumOverflow, sighashMatch: false, code: "BAD_OUTPUTS" };
+    if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false, code: "BAD_OUTPUTS" };
   }
   return { sumOut };
 }
@@ -680,10 +678,7 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
   if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false, code: "BAD_FEE" };
   // Cap the value outputs a Propose may carry (normally one protocol-fee output). Prevents a
   // hostile dApp from flooding the clear-signing window with hundreds of disguised payments.
-  const chk = validateOutputs(payouts, {
-    max: 8, minOne: false,
-    messages: { tooMany: "too many outputs on a proposal (max 8)", badAddr: "each recipient must be a 0x… 20-byte address", notPositive: "each amount must be a positive safe integer", notSafe: "each amount must be a positive safe integer", sumOverflow: "outputs exceed the safe integer range" },
-  });
+  const chk = validateOutputs(payouts, { max: 8, minOne: false });
   if (!("sumOut" in chk)) return chk;
   const outputs = payouts.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
   return assembleValueTx(rpc, outputs, fee, app, priv);
@@ -736,10 +731,7 @@ export async function send(rpc: string, p: { to: string; amount: number; fee: nu
 // for 1→many payments; send() above is the single-recipient convenience wrapper.
 export async function sendMany(rpc: string, p: { outputs: { to: string; value: number }[]; fee: number }, priv: string): Promise<SubmitResult> {
   const outs = Array.isArray(p.outputs) ? p.outputs : [];
-  const chk = validateOutputs(outs, {
-    max: 500, minOne: true,
-    messages: { minOne: "at least one output required", tooMany: "too many outputs (max 500)", badAddr: "each recipient must be a 0x… 20-byte address", notPositive: "each amount must be positive", notSafe: "an amount exceeds the safe integer range", sumOverflow: "total outputs exceed the safe integer range" },
-  });
+  const chk = validateOutputs(outs, { max: 500, minOne: true });
   if (!("sumOut" in chk)) return chk;
   if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
@@ -838,10 +830,7 @@ export async function fillOffer(
   const outs = Array.isArray(p.outputs) ? p.outputs : [];
   // outs MAY be empty: a CairnX v1.2 token-priced fill pays in tokens (resolver-debited,
   // marked by confidence=1e6) and carries no CSD payment — the tx is attest + change only.
-  const chk = validateOutputs(outs, {
-    max: 100, minOne: false,
-    messages: { tooMany: "too many outputs (max 100)", badAddr: "each recipient must be a 0x… 20-byte address", notPositive: "each amount must be positive", notSafe: "an amount exceeds the safe integer range", sumOverflow: "total outputs exceed the safe integer range" },
-  });
+  const chk = validateOutputs(outs, { max: 100, minOne: false });
   if (!("sumOut" in chk)) return chk;
   if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
