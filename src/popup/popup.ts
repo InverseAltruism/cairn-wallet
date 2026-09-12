@@ -518,8 +518,11 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   } else {
     ($("nc-fee-row") as HTMLElement).hidden = true;
   }
+  // M8: an unpriceable renew fee (offline/error) must render the total as unknown, never as the
+  // anchor-only 0.25 (which would understate a 15.25 action). The fee row already says "priced at
+  // confirm"; the total must not contradict it. Set-primary is anchor-only, so its total is exact.
   const total = CAIRNX_FEE + renewFee;
-  $("nc-total").textContent = fmtCsd(total);
+  $("nc-total").textContent = (kind === "renew" && !renewFee) ? "— (priced at confirm)" : fmtCsd(total);
   let after = "";
   try { const b = await call("balance"); after = fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
   if (seq !== nameActSeq) return;   // superseded after the balance fetch — abort before priming the snapshot
@@ -686,6 +689,19 @@ function sendDidntConfirm(f: SendFlow, thrownPrefix?: string, txid?: string) {
     ? thrownPrefix + "send didn't confirm; it may already be in flight. Check history before resending."
     : "send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.") + where, "err");
 }
+
+// W-B11: a thrown bridge error is genuinely ambiguous EXCEPT "locked" (the vault auto-locked while
+// the review sat open) - then NOTHING was signed, and the "may already be in flight" copy would
+// teach a double-spend (or block an honest retry). Say the honest thing instead.
+function sendThrew(f: SendFlow, e: any) {
+  if (String(e?.message ?? "") === "locked") {
+    teardownReview(f, false);
+    f.refresh();
+    msg("the wallet locked before anything was signed — nothing was sent. Unlock and Review again to retry.", "err");
+    return;
+  }
+  sendDidntConfirm(f, e?.message ? String(e.message) + " — " : "");
+}
 // A structured {ok:false} from the send engine (2026-07-09): every code EXCEPT the genuinely
 // ambiguous SUBMIT_MAYBE_INFLIGHT is a CLEAN refusal — either pre-broadcast (INSUFFICIENT,
 // TOO_MANY_INPUTS, VERIFY_*, FEE_*, BAD_*, GHOST_INPUTS_SKIPPED: nothing was even signed) or a
@@ -795,7 +811,7 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
     if (r.ok) sentOk(TOKEN_FLOW, `sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`); // W8: both scales here too
     else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
   } catch (e: any) {
-    sendDidntConfirm(TOKEN_FLOW, e?.message ? e.message + " — " : "");       // thrown bridge error: same ambiguity
+    sendThrew(TOKEN_FLOW, e);       // W-B11: "locked" is honest (nothing signed); other throws stay ambiguous
   }
 });
 
@@ -854,12 +870,11 @@ $("setup-pw").addEventListener("input", () => {
 $("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 // F-CLIP (Plans/68 A2 companion): the FIRST-backup copies get the same KEY-6 clipboard auto-clear the
 // export/reveal panels already have — the create-flow phrase/key is exactly as secret as a revealed one.
-$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); copiedSecret = backupPhrase; flashBtn("btn-copy-seed", "copied ✓ (auto-clears)"); });
-$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); copiedSecret = backupPriv; flashBtn("btn-copy-priv", "copied ✓ (auto-clears)"); });
+$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); flashBtn("btn-copy-seed", "copied ✓"); });
+$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); flashBtn("btn-copy-priv", "copied ✓"); });
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
 $("btn-backup-done").addEventListener("click", () => {
   backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = "";
-  clearCopiedSecret(); // F-CLIP: if the first-backup phrase/key was copied, clear it now rather than waiting for popup close
   msg("wallet ready", "ok"); render();
   // wallet-ready moment: one-shot ring pulse over the balance hero (CSS-only; killed by reduced-motion)
   const vm = $("view-main");
@@ -876,22 +891,15 @@ $("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
 const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "consolidate-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
-// Best-effort clipboard hygiene for a copied key/phrase (audit KEY-6): when the reveal panel closes
-// (switch/close/popup-unload), clear the clipboard IFF it still holds the secret we copied — so we never
-// clobber unrelated clipboard content. Wrapped so a clipboard-permission error can never break a flow.
-let copiedSecret = "";
-function clearCopiedSecret() {
-  const s = copiedSecret; copiedSecret = "";
-  if (!s) return;
-  try { navigator.clipboard?.readText?.().then((c) => { if (c === s) navigator.clipboard?.writeText("").catch(() => {}); }).catch(() => {}); } catch { /* clipboard unavailable */ }
-}
+// C-8 / PH-16 (2026-09-09): the "auto-clears" clipboard promise was FALSE (the clear needs a
+// clipboardRead permission the manifest lacks, and the beforeunload path never settles in the
+// shipped build). The machinery is deleted rather than repaired - a clipboard-read permission on a
+// wallet is a Chrome Web Store red flag disproportionate to a cosmetic label.
 function resetRevealPanel() {
-  clearCopiedSecret();
   revealedKey = ""; const o = $("reveal-out"); o.textContent = ""; o.classList.remove("shown"); (o as HTMLElement).hidden = true;
   ($("reveal-actions") as HTMLElement).hidden = true; ($("reveal-pw") as HTMLInputElement).value = "";
 }
 function resetPhrasePanel() {
-  clearCopiedSecret();
   revealedPhrase = ""; const o = $("phrase-out"); o.innerHTML = ""; o.classList.remove("shown"); o.classList.add("blur"); (o as HTMLElement).hidden = true;
   ($("phrase-actions") as HTMLElement).hidden = true; ($("phrase-pw") as HTMLInputElement).value = "";
 }
@@ -971,7 +979,7 @@ $("btn-reveal-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-reveal-show").addEventListener("click", () => { ($("reveal-out") as HTMLElement).classList.toggle("shown"); });
-$("btn-reveal-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedKey)?.catch(() => {}); copiedSecret = revealedKey; flashBtn("btn-reveal-copy", "copied ✓ (auto-clears)"); });
+$("btn-reveal-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedKey)?.catch(() => {}); flashBtn("btn-reveal-copy", "copied ✓"); });
 $("btn-reveal-close").addEventListener("click", () => { resetRevealPanel(); ($("reveal-panel") as HTMLElement).hidden = true; });
 
 // Reveal recovery phrase — in-popup panel (password → blurred 12-word grid).
@@ -986,7 +994,7 @@ $("btn-phrase-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-phrase-show").addEventListener("click", () => { const o = $("phrase-out"); o.classList.toggle("shown"); o.classList.toggle("blur"); });
-$("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase)?.catch(() => {}); copiedSecret = revealedPhrase; flashBtn("btn-phrase-copy", "copied ✓ (auto-clears)"); });
+$("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase)?.catch(() => {}); flashBtn("btn-phrase-copy", "copied ✓"); });
 $("btn-phrase-close").addEventListener("click", () => { resetPhrasePanel(); ($("phrase-panel") as HTMLElement).hidden = true; });
 $("btn-settings").addEventListener("click", () => { if (openPanel("settings")) { renderConnectedSites(); renderCoinsInfo(); } });
 
@@ -1357,7 +1365,7 @@ $("btn-send-confirm").addEventListener("click", async () => {
     if (r.ok) sentOk(CSD_FLOW, "sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
     else sendRefused(CSD_FLOW, r);                    // structured refusal: show the REAL reason (FOOT-3 teardown inside)
   } catch (e: any) {
-    sendDidntConfirm(CSD_FLOW, e?.message ? e.message + " — " : "");       // thrown bridge error: same ambiguity
+    sendThrew(CSD_FLOW, e);       // W-B11: "locked" is honest (nothing signed); other throws stay ambiguous
   }
 });
 $("btn-name-confirm").addEventListener("click", () => doNameAction());
@@ -1386,5 +1394,3 @@ $("btn-post").addEventListener("click", async () => {
 
 render();
 if (EXT) setInterval(renderPending, 1500);
-// Clear a copied secret from the clipboard when the popup closes (audit KEY-6, best-effort).
-window.addEventListener("beforeunload", clearCopiedSecret);
