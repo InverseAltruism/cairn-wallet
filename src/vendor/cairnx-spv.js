@@ -662,9 +662,11 @@ var CsdClient = class {
   timeoutMs;
   retries;
   maxBytes;
+  parseJson;
   constructor(opts) {
     this.base = opts.baseUrl.replace(/\/+$/, "");
     this.maxBytes = Math.max(1, opts.maxResponseBytes ?? 16 * 1024 * 1024);
+    this.parseJson = opts.parseJson ?? JSON.parse;
     const gf = globalThis.fetch;
     this.f = opts.fetch ?? (gf ? gf.bind(globalThis) : gf);
     this.timeoutMs = opts.timeoutMs ?? 1e4;
@@ -706,7 +708,7 @@ var CsdClient = class {
       const t = await r.text();
       const byteLen = new TextEncoder().encode(t).length;
       if (byteLen > max) throw new Error(`GET ${path} \u2192 response too large (${byteLen} > ${max} bytes)`);
-      return JSON.parse(t);
+      return this.parseJson(t);
     }
     const reader = body.getReader();
     const chunks = [];
@@ -732,7 +734,7 @@ var CsdClient = class {
       buf.set(c, off);
       off += c.length;
     }
-    return JSON.parse(new TextDecoder().decode(buf));
+    return this.parseJson(new TextDecoder().decode(buf));
   }
   get(path) {
     return this.req(path);

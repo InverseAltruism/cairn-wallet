@@ -112,6 +112,25 @@ function bodyNumbersRepresentable(body: any): boolean {
   return true;
 }
 
+// M1: a source-preserving JSON reviver for SPV block/tx reads. A Propose's expires_epoch is an
+// unbounded u64 on-chain; a value past 2^53 is rounded by a plain JSON.parse, and the codec's u64
+// then throws on the non-safe-integer, bricking the whole block's SPV bind (the "SPV poison"). The
+// reviver preserves a non-safe-integer literal as a BigInt from its source text, so the txid
+// recomputes EXACTLY and the merkle bind succeeds — the poison record reaches resolve() as a
+// consensus no-op instead of bricking the lane. Fires ONLY on INTEGER literals that fail
+// isSafeInteger; everything else is byte-identical to a plain parse. The source-text regex gate is
+// load-bearing (Fable M1 QC): a non-safe-integer FLOAT literal (0.5, 1e20) also reaches here, and
+// BigInt("0.5") throws — without the gate one future float field in a node body would fail every
+// SPV read closed, the very brick this reviver exists to cure. Non-integer literals fall through to
+// the plain (rounded) value, exactly as a plain parse. (ctx.source is the V8/Node source-text
+// feature, present in the MV3 target.)
+export function spvJsonReviver(this: unknown, _key: string, value: unknown, context?: { source?: string }): unknown {
+  return typeof value === "number" && !Number.isSafeInteger(value) && typeof context?.source === "string" && /^-?\d+$/.test(context.source)
+    ? BigInt(context.source)
+    : value;
+}
+export const parseSpvJson = (text: string): unknown => JSON.parse(text, spvJsonReviver);
+
 // Map a node-JSON tx body (from /tx or /block) back into our codec Tx so we can recompute its txid.
 function nodeTxToTx(j: any): Tx {
   const a = j.app || {};

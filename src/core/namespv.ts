@@ -32,6 +32,7 @@
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason — never a false pass against FABRICATION.
 import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, paidToFromOutputs, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
+import { parseSpvJson } from "./node.js";
 
 // Baked checkpoint: a real finalized CSD header at the NAMES-ACTIVATION floor (V11_HEIGHT). No name can
 // have an effectiveHeight below this, so a forward-only verified chain seeded here covers every name.
@@ -323,17 +324,17 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, agreed: 0, disagree: false };
       return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, agreed: 0, disagree: false };
     }
-    // H1 (deep-review 2026-07-03): a REGISTERED-vs-UNREGISTERED disagreement is fail-closed. When one source
-    // serves history (usable) but ANOTHER independent source AFFIRMATIVELY reports the name unregistered (a
-    // clean 404, `unregistered:true` — NOT mere unavailability), do NOT silently honor only the hint-serving
-    // source: the honest source may have fully replayed and seen an out-of-name-scope rejection (the V25
-    // MAX_PENDING_REG forged-green class) that the hint-serving source cannot represent. Fail closed to the
-    // untrusted-resolver caution. This is deliberately NOT a blanket ≥2-source rule — a lone honest source
-    // with NO disagreeing source still verifies, so the common clarvis-DOWN case keeps its single-source
-    // posture (down ≠ a 404). The cost is confined to a genuine primary-vs-second-source existence conflict.
-    if (results.some((r) => r.unregistered)) {
-      return { ...fail(`one name source reports ${name}.csd is unregistered while another served history — the sources disagree on whether it exists; confirm the address out-of-band before sending`), sources: usable.length, agreed: 0, disagree: true };
-    }
+    // S-B6 (2026-09-09 — DELETES the H1 pre-replay short-circuit): a source's clean 404 used to VETO the
+    // union here, before any replay — and resolveName then fell through to serving the hint-serving
+    // source's RAW (unproven) claim with a caution badge. That was strictly worse on both planes:
+    // availability (a LAGGING second resolver 404s every brand-new name until it indexes, so routine
+    // sends degraded to unverified) and trust (what got served was the raw claim, not the SPV-proven
+    // winner). The replay itself is the existence check: fabricated events are not mined and fail SPV,
+    // and a genuinely-unregistered name has no mined events to serve. The out-of-name-scope classes the
+    // 404 veto was meant to catch (V17 claim cap / token-balance fills) stay fail-closed via the viaFill /
+    // scopedReplaySufficient gates below — those are computed from OUR verified events, not a served flag.
+    // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
+    const existenceDisagree = results.some((r) => r.unregistered);
     // UNION the hints by lowercase txid; a same-txid-different-height across sources is a tamper → conflict.
     const byTxid = new Map<string, NameHint>();
     let conflict = false;
@@ -383,7 +384,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
           // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
           const soleSource = recovered.length === 1;
-          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, scope: "as-shown", sources: usable.length, agreed, disagree: recovered.length < usable.length || agreed < usable.length, soleSource, viaFill: false };
+          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, scope: "as-shown", sources: usable.length, agreed, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree, soleSource, viaFill: false };
         }
       }
       return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
@@ -410,7 +411,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null;
       if (c === rep.addr) agreed++; else disagreeing.push(r.label);
     }
-    const disagree = disagreeing.length > 0 || conflict;
+    const disagree = disagreeing.length > 0 || conflict || existenceDisagree; // S-B6: a 404-ing source counts
     return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, scope: "as-shown", sources: usable.length, agreed, disagree, viaFill: false };
   } catch (e) {
     return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, agreed: 0, disagree: false };
@@ -465,7 +466,11 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
   // default TIED the inner chain exactly — an abort could fire the instant the proxy's fallback
   // would have answered (timeout-inversion class, docs/Plans/66 B2).
-  const client = new CsdClient({ baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000 });
+  // M1: inject the source-preserving reviver so a Propose with an unbounded u64 expires_epoch
+  // (>2^53) parses to an exact BigInt and the SPV merkle bind succeeds (the "SPV poison" becomes a
+  // consensus no-op instead of bricking the fill/name lanes). Requires the rebuilt vendored bundle
+  // carrying csd-client's parseJson hook + the cairn proxy's raw pass-through (deployed first).
+  const client = new CsdClient({ baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000, parseJson: parseSpvJson });
   const headersBase = opts.headersBase.replace(/\/$/, "");
   // The /api/headers endpoint is budget-limited (DOS-HDR-1) and deadline-bounded (it answers a clean
   // 502 at ~10s instead of grinding on a slow indexer). A legit cold sync paces itself:

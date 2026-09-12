@@ -17,7 +17,10 @@ export interface VerifiedHeader { height: number; hash: string; header: { merkle
 export interface RpcBlock { ok: boolean; hash: string; height?: number; header: unknown; txs: (RpcTxJson & { txid: string })[] }
 
 export class CsdClient {
-  constructor(opts: { baseUrl: string; fetch?: typeof fetch; timeoutMs?: number }); // timeoutMs: per-request AbortSignal bound (bundle default 10s)
+  // timeoutMs: per-request AbortSignal bound (bundle default 10s). parseJson (M1): a precision-preserving
+  // parser hook for node JSON (u64 fields like expires_epoch exceed 2^53) — the wallet passes parseSpvJson;
+  // defaults to JSON.parse.
+  constructor(opts: { baseUrl: string; fetch?: typeof fetch; timeoutMs?: number; parseJson?: (text: string) => unknown });
   tip(): Promise<{ height: number; hash?: string }>;
   blockByHeight(h: number): Promise<RpcBlock>;
   blockByHash(hash: string): Promise<RpcBlock>;
@@ -50,6 +53,7 @@ export function resolve(events: unknown[], tipHeight: number): { names: Record<s
 // resolve(); these are the same reviewed bytes, now type-declared for the wallet's build/decode/display.
 export const DOMAIN: string;
 export const MIN_FEE_PROPOSE: number;
+export const MIN_FEE_ATTEST: number;
 export const TREASURY_ADDR: string;
 export const FEE_BPS: number;
 export const FEE_BPS_V16: number;

@@ -215,12 +215,13 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   ok("H1: a non-viaFill name with no flag stays verified (back-compat with older servers)", rNone.verified === true && rNone.addr === TARGET);
 }
 
-// 17. H1 UNION BACKSTOP (deep-review 2026-07-03) — a REGISTERED-vs-UNREGISTERED source disagreement is
-//     fail-closed: one source serves history while another INDEPENDENT source affirmatively 404s the name.
-//     The honest source may have fully replayed and seen an out-of-name-scope rejection (the MAX_PENDING_REG
-//     forged-green class) the hint-serving source cannot represent. Must caution — but a LONE honest source
-//     with no disagreeing peer must still verify (deliberately NOT a blanket ≥2-source rule; clarvis-DOWN,
-//     which is a 502 not a 404, keeps single-source verified).
+// 17. S-B6 (2026-09-09 — REPLACES the H1 union backstop): a REGISTERED-vs-UNREGISTERED source split no
+//     longer vetoes the proof. The old pre-replay short-circuit failed closed here, and resolveName then
+//     fell through to serving the hint-serving source's RAW claim with a caution — strictly worse than
+//     serving the SPV-PROVEN winner. Now: the replay runs (fabricated events aren't mined and fail SPV; a
+//     genuinely-unregistered name has no mined events), the PROVEN address is served, and the 404 rides as
+//     a `disagree` flag for the UI badge. A merely-DOWN peer (502) remains a non-event (single-source).
+//     RED-FIRST: the old assertions (verified:false + a fail reason) flip.
 {
   const NM = "erin";
   const eClaim = proposeTx({ ...pick(buildNameClaim({ name: NM })), priv: keyA, outputs: feeOut() });
@@ -237,9 +238,10 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
     return { ok: true, status: 200, json: async () => ({ ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: ev }) };
   };
   const r404 = await verifyNameUnion(NM, SRC, src, mk(404));
-  ok("H1-backstop: registered-vs-UNREGISTERED (404) disagreement ⇒ NOT verified (fail-closed caution)", r404.verified === false && r404.disagree === true && /disagree|unregistered|out-of-band/i.test(r404.reason));
+  ok("S-B6: a lagging-404 peer no longer suppresses the SPV proof — the PROVEN address is served", r404.verified === true && r404.addr === TARGET);
+  ok("S-B6: the 404 rides as a disagree flag (the UI badge shows a source disagreed)", r404.disagree === true);
   const r502 = await verifyNameUnion(NM, SRC, src, mk(502));
-  ok("H1-backstop: a merely-DOWN peer (502) is NOT a disagreement — lone honest source still verifies (no blanket ≥2-source rule)", r502.verified === true && r502.addr === TARGET && r502.sources === 1);
+  ok("S-B6: a merely-DOWN peer (502) is NOT a disagreement — lone honest source still verifies", r502.verified === true && r502.addr === TARGET && r502.sources === 1 && r502.disagree === false);
 }
 
 done("namespv");
