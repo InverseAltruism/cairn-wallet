@@ -199,6 +199,10 @@ async function fillTokenSim(r: any) {
     // BEFORE the await, so a superseded write lands on the detached old node, not on the request now on
     // screen); keeping the shape identical across all fillers is what stops the next one from drifting.
     if (renderedId !== r.id) return;
+    // RT-W2: remember the quote actually DISPLAYED so the approve click can thread it to the
+    // preflight, which refuses unless it equals the chain-proven want (a resolver that quotes low
+    // at review and honest at click used to debit the larger proven amount behind the low card).
+    r.tokenQuoteDisplayed = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total } : undefined;
     show(tokenQuoteHtml(q));
   } catch {
     show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
@@ -300,6 +304,7 @@ async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
+  const displayedQuote = current.tokenQuoteDisplayed; // RT-W2: the number the user actually saw
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip).
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
   // verdict proceeds (fail-open). Reject never waits.
@@ -314,7 +319,7 @@ async function resolve(approve: boolean) {
   msg("approving…");
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
-  let r: any; try { r = await call("resolve", id, true, signer); } catch (e: any) { r = { ok: false, error: e?.message }; }
+  let r: any; try { r = await call("resolve", id, true, signer, displayedQuote); } catch (e: any) { r = { ok: false, error: e?.message }; }
   if (r && r.ok === false) msg("failed: " + (r.error || "?"), "err");
   else if (r && r.txid) msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
   else msg("approved", "ok");

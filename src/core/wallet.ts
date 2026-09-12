@@ -644,7 +644,7 @@ export class Wallet {
     const fee = p.fee ?? defaultFeeFor("propose");
     const hk = this.histKeyNow(); const r = await node.propose(this.rpc, { ...p, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee }); return r;
   }
-  async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string }) {
+  async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string; tokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string } }) {
     // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
     // App=Attest expression, outputs:[]), so an attest(score, confidence=CONF_TOKEN_FILL) was the fill
     // path stripped of its preflight - no OFFER_UNKNOWN gate, no captureSigner, paying into a proposal the
@@ -660,7 +660,7 @@ export class Wallet {
     // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
     if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
-      return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner });
+      return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
     // B9: an omitted fee signs defaultFeeFor("attest") — the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
     // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
@@ -673,7 +673,7 @@ export class Wallet {
   // validates IS the account that signs), re-assert it AFTER the last await and immediately before the
   // sign, and sign/record with the CAPTURED key/histKey — a switchAccount parked in the preflight's offer
   // or tip await now refuses (ACCOUNT_CHANGED) instead of paying from the wrong account.
-  async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string }) {
+  async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string; tokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string } }) {
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(p.expectSigner, ctx.addr);
     if (early) return early;
@@ -688,7 +688,7 @@ export class Wallet {
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
     if (p.score != null && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
     const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? defaultFeeFor("attest") };
-    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr);
+    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote);
     if (refusal) return refusal;
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
     const r = await node.fillOffer(this.rpc, q, ctx.priv);
@@ -711,7 +711,9 @@ export class Wallet {
   //     inside the resolver's ~15s scan window. A coherently-lying resolver is the B3 fill-SPV item.
   // `me` is the CAPTURED signer address from fillOffer's SignerCtx (A1) — never read live here, so the
   // account this preflight validates is by construction the account whose key signs.
-  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string): Promise<node.SubmitResult | null> {
+  // RT-W2: `reviewedQuote` is the token debit quote the approve window DISPLAYED (threaded from
+  // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
+  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<node.SubmitResult | null> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return null; // not a well-formed id → the node guard handles it
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
@@ -854,6 +856,16 @@ export class Wallet {
         const w = (offer.want as { ticker?: string; amount?: string }) ?? {};
         if (String(w.ticker) !== String(proven.wantTicker ?? "") || String(w.amount) !== String(proven.wantAmount ?? ""))
           return { ok: false, error: "refusing to sign: the token or amount you would pay does not match the offer's on-chain record (a lying resolver may be understating your cost)", sighashMatch: false, code: "FILL_UNSAFE" };
+        // RT-W2: bind the number the user SAW at review to the chain-proven want. The review card's
+        // quote was a live resolver read; a resolver answering low on that read and honest at click
+        // used to debit the larger proven amount behind the low card. The displayed quote must equal
+        // the proven want or the fill refuses. (Absent quote → the review already showed the loud
+        // do-NOT-approve caution; the served↔proven binds above still hold.)
+        if (reviewedQuote && reviewedQuote.ticker !== undefined) {
+          const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
+          if (qT !== String(proven.wantTicker ?? "") || qA !== String(proven.wantAmount ?? ""))
+            return { ok: false, error: `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.wantAmount ?? "?"} ${proven.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`, sighashMatch: false, code: "FILL_UNSAFE" };
+        }
       }
     } else if (fetchFailed) {
       // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and

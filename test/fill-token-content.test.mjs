@@ -113,6 +113,39 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
   check(`unprovable token offer fails closed-retryable VERIFY_UNAVAILABLE (${r?.code})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && s.submits.length === 0);
 }
 
+// 8. RT-W2 — the REVIEWED-quote bind. The review card's debit quote was a live resolver read,
+//    unbound; a resolver answering LOW at review and honest at click debited the larger proven
+//    amount behind the low card. The displayed quote is now threaded to the preflight and must
+//    equal the proven want. RED-FIRST: case 8a submits on pre-fix code (the quote was not bound).
+{
+  // 8a. HEADLINE: the card showed 5 PAY; the chain proves 7 PAY → REFUSED, nothing signed.
+  const w = await freshWallet("pw-w2-low-12345", TRUE_PROVEN);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "5", fee: "0", total: "5" } });
+  check("RT-W2: a review quote BELOW the proven want is REFUSED (bait-and-switch closed)", r?.ok === false && r?.code === "FILL_UNSAFE" && /changed between review and signing/.test(r?.error ?? ""));
+  check("RT-W2: …and nothing was submitted", s.submits.length === 0);
+}
+{
+  // 8b. a swapped TICKER in the review quote is refused too
+  const w = await freshWallet("pw-w2-tick-12345", TRUE_PROVEN);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "AAA", amount: "7", fee: "0", total: "7" } });
+  check("RT-W2: a review quote with the wrong ticker is REFUSED", r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
+}
+{
+  // 8c. a quote MATCHING the proven want proceeds (the honest path is not over-refused)
+  const w = await freshWallet("pw-w2-ok-12345", TRUE_PROVEN);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "0", total: "7" } });
+  check("RT-W2: a matching review quote PROCEEDS (honest path)", r?.ok === true && s.submits.length === 1);
+}
+{
+  // 8d. NO quote (the review showed the loud do-NOT-approve caution) keeps the existing posture:
+  //     the served↔proven binds still hold and an honest fill proceeds.
+  const { r, s } = await fillServed("pw-w2-none-12345", honestOffer);
+  check("RT-W2: no reviewed quote keeps the caution-path posture (honest fill proceeds)", r?.ok === true && s.submits.length === 1);
+}
+
 globalThis.fetch = origFetch;
 console.log(`\nfill-token-content: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

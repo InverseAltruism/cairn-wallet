@@ -137,7 +137,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
-    case "resolve": return resolvePending(args[0], args[1], args[2]); // (id, approve, displayedSigner?)
+    case "resolve": return resolvePending(args[0], args[1], args[2], args[3]); // (id, approve, displayedSigner?, displayedTokenQuote?)
     case "flushPending": return wallet.flushPending();
     case "history": return wallet.history();
     case "sealClaim": return wallet.sealClaim(args[0]);
@@ -147,7 +147,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
   }
 }
 
-async function resolvePending(id: string, approve: boolean, displayedSigner?: string): Promise<{ done: boolean; ok?: boolean; error?: string; txid?: string }> {
+// RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
+// approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
+async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<{ done: boolean; ok?: boolean; error?: string; txid?: string }> {
   const p = pending.get(id);
   if (!p) return { done: false };
   pending.delete(id);
@@ -201,7 +203,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // (p.origin) and signs it; it never mints a session, so it is safe for any origin.
     else if (p.method === "signinWithCsd") result = await wallet.signInWithCsd(p.params, p.origin);
     else if (p.method === "propose") result = await wallet.propose(p.params);
-    else if (p.method === "attest") result = await wallet.attest({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined }); // W4 (B5d): thread the reviewed signer so a token-fill-confidence attest gets the fill path's ACCOUNT_CHANGED cross-check
+    else if (p.method === "attest") result = await wallet.attest({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote }); // W4 (B5d): thread the reviewed signer so a token-fill-confidence attest gets the fill path's ACCOUNT_CHANGED cross-check; RT-W2: + the reviewed quote
     else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
     else if (p.method === "revealClaim") result = await wallet.revealClaim(p.params);
     // Plain transfer. Reachable from a dApp ONLY through this approval path (the user
@@ -223,7 +225,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // Atomic fill (Attest + payment in one tx — CairnX DvP). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
     // and change only ever returns to the wallet's own address.
-    else if (p.method === "fillOffer") result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined });
+    else if (p.method === "fillOffer") result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote });
     else throw new Error("unsupported dApp method: " + p.method);
     return finish({ ok: true, result });
   } catch (e: any) { return finish({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
