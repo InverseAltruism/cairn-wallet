@@ -380,10 +380,11 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       return { ...fail(reason), sources: usable.length, disagree: false, viaFill: !!rep.viaFill };
     }
     // Cross-check: each usable source's STATED claim.addr against the SPV-proven union winner.
-    let agreed = 0; const disagreeing: string[] = [];
+    // (D3 follow-through: the agreed COUNTER is gone — only the disagreement set feeds the flag.)
+    const disagreeing: string[] = [];
     for (const r of usable) {
       const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null;
-      if (c === rep.addr) agreed++; else disagreeing.push(r.label);
+      if (c !== rep.addr) disagreeing.push(r.label);
     }
     const disagree = disagreeing.length > 0 || conflict || existenceDisagree; // S-B6: a 404-ing source counts
     return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, sources: usable.length, disagree, viaFill: false };

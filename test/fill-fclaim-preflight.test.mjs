@@ -355,6 +355,9 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
   const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: instrumented, hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
   check("D1: a live legacy me-hold NEVER counts toward the cap (the scan+count is deleted)", io.myLiveHoldsAtGrant === 0);
   check("D1: the prevout seam is never queried for a legacy claim's coin (the hostile-minable fetch is gone)", !prevoutCalls.some((t) => legacyPrevouts.includes(t)));
+  // non-vacuousness: the instrumentation DID fire for the lane events (the scan still proves the
+  // offer/fill/lane txs), so the never-legacy assertion above is not vacuously true
+  check("D1: the prevout seam DID fire for the real lane events (the instrumentation is wired)", prevoutCalls.length > 0);
 
   // …and past the old gate (tip 60,134) the same holds — one fixture, both tips.
   const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;
