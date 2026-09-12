@@ -15,7 +15,7 @@
 // prior hold), NOT a resolver hint list. Any gap/mismatch/error THROWS → the preflight fails CLOSED.
 import {
   rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
-  fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, SCORE_CLAIM, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS,
+  fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, V28_HEIGHT, ACTIVATION_HEIGHT,
   provenOfferTerms,
   type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms,
@@ -33,10 +33,8 @@ export { feeBpsAt, type ProvenOfferTerms, type MintedProvenOfferTerms } from "..
 
 // A fclaim hold lasts at most MAX_HOLD_SPAN blocks past its grant (a grant at an epoch's first block with
 // ee = epochOf(h)+2 holds through h+89). A FILLABLE fclaim is within its hold (verifyFillSpv's deadline guard),
-// so its grant height is at most MAX_HOLD_SPAN below the tip. LEGACY_MAX_HOLD = the widest pre-V28 legacy claim
-// hold (window + fill grace); a legacy claim older than this is provably lapsed.
+// so its grant height is at most MAX_HOLD_SPAN below the tip.
 const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;   // 89
-const LEGACY_MAX_HOLD = CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS;
 
 // The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so an event
 // whose authenticating input looks like one has no prevout owner to bind against. Mirrors namespv.ts.
@@ -206,7 +204,6 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const laneProposals = new Set<string>([offerId]);    // the offer + every fclaim-for-this-offer
   const attestBuf: { id: string; height: number; proposalId: string }[] = [];
   const otherFclaims: { id: string; height: number; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
-  const legacyClaims: { id: string; height: number }[] = [];   // pre-V28 SCORE_CLAIM attests on OTHER offers
   const add = (id: string, h: number) => { const k = id.toLowerCase(); if (!heightOf.has(k)) heightOf.set(k, h); ids.add(k); };
   const markScanned = (id: string, h: number) => { scannedIds.add(id.toLowerCase()); add(id, h); };
 
@@ -288,7 +285,6 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       } else {
         const proposalId = String(app.proposalId).toLowerCase();
         attestBuf.push({ id, height: h, proposalId });
-        if (Number(app.score) === SCORE_CLAIM && proposalId !== offerId) legacyClaims.push({ id, height: h });
       }
     }
   }
@@ -313,35 +309,12 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
     const proposer = ev && ev.kind === "propose" ? ev.proposer : me;   // unbindable -> attribute to me (over-count)
     held.push({ kind: "propose", proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch });
   }
-  let myLiveHoldsAtGrant = countMyOtherLiveHolds(held, offerId, me, grantHeight);
-
-  // OBS-3 (V28 activation window): resolve()'s cap also counts a still-live pre-V28 LEGACY hold (a SCORE_CLAIM
-  // attest on an offer, 40+5-block window). New clients build none, so this only bites during the V28
-  // transition; count them the same over-count way (mine OR unbindable) so a live legacy hold on another offer
-  // at grant is not under-counted during the transition.
-  //
-  // BP6 SUNSET TOMBSTONE (REBIND Track P): skip the legacy scan+count, AND with it the hostile-minable prevout
-  // fetch (proveEventAt reads a prevout script for each attacker-plantable SCORE_CLAIM), once it is provably
-  // unreachable. NOTE the floor here is HIGHER than the site's 60,045 and higher than the plan's stated 60,045,
-  // because OBS-3 counts a hold live at the fclaim's GRANT height, not at the tip:
-  //   - a legacy hold the resolver ALSO counts is a SCORE_CLAIM granted BELOW V28 (a SCORE_CLAIM at height >=
-  //     V28_HEIGHT is resolver-rejected, so counting it only OVER-counts -> over-refuse, never a burn); such a
-  //     hold is live at a grant G only while G < (V28_HEIGHT - 1) + LEGACY_MAX_HOLD, i.e. G <= 60,043; and
-  //   - a FILLABLE fclaim's grant is at most MAX_HOLD_SPAN below the verified tip (verifyFillSpv's deadline
-  //     guard; see MAX_HOLD_SPAN above), so G >= verifiedTip - MAX_HOLD_SPAN.
-  // Both can hold only while verifiedTip - MAX_HOLD_SPAN <= 60,043, i.e. verifiedTip < V28_HEIGHT +
-  // LEGACY_MAX_HOLD + MAX_HOLD_SPAN (= 60,134). At/above that tip no legacy hold can be live at any fillable
-  // fclaim's grant, so the count is provably zero; skipping is fail-safe (it only ever drops an over-refuse,
-  // and no genuine hold is left to under-count). Below the gate it runs exactly as before (pinned by fill-
-  // fclaim-preflight OBS3 at tip 60,010). Self-activating on the verified tip, so it is correct regardless of
-  // the merge tip: the wallet half's true crossing is tip >= 60,134, NOT 60,045 (recorded for the runbook).
-  if (verifiedTip < V28_HEIGHT + LEGACY_MAX_HOLD + MAX_HOLD_SPAN) {
-    for (const c of legacyClaims) {
-      if (c.height < grantHeight - LEGACY_MAX_HOLD) continue;         // provably lapsed before the grant
-      const ev = await proveEventAt(c.id, c.height);
-      if (!ev || ev.kind !== "attest" || ev.attester === me) myLiveHoldsAtGrant++;   // mine OR unbindable -> count
-    }
-  }
+  const myLiveHoldsAtGrant = countMyOtherLiveHolds(held, offerId, me, grantHeight);
+  // D1 (register §3, 2026-09-12): the OBS-3 legacy SCORE_CLAIM scan+count is DELETED. Its gate
+  // (verifiedTip < 60,134) is unreachable at any tip a fillable fclaim can exist at, and the deletion
+  // removes the only hostile-minable prevout fetch in this scan (an attacker-plantable SCORE_CLAIM
+  // used to force a proveEventAt read). resolve() rejects SCORE_CLAIM at/after V28 anyway, so a
+  // legacy hold could only ever OVER-count (over-refuse), never under-count — nothing is lost.
 
   // DEFECT-3 fix: EAGERLY authenticate every lane event the scan FOUND in a merkle-bound block, HERE (not in
   // provenEvent alone). verifyFillSpv silently SKIPS a null provenEvent AND its per-event try/catch swallows a

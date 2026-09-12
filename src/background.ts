@@ -109,7 +109,6 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "consolidatePreview": return wallet.consolidatePreview(args[0]);
     case "pendingMerge": return wallet.pendingMerge(args[0]); // merge-in-flight probe (feeds the popup pending line); writes only its own bookkeeping latches — in READ_ONLY_METHODS because it must never extend the idle lock
     case "cairnPost": return wallet.cairnPost(args[0]);
-    case "cairnSupport": return wallet.cairnSupport(args[0], args[1], args[2], args[3]);
     case "cairnxAssets": return wallet.cairnxAssets();
     case "cairnxTokens": return wallet.cairnxTokens();
     case "cairnxTransfer": return wallet.cairnxTransfer(args[0]);

@@ -333,34 +333,34 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
   check(`DEFECT2: a scriptSig-swapped ME-hold is still COUNTED (bind rejects re-attribution) and a bound stranger is NOT (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 1);
 }
 
-// OBS 3: a still-live pre-V28 LEGACY hold (score=SCORE_CLAIM attest on another offer) by me counts toward the
-// cap in the ~45-block V28 transition; a stranger's and a provably-lapsed (older than LEGACY_HOLD) one do not.
+// OBS 3 → D1 (2026-09-12): the legacy SCORE_CLAIM scan+count is DELETED (the V28-transition gate at
+// tip 60,134 is unreachable at any tip a fillable fclaim can exist at). A legacy claim now NEVER counts
+// toward the cap — inside the old transition window AND past it — and the scan never fetches a prevout
+// for a legacy txid (the deletion removed the only attacker-plantable prevout-fetch trigger in this
+// scan). RED-FIRST: the count assertion was === 1 pre-deletion.
 {
   const fill = fcTxFor();
   const legacyMine = attestTx({ proposalId: OID2, score: SCORE_CLAIM, priv: meKey });
   const legacyStranger = attestTx({ proposalId: OID3, score: SCORE_CLAIM, priv: foreignKey });
-  const legacyOld = attestTx({ proposalId: OID4, score: SCORE_CLAIM, priv: meKey });
   const blocks = withOffer([
     { height: Hfc, tx: fill }, { height: Hfc, tx: legacyMine }, { height: Hfc, tx: legacyStranger },
-    { height: Hfc - LEGACY_HOLD - 1, tx: legacyOld },
   ]);
-  const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
-  check(`OBS3: a live legacy me-hold counts; a stranger's and a lapsed one do not (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 1);
-}
+  // the coins the legacy txs spend (the scan would fetch THESE prevouts to prove the legacy claims)
+  const legacyPrevouts = [legacyMine, legacyStranger].map((t) => String(t.inputs[0].prev_txid).toLowerCase());
 
-// OBS 3 BP6 SUNSET TOMBSTONE: the SAME live legacy me-hold is NO LONGER counted once the verified tip reaches
-// V28_HEIGHT + LEGACY_MAX_HOLD + MAX_HOLD_SPAN (60,134). OBS-3's scan+count (and its hostile-minable prevout
-// fetch) is skipped, because no legacy hold can be live at any FILLABLE fclaim grant that far past the gate (a
-// fillable fclaim's grant is at most MAX_HOLD_SPAN below the tip, and a pre-V28 legacy hold lapses <=
-// LEGACY_HOLD past its < V28 grant). This is the wallet half's true crossing (higher than the site's 60,045).
-{
+  // instrument the prevout seam: record every prevout the scan fetches
+  const prevoutCalls = [];
+  const base = fillSource(blocks, TIP);
+  const instrumented = { ...base, prevoutScriptPubkey: async (t, v) => { prevoutCalls.push(String(t).toLowerCase()); return base.prevoutScriptPubkey(t, v); } };
+  const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: instrumented, hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
+  check("D1: a live legacy me-hold NEVER counts toward the cap (the scan+count is deleted)", io.myLiveHoldsAtGrant === 0);
+  check("D1: the prevout seam is never queried for a legacy claim's coin (the hostile-minable fetch is gone)", !prevoutCalls.some((t) => legacyPrevouts.includes(t)));
+
+  // …and past the old gate (tip 60,134) the same holds — one fixture, both tips.
   const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;
-  const POST_GATE = H0 + LEGACY_HOLD + MAX_HOLD_SPAN;   // == V28_HEIGHT + LEGACY_MAX_HOLD + MAX_HOLD_SPAN (60,134)
-  const fill = fcTxFor();
-  const legacyMine = attestTx({ proposalId: OID2, score: SCORE_CLAIM, priv: meKey });
-  const blocks = withOffer([{ height: Hfc, tx: fill }, { height: Hfc, tx: legacyMine }]);
-  const io = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, POST_GATE), hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
-  check(`OBS3 BP6 tombstone: at tip 60,134 the SAME legacy me-hold is NO LONGER counted (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 0);
+  const POST_GATE = H0 + LEGACY_HOLD + MAX_HOLD_SPAN;   // == the old 60,134 crossing
+  const io2 = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, POST_GATE), hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
+  check("D1: same answer past the old gate (tip 60,134)", io2.myLiveHoldsAtGrant === 0);
 }
 
 // DEFECT 1 backstop: the fclaim being filled MUST be merkle-proven in the scan window, else fail CLOSED

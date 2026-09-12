@@ -4,9 +4,14 @@
 // the HONEST tip a genuinely-lapsed lease is REFUSED (verified=false). The deflated-tip case documents the
 // single-source residual that the liveSpvSource monotonic floor (NAME-4) defends — replayName itself
 // trusts the nodeTip it is handed. Run: tsx test/name4-lapse-poc.mjs
-import { verifyName } from "../src/core/namespv.ts";
+import { verifyNameUnion } from "../src/core/namespv.ts";
 import { checker } from "./_check.ts";
-import { buildNameClaim, buildNameSet, addrFromPriv, proposeTx, world, source, feeOut, pick } from "./_spvrig.ts";
+import { buildNameClaim, buildNameSet, addrFromPriv, proposeTx, world, source, feeOut, pick, mkFetch } from "./_spvrig.ts";
+
+// D2 (2026-09-12): the single-source verifyName twin was deleted; drive the union with ONE source.
+const SRC1 = [{ label: "primary", base: "https://primary.example/trade/api" }];
+const unionOne = (nm, claim, evHints, src) =>
+  verifyNameUnion(nm, SRC1, src, mkFetch({ [SRC1[0].base]: { ok: true, resolve: claim, events: evHints } }));
 
 const { check, done } = checker("NAME-4 tip-deflation vs lease-lapse:");
 
@@ -26,8 +31,8 @@ const src = (nodeTip) => source(blocks, nodeTip, { verifiedTip: 33722, nodeTip }
 const REAL_TIP = 320000;   // honest chain tip — alice.csd lease lapsed LONG ago
 const DEFLATED = 33722;    // hostile/MITM tip == verifiedTip (cannot go below it; cold-start floor=0)
 
-const honest = await verifyName(NAME, { addr: TARGET, owner: A, via: "nset" }, hints, src(REAL_TIP));
-const attack = await verifyName(NAME, { addr: TARGET, owner: A, via: "nset" }, hints, src(DEFLATED));
+const honest = await unionOne(NAME, { addr: TARGET, owner: A, via: "nset" }, hints, src(REAL_TIP));
+const attack = await unionOne(NAME, { addr: TARGET, owner: A, via: "nset" }, hints, src(DEFLATED));
 console.log("HONEST tip (lapsed):  verified=%s reason=%s", honest.verified, honest.reason);
 console.log("DEFLATED tip (MITM):  verified=%s addr=%s via=%s", attack.verified, attack.addr, attack.via);
 

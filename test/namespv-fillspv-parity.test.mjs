@@ -14,10 +14,16 @@
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { verifyName } from "../src/core/namespv.js";
+import { verifyNameUnion } from "../src/core/namespv.js";
 import { provenOfferPayto, liveFillSpvSource, feeBpsAt } from "../src/core/fillspv.js";
 import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
-import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor } from "./_spvrig.ts";
+import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase } from "./_spvrig.ts";
+
+// D2 (2026-09-12): the single-source verifyName twin was deleted; the namespv leg now drives
+// verifyNameUnion with ONE source (the production shape) serving the case's claim + hints.
+const SRC1 = [{ label: "primary", base: "https://primary.example/trade/api" }];
+const unionOne = (nm, claim, hints, src) =>
+  verifyNameUnion(nm, SRC1, src, mkFetchByBase({ [SRC1[0].base]: { ok: true, resolve: claim, events: hints } }));
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -47,7 +53,7 @@ const offerId = ctxid(rpcTxToTx(offerTx)).toLowerCase();
 // ── positive controls: the HONEST author (owns the spent coin) is accepted by BOTH binds (no over-rejection). ──
 {
   const { blocks, hints } = world([{ height: H, tx: nameTx }]);
-  const r = await verifyName(NM, { addr: A, owner: A }, hints, source(blocks, TIP));
+  const r = await unionOne(NM, { addr: A, owner: A }, hints, source(blocks, TIP));
   check(`namespv control: the honest name author verifies (owner A) (${r.reason ?? "verified"})`, r.verified === true && r.owner === A);
 }
 let honestOffer;
@@ -63,7 +69,7 @@ const offerSwapped = swapSig(offerTx, keyB);
 let nspvReason = "", nspvVerified;
 {
   const { blocks, hints } = world([{ height: H, tx: nameSwapped }]);
-  const r = await verifyName(NM, { addr: B, owner: B }, hints, source(blocks, TIP));
+  const r = await unionOne(NM, { addr: B, owner: B }, hints, source(blocks, TIP));
   nspvVerified = r.verified; nspvReason = r.reason ?? "";
   check(`namespv bind: scriptSig-substituted name author is REFUSED (${nspvReason})`, r.verified === false && /own the coin|substitution/i.test(nspvReason));
 }
@@ -91,7 +97,7 @@ async function withMutant(file, marker, run) {
 }
 {
   const { blocks, hints } = world([{ height: H, tx: nameSwapped }]);
-  const r = await withMutant("namespv.ts", "MUTATE_NSPV_PREVOUT_BIND", (mod) => mod.verifyName(NM, { addr: B, owner: B }, hints, source(blocks, TIP)));
+  const r = await withMutant("namespv.ts", "MUTATE_NSPV_PREVOUT_BIND", (mod) => mod.verifyNameUnion(NM, SRC1, source(blocks, TIP), mkFetchByBase({ [SRC1[0].base]: { ok: true, resolve: { addr: B, owner: B }, events: hints } })));
   check("MUTATION[namespv bind removed]: the substituted author is now ATTRIBUTED to attacker B (name verifies) — bind is load-bearing", r.verified === true && r.owner === B);
 }
 {

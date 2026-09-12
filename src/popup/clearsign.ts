@@ -476,7 +476,7 @@ export function sendWarnings(recipients: string[], sentTo: string[], ownAddrs: s
 // (resolver offline, service not yet upgraded, or a proven mismatch already refused upstream) it carries
 // the original strong caution. Either way the resolved FULL address stays the unmissable thing the user
 // confirms. (The name is regex-constrained at resolution, but escape it anyway — defense in depth.)
-export function nameCautionHtml(name: string, verified?: boolean, info?: { sources?: number; agreed?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }): string {
+export function nameCautionHtml(name: string, verified?: boolean, info?: { sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }): string {
   const n = escapeHtml(String(name));
   // Checked BEFORE the verified branch (and independent of `verified`) so a viaFill name can NEVER render a
   // green badge — defense-in-depth even though the verifier already forces viaFill ⇒ verified:false.

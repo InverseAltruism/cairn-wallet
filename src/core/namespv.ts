@@ -47,17 +47,16 @@ export interface NameVerification {
   via?: "nset" | "owner";
   depth?: number;             // confirmations of the most recent defining record
   reason?: string;            // fail-closed explanation when !verified
-  scope: "as-shown";          // honest completeness label (see file header)
   // NSPV-CLAIMCAP-1 (H1): true when the winning record was acquired via an on-chain offer FILL/recapture
   // (cairnx resolver `viaFill`). Such ownership can depend on out-of-name-scope state (the V17 open-lane
   // claim cap is global over ALL offers; a name-for-token fill depends on the buyer's global token balance),
   // so a name-scoped SPV replay cannot soundly prove it. Surfaced so the UI never shows it as plain "verified".
   viaFill?: boolean;
   // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many INDEPENDENT resolvers were
-  // unioned, how many AGREED with the chain-recomputed address, and whether any disagreed (a source whose
-  // stated claim ≠ the SPV-proven union winner — caught + flagged; the send still goes to the proven winner).
+  // unioned, and whether any disagreed (a source whose stated claim ≠ the SPV-proven union winner — caught
+  // + flagged; the send still goes to the proven winner). (D3: the `agreed` count and the `scope` label
+  // were deleted — nothing in production read them; the badge reads sources/disagree/soleSource/viaFill.)
   sources?: number;
-  agreed?: number;
   disagree?: boolean;
   // WALLET-LAPSE-TIP-1: a lease-LAPSED verdict is only CONFIDENT (`lapsed:true`) when corroborated — a second
   // independent name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
@@ -114,7 +113,7 @@ export interface SpvSource {
 // never needs the full chain tip for inclusion — only up to the records it must prove.
 const CONF_BUFFER = 12;
 
-const fail = (reason: string): NameVerification => ({ verified: false, reason, scope: "as-shown" });
+const fail = (reason: string): NameVerification => ({ verified: false, reason });
 
 // outputs → addr→sum(value) map (the resolver's `paidTo`). The AGGREGATION is the vendored
 // paidToFromOutputs (the exact sink the cairnx scanner/resolver use — same skip-don't-throw
@@ -252,39 +251,10 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1), viaFill: !!rec.viaFill };
 }
 
-/**
- * Verify `name → claim.addr` against the chain via SPV + an audited replay (SINGLE source). The
- * chain-recomputed address must equal what the resolver claimed — a fabricated redirect cannot pass (the
- * attacker has no signed, mined events for 0xATTACKER). Pure over `src` so it is fully Node-testable.
- * NOTE: single-source verify cannot defeat a WITHHOLDING resolver — use verifyNameUnion for that.
- */
-export async function verifyName(name: string, claim: NameClaim, hints: NameHint[], src: SpvSource): Promise<NameVerification> {
-  try {
-    if (!claim?.addr || !/^0x[0-9a-f]{40}$/.test(String(claim.addr).toLowerCase())) return fail("the resolver returned no usable address for this name");
-    if (claim.lapsed) return fail(`${name}.csd lease has lapsed — refusing to send`);
-    const r = await replayName(name, hints, src);
-    if (!r.ok) {
-      // WALLET-LAPSE-TIP-1: a SINGLE-source lapse is confident ONLY if the persisted floor corroborates it;
-      // otherwise degrade to CAUTION (verified:false, lapsed falsy, "may have lapsed") so a MITM-inflated tip
-      // on a fresh install cannot assert a false confident lapse and hard-block a legit send. Fail-soft.
-      if (r.lapsed) {
-        return r.floorCorroborated
-          ? { ...fail(r.reason), sources: 1, agreed: 0, disagree: false, lapsed: true }
-          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip — confirm out-of-band before sending`), sources: 1, agreed: 0, disagree: false, lapsed: false };
-      }
-      return fail(r.reason);
-    }
-    if (r.addr !== String(claim.addr).toLowerCase())
-      return fail("the resolver's address does NOT match what the chain proves — refusing (possible hostile resolver)");
-    // NSPV-CLAIMCAP-1 (H1): a fill-acquired name can't be soundly proven from a name-scoped replay, and the
-    // single-source path has no scopedReplaySufficient signal to consult — fail CLOSED rather than show green.
-    if (r.viaFill)
-      return { ...fail(`${name}.csd ownership was decided by an on-chain offer fill that a name-scoped replay cannot prove — refusing to show as verified (confirm out-of-band)`), sources: 1, agreed: 0, disagree: false, viaFill: true };
-    return { verified: true, addr: r.addr, owner: r.owner, via: r.via, depth: r.depth, scope: "as-shown", sources: 1, agreed: 1, disagree: false, viaFill: false };
-  } catch (e) {
-    return fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`);
-  }
-}
+// D2 (register §3, 2026-09-12): the single-source verifyName twin is DELETED. It had zero production
+// callers (wallet.ts's method and every resolve path go through verifyNameUnion below), it had already
+// drifted from the union's behavior, and its existence let the test suite certify a function production
+// never ran. The shared machinery (replayName, fail, toChainEvent) stays — the union uses it.
 
 // Fetch one resolver's /cairnx/name-history. Fail-soft: any error → ok:false (the union tolerates a down source).
 async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: typeof fetch): Promise<SourceResult> {
@@ -321,8 +291,8 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     const results = await Promise.all(uniq.map((s) => fetchNameHistory(s, name, fetchImpl)));
     const usable = results.filter((r) => r.ok && r.hints.length > 0);
     if (usable.length === 0) {
-      if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, agreed: 0, disagree: false };
-      return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, agreed: 0, disagree: false };
+      if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, disagree: false };
+      return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, disagree: false };
     }
     // S-B6 (2026-09-09 — DELETES the H1 pre-replay short-circuit): a source's clean 404 used to VETO the
     // union here, before any replay — and resolveName then fell through to serving the hint-serving
@@ -336,12 +306,16 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
     const existenceDisagree = results.some((r) => r.unregistered);
     // UNION the hints by lowercase txid; a same-txid-different-height across sources is a tamper → conflict.
+    // D4 (register §3, 2026-09-12): the pos leg is DELETED — replayName recomputes each event's position
+    // from the merkle-bound block and never reads hint.pos, so a pos-only mismatch carried no tamper
+    // signal; all it could do was let one source lying about pos raise a false "sources DISAGREE"
+    // caution on an honest name (attacker-triggerable nuisance). Height remains the tamper leg.
     const byTxid = new Map<string, NameHint>();
     let conflict = false;
     for (const r of usable) for (const h of r.hints) {
       const k = String(h.txid).toLowerCase();
       const prev = byTxid.get(k);
-      if (prev) { if (Number(prev.height) !== Number(h.height) || Number(prev.pos) !== Number(h.pos)) conflict = true; }
+      if (prev) { if (Number(prev.height) !== Number(h.height)) conflict = true; }
       else byTxid.set(k, h);
     }
     const rep = await replayName(name, [...byTxid.values()], src);
@@ -353,8 +327,8 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (rep.lapsed) {
         const confident = usable.length >= 2 || rep.floorCorroborated === true;
         return confident
-          ? { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false, lapsed: true }
-          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip — confirm out-of-band before sending`), sources: usable.length, agreed: 0, disagree: false, lapsed: false };
+          ? { ...fail(rep.reason), sources: usable.length, disagree: false, lapsed: true }
+          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip — confirm out-of-band before sending`), sources: usable.length, disagree: false, lapsed: false };
       }
       // M12 (B5e): the UNIONED replay failed. A single hostile source can poison the combined hint set
       // with ONE junk hint (a txid not in its claimed block, an unauthenticated record), aborting the whole
@@ -384,10 +358,10 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
           // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
           const soleSource = recovered.length === 1;
-          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, scope: "as-shown", sources: usable.length, agreed, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree, soleSource, viaFill: false };
+          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, sources: usable.length, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree, soleSource, viaFill: false };
         }
       }
-      return { ...fail(rep.reason), sources: usable.length, agreed: 0, disagree: false };
+      return { ...fail(rep.reason), sources: usable.length, disagree: false };
     }
     // NSPV-CLAIMCAP-1 (H1): never present a fill-acquired ("viaFill") name — or a name any usable source
     // flagged scopedReplaySufficient:false — as plain verified. Its ownership can hinge on out-of-name-scope
@@ -403,7 +377,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       const reason = rep.viaFill
         ? `${name}.csd ownership was decided by an on-chain offer fill that a name-scoped replay cannot prove (open-lane / token sale) — confirm the address out-of-band before sending`
         : `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain) — confirm the address out-of-band before sending`;
-      return { ...fail(reason), sources: usable.length, agreed: 0, disagree: false, viaFill: !!rep.viaFill };
+      return { ...fail(reason), sources: usable.length, disagree: false, viaFill: !!rep.viaFill };
     }
     // Cross-check: each usable source's STATED claim.addr against the SPV-proven union winner.
     let agreed = 0; const disagreeing: string[] = [];
@@ -412,9 +386,9 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (c === rep.addr) agreed++; else disagreeing.push(r.label);
     }
     const disagree = disagreeing.length > 0 || conflict || existenceDisagree; // S-B6: a 404-ing source counts
-    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, scope: "as-shown", sources: usable.length, agreed, disagree, viaFill: false };
+    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, sources: usable.length, disagree, viaFill: false };
   } catch (e) {
-    return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, agreed: 0, disagree: false };
+    return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, disagree: false };
   }
 }
 

@@ -1202,7 +1202,9 @@ export class Wallet {
     await this.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
     return r;
   }
-  async cairnSupport(proposalId: string, fee: number, score = 80, confidence = 70) { const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId, score, confidence, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: proposalId, fee }); return r; }
+  // D8 (register §3, 2026-09-12): cairnSupport DELETED — dead (no dApp/popup/inpage caller; not in
+  // DAPP_METHODS) and worse, a guard-free twin of attest() (it bypassed the CONF_TOKEN_FILL WYSIWYS
+  // routing guard). Board support goes through attest().
 
   // ── CairnX tokens + .csd names ──────────────────────────────────────────────
   // READS go to the public CairnX resolver API and NEVER throw — the popup must keep
@@ -1226,7 +1228,7 @@ export class Wallet {
   // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
   // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
   // owner (so a name works as a recipient even before its holder sets a resolver record).
-  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; agreed?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
+  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
     const nm = normName(name);
     // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
     // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
@@ -1263,7 +1265,7 @@ export class Wallet {
         // copy. A real lapse still refuses exactly as before — this only removes the FALSE refusal.
         const lv = await this.verifyName(nm).catch(() => null);
         if (lv?.verified && lv.addr)
-          return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, agreed: lv.agreed, disagree: lv.disagree, soleSource: lv.soleSource };
+          return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
         return lv?.lapsed === true
           ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed — can't send to it` }
           : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain — refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
@@ -1271,13 +1273,13 @@ export class Wallet {
       if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
       const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
       // XREPO-1 cure: independently SPV-verify the name → address against the chain. The resolver's
-      // answer above is UNTRUSTED until this confirms it. Best-effort + fail-closed: a PROVEN mismatch
-      // (the chain says a different address) REFUSES; an unavailable verifier returns the address with a
-      // caution flag (today's behaviour + a signal), never silently "verified".
+      // answer above is UNTRUSTED — the union serves the chain-PROVEN winner (never the served claim),
+      // flagging any source disagreement on the result; an unavailable verifier returns the served
+      // address with a caution flag (never silently "verified"). (D2: the old single-source
+      // "does NOT match / hostile resolver" refusal branch is deleted — the union replaced that
+      // refusal with serve-the-proven-winner + disagree, so no emitted reason ever matched it.)
       const v = await this.verifyName(nm).catch(() => null);
-      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, agreed: v.agreed, disagree: v.disagree, soleSource: v.soleSource };
-      if (v && /does NOT match|hostile/i.test(v.reason ?? ""))
-        return { ok: false, error: `${nm}.csd: the resolver's address contradicts the chain — refusing (possible hostile resolver)`, verified: false };
+      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, disagree: v.disagree, soleSource: v.soleSource };
       // NS-2: gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but serves an
       // address for a genuinely-lapsed name reaches here; verifyName's union already computed the lapse
       // (resolve(events, lapseTip).expired, corroborated by the persisted floor at namespv.ts). Refuse a
@@ -1324,7 +1326,7 @@ export class Wallet {
   // fail-closed tri-state. Exposed to dApps (popup "verifyName") so a recipient can be confirmed before a send.
   async verifyName(name: string): Promise<NameVerification & { name: string }> {
     const nm = normName(name);
-    if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, scope: "as-shown", name: nm };
+    if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
     try {
       // Cross-check the user's configured primary resolver against the independent clarvis second source
       // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
@@ -1333,7 +1335,7 @@ export class Wallet {
       const res = await verifyNameUnion(nm, sources, await this.spvSource());
       return { ...res, name: nm };
     } catch (e) {
-      return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, scope: "as-shown", name: nm };
+      return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm };
     }
   }
 

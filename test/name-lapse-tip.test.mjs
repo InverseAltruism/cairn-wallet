@@ -12,9 +12,16 @@
 //   * a two-source-confirmed lapse stops being confident (Case 3: lapsed!==true).
 //   * a single usable union source stops degrading to caution (Case 4: lapsed===true).
 // Run: tsx test/name-lapse-tip.test.mjs
-import { verifyName, verifyNameUnion } from "../src/core/namespv.ts";
+import { verifyNameUnion } from "../src/core/namespv.ts";
 import { checker } from "./_check.ts";
 import { buildNameClaim, buildNameSet, addrFromPriv, proposeTx, world, source, feeOut, pick, mkFetch } from "./_spvrig.ts";
+
+// D2 (2026-09-12): the single-source verifyName twin was deleted; the single-source lapse cases now
+// drive verifyNameUnion with ONE source — the union's lone-usable-source lapse handling IS the
+// production single-source posture (caution unless floor-corroborated).
+const SRC1 = [{ label: "primary", base: "https://primary.example/trade/api" }];
+const unionOne = (nm, claim, evHints, src) =>
+  verifyNameUnion(nm, SRC1, src, mkFetch({ [SRC1[0].base]: { ok: true, resolve: claim, events: evHints } }));
 
 const { check, done } = checker("WALLET-LAPSE-TIP-1 (lease-lapse single-source tip):");
 
@@ -38,7 +45,7 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
 
 // ── Case 1: SINGLE-source lapse, no floor corroboration → CAUTION (not a confident lapse) ──
 {
-  const r = await verifyName(NAME, CLAIM, hints, srcNoFloor(REAL_TIP));
+  const r = await unionOne(NAME, CLAIM, hints, srcNoFloor(REAL_TIP));
   console.log("[1] single-source, no floor: verified=%s lapsed=%s reason=%j", r.verified, r.lapsed, r.reason);
   check("[1] single-source lapse DEGRADES TO CAUTION (verified=false, lapsed !== true)", r.verified === false && r.lapsed !== true);
   check("[1] the caution reason says the tip could not be independently confirmed", /only one name source|confirm out-of-band/i.test(r.reason || ""));
@@ -46,7 +53,7 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
 
 // ── Case 2: SINGLE-source lapse, but the PERSISTED FLOOR is also past expiry → CONFIDENT lapse ──
 {
-  const r = await verifyName(NAME, CLAIM, hints, srcWithFloor(REAL_TIP, REAL_TIP));
+  const r = await unionOne(NAME, CLAIM, hints, srcWithFloor(REAL_TIP, REAL_TIP));
   console.log("[2] single-source, floor corroborates: verified=%s lapsed=%s reason=%j", r.verified, r.lapsed, r.reason);
   check("[2] a floor-corroborated lapse is CONFIDENT (verified=false, lapsed===true)", r.verified === false && r.lapsed === true);
   check("[2] the confident-lapse reason refuses the send", /lapsed[\s\S]*refusing|refusing[\s\S]*lapsed/i.test(r.reason || ""));
@@ -76,7 +83,7 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
 
 // ── Control: a NON-lapsed name (deflated/low tip) still verifies clean — the caution path never over-warns ──
 {
-  const r = await verifyName(NAME, CLAIM, hints, srcNoFloor(VERIFIED)); // nodeTip == verifiedTip → not yet lapsed
+  const r = await unionOne(NAME, CLAIM, hints, srcNoFloor(VERIFIED)); // nodeTip == verifiedTip → not yet lapsed
   console.log("[C] not-yet-lapsed control: verified=%s addr=%s", r.verified, r.addr);
   check("[C] a name that is NOT lapsed verifies clean (no spurious lapse caution)", r.verified === true && r.addr === TARGET && r.lapsed !== true);
 }

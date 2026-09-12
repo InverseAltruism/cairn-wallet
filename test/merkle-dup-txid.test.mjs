@@ -15,10 +15,16 @@
 //
 // Run: node --import tsx test/merkle-dup-txid.test.mjs   (offline)
 import { provenOfferPayto } from "../src/core/fillspv.ts";
-import { verifyName } from "../src/core/namespv.ts";
+import { verifyNameUnion } from "../src/core/namespv.ts";
 import { buildNameClaim, buildNameSet } from "../src/core/cairnx.ts";
-import { proposeTx, addrFromPriv, world, source, pick, merkleRoot, ctxid, rpcTxToTx, feeOut, prevoutFor } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, world, source, pick, merkleRoot, ctxid, rpcTxToTx, feeOut, prevoutFor, mkFetch as mkFetchByBase } from "./_spvrig.ts";
 import { offer } from "../src/vendor/cairnx-spv.js";
+
+// D2 (2026-09-12): the single-source verifyName twin was deleted; the namespv leg drives
+// verifyNameUnion with ONE source (the production shape) serving the case's claim + hints.
+const SRC1 = [{ label: "primary", base: "https://primary.example/trade/api" }];
+const unionOne = (nm, claim, hints, src) =>
+  verifyNameUnion(nm, SRC1, src, mkFetchByBase({ [SRC1[0].base]: { ok: true, resolve: claim, events: hints } }));
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -63,11 +69,11 @@ console.log("M7/F11 (B5e) - CVE-2012-2459 duplicate-txid rejection:");
   const CLAIM = { addr: TARGET, owner: A, via: "nset" };
   const honestSrc = source(blocks, 33_722, { verifiedTip: 33_722, nodeTip: 33_722 });
 
-  const okr = await verifyName(NAME, CLAIM, hints, honestSrc);
+  const okr = await unionOne(NAME, CLAIM, hints, honestSrc);
   check(`F11 control: honest 3-tx block verifies (${okr.reason ?? "verified"})`, okr.verified === true);
 
   const malSrc = malleateLastTx(honestSrc, 33700);
-  const badr = await verifyName(NAME, CLAIM, hints, malSrc);
+  const badr = await unionOne(NAME, CLAIM, hints, malSrc);
   check(`F11: a duplicated-txid block is REFUSED (${badr.reason ?? "?"})`, badr.verified === false && /duplicate txid|CVE-2012-2459/i.test(badr.reason || ""));
 }
 
