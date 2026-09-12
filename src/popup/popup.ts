@@ -523,8 +523,10 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   // confirm"; the total must not contradict it. Set-primary is anchor-only, so its total is exact.
   const total = CAIRNX_FEE + renewFee;
   $("nc-total").textContent = (kind === "renew" && !renewFee) ? "— (priced at confirm)" : fmtCsd(total);
+  // M8 residual (Fable final QC): when the renew fee is unpriceable the AFTER balance is likewise
+  // unknown — subtracting the anchor-only 0.25 would understate a 15.25 action in the second row too.
   let after = "";
-  try { const b = await call("balance"); after = fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
+  try { const b = await call("balance"); after = (kind === "renew" && !renewFee) ? "" : fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
   if (seq !== nameActSeq) return;   // superseded after the balance fetch — abort before priming the snapshot
   $("nc-after").textContent = after || "—";
   $("nc-note").textContent = kind === "renew"
@@ -595,7 +597,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     const badge = !verified
       ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
       : res.soleSource ? `⚠ only ONE name source could prove this address and it isn't independently corroborated: confirm it out-of-band before sending${conf}`
-      : res.disagree ? `⚠ chain-backed but a name source DISAGREED — verify the address${conf}`
+      : res.disagree ? `⚠ chain-backed but a name source DISAGREED (or hasn't indexed it yet) — verify the address${conf}`
       : (res.sources ?? 1) >= 2
         ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree — only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
         : `△ chain-backed but only 1 source answered — second server unreachable, weaker guarantee${conf}`;

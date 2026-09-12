@@ -120,7 +120,9 @@ export function renderOutputs(outs: any[], shown = 12): string {
 }
 
 export function feeLine(raw: number, fallback = 0): string {
-  const fee = Number(raw || fallback);
+  // `??` (not `||`): an explicit fee:0 must RENDER as 0 — the engine refuses it BAD_FEE, and the
+  // screen must show the refused value, not the table default (Fable final QC nit).
+  const fee = Number(raw ?? fallback);
   if (!Number.isFinite(fee)) return `fee: <span class="err">invalid amount</span>`;
   const warn = fee > FEE_WARN ? ` <span class="err">⚠ unusually large fee</span>` : "";
   return `fee: ${fee / 1e8} CSD${warn}`;
@@ -429,12 +431,12 @@ export function debitOf(r: any): number {
   if (r.method === "send" || r.method === "fillOffer") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [{ value: p.amount }];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    return total + baseVal(p.fee || defaultFeeFor(r.method));
+    return total + baseVal(p.fee ?? defaultFeeFor(r.method));
   }
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return 0;
   // a propose may carry protocol-fee outputs (CairnX deploy / name registration) → count them
   const outs = r.method === "propose" && Array.isArray(p.outputs) ? p.outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
-  return outs + baseVal(p.fee || defaultFeeFor(r.method));
+  return outs + baseVal(p.fee ?? defaultFeeFor(r.method));
 }
 
 // Address-poisoning lookalike: an attacker seeds your history with an address sharing the head+tail
@@ -496,7 +498,9 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: { sourc
     // A source's stated claim disagreed with the SPV-proven union winner (NSPV-COMPLETE-1): one resolver may
     // be hostile/stale. The address shown IS the chain-proven winner across all sources, but flag it loudly.
     if (info?.disagree) {
-      return `⚠ <b><code>${n}.csd</code> — sources DISAGREE.</b> The wallet SPV-verified the records, but one name source's answer did <b>not</b> match what the chain proves across the others — a source may be hostile or stale. The <b>To</b> address shown is the chain-proven winner, but <b>double-check it out-of-band</b> before any sizable send.`;
+      // S-B6: `disagree` now also covers a source that 404'd the name (reported it unregistered —
+      // typically a LAGGING second resolver) while another served provable history. Name that case.
+      return `⚠ <b><code>${n}.csd</code> — sources DISAGREE.</b> The wallet SPV-verified the records, but one name source's answer did <b>not</b> match what the chain proves across the others (or reported the name unregistered) — a source may be hostile, stale, or still indexing. The <b>To</b> address shown is the chain-proven winner, but <b>double-check it out-of-band</b> before any sizable send.`;
     }
     // ≥2 sources agreed on the SPV-verified mapping. HONESTY (2026-06-27 red-team): the two sources
     // (cairn-substrate.com + clarvis) are currently CO-LOCATED on one operator/apex (live DNS confirmed), so
@@ -615,24 +619,24 @@ export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchRe
 // Cost summary line from the request's own params (no network).
 export function costLine(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return "no funds move — this only proves your address to the site.";
-  if (r.method === "send") { const fee = baseVal(r.params?.fee || defaultFeeFor(r.method)); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
+  if (r.method === "send") { const fee = baseVal(r.params?.fee ?? defaultFeeFor(r.method)); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
   if (r.method === "fillOffer") {
-    const fee = baseVal(r.params?.fee || defaultFeeFor(r.method)); const sent = debitOf(r) - fee;
+    const fee = baseVal(r.params?.fee ?? defaultFeeFor(r.method)); const sent = debitOf(r) - fee;
     const tok = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL ? " PLUS tokens debited from your CairnX balance per the offer's terms" : "";
     return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee${tok} — atomic with the fill.`;
   }
   if (r.method === "propose") {
     const outs = Array.isArray(r.params?.outputs) ? r.params.outputs : [];
     const out = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const fee = baseVal(r.params?.fee || defaultFeeFor(r.method));
+    const fee = baseVal(r.params?.fee ?? defaultFeeFor(r.method));
     return out ? `cost: ${fmtCsd(out)} transferred out of your wallet + ${fmtCsd(fee)} network fee.` : `cost: ${fmtCsd(fee)} network fee (paid to miners).`;
   }
   if (r.method === "attest") {
-    const fee = baseVal(r.params?.fee || defaultFeeFor(r.method));
+    const fee = baseVal(r.params?.fee ?? defaultFeeFor(r.method));
     const tok = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL
       ? ` PLUS tokens debited from your CairnX balance IF this attests an open offer (its ask + ${FEE_BPS_V16 / 100}%)` : "";
     return `cost: ${fmtCsd(fee)} network fee${tok}.`;
   }
-  const fee = baseVal(r.params?.fee || defaultFeeFor(r.method));
+  const fee = baseVal(r.params?.fee ?? defaultFeeFor(r.method));
   return `cost: ${fmtCsd(fee)} network fee (paid to miners), + a tiny chain fee.`;
 }
