@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -330,7 +330,7 @@ export function describe(r: any): string {
         // The decoded record (cx) is schema-BOUNDED text (regex-constrained tickers/names/addresses,
         // memo <= 64, profile values sliced), so it cannot scroll the money rows away; the hash echo is
         // capped anyway (a decoded record implies a canonical 66-char hash, so the cap is inert here).
-        return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, 1000000)}`
+        return `${cx}<br><span class="dim">anchored as a cairnx:v1 proposal</span><br>${feeLine(p.fee, defaultFeeFor(r.method))}`
           + `<br>payload hash: <code>${truncLoud(String(p.payloadHash || "(none)"), 80)}</code>${exp}${xfer}${feeWarn}`;
       }
     }
@@ -339,7 +339,7 @@ export function describe(r: any): string {
     // the sticky Approve button must never be able to scroll what-this-costs out of view. The uri cap is
     // 512 (the node's own on-chain uri cap), so no VALID record's uri is ever cut; only oversized text
     // the chain would reject anyway gets the loud marker.
-    return `<b>Post a proposal</b><br>${feeLine(p.fee, 1000000)}${exp}${xfer}`
+    return `<b>Post a proposal</b><br>${feeLine(p.fee, defaultFeeFor(r.method))}${exp}${xfer}`
       + `<br>domain: <code>${truncLoud(String(p.domain), DOMAIN_CAP)}</code>`
       + `<br>payload hash: <code>${truncLoud(String(p.payloadHash || "(none)"), 80)}</code>`
       + `<br>uri: <code>${truncLoud(String(p.uri || "(none)"), 512)}</code>`;
@@ -360,7 +360,7 @@ export function describe(r: any): string {
       const v28warn = (Number(r.tipFloor) || 0) >= V28_HEIGHT
         ? `<br><b class="err">⚠ the chain has passed the v2.8 upgrade (block ${V28_HEIGHT}): this legacy reservation type is REJECTED on-chain, so approving would be a no-op that still costs the network fee. Use the site's current buy flow instead.</b>`
         : "";
-      return `<b>Reserve an open offer</b> - v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~${CLAIM_WINDOW_BLOCKS_V20} blocks; you pay only when you complete the purchase.<br>offer: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code><br>${feeLine(p.fee)} · score 50 (claim) · no payment${v28warn}`;
+      return `<b>Reserve an open offer</b> - v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~${CLAIM_WINDOW_BLOCKS_V20} blocks; you pay only when you complete the purchase.<br>offer: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code><br>${feeLine(p.fee, defaultFeeFor(r.method))} · score 50 (claim) · no payment${v28warn}`;
     }
     // CairnX v1.2: confidence 1 000 000 is the TOKEN-PRICED-FILL marker. A bare Attest carrying
     // it is BYTE-IDENTICAL to a fillOffer with empty outputs (the resolver cannot tell them
@@ -371,7 +371,7 @@ export function describe(r: any): string {
     const tokenFill = conf === CONF_TOKEN_FILL
       ? `<br><b class="err">⚠ TOKEN-PRICED FILL: approving SPENDS TOKENS from your CairnX balance</b> - if this attests an open offer, the convention debits its asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Only approve if you intend to BUY from this offer; verify its price on the site/explorer first.<div id="token-sim" class="req" style="margin-top:6px" hidden></div>`
       : "";
-    return `<b>Support / review</b><br>target: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>${tokenFill}<br>${feeLine(p.fee)} · score ${score} · confidence ${conf}`;
+    return `<b>Support / review</b><br>target: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>${tokenFill}<br>${feeLine(p.fee, defaultFeeFor(r.method))} · score ${score} · confidence ${conf}`;
   }
   if (r.method === "sealClaim") {
     // Show the actual claim TEXT being committed: sealClaim hashes {domain,claim,nonce} into the on-chain
@@ -381,7 +381,7 @@ export function describe(r: any): string {
     // capped-and-LOUD (truncLoud) instead of a quiet ellipsis.
     const claim = p.claim != null ? String(p.claim) : "";
     const claimLine = claim ? `<br>claim: <code>${truncLoud(claim, 200)}</code>` : "";
-    return `<b>Seal a claim</b> - commit a hidden claim on-chain (reveal later).<br>domain: <code>${truncLoud(String(p.domain || "csd:sealed"), DOMAIN_CAP)}</code><br>${feeLine(p.fee, CAIRNX_PROPOSE_FEE)} · the salt stays in your wallet (the claim is published only when you reveal)${claimLine}`;
+    return `<b>Seal a claim</b> - commit a hidden claim on-chain (reveal later).<br>domain: <code>${truncLoud(String(p.domain || "csd:sealed"), DOMAIN_CAP)}</code><br>${feeLine(p.fee, defaultFeeFor(r.method))} · the salt stays in your wallet (the claim is published only when you reveal)${claimLine}`;
   }
   // M14 (B5h): a reveal PUBLISHES a secret - show the FULL seal txid (18 characters invited approving the
   // wrong reveal) and mount #reveal-preview, which approve.ts fills with the domain + claim text from the
@@ -395,7 +395,7 @@ export function describe(r: any): string {
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
     const rows = renderOutputs(outs); // capped+LOUD-on-truncation, single-sourced (WYSIWYS-TRUNC-1)
     const totalLine = outs.length > 1 ? `<br>total: <b>${fmtCsd(total)}</b> to ${outs.length} recipients` : "";
-    return `<b>Send CSD</b><br>${rows}<br>${feeLine(p.fee, 1000000)}${totalLine}<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
+    return `<b>Send CSD</b><br>${rows}<br>${feeLine(p.fee, defaultFeeFor(r.method))}${totalLine}<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
   }
   // Atomic fill (CairnX DvP): an Attest AND payment outputs in ONE tx. Funds move to a
   // page-chosen recipient, so this clear-signs like send — full recipients + amounts +
@@ -417,7 +417,7 @@ export function describe(r: any): string {
       : "";
     return `<b>Fill offer</b> — pay + attest in ONE atomic transaction<br>`
       + `offer: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>${tokenFill}<br>${rows}<br>`
-      + `${feeLine(p.fee, 5000000)} · score ${(Number(p.score ?? 100) >>> 0)} · confidence ${(Number(p.confidence ?? 100) >>> 0)}${totalLine}`
+      + `${feeLine(p.fee, defaultFeeFor(r.method))} · score ${(Number(p.score ?? 100) >>> 0)} · confidence ${(Number(p.confidence ?? 100) >>> 0)}${totalLine}`
       + `<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
   }
   return `<b>${escapeHtml(r.method)}</b>`;
@@ -429,12 +429,12 @@ export function debitOf(r: any): number {
   if (r.method === "send" || r.method === "fillOffer") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [{ value: p.amount }];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    return total + baseVal(p.fee || (r.method === "fillOffer" ? 5_000_000 : 1_000_000));
+    return total + baseVal(p.fee || defaultFeeFor(r.method));
   }
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return 0;
   // a propose may carry protocol-fee outputs (CairnX deploy / name registration) → count them
   const outs = r.method === "propose" && Array.isArray(p.outputs) ? p.outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
-  return outs + baseVal(p.fee || (r.method === "sealClaim" ? CAIRNX_PROPOSE_FEE : 0));
+  return outs + baseVal(p.fee || defaultFeeFor(r.method));
 }
 
 // Address-poisoning lookalike: an attacker seeds your history with an address sharing the head+tail
@@ -615,24 +615,24 @@ export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchRe
 // Cost summary line from the request's own params (no network).
 export function costLine(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return "no funds move — this only proves your address to the site.";
-  if (r.method === "send") { const fee = baseVal(r.params?.fee || 1_000_000); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
+  if (r.method === "send") { const fee = baseVal(r.params?.fee || defaultFeeFor(r.method)); const sent = debitOf(r) - fee; return `cost: ${fmtCsd(sent)} sent + ${fmtCsd(fee)} network fee.`; }
   if (r.method === "fillOffer") {
-    const fee = baseVal(r.params?.fee || 5_000_000); const sent = debitOf(r) - fee;
+    const fee = baseVal(r.params?.fee || defaultFeeFor(r.method)); const sent = debitOf(r) - fee;
     const tok = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL ? " PLUS tokens debited from your CairnX balance per the offer's terms" : "";
     return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee${tok} — atomic with the fill.`;
   }
   if (r.method === "propose") {
     const outs = Array.isArray(r.params?.outputs) ? r.params.outputs : [];
     const out = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const fee = baseVal(r.params?.fee || 1_000_000);
+    const fee = baseVal(r.params?.fee || defaultFeeFor(r.method));
     return out ? `cost: ${fmtCsd(out)} transferred out of your wallet + ${fmtCsd(fee)} network fee.` : `cost: ${fmtCsd(fee)} network fee (paid to miners).`;
   }
   if (r.method === "attest") {
-    const fee = baseVal(r.params?.fee || 5_000_000);
+    const fee = baseVal(r.params?.fee || defaultFeeFor(r.method));
     const tok = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL
       ? ` PLUS tokens debited from your CairnX balance IF this attests an open offer (its ask + ${FEE_BPS_V16 / 100}%)` : "";
     return `cost: ${fmtCsd(fee)} network fee${tok}.`;
   }
-  const fee = baseVal(r.params?.fee || (r.method === "sealClaim" ? CAIRNX_PROPOSE_FEE : 0));
+  const fee = baseVal(r.params?.fee || defaultFeeFor(r.method));
   return `cost: ${fmtCsd(fee)} network fee (paid to miners), + a tiny chain fee.`;
 }

@@ -14,7 +14,7 @@
 import { utf8ToBytes } from "@noble/hashes/utils";
 import {
   // constants
-  DOMAIN, MIN_FEE_PROPOSE, TREASURY_ADDR,
+  DOMAIN, MIN_FEE_PROPOSE, MIN_FEE_ATTEST, TREASURY_ADDR,
   FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT,
   CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
@@ -40,6 +40,25 @@ import {
 // ── app constants (re-exported under the wallet's historical names) ───────────
 export const CAIRNX_DOMAIN = DOMAIN;                 // "cairnx:v1"
 export const CAIRNX_PROPOSE_FEE = MIN_FEE_PROPOSE;   // 0.25 CSD — the convention's anchor fee floor
+
+// B9 (M8 batch): THE per-method default-fee table — the single source both sides read: the engine
+// (wallet.ts applies it when a dApp omits `fee`) and the clear-sign display (clearsign.ts feeLine /
+// costLine / debitOf). Before this table the three formatters disagreed (a bare attest clear-signed
+// "fee: 0 CSD" beside a "cost: 0.05 CSD" row, and a fee-less propose showed 0.01 CSD — an amount the
+// node REFUSES, since validate_app_sanity enforces MIN_FEE_PROPOSE / MIN_FEE_ATTEST on every app tx).
+// The app-tx defaults ARE those node-enforced floors: a smaller default would sign a transaction the
+// mempool rejects. A plain send carries no app floor (only the dust-level relay feerate); 0.01 CSD is
+// the wallet's long-standing send default. Unknown / non-fee-bearing methods → 0 (no assumption made).
+export function defaultFeeFor(method: string): number {
+  switch (method) {
+    case "send": return 1_000_000;              // 0.01 CSD
+    case "propose":
+    case "sealClaim": return MIN_FEE_PROPOSE;   // 0.25 CSD — a seal anchors AS a Propose
+    case "attest":
+    case "fillOffer": return MIN_FEE_ATTEST;    // 0.05 CSD — a fill IS an Attest (+ payment outputs)
+    default: return 0;
+  }
+}
 export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL, NAME_RE, canonicalJson };
 // v1.6 fee: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; this just
 // computes the trade fee for clear-sign display. Byte-identical to cairnx-core (callers pass bigint). (The

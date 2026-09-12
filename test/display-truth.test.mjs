@@ -14,8 +14,9 @@
 //
 // Run: node --import tsx test/display-truth.test.mjs   (offline)
 import { readFileSync } from "node:fs";
-import { describe, costLine, truncLoud, tokenAmountBothScales, tokenQuoteHtml, revealPreviewHtml } from "../src/popup/clearsign.ts";
-import { canonicalJson, cairnxPayloadHash, CAIRNX_DOMAIN, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16 } from "../src/core/cairnx.ts";
+import { describe, costLine, debitOf, fmtCsd, truncLoud, tokenAmountBothScales, tokenQuoteHtml, revealPreviewHtml } from "../src/popup/clearsign.ts";
+import { canonicalJson, cairnxPayloadHash, defaultFeeFor, CAIRNX_DOMAIN, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16 } from "../src/core/cairnx.ts";
+import { MIN_FEE_PROPOSE, MIN_FEE_ATTEST } from "../src/vendor/cairnx-spv.js";
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? pass++ : fail++; console.log(`  ${c ? "PASS" : "FAIL"} ${n}`); };
@@ -161,6 +162,69 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("PIN M14: approve.ts wires fillRevealPreview into render()", approveSrc.includes("fillRevealPreview(current)"));
   ok("PIN M14: the preview reads the LOCAL sealedClaims store (no network)", approveSrc.includes('call("sealedClaims")'));
   ok("PIN B5h: a score-50 attest threads only the LOCAL tipFloor (no tip/network fetch added)", /method === "attest"[\s\S]{0,900}?call\("tipFloor"\)/.test(approveSrc) && !/method === "attest"[\s\S]{0,900}?call\("tip"\)[^F]/.test(approveSrc));
+}
+
+// ── B9 (M8 batch): ONE default-fee table — screen rows can never disagree again ─────────────
+// RED-FIRST (authored against the pre-fix tree): a fee-less bare attest rendered "fee: 0 CSD" in
+// describe() beside "cost: 0.05 CSD" in costLine() with debitOf() counting 0; a fee-less propose
+// rendered 0.01 CSD — an amount the NODE refuses (utxo.rs validate_app_sanity enforces
+// MIN_FEE_PROPOSE / MIN_FEE_ATTEST on every app tx). The engine meanwhile ERRORED (BAD_FEE) on the
+// omitted fee, so no on-screen number was ever what got signed.
+{
+  // Ground truth, independent of the table under test: the vendored consensus mirror's floors.
+  ok("B9 ground truth: MIN_FEE_PROPOSE is 0.25 CSD", MIN_FEE_PROPOSE === 25_000_000);
+  ok("B9 ground truth: MIN_FEE_ATTEST is 0.05 CSD", MIN_FEE_ATTEST === 5_000_000);
+
+  // The table itself.
+  ok("B9 table: send → 0.01 CSD (no app floor; relay feerate only)", defaultFeeFor("send") === 1_000_000);
+  ok("B9 table: propose → the node propose floor", defaultFeeFor("propose") === MIN_FEE_PROPOSE);
+  ok("B9 table: sealClaim → the propose floor (a seal anchors AS a Propose)", defaultFeeFor("sealClaim") === MIN_FEE_PROPOSE);
+  ok("B9 table: attest → the node attest floor", defaultFeeFor("attest") === MIN_FEE_ATTEST);
+  ok("B9 table: fillOffer → the attest floor (a fill IS an Attest + outputs)", defaultFeeFor("fillOffer") === MIN_FEE_ATTEST);
+  ok("B9 table: unknown method → 0 (no assumption)", defaultFeeFor("someFutureMethod") === 0);
+
+  // Cross-row consistency: with NO dApp-supplied fee, the fee row in describe(), the cost row, and
+  // the balance-after debit must ALL be the table value — the number the engine will sign.
+  const feeTxt = (base) => `fee: ${base / 1e8} CSD`;
+  const bareAttest = { method: "attest", params: { proposalId: ID, score: 80, confidence: 70 } };
+  ok("B9: bare attest fee row shows the floor the engine signs", describe(bareAttest).includes(feeTxt(MIN_FEE_ATTEST)));
+  ok("B9: bare attest cost row agrees", costLine(bareAttest).includes(`cost: ${fmtCsd(MIN_FEE_ATTEST)} network fee`));
+  ok("B9: bare attest debit agrees", debitOf(bareAttest) === MIN_FEE_ATTEST);
+
+  const claim = { method: "attest", params: { proposalId: ID, score: 50, confidence: 0 } };
+  ok("B9: a claim reservation shows its real attest fee (it is not free)", describe(claim).includes(feeTxt(MIN_FEE_ATTEST)));
+
+  const barePropose = { method: "propose", params: { domain: "csd:test", payloadHash: ID, uri: "u" } };
+  ok("B9: bare propose shows the node-enforced 0.25 floor (not a rejected 0.01)", describe(barePropose).includes(feeTxt(MIN_FEE_PROPOSE)));
+  ok("B9: bare propose cost row agrees", costLine(barePropose).includes(`${fmtCsd(MIN_FEE_PROPOSE)} network fee`));
+  ok("B9: bare propose debit agrees", debitOf(barePropose) === MIN_FEE_PROPOSE);
+
+  const cxRec = { v: 1, t: "transfer", ticker: "TOK", amount: "5", to: "0x" + "cd".repeat(20) };
+  const cxPropose = { method: "propose", params: { domain: CAIRNX_DOMAIN, uri: canonicalJson(cxRec), payloadHash: cairnxPayloadHash(cxRec) } };
+  ok("B9: a cairnx propose shows the 0.25 anchor floor (was a 25x understatement)", describe(cxPropose).includes(feeTxt(MIN_FEE_PROPOSE)));
+
+  // Happy-path anchors (these were already consistent and must stay so).
+  const bareSend = { method: "send", params: { to: "0x" + "ab".repeat(20), amount: 100 } };
+  ok("B9: send still shows 0.01 and debits amount+fee", describe(bareSend).includes(feeTxt(1_000_000)) && debitOf(bareSend) === 100 + 1_000_000);
+  const bareFill = { method: "fillOffer", params: { proposalId: ID, outputs: [{ to: "0x" + "ab".repeat(20), value: 1000 }] } };
+  ok("B9: fillOffer still shows 0.05 and debits outputs+fee", describe(bareFill).includes(feeTxt(MIN_FEE_ATTEST)) && debitOf(bareFill) === 1000 + MIN_FEE_ATTEST);
+  ok("B9: sealClaim still shows 0.25", describe({ method: "sealClaim", params: { claim: "x" } }).includes(feeTxt(MIN_FEE_PROPOSE)));
+
+  // An EXPLICIT dApp fee still wins over the table everywhere (the table is a default, not a clamp).
+  const explicit = { method: "attest", params: { proposalId: ID, score: 80, confidence: 70, fee: 9_000_000 } };
+  ok("B9: an explicit fee is shown and debited as given", describe(explicit).includes(feeTxt(9_000_000)) && debitOf(explicit) === 9_000_000);
+
+  // Use-site pins: the display layer must read the table (no hand-typed fallback literals), and the
+  // engine must APPLY the table where it used to error on an omitted fee.
+  const clearsignSrc = readFileSync(new URL("../src/popup/clearsign.ts", import.meta.url), "utf8");
+  const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
+  ok("PIN B9: every feeLine use-site reads defaultFeeFor(r.method)",
+    (clearsignSrc.match(/feeLine\(p\.fee, defaultFeeFor\(r\.method\)\)/g) || []).length >= 7
+    && !/feeLine\(p\.fee(, ?\d|(, ?CAIRNX_PROPOSE_FEE)?\))/.test(clearsignSrc.replace(/feeLine\(p\.fee, defaultFeeFor\(r\.method\)\)/g, "")));
+  ok("PIN B9: cost/debit fallbacks read the table, not literals", !/\|\| ?(1_000_000|5_000_000|1000000|5000000)\)/.test(clearsignSrc));
+  ok("PIN B9: the engine defaults an omitted propose fee (was BAD_FEE after approval)", walletSrc.includes('defaultFeeFor("propose")'));
+  ok("PIN B9: the engine defaults an omitted attest fee", walletSrc.includes('defaultFeeFor("attest")'));
+  ok("PIN B9: the drift-prone ATTEST_FLOOR twin const is gone", !walletSrc.includes("const ATTEST_FLOOR"));
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);

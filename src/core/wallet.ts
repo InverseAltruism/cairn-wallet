@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
@@ -145,7 +145,8 @@ const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sea
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
 // Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
-const ATTEST_FLOOR = 5_000_000;
+// B9: single-sourced into core/cairnx.ts defaultFeeFor("attest") — the same table the clear-sign
+// display reads, so the screen and the signer can never disagree again (the local literal was the twin).
 // The app-layer confidence SENTINEL for a token-priced fill. NOT consensus math - it is the value the trade
 // UI stamps so a fill against a token-want offer is distinguishable from a board-support attest (70/80). W4
 // (B5d) routes on it. B7e: SINGLE-SOURCED from the vendored cairnx-core (imported above) instead of a local
@@ -636,8 +637,14 @@ export class Wallet {
   // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE — stated
   // coverage limit, not assumed away). Popup-only read; never a dApp method.
   async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
-  async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }) { const hk = this.histKeyNow(); const r = await node.propose(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee: p.fee }); return r; }
-  async attest(p: { proposalId: string; score: number; confidence: number; fee: number; expectSigner?: string }) {
+  async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee?: number; outputs?: { to: string; value: number }[] }) {
+    // B9: an omitted fee signs defaultFeeFor("propose") — the node-enforced MIN_FEE_PROPOSE floor the
+    // clear-sign screen displayed (was: the build ERRORED BadFee AFTER the user approved a screen that
+    // showed a 0.01 CSD the node would have rejected anyway). An explicit sub-floor fee still refuses.
+    const fee = p.fee ?? defaultFeeFor("propose");
+    const hk = this.histKeyNow(); const r = await node.propose(this.rpc, { ...p, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee }); return r;
+  }
+  async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string }) {
     // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
     // App=Attest expression, outputs:[]), so an attest(score, confidence=CONF_TOKEN_FILL) was the fill
     // path stripped of its preflight - no OFFER_UNKNOWN gate, no captureSigner, paying into a proposal the
@@ -654,7 +661,11 @@ export class Wallet {
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
     if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner });
-    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, p, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: p.fee }); return r;
+    // B9: an omitted fee signs defaultFeeFor("attest") — the node-enforced MIN_FEE_ATTEST floor the
+    // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
+    // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
+    const fee = p.fee ?? defaultFeeFor("attest");
+    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
   }
   // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
@@ -676,7 +687,7 @@ export class Wallet {
     // 0.2.64 accepted, since this guard has never shipped) was refused for no reason. Absent means
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
     if (p.score != null && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
-    const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? ATTEST_FLOOR };
+    const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? defaultFeeFor("attest") };
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr);
     if (refusal) return refusal;
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
@@ -1055,12 +1066,13 @@ export class Wallet {
   }
 
   // Plain CSD transfer to any address. fee default 0.01 CSD.
-  async send(to: string, amount: number, fee = 1_000_000, expectSigner?: string) {
+  async send(to: string, amount: number, fee?: number, expectSigner?: string) {
+    const f = fee ?? defaultFeeFor("send"); // B9: the table, not a local literal (was a param default)
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(expectSigner, ctx.addr);
     if (early) return early;
-    const r = await node.send(this.rpc, { to, amount, fee }, ctx.priv);
-    await this.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee });
+    const r = await node.send(this.rpc, { to, amount, fee: f }, ctx.priv);
+    await this.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee: f });
     return r;
   }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
