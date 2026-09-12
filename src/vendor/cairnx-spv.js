@@ -1197,7 +1197,9 @@ var LightClient = class _LightClient {
    * localStorage-poisoned snapshot is REJECTED here, not restored as verified. chainwork is
    * recomputed, never read from the file.
    */
-  static fromSnapshot(s, opts = {}) {
+  /** Shared restore setup (containment + baseHeight normalisation) for fromSnapshot /
+      fromSnapshotAsync — one copy, so the two entry points can never drift on the anchor rules. */
+  static prepareRestore(s, opts) {
     if (s.v !== 1 || !Array.isArray(s.headers) || !s.headers.length) throw new Error("bad snapshot");
     const lc = new _LightClient(opts);
     const baseHeight = Number(s.baseHeight);
@@ -1211,33 +1213,59 @@ var LightClient = class _LightClient {
       }
     }
     lc.baseHeight = baseHeight;
-    let prevHash = null;
-    let work = 0n;
+    return { lc, baseHeight };
+  }
+  /** The per-header restore step, shared VERBATIM by fromSnapshot (sync) and fromSnapshotAsync
+      (chunked) — a second verifier copy could drift (S5-a). Carries (prevHash, work) across. */
+  static restoreOne(lc, baseHeight, e, i, prevHash, work) {
+    const height = Number(e.height);
+    if (!Number.isSafeInteger(height) || height < 0) throw new Error(`snapshot bad height at index ${i}: ${height}`);
+    if (height !== baseHeight + i) throw new Error(`snapshot not contiguous at ${height}`);
+    const hash = headerHash(e.header);
+    if (hash.toLowerCase() !== e.hash.toLowerCase()) throw new Error(`snapshot hash mismatch at ${height}`);
+    if (i === 0 && baseHeight === 0) {
+      if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`snapshot foreign genesis: ${hash}`);
+      if (e.header.bits !== INITIAL_BITS) throw new Error("snapshot genesis bits != INITIAL_BITS");
+    }
+    if (prevHash && e.header.prev.toLowerCase() !== prevHash) throw new Error(`snapshot prev link broken at ${height}`);
+    const fullWindowAvailable = baseHeight === 0 || height - baseHeight >= LWMA_WINDOW;
+    if (height > 0 && (!e.trusted || fullWindowAvailable)) {
+      const window = lc.windowBefore(height);
+      const parent = lc.chain[i - 1];
+      if (parent) lc.checkTimeRules(height, e.header, window, parent);
+      const exp = expectedBitsFromWindow(window, height);
+      if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
+    }
+    if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
+    lc.pinCheckpoint(height, hash);
+    work = satAddWork(work, e.header.bits);
+    lc.chain.push({ height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
+    return { prevHash: hash.toLowerCase(), work };
+  }
+  static fromSnapshot(s, opts = {}) {
+    const { lc, baseHeight } = _LightClient.prepareRestore(s, opts);
+    let prevHash = null, work = 0n;
     for (let i = 0; i < s.headers.length; i++) {
-      const e = s.headers[i];
-      const height = Number(e.height);
-      if (!Number.isSafeInteger(height) || height < 0) throw new Error(`snapshot bad height at index ${i}: ${height}`);
-      if (height !== baseHeight + i) throw new Error(`snapshot not contiguous at ${height}`);
-      const hash = headerHash(e.header);
-      if (hash.toLowerCase() !== e.hash.toLowerCase()) throw new Error(`snapshot hash mismatch at ${height}`);
-      if (i === 0 && baseHeight === 0) {
-        if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`snapshot foreign genesis: ${hash}`);
-        if (e.header.bits !== INITIAL_BITS) throw new Error("snapshot genesis bits != INITIAL_BITS");
-      }
-      if (prevHash && e.header.prev.toLowerCase() !== prevHash) throw new Error(`snapshot prev link broken at ${height}`);
-      const fullWindowAvailable = baseHeight === 0 || height - baseHeight >= LWMA_WINDOW;
-      if (height > 0 && (!e.trusted || fullWindowAvailable)) {
-        const window = lc.windowBefore(height);
-        const parent = lc.chain[i - 1];
-        if (parent) lc.checkTimeRules(height, e.header, window, parent);
-        const exp = expectedBitsFromWindow(window, height);
-        if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
-      }
-      if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
-      lc.pinCheckpoint(height, hash);
-      work = satAddWork(work, e.header.bits);
-      lc.chain.push({ height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
-      prevHash = hash.toLowerCase();
+      const r = _LightClient.restoreOne(lc, baseHeight, s.headers[i], i, prevHash, work);
+      prevHash = r.prevHash;
+      work = r.work;
+    }
+    return lc;
+  }
+  /** S5-a (register Phase 4, 2026-09-12): the CHUNKED async restore — the IDENTICAL per-header
+      verification (restoreOne, shared with the sync path), but yields to the event loop every
+      `chunk` headers so a long snapshot restore doesn't freeze the MV3 UI thread on slow hardware.
+      The consumer view stays atomic: the wallet holds the PROMISE (`_spvSrc`) and only the resolved
+      client is ever read. The checkpoint is NEVER bumped and the rejection semantics are unchanged
+      (a hostile snapshot is still refused whole — the throw just happens at a later await). */
+  static async fromSnapshotAsync(s, opts = {}, chunk = 2e3) {
+    const { lc, baseHeight } = _LightClient.prepareRestore(s, opts);
+    let prevHash = null, work = 0n;
+    for (let i = 0; i < s.headers.length; i++) {
+      const r = _LightClient.restoreOne(lc, baseHeight, s.headers[i], i, prevHash, work);
+      prevHash = r.prevHash;
+      work = r.work;
+      if (i % chunk === chunk - 1) await new Promise((res) => setTimeout(res, 0));
     }
     return lc;
   }

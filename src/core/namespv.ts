@@ -473,9 +473,13 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   const checkpoints = { [CP.height]: CP.hash };
 
   let lc: LightClient | null = null;
-  // try a re-verified snapshot first (fromSnapshot recomputes PoW + links + LWMA bits, honours the checkpoint)
+  // try a re-verified snapshot first (fromSnapshotAsync recomputes PoW + links + LWMA bits and honours
+  // the checkpoint EXACTLY as the sync path — it shares the one restoreOne verifier — but yields to the
+  // event loop every 2000 headers, so a long restore doesn't freeze the MV3 UI thread on slow hardware).
+  // S5-a (register Phase 4). The view stays atomic: `_spvSrc` holds the PROMISE; only the resolved
+  // client is ever read. The checkpoint is never bumped.
   if (opts.cache) {
-    try { const snap = await opts.cache.get(); if (snap) lc = LightClient.fromSnapshot(snap, { client, headersBatchProvider: headersBatch, checkpoints }); }
+    try { const snap = await opts.cache.get(); if (snap) lc = await LightClient.fromSnapshotAsync(snap, { client, headersBatchProvider: headersBatch, checkpoints }); }
     catch { lc = null; }
   }
   if (!lc) {
