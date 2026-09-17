@@ -145,6 +145,36 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
   const { r, s } = await fillServed("pw-w2-none-12345", honestOffer);
   check("RT-W2: no reviewed quote keeps the caution-path posture (honest fill proceeds)", r?.ok === true && s.submits.length === 1);
 }
+{
+  // 8e. 0.2.70: a review give that does not match the proven give is REFUSED.
+  const w = await freshWallet("pw-w2-give-12345", TRUE_PROVEN);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "0", total: "7", giveTicker: "BBB", giveAmount: "10" } });
+  check("0.2.70: a review give TICKER that does not match proven is REFUSED", r?.ok === false && r?.code === "FILL_UNSAFE" && /receive changed/.test(r?.error ?? "") && s.submits.length === 0);
+}
+{
+  const w = await freshWallet("pw-w2-giveok-12345", TRUE_PROVEN);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "0", total: "7", giveTicker: "AAA", giveAmount: "10" } });
+  check("0.2.70: a matching review give PROCEEDS (honest path)", r?.ok === true && s.submits.length === 1);
+}
+
+// 0.2.70 Fable nit: tokenFillQuote must treat served give.amount null/undefined as absent.
+// String(null) === "null" is a present string; the vendor give-leg then refuses an honest fill.
+{
+  const w = await freshWallet("pw-quote-null-12345");
+  mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => ({ ...honestOffer, give: { ticker: "AAA", amount: null } }) }) });
+  const q = await w.tokenFillQuote(OID);
+  check("0.2.70: tokenFillQuote treats served give.amount:null as absent (not the string \"null\")",
+    q.ok === true && q.giveTicker === "AAA" && q.giveAmount === undefined);
+}
+{
+  const w = await freshWallet("pw-quote-zero-12345");
+  mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => ({ ...honestOffer, give: { ticker: "AAA", amount: 0 } }) }) });
+  const q = await w.tokenFillQuote(OID);
+  check("0.2.70: tokenFillQuote still String()s a real give.amount of 0",
+    q.ok === true && q.giveAmount === "0");
+}
 
 globalThis.fetch = origFetch;
 console.log(`\nfill-token-content: ${pass} passed, ${fail} failed`);

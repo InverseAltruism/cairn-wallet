@@ -33,6 +33,7 @@ dropping it would be a dApp-visible shape change.)
 | `FORBIDDEN` | Privileged internal message from a non-extension page. | No. | 0.2.46 |
 | `UNKNOWN_KIND` | Unknown message kind on the internal channel. | No. | 0.2.46 |
 | `INTERNAL` | Catch-all wrapper for anything thrown while executing an approved action; `error` carries the thrown message. | Unknown from the code alone; consumers may inspect the string (the coin-verify "could not verify selected inputs" / "couldn't fetch source transactions" prose is retryable). | 0.2.46 |
+| `WALLET_UNAVAILABLE` | The content-script ↔ service-worker channel is closed (SW dropped, bfcache, or `wallet.init` rejected). The inpage waiter is resolved with this coded refusal instead of hanging. | Yes, after a page refresh (or once the extension is reachable again). | 0.2.70 |
 
 ## Nested SubmitResult codes (0.2.54)
 

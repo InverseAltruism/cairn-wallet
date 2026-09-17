@@ -86,9 +86,9 @@ async function render() {
       + connectNote
       + `<div class="req dim" id="cost">${costLine(current)}</div>`;
     msg(""); // clear any stale "approved"/"rejected" from a previous request
+    warnPainted = fillSendWarning(current);
     armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
     fillBalance(current);
-    fillSendWarning(current);
     fillTokenSim(current);
     fillRevealPreview(current); // M14: which secret a revealClaim makes public (local sealedClaims read)
     armNfinalizeGate(current, st);
@@ -202,7 +202,7 @@ async function fillTokenSim(r: any) {
     // RT-W2: remember the quote actually DISPLAYED so the approve click can thread it to the
     // preflight, which refuses unless it equals the chain-proven want (a resolver that quotes low
     // at review and honest at click used to debit the larger proven amount behind the low card).
-    r.tokenQuoteDisplayed = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total } : undefined;
+    r.tokenQuoteDisplayed = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total, giveTicker: q.giveTicker, giveAmount: q.giveAmount, giveName: q.giveName } : undefined;
     show(tokenQuoteHtml(q));
   } catch {
     show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
@@ -294,11 +294,18 @@ function disableButtons() {
   ($("btn-approve") as HTMLButtonElement).disabled = true;
   ($("btn-reject") as HTMLButtonElement).disabled = true;
 }
+// 0.2.70: never re-enable before the send-warning paint. 700ms remains the floor (click-through);
+// fillSendWarning settling is the ceiling so a slow history fetch cannot leave Approve live over
+// an unpainted poisoning warning.
+let warnPainted: Promise<unknown> = Promise.resolve();
 function armButtons() {
   disableButtons();  // AW-1: same immediate disable; the 700ms RE-ENABLE timer stays here, after the paint
   // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
   // AFTER this timer disables it directly in armNfinalizeGate).
-  setTimeout(() => { ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked; ($("btn-reject") as HTMLButtonElement).disabled = false; }, 700);
+  const minWait = new Promise((r) => setTimeout(r, 700));
+  Promise.all([minWait, Promise.resolve(warnPainted).catch(() => {})]).then(() => {
+    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked; ($("btn-reject") as HTMLButtonElement).disabled = false;
+  });
 }
 async function resolve(approve: boolean) {
   if (!current) return;

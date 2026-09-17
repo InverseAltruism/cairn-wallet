@@ -502,9 +502,6 @@ function serializeHeader(h) {
   buf.set(u32(h.nonce), 80);
   return buf;
 }
-function headerHash(h) {
-  return hx(sha256d(serializeHeader(h)));
-}
 function headerHashBytes(h) {
   return sha256d(serializeHeader(h));
 }
@@ -568,17 +565,6 @@ function targetToBits(target) {
   return (exp << 24 | mant) >>> 0;
 }
 var POW_LIMIT_TARGET = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
-function powOk(headerHashBE, bits) {
-  const target = targetToBigInt(bitsToTarget(bits));
-  if (target === 0n || target > POW_LIMIT_TARGET) return false;
-  return targetToBigInt(headerHashBE) <= target;
-}
-function workForBits(bits) {
-  const target = targetToBigInt(bitsToTarget(bits));
-  if (target === 0n || target > POW_LIMIT_TARGET) return 0n;
-  const w = (1n << 256n) / (target + 1n);
-  return w > MAX_U128 ? MAX_U128 : w;
-}
 function merkleRoot(txidsHex) {
   if (txidsHex.length === 0) return "0x" + "00".repeat(32);
   let layer = txidsHex.map(hb);
@@ -863,6 +849,25 @@ function bitsToTargetBigInt(bits) {
   return v;
 }
 var POW_LIMIT_TARGET2 = bitsToTargetBigInt(POW_LIMIT_BITS);
+var workMemo = /* @__PURE__ */ new Map();
+function powOkMemo(headerHashBE, bits) {
+  const target = bitsToTargetBigInt(bits);
+  if (target === 0n || target > POW_LIMIT_TARGET2) return false;
+  return targetToBigInt(headerHashBE) <= target;
+}
+function workForBitsMemo(bits) {
+  const hit = workMemo.get(bits);
+  if (hit !== void 0) return hit;
+  const target = bitsToTargetBigInt(bits);
+  let v = 0n;
+  if (target !== 0n && target <= POW_LIMIT_TARGET2) {
+    const w = (1n << 256n) / (target + 1n);
+    v = w > MAX_U128 ? MAX_U128 : w;
+  }
+  if (workMemo.size >= TARGET_MEMO_CAP) workMemo.clear();
+  workMemo.set(bits, v);
+  return v;
+}
 function expectedBitsFromWindow(window, height) {
   if (height === 0) return INITIAL_BITS;
   const parent = window[window.length - 1];
@@ -906,7 +911,7 @@ function expectedBitsFromWindow(window, height) {
   return bits;
 }
 var satAddWork = (a, bits) => {
-  const s = a + workForBits(bits);
+  const s = a + workForBitsMemo(bits);
   return s > MAX_U128 ? MAX_U128 : s;
 };
 var LightClient = class _LightClient {
@@ -986,7 +991,8 @@ var LightClient = class _LightClient {
   }
   /** Pure verification of one header against a window + parent (no mutation). */
   verifyOne(height, header, window, parent, claimedHash) {
-    const hash = headerHash(header);
+    const hashBytes = headerHashBytes(header);
+    const hash = hx(hashBytes);
     if (claimedHash && claimedHash.toLowerCase() !== hash.toLowerCase()) throw new Error(`header hash mismatch at ${height}`);
     if (height === 0) {
       if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`foreign genesis: ${hash}`);
@@ -998,7 +1004,7 @@ var LightClient = class _LightClient {
       const exp = expectedBitsFromWindow(window, height);
       if (header.bits !== exp) throw new Error(`bad bits at ${height}: header ${header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
     }
-    if (!powOk(headerHashBytes(header), header.bits)) throw new Error(`invalid PoW at ${height}`);
+    if (!powOkMemo(hashBytes, header.bits)) throw new Error(`invalid PoW at ${height}`);
     this.pinCheckpoint(height, hash);
     return { height, hash, header, chainwork: satAddWork(parent?.chainwork ?? 0n, header.bits) };
   }
@@ -1042,10 +1048,11 @@ var LightClient = class _LightClient {
     for (let i = 0; i < seed.length; i++) {
       const s = seed[i];
       if (s.height !== this.baseHeight + i) throw new Error("seed not contiguous");
-      const hash = headerHash(s.header);
+      const hashBytes = headerHashBytes(s.header);
+      const hash = hx(hashBytes);
       if (s.hash && s.hash.toLowerCase() !== hash.toLowerCase()) throw new Error(`seed header hash mismatch at ${s.height}`);
       if (prevHash && s.header.prev.toLowerCase() !== prevHash.toLowerCase()) throw new Error(`seed prev link broken at ${s.height}`);
-      if (!powOk(headerHashBytes(s.header), s.header.bits)) throw new Error(`seed PoW invalid at ${s.height}`);
+      if (!powOkMemo(hashBytes, s.header.bits)) throw new Error(`seed PoW invalid at ${s.height}`);
       this.pinCheckpoint(s.height, hash);
       this.chain.push({ height: s.height, hash, header: s.header, chainwork: satAddWork(this.chain[i - 1]?.chainwork ?? 0n, s.header.bits), trusted: true });
       prevHash = hash;
@@ -1221,7 +1228,8 @@ var LightClient = class _LightClient {
     const height = Number(e.height);
     if (!Number.isSafeInteger(height) || height < 0) throw new Error(`snapshot bad height at index ${i}: ${height}`);
     if (height !== baseHeight + i) throw new Error(`snapshot not contiguous at ${height}`);
-    const hash = headerHash(e.header);
+    const hashBytes = headerHashBytes(e.header);
+    const hash = hx(hashBytes);
     if (hash.toLowerCase() !== e.hash.toLowerCase()) throw new Error(`snapshot hash mismatch at ${height}`);
     if (i === 0 && baseHeight === 0) {
       if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`snapshot foreign genesis: ${hash}`);
@@ -1236,7 +1244,7 @@ var LightClient = class _LightClient {
       const exp = expectedBitsFromWindow(window, height);
       if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
     }
-    if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
+    if (!powOkMemo(hashBytes, e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
     lc.pinCheckpoint(height, hash);
     work = satAddWork(work, e.header.bits);
     lc.chain.push({ height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });

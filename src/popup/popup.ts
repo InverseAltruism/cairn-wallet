@@ -1,8 +1,8 @@
 // Popup UI controller. In the extension it messages the background service worker
 // (which owns the keys); standalone (dev/E2E, no chrome.*) it drives a local Wallet
 // against localStorage so the exact UI flows can be tested in a real browser.
-import { Wallet, explorerLink, EXPLORER_PRESETS } from "../core/wallet.js";
-import { localStore } from "../core/storage.js";
+import type { Wallet } from "../core/wallet.js";
+import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
 import { formatUnits, parseUnits, isPlainName, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
 import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
@@ -10,64 +10,16 @@ import { drawQr } from "./qr/draw.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
-let dev: Wallet | null = null;
-async function devWallet() { if (!dev) { dev = new Wallet(localStore()); await dev.init(); } return dev; }
 
 async function call(method: string, ...args: any[]): Promise<any> {
   if (EXT) return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
     if (chrome.runtime.lastError) return rej(new Error(chrome.runtime.lastError.message));
     r?.ok ? res(r.result) : rej(new Error(r?.error || "error"));
   }));
-  // NOTE: this dev shim drives the SAME Wallet class against the REAL production RPC/APIs — it is
-  // NOT inert. Every forwarded spend method (send, cairnxTransfer, sealClaim, cairnxNameRenew…)
-  // signs and broadcasts real CSD if a funded key is unlocked in the dev browser profile.
-  const w = await devWallet();
-  switch (method) {
-    case "status": return w.status();
-    case "create": return w.create(args[0]);
-    case "restore": return w.restore(args[0], args[1]);
-    case "import": return w.importKey(args[0], args[1]);
-    case "unlock": return w.unlock(args[0]);
-    case "lock": return w.lock();
-    case "addAccount": return w.addAccount(args[0]);
-    case "importAccount": return w.importAccount(args[0], args[1]);
-    case "switchAccount": return w.switchAccount(args[0]);
-    case "renameAccount": return w.renameAccount(args[0], args[1]);
-    case "removeAccount": return w.removeAccount(args[0]);
-    case "balance": return w.balance();
-    case "send": return w.send(args[0], args[1], args[2]);
-    case "cairnPost": return w.cairnPost(args[0]);
-    case "cairnxAssets": return w.cairnxAssets();
-    case "cairnxTokens": return w.cairnxTokens();
-    case "cairnxTransfer": return w.cairnxTransfer(args[0]);
-    case "resolveName": return w.resolveName(args[0]);
-    case "cairnxNameRenew": return w.cairnxNameRenew(args[0], args[1]); // args[1] = the reviewed frozen fee (WL-FEE-FREEZE-1 parity with the background)
-    case "cairnxNameRenewFee": return w.cairnxNameRenewFee(args[0]);
-    case "cairnxSetPrimary": return w.cairnxSetPrimary(args[0]);
-    case "setTradeApi": return w.setTradeApi(args[0]);
-    case "export": return w.exportKey(args[0]);
-    case "exportMnemonic": return w.exportMnemonic(args[0]);
-    case "setRpc": return w.setRpc(args[0]);
-    case "setApi": return w.setApi(args[0]);
-    case "rpcList": return w.rpcList();
-    case "addRpc": return w.addRpc(args[0]);
-    case "removeRpc": return w.removeRpc(args[0]);
-    case "setExplorer": return w.setExplorer(args[0]);
-    case "explorerList": return w.explorerList();
-    case "addExplorer": return w.addExplorer(args[0]);
-    case "removeExplorer": return w.removeExplorer(args[0]);
-    case "history": return w.history();
-    case "sealClaim": return w.sealClaim(args[0]);
-    case "sealedClaims": return w.sealedClaims();
-    case "revealClaim": return w.revealClaim(args[0]);
-    // background-only surfaces stubbed for dev (like `pending`): the dApp request queue and the
-    // per-origin consent store live in the service worker, so there is no Wallet method to forward.
-    case "connectedSites": return [];
-    case "disconnectSite": return { ok: true };
-    case "pending": return [];
-    case "resolve": return { done: true };
-    default: throw new Error("unknown " + method);
-  }
+  // Dev/E2E only: the Wallet class lives in a dynamically imported chunk so popup.js never
+  // statically embeds it (MV3 isolation). The shim throws at load if chrome.runtime.sendMessage exists.
+  const { runDevPopupMethod } = await import("./devshim.js");
+  return runDevPopupMethod(method, args);
 }
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -609,7 +561,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
 // returns EXACTLY the reviewed address. Fail-closed on any error / network failure. The equality +
 // shape check lives in clearsign.reresolveUnchanged (pure, unit-tested); this only wires the live call.
 async function nameStillPointsTo(name: string, reviewed: string, reviewedVerified?: boolean): Promise<boolean> {
-  const re = await call("resolveName", name).catch(() => ({ ok: false }));
+  const re = await call("confirmName", name).catch(() => ({ ok: false }));
   return reresolveUnchanged(reviewed, re, reviewedVerified); // L7: also refuses a verified→unverified regression
 }
 function setNameRow(rowId: string, valId: string, label: string | null | undefined) {
@@ -657,10 +609,9 @@ function armReview(f: SendFlow) {
 async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookalike: string | null }> {
   let firstTime = true, lookalike: string | null = null;
   try {
-    const h: any[] = await call("history");
+    const [h, st] = await Promise.all([call("history"), call("status")]);
     const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
     firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
-    const st = await call("status");
     lookalike = lookalikeOf(to, [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))]);
   } catch { /* no history → treat as first time */ }
   return { firstTime, lookalike };
@@ -1338,9 +1289,9 @@ $("btn-send").addEventListener("click", async () => {
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
   setNameRow("c-name-row", "c-name", rr.label);
-  const { firstTime, lookalike } = await recipientChecks(to);
-  let after = "";
-  try { const b = await call("balance"); after = fmtBalance(b.confirmed - amt - SEND_FEE) + " CSD"; } catch { /* offline */ }
+  const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
+  const { firstTime, lookalike } = checks;
+  const after = b ? fmtBalance(b.confirmed - amt - SEND_FEE) + " CSD" : "";
   $("c-to").textContent = to;                       // FULL address, not truncated
   $("c-amt").textContent = fmtCsd(amt);
   $("c-fee").textContent = fmtCsd(SEND_FEE);

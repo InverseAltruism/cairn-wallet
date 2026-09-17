@@ -20,16 +20,22 @@
 # Rebuild with: bash scripts/build-spv-vendor.sh   (rerun + recommit whenever the SDK verify surface changes)
 set -euo pipefail
 cd "$(dirname "$0")/.."                                   # -> cairn-wallet/
-ROOT="$(cd .. && pwd)"
-LIGHT="$ROOT/csd-sdk/packages/light/dist/index.js"
-CLIENT="$ROOT/csd-sdk/packages/client/dist/index.js"
-CODEC="$ROOT/csd-sdk/packages/codec/dist/index.js"
-CRYPTO="$ROOT/csd-sdk/packages/crypto/dist/index.js"
-CAIRNX="$ROOT/csd-sdk/packages/cairnx/dist/index.js"
+# Locate the csd-sdk source. Defaults to the sibling checkout (../csd-sdk); CI / worktrees
+# can point it elsewhere via CSD_SDK_DIR (same env as scripts/check-vendor-fresh.mjs).
+if [ -n "${CSD_SDK_DIR:-}" ]; then
+  SDK="$CSD_SDK_DIR"
+else
+  SDK="$(cd .. && pwd)/csd-sdk"
+fi
+LIGHT="$SDK/packages/light/dist/index.js"
+CLIENT="$SDK/packages/client/dist/index.js"
+CODEC="$SDK/packages/codec/dist/index.js"
+CRYPTO="$SDK/packages/crypto/dist/index.js"
+CAIRNX="$SDK/packages/cairnx/dist/index.js"
 OUT="src/vendor/cairnx-spv.js"
 
 for d in "$LIGHT" "$CLIENT" "$CODEC" "$CRYPTO" "$CAIRNX"; do
-  [ -f "$d" ] || { echo "missing $d — run (cd $ROOT/csd-sdk && pnpm -r build) first"; exit 1; }
+  [ -f "$d" ] || { echo "missing $d — run (cd $SDK && pnpm -r build) first"; exit 1; }
 done
 
 mkdir -p src/vendor
