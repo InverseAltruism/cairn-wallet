@@ -102,6 +102,12 @@ async function bindBlockPool(heights: readonly number[], limit: number, fn: (h: 
   const worker = async () => { while (i < heights.length) { const idx = i++; await fn(heights[idx]!); } };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, heights.length || 1)) }, worker));
 }
+/** Bounded worker pool (same semantics as bindBlockPool) for per-id proveEventAt fan-out. */
+export async function mapPool<T>(items: readonly T[], limit: number, fn: (item: T, i: number) => Promise<void>): Promise<void> {
+  let i = 0;
+  const worker = async () => { while (i < items.length) { const idx = i++; await fn(items[idx]!, idx); } };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length || 1)) }, worker));
+}
 
 export interface FillSpvHints { offerId: string; fclaimTxid: string; me: string; offerHeight: number; }
 
@@ -303,12 +309,16 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // is counted (dropping a possibly-mine hold under-counts and burns); only a hold provably bound to ANOTHER
   // address is excluded. Only holds still live at the grant height are considered.
   const held: { kind: "propose"; proposer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
-  for (const c of otherFclaims) {
-    if (fclaimHoldEnd(c.expiresEpoch) < grantHeight) continue;      // provably lapsed before the grant
+  // 0.2.70: proveEventAt fan-out at SCAN_POOL (12). countMyOtherLiveHolds is UNCHANGED (advisor: fix
+  // site+wallet together or neither). Order of completion does not matter: the predicate just counts.
+  const liveOthers = otherFclaims.filter((c) => fclaimHoldEnd(c.expiresEpoch) >= grantHeight);
+  const heldBuf: typeof held = new Array(liveOthers.length);
+  await mapPool(liveOthers, SCAN_POOL, async (c, i) => {
     const ev = await proveEventAt(c.id, c.height);
     const proposer = ev && ev.kind === "propose" ? ev.proposer : me;   // unbindable -> attribute to me (over-count)
-    held.push({ kind: "propose", proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch });
-  }
+    heldBuf[i] = { kind: "propose", proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch };
+  });
+  for (const h of heldBuf) if (h) held.push(h);
   const myLiveHoldsAtGrant = countMyOtherLiveHolds(held, offerId, me, grantHeight);
   // D1 (register §3, 2026-09-12): the OBS-3 legacy SCORE_CLAIM scan+count is DELETED. Its gate
   // (verifiedTip < 60,134) is unreachable at any tip a fillable fclaim can exist at, and the deletion
@@ -326,11 +336,12 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // always binds (L0 required the owner's valid signature to mine it), so an honest read never trips this. A
   // genuinely-ADDED fake id (a lying resolver hint, absent from every block) is NOT here -- scannedIds holds
   // ONLY events THIS independent scan proved in a merkle-bound block, so it correctly cannot be a suppression.
-  for (const wid of scannedIds) {
+  const scanned = [...scannedIds];
+  await mapPool(scanned, SCAN_POOL, async (wid) => {
     const h = heightOf.get(wid);
     if (h !== undefined && (await proveEventAt(wid, h)) === null)
       throw new Error("fill-SPV: a lane event could not be authorship-bound (possible scriptSig suppression) - refusing");
-  }
+  });
 
   // GIVE-BACKING SYNTHESIS (accepted N1 residual): the scan drops the offer's give-backing (a token's deploy+mint,
   // or a name's registration) because it is arbitrarily OLD (outside the tip-anchored window), so without this

@@ -1,7 +1,7 @@
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js
 var crypto = typeof globalThis === "object" && "crypto" in globalThis ? globalThis.crypto : void 0;
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
 function isBytes(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -140,7 +140,7 @@ function randomBytes(bytesLength = 32) {
   throw new Error("crypto.getRandomValues must be defined");
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
 function setBigUint64(view, byteOffset, value, isLE) {
   if (typeof view.setBigUint64 === "function")
     return view.setBigUint64(byteOffset, value, isLE);
@@ -260,7 +260,7 @@ var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
   1541459225
 ]);
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
 var SHA256_K = /* @__PURE__ */ Uint32Array.from([
   1116352408,
   1899447441,
@@ -400,10 +400,10 @@ var SHA256 = class extends HashMD {
 };
 var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js
 var sha2562 = sha256;
 
-// ../csd-sdk/packages/codec/dist/index.js
+// ../csd-light-0.1.21/packages/codec/dist/index.js
 var strip0x = (h) => h.startsWith("0x") ? h.slice(2) : h;
 var hb = (h) => hexToBytes(strip0x(h));
 var hx = (b) => "0x" + bytesToHex(b);
@@ -502,9 +502,6 @@ function serializeHeader(h) {
   buf.set(u32(h.nonce), 80);
   return buf;
 }
-function headerHash(h) {
-  return hx(sha256d(serializeHeader(h)));
-}
 function headerHashBytes(h) {
   return sha256d(serializeHeader(h));
 }
@@ -568,17 +565,6 @@ function targetToBits(target) {
   return (exp << 24 | mant) >>> 0;
 }
 var POW_LIMIT_TARGET = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
-function powOk(headerHashBE, bits) {
-  const target = targetToBigInt(bitsToTarget(bits));
-  if (target === 0n || target > POW_LIMIT_TARGET) return false;
-  return targetToBigInt(headerHashBE) <= target;
-}
-function workForBits(bits) {
-  const target = targetToBigInt(bitsToTarget(bits));
-  if (target === 0n || target > POW_LIMIT_TARGET) return 0n;
-  const w = (1n << 256n) / (target + 1n);
-  return w > MAX_U128 ? MAX_U128 : w;
-}
 function merkleRoot(txidsHex) {
   if (txidsHex.length === 0) return "0x" + "00".repeat(32);
   let layer = txidsHex.map(hb);
@@ -655,7 +641,7 @@ function payloadHash(content) {
   return "0x" + bytesToHex(sha2562(utf8ToBytes(canonicalJson(content))));
 }
 
-// ../csd-sdk/packages/client/dist/index.js
+// ../csd-light-0.1.21/packages/client/dist/index.js
 var CsdClient = class {
   base;
   f;
@@ -851,7 +837,7 @@ function rpcHeaderToHeader(h) {
   return { version: h.version, prev: h.prev, merkle: h.merkle, time: h.time, bits: h.bits, nonce: h.nonce };
 }
 
-// ../csd-sdk/packages/light/dist/index.js
+// ../csd-light-0.1.21/packages/light/dist/index.js
 var TARGET_MEMO_CAP = 4096;
 var targetMemo = /* @__PURE__ */ new Map();
 function bitsToTargetBigInt(bits) {
@@ -863,6 +849,25 @@ function bitsToTargetBigInt(bits) {
   return v;
 }
 var POW_LIMIT_TARGET2 = bitsToTargetBigInt(POW_LIMIT_BITS);
+var workMemo = /* @__PURE__ */ new Map();
+function powOkMemo(headerHashBE, bits) {
+  const target = bitsToTargetBigInt(bits);
+  if (target === 0n || target > POW_LIMIT_TARGET2) return false;
+  return targetToBigInt(headerHashBE) <= target;
+}
+function workForBitsMemo(bits) {
+  const hit = workMemo.get(bits);
+  if (hit !== void 0) return hit;
+  const target = bitsToTargetBigInt(bits);
+  let v = 0n;
+  if (target !== 0n && target <= POW_LIMIT_TARGET2) {
+    const w = (1n << 256n) / (target + 1n);
+    v = w > MAX_U128 ? MAX_U128 : w;
+  }
+  if (workMemo.size >= TARGET_MEMO_CAP) workMemo.clear();
+  workMemo.set(bits, v);
+  return v;
+}
 function expectedBitsFromWindow(window, height) {
   if (height === 0) return INITIAL_BITS;
   const parent = window[window.length - 1];
@@ -906,7 +911,7 @@ function expectedBitsFromWindow(window, height) {
   return bits;
 }
 var satAddWork = (a, bits) => {
-  const s = a + workForBits(bits);
+  const s = a + workForBitsMemo(bits);
   return s > MAX_U128 ? MAX_U128 : s;
 };
 var LightClient = class _LightClient {
@@ -986,7 +991,8 @@ var LightClient = class _LightClient {
   }
   /** Pure verification of one header against a window + parent (no mutation). */
   verifyOne(height, header, window, parent, claimedHash) {
-    const hash = headerHash(header);
+    const hashBytes = headerHashBytes(header);
+    const hash = hx(hashBytes);
     if (claimedHash && claimedHash.toLowerCase() !== hash.toLowerCase()) throw new Error(`header hash mismatch at ${height}`);
     if (height === 0) {
       if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`foreign genesis: ${hash}`);
@@ -998,7 +1004,7 @@ var LightClient = class _LightClient {
       const exp = expectedBitsFromWindow(window, height);
       if (header.bits !== exp) throw new Error(`bad bits at ${height}: header ${header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
     }
-    if (!powOk(headerHashBytes(header), header.bits)) throw new Error(`invalid PoW at ${height}`);
+    if (!powOkMemo(hashBytes, header.bits)) throw new Error(`invalid PoW at ${height}`);
     this.pinCheckpoint(height, hash);
     return { height, hash, header, chainwork: satAddWork(parent?.chainwork ?? 0n, header.bits) };
   }
@@ -1042,10 +1048,11 @@ var LightClient = class _LightClient {
     for (let i = 0; i < seed.length; i++) {
       const s = seed[i];
       if (s.height !== this.baseHeight + i) throw new Error("seed not contiguous");
-      const hash = headerHash(s.header);
+      const hashBytes = headerHashBytes(s.header);
+      const hash = hx(hashBytes);
       if (s.hash && s.hash.toLowerCase() !== hash.toLowerCase()) throw new Error(`seed header hash mismatch at ${s.height}`);
       if (prevHash && s.header.prev.toLowerCase() !== prevHash.toLowerCase()) throw new Error(`seed prev link broken at ${s.height}`);
-      if (!powOk(headerHashBytes(s.header), s.header.bits)) throw new Error(`seed PoW invalid at ${s.height}`);
+      if (!powOkMemo(hashBytes, s.header.bits)) throw new Error(`seed PoW invalid at ${s.height}`);
       this.pinCheckpoint(s.height, hash);
       this.chain.push({ height: s.height, hash, header: s.header, chainwork: satAddWork(this.chain[i - 1]?.chainwork ?? 0n, s.header.bits), trusted: true });
       prevHash = hash;
@@ -1221,7 +1228,8 @@ var LightClient = class _LightClient {
     const height = Number(e.height);
     if (!Number.isSafeInteger(height) || height < 0) throw new Error(`snapshot bad height at index ${i}: ${height}`);
     if (height !== baseHeight + i) throw new Error(`snapshot not contiguous at ${height}`);
-    const hash = headerHash(e.header);
+    const hashBytes = headerHashBytes(e.header);
+    const hash = hx(hashBytes);
     if (hash.toLowerCase() !== e.hash.toLowerCase()) throw new Error(`snapshot hash mismatch at ${height}`);
     if (i === 0 && baseHeight === 0) {
       if (hash.toLowerCase() !== GENESIS_HASH.toLowerCase()) throw new Error(`snapshot foreign genesis: ${hash}`);
@@ -1236,7 +1244,7 @@ var LightClient = class _LightClient {
       const exp = expectedBitsFromWindow(window, height);
       if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
     }
-    if (!powOk(headerHashBytes(e.header), e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
+    if (!powOkMemo(hashBytes, e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
     lc.pinCheckpoint(height, hash);
     work = satAddWork(work, e.header.bits);
     lc.chain.push({ height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
@@ -1271,7 +1279,7 @@ var LightClient = class _LightClient {
   }
 };
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
 var HMAC = class extends Hash {
   constructor(hash, _key) {
     super();
@@ -1339,7 +1347,7 @@ var HMAC = class extends Hash {
 var hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
 hmac.create = (hash, key) => new HMAC(hash, key);
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
 var _0n = /* @__PURE__ */ BigInt(0);
 var _1n = /* @__PURE__ */ BigInt(1);
 function _abool2(value, title = "") {
@@ -1492,7 +1500,7 @@ function memoized(fn) {
   };
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
 var _0n2 = BigInt(0);
 var _1n2 = BigInt(1);
 var _2n = /* @__PURE__ */ BigInt(2);
@@ -1837,7 +1845,7 @@ function mapHashToField(key, fieldOrder, isLE = false) {
   return isLE ? numberToBytesLE(reduced, fieldLen) : numberToBytesBE(reduced, fieldLen);
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
 var _0n3 = BigInt(0);
 var _1n3 = BigInt(1);
 function negateCt(condition, item) {
@@ -2115,7 +2123,7 @@ function _createCurveFields(type, CURVE, curveOpts = {}, FpFnLE) {
   return { CURVE, Fp, Fn };
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/weierstrass.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/weierstrass.js
 var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n2) / den;
 function _splitEndoScalar(k, basis, n) {
   const [[a1, b1], [a2, b2]] = basis;
@@ -3129,13 +3137,13 @@ function weierstrass(c) {
   return _ecdsa_new_output_to_legacy(c, signs);
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/_shortw_utils.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/_shortw_utils.js
 function createCurve(curveDef, defHash) {
   const create = (hash) => weierstrass({ ...curveDef, hash });
   return { ...create(defHash), create };
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/secp256k1.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/secp256k1.js
 var secp256k1_CURVE = {
   p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
   n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
@@ -3178,7 +3186,7 @@ function sqrtMod(y) {
 var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
 var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/legacy.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/legacy.js
 var Rho160 = /* @__PURE__ */ Uint8Array.from([
   7,
   4,
@@ -3296,10 +3304,10 @@ var RIPEMD160 = class extends HashMD {
 };
 var ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160());
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/ripemd160.js
+// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/ripemd160.js
 var ripemd1602 = ripemd160;
 
-// ../csd-sdk/packages/crypto/dist/index.js
+// ../csd-light-0.1.21/packages/crypto/dist/index.js
 var strip0x2 = (h) => h.startsWith("0x") ? h.slice(2) : h;
 var hb2 = (h) => hexToBytes(strip0x2(h));
 var hx2 = (b) => "0x" + bytesToHex(b);
@@ -3343,7 +3351,7 @@ function recoverSigner(scriptSig, digestHex) {
   }
 }
 
-// ../csd-sdk/packages/cairnx/dist/index.js
+// ../csd-light-0.1.21/packages/cairnx/dist/index.js
 var DOMAIN = "cairnx:v1";
 var ACTIVATION_HEIGHT = 29860;
 var V11_HEIGHT = 29960;

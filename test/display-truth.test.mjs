@@ -51,6 +51,9 @@ ok("W8: 0-decimals token still shows both scales", tokenAmountBothScales("7", 0,
   ok("M3: failed quote keeps the loud do-NOT-approve caution", /Do NOT approve/.test(tokenQuoteHtml({ ok: false, error: "offer gone" })));
   ok("M3: null quote (bridge threw) keeps the loud caution", /Do NOT approve/.test(tokenQuoteHtml(null)) && tokenQuoteHtml(null).includes("offer unavailable"));
   ok("M3: hostile quote error is escaped", !tokenQuoteHtml({ ok: false, error: "<img src=x>" }).includes("<img"));
+  ok("M3: give ticker/amount paint on the card", /You receive 10 AAA/.test(tokenQuoteHtml({ ...q, giveTicker: "AAA", giveAmount: "10" })));
+  ok("M3: give name paints as .csd", /You receive alice\.csd/.test(tokenQuoteHtml({ ...q, giveName: "alice" })));
+  ok("M3: hostile give ticker is escaped", !tokenQuoteHtml({ ...q, giveTicker: "<img src=x>" }).includes("<img"));
 }
 
 // ── M14: reveal-claim shows WHICH secret goes public ─────────────────────────
@@ -159,6 +162,8 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("PIN M10: the >1h tombstone states the change-output blind spot honestly", popupSrc.includes("cannot be confirmed from here"));
   ok("PIN M3: approve.ts renders the quote via the attributed tokenQuoteHtml", approveSrc.includes("show(tokenQuoteHtml(q))"));
   ok("PIN M3: no first-person 'You will pay' debit assertion remains in approve.ts", !approveSrc.includes("You will pay"));
+  ok("PIN 0.2.70: armButtons fail-softs a rejected fillSendWarning (Approve/Reject cannot stay disabled)",
+    /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approveSrc));
   ok("PIN M14: approve.ts wires fillRevealPreview into render()", approveSrc.includes("fillRevealPreview(current)"));
   ok("PIN M14: the preview reads the LOCAL sealedClaims store (no network)", approveSrc.includes('call("sealedClaims")'));
   ok("PIN B5h: a score-50 attest threads only the LOCAL tipFloor (no tip/network fetch added)", /method === "attest"[\s\S]{0,900}?call\("tipFloor"\)/.test(approveSrc) && !/method === "attest"[\s\S]{0,900}?call\("tip"\)[^F]/.test(approveSrc));
@@ -208,6 +213,9 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("B9: send still shows 0.01 and debits amount+fee", describe(bareSend).includes(feeTxt(1_000_000)) && debitOf(bareSend) === 100 + 1_000_000);
   const bareFill = { method: "fillOffer", params: { proposalId: ID, outputs: [{ to: "0x" + "ab".repeat(20), value: 1000 }] } };
   ok("B9: fillOffer still shows 0.05 and debits outputs+fee", describe(bareFill).includes(feeTxt(MIN_FEE_ATTEST)) && debitOf(bareFill) === 1000 + MIN_FEE_ATTEST);
+  const nullScore = { method: "fillOffer", params: { proposalId: ID, outputs: [], score: null } };
+  ok("0.2.70: score:null paints 100 (null ?? 100; paint logic unchanged)", /score 100/.test(describe(nullScore)));
+  ok("0.2.70: MUT score:null is not painted as 0", !/score 0/.test(describe(nullScore)));
   ok("B9: sealClaim still shows 0.25", describe({ method: "sealClaim", params: { claim: "x" } }).includes(feeTxt(MIN_FEE_PROPOSE)));
 
   // An EXPLICIT dApp fee still wins over the table everywhere (the table is a default, not a clamp).

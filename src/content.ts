@@ -28,7 +28,16 @@ window.addEventListener("message", (ev: MessageEvent) => {
       // If this page was moved into the back/forward cache (or the SW dropped) before the reply arrived,
       // the channel is closed — read lastError so Chrome doesn't log "Unchecked runtime.lastError", and
       // skip posting to a now-frozen page (cosmetic; the page reconnects/re-requests on resume). Harmless.
-      if (chrome.runtime.lastError) return;
+      if (chrome.runtime.lastError) {
+        // 0.2.70: a dropped SW / bfcache close used to swallow the reply, leaving window.cairn
+        // hung forever. Close the waiter with a coded refusal so the page can retry / refresh.
+        window.postMessage({
+          target: "cairn-inpage", id,
+          res: { ok: false, error: "the wallet is unavailable — it may have reloaded; refresh this page to reconnect", code: "WALLET_UNAVAILABLE" },
+          nonce: NONCE,
+        }, window.location.origin);
+        return;
+      }
       // Reply only to our own origin (not "*") — the inpage provider lives in the same page.
       window.postMessage({ target: "cairn-inpage", id, res, nonce: NONCE }, window.location.origin);
     });

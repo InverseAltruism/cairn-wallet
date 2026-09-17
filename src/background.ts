@@ -113,6 +113,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnxTokens": return wallet.cairnxTokens();
     case "cairnxTransfer": return wallet.cairnxTransfer(args[0]);
     case "resolveName": return wallet.resolveName(args[0]);
+    case "confirmName": return wallet.confirmName(args[0]); // 0.2.70: hint-set confirm (popup-only, READ_ONLY)
     case "verifyName": return wallet.verifyName(args[0]);
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2]); // args[2] = expectSigner (A1)
@@ -241,7 +242,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "tokenFillQuote", "pendingMerge", "prewarmSpv"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "pendingMerge", "prewarmSpv"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
@@ -249,15 +250,24 @@ let approveWinId: number | null = null; // track the approval popup so we can ra
 // Open (or focus) the dedicated clear-signing approval window. Used both when a request
 // first arrives and when the user clicks "Review" in the toolbar popup — so EVERY approval
 // goes through the full recipient/amount/fee/warnings disclosure, never a blind approve.
+let openingApproval: Promise<{ opened: boolean }> | null = null;
 function openApprovalWindow(): Promise<{ opened: boolean }> {
-  return new Promise((resolve) => {
-    if (!pending.size) { resolve({ opened: false }); return; }
-    if (approveWinId != null) {
-      try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }, () => resolve({ opened: true })); return; } catch { /* fall through to create */ }
-    }
-    try { chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => { approveWinId = w?.id ?? null; resolve({ opened: approveWinId != null }); }); }
-    catch { resolve({ opened: false }); }
+  if (!pending.size) return Promise.resolve({ opened: false });
+  if (openingApproval) return openingApproval; // 0.2.70: same-turn arrivals share one create/focus
+  // Coalesce on a microtask, then drop the latch — do NOT wait for chrome's create callback.
+  // Waiting wedged every later open when the callback was delayed or (in tests) never invoked.
+  openingApproval = Promise.resolve().then(() => {
+    try {
+      if (approveWinId != null) {
+        try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
+        return { opened: true };
+      }
+      chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => { approveWinId = w?.id ?? null; });
+      return { opened: true };
+    } catch { return { opened: false }; }
+    finally { openingApproval = null; }
   });
+  return openingApproval;
 }
 // Bound the approval queue (audit NSPV-DAPP-QUEUE): a malicious page could otherwise flood the SW with
 // approval requests, growing `pending` without limit, burying the user's real request and DoS-ing the
@@ -300,8 +310,9 @@ try { chrome.windows?.onRemoved?.addListener((wid: number) => {
 
 chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: any) => void) => {
   (async () => {
-    await ready;
     try {
+      try { await ready; }
+      catch (e: any) { sendResponse({ ok: false, code: "WALLET_UNAVAILABLE", error: e?.message ?? "wallet failed to initialize" }); return; }
       // Reset the idle auto-lock ONLY on genuine user activity (the extension's own popup
       // UI). dApp/page-relayed messages must NOT extend the unlock — otherwise a malicious
       // allowed-origin page could ping every minute (even with a rejected method) to keep

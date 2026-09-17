@@ -93,8 +93,31 @@ mkdirSync("dist", { recursive: true });
 
 const common = { bundle: true, target: "es2022", logLevel: "info", legalComments: "none" };
 
-await esbuild.build({ ...common, entryPoints: { background: "src/background.ts", popup: "src/popup/popup.ts", approve: "src/popup/approve.ts" }, format: "esm", outdir: "dist", splitting: false });
+// MV3 service worker cannot dynamic-import: background + approve stay single-file.
+await esbuild.build({ ...common, entryPoints: { background: "src/background.ts", approve: "src/popup/approve.ts" }, format: "esm", outdir: "dist", splitting: false });
+// Popup gets its own build with splitting:true so the Wallet class lands in a dynamically
+// imported chunk (a lone import() is INLINED when splitting:false).
+await esbuild.build({ ...common, entryPoints: { popup: "src/popup/popup.ts" }, format: "esm", outdir: "dist", splitting: true, chunkNames: "[name]" });
 await esbuild.build({ ...common, entryPoints: { content: "src/content.ts", inpage: "src/inpage.ts" }, format: "iife", outdir: "dist" });
+
+{
+  const { existsSync: _exists, readFileSync: _read, readdirSync: _ls } = await import("node:fs");
+  const NEEDLE = "endpoint must be an https";
+  if (!_exists("dist/popup.js")) { console.error("✗ build aborted: dist/popup.js missing after popup split"); process.exit(1); }
+  const popupJs = _read("dist/popup.js", "utf8");
+  const popupHits = (popupJs.match(new RegExp(NEEDLE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+  if (popupHits !== 0) {
+    console.error(`✗ build aborted: Wallet class leaked into dist/popup.js (found ${NEEDLE} ×${popupHits}). popup entry must stay splitting:true with a dynamic Wallet import.`);
+    process.exit(1);
+  }
+  const chunks = _ls("dist").filter((f) => f.endsWith(".js") && !["popup.js", "background.js", "approve.js", "content.js", "inpage.js"].includes(f));
+  const chunkHits = chunks.reduce((n, f) => n + ((_read("dist/" + f, "utf8").match(new RegExp(NEEDLE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length), 0);
+  if (chunkHits < 1) {
+    console.error("✗ build aborted: Wallet/devshim chunk missing (expected endpoint-URL string in a split chunk, not popup.js)");
+    process.exit(1);
+  }
+  console.log(`✓ popup isolation: ${NEEDLE} ×0 in popup.js, ×${chunkHits} in ${chunks.join(", ") || "(chunks)"}`);
+}
 
 cpSync("public/manifest.json", "dist/manifest.json");
 cpSync("src/popup/popup.html", "dist/popup.html");

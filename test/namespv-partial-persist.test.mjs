@@ -119,10 +119,13 @@ ok("exactly one syncWithPartialPersist call-site (an unwrapped second sync path 
    (src.match(/await syncWithPartialPersist\(/g) || []).length === 1);
 // the catch persists the mid-window tail BEFORE classifying transient-vs-structural, guarded on progress
 const catchIdx = prep.indexOf("} catch (e) {");
-const tailPersistIdx = prep.indexOf("await opts.cache.set(LC.toSnapshot())");
+const tailPersistIdx = prep.indexOf("LC.toSnapshot()");
+const tailDetachIdx = prep.indexOf("detachSnapshotWrite");
 const classifyIdx = prep.indexOf("const msg = String((e as Error)");
-ok("the catch persists partial progress (tail) BEFORE the transient/structural classification",
+ok("the catch captures toSnapshot() (inside the lock) BEFORE the transient/structural classification",
    catchIdx > 0 && tailPersistIdx > catchIdx && classifyIdx > tailPersistIdx);
+ok("the catch detaches cache.set (only the write leaves the lock)",
+   tailDetachIdx > tailPersistIdx && tailDetachIdx < classifyIdx);
 ok("the tail persist is progress-guarded (no rewrite when nothing was ingested)",
    /LC\.baseHeight \+ LC\.chain\.length - 1 > cur/.test(prep.slice(catchIdx, classifyIdx)));
 // B5a composition: NO partial-persist path may advance the lapse floor. floorAdvance lives strictly

@@ -12,8 +12,12 @@ import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
-import { verifyNameUnion, liveSpvSource, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import { verifyNameUnion, liveSpvSource, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
+import { refuse } from "./refuse.js";
+import { DEFAULT_EXPLORER } from "./explorer.js";
+import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
+export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
 // requiredFillOutputs sizes the treasury fee from feeBps (= feeBpsAt(creation height)), the maker rebate from
@@ -68,24 +72,10 @@ const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 // AUTO_LOCK_MS can never drift out of one another (they were two independent 15-min literals).
 export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
 
-// Block-explorer presets the wallet links to. Navigation-only — opened in a new tab, NEVER fetched — so this
-// adds NO CSP / host_permission / fetch surface (the source-host tripwire only covers fetched *_RPC/*_API
-// hosts). Default = the Cairn explorer (the indexer UI, hash-routed); the Official CSD explorer (a static MPA
-// with a different URL scheme) is the alternative; a user may add a custom explorer (assumed indexer hash
-// format). The selection is stored as a preset id ("cairn"|"official") or a custom https base URL.
-export const EXPLORER_PRESETS = [
-  { id: "cairn", label: "Cairn Explorer", base: "https://cairn-substrate.com/explorer" },
-  { id: "official", label: "Official CSD Explorer", base: "https://explorer.computesubstrate.org" },
-] as const;
-export const DEFAULT_EXPLORER = "cairn";
-/** Resolve an explorer setting (preset id | custom https base) + a tx/addr value into a link URL. */
-export function explorerLink(setting: string, kind: "tx" | "addr", value: string): string {
-  const v = encodeURIComponent(value);
-  if (setting === "official") return `https://explorer.computesubstrate.org/${kind === "tx" ? `tx.html?txid=${v}` : `address.html?addr=${v}`}`;
-  // "cairn" (default) and any custom base use the indexer explorer's hash route (#/tx/… , #/address/…)
-  const base = !setting || setting === "cairn" ? "https://cairn-substrate.com/explorer" : setting.replace(/\/+$/, "");
-  return `${base}#/${kind === "tx" ? "tx" : "address"}/${v}`;
-}
+export type TokenFillQuote = {
+  ticker?: string; amount?: string; fee?: string; total?: string;
+  giveTicker?: string; giveAmount?: string; giveName?: string;
+};
 
 // L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
 // loopback http for local dev) with NO embedded credentials — otherwise `setRpc("https://user:pass@evil")`
@@ -127,15 +117,13 @@ function capSeals(list: any[]): any[] {
 interface SignerCtx { active: number; addr: string; priv: string; histKey: string }
 // Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
 // pre-dispatch M5 guard copy; same machine code, WALLET-ERROR-CODES.md).
-const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => ({
-  ok: false, sighashMatch: false, code: "ACCOUNT_CHANGED",
-  error: "the active account changed since you reviewed this request — reopen it and review again before approving",
-});
+const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => refuse("ACCOUNT_CHANGED",
+  "the active account changed since you reviewed this request — reopen it and review again before approving");
 // XR-1/FL-1: a fill whose on-chain score is present but is not the marketplace-required SCORE_FILL (100).
 // The real cairnx resolve() silently NO-OPS any other score AFTER the payment moved (the SCORE-BURN class),
 // so we refuse (not coerce) a present-and-wrong caller score before signing. The site never passes a score
 // (CSD lanes default; the token lane passes 100), so this declines no honest fill (WALLET-ERROR-CODES.md).
-const SCORE_FILL_REFUSAL = (): node.SubmitResult => ({ ok: false, error: "refusing to sign: this fill's score is not the value the marketplace requires, so the chain would ignore it and your payment would be lost. Retry the purchase from the site's Buy button.", sighashMatch: false, code: "FILL_UNSAFE" });
+const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refusing to sign: this fill's score is not the value the marketplace requires, so the chain would ignore it and your payment would be lost. Retry the purchase from the site's Buy button.");
 
 // Epoch math + record-expiry windows (all in EPOCHS; one epoch = BLOCKS_PER_EPOCH blocks). BLOCKS_PER_EPOCH
 // mirrors the vendored cairnx-core EPOCH_LEN (30) — kept as a named local because the wallet .d.ts does not
@@ -192,6 +180,13 @@ export class Wallet {
   explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base) — navigation-only
   // Idle window for both auto-lock AND session-rehydrate expiry; background sets it to AUTO_LOCK_MS.
   idleMs = AUTO_LOCK_MS;
+  // 0.2.70: in-memory hint-set cache for confirm-time skip (background Wallet, never the popup).
+  // Dropped on SW death → next confirm full-verifies (safe). Never persisted.
+  private nameHints = new Map<string, HintSetEntry>();
+  /** Test seam: inject a synthetic SpvSource (hashAt / confirm skip). */
+  nameSpvForTest?: SpvSource;
+  /** Test seam: inspect / seed the hint-set cache. */
+  nameHintCacheForTest(): Map<string, HintSetEntry> { return this.nameHints; }
   // `session` is chrome.storage.session (in-RAM) when running as an extension, else null. It lets the
   // unlocked key survive an MV3 service-worker idle-kill so genuine activity within idleMs doesn't
   // keep re-prompting for the password. null ⇒ in-memory-only (the old behaviour).
@@ -644,7 +639,7 @@ export class Wallet {
     const fee = p.fee ?? defaultFeeFor("propose");
     const hk = this.histKeyNow(); const r = await node.propose(this.rpc, { ...p, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee }); return r;
   }
-  async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string; tokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string } }) {
+  async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string; tokenQuote?: TokenFillQuote }) {
     // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
     // App=Attest expression, outputs:[]), so an attest(score, confidence=CONF_TOKEN_FILL) was the fill
     // path stripped of its preflight - no OFFER_UNKNOWN gate, no captureSigner, paying into a proposal the
@@ -673,7 +668,7 @@ export class Wallet {
   // validates IS the account that signs), re-assert it AFTER the last await and immediately before the
   // sign, and sign/record with the CAPTURED key/histKey — a switchAccount parked in the preflight's offer
   // or tip await now refuses (ACCOUNT_CHANGED) instead of paying from the wrong account.
-  async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string; tokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string } }) {
+  async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string; tokenQuote?: TokenFillQuote }) {
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(p.expectSigner, ctx.addr);
     if (early) return early;
@@ -713,7 +708,7 @@ export class Wallet {
   // account this preflight validates is by construction the account whose key signs.
   // RT-W2: `reviewedQuote` is the token debit quote the approve window DISPLAYED (threaded from
   // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
-  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<node.SubmitResult | null> {
+  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote): Promise<node.SubmitResult | null> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return null; // not a well-formed id → the node guard handles it
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
@@ -864,7 +859,14 @@ export class Wallet {
         if (reviewedQuote && reviewedQuote.ticker !== undefined) {
           const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
           if (qT !== String(proven.wantTicker ?? "") || qA !== String(proven.wantAmount ?? ""))
-            return { ok: false, error: `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.wantAmount ?? "?"} ${proven.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`, sighashMatch: false, code: "FILL_UNSAFE" };
+            return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.wantAmount ?? "?"} ${proven.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
+        }
+        // 0.2.70: bind the resolver-served give the card showed to the merkle-proven give.
+        if (reviewedQuote && (reviewedQuote.giveTicker !== undefined || reviewedQuote.giveAmount !== undefined || reviewedQuote.giveName !== undefined)) {
+          if (String(reviewedQuote.giveTicker ?? "") !== String(proven.terms.giveTicker ?? "")
+            || String(reviewedQuote.giveAmount ?? "") !== String(proven.terms.giveAmount ?? "")
+            || String(reviewedQuote.giveName ?? "") !== String(proven.terms.giveName ?? ""))
+            return refuse("FILL_UNSAFE", "refusing to sign: the asset you would receive changed between review and signing — the card showed a different give than the offer's on-chain record. Retry from the site's Buy button.");
         }
       }
     } else if (fetchFailed) {
@@ -1299,7 +1301,7 @@ export class Wallet {
   // (BigInt-exact, same cairnxTradeFee the convention uses). Returns ok:false on any unreachable/mismatch so
   // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
   // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
-  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string }> {
+  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string }> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
     try {
       const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): fill-quote read
@@ -1317,7 +1319,13 @@ export class Wallet {
       const hasBps = Number.isFinite(Number(o.feeBps));
       const bps = hasBps ? Number(o.feeBps) : FEE_BPS_V16;
       const fee = cairnxTradeFee(amount, bps);
-      return { ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps };
+      const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
+      const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
+      // Served amount:null must stay absent — String(null) is "null", and the vendor give-leg
+      // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
+      const giveAmount = g?.amount != null ? String(g.amount) : undefined;
+      const giveName = typeof g?.name === "string" ? g.name : undefined;
+      return { ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName };
     } catch { return { ok: false, error: "offer unavailable" }; }
   }
 
@@ -1333,16 +1341,81 @@ export class Wallet {
       // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
       const sources: ResolverSource[] = [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
       const res = await verifyNameUnion(nm, sources, await this.spvSource());
+      try { await this.rememberHintSet(nm, res); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
       return { ...res, name: nm };
     } catch (e) {
       return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm };
     }
   }
 
+  // Confirm-time cheap path (0.2.70): skip merkle/prevout only when a clean (non-M12) review
+  // cache exists AND the freshly fetched hint pairs + header hashes + TTL/epoch still match.
+  // Else fall through to resolveName (full SPV). Re-point still refuses via reresolveUnchanged.
+  async confirmName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
+    const nm = normName(name);
+    if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
+    try {
+      const skipped = await this.tryConfirmHintSet(nm);
+      if (skipped) return skipped;
+    } catch { /* fall through to full resolve */ }
+    return this.resolveName(nm);
+  }
+
+  private nameSources(): ResolverSource[] {
+    return [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
+  }
+
+  private async rememberHintSet(nm: string, res: NameVerification): Promise<void> {
+    // Advisor 2.4: cache ONLY a clean union success. Never M12 recovered / soleSource / viaFill / lapse.
+    if (!res.verified || !res.addr || res.recovered || res.soleSource || res.viaFill || res.lapsed === true) return;
+    const pairs = res.hintPairs && res.hintPairs.length ? sortHintPairs(res.hintPairs) : null;
+    if (!pairs || !pairs.length) return;
+    const src = await this.spvSource();
+    if (!src.hashAt) return;
+    const hashes: Record<number, string> = {};
+    for (const p of pairs) {
+      const h = await src.hashAt(p.height);
+      if (!h) return;
+      hashes[p.height] = h.toLowerCase();
+    }
+    const tip = await this.tip();
+    if (tip == null || !Number.isFinite(tip)) return;
+    this.nameHints.set(nm, {
+      name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
+      ts: Date.now(), epoch: Math.floor(tip / BLOCKS_PER_EPOCH),
+    });
+  }
+
+  private async tryConfirmHintSet(nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
+    const cache = this.nameHints.get(nm);
+    if (!cache) return null;
+    const bundle = await fetchNameUnion(nm, this.nameSources());
+    if (!bundle.usable.length) return null;
+    const src = await this.spvSource();
+    const tip = await this.tip();
+    const verdict = await evaluateHintSetSkip({
+      cache,
+      pairs: bundle.pairs,
+      claims: bundle.usable.map((r) => r.claim ?? {}),
+      conflict: bundle.conflict,
+      existenceDisagree: bundle.existenceDisagree,
+      now: Date.now(),
+      epoch: tip == null ? null : Math.floor(tip / BLOCKS_PER_EPOCH),
+      hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,
+    });
+    if (!verdict.skip) return null;
+    return {
+      ok: true, name: nm, addr: cache.addr, via: cache.via, owner: cache.owner, lapsed: false,
+      verified: true, depth: cache.depth, sources: verdict.sources, disagree: verdict.disagree,
+      soleSource: false, viaFill: false,
+    };
+  }
+
   // Lazily built PoW-verified-header SPV source (singleton per wallet), with the header-chain snapshot
   // persisted in the wallet store so only the FIRST verify pays the cold-sync cost. Rebuilt on failure.
   private _spvSrc: Promise<SpvSource> | null = null;
   private spvSource(): Promise<SpvSource> {
+    if (this.nameSpvForTest) return Promise.resolve(this.nameSpvForTest);
     if (!this._spvSrc) {
       this._spvSrc = liveSpvSource({
         rpcBase: this.rpc, headersBase: this.api,

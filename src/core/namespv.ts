@@ -33,6 +33,7 @@
 // error returns verified:false with a reason — never a false pass against FABRICATION.
 import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, paidToFromOutputs, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
 import { parseSpvJson } from "./node.js";
+import { sortHintPairs, type HintPair } from "./namecache.js";
 
 // Baked checkpoint: a real finalized CSD header at the NAMES-ACTIVATION floor (V11_HEIGHT). No name can
 // have an effectiveHeight below this, so a forward-only verified chain seeded here covers every name.
@@ -70,6 +71,12 @@ export interface NameVerification {
   // send still goes to the PROVEN winner (vetoing would drop back to the resolver-served address = the B5e
   // single-source DoS/trust regression). Real closure remains a genuinely-independent second source.
   soleSource?: boolean;
+  // 0.2.70: true only on the M12 solo-recovery path. Confirm-time hint-set skip must NEVER
+  // cache or skip merkle when this is set (advisor 2.4). Absent on a clean union success.
+  recovered?: boolean;
+  // Sorted (txid, height) pairs of the unioned hints that produced this verdict. Present on a
+  // clean union success so the wallet can cache them for confirm-time skip. Omitted on M12.
+  hintPairs?: { txid: string; height: number }[];
 }
 
 export interface NameClaim { addr?: string; owner?: string; via?: string; lapsed?: boolean }
@@ -84,7 +91,34 @@ const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
 // An independent name-history source (resolver) to cross-check against. `base` ends at the trade-API root,
 // e.g. "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api".
 export interface ResolverSource { label: string; base: string }
-interface SourceResult { label: string; ok: boolean; unregistered?: boolean; claim?: NameClaim; hints: NameHint[]; error?: string; scopedReplaySufficient?: boolean }
+export interface SourceResult { label: string; ok: boolean; unregistered?: boolean; claim?: NameClaim; hints: NameHint[]; error?: string; scopedReplaySufficient?: boolean }
+export interface NameUnionFetch {
+  results: SourceResult[];
+  usable: SourceResult[];
+  pairs: HintPair[];
+  hints: NameHint[];
+  conflict: boolean;
+  existenceDisagree: boolean;
+}
+
+/** Fetch + union name-history hints (no merkle). Shared by verifyNameUnion and confirm-time skip. */
+export async function fetchNameUnion(name: string, sources: ResolverSource[], fetchImpl: typeof fetch = fetch): Promise<NameUnionFetch> {
+  const seen = new Set<string>();
+  const uniq = sources.filter((s) => s.base && !seen.has(s.base.replace(/\/$/, "")) && seen.add(s.base.replace(/\/$/, "")));
+  const results = await Promise.all(uniq.map((s) => fetchNameHistory(s, name, fetchImpl)));
+  const usable = results.filter((r) => r.ok && r.hints.length > 0);
+  const existenceDisagree = results.some((r) => r.unregistered);
+  const byTxid = new Map<string, NameHint>();
+  let conflict = false;
+  for (const r of usable) for (const h of r.hints) {
+    const k = String(h.txid).toLowerCase();
+    const prev = byTxid.get(k);
+    if (prev) { if (Number(prev.height) !== Number(h.height)) conflict = true; }
+    else byTxid.set(k, h);
+  }
+  const hints = [...byTxid.values()];
+  return { results, usable, pairs: sortHintPairs(hints), hints, conflict, existenceDisagree };
+}
 
 // The SPV data seam. Production wires the real LightClient (liveSpvSource); tests inject synthetic
 // PoW-verified blocks so the merkle-bind + replay + fail-closed logic is exercised without a chain.
@@ -107,6 +141,11 @@ export interface SpvSource {
   // scriptSig to re-attribute a record. Returns the 0x-prefixed 20-byte scriptPubkey, or null on any
   // mismatch / unavailable / malformed body → the caller fails CLOSED.
   prevoutScriptPubkey(prevTxid: string, vout: number): Promise<string | null>;
+  // 0.2.70: network-free reads of the already-verified header chain. Confirm-time hint-set
+  // skip uses hashAt to refuse a skip when the local header at a hinted height has moved
+  // (reorg / reseed). Omitted on synthetic sources that do not carry headers.
+  hashAt?(height: number): Promise<string | null>;
+  merkleAt?(height: number): Promise<string | null>;
 }
 
 // Headers to sync past the last record so its inclusion proof has a confirmation cushion. The verifier
@@ -285,11 +324,7 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
  */
 export async function verifyNameUnion(name: string, sources: ResolverSource[], src: SpvSource, fetchImpl: typeof fetch = fetch): Promise<NameVerification> {
   try {
-    // de-dup sources by base so [primary, clarvis] with an identical custom tradeApi doesn't double-count
-    const seen = new Set<string>();
-    const uniq = sources.filter((s) => s.base && !seen.has(s.base.replace(/\/$/, "")) && seen.add(s.base.replace(/\/$/, "")));
-    const results = await Promise.all(uniq.map((s) => fetchNameHistory(s, name, fetchImpl)));
-    const usable = results.filter((r) => r.ok && r.hints.length > 0);
+    const { results, usable, pairs, hints, conflict, existenceDisagree } = await fetchNameUnion(name, sources, fetchImpl);
     if (usable.length === 0) {
       if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, disagree: false };
       return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, disagree: false };
@@ -304,21 +339,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // 404 veto was meant to catch (V17 claim cap / token-balance fills) stay fail-closed via the viaFill /
     // scopedReplaySufficient gates below — those are computed from OUR verified events, not a served flag.
     // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
-    const existenceDisagree = results.some((r) => r.unregistered);
-    // UNION the hints by lowercase txid; a same-txid-different-height across sources is a tamper → conflict.
-    // D4 (register §3, 2026-09-12): the pos leg is DELETED — replayName recomputes each event's position
-    // from the merkle-bound block and never reads hint.pos, so a pos-only mismatch carried no tamper
-    // signal; all it could do was let one source lying about pos raise a false "sources DISAGREE"
-    // caution on an honest name (attacker-triggerable nuisance). Height remains the tamper leg.
-    const byTxid = new Map<string, NameHint>();
-    let conflict = false;
-    for (const r of usable) for (const h of r.hints) {
-      const k = String(h.txid).toLowerCase();
-      const prev = byTxid.get(k);
-      if (prev) { if (Number(prev.height) !== Number(h.height)) conflict = true; }
-      else byTxid.set(k, h);
-    }
-    const rep = await replayName(name, [...byTxid.values()], src);
+    const rep = await replayName(name, hints, src);
     if (!rep.ok) {
       // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 independent name sources served the
       // events establishing the lease, OR the persisted tip floor is also past expiry. A lone usable source
@@ -358,7 +379,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
           // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
           const soleSource = recovered.length === 1;
-          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, sources: usable.length, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree, soleSource, viaFill: false };
+          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, sources: usable.length, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree, soleSource, viaFill: false, recovered: true };
         }
       }
       return { ...fail(rep.reason), sources: usable.length, disagree: false };
@@ -387,7 +408,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (c !== rep.addr) disagreeing.push(r.label);
     }
     const disagree = disagreeing.length > 0 || conflict || existenceDisagree; // S-B6: a 404-ing source counts
-    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, sources: usable.length, disagree, viaFill: false };
+    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, sources: usable.length, disagree, viaFill: false, hintPairs: pairs };
   } catch (e) {
     return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, disagree: false };
   }
@@ -513,7 +534,10 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   // inside the serialized critical section below (so no torn snapshot: nothing mutates LC while it
   // serializes), and best-effort by contract (syncWithPartialPersist and the catch below swallow its
   // failures): losing a checkpoint write degrades to a re-sync, never a refusal.
-  const persistSnap = opts.cache ? (s: unknown) => opts.cache!.set(s) : null;
+  // 0.2.70: toSnapshot() stays inside the serialized block (capture is the heavy work + must
+  // not race a reseed). Only cache.set is detached (single-flight, latest-wins). floorAdvance
+  // still runs AFTER a fully successful sync.
+  const persistSnap = opts.cache ? (s: unknown) => { detachSnapshotWrite(opts.cache!, s); return Promise.resolve(); } : null;
 
   return {
     async prepare(maxEventHeight: number) {
@@ -552,7 +576,7 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
           // rethrow / a failed reseed below skips it, so the floor can never exceed what was actually
           // verified. Fail-soft: a persist failure only means the next attempt re-syncs.
           if (opts.cache && LC.baseHeight + LC.chain.length - 1 > cur) {
-            try { await opts.cache.set(LC.toSnapshot()); } catch { /* fail-soft: next attempt re-syncs */ }
+            try { const snap = LC.toSnapshot(); detachSnapshotWrite(opts.cache, snap); } catch { /* fail-soft: next attempt re-syncs */ }
           }
           // M8 (B5e): port swapguard's transient-vs-STRUCTURAL split (ensureSyncedTo, DOS-HDR-3). The
           // wallet only ever appended headers and NEVER cleared the cached snapshot on a prev-link break,
@@ -583,7 +607,7 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
         // the vault/history — a persistent write failure here is the early smoke of quota
         // exhaustion (the manifest carries unlimitedStorage precisely to keep this from failing;
         // if this warning ever fires, investigate storage pressure, don't ignore it).
-        if (opts.cache) { try { await opts.cache.set(LC.toSnapshot()); } catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); } }
+        if (opts.cache) { try { const snap = LC.toSnapshot(); detachSnapshotWrite(opts.cache, snap); } catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); } }
       });
       // M9 (B5a): advance + persist the floor ONLY after the sync above succeeded (a throw skips this),
       // and never above verifiedTip + FLOOR_SLACK (floorAdvance). The RETURNED nodeTip still carries the
@@ -608,6 +632,14 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
     // commits every output incl. its 20-byte scriptPubkey). A hostile node cannot serve a fake body whose
     // recomputed txid still matches the outpoint. Returns the 0x scriptPubkey, or null (→ fail-closed) on any
     // missing / not-yet-mined / mismatched / malformed body. Same untrusted-node read path as blockAt.
+    async hashAt(height: number) {
+      const vh = LC.chain[height - LC.baseHeight];
+      return vh ? String(vh.hash) : null;
+    },
+    async merkleAt(height: number) {
+      const vh = LC.chain[height - LC.baseHeight];
+      return vh ? String(vh.header.merkle) : null;
+    },
     async prevoutScriptPubkey(prevTxid: string, vout: number) {
       try {
         const body = (await client.tx(prevTxid))?.tx;
@@ -624,6 +656,38 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// 0.2.70: detach chrome.storage writes from the serialized sync / click path. toSnapshot() is
+// captured by the caller inside the lock; only set() runs here. Latest-wins: a newer snap
+// arriving while a write is in flight replaces the pending payload (a stale-but-valid snap
+// would only force a short re-sync). Fail-soft: a write error is warned, never a refusal.
+let snapWriteTail: Promise<void> = Promise.resolve();
+let snapWriteBusy = false;
+let snapWriteLatest: { cache: { set(s: unknown): Promise<void> }; snap: unknown } | null = null;
+
+export function detachSnapshotWrite(cache: { set(s: unknown): Promise<void> }, snap: unknown): void {
+  snapWriteLatest = { cache, snap };
+  if (snapWriteBusy) return;
+  snapWriteBusy = true;
+  snapWriteTail = snapWriteTail.then(async () => {
+    try {
+      while (snapWriteLatest) {
+        const job = snapWriteLatest;
+        snapWriteLatest = null;
+        try { await job.cache.set(job.snap); }
+        catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); }
+      }
+    } finally {
+      snapWriteBusy = false;
+      if (snapWriteLatest) detachSnapshotWrite(snapWriteLatest.cache, snapWriteLatest.snap);
+    }
+  });
+}
+
+/** Test hook: await the detached snapshot write(s). Production click path never waits. */
+export function flushSpvSnapshotWrites(): Promise<void> {
+  return snapWriteTail;
+}
 
 // Serialize async operations so they never OVERLAP, while each caller still awaits its own operation and sees
 // its own result/error. A prior rejection is swallowed for chaining ONLY (the rejecting caller still gets its

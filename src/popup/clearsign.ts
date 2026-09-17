@@ -91,7 +91,10 @@ export function tokenAmountBothScales(base: unknown, decimals: unknown, ticker: 
 // disproportionate (Plan 71 section 8, decline 6); the real number is bound at the fund boundary.
 export function tokenQuoteHtml(q: any): string {
   if (!(q && q.ok)) return `<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). Do NOT approve unless you have verified the exact token + amount on the site/explorer.</b>`;
-  return `<b>Per the offer service, filling this debits ${escapeHtml(String(q.total))} base units of ${escapeHtml(String(q.ticker))}</b> <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span> - the wallet cannot verify this number; confirm the token + amount on the site/explorer before approving.`;
+  const giveBit = (q.giveTicker || q.giveName)
+    ? ` You receive ${q.giveAmount != null && q.giveAmount !== "" ? escapeHtml(String(q.giveAmount)) + " " : ""}${escapeHtml(q.giveName ? String(q.giveName) + ".csd" : String(q.giveTicker))} (resolver-served; confirm on the explorer).`
+    : "";
+  return `<b>Per the offer service, filling this debits ${escapeHtml(String(q.total))} base units of ${escapeHtml(String(q.ticker))}</b> <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span> - the wallet cannot verify this number; confirm the token + amount on the site/explorer before approving.${giveBit}`;
 }
 
 // M14 (B5h): a revealClaim PUBLISHES the decrypted preimage of an earlier sealed commit - the user must
