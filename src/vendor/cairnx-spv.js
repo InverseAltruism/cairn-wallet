@@ -1,7 +1,7 @@
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js
 var crypto = typeof globalThis === "object" && "crypto" in globalThis ? globalThis.crypto : void 0;
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
 function isBytes(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -140,7 +140,7 @@ function randomBytes(bytesLength = 32) {
   throw new Error("crypto.getRandomValues must be defined");
 }
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
 function setBigUint64(view, byteOffset, value, isLE) {
   if (typeof view.setBigUint64 === "function")
     return view.setBigUint64(byteOffset, value, isLE);
@@ -260,7 +260,7 @@ var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
   1541459225
 ]);
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
 var SHA256_K = /* @__PURE__ */ Uint32Array.from([
   1116352408,
   1899447441,
@@ -400,10 +400,10 @@ var SHA256 = class extends HashMD {
 };
 var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js
 var sha2562 = sha256;
 
-// ../csd-light-0.1.21/packages/codec/dist/index.js
+// ../csd-sdk/packages/codec/dist/index.js
 var strip0x = (h) => h.startsWith("0x") ? h.slice(2) : h;
 var hb = (h) => hexToBytes(strip0x(h));
 var hx = (b) => "0x" + bytesToHex(b);
@@ -641,7 +641,7 @@ function payloadHash(content) {
   return "0x" + bytesToHex(sha2562(utf8ToBytes(canonicalJson(content))));
 }
 
-// ../csd-light-0.1.21/packages/client/dist/index.js
+// ../csd-sdk/packages/client/dist/index.js
 var CsdClient = class {
   base;
   f;
@@ -837,7 +837,7 @@ function rpcHeaderToHeader(h) {
   return { version: h.version, prev: h.prev, merkle: h.merkle, time: h.time, bits: h.bits, nonce: h.nonce };
 }
 
-// ../csd-light-0.1.21/packages/light/dist/index.js
+// ../csd-sdk/packages/light/dist/index.js
 var TARGET_MEMO_CAP = 4096;
 var targetMemo = /* @__PURE__ */ new Map();
 function bitsToTargetBigInt(bits) {
@@ -1279,7 +1279,7 @@ var LightClient = class _LightClient {
   }
 };
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
 var HMAC = class extends Hash {
   constructor(hash, _key) {
     super();
@@ -1347,7 +1347,7 @@ var HMAC = class extends Hash {
 var hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
 hmac.create = (hash, key) => new HMAC(hash, key);
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
+// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
 var _0n = /* @__PURE__ */ BigInt(0);
 var _1n = /* @__PURE__ */ BigInt(1);
 function _abool2(value, title = "") {
@@ -1500,7 +1500,7 @@ function memoized(fn) {
   };
 }
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
+// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
 var _0n2 = BigInt(0);
 var _1n2 = BigInt(1);
 var _2n = /* @__PURE__ */ BigInt(2);
@@ -1845,7 +1845,7 @@ function mapHashToField(key, fieldOrder, isLE = false) {
   return isLE ? numberToBytesLE(reduced, fieldLen) : numberToBytesBE(reduced, fieldLen);
 }
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
+// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
 var _0n3 = BigInt(0);
 var _1n3 = BigInt(1);
 function negateCt(condition, item) {
@@ -2123,7 +2123,7 @@ function _createCurveFields(type, CURVE, curveOpts = {}, FpFnLE) {
   return { CURVE, Fp, Fn };
 }
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/weierstrass.js
+// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/weierstrass.js
 var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n2) / den;
 function _splitEndoScalar(k, basis, n) {
   const [[a1, b1], [a2, b2]] = basis;
@@ -3137,13 +3137,13 @@ function weierstrass(c) {
   return _ecdsa_new_output_to_legacy(c, signs);
 }
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/_shortw_utils.js
+// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/_shortw_utils.js
 function createCurve(curveDef, defHash) {
   const create = (hash) => weierstrass({ ...curveDef, hash });
   return { ...create(defHash), create };
 }
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/secp256k1.js
+// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/secp256k1.js
 var secp256k1_CURVE = {
   p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
   n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
@@ -3186,7 +3186,7 @@ function sqrtMod(y) {
 var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
 var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/legacy.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/legacy.js
 var Rho160 = /* @__PURE__ */ Uint8Array.from([
   7,
   4,
@@ -3304,10 +3304,10 @@ var RIPEMD160 = class extends HashMD {
 };
 var ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160());
 
-// ../csd-light-0.1.21/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/ripemd160.js
+// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/ripemd160.js
 var ripemd1602 = ripemd160;
 
-// ../csd-light-0.1.21/packages/crypto/dist/index.js
+// ../csd-sdk/packages/crypto/dist/index.js
 var strip0x2 = (h) => h.startsWith("0x") ? h.slice(2) : h;
 var hb2 = (h) => hexToBytes(strip0x2(h));
 var hx2 = (b) => "0x" + bytesToHex(b);
@@ -3351,7 +3351,7 @@ function recoverSigner(scriptSig, digestHex) {
   }
 }
 
-// ../csd-light-0.1.21/packages/cairnx/dist/index.js
+// ../csd-sdk/packages/cairnx/dist/index.js
 var DOMAIN = "cairnx:v1";
 var ACTIVATION_HEIGHT = 29860;
 var V11_HEIGHT = 29960;
