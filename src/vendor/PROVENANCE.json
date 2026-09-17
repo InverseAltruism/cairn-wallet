@@ -1,7 +1,7 @@
 {
-  "note": "Provenance for src/vendor/cairnx-spv.js (the vendored SPV bundle). Rebuild with scripts/build-spv-vendor.sh, then regenerate with `node scripts/check-vendor-fresh.mjs --write`. Verified by scripts/check-vendor-fresh.mjs (audit NSPV-SUPPLY-1 / NSPV-MIRROR-1). Bundle includes uncommitted csd-light 0.1.21 from worktree light/0.1.21 (hash-once + powOkMemo/workForBitsMemo); csdSdkCommit is the parent HEAD, not a fake hash of those uncommitted bytes.",
+  "note": "Provenance for src/vendor/cairnx-spv.js (the vendored SPV bundle). Rebuild with scripts/build-spv-vendor.sh, then regenerate with `node scripts/check-vendor-fresh.mjs --write`. Verified by scripts/check-vendor-fresh.mjs (audit NSPV-SUPPLY-1 / NSPV-MIRROR-1).",
   "csdSdkVersion": "0.1.41",
-  "csdSdkCommit": "4deaf2de8fb91e78948311c96b964391bbf198d9",
+  "csdSdkCommit": "06c3780808c30f64dd8eff5a18c83108a43c5584",
   "bundleSha256": "73a249d2cde0de0e8c4a563a8e51df06e68ef3a093b8728e3a5398a2b27c7b5c",
   "noble": {
     "@noble/curves": "1.9.7",
