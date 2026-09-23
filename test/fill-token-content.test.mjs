@@ -190,6 +190,24 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
     q.ok === true && q.giveAmount === "0");
 }
 
+// Review D-2: the preview reads each token it shows by ticker, never the whole token list.
+{
+  const w = await freshWallet("pw-quote-meta-12345");
+  const seen = [];
+  mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => ({ ...honestOffer, give: { ticker: "AAA", amount: "10" } }) }) });
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url); seen.push(u);
+    const m = u.match(/\/cairnx\/token\/([A-Z0-9]+)$/);
+    if (m) return { ok: true, status: 200, json: async () => ({ ticker: m[1], decimals: 2, deployId: "0x" + "cd".repeat(32) }) };
+    return inner(url, init);
+  };
+  const q = await w.tokenFillQuote(OID);
+  check("review D-2: decimals and deploy ids come from per-ticker reads (paired: still shown)",
+    q.ok === true && q.wantDecimals === 2 && q.giveDecimals === 2 && q.giveDeployId === "0x" + "cd".repeat(32));
+  check("review D-2: the full /cairnx/tokens list is never requested for a preview", !seen.some((u) => /\/cairnx\/tokens(\?|$)/.test(u)));
+}
+
 globalThis.fetch = origFetch;
 console.log(`\nfill-token-content: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

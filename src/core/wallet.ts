@@ -1346,13 +1346,15 @@ export class Wallet {
       const giveName = typeof g?.name === "string" ? g.name : undefined;
       // 0.2.71: decimals + deploy ids for display (human units, look-alike warning). Fail-soft: a failed
       // read leaves them absent and the card shows base units only. Never used to decide what is signed.
-      let meta: Record<string, { decimals?: number; deployId?: string }> = {};
-      try {
-        const tr = await this.tradeGet(`/cairnx/tokens`);
-        const list: any = tr.ok ? await tr.json().catch(() => null) : null;
-        for (const t of (Array.isArray(list) ? list : Object.values(list || {})) as any[])
-          if (t && typeof t.ticker === "string") meta[t.ticker] = { decimals: Number.isInteger(t.decimals) ? t.decimals : undefined, deployId: typeof t.deployId === "string" ? t.deployId : undefined };
-      } catch { meta = {}; }
+      // Review D-2: one bounded per-ticker read each (in parallel), not the whole token list.
+      const meta: Record<string, { decimals?: number; deployId?: string }> = {};
+      await Promise.all([w.ticker, giveTicker].filter((x): x is string => typeof x === "string").map(async (tk) => {
+        try {
+          const tr = await this.tradeGet(`/cairnx/token/${encodeURIComponent(tk)}`, 8000);
+          const t: any = tr.ok ? await tr.json().catch(() => null) : null;
+          if (t && t.ticker === tk) meta[tk] = { decimals: Number.isInteger(t.decimals) ? t.decimals : undefined, deployId: typeof t.deployId === "string" ? t.deployId : undefined };
+        } catch { /* display only */ }
+      }));
       return {
         ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName,
         wantDecimals: meta[w.ticker]?.decimals, wantDeployId: meta[w.ticker]?.deployId,

@@ -62,6 +62,8 @@ ok("W8: 0-decimals token still shows both scales", tokenAmountBothScales("7", 0,
   ok("0.2.71: a look-alike ticker gets the not-verified warning; CAIRN with the real deploy does not",
     /not verified/.test(tokenQuoteHtml({ ...q, ticker: "BTC" })) && !/not verified|not Cairn/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN", wantDeployId: "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517" }))
     && /not Cairn's token/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN", wantDeployId: "0x" + "ab".repeat(32) })));
+  ok("review D-1: CAIRN whose deploy id did not load warns instead of reading as verified",
+    /Could not confirm this CAIRN/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN" })) && /Could not confirm this CAIRN/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN", wantDeployId: undefined })));
   ok("M3: hostile give ticker is escaped", !tokenQuoteHtml({ ...q, giveTicker: "<img src=x>" }).includes("<img"));
 }
 

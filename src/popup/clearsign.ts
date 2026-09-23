@@ -118,7 +118,11 @@ const CAIRN_DEPLOY_ID = "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc5977660
 export function tickerWarning(ticker: unknown, deployId?: unknown): string {
   const t = String(ticker || "").toUpperCase();
   if (!t) return "";
-  if (t === "CAIRN") return deployId && String(deployId).toLowerCase() !== CAIRN_DEPLOY_ID ? "⚠ This CAIRN is not Cairn's token (different deploy). Check the deployer." : "";
+  if (t === "CAIRN") {
+    // Review D-1: an absent deploy id (the token read failed) must not read as verified.
+    if (!deployId) return "⚠ Could not confirm this CAIRN is Cairn's token (its record did not load). Check the deployer before approving.";
+    return String(deployId).toLowerCase() !== CAIRN_DEPLOY_ID ? "⚠ This CAIRN is not Cairn's token (different deploy). Check the deployer." : "";
+  }
   if (WELL_KNOWN.has(t) || t.startsWith("CX") || t.includes("CAIRN")) return `⚠ ${escapeHtml(t)} is a well-known or Cairn-like ticker that Cairn has not verified. Anyone can deploy any ticker. Check the deployer.`;
   return "";
 }
