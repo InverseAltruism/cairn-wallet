@@ -262,7 +262,19 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
         try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
         return { opened: true };
       }
-      chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => { approveWinId = w?.id ?? null; });
+      // 0.2.71 (CX-15 item 4): two requests in different turns before the first create's callback can
+      // each create a window. Keep exactly one: the first window to report in owns the queue; a later
+      // one closes itself and focus returns to the owner (approve.html polls the whole queue anyway).
+      chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => {
+        const id = w?.id ?? null;
+        if (id == null) return;
+        if (approveWinId != null && approveWinId !== id) {
+          try { chrome.windows.remove?.(id); } catch { /* best-effort */ }
+          try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* best-effort */ }
+          return;
+        }
+        approveWinId = id;
+      });
       return { opened: true };
     } catch { return { opened: false }; }
     finally { openingApproval = null; }

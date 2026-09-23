@@ -30,7 +30,10 @@ ok("CSD Review parallelizes recipientChecks+balance",
 
 const approve = src("src/popup/approve.ts");
 ok("armButtons still owns the 700ms timer", /function armButtons\(\)[\s\S]*setTimeout\([\s\S]*700\)/.test(approve));
-ok("armButtons waits for fillSendWarning as well as 700ms", /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approve));
+ok("armButtons waits for fillSendWarning (and, 0.2.71, the token preview) as well as 700ms",
+  /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approve) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approve));
+ok("0.2.71: Approve stays disabled for a token fill until its preview is ready, and review state is keyed by request id",
+  /nfinBlocked \|\| tokenNotReady\(current\)/.test(approve) && /const reviewState = new Map/.test(approve) && /rs\(id\)\.tokenQuoteDisplayed/.test(approve));
 ok("warnPainted is assigned from fillSendWarning before armButtons",
   approve.indexOf("warnPainted = fillSendWarning") > 0 && approve.indexOf("warnPainted = fillSendWarning") < approve.indexOf("armButtons();"));
 
@@ -48,9 +51,9 @@ ok("CP is still 29960 (no checkpoint bump)", /height: 29960/.test(namespv));
 
 const inpage = src("src/inpage.ts");
 const versions = [...inpage.matchAll(/version:\s*"([^"]+)"/g)].map((m) => m[1]);
-ok("inpage lockstep 0.2.70 (both literals)", versions.length === 2 && versions.every((v) => v === "0.2.70"));
-ok("package.json is 0.2.70", JSON.parse(src("package.json")).version === "0.2.70");
-ok("manifest is 0.2.70", JSON.parse(src("public/manifest.json")).version === "0.2.70");
+ok("inpage lockstep 0.2.71 (both literals)", versions.length === 2 && versions.every((v) => v === "0.2.71"));
+ok("package.json is 0.2.71", JSON.parse(src("package.json")).version === "0.2.71");
+ok("manifest is 0.2.71", JSON.parse(src("public/manifest.json")).version === "0.2.71");
 
 const build = src("build.mjs");
 ok("popup entry is its own esbuild build with splitting:true",

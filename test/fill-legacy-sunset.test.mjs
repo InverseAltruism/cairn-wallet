@@ -140,7 +140,7 @@ console.log("W5 (B5b) - legacy-sunset arithmetic refuse:");
   };
   w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => offer }), tip: 60_050 });
-  const r = await w.fillOffer({ proposalId: OID, outputs: [] });
+  const r = await w.fillOffer({ proposalId: OID, outputs: [], tokenQuote: { ticker: "PAY", amount: "7", fee: "1", total: "8", giveTicker: "TKN", giveAmount: "5" } });   // 0.2.71: the reviewed quote the popup sends
   check(`exempt: honest token-want past the sunset ACCEPTS, not sunset-refused (got ${r?.error ?? r?.code ?? "ok"})`, r?.ok === true && s.submits.length === 1 && r?.code !== "FILL_LEGACY_SUNSET");
 }
 

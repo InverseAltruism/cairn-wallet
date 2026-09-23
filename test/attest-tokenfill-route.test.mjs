@@ -43,6 +43,8 @@ function mkStub({ offerReply }) {
 async function freshWallet(pw) { const w = new Wallet(memoryStore()); await w.create(pw); return w; }
 
 // An open TOKEN-want offer (the token fill lane; outputs:[] because the buyer routes no on-chain value).
+// 0.2.71: the quote the approval window displays for tokenOffer (7 PAY at 150 bps: fee 1, total 8)
+const TQ = { ticker: "PAY", amount: "7", fee: "1", total: "8", giveTicker: "AAA", giveAmount: "10" };
 const tokenOffer = { id: OID, seller: SELLER, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 };
 // The B7e-FIX token-lane content bind merkle-proves the offer record; inject the proven give/want that
 // resolve() would materialize from the same on-chain record so an HONEST token fill proceeds (the live SPV
@@ -57,7 +59,7 @@ console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fi
 {
   const w = await freshWallet("pw-unknown-12345");
   const s = mkStub({ offerReply: () => ({ ok: false, status: 404, json: async () => ({ error: "not found" }) }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000 });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: TQ });
   check(`token-fill attest on an unknown proposal is REFUSED with OFFER_UNKNOWN (${r?.code})`, r?.ok === false && r?.code === "OFFER_UNKNOWN");
   check("...and nothing was submitted (no pay-into-unsettleable)", s.submits.length === 0);
 }
@@ -68,7 +70,7 @@ console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fi
   const w = await freshWallet("pw-open-12345");
   w.provenPaytoForTest = honestTokenProven;
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => tokenOffer }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000 });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: TQ });
   check(`honest token-fill attest PROCEEDS and submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
   const h = await w.history();
   check("...and files a fillOffer history entry (truthful shape, not 'support')", h.length === 1 && h[0].type === "fillOffer");
@@ -78,7 +80,7 @@ console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fi
 {
   const w = await freshWallet("pw-filled-12345");
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => ({ ...tokenOffer, status: "filled" }) }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000 });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: TQ });
   check(`token-fill attest on a FILLED offer is refused (${r?.code})`, r?.ok === false && s.submits.length === 0);
 }
 
@@ -91,7 +93,7 @@ console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fi
   const w = await freshWallet("pw-theft-12345");
   w.provenPaytoForTest = honestTokenProven;
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => tokenOffer }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, outputs: [{ to: "0x" + "ee".repeat(20), value: 90_000_000 }] });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, outputs: [{ to: "0x" + "ee".repeat(20), value: 90_000_000 }], tokenQuote: TQ });
   const outs = s.submits[0]?.tx?.outputs ?? [];
   // the attacker's addr 0xee..ee encodes to an all-238 script_pubkey byte array; a token fill has NO CSD
   // outputs, so the ONLY output is change back to SELF (never all-238, never the 90M value).
