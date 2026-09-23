@@ -90,11 +90,41 @@ export function tokenAmountBothScales(base: unknown, decimals: unknown, ticker: 
 // Re-framing only, by decision: a second price source for a display string was DECLINED as
 // disproportionate (Plan 71 section 8, decline 6); the real number is bound at the fund boundary.
 export function tokenQuoteHtml(q: any): string {
-  if (!(q && q.ok)) return `<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). Do NOT approve unless you have verified the exact token + amount on the site/explorer.</b>`;
+  if (!(q && q.ok)) return `<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). The wallet will not sign this fill until the amount can be shown; try again in a moment or reject.</b>`;
+  const amt = (base: unknown, dec: unknown, tk: unknown) => {
+    const b = String(base ?? "");
+    const human = Number.isInteger(dec) ? formatBase(b, Number(dec)) : null;
+    return human != null ? `<b>${escapeHtml(human)} ${escapeHtml(String(tk))}</b> <span class="dim">(${escapeHtml(b)} base units)</span>` : `<b>${escapeHtml(b)}</b> base units of <b>${escapeHtml(String(tk))}</b>`;
+  };
   const giveBit = (q.giveTicker || q.giveName)
-    ? ` You receive ${q.giveAmount != null && q.giveAmount !== "" ? escapeHtml(String(q.giveAmount)) + " " : ""}${escapeHtml(q.giveName ? String(q.giveName) + ".csd" : String(q.giveTicker))} (resolver-served; confirm on the explorer).`
+    ? ` You receive ${q.giveName ? `<b>${escapeHtml(String(q.giveName))}.csd</b>` : amt(q.giveAmount, q.giveDecimals, q.giveTicker)}.`
     : "";
-  return `<b>Per the offer service, filling this debits ${escapeHtml(String(q.total))} base units of ${escapeHtml(String(q.ticker))}</b> <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span> - the wallet cannot verify this number; confirm the token + amount on the site/explorer before approving.${giveBit}`;
+  const warn = [tickerWarning(q.ticker, q.wantDeployId), q.giveTicker ? tickerWarning(q.giveTicker, q.giveDeployId) : ""].filter(Boolean).join(" ");
+  return `Filling this debits ${amt(q.total, q.wantDecimals, q.ticker)} <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span>.${giveBit} Quoted by the offer service; the wallet refuses to sign if the offer's on-chain record differs from what is shown here.${warn ? ` <b class="err">${warn}</b>` : ""}`;
+}
+
+/** Base units to a display string with `dec` decimals, trailing zeros trimmed. Null on bad input. */
+export function formatBase(base: string, dec: number): string | null {
+  if (!/^\d+$/.test(base) || !Number.isInteger(dec) || dec < 0 || dec > 18) return null;
+  if (dec === 0) return base;
+  const s = base.padStart(dec + 1, "0");
+  const whole = s.slice(0, s.length - dec), frac = s.slice(s.length - dec).replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : whole;
+}
+
+// 0.2.71 (CX-16 item 3): the same look-alike rule as the site's verified-tokens.json. A warning, never a block.
+const WELL_KNOWN = new Set(["BTC", "ETH", "USDT", "USDC", "SOL", "BNB", "XRP", "DOGE", "ADA", "TRX", "TON", "AVAX", "LINK", "DOT", "MATIC", "SHIB", "LTC", "BCH", "USD", "EUR", "ZEC", "CAD"]);
+const CAIRN_DEPLOY_ID = "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517";
+export function tickerWarning(ticker: unknown, deployId?: unknown): string {
+  const t = String(ticker || "").toUpperCase();
+  if (!t) return "";
+  if (t === "CAIRN") {
+    // Review D-1: an absent deploy id (the token read failed) must not read as verified.
+    if (!deployId) return "⚠ Could not confirm this CAIRN is Cairn's token (its record did not load). Check the deployer before approving.";
+    return String(deployId).toLowerCase() !== CAIRN_DEPLOY_ID ? "⚠ This CAIRN is not Cairn's token (different deploy). Check the deployer." : "";
+  }
+  if (WELL_KNOWN.has(t) || t.startsWith("CX") || t.includes("CAIRN")) return `⚠ ${escapeHtml(t)} is a well-known or Cairn-like ticker that Cairn has not verified. Anyone can deploy any ticker. Check the deployer.`;
+  return "";
 }
 
 // M14 (B5h): a revealClaim PUBLISHES the decrypted preimage of an earlier sealed commit - the user must

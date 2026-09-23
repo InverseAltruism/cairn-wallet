@@ -43,16 +43,27 @@ ok("W8: 0-decimals token still shows both scales", tokenAmountBothScales("7", 0,
 {
   const q = { ok: true, ticker: "TOK", amount: "1000", fee: "15", total: "1015" };
   const html = tokenQuoteHtml(q);
-  ok("M3: quote is attributed to the offer service", /per the offer service/i.test(html));
+  ok("M3: quote is attributed to the offer service", /quoted by the offer service/i.test(html));
   ok("M3: no first-person debit assertion", !/you will pay/i.test(html));
   ok("M3: quote shows total + ticker in labeled base units", html.includes("1015") && html.includes("TOK") && html.includes("base units"));
-  ok("M3: quote states the wallet cannot verify the number", /cannot verify/i.test(html));
+  // 0.2.71 (CX-15): the signer now binds this number to the proven record, so the copy says what the
+  // wallet does (refuse on mismatch) instead of "cannot verify", which was no longer true.
+  ok("M3: quote states the wallet refuses when the on-chain record differs", /refuses to sign if the offer's on-chain record differs/i.test(html));
+  ok("0.2.71: human units shown beside base units when decimals are known",
+    /1\.015 TOK/.test(tokenQuoteHtml({ ...q, wantDecimals: 3 })) && /1015 base units/.test(tokenQuoteHtml({ ...q, wantDecimals: 3 })));
   ok("M3: estimated flag still surfaces", tokenQuoteHtml({ ...q, estimated: true }).includes("estimated"));
-  ok("M3: failed quote keeps the loud do-NOT-approve caution", /Do NOT approve/.test(tokenQuoteHtml({ ok: false, error: "offer gone" })));
-  ok("M3: null quote (bridge threw) keeps the loud caution", /Do NOT approve/.test(tokenQuoteHtml(null)) && tokenQuoteHtml(null).includes("offer unavailable"));
+  ok("M3: failed quote says the wallet will not sign until the amount is shown", /will not sign this fill until the amount can be shown/.test(tokenQuoteHtml({ ok: false, error: "offer gone" })));
+  ok("M3: null quote (bridge threw) keeps the loud caution", /will not sign/.test(tokenQuoteHtml(null)) && tokenQuoteHtml(null).includes("offer unavailable"));
   ok("M3: hostile quote error is escaped", !tokenQuoteHtml({ ok: false, error: "<img src=x>" }).includes("<img"));
-  ok("M3: give ticker/amount paint on the card", /You receive 10 AAA/.test(tokenQuoteHtml({ ...q, giveTicker: "AAA", giveAmount: "10" })));
-  ok("M3: give name paints as .csd", /You receive alice\.csd/.test(tokenQuoteHtml({ ...q, giveName: "alice" })));
+  const text = (h) => h.replace(/<[^>]+>/g, "");
+  ok("M3: give ticker/amount paint on the card (base units when decimals are unknown)", /You receive 10 base units of AAA/.test(text(tokenQuoteHtml({ ...q, giveTicker: "AAA", giveAmount: "10" }))));
+  ok("0.2.71: give paints in human units when its decimals are known", /You receive 0\.1 AAA \(10 base units\)/.test(text(tokenQuoteHtml({ ...q, giveTicker: "AAA", giveAmount: "10", giveDecimals: 2 }))));
+  ok("M3: give name paints as .csd", /You receive alice\.csd/.test(text(tokenQuoteHtml({ ...q, giveName: "alice" }))));
+  ok("0.2.71: a look-alike ticker gets the not-verified warning; CAIRN with the real deploy does not",
+    /not verified/.test(tokenQuoteHtml({ ...q, ticker: "BTC" })) && !/not verified|not Cairn/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN", wantDeployId: "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517" }))
+    && /not Cairn's token/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN", wantDeployId: "0x" + "ab".repeat(32) })));
+  ok("review D-1: CAIRN whose deploy id did not load warns instead of reading as verified",
+    /Could not confirm this CAIRN/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN" })) && /Could not confirm this CAIRN/.test(tokenQuoteHtml({ ...q, ticker: "CAIRN", wantDeployId: undefined })));
   ok("M3: hostile give ticker is escaped", !tokenQuoteHtml({ ...q, giveTicker: "<img src=x>" }).includes("<img"));
 }
 
@@ -163,7 +174,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("PIN M3: approve.ts renders the quote via the attributed tokenQuoteHtml", approveSrc.includes("show(tokenQuoteHtml(q))"));
   ok("PIN M3: no first-person 'You will pay' debit assertion remains in approve.ts", !approveSrc.includes("You will pay"));
   ok("PIN 0.2.70: armButtons fail-softs a rejected fillSendWarning (Approve/Reject cannot stay disabled)",
-    /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approveSrc));
+    /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approveSrc) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approveSrc));
   ok("PIN M14: approve.ts wires fillRevealPreview into render()", approveSrc.includes("fillRevealPreview(current)"));
   ok("PIN M14: the preview reads the LOCAL sealedClaims store (no network)", approveSrc.includes('call("sealedClaims")'));
   ok("PIN B5h: a score-50 attest threads only the LOCAL tipFloor (no tip/network fetch added)", /method === "attest"[\s\S]{0,900}?call\("tipFloor"\)/.test(approveSrc) && !/method === "attest"[\s\S]{0,900}?call\("tip"\)[^F]/.test(approveSrc));

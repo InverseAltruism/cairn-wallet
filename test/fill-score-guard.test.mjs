@@ -43,6 +43,8 @@ const csdProven = (me) => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLower
 const csdOuts = (me) => requiredFillOutputs(csdOffer(me), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
 
 // The token taker-bound offer + its honest token terms.
+// 0.2.71: the quote the approval window displays for tokOffer (40,000,000 ask at 150 bps: fee 600,000)
+const TOK_Q = { ticker: "USDX", amount: "40000000", fee: "600000", total: "40600000", giveTicker: "AAA", giveAmount: "10" };
 const tokOffer = (me) => ({ id: TOID, seller: SELLER, status: "open", give: { ticker: "AAA", amount: "10" }, want: { ticker: "USDX", amount: "40000000" }, taker: me, height: 34000, feeBps: 150 });
 const tokProven = (me) => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: undefined, taker: me.toLowerCase(), bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "USDX", wantAmount: "40000000" });
 
@@ -100,7 +102,7 @@ console.log("XR-1/FL-1 - fill score guard + token-lane CSD-output (N26) guard:\n
 // ── 2. TOKEN-outputs (N26) guard: a token fill carrying CSD outputs is REFUSED. ──
 {
   const { w, s } = await freshWallet("pw-tokcsd-123");
-  const r = await w.fillOffer({ proposalId: TOID, outputs: [{ to: ATTACKER, value: 5_00000000 }] });
+  const r = await w.fillOffer({ proposalId: TOID, outputs: [{ to: ATTACKER, value: 5_00000000 }] , tokenQuote: TOK_Q });
   check(`a token fill carrying an ATTACKER CSD output is REFUSED with FILL_UNSAFE (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /token purchase is paid in tokens/i.test(String(r?.error)));
   check("...and nothing was submitted (no CSD smuggled through a token fill)", s.submits.length === 0);
 }
@@ -123,13 +125,13 @@ console.log("\nPAIRED HAPPY-PATH (honest fills still submit):");
   // (c) an honest token fill (outputs:[]) submits (sums.size === 0, no token-outputs refusal) — the exact
   // attest->fillOffer reroute shape (outputs:[]) the site uses at actions.js:397.
   const { w, s } = await freshWallet("pw-tokhonest-123");
-  const r = await w.fillOffer({ proposalId: TOID, outputs: [] });
+  const r = await w.fillOffer({ proposalId: TOID, outputs: [] , tokenQuote: TOK_Q });
   check(`an honest token fill (outputs:[]) still submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
 }
 {
   // (d) W3's paired happy-path, the site's TOKEN-lane call shape verbatim: score:100 with outputs:[].
   const { w, s } = await freshWallet("pw-tok100-123");
-  const r = await w.fillOffer({ proposalId: TOID, outputs: [], score: 100 });
+  const r = await w.fillOffer({ proposalId: TOID, outputs: [], score: 100 , tokenQuote: TOK_Q });
   check(`the token lane's score:100 call shape still submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
   check("...signing SCORE_FILL (100)", Number(s.submits[0]?.tx?.app?.Attest?.score) === 100);
 }
@@ -158,7 +160,7 @@ async function withGuardRemoved(marker, run) {
 {
   const mut = await withGuardRemoved("MUTATE_TOKEN_OUTPUTS_GUARD", async (mod) => {
     const { w, s } = await freshWallet("pw-tokmut-123", mod.Wallet);
-    const r = await w.fillOffer({ proposalId: TOID, outputs: [{ to: ATTACKER, value: 5_00000000 }] });
+    const r = await w.fillOffer({ proposalId: TOID, outputs: [{ to: ATTACKER, value: 5_00000000 }] , tokenQuote: TOK_Q });
     // the signed tx carries the attacker's 5-CSD CSD output (smuggled through a "token" fill).
     const outs = s.submits[0]?.tx?.outputs ?? [];
     const smuggled = s.submits.length === 1 && outs.some((o) => Number(o.value) === 5_00000000);

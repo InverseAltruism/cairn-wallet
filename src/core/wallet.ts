@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS_V16, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
@@ -75,6 +75,8 @@ export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
 export type TokenFillQuote = {
   ticker?: string; amount?: string; fee?: string; total?: string;
   giveTicker?: string; giveAmount?: string; giveName?: string;
+  // 0.2.71, display only (never bound): decimals and deploy ids for human units and the ticker warning
+  wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string;
 };
 
 // L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
@@ -856,10 +858,27 @@ export class Wallet {
         // used to debit the larger proven amount behind the low card. The displayed quote must equal
         // the proven want or the fill refuses. (Absent quote → the review already showed the loud
         // do-NOT-approve caution; the served↔proven binds above still hold.)
+        // 0.2.71 (CX-15): a token-debiting fill signs only what the user reviewed. No reviewed quote
+        // (the preview failed, was slow, or a caller skipped the approval window) is REVIEW_REQUIRED,
+        // retryable; the review must also carry the fee and total, which are bound below.
+        if (!reviewedQuote || reviewedQuote.ticker === undefined || reviewedQuote.fee === undefined || reviewedQuote.total === undefined)
+          return refuse("REVIEW_REQUIRED", "the wallet could not show you the exact token amount this fill debits, so it will not sign it. Reopen the purchase and approve once the amount is shown.");
         if (reviewedQuote && reviewedQuote.ticker !== undefined) {
           const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
           if (qT !== String(proven.wantTicker ?? "") || qA !== String(proven.wantAmount ?? ""))
             return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.wantAmount ?? "?"} ${proven.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
+        }
+        // 0.2.71 (CX-15): bind the reviewed fee and total. The fee follows from the proven amount and the
+        // offer's proven inclusion height (1.5% from V16, 1% before), not from the served feeBps, so a
+        // quote that understated the fee (e.g. a served feeBps of 0) cannot sign a larger debit.
+        {
+          let provenAmt: bigint;
+          try { provenAmt = BigInt(String(proven.wantAmount ?? "")); } catch { return refuse("FILL_UNSAFE", "refusing to sign: the offer's on-chain amount could not be read"); }
+          const provenBps = Number((proven.terms as { feeBps?: unknown }).feeBps);
+          const bps = Number.isFinite(provenBps) ? provenBps : (Number(offer.height) >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS);
+          const fee = cairnxTradeFee(provenAmt, bps);
+          if (String(reviewedQuote.fee) !== fee.toString() || String(reviewedQuote.total) !== (provenAmt + fee).toString())
+            return refuse("FILL_UNSAFE", `refusing to sign: the card showed a fee of ${reviewedQuote.fee} and a total of ${reviewedQuote.total}, but this offer's on-chain terms debit ${fee.toString()} + ${provenAmt.toString()} = ${(provenAmt + fee).toString()}. Retry from the site's Buy button.`);
         }
         // 0.2.70: bind the resolver-served give the card showed to the merkle-proven give.
         if (reviewedQuote && (reviewedQuote.giveTicker !== undefined || reviewedQuote.giveAmount !== undefined || reviewedQuote.giveName !== undefined)) {
@@ -1301,7 +1320,7 @@ export class Wallet {
   // (BigInt-exact, same cairnxTradeFee the convention uses). Returns ok:false on any unreachable/mismatch so
   // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
   // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
-  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string }> {
+  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string }> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
     try {
       const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): fill-quote read
@@ -1325,7 +1344,22 @@ export class Wallet {
       // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
       const giveAmount = g?.amount != null ? String(g.amount) : undefined;
       const giveName = typeof g?.name === "string" ? g.name : undefined;
-      return { ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName };
+      // 0.2.71: decimals + deploy ids for display (human units, look-alike warning). Fail-soft: a failed
+      // read leaves them absent and the card shows base units only. Never used to decide what is signed.
+      // Review D-2: one bounded per-ticker read each (in parallel), not the whole token list.
+      const meta: Record<string, { decimals?: number; deployId?: string }> = {};
+      await Promise.all([w.ticker, giveTicker].filter((x): x is string => typeof x === "string").map(async (tk) => {
+        try {
+          const tr = await this.tradeGet(`/cairnx/token/${encodeURIComponent(tk)}`, 8000);
+          const t: any = tr.ok ? await tr.json().catch(() => null) : null;
+          if (t && t.ticker === tk) meta[tk] = { decimals: Number.isInteger(t.decimals) ? t.decimals : undefined, deployId: typeof t.deployId === "string" ? t.deployId : undefined };
+        } catch { /* display only */ }
+      }));
+      return {
+        ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName,
+        wantDecimals: meta[w.ticker]?.decimals, wantDeployId: meta[w.ticker]?.deployId,
+        giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined,
+      };
     } catch { return { ok: false, error: "offer unavailable" }; }
   }
 

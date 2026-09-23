@@ -50,10 +50,16 @@ function mkStub({ offerReply }) {
 
 async function freshWallet(pw, proven = TRUE_PROVEN) { const w = new Wallet(memoryStore()); await w.create(pw); w.provenPaytoForTest = proven; return w; }
 // Fill a served token offer; the merkle-proven terms are always the HONEST ones (TRUE_PROVEN).
-async function fillServed(pw, servedOffer, proven = TRUE_PROVEN) {
+// The quote the approval window would DISPLAY for a served offer (0.2.71: the signer requires it).
+function quoteFor(o) {
+  const amt = BigInt(o?.want?.amount ?? 0), bps = BigInt(o?.feeBps ?? 150);
+  const fee = (amt * bps + 9999n) / 10000n;
+  return { ticker: o?.want?.ticker, amount: amt.toString(), fee: fee.toString(), total: (amt + fee).toString(), giveTicker: o?.give?.ticker, giveAmount: o?.give?.amount != null ? String(o.give.amount) : undefined, giveName: o?.give?.name };
+}
+async function fillServed(pw, servedOffer, proven = TRUE_PROVEN, tokenQuote = quoteFor(servedOffer)) {
   const w = await freshWallet(pw, proven);
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000 });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote });
   return { r, s };
 }
 
@@ -136,26 +142,34 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
   // 8c. a quote MATCHING the proven want proceeds (the honest path is not over-refused)
   const w = await freshWallet("pw-w2-ok-12345", TRUE_PROVEN);
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "0", total: "7" } });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "1", total: "8" } });
   check("RT-W2: a matching review quote PROCEEDS (honest path)", r?.ok === true && s.submits.length === 1);
 }
 {
-  // 8d. NO quote (the review showed the loud do-NOT-approve caution) keeps the existing posture:
-  //     the served↔proven binds still hold and an honest fill proceeds.
-  const { r, s } = await fillServed("pw-w2-none-12345", honestOffer);
-  check("RT-W2: no reviewed quote keeps the caution-path posture (honest fill proceeds)", r?.ok === true && s.submits.length === 1);
+  // 8d. 0.2.71 (CX-15, deliberate change): NO reviewed quote is REVIEW_REQUIRED. Before 0.2.71 the
+  //     signer proceeded on a failed or slow preview, so the user could sign a debit never shown.
+  const { r, s } = await fillServed("pw-w2-none-12345", honestOffer, TRUE_PROVEN, null);
+  check("0.2.71 red-first: no reviewed quote is REVIEW_REQUIRED and nothing is signed", r?.ok === false && r?.code === "REVIEW_REQUIRED" && s.submits.length === 0);
+}
+{
+  // 8g. 0.2.71 (CX-15): an unchanged ask with an UNDERSTATED fee (served feeBps 0 at review) is refused:
+  //     the proven terms debit 7 + 1 = 8, the card showed 7 + 0 = 7.
+  const w = await freshWallet("pw-w2-fee-12345", TRUE_PROVEN);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "0", total: "7" } });
+  check("0.2.71 red-first: same ask, understated fee/total is REFUSED", r?.ok === false && r?.code === "FILL_UNSAFE" && /fee of 0 and a total of 7/.test(r?.error ?? "") && s.submits.length === 0);
 }
 {
   // 8e. 0.2.70: a review give that does not match the proven give is REFUSED.
   const w = await freshWallet("pw-w2-give-12345", TRUE_PROVEN);
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "0", total: "7", giveTicker: "BBB", giveAmount: "10" } });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "1", total: "8", giveTicker: "BBB", giveAmount: "10" } });
   check("0.2.70: a review give TICKER that does not match proven is REFUSED", r?.ok === false && r?.code === "FILL_UNSAFE" && /receive changed/.test(r?.error ?? "") && s.submits.length === 0);
 }
 {
   const w = await freshWallet("pw-w2-giveok-12345", TRUE_PROVEN);
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
-  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "0", total: "7", giveTicker: "AAA", giveAmount: "10" } });
+  const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "PAY", amount: "7", fee: "1", total: "8", giveTicker: "AAA", giveAmount: "10" } });
   check("0.2.70: a matching review give PROCEEDS (honest path)", r?.ok === true && s.submits.length === 1);
 }
 
@@ -174,6 +188,24 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
   const q = await w.tokenFillQuote(OID);
   check("0.2.70: tokenFillQuote still String()s a real give.amount of 0",
     q.ok === true && q.giveAmount === "0");
+}
+
+// Review D-2: the preview reads each token it shows by ticker, never the whole token list.
+{
+  const w = await freshWallet("pw-quote-meta-12345");
+  const seen = [];
+  mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => ({ ...honestOffer, give: { ticker: "AAA", amount: "10" } }) }) });
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url); seen.push(u);
+    const m = u.match(/\/cairnx\/token\/([A-Z0-9]+)$/);
+    if (m) return { ok: true, status: 200, json: async () => ({ ticker: m[1], decimals: 2, deployId: "0x" + "cd".repeat(32) }) };
+    return inner(url, init);
+  };
+  const q = await w.tokenFillQuote(OID);
+  check("review D-2: decimals and deploy ids come from per-ticker reads (paired: still shown)",
+    q.ok === true && q.wantDecimals === 2 && q.giveDecimals === 2 && q.giveDeployId === "0x" + "cd".repeat(32));
+  check("review D-2: the full /cairnx/tokens list is never requested for a preview", !seen.some((u) => /\/cairnx\/tokens(\?|$)/.test(u)));
 }
 
 globalThis.fetch = origFetch;

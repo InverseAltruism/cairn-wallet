@@ -19,6 +19,11 @@ function call(method: string, ...args: any[]): Promise<any> {
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
 
 let current: any = null;
+// 0.2.71 (CX-23): per-request review state, keyed by request id. `current` is a FRESH object on every
+// 1.2 s poll (background "pending" maps new objects each call), so state stored on it was lost after one
+// tick: in 0.2.70 the RT-W2 displayed quote therefore almost never reached the signer. Keep it here.
+const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any }>();
+const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
 async function render() {
@@ -87,9 +92,9 @@ async function render() {
       + `<div class="req dim" id="cost">${costLine(current)}</div>`;
     msg(""); // clear any stale "approved"/"rejected" from a previous request
     warnPainted = fillSendWarning(current);
+    tokenPainted = fillTokenSim(current);   // 0.2.71: Approve waits for the token preview of THIS request
     armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
     fillBalance(current);
-    fillTokenSim(current);
     fillRevealPreview(current); // M14: which secret a revealClaim makes public (local sealedClaims read)
     armNfinalizeGate(current, st);
   } catch (e) {
@@ -186,14 +191,28 @@ function armNfinalizeGate(r: any, st: any) {
 // it can't be computed, ESCALATE to a "do NOT approve unless verified" caution rather than leave the amount
 // quietly unknown. Once per request (render doesn't rebuild each tick).
 let tokenSimForId: string | null = null;
+// 0.2.71 (CX-15): a token-debiting fill is approvable only once its preview is `ready` for this very
+// request. States: loading -> ready | error. A failed quote is retried a few times before `error`.
+function isTokenFill(r: any): boolean {
+  const conf = Number((r?.params || {}).confidence ?? 100) >>> 0;
+  return !!r && (r.method === "fillOffer" || r.method === "attest") && conf === CONF_TOKEN_FILL;
+}
+function tokenNotReady(r: any): boolean { return isTokenFill(r) && rs(r.id).tokenPreview !== "ready"; }
 async function fillTokenSim(r: any) {
   const conf = Number((r.params || {}).confidence ?? 100) >>> 0;
   if ((r.method !== "fillOffer" && r.method !== "attest") || conf !== CONF_TOKEN_FILL || tokenSimForId === r.id) return; tokenSimForId = r.id;
+  rs(r.id).tokenPreview = "loading";
   const el = document.getElementById("token-sim");
   if (!el) return;
   const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };
   try {
-    const q = await call("tokenFillQuote", (r.params || {}).proposalId);
+    let q: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      q = await call("tokenFillQuote", (r.params || {}).proposalId).catch(() => null);
+      if (q && q.ok) break;
+      if (renderedId !== r.id) return;
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
     // W2 (AW-3), the same rule applied uniformly: any async filler that writes into the DOM after an
     // await carries the guard. This one is defense in depth rather than a live hole (`el` is resolved
     // BEFORE the await, so a superseded write lands on the detached old node, not on the request now on
@@ -202,9 +221,12 @@ async function fillTokenSim(r: any) {
     // RT-W2: remember the quote actually DISPLAYED so the approve click can thread it to the
     // preflight, which refuses unless it equals the chain-proven want (a resolver that quotes low
     // at review and honest at click used to debit the larger proven amount behind the low card).
-    r.tokenQuoteDisplayed = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total, giveTicker: q.giveTicker, giveAmount: q.giveAmount, giveName: q.giveName } : undefined;
+    const shown = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total, giveTicker: q.giveTicker, giveAmount: q.giveAmount, giveName: q.giveName } : undefined;
+    rs(r.id).tokenQuoteDisplayed = shown;
+    rs(r.id).tokenPreview = shown ? "ready" : "error";
     show(tokenQuoteHtml(q));
   } catch {
+    rs(r.id).tokenPreview = "error";
     show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
   }
 }
@@ -298,20 +320,29 @@ function disableButtons() {
 // fillSendWarning settling is the ceiling so a slow history fetch cannot leave Approve live over
 // an unpainted poisoning warning.
 let warnPainted: Promise<unknown> = Promise.resolve();
+let tokenPainted: Promise<unknown> = Promise.resolve();
 function armButtons() {
   disableButtons();  // AW-1: same immediate disable; the 700ms RE-ENABLE timer stays here, after the paint
   // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
-  // AFTER this timer disables it directly in armNfinalizeGate).
+  // AFTER this timer disables it directly in armNfinalizeGate), and for a token-debiting fill until its
+  // preview for THIS request is ready (0.2.71). Reject is always re-enabled.
+  const armedId = current?.id;
   const minWait = new Promise((r) => setTimeout(r, 700));
-  Promise.all([minWait, Promise.resolve(warnPainted).catch(() => {})]).then(() => {
-    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked; ($("btn-reject") as HTMLButtonElement).disabled = false;
+  const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => {})]);
+  // Reject never waits for the token preview: a hanging quote must not lock the user out of rejecting.
+  base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
+  Promise.all([base, Promise.resolve(tokenPainted).catch(() => {})]).then(() => {
+    if (current?.id !== armedId) return;   // superseded: the new request arms itself
+    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current); ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
 }
 async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
-  const displayedQuote = current.tokenQuoteDisplayed; // RT-W2: the number the user actually saw
+  const displayedQuote = rs(id).tokenQuoteDisplayed; // RT-W2: the number the user actually saw (survives the 1.2 s re-poll)
+  // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
+  if (approve && tokenNotReady(current)) { msg("the token amount is not shown yet; wait for it or reject", "err"); return; }
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip).
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
   // verdict proceeds (fail-open). Reject never waits.

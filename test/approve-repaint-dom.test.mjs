@@ -71,7 +71,7 @@ class El {
     }
   }
   insertAdjacentHTML(_pos, html) { this._html += String(html); this._adopt(html); }
-  addEventListener() { /* the buttons' listeners are not under test here */ }
+  addEventListener(type, fn) { (this._listeners ||= {})[type] = fn; }   // recorded; only section 8 clicks
 }
 for (const id of ["view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw"]) registry.set(id, new El(id));
 globalThis.document = { getElementById: (id) => registry.get(id) ?? null };
@@ -284,6 +284,31 @@ await tick(); await flush(); await settle();
 check("(7) a genuinely NEW nrenew request DOES re-arm the gate (one new fetch)", nameFetches === 2);
 check("(7) ...and paints its own verdict", noteRe.test(registry.get("req").innerHTML));
 check("(7) the window was never closed during the W8 section", closes === 0);
+
+// ── 8. 0.2.71 (CX-23 + CX-15): the reviewed token quote survives the 1.2 s re-poll and gates Approve ──
+// The real extension port CLONES every reply, so `pending` yields a fresh object on each poll. 0.2.70
+// stored the displayed quote on that object, so it was gone by the time the user clicked Approve.
+console.log("\n0.2.71: token-fill review state across polls");
+handlers.pending = () => structuredClone(state.pending);
+let resolveArgs = null;
+handlers.resolve = (...a) => { resolveArgs = a; return { ok: true, txid: "0x" + "ee".repeat(32) }; };
+const TQ = { ok: true, ticker: "PAY", amount: "7", fee: "1", total: "8", giveTicker: "AAA", giveAmount: "10" };
+let quoteReady = false;
+handlers.tokenFillQuote = () => (quoteReady ? TQ : new Promise(() => {}));   // pending until released
+const tokenReq = (id) => ({ id, method: "attest", origin: "https://dapp.example", params: { proposalId: "0x" + "aa".repeat(32), score: 100, confidence: 1_000_000 } });
+state.pending = [tokenReq("t1")];
+await tick(); await flush(); await settle();
+check("(8a) red-first: while the token preview is still loading, Approve stays DISABLED past the 700ms timer", registry.get("btn-approve").disabled === true);
+check("(8a) ...and Reject is available", registry.get("btn-reject").disabled === false);
+quoteReady = true;
+state.pending = [tokenReq("t2")];                        // a new request whose quote answers promptly
+await tick(); await flush(); await settle();
+check("(8b) paired: once the preview is ready, Approve is enabled", registry.get("btn-approve").disabled === false);
+await tick(); await flush(); await tick(); await flush();   // two more polls: `current` is now a fresh clone
+registry.get("btn-approve")._listeners.click();
+await flush(); await settle(50);
+check("(8c) red-first (CX-23): the quote the user saw still reaches the signer after re-polls",
+  !!resolveArgs && resolveArgs[0] === "t2" && resolveArgs[1] === true && resolveArgs[3]?.total === "8" && resolveArgs[3]?.fee === "1");
 
 console.log(`\napprove-repaint-dom: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -60,10 +60,15 @@ unchanged); only the blocking shape changes.
 Owner: post-CERTIFY campaign, first implementation slot.
 Bite date covered: the ~74k / ~2026-08-11 slow-hardware bite.
 
+Status (2026-09-23): SHIPPED. Wallet 0.2.68 restores the snapshot through csd-light's chunked
+`fromSnapshotAsync` (same per-header checks, yields between chunks), and 0.2.70 adds persisted partial
+progress, detached/coalesced storage writes and prewarming. Parsing and re-verifying the full span still
+grow with chain height; this item removed the blocking shape, not the work.
+
 ### 2. Binary snapshot v2
 
 Replace the JSON blob with a versioned binary record format (fixed-width header
-records, about 80 bytes per header vs about 370 as JSON), appended
+records: the native header encoding is 84 bytes per header, not Bitcoin's 80, vs about 370 as JSON), appended
 incrementally instead of whole-blob rewritten per advance. One-shot migration
 from v1 on first load; v1 fallback read kept for one release. Restore
 re-verification is UNCHANGED (same hashes, prev links, PoW, LWMA re-derivation,
@@ -78,10 +83,15 @@ pressure shared with the vault) and the parse half of the ~163k bite.
 The ONLY path that beats the unbumpable checkpoint floor. Cache, per name
 event, the minimal verified proof bundle (the PoW-verified header at the event
 height, the merkle inclusion path, the signer/prevout bind result), keyed by
-header hash. Once an event's proof is cached and re-verifiable locally, the
-full header span between proven heights no longer needs to be retained or
-re-synced, so the chain window can finally be pruned without breaking
-historical name verification.
+header hash. A cached proof lets a repeat verification skip refetching and re-proving
+that event.
+
+Correction (2026-09-23): a cached inclusion proof does NOT by itself justify pruning the
+header span. It proves that one event was included in one header; it does not prove that
+header's ancestry and cumulative work back to the checkpoint, and it says nothing about
+whether the event history is complete. Pruning the span therefore needs a separately
+specified authenticated strategy (for example a new, explicitly trusted checkpoint policy
+with its own review), not just this cache.
 
 This is a LARGE money-path change (it alters what the name-verify trust chain
 is rebuilt from) and is deliberately NOT built inside REBIND: the campaign's D3
