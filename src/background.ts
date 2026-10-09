@@ -414,9 +414,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
 // it, so a post made right before the popup closed still gets its content
 // registered once the tx mines (~30-60s) — no more hash-only placeholders.
 ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }));
-// AUTO_LOCK_MS is imported from core/wallet.js so this enforced window can't drift from the wallet's
-// own idle default (both were separate 15-min literals). Wipe the in-memory + session key after it.
-wallet.idleMs = AUTO_LOCK_MS;        // keep the session-rehydrate window == the auto-lock window
+// Idle auto-lock: the alarm wipes the in-memory + session key after AUTO_LOCK_MS without activity.
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
   chrome.alarms?.create("cairn-autolock", { periodInMinutes: 1 });
