@@ -42,17 +42,9 @@ const pkg = JSON.parse(readFileSync(join(WALLET, "package.json"), "utf8"));
 const walletNoble = { "@noble/curves": pkg.dependencies?.["@noble/curves"], "@noble/hashes": pkg.dependencies?.["@noble/hashes"] };
 const bundleSha = sha256(readFileSync(OUT));
 
-const DISTS = {
-  LIGHT: ["light", "LightClient, CsdClient"],
-  CLIENT: ["client", "rpcTxToTx"],
-  CODEC: ["codec", "txid, sighash, merkleRoot, verifyMerkleProof"],
-  CRYPTO: ["crypto", "addrFromPub, verifyDigest, recoverSigner"],
-  // Phase 2 (shared-core de-dup, docs/Plans/46): the wallet now imports the WHOLE CairnX convention from the
-  // bundle (constants/fee+name math/canonicalJson/parseRecord/regexes), not just resolve — so this rebuild
-  // entry MUST use `export *` to match scripts/build-spv-vendor.sh, or the byte-diff false-fails.
-  CAIRNX: ["cairnx", "*"],
-};
-const sdkPresent = existsSync(SDK) && Object.values(DISTS).every(([p]) => existsSync(join(SDK, `packages/${p}/dist/index.js`)));
+// The rebuild below runs scripts/build-spv-vendor.sh itself, so the entry (which dists, which exports) is
+// defined in one place. A partially built csd-sdk fails that script, which fails this gate.
+const sdkPresent = existsSync(join(SDK, "packages/cairnx/dist/index.js"));
 
 // csd-sdk's declared version + noble (read from package.json — pnpm hoists node_modules so we trust the
 // exact pins the packages declare, which are themselves what the dist was built against).
@@ -105,17 +97,11 @@ if (!sdkPresent) {
   }
   // rebuild the bundle from current dists into a temp and require byte-identity
   const tmp = mkdtempSync(join(tmpdir(), "vendor-fresh-"));
-  const entry = join(tmp, "entry.mjs");
   const outTmp = join(tmp, "out.js");
-  writeFileSync(entry, Object.values(DISTS).map(([p, names]) => {
-    const from = `"${join(SDK, `packages/${p}/dist/index.js`)}"`;
-    return names === "*" ? `export * from ${from};` : `export { ${names} } from ${from};`;
-  }).join("\n") + "\n");
   try {
-    execFileSync(join(WALLET, "node_modules/.bin/esbuild"), [entry,
-      "--bundle", "--format=esm", "--platform=browser", "--target=es2022", "--legal-comments=none", `--outfile=${outTmp}`],
-      { stdio: ["ignore", "ignore", "inherit"] });
-  } catch (e) { fail("rebuild failed (could not esbuild the current dists)"); process.exit(1); }
+    execFileSync("bash", [join(WALLET, "scripts/build-spv-vendor.sh")],
+      { env: { ...process.env, CSD_SDK_DIR: SDK, VENDOR_OUT: outTmp }, stdio: ["ignore", "ignore", "inherit"] });
+  } catch (e) { fail("rebuild failed (scripts/build-spv-vendor.sh could not bundle the current dists)"); process.exit(1); }
   const rebuiltSha = sha256(readFileSync(outTmp));
   if (rebuiltSha === bundleSha) ok(`committed bundle is byte-identical to a rebuild from csd-sdk@${sdkVersion} dists`);
   else fail(`STALE/DRIFTED: a rebuild from csd-sdk@${sdkVersion} dists (${rebuiltSha.slice(0, 12)}…) != committed bundle (${bundleSha.slice(0, 12)}…) — run scripts/build-spv-vendor.sh && node scripts/check-vendor-fresh.mjs --write`);

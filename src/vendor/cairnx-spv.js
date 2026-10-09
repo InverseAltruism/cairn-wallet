@@ -1,7 +1,7 @@
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js
 var crypto = typeof globalThis === "object" && "crypto" in globalThis ? globalThis.crypto : void 0;
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
 function isBytes(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -140,7 +140,7 @@ function randomBytes(bytesLength = 32) {
   throw new Error("crypto.getRandomValues must be defined");
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
 function setBigUint64(view, byteOffset, value, isLE) {
   if (typeof view.setBigUint64 === "function")
     return view.setBigUint64(byteOffset, value, isLE);
@@ -260,7 +260,7 @@ var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
   1541459225
 ]);
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
 var SHA256_K = /* @__PURE__ */ Uint32Array.from([
   1116352408,
   1899447441,
@@ -400,10 +400,10 @@ var SHA256 = class extends HashMD {
 };
 var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js
 var sha2562 = sha256;
 
-// ../csd-sdk/packages/codec/dist/index.js
+// packages/codec/dist/index.js
 var strip0x = (h) => h.startsWith("0x") ? h.slice(2) : h;
 var hb = (h) => hexToBytes(strip0x(h));
 var hx = (b) => "0x" + bytesToHex(b);
@@ -641,7 +641,7 @@ function payloadHash(content) {
   return "0x" + bytesToHex(sha2562(utf8ToBytes(canonicalJson(content))));
 }
 
-// ../csd-sdk/packages/client/dist/index.js
+// packages/client/dist/index.js
 var CsdClient = class {
   base;
   f;
@@ -837,7 +837,7 @@ function rpcHeaderToHeader(h) {
   return { version: h.version, prev: h.prev, merkle: h.merkle, time: h.time, bits: h.bits, nonce: h.nonce };
 }
 
-// ../csd-sdk/packages/light/dist/index.js
+// packages/light/dist/index.js
 var TARGET_MEMO_CAP = 4096;
 var targetMemo = /* @__PURE__ */ new Map();
 function bitsToTargetBigInt(bits) {
@@ -1279,7 +1279,7 @@ var LightClient = class _LightClient {
   }
 };
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
 var HMAC = class extends Hash {
   constructor(hash, _key) {
     super();
@@ -1347,7 +1347,7 @@ var HMAC = class extends Hash {
 var hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
 hmac.create = (hash, key) => new HMAC(hash, key);
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
+// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
 var _0n = /* @__PURE__ */ BigInt(0);
 var _1n = /* @__PURE__ */ BigInt(1);
 function _abool2(value, title = "") {
@@ -1500,7 +1500,7 @@ function memoized(fn) {
   };
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
+// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
 var _0n2 = BigInt(0);
 var _1n2 = BigInt(1);
 var _2n = /* @__PURE__ */ BigInt(2);
@@ -1845,7 +1845,7 @@ function mapHashToField(key, fieldOrder, isLE = false) {
   return isLE ? numberToBytesLE(reduced, fieldLen) : numberToBytesBE(reduced, fieldLen);
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
+// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
 var _0n3 = BigInt(0);
 var _1n3 = BigInt(1);
 function negateCt(condition, item) {
@@ -2123,7 +2123,7 @@ function _createCurveFields(type, CURVE, curveOpts = {}, FpFnLE) {
   return { CURVE, Fp, Fn };
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/weierstrass.js
+// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/weierstrass.js
 var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n2) / den;
 function _splitEndoScalar(k, basis, n) {
   const [[a1, b1], [a2, b2]] = basis;
@@ -3137,13 +3137,13 @@ function weierstrass(c) {
   return _ecdsa_new_output_to_legacy(c, signs);
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/_shortw_utils.js
+// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/_shortw_utils.js
 function createCurve(curveDef, defHash) {
   const create = (hash) => weierstrass({ ...curveDef, hash });
   return { ...create(defHash), create };
 }
 
-// ../csd-sdk/node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/secp256k1.js
+// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/secp256k1.js
 var secp256k1_CURVE = {
   p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
   n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
@@ -3186,7 +3186,7 @@ function sqrtMod(y) {
 var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
 var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/legacy.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/legacy.js
 var Rho160 = /* @__PURE__ */ Uint8Array.from([
   7,
   4,
@@ -3304,10 +3304,10 @@ var RIPEMD160 = class extends HashMD {
 };
 var ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160());
 
-// ../csd-sdk/node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/ripemd160.js
+// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/ripemd160.js
 var ripemd1602 = ripemd160;
 
-// ../csd-sdk/packages/crypto/dist/index.js
+// packages/crypto/dist/index.js
 var strip0x2 = (h) => h.startsWith("0x") ? h.slice(2) : h;
 var hb2 = (h) => hexToBytes(strip0x2(h));
 var hx2 = (b) => "0x" + bytesToHex(b);
@@ -3351,7 +3351,7 @@ function recoverSigner(scriptSig, digestHex) {
   }
 }
 
-// ../csd-sdk/packages/cairnx/dist/index.js
+// packages/cairnx/dist/index.js
 var DOMAIN = "cairnx:v1";
 var ACTIVATION_HEIGHT = 29860;
 var V11_HEIGHT = 29960;
@@ -3726,6 +3726,24 @@ function resolve(events, tipHeight) {
   const offers = /* @__PURE__ */ new Map();
   const offerLock = /* @__PURE__ */ new Map();
   const bids = /* @__PURE__ */ new Map();
+  const openOffers = /* @__PURE__ */ new Set();
+  const openBids = /* @__PURE__ */ new Set();
+  const pendingNames = /* @__PURE__ */ new Set();
+  const setOfferStatus = (o, status) => {
+    o.status = status;
+    if (status === "open") openOffers.add(o.id);
+    else openOffers.delete(o.id);
+  };
+  const setBidStatus = (b, status) => {
+    b.status = status;
+    if (status === "open") openBids.add(b.id);
+    else openBids.delete(b.id);
+  };
+  const putName = (nm, n) => {
+    names.set(nm, n);
+    if (n.pending) pendingNames.add(nm);
+    else pendingNames.delete(nm);
+  };
   const fclaims = /* @__PURE__ */ new Map();
   const log = [];
   let feesPaid = 0n;
@@ -3763,18 +3781,35 @@ function resolve(events, tipHeight) {
   const effExpiry = (e, height) => e.height >= V22_HEIGHT ? e.expiresEpoch : height >= V21_HEIGHT ? Math.min(e.expiresEpoch, epochOf(e.height) + MAX_OFFER_EPOCHS) : e.expiresEpoch;
   const sweepExpired = (height) => {
     const ep = epochOf(height);
-    for (const o of offers.values()) {
-      if (o.status === "open" && ep > effExpiry(o, height)) {
+    for (const id of [...openOffers]) {
+      const o = offers.get(id);
+      if (!o || o.status !== "open") {
+        openOffers.delete(id);
+        continue;
+      }
+      if (ep > effExpiry(o, height)) {
         releaseGive(o);
-        o.status = "expired";
+        setOfferStatus(o, "expired");
       }
     }
-    for (const b of bids.values()) {
-      if (b.status === "open" && ep > effExpiry(b, height)) b.status = "expired";
+    for (const id of [...openBids]) {
+      const b = bids.get(id);
+      if (!b || b.status !== "open") {
+        openBids.delete(id);
+        continue;
+      }
+      if (ep > effExpiry(b, height)) setBidStatus(b, "expired");
     }
-    for (const nm of [...names.keys()]) {
+    for (const nm of [...pendingNames]) {
       const n = names.get(nm);
-      if (n.pending && n.finalizeBy !== void 0 && height > n.finalizeBy) names.delete(nm);
+      if (!n || !n.pending) {
+        pendingNames.delete(nm);
+        continue;
+      }
+      if (n.finalizeBy !== void 0 && height > n.finalizeBy) {
+        names.delete(nm);
+        pendingNames.delete(nm);
+      }
     }
     for (const nm of [...recaptures.keys()]) {
       const r = recaptures.get(nm);
@@ -3788,13 +3823,13 @@ function resolve(events, tipHeight) {
   const markBidDone = (o, buyer) => {
     if (!o.bid) return;
     const b = bids.get(o.bid);
-    if (b && b.status === "open" && b.bidder === buyer) b.status = "done";
+    if (b && b.status === "open" && b.bidder === buyer) setBidStatus(b, "done");
   };
   const voidOpenNameOffers = (name, height) => {
     for (const o of offers.values()) if (o.status === "open" && isNameGive(o.give) && o.give.name === name) {
       if (height >= V28_HEIGHT && o.claimTxid !== void 0 && claimHeld(o, height)) continue;
       releaseGive(o);
-      o.status = "cancelled";
+      setOfferStatus(o, "cancelled");
     }
   };
   const earlierAnchor = (effHeight, pos, id, inc) => effHeight < inc.effHeight || effHeight === inc.effHeight && (pos < inc.pos || pos === inc.pos && id < inc.id);
@@ -3969,7 +4004,7 @@ function resolve(events, tipHeight) {
             continue;
           }
           voidOpenNameOffers(rec.name, ev.height);
-          names.set(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, viaFill: true, paidThroughEpoch: epClaim + NAME_TERM_EPOCHS });
+          putName(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, viaFill: true, paidThroughEpoch: epClaim + NAME_TERM_EPOCHS });
           feesPaid += fee;
           note(ev, ev.id, "name", true, "lapsed lease re-claimed (premium)");
           continue;
@@ -3993,7 +4028,7 @@ function resolve(events, tipHeight) {
           if (curActive) {
             voidOpenNameOffers(rec.name, ev.height);
           }
-          names.set(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, pending: true, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
+          putName(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, pending: true, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
           note(ev, ev.id, "name", true, curActive ? "reserved (displaced prior reservation)" : "reserved (pending finalize)");
           continue;
         }
@@ -4018,7 +4053,7 @@ function resolve(events, tipHeight) {
         if (curActive) {
           voidOpenNameOffers(rec.name, ev.height);
         }
-        names.set(rec.name, cand);
+        putName(rec.name, cand);
         feesPaid += nameRegFee(rec.name, ev.height);
         note(ev, ev.id, "name", true, curActive ? "displaced prior holder" : void 0);
       } else if (rec.t === "nfinalize") {
@@ -4047,6 +4082,7 @@ function resolve(events, tipHeight) {
           }
           delete n.pending;
           delete n.finalizeBy;
+          pendingNames.delete(rec.name);
           n.paidThroughEpoch = epochOf(ev.height) + NAME_TERM_EPOCHS;
           feesPaid += nameRegFee(rec.name, ev.height);
           note(ev, ev.id, "nfinalize", true);
@@ -4080,7 +4116,7 @@ function resolve(events, tipHeight) {
             continue;
           }
           voidOpenNameOffers(rec.name, ev.height);
-          names.set(rec.name, { owner: who, effHeight: r.effHeight, pos: r.pos, id: r.id, height: r.height, locked: false, paidThroughEpoch: ep + NAME_TERM_EPOCHS });
+          putName(rec.name, { owner: who, effHeight: r.effHeight, pos: r.pos, id: r.id, height: r.height, locked: false, paidThroughEpoch: ep + NAME_TERM_EPOCHS });
           recaptures.delete(rec.name);
           feesPaid += fee;
           note(ev, ev.id, "nfinalize", true, "recapture finalized (premium)");
@@ -4231,6 +4267,7 @@ function resolve(events, tipHeight) {
           feeBps: v11 ? v16 ? FEE_BPS_V16 : FEE_BPS : 0
         };
         offers.set(ev.id, o);
+        openOffers.add(ev.id);
         const linked = rec.bid !== void 0 ? bids.get(rec.bid) : void 0;
         if (linked) linked.offers.push(ev.id);
         note(ev, ev.id, "offer", true);
@@ -4261,6 +4298,7 @@ function resolve(events, tipHeight) {
           height: ev.height,
           offers: []
         });
+        openBids.add(ev.id);
         note(ev, ev.id, "bid", true);
       } else if (rec.t === "ocancel") {
         if (!v12) {
@@ -4282,7 +4320,7 @@ function resolve(events, tipHeight) {
               if (ev.height >= V28_HEIGHT && o.claimTxid !== void 0 && claimHeld(o, ev.height)) continue;
               if (o.status === "open") {
                 releaseGive(o);
-                o.status = "cancelled";
+                setOfferStatus(o, "cancelled");
                 n++;
               }
             }
@@ -4291,7 +4329,7 @@ function resolve(events, tipHeight) {
         } else {
           for (const o of targets) {
             releaseGive(o);
-            o.status = "cancelled";
+            setOfferStatus(o, "cancelled");
           }
           note(ev, ev.id, "ocancel", true, `${targets.length} cancelled`);
         }
@@ -4425,7 +4463,7 @@ function resolve(events, tipHeight) {
             note(ev, ev.txid, "bidcancel", false, `bid ${b.status}`);
             continue;
           }
-          b.status = "cancelled";
+          setBidStatus(b, "cancelled");
           note(ev, ev.txid, "bidcancel", true);
         }
         continue;
@@ -4451,13 +4489,13 @@ function resolve(events, tipHeight) {
             }
             if (o.status === "open") {
               releaseGive(o);
-              o.status = "cancelled";
+              setOfferStatus(o, "cancelled");
               note(ev, ev.txid, "cancel", true);
             } else note(ev, ev.txid, "cancel", false, "superseded by same-block fill (v1.4)");
           });
         } else {
           releaseGive(o);
-          o.status = "cancelled";
+          setOfferStatus(o, "cancelled");
           note(ev, ev.txid, "cancel", true);
         }
       } else if (ev.score === SCORE_FILL && isTokenWant(o.want)) {
@@ -4499,7 +4537,7 @@ function resolve(events, tipHeight) {
         if (fee > 0n) bal(o.want.ticker, TREASURY_ADDR).available += fee;
         if (isNameGive(o.give)) deliverNameToBuyer(giveName, who, ev);
         else releaseGiveLock(o, who, giveLock);
-        o.status = "filled";
+        setOfferStatus(o, "filled");
         o.fill = { buyer: who, txid: ev.txid, height: ev.height, paid: amt.toString(), fee: fee.toString() };
         markBidDone(o, who);
         note(ev, ev.txid, "fill", true);
@@ -4557,7 +4595,7 @@ function resolve(events, tipHeight) {
         (o.fills ??= []).push(entry);
         feesPaid += fee;
         if (newPaid === want) {
-          o.status = "filled";
+          setOfferStatus(o, "filled");
           o.fill = entry;
           offerLock.delete(o.id);
           markBidDone(o, who);
@@ -4613,7 +4651,7 @@ function resolve(events, tipHeight) {
           releaseGiveLock(o, who, amt);
         }
         feesPaid += fee;
-        o.status = "filled";
+        setOfferStatus(o, "filled");
         o.fill = { buyer: who, txid: ev.txid, height: ev.height, paid: paid.toString(), fee: fee.toString() };
         markBidDone(o, who);
         note(ev, ev.txid, "fill", true);
