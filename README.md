@@ -86,8 +86,8 @@ The signing core is verified against external ground truth, not only its own ass
 
 > For maintainers.
 
-1. **Bump the version in lockstep** across `package.json`, `public/manifest.json`, and `src/inpage.ts` (both the
-   provider object's `version:` and `getCapabilities`). `build.mjs` aborts the build on any drift. Then
+1. **Bump the version** in `package.json` (`npm version X.Y.Z --no-git-tag-version`). It is the only place the
+   version is written: `build.mjs` stamps it into `dist/manifest.json` and the `window.cairn` provider. Then
    `npm test && npm run package` must pass locally.
 2. **Tag and push**: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z` triggers
    `.github/workflows/release.yml`: `npm ci` → `npm test` (full gate) → `npm run package` (deterministic

@@ -79,8 +79,8 @@ function emit(outName, prefix) {
   return sha;
 }
 
-// package.json is the single source of truth for the release version (build.mjs enforces the
-// manifest/inpage lockstep at build time).
+// package.json is the single source of truth for the release version (build.mjs stamps it into
+// dist/manifest.json and the inpage provider).
 export const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 
 // B8w: the CWS upload artifact carries the version IN ITS FILENAME. The old stable name
@@ -91,7 +91,7 @@ export const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "
 export const storeZipName = (version) => `cairn-wallet-store-${version}.zip`;
 
 // B8w packaging assertion: the manifest.json that lands at the ROOT of the store zip is what the Chrome
-// Web Store shows as the version. It MUST equal package.json. build.mjs already checks this at build
+// Web Store shows as the version. It MUST equal package.json. build.mjs stamps it at build
 // time, but package.mjs can be pointed at a stale dist/ when run standalone (OP-01 prep packaged an
 // existing dist), so this is the backstop that turns "package a stale build" into a hard failure rather
 // than a silent wrong-version zip. Pinned by test/package-assert.test.mjs.

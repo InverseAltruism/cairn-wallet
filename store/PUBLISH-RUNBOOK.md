@@ -24,13 +24,12 @@ held by no single party, resident in no CI, may publish unilaterally.**
    the tag pattern and put the release job in a GitHub **environment with required reviewers** so one person
    cannot unilaterally produce the artifact. (Repo/branch protection + a 2-person review on release-relevant
    changes — GitHub's required-reviewer rule.)
-5. **SLSA provenance** is produced automatically when the source repo is **public** (`attest-build-provenance`).
-   On a private repo it is a documented no-op. Making the repo public (the wallet is already declared
-   open-source and ships reproducible byte-identical zips) restores real, verifiable provenance.
+5. **SLSA provenance** is produced for every release (`attest-build-provenance` in `release.yml`); the repo is
+   public, so the step is required and a failed attestation fails the release.
 
 ## Release procedure (every version)
-1. **Bump in lockstep** — `package.json`, `public/manifest.json`, and `src/inpage.ts` versions must agree
-   (the `build.mjs` version-sync tripwire fails the build otherwise).
+1. **Bump the version** in `package.json` only; `build.mjs` stamps it into `dist/manifest.json` and
+   `window.cairn` (provider `version` and `getCapabilities().version`).
 2. **Vendor freshness** — `npm run verify:vendor` must pass, including the full rebuild-vs-source byte-diff and
    the `csdSdkCommit` provenance match (set `ECOSYSTEM_RO_TOKEN` in CI so the cross-repo rebuild job runs;
    without it the full diff self-skips).
