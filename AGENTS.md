@@ -1,6 +1,6 @@
 # cairn-wallet
 
-> Onboarding briefing for coding agents and outside contributors. `AGENTS.md` is canonical; `CLAUDE.md` imports it, so make edits here, not there.
+> Onboarding briefing for coding agents and outside contributors. `AGENTS.md` is canonical; `CLAUDE.md` is a symlink to it.
 > Production and operations specifics (hosting, deployment, keys) are intentionally out of scope here and maintained privately by the maintainers.
 
 The first non-custodial browser wallet for Compute Substrate (CSD): a Chrome MV3 extension (Chrome/Brave/Edge) that generates a BIP-39 phrase on-device, derives accounts via BIP-32/44 at m/44'/7779'/0'/0/i (7779 is this wallet's own coin-type convention), encrypts keys locally, and signs everything on-device. It is the fund-custody endpoint of the ecosystem: CSD sends, CairnX token transfers, .csd name operations (renew, set-primary, send-to-name with in-wallet SPV), sealed commit-reveal claims, board posts, atomic offer fills (DvP), the `window.cairn` dApp provider used by cairn-substrate.com, and audience-bound Sign in with CSD (SIWC).
@@ -17,7 +17,7 @@ The wallet is the signer for the whole app layer. It talks to: the cairn web fro
 
 Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runtime npm imports (all four deps inlined).
 
-- `build.mjs`: build + three HARD TRIPWIRES: (1) forbidden external message surface (externally_connectable/onMessageExternal anywhere aborts), (2) version lockstep (package.json == manifest.json == every version string in inpage.ts), (3) source-host coverage (every hardcoded https fetch host must be in CSP connect-src AND host_permissions).
+- `build.mjs`: build + two HARD TRIPWIRES: (1) forbidden external message surface (externally_connectable/onMessageExternal anywhere aborts), (2) source-host coverage (every hardcoded https fetch host must be in CSP connect-src AND host_permissions). The release version lives only in package.json; the build stamps it into dist/manifest.json and the inpage provider (esbuild define `__WALLET_VERSION__`).
 - `src/background.ts`: MV3 service worker; owns the unlocked key, the dApp approval queue, per-origin consent, the DAPP_METHODS allowlist (enforced twice: pre-queue and in resolvePending), the popup sender-origin gate, provider events, queue caps (MAX_PENDING_GLOBAL=32 / PER_ORIGIN=5), alarm-driven auto-lock.
 - `src/content.ts` / `src/inpage.ts`: inject the frozen window.cairn provider; per-page-load nonce handshake; csd:announceProvider discovery.
 - `src/core/`:
@@ -29,7 +29,7 @@ Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runt
   - `cairnx.ts`: CairnX record builders over the vendored core; consensus rules IMPORTED never re-typed; pre-spend parseRecord round-trip so build-success implies resolver-acceptance. NO on-device registration flow (commit/reveal/finalize builders removed 2026-07-06; the /names site drives registration via dApp propose, always clear-signed).
   - `namespv.ts` (~672 lines): trustless name verification: PoW light client from baked checkpoint (height 29960), full-block merkle bind, signer auth + prevout-ownership bind, TWO-SOURCE UNION (verifyNameUnion: primary + clarvis, union by txid, SPV-prove every event, replay the audited resolver), fail-closed everywhere; viaFill names NEVER show green. BP8b: long cold syncs persist verified header PREFIXES mid-sync (partial-progress snapshots, header-chain key ONLY), so a 429'd/interrupted bootstrap RESUMES instead of restarting from zero; the lapse floor NEVER advances on a partial persist (floorAdvance runs only after a fully successful serialized sync); restore still re-verifies everything (the storage-poisoning defense is untouched).
 - `src/popup/`: popup.ts (~1,334 lines, main UI + shared send-flow engine), approve.ts (clear-signing window), clearsign.ts (pure formatters + lookalike detection + the nfinalize approve gate: re-fetches the reservation and runs finalizeWinnerCheck before allowing a fee-burning finalize), identicon, QR.
-- `src/vendor/cairnx-spv.js`: vendored esbuild bundle of csd-sdk's audited dists. PROVENANCE.json pins bundleSha256 + csdSdkVersion + csdSdkCommit + noble versions (currently csdSdkVersion 0.1.41 at csd-sdk commit 82175f98, bundle sha f34994f2c58c; the gate warns when csd-sdk HEAD has moved past that commit and the byte-diff stays authoritative); scripts/check-vendor-fresh.mjs enforces integrity; CI rebuilds byte-identical from the pinned commit.
+- `src/vendor/cairnx-spv.js`: vendored esbuild bundle of csd-sdk's audited dists. PROVENANCE.json pins bundleSha256 + csdSdkVersion + csdSdkCommit + noble versions (currently csdSdkVersion 0.1.42 at csd-sdk commit fb37dbb9, bundle sha 979a225aa831); scripts/check-vendor-fresh.mjs enforces integrity by re-running scripts/build-spv-vendor.sh into a temp file; CI rebuilds byte-identical from the pinned commit.
 - `public/manifest.json`: permissions only storage+alarms+unlimitedStorage (the SPV header snapshot outgrows the default quota); CSP connect-src limited to cairn-substrate.com, clarvis, localhost; web_accessible_resources only inpage.js; NO externally_connectable.
 - `store/`: CWS listing kit incl. PUBLISH-RUNBOOK.md (security-critical). `WALLET-ERROR-CODES.md`: the dApp error contract (codes are the contract, strings are UX copy).
 
@@ -70,7 +70,7 @@ npm run package               # deterministic zips + sha256
 npm run verify:vendor         # vendor-freshness gate
 ```
 
-Load dist/ unpacked at chrome://extensions. Rebuild the vendored SPV bundle only when csd-sdk's verify surface changes: build csd-sdk (pnpm -r build), then `bash scripts/build-spv-vendor.sh`, then `node scripts/check-vendor-fresh.mjs --write`, recommit bundle + PROVENANCE.json together. UI harness: `node scripts/ux-shots.mjs` (headless walk, zero-page-error + element-ID assertions). Live mainnet E2E (maintainer-only, spends ~0.03 CSD of real funds): `tsx scripts/live-e2e.ts`.
+Load dist/ unpacked at chrome://extensions. Rebuild the vendored SPV bundle only when csd-sdk's verify surface changes: build csd-sdk (pnpm -r build), then `bash scripts/build-spv-vendor.sh`, then `node scripts/check-vendor-fresh.mjs --write`, recommit bundle + PROVENANCE.json together. Both scripts take `CSD_SDK_DIR` (default `../csd-sdk`); esbuild runs from the csd-sdk root, so the bytes do not depend on where the two checkouts sit (a worktree of csd-sdk at the pinned commit works). UI harness: `node scripts/ux-shots.mjs` (headless walk, zero-page-error + element-ID assertions). Live mainnet E2E (maintainer-only, spends ~0.03 CSD of real funds): `tsx scripts/live-e2e.ts`.
 
 ## Testing
 
@@ -78,9 +78,9 @@ Load dist/ unpacked at chrome://extensions. Rebuild the vendored SPV bundle only
 
 ## Release and deploy
 
-1. Bump version in LOCKSTEP: package.json, public/manifest.json, src/inpage.ts (provider version AND getCapabilities().version). build.mjs hard-fails on drift.
+1. Bump the version in package.json only (`npm version X.Y.Z --no-git-tag-version`, which also updates package-lock.json). build.mjs stamps it into dist/manifest.json and window.cairn.
 2. `npm test && npm run package` green. scripts/package.mjs emits two byte-reproducible artifacts + sha256s: cairn-wallet-store.zip (manifest at zip ROOT, the CWS upload) and cairn-wallet.zip (nested, for load-unpacked).
-3. Tag + push (maintainers only) -> release.yml CI: vendor-fresh-full gate -> test -> package -> SLSA attestation (continue-on-error) -> idempotent gh release create with all four artifacts.
+3. Tag + push (maintainers only) -> release.yml CI: vendor-fresh-full gate -> test -> package -> SLSA attestation -> idempotent gh release create with all four artifacts.
 4. Chrome Web Store: MANUAL per store/PUBLISH-RUNBOOK.md. Never automate.
 5. The website's download links follow releases/latest automatically; the site updates its displayed wallet-version signal once the Chrome Web Store approves the new build.
 
@@ -95,10 +95,16 @@ SPV snapshot growth (the honest picture, established 2026-07-10): the baked chec
 - Large-send bug (2026-07, most instructive): a 10,540 CSD send (~211 coinbase inputs) failed with the misleading "may already be in flight" copy; nothing was broadcast. The first diagnosis (verify fan-out tripping the front door's rate limit) was WRONG and is superseded: the proven root cause was the front-door proxy's GLOBAL 64KB JSON body limit 400-ing /tx/submit at ~127+ inputs (~530 bytes/input) before the tx ever reached the node. Wallet 0.2.55 ships the wallet-side fixes (honest structured errors via sendRefused with "may be in flight" copy reserved for genuine SUBMIT_MAYBE_INFLIGHT/catch paths, SUBMIT_MAYBE_INFLIGHT vs SUBMIT_REJECTED, bounded verify concurrency, timeouts, TOO_MANY_INPUTS distinguished from INSUFFICIENT, token-send CSD fee pre-check, consolidate + preview); the matching server-side fix (a scoped larger body cap on that route plus a raised rate limit) shipped on the cairn front door. The fee guard was a red herring (send fee is fixed 0.01 CSD). Lesson: when a submit fails, distinguish "the front door refused the HTTP request" from "the node rejected the tx" before blaming the wallet, and never show "may be in flight" unless it truly may be.
 - Ghost-UTXO incident (h47114): a node reorg-undo bug left phantom coins; under the old any-null-kills-all fold ONE ghost bricked every spend. 0.2.53: per-coin fail-closed classification + GHOST_INPUTS_SKIPPED + honest balance warning.
 - MV3 SW idle-kill looked like premature locking; cured with chrome.storage.session key persistence. Related: the approval window runs IN A TAB, so the sender gate keys on extension-origin sender.url, not tab absence (a v0.2.17 regression).
-- Version drift shipped once (v0.2.21) -> the lockstep tripwire. A stale vendored bundle shipped once -> the PROVENANCE + byte-diff gates. Clarvis was dead-on-arrival once because its host was missing from CSP -> the source-host tripwire.
+- Version drift shipped once (v0.2.21) -> the version is now written only in package.json and stamped at build time. A stale vendored bundle shipped once -> the PROVENANCE + byte-diff gates. Clarvis was dead-on-arrival once because its host was missing from CSP -> the source-host tripwire.
 - SPV /api/headers 429 spiral (2026-06-22) blocked buys -> bounded backoff. The general standing rule "fail-closed without an availability valve is a UX regression" comes from this.
 - fillOffer once trusted a caller-supplied verified flag and could underpay a maker on a partial fill; both closed by the BigInt exact-compare need-map preflight in fillOffer and fail-closed registered-vs-unregistered handling in the union path. These guards are load-bearing; keep them.
 - Misc: rename/removeAccount take an ADDRESS not an index; sighashMatch in SubmitResult is vestigial but dApp-visible, keep it; a .csd recipient must never reach a URL un-validated (NAME_RE first); Google Safe Browsing once flagged the sites for self-serving the zip (site-side; wallet distribution is CWS + GH only).
+
+## State snapshot (2026-10-09, Plan 83 batch 1; verify with `git log` and the GitHub releases page before trusting)
+
+**Version 0.2.72 on `lts/83-wallet-0.2.72` (draft PR), not tagged, not uploaded.** Chrome Web Store field version: 0.2.71. What it carries: the vendored bundle rebuilt from csd-sdk `fb37dbb` (cairnx-core 0.1.42, the expiry-index resolver change; replay byte-identical); the vendor build runs esbuild from the csd-sdk root and the freshness gate re-runs the build script instead of keeping its own copy of the entry, so the bundle bytes no longer depend on checkout layout (from a worktree the gate used to report STALE on identical code); nprofile values are shown in full in the approval window (they were cut at 120 chars with no marker, so the tail of a signed value was hidden); the SLSA attestation step in release.yml is required (the repo is public and the step has succeeded on every release since); the version is written once, in package.json, and stamped into the manifest and the provider at build time.
+
+The section below is the 2026-09-23 snapshot, retained as release narrative.
 
 ## State snapshot (2026-09-23, Plan 80 Phase D; verify with `git log` and the GitHub releases page before trusting)
 
