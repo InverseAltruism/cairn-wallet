@@ -110,8 +110,8 @@ the csd-sdk **version and source commit**, and a CI gate (`scripts/check-vendor-
 it from source and requires byte-identity, so it cannot be hand-edited or left stale. Releases are
 built in CI from tagged source with `npm ci` and a deterministic zip writer, so they are
 **byte-for-byte reproducible**: rebuild from the same source and the SHA-256 matches the published
-release. SLSA build-provenance is emitted when the source repo is public (it is a no-op on a private
-repo; see `store/PUBLISH-RUNBOOK.md`).
+release. Every release carries a SLSA build-provenance attestation; the release job fails if it
+cannot be produced.
 
 ## Publishing & updates
 

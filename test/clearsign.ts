@@ -2,7 +2,7 @@
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
 import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
-import { buildNameRenew, buildNameSet, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck } from "../src/vendor/cairnx-spv.js";
 declare const process: { exit(code: number): void };
 
@@ -185,6 +185,15 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   ok("FEE-1: correctly-paid renewal (5 CSD at V24) does NOT warn", !/BELOW the current price/.test(mk(5e8, 49300)));
   ok("FEE-1: pre-V24 renewal paying the 3 CSD V18 price does NOT warn (no false alarm)", !/BELOW the current price/.test(mk(3e8, 44230)));
   ok("FEE-1: offline (no tip) skips the fee check (no false warning)", !/BELOW the current price/.test(mk(3e8, undefined)));
+}
+
+// RT-W1: an nprofile value (consensus cap 256 bytes) must be shown in full; the popup used to cut it at
+// 120 chars with no marker, so the tail of a signed value was invisible.
+{
+  const long = "a".repeat(150) + "TAIL";
+  const prof = buildNameProfile({ name: "audit", profile: { bio: long } });
+  const html = describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, uri: prof.uri, payloadHash: prof.payloadHash, fee: 25000000, expiresEpoch: 2000 } });
+  ok("RT-W1: nprofile value longer than 120 chars is shown in full", html.includes(`bio: <code>${long}</code>`));
 }
 
 // NFIN-WINDOW-1 (Plan 63 carry-over, 0.2.54) — the approve-path nfinalize gate: a displaced or

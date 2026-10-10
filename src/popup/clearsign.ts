@@ -257,12 +257,12 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
       return `<b>.csd name renewal</b><br>extends the lease on <code>${esc(r.name)}.csd</code>`;
     case "nprofile": {
       // v1.9 ENS-class identity (doc 36). COSMETIC profile — does NOT change where funds go. Show every
-      // key/value being set (escaped + truncated), "clears it" for an empty map, and WARN if a cosmetic
+      // key/value being set in full (parseRecord caps a value at 256 bytes), "clears it" for an empty map, and WARN if a cosmetic
       // field is named like an address (a dApp could try to dress a profile value up as a send target).
       const pm = (r.p && typeof r.p === "object" ? r.p : {}) as Record<string, unknown>;
       const keys = Object.keys(pm);
       if (!keys.length) return `<b>.csd profile</b> — <b>clears</b> the identity profile on <code>${esc(r.name)}.csd</code><br><span class="dim">cosmetic only · does not change where funds go</span>`;
-      const rows = keys.map((k) => `${esc(k)}: <code>${esc(String((pm as Record<string, unknown>)[k]).slice(0, 120))}</code>`).join("<br>");
+      const rows = keys.map((k) => `${esc(k)}: <code>${esc(String((pm as Record<string, unknown>)[k]))}</code>`).join("<br>");
       // defense-in-depth (Gate-3 INFO): warn on a reserved key NAME *or* any value that LOOKS like an
       // address (0x+40hex under ANY key) — a dApp must not be able to dress a cosmetic profile field up as
       // a send target. (Funds can never route through the profile regardless — this is purely to alert the user.)

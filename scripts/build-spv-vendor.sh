@@ -18,27 +18,25 @@
 #                                  merkle-verified name events and recompute ownership
 #
 # Rebuild with: bash scripts/build-spv-vendor.sh   (rerun + recommit whenever the SDK verify surface changes)
+# VENDOR_OUT overrides the output path (scripts/check-vendor-fresh.mjs rebuilds into a temp file with it).
 set -euo pipefail
 cd "$(dirname "$0")/.."                                   # -> cairn-wallet/
+WALLET="$PWD"
 # Locate the csd-sdk source. Defaults to the sibling checkout (../csd-sdk); CI / worktrees
 # can point it elsewhere via CSD_SDK_DIR (same env as scripts/check-vendor-fresh.mjs).
-if [ -n "${CSD_SDK_DIR:-}" ]; then
-  SDK="$CSD_SDK_DIR"
-else
-  SDK="$(cd .. && pwd)/csd-sdk"
-fi
+SDK="$(cd "${CSD_SDK_DIR:-../csd-sdk}" && pwd -P)"
 LIGHT="$SDK/packages/light/dist/index.js"
 CLIENT="$SDK/packages/client/dist/index.js"
 CODEC="$SDK/packages/codec/dist/index.js"
 CRYPTO="$SDK/packages/crypto/dist/index.js"
 CAIRNX="$SDK/packages/cairnx/dist/index.js"
-OUT="src/vendor/cairnx-spv.js"
+OUT="${VENDOR_OUT:-$WALLET/src/vendor/cairnx-spv.js}"
 
 for d in "$LIGHT" "$CLIENT" "$CODEC" "$CRYPTO" "$CAIRNX"; do
   [ -f "$d" ] || { echo "missing $d — run (cd $SDK && pnpm -r build) first"; exit 1; }
 done
 
-mkdir -p src/vendor
+mkdir -p "$(dirname "$OUT")"
 TMP_ENTRY="$(mktemp --suffix=.mjs)"
 trap 'rm -f "$TMP_ENTRY"' EXIT
 {
@@ -54,9 +52,11 @@ trap 'rm -f "$TMP_ENTRY"' EXIT
   printf 'export * from "%s";\n' "$CAIRNX"
 } > "$TMP_ENTRY"
 
-node_modules/.bin/esbuild "$TMP_ENTRY" \
+# esbuild runs from the csd-sdk root so the bundle's source-path comments are relative to csd-sdk and the
+# bytes do not depend on where the wallet and csd-sdk checkouts sit.
+(cd "$SDK" && "$WALLET/node_modules/.bin/esbuild" "$TMP_ENTRY" \
   --bundle --format=esm --platform=browser --target=es2022 \
-  --legal-comments=none --outfile="$OUT"
+  --legal-comments=none --log-level=warning --outfile="$OUT")
 
 echo "built $OUT ($(du -h "$OUT" | cut -f1))"
-node --input-type=module -e "import('./$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"
+node --input-type=module -e "import('$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"

@@ -2,7 +2,8 @@
 // incl. @noble, is inlined). background + popup are ES modules; content + inpage
 // run as classic scripts (IIFE).
 import * as esbuild from "esbuild";
-import { cpSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { assertStampedVersion, assertVersionLockstep, manifestVersionInDist } from "./scripts/package.mjs";
+import { cpSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 // F12 tripwire: the popup-isolation argument rests on the extension having NO external message
 // surface. Fail the build HARD if anything re-introduces one, so the assertion in background.ts
@@ -19,26 +20,10 @@ for (const dir of ["src", "public"]) {
   walk(dir);
 }
 
-// Version-sync tripwire: package.json is the single source of truth for the release version.
-// The Chrome Web Store shows manifest.json's version, and dApps read window.cairn.version from
-// inpage.ts — all three MUST agree. v0.2.21 shipped with a manifest/inpage left at 0.2.20 (the
-// browser kept showing the old version); this guard makes that class of release-hygiene drift a
-// hard build failure instead of a silent ship. (No literal "version" key match: scan structurally.)
+// package.json is the only place the release version is written. The build stamps it into
+// dist/manifest.json and into window.cairn (esbuild define), so the shipped copies cannot drift
+// (v0.2.21 once shipped a manifest/inpage left at the previous version).
 const PKG_VERSION = JSON.parse(readFileSync("package.json", "utf8")).version;
-const manifestVersion = JSON.parse(readFileSync("public/manifest.json", "utf8")).version;
-// inpage.ts carries the version in MORE than one place (window.cairn.version AND getCapabilities().version);
-// check EVERY `version:` string, not just the first, so a drift in only the capabilities string (which a
-// dApp reads) can't slip through. (audit N2: the old single-match regex left line ~64 unguarded.)
-const inpageVersions = [...readFileSync("src/inpage.ts", "utf8").matchAll(/version:\s*"([^"]+)"/g)].map((m) => m[1]);
-if (inpageVersions.length === 0) { console.error("✗ build aborted: no version: string found in src/inpage.ts"); process.exit(1); }
-const versionChecks = [["public/manifest.json", manifestVersion], ...inpageVersions.map((v, i) => [`src/inpage.ts (version #${i + 1})`, v])];
-for (const [where, v] of versionChecks) {
-  if (v !== PKG_VERSION) {
-    console.error(`✗ build aborted: version drift — package.json is ${PKG_VERSION} but ${where} is ${v}. Bump them in lockstep.`);
-    process.exit(1);
-  }
-}
-console.log(`✓ version sync: ${PKG_VERSION} (package.json == manifest == inpage ×${inpageVersions.length})`);
 
 // Source-host tripwire (NSPV-CLARVIS-MANIFEST-1 / H2): every hardcoded remote host the wallet FETCHES from —
 // name-history resolver sources + the SPV RPC/header origins (the `*_RPC` / `*_API` constants in wallet.ts) —
@@ -91,7 +76,7 @@ console.log(`✓ version sync: ${PKG_VERSION} (package.json == manifest == inpag
 rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist", { recursive: true });
 
-const common = { bundle: true, target: "es2022", logLevel: "info", legalComments: "none" };
+const common = { bundle: true, target: "es2022", logLevel: "info", legalComments: "none", define: { __WALLET_VERSION__: JSON.stringify(PKG_VERSION) } };
 
 // MV3 service worker cannot dynamic-import: background + approve stay single-file.
 await esbuild.build({ ...common, entryPoints: { background: "src/background.ts", approve: "src/popup/approve.ts" }, format: "esm", outdir: "dist", splitting: false });
@@ -119,7 +104,7 @@ await esbuild.build({ ...common, entryPoints: { content: "src/content.ts", inpag
   console.log(`✓ popup isolation: ${NEEDLE} ×0 in popup.js, ×${chunkHits} in ${chunks.join(", ") || "(chunks)"}`);
 }
 
-cpSync("public/manifest.json", "dist/manifest.json");
+writeFileSync("dist/manifest.json", JSON.stringify({ ...JSON.parse(readFileSync("public/manifest.json", "utf8")), version: PKG_VERSION }, null, 2) + "\n");
 cpSync("src/popup/popup.html", "dist/popup.html");
 cpSync("src/popup/approve.html", "dist/approve.html");
 cpSync("src/popup/popup.css", "dist/popup.css");
@@ -132,3 +117,8 @@ if (existsSync("public/icons")) {
   for (const f of SHIP_ICONS) if (existsSync(`public/icons/${f}`)) cpSync(`public/icons/${f}`, `dist/icons/${f}`);
 }
 console.log("✓ built dist/ — load it unpacked in chrome://extensions (Developer mode → Load unpacked → dist/)");
+
+// Output check: the stamp must have landed in every bundle and the manifest.
+assertStampedVersion("dist", PKG_VERSION);
+assertVersionLockstep(PKG_VERSION, manifestVersionInDist("dist"));
+console.log(`✓ version stamp: ${PKG_VERSION} in dist/inpage.js and dist/manifest.json, no unreplaced placeholder`);

@@ -79,8 +79,8 @@ function emit(outName, prefix) {
   return sha;
 }
 
-// package.json is the single source of truth for the release version (build.mjs enforces the
-// manifest/inpage lockstep at build time).
+// package.json is the single source of truth for the release version (build.mjs stamps it into
+// dist/manifest.json and the inpage provider).
 export const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
 
 // B8w: the CWS upload artifact carries the version IN ITS FILENAME. The old stable name
@@ -91,7 +91,7 @@ export const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "
 export const storeZipName = (version) => `cairn-wallet-store-${version}.zip`;
 
 // B8w packaging assertion: the manifest.json that lands at the ROOT of the store zip is what the Chrome
-// Web Store shows as the version. It MUST equal package.json. build.mjs already checks this at build
+// Web Store shows as the version. It MUST equal package.json. build.mjs stamps it at build
 // time, but package.mjs can be pointed at a stale dist/ when run standalone (OP-01 prep packaged an
 // existing dist), so this is the backstop that turns "package a stale build" into a hard failure rather
 // than a silent wrong-version zip. Pinned by test/package-assert.test.mjs.
@@ -104,9 +104,24 @@ export function assertVersionLockstep(pkgVersion, distManifestVersion) {
   }
 }
 
+// The version is stamped into bundles by build.mjs (esbuild `define` of __WALLET_VERSION__). If a build call
+// drops the define, the bare identifier ships and inpage.js throws on every page; this fails that build.
+export function assertStampedVersion(distDir, pkgVersion) {
+  const jsFiles = readdirSync(distDir).filter((f) => f.endsWith(".js") && statSync(join(distDir, f)).isFile());
+  const unstamped = jsFiles.filter((f) => readFileSync(join(distDir, f), "utf8").includes("__WALLET_VERSION__"));
+  if (unstamped.length) {
+    throw new Error(`✗ build output invalid: __WALLET_VERSION__ was not replaced in ${unstamped.join(", ")}; every esbuild call needs the version define.`);
+  }
+  const stamped = JSON.stringify(pkgVersion);
+  if (!readFileSync(join(distDir, "inpage.js"), "utf8").includes(stamped)) {
+    throw new Error(`✗ build output invalid: ${distDir}/inpage.js does not contain ${stamped} (package.json version); the version stamp is missing.`);
+  }
+}
+
 function main() {
   // fail HARD before writing any artifact if the built manifest drifted from package.json
   assertVersionLockstep(PKG_VERSION, manifestVersionInDist(DIST));
+  assertStampedVersion(DIST, PKG_VERSION);
   // the CWS upload artifact (manifest at root) FIRST, version-STAMPED so a stale local file can't be
   // silently uploaded. The stable name stays too (release.yml attaches it), byte-identical to the stamped
   // copy since both zip the SAME dist with the empty prefix.

@@ -1,5 +1,5 @@
 // 0.2.70 source-structure pins: connector hang, popup isolation, snapshot detach,
-// armButtons warning floor, CSD review parallel, proveEventAt pool, versions.
+// armButtons warning floor, CSD review parallel, proveEventAt pool.
 import { readFileSync } from "node:fs";
 import { refuse } from "../src/core/refuse.ts";
 
@@ -48,12 +48,6 @@ ok("toSnapshot stays inside the serialized block; cache.set is detached",
 ok("flushSpvSnapshotWrites is exported for tests", /export function flushSpvSnapshotWrites/.test(namespv));
 ok("hashAt/merkleAt are on the live source", /async hashAt\(height/.test(namespv) && /async merkleAt\(height/.test(namespv));
 ok("CP is still 29960 (no checkpoint bump)", /height: 29960/.test(namespv));
-
-const inpage = src("src/inpage.ts");
-const versions = [...inpage.matchAll(/version:\s*"([^"]+)"/g)].map((m) => m[1]);
-ok("inpage lockstep 0.2.71 (both literals)", versions.length === 2 && versions.every((v) => v === "0.2.71"));
-ok("package.json is 0.2.71", JSON.parse(src("package.json")).version === "0.2.71");
-ok("manifest is 0.2.71", JSON.parse(src("public/manifest.json")).version === "0.2.71");
 
 const build = src("build.mjs");
 ok("popup entry is its own esbuild build with splitting:true",
