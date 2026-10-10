@@ -180,7 +180,7 @@ export class Wallet {
   api = DEFAULT_API;
   tradeApi = DEFAULT_TRADE_API;
   explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base) — navigation-only
-  // Idle window for both auto-lock AND session-rehydrate expiry; background sets it to AUTO_LOCK_MS.
+  // Idle window for auto-lock and session-rehydrate expiry.
   idleMs = AUTO_LOCK_MS;
   // 0.2.70: in-memory hint-set cache for confirm-time skip (background Wallet, never the popup).
   // Dropped on SW death → next confirm full-verifies (safe). Never persisted.

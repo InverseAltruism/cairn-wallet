@@ -104,9 +104,24 @@ export function assertVersionLockstep(pkgVersion, distManifestVersion) {
   }
 }
 
+// The version is stamped into bundles by build.mjs (esbuild `define` of __WALLET_VERSION__). If a build call
+// drops the define, the bare identifier ships and inpage.js throws on every page; this fails that build.
+export function assertStampedVersion(distDir, pkgVersion) {
+  const jsFiles = readdirSync(distDir).filter((f) => f.endsWith(".js") && statSync(join(distDir, f)).isFile());
+  const unstamped = jsFiles.filter((f) => readFileSync(join(distDir, f), "utf8").includes("__WALLET_VERSION__"));
+  if (unstamped.length) {
+    throw new Error(`✗ build output invalid: __WALLET_VERSION__ was not replaced in ${unstamped.join(", ")}; every esbuild call needs the version define.`);
+  }
+  const stamped = JSON.stringify(pkgVersion);
+  if (!readFileSync(join(distDir, "inpage.js"), "utf8").includes(stamped)) {
+    throw new Error(`✗ build output invalid: ${distDir}/inpage.js does not contain ${stamped} (package.json version); the version stamp is missing.`);
+  }
+}
+
 function main() {
   // fail HARD before writing any artifact if the built manifest drifted from package.json
   assertVersionLockstep(PKG_VERSION, manifestVersionInDist(DIST));
+  assertStampedVersion(DIST, PKG_VERSION);
   // the CWS upload artifact (manifest at root) FIRST, version-STAMPED so a stale local file can't be
   // silently uploaded. The stable name stays too (release.yml attaches it), byte-identical to the stamped
   // copy since both zip the SAME dist with the empty prefix.

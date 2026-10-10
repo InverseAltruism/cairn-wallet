@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PKG_VERSION, storeZipName, assertVersionLockstep, manifestVersionInDist } from "../scripts/package.mjs";
+import { PKG_VERSION, storeZipName, assertVersionLockstep, manifestVersionInDist, assertStampedVersion } from "../scripts/package.mjs";
 
 let pass = 0, fail = 0;
 const ok = (name, fn) => { try { fn(); pass++; console.log("  ✓", name); } catch (e) { fail++; console.log("  ✗", name, "\n      ", e.message); } };
@@ -41,6 +41,24 @@ ok("manifestVersionInDist reads the manifest version from the (would-be-zipped) 
     writeFileSync(join(dir, "manifest.json"), JSON.stringify({ version: "9.9.9", name: "x" }));
     assert.equal(manifestVersionInDist(dir), "9.9.9");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// (3) the build-output stamp check: a dropped esbuild `define` must fail, a stamped dist must pass.
+const withDist = (files, fn) => {
+  const dir = mkdtempSync(join(tmpdir(), "wallet-stamp-"));
+  try { for (const [n, c] of Object.entries(files)) writeFileSync(join(dir, n), c); fn(dir); }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+};
+ok("assertStampedVersion passes on a stamped inpage.js with no placeholder (honest build shape)", () => {
+  withDist({ "inpage.js": '(()=>{window.cairn={version: "0.2.72"}})();', "background.js": "export{};" }, (dir) => assertStampedVersion(dir, "0.2.72"));
+});
+ok("assertStampedVersion THROWS when any .js still holds __WALLET_VERSION__", () => {
+  withDist({ "inpage.js": 'x={version: "0.2.72"}', "popup.js": "const v=__WALLET_VERSION__;" }, (dir) =>
+    assert.throws(() => assertStampedVersion(dir, "0.2.72"), /__WALLET_VERSION__ was not replaced in popup\.js/));
+});
+ok("assertStampedVersion THROWS when inpage.js lacks the quoted version", () => {
+  withDist({ "inpage.js": 'x={version: "0.2.71"}' }, (dir) =>
+    assert.throws(() => assertStampedVersion(dir, "0.2.72"), /inpage\.js does not contain "0\.2\.72"/));
 });
 
 console.log(`package-assert: ${pass} passed, ${fail} failed`);

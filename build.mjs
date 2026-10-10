@@ -2,6 +2,7 @@
 // incl. @noble, is inlined). background + popup are ES modules; content + inpage
 // run as classic scripts (IIFE).
 import * as esbuild from "esbuild";
+import { assertStampedVersion, assertVersionLockstep, manifestVersionInDist } from "./scripts/package.mjs";
 import { cpSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 // F12 tripwire: the popup-isolation argument rests on the extension having NO external message
@@ -116,3 +117,8 @@ if (existsSync("public/icons")) {
   for (const f of SHIP_ICONS) if (existsSync(`public/icons/${f}`)) cpSync(`public/icons/${f}`, `dist/icons/${f}`);
 }
 console.log("✓ built dist/ — load it unpacked in chrome://extensions (Developer mode → Load unpacked → dist/)");
+
+// Output check: the stamp must have landed in every bundle and the manifest.
+assertStampedVersion("dist", PKG_VERSION);
+assertVersionLockstep(PKG_VERSION, manifestVersionInDist("dist"));
+console.log(`✓ version stamp: ${PKG_VERSION} in dist/inpage.js and dist/manifest.json, no unreplaced placeholder`);
