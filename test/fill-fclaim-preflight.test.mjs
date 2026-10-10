@@ -9,8 +9,9 @@
 // as the B4 core test and namespv test inject a chain-free seam.
 //
 // Proves: honest granted+buried fill ACCEPTED; denied-fclaim REFUSED; forged-holder (someone else's fclaim)
-// REFUSED; below-depth REFUSED; the fill makes no second-resolver (clarvis) request, and a primary lie on any field
-// the removed clarvis comparison covered is refused by the merkle-proven bind; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
+// REFUSED; below-depth REFUSED; the fill reads the second resolver (clarvis) only by OFFER id (the second-source
+// verdicts are in test/fill-offer-crosscheck.test.mjs), and a primary lie on any field the 0.2.71 clarvis value
+// comparison covered is refused by the merkle-proven bind; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
 // ACCEPTED, adding a 3rd FLIPS to REFUSED, never hardcoded 0). The denied-fclaim guard is MUTATION-VERIFIED
 // (removed from the wallet source, the same forgery then SUBMITS, proving the guard is the sole rejecter).
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
@@ -92,12 +93,12 @@ const served = [coin];
 const outputs = requiredFillOutputs(servedOffer(fcH, H0 + 3), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
 
 function mkStub({ offerReply, tip = 50_000 }) {
-  const stats = { submits: [], clarvis: 0 };
+  const stats = { submits: [], clarvis: 0, clarvisUrls: [] };
   globalThis.fetch = async (url, init) => {
     const u = String(url);
     if (u.includes("/tx/submit")) { stats.submits.push(init?.body); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
     // a hostile second resolver: it would serve a diverging payto if it were ever asked
-    if (u.includes("clarvis")) { stats.clarvis++; return { ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, { want: { value: String(V), payto: "0x" + "ee".repeat(20) } }) }; }
+    if (u.includes("clarvis")) { stats.clarvis++; stats.clarvisUrls.push(u); return { ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, { want: { value: String(V), payto: "0x" + "ee".repeat(20) } }) }; }
     if (u.includes("/cairnx/offer/")) return offerReply();
     if (u.match(/\/utxos\//)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
     if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: tip }) };
@@ -165,9 +166,9 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
   check("…and nothing was submitted", s.submits.length === 0);
 }
 
-// 5a. The fclaim fill makes NO second-resolver (clarvis) request: the comparison was removed in 0.2.72 because the
-// merkle-proven bind below covers every field it compared. A clarvis that would serve a diverging payto (the
-// stub) therefore no longer blocks an honest buy. (Replaces the old 404-proceed and degraded-body-proceed cases.)
+// 5a. The fclaim fill reads clarvis once, by the OFFER id (not the fclaim txid), and compares only offer progress
+// (status, paid/delivered, reservation holder). Value fields are bound by the merkle-proven offer, so a clarvis
+// that serves a diverging payto (the stub) does not block an honest buy.
 let honestBody = null, honestWallet = null;
 {
   const { w } = await freshWallet("pw-noclarvis");
@@ -176,7 +177,8 @@ let honestBody = null, honestWallet = null;
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
   const r = await w.fillOffer({ proposalId: fcH, outputs });
   check(`honest fclaim fill submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
-  check(`...with ZERO clarvis requests (was one round trip per fill, up to 12 s) (${s.clarvis})`, s.clarvis === 0);
+  check(`...with one clarvis request, keyed by the offer id, and a diverging clarvis payto does not refuse (${s.clarvisUrls})`,
+    s.clarvis === 1 && s.clarvisUrls[0].endsWith(`/cairnx/offer/${OID.toLowerCase()}`));
   honestBody = s.submits[0];
 }
 
@@ -199,8 +201,8 @@ let honestBody = null, honestWallet = null;
     w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, patch) }) });
     const r = await w.fillOffer({ proposalId: fcH, outputs });
-    check(`primary lie on ${field} is REFUSED by the merkle-proven bind, nothing submitted, no clarvis request (${r?.error})`,
-      r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0 && s.clarvis === 0);
+    check(`primary lie on ${field} is REFUSED by the merkle-proven bind, nothing submitted (${r?.error})`,
+      r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
   }
 }
 // want.amount on a CSD-priced offer is read by nothing on this lane (the lane is CSD-only and every signed output
@@ -214,7 +216,7 @@ let honestBody = null, honestWallet = null;
     r?.ok === true && s.submits.length === 1 && typeof honestBody === "string" && s.submits[0] === honestBody);
 }
 // status: the primary serves "open" for an offer the seller cancelled before this fclaim. The grant replay over
-// proven events sees the cancel and refuses. (An honest clarvis 404s this denied fclaim, so it never caught it.)
+// proven events sees the cancel and refuses. (An honest clarvis 404s a denied fclaim txid, so the 0.2.71 fclaim-keyed comparison never caught it.)
 {
   const { w } = await freshWallet("pw-lie-status");
   const cancelled = (me) => [...baseFor(), PE(id("0c"), offerCancelAll({ ticker: "AAA" }), H0 + 3, S, 9e9), fcFor(fcH, OID, H0 + 4, me)];

@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, type TokenDisplayMeta, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, type TokenDisplayMeta, PINNED_TOKENS, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -91,16 +91,18 @@ export function tokenAmountBothScales(base: unknown, decimals: unknown, ticker: 
 // disproportionate (Plan 71 section 8, decline 6); the real number is bound at the fund boundary.
 export function tokenQuoteHtml(q: any): string {
   if (!(q && q.ok)) return `<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). The wallet will not sign this fill until the amount can be shown; try again in a moment or reject.</b>`;
-  const amt = (base: unknown, dec: unknown, tk: unknown) => {
+  const amt = (base: unknown, served: unknown, tk: unknown, deployId: unknown) => {
     const b = String(base ?? "");
+    const { decimals: dec, pinned } = displayDecimals(tk, served);
     const human = Number.isInteger(dec) ? formatBase(b, Number(dec)) : null;
-    return human != null ? `<b>${escapeHtml(human)} ${escapeHtml(String(tk))}</b> <span class="dim">(${escapeHtml(b)} base units)</span>` : `<b>${escapeHtml(b)}</b> base units of <b>${escapeHtml(String(tk))}</b>`;
+    if (human == null) return `<b>${escapeHtml(b)}</b> base units of <b>${escapeHtml(String(tk))}</b>`;
+    return `<b>${escapeHtml(human)} ${escapeHtml(String(tk))}</b> <span class="dim">(${escapeHtml(b)} base units)</span>${unverifiedMark(tk, pinned, deployId)}`;
   };
   const giveBit = (q.giveTicker || q.giveName)
-    ? ` You receive ${q.giveName ? `<b>${escapeHtml(String(q.giveName))}.csd</b>` : amt(q.giveAmount, q.giveDecimals, q.giveTicker)}.`
+    ? ` You receive ${q.giveName ? `<b>${escapeHtml(String(q.giveName))}.csd</b>` : amt(q.giveAmount, q.giveDecimals, q.giveTicker, q.giveDeployId)}.`
     : "";
   const warn = [tickerWarning(q.ticker, q.wantDeployId), q.giveTicker ? tickerWarning(q.giveTicker, q.giveDeployId) : ""].filter(Boolean).join(" ");
-  return `Filling this debits ${amt(q.total, q.wantDecimals, q.ticker)} <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span>.${giveBit} Quoted by the offer service; the wallet refuses to sign if the offer's on-chain record differs from what is shown here.${warn ? ` <b class="err">${warn}</b>` : ""}`;
+  return `Filling this debits ${amt(q.total, q.wantDecimals, q.ticker, q.wantDeployId)} <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span>.${giveBit} Quoted by the offer service; the wallet refuses to sign if the offer's on-chain record differs from what is shown here.${warn ? ` <b class="err">${warn}</b>` : ""}`;
 }
 
 /** Base units to a display string with `dec` decimals, trailing zeros trimmed. Null on bad input. */
@@ -114,7 +116,7 @@ export function formatBase(base: string, dec: number): string | null {
 
 // 0.2.71 (CX-16 item 3): the same look-alike rule as the site's verified-tokens.json. A warning, never a block.
 const WELL_KNOWN = new Set(["BTC", "ETH", "USDT", "USDC", "SOL", "BNB", "XRP", "DOGE", "ADA", "TRX", "TON", "AVAX", "LINK", "DOT", "MATIC", "SHIB", "LTC", "BCH", "USD", "EUR", "ZEC", "CAD"]);
-const CAIRN_DEPLOY_ID = "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517";
+const CAIRN_DEPLOY_ID = PINNED_TOKENS.CAIRN!.deployId;
 export function tickerWarning(ticker: unknown, deployId?: unknown): string {
   const t = String(ticker || "").toUpperCase();
   if (!t) return "";
@@ -125,6 +127,11 @@ export function tickerWarning(ticker: unknown, deployId?: unknown): string {
   }
   if (WELL_KNOWN.has(t) || t.startsWith("CX") || t.includes("CAIRN")) return `⚠ ${escapeHtml(t)} is a well-known or Cairn-like ticker that Cairn has not verified. Anyone can deploy any ticker. Check the deployer.`;
   return "";
+}
+// A human figure scaled by served decimals, on a token the wallet does not pin, gets this marker unless a
+// look-alike warning already says the token is unverified.
+function unverifiedMark(ticker: unknown, pinned: boolean, deployId: unknown): string {
+  return pinned || tickerWarning(ticker, deployId) ? "" : ` <span class="dim">(unverified token)</span>`;
 }
 
 // M14 (B5h): a revealClaim PUBLISHES the decrypted preimage of an earlier sealed commit - the user must
@@ -201,9 +208,10 @@ const esc = (v: unknown) => escapeHtml(String(v));
 const baseAmt = (v: unknown) => `<b>${esc(v)}</b> <span class="dim">base units</span>`;
 function tokenAmt(amount: unknown, ticker: unknown, meta?: TokenDisplayMeta): string {
   const m = meta?.[String(ticker)];
-  const dec = m?.decimals;
-  const amt = typeof dec === "number" && Number.isInteger(dec) && dec >= 0 && dec <= 8
-    ? `<b>${esc(tokenAmountBothScales(amount, dec, ticker))}</b>`
+  const { decimals: dec, pinned } = displayDecimals(ticker, m?.decimals);
+  const human = typeof dec === "number" && Number.isInteger(dec) && dec >= 0 && dec <= 8;
+  const amt = human
+    ? `<b>${esc(tokenAmountBothScales(amount, dec, ticker))}</b>${unverifiedMark(ticker, pinned, m?.deployId)}`
     : `${baseAmt(amount)} of <b>${esc(ticker)}</b>`;
   const warn = meta ? tickerWarning(ticker, m?.deployId) : "";
   return warn ? `${amt} <b class="err">${warn}</b>` : amt;

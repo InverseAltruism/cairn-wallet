@@ -11,10 +11,11 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
-import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
+import { secondSourceOfferConflict, startSecondSourceOfferRead, type SecondSourceRead } from "./offerxcheck.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
@@ -66,6 +67,9 @@ const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
 // the primary's defeats a withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the
 // SAME event). Fail-soft: if clarvis is unreachable the verify falls back to single-source (with caution).
 const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
+// Abort bound for the fclaim-lane second-source offer read. The fill does not wait on it: the answer is used
+// only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in test/fill-offer-crosscheck).
+const SECOND_SOURCE_TIMEOUT_MS = 12000;
 
 // The idle window shared by the wallet's auto-lock AND its session-rehydrate expiry, and by the
 // background alarm that ENFORCES the lock. Exported so the decoy default here and background's
@@ -725,8 +729,10 @@ export class Wallet {
       // `proposalId !== offer.id` fails CLOSED in verifyFillSpv (no fclaim exists below the gate).
       // fclaimLanePreflight already fails closed on any unprovable/fabricated fclaim (it must be merkle-proven in
       // the scan AND reference this offer). This makes the mandatory grant replay actually mandatory at V28.
-      if (String(proposalId).toLowerCase() !== String(offer.id ?? "").toLowerCase())
-        return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay);
+      if (String(proposalId).toLowerCase() !== String(offer.id ?? "").toLowerCase()) {
+        const second = startSecondSourceOfferRead(CLARVIS_TRADE_API, String(offer.id ?? ""), SECOND_SOURCE_TIMEOUT_MS);
+        try { return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay, second); } finally { second.stop(); }
+      }
       // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
       // a live tip. this.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
       // as 0. But the disarm is NOT just tip==0: fillIsSafe only runs the claim check when
@@ -892,7 +898,8 @@ export class Wallet {
   // whole payment. This is a faithful resolve() mirror the STRONG way: it re-derives the ENTIRE grant + hold
   // from PoW-buried, merkle-proven events (the vendored verifyFillSpv) and fails CLOSED on anything unproven —
   // it only ever REJECTS MORE than resolve(), never accepts something resolve() would reject.
-  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint): Promise<node.SubmitResult | null> {
+  // `second` is the clarvis read of the offer, started by the caller before the scan so it runs alongside it.
+  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint, second: SecondSourceRead): Promise<node.SubmitResult | null> {
     const offerId = String(offer?.id ?? "").toLowerCase();
     if (!/^0x[0-9a-f]{64}$/.test(offerId))
       return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
@@ -960,6 +967,12 @@ export class Wallet {
       const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
       return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
     }
+    // Pre-window withholding: the scan cannot see a cancel or fill older than its window, so ask the second
+    // source about the offer. Its answer counts only if it has already arrived; pending or unusable proceeds.
+    const fcEv = await io.provenEvent(fclaimTxid).catch(() => null);
+    const ownHoldEnd = fcEv && fcEv.kind === "propose" ? fclaimHoldEnd(fcEv.expiresEpoch) : undefined;
+    const conflict = secondSourceOfferConflict(offer, second.answer(), { offerId, fclaimTxid, ownHoldEnd }); // MUTATE_OFFER_XCHECK
+    if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the independent second resolver reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
     return null;
   }
 

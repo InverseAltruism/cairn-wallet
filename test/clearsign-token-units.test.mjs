@@ -10,7 +10,7 @@
 //   submitted bytes against a digest captured from the unmodified 0.2.72 tree (master 8ce3ed7).
 // Run: node --import tsx test/clearsign-token-units.test.mjs   (offline)
 import { createHash } from "node:crypto";
-import { cairnxDescribe, cairnxTokenTickers, describe } from "../src/popup/clearsign.js";
+import { cairnxDescribe, cairnxTokenTickers, describe, tokenQuoteHtml } from "../src/popup/clearsign.js";
 import { canonicalJson, cairnxPayloadHash, CAIRNX_DOMAIN } from "../src/core/cairnx.js";
 import { propose } from "../src/core/node.js";
 import { bid } from "../src/vendor/cairnx-spv.js";
@@ -61,18 +61,42 @@ console.log("2. every token side uses the same rendering (transfer, mint, offer 
   check("cairnxTokenTickers: a default-lot mint has no amount to scale", cairnxTokenTickers(mu, mph).length === 0);
 }
 
-console.log("3. decimals unknown or unusable: base units only");
+console.log("3. decimals unknown or unusable on an unpinned token: base units only");
 {
-  const plain = text(cairnxDescribe(BID.uri, BID.payloadHash, {}));
-  check("no meta for the ticker: base units of CAIRN, no human figure", plain.includes("463852873290 base units of CAIRN") && !plain.includes("4638.5"));
-  check("...and the CAIRN record-did-not-load warning (D-1)", /Could not confirm this CAIRN/.test(plain));
+  const TBID = bid({ give: { value: "5000000000" }, want: { ticker: "TOKX", amount: "463852873290" } });
+  const plain = text(cairnxDescribe(TBID.uri, TBID.payloadHash, {}));
+  check("no meta for the ticker: base units of TOKX, no human figure", plain.includes("463852873290 base units of TOKX") && !plain.includes("4638.5"));
   for (const bad of [9, -1, 2.5, "8", null]) {
-    const t = text(cairnxDescribe(BID.uri, BID.payloadHash, { CAIRN: { decimals: bad, deployId: CAIRN_DEPLOY } }));
-    check(`decimals ${JSON.stringify(bad)} is not used (base units only)`, t.includes("463852873290 base units of CAIRN") && !t.includes(" CAIRN = "));
+    const t = text(cairnxDescribe(TBID.uri, TBID.payloadHash, { TOKX: { decimals: bad } }));
+    check(`decimals ${JSON.stringify(bad)} is not used (base units only)`, t.includes("463852873290 base units of TOKX") && !t.includes(" TOKX = "));
   }
-  const noMeta = text(cairnxDescribe(BID.uri, BID.payloadHash));
-  check("no meta argument at all: base units only and no ticker warning (unchanged pre-CX-35 render)",
-    noMeta.includes("463852873290 base units of CAIRN") && !/Could not confirm|not Cairn's token/.test(noMeta));
+  const noMeta = text(cairnxDescribe(TBID.uri, TBID.payloadHash));
+  check("no meta argument at all: base units only and no ticker warning", noMeta.includes("463852873290 base units of TOKX") && !/⚠/.test(noMeta));
+  const cairnNoMeta = text(cairnxDescribe(BID.uri, BID.payloadHash, {}));
+  check("CAIRN with no meta: pinned decimals still give the human figure, plus the record-did-not-load warning (D-1)",
+    cairnNoMeta.includes("4638.5287329 CAIRN = 463852873290 base units") && /Could not confirm this CAIRN/.test(cairnNoMeta));
+}
+
+console.log("3b. L-3: a pinned token ignores served decimals; an unpinned one is marked unverified");
+{
+  // RED-FIRST: make displayDecimals return the served value for every ticker and the lied-decimals rows go red.
+  for (const lie of [0, 2, 6, 9, "8", null, undefined]) {
+    const t = text(cairnxDescribe(BID.uri, BID.payloadHash, { CAIRN: { decimals: lie, deployId: CAIRN_DEPLOY } }));
+    check(`CAIRN with served decimals ${JSON.stringify(lie)} shows the pinned 4638.5287329 CAIRN, no unverified marker`,
+      t.includes("4638.5287329 CAIRN = 463852873290 base units") && !/unverified token/.test(t));
+  }
+  const tok = bid({ give: { value: "5000000000" }, want: { ticker: "TOKX", amount: "12345" } });
+  const served = text(cairnxDescribe(tok.uri, tok.payloadHash, { TOKX: { decimals: 2 } }));
+  check("an unpinned token still uses served decimals (123.45 TOKX = 12345 base units)", served.includes("123.45 TOKX = 12345 base units"));
+  check("...and carries the (unverified token) marker", /123\.45 TOKX = 12345 base units \(unverified token\)/.test(served));
+  const look = text(cairnxDescribe(bid({ give: { value: "1" }, want: { ticker: "USDT", amount: "100" } }).uri, bid({ give: { value: "1" }, want: { ticker: "USDT", amount: "100" } }).payloadHash, { USDT: { decimals: 2 } }));
+  check("a look-alike ticker shows its warning and no second unverified marker", /not verified/.test(look) && !/unverified token/.test(look));
+  const baseOnly = text(cairnxDescribe(tok.uri, tok.payloadHash, {}));
+  check("no human figure, no marker (the marker flags a served scale)", !/unverified token/.test(baseOnly));
+  const q = { ok: true, ticker: "CAIRN", amount: "100000000", fee: "1500000", total: "101500000", wantDecimals: 0, wantDeployId: CAIRN_DEPLOY, giveTicker: "TOKX", giveAmount: "250", giveDecimals: 2 };
+  const qt = text(tokenQuoteHtml(q));
+  check("token quote: CAIRN debit uses pinned decimals over a served 0 (1.015 CAIRN)", qt.includes("1.015 CAIRN (101500000 base units)") && !/1\.015 CAIRN \(101500000 base units\) \(unverified/.test(qt));
+  check("token quote: the unpinned give side is marked (2.5 TOKX ... (unverified token))", /2\.5 TOKX \(250 base units\) \(unverified token\)/.test(qt));
 }
 
 console.log("4. PAIRED HAPPY-PATH: the signed bytes of the same bid request are unchanged");

@@ -155,17 +155,13 @@ export function countMyOtherLiveHolds(
  * authorship-bound below and fails CLOSED if unbindable, so a scriptSig-swap cannot make an in-window prior
  * hold / cancel / consuming fill vanish from the replay.
  *
- * RESIDUAL (precise, and ACCEPTED as resolver-compromise-bounded): the ONE leg left open is a hostile PRIMARY
- * resolver WITHHOLDING a genuine PRE-window event (a cancel or consuming fill OLDER than the tip-anchored
- * window), which only an unbounded anchor-to-tip body scan would surface, and that is hot-path-infeasible (a
- * V22+ offer can be weeks old). This gap is OPEN. Correction 2 only freezes a cancel landing DURING a live hold
- * (a cancel BEFORE the grant is a real cancellation, not frozen), and reorg depth is irrelevant to a
- * genuinely-buried OLD cancel. A second resolver does not close it either: an honest one has no D2 alias for
- * the denied fclaim and 404s it, which is why the fill lane no longer queries one. Fills are single-source
- * plus SPV; they are not two-source. Its only closure is the deferred B4 warm-snapshot + chunked lifecycle scan
- * (verified-event proof cache), the same "as-shown" completeness limit namespv already accepts. B6 is a STRICT
- * improvement over the pre-B6 fill, which trusted the resolver's ENTIRE answer; here only this bounded
- * pre-window-withholding leg remains.
+ * PRE-WINDOW WITHHOLDING: this scan cannot see a cancel or consuming fill OLDER than the tip-anchored window,
+ * and a full anchor-to-tip scan is too slow for the hot path (an offer can be weeks old). wallet.ts
+ * fclaimLanePreflight therefore reads the OFFER by id from the second resolver (clarvis) beside this scan and
+ * refuses when it reports the offer closed, further filled, or held by a later reservation
+ * (offerxcheck.ts, test/fill-offer-crosscheck.test.mjs). The gap is closed when clarvis answers before the scan
+ * ends and is honest. It stays open when clarvis is down, slower than the scan, or withholding the same event.
+ * The chain-only closure is still the deferred warm-snapshot lifecycle scan (verified-event proof cache).
  *
  * GIVE-BACKING is separately RESOLVER-TRUSTED (the accepted N1 residual): the offer's token/name backing is
  * synthesized from the merkle-proven offer record (see below) so the offer materializes, and it NEVER affects
@@ -175,7 +171,7 @@ export function countMyOtherLiveHolds(
  * `proposalId !== offer.id`, so a hostile PRIMARY can no longer WITHHOLD/alter the D2 `fclaimId` to steer the
  * fill away from the boundary -- see wallet.ts fillOfferPreflight), it stops a denied / superseded / forged-holder
  * / below-depth fclaim and an in-window scriptSig-suppressed hold/cancel/fill. It does NOT stop: (1) a PRE-window
- * withheld cancel/consuming-fill (above); (2) resolver-trusted give-backing (above); (3) a fill the wallet routes
+ * withheld cancel/consuming-fill (above; the second-source read covers it only when clarvis answers); (2) resolver-trusted give-backing (above); (3) a fill the wallet routes
  * to the LEGACY lane (`proposalId === offer.id` with no live fclaim hold -- a taker-bound fill or a pre-V28
  * sunset hold), which stays resolver-trusted exactly as pre-V28 (N1). A hostile primary that also relabels
  * `offer.id === proposalId` lands in that same pre-existing legacy N1 residual, not a new V28 lane.
