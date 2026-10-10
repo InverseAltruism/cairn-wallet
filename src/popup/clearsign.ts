@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, type TokenDisplayMeta, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -194,22 +194,41 @@ export function expiryLine(expiresEpoch: unknown, currentEpoch?: unknown): strin
 // a record that is canonical + hash-committed + schema-valid (anything else is a resolver
 // no-op), so what we render is exactly what the convention will execute. Unknown/invalid
 // shapes return null → the caller falls back to the raw uri.
-// Token amounts are shown in BASE UNITS (decimals are resolver state — the offline
-// approval window can't trust a site-supplied value), explicitly labeled as such.
+// Token amounts: the signed base units stay on screen. Served decimals (`meta`, display only) add a human
+// scale beside them, so a wrong decimals value does not hide what is signed (test/clearsign-token-units).
+// `meta` also carries the deploy id for tickerWarning.
 const esc = (v: unknown) => escapeHtml(String(v));
 const baseAmt = (v: unknown) => `<b>${esc(v)}</b> <span class="dim">base units</span>`;
-function sideStr(s: any): string {
+function tokenAmt(amount: unknown, ticker: unknown, meta?: TokenDisplayMeta): string {
+  const m = meta?.[String(ticker)];
+  const dec = m?.decimals;
+  const amt = typeof dec === "number" && Number.isInteger(dec) && dec >= 0 && dec <= 8
+    ? `<b>${esc(tokenAmountBothScales(amount, dec, ticker))}</b>`
+    : `${baseAmt(amount)} of <b>${esc(ticker)}</b>`;
+  const warn = meta ? tickerWarning(ticker, m?.deployId) : "";
+  return warn ? `${amt} <b class="err">${warn}</b>` : amt;
+}
+function sideStr(s: any, meta?: TokenDisplayMeta): string {
   if (s && typeof s === "object" && "name" in s) return `name <code>${esc(s.name)}.csd</code>`;
   if (s && typeof s === "object" && "value" in s) return fmtCsdBig(s.value);
-  return `${baseAmt(s?.amount)} of <b>${esc(s?.ticker)}</b>`;
+  return tokenAmt(s?.amount, s?.ticker, meta);
 }
-export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | null {
+/** Tickers whose amounts a cairnx record clear-signs (the approval window fetches their display meta). */
+export function cairnxTokenTickers(uri: unknown, payloadHash?: unknown): string[] {
+  const r = decodeCairnxRecord(uri, payloadHash) as any;
+  if (!r) return [];
+  const side = (x: any) => (x && typeof x === "object" && typeof x.ticker === "string" ? [x.ticker] : []);
+  if (r.t === "transfer" || (r.t === "mint" && r.amount !== undefined)) return [String(r.ticker)];
+  if (r.t === "offer" || r.t === "bid") return [...new Set([...side(r.give), ...side(r.want)])];
+  return [];
+}
+export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: TokenDisplayMeta): string | null {
   const r = decodeCairnxRecord(uri, payloadHash);
   if (!r) return null;
   const memo = r.memo !== undefined ? `<br>memo: <code>${esc(r.memo)}</code>` : "";
   switch (r.t) {
     case "transfer":
-      return `<b>CairnX token transfer</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${baseAmt(r.amount)}<br>to: <code>${esc(r.to)}</code>${memo}`;
+      return `<b>CairnX token transfer</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${tokenAmt(r.amount, r.ticker, meta)}<br>to: <code>${esc(r.to)}</code>${memo}`;
     case "deploy": {
       const limit = r.mint === "open" ? ` · mint limit ${esc(r.mintLimit)}/tx` : "";
       // N22 counter-case (B5g): THIS record's decimals are part of the signed bytes (schema: integer 0..8),
@@ -220,16 +239,16 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown): string | nu
       return `<b>CairnX token deploy</b><br>ticker: <b>${esc(r.ticker)}</b>${r.name !== undefined ? ` (${esc(r.name)})` : ""}<br>supply: ${baseAmt(r.supply)}${supplyHuman} · decimals: ${esc(r.decimals)}<br>minting: ${esc(r.mint)}${limit}`;
     }
     case "mint":
-      return `<b>CairnX token mint</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${r.amount !== undefined ? baseAmt(r.amount) : `<span class="dim">default lot</span>`}`;
+      return `<b>CairnX token mint</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${r.amount !== undefined ? tokenAmt(r.amount, r.ticker, meta) : `<span class="dim">default lot</span>`}`;
     case "offer": {
       const extras = (r.min !== undefined ? `<br>partial fills from: ${baseAmt(r.min)}` : "")
         + (r.taker !== undefined ? `<br>only fillable by: <code>${esc(r.taker)}</code>` : "")
         + (r.bid !== undefined ? `<br>accepts bid: <code>${esc(r.bid)}</code>` : "")
         + ((r.want as any)?.payto !== undefined ? `<br>paid to: <code>${esc((r.want as any).payto)}</code>` : "");
-      return `<b>CairnX offer</b> — escrows what you give until filled/cancelled<br>give: ${sideStr(r.give)}<br>want: ${sideStr(r.want)}${extras}${memo}`;
+      return `<b>CairnX offer</b> — escrows what you give until filled/cancelled<br>give: ${sideStr(r.give, meta)}<br>want: ${sideStr(r.want, meta)}${extras}${memo}`;
     }
     case "bid":
-      return `<b>CairnX bid</b><br>bidding: ${sideStr(r.give)}<br>for: ${sideStr(r.want)}${memo}`;
+      return `<b>CairnX bid</b><br>bidding: ${sideStr(r.give, meta)}<br>for: ${sideStr(r.want, meta)}${memo}`;
     case "ocancel": {
       const scope = r.ticker !== undefined ? `your open <b>${esc(r.ticker)}</b> offers` : r.name !== undefined ? `your open offers for <code>${esc(r.name)}.csd</code>` : `<b>ALL</b> your open offers`;
       return `<b>CairnX cancel offers</b><br>cancels ${scope} (escrow returns to you)`;
@@ -329,7 +348,7 @@ export function describe(r: any): string {
     // The dApp-supplied expiry is part of the signed bytes — surface it humanized in BOTH branches.
     const exp = p.expiresEpoch !== undefined ? `<br>${expiryLine(p.expiresEpoch, r.currentEpoch)}` : "";
     if (String(p.domain) === CAIRNX_DOMAIN) {
-      const cx = cairnxDescribe(p.uri, p.payloadHash);
+      const cx = cairnxDescribe(p.uri, p.payloadHash, r.tokenMeta);
       if (cx) {
         // CLEARSIGN-FEE-1: a dApp-built .csd registration/renewal that UNDERPAYS the length-graded fee is a
         // silent fund-loss-with-no-benefit (the fee leaves the wallet, but the resolver no-ops the underpaid

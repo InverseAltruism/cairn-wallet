@@ -39,9 +39,14 @@
 //   nrenew still has Approve disabled after the repaint's own 700ms re-enable timer; case (5c)/(6c) the
 //   repaint fires ZERO new gate fetches; case (7) an ungated request is unchanged and inherits no note.
 //
+// CX-35 (section 9): a bid's token side paints in human units beside the signed base units; the display read
+// fires once per request, never on the poll, and never reaches the resolve() call that signs.
+//   RED-FIRST: drop the tokenMeta threading in approve.ts render() and (9a) goes red.
+//
 // Run: node --import tsx test/approve-repaint-dom.test.mjs   (offline)
 import { costLine, debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { bid } from "../src/vendor/cairnx-spv.js";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -309,6 +314,34 @@ registry.get("btn-approve")._listeners.click();
 await flush(); await settle(50);
 check("(8c) red-first (CX-23): the quote the user saw still reaches the signer after re-polls",
   !!resolveArgs && resolveArgs[0] === "t2" && resolveArgs[1] === true && resolveArgs[3]?.total === "8" && resolveArgs[3]?.fee === "1");
+
+// ── 9. CX-35: a bid's token side paints in human units, and nothing display-only reaches the signer ──────
+// Production's call shape: the Sunrise quick buy raises a cairnx:v1 `propose` carrying the canonical bid record.
+console.log("\nCX-35: bid card in human units (display only)");
+const LIVE_BID = bid({ give: { value: "5000000000" }, want: { ticker: "CAIRN", amount: "463852873290" } });
+const bidReq = (id) => ({ id, method: "propose", origin: "https://cairn-substrate.com",
+  params: { domain: CAIRNX_DOMAIN, uri: LIVE_BID.uri, payloadHash: LIVE_BID.payloadHash, expiresEpoch: 2_300, fee: 25_000_000 } });
+let metaCalls = 0;
+handlers.tokenDisplayMeta = (tickers) => { metaCalls++; return Array.isArray(tickers) && tickers.includes("CAIRN") ? { CAIRN: { decimals: 8, deployId: "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517" } } : {}; };
+resolveArgs = null;
+state.pending = [bidReq("cx1")];
+await tick(); await flush(); await settle();
+const bidText = registry.get("req").innerHTML.replace(/<[^>]+>/g, "");
+check("(9a) red-first: the bid card shows 4638.5287329 CAIRN beside the signed 463852873290 base units", bidText.includes("4638.5287329 CAIRN = 463852873290 base units"));
+check("(9a) one display read for the request", metaCalls === 1);
+for (let i = 0; i < 3; i++) { await tick(); await flush(3); }
+check("(9a) the 1.2 s poll adds no display reads", metaCalls === 1);
+registry.get("btn-approve")._listeners.click();
+await flush(); await settle(50);
+check("(9b) paired: Approve resolves with exactly (id, true, signer, no quote); the display meta never travels to the signer",
+  !!resolveArgs && resolveArgs.length === 4 && resolveArgs[0] === "cx1" && resolveArgs[1] === true && resolveArgs[2] === ME && resolveArgs[3] === undefined);
+delete handlers.tokenDisplayMeta;   // the read fails (the bridge answers "no such popup method")
+state.pending = [bidReq("cx2")];
+await tick(); await flush(); await settle();
+const failText = registry.get("req").innerHTML.replace(/<[^>]+>/g, "");
+check("(9c) a failed display read paints base units only, with the record-did-not-load warning",
+  failText.includes("463852873290 base units of CAIRN") && !failText.includes("4638.5") && /Could not confirm this CAIRN/.test(failText));
+check("(9c) ...and Approve still arms (display never blocks a buy)", registry.get("btn-approve").disabled === false);
 
 console.log(`\napprove-repaint-dom: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

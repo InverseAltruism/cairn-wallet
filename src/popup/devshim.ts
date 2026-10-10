@@ -49,6 +49,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "confirmName": return w.confirmName(args[0]);
     case "verifyName": return w.verifyName(args[0]);
     case "tokenFillQuote": return w.tokenFillQuote(args[0]);
+    case "tokenDisplayMeta": return w.tokenDisplayMeta(args[0]);
     case "cairnxNameRenew": return w.cairnxNameRenew(args[0], args[1], args[2]);
     case "cairnxNameRenewFee": return w.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return w.cairnxSetPrimary(args[0], args[1]);

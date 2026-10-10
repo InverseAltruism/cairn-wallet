@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import type { CxOfferState, FillSpvIo, FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
@@ -143,26 +143,6 @@ const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived i
 // literal, so the wallet, the clearsign/approve popup formatters and the resolver all read the same value.
 // Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
 const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
-
-// The first VALUE field on which two independent resolvers disagree about an offer, or null when they agree
-// on every value-bearing field. The fclaim-lane 2nd-source (clarvis) cross-check refuses ONLY on a value
-// divergence; availability gaps (a 404 on a brand-new fclaim txid, a timeout) are fail-soft PROCEED, so an
-// honest buy is never blocked by clarvis lagging the primary. Display-only fields are deliberately ignored.
-const fieldStr = (v: unknown): string => String(v ?? "").toLowerCase();
-function divergentValueField(a: any, b: any): string | null {
-  const aw = a?.want ?? {}, bw = b?.want ?? {}, ag = a?.give ?? {}, bg = b?.give ?? {};
-  if (fieldStr(aw.payto) !== fieldStr(bw.payto)) return "recipient (want.payto)";
-  if (fieldStr(aw.value) !== fieldStr(bw.value)) return "price (want.value)";
-  if (fieldStr(aw.ticker) !== fieldStr(bw.ticker)) return "price token (want.ticker)";
-  if (fieldStr(aw.amount) !== fieldStr(bw.amount)) return "price amount (want.amount)";
-  if (fieldStr(ag.ticker) !== fieldStr(bg.ticker)) return "asset (give.ticker)";
-  if (fieldStr(ag.amount) !== fieldStr(bg.amount)) return "amount (give.amount)";
-  if (fieldStr(ag.name) !== fieldStr(bg.name)) return "asset (give.name)";
-  if (fieldStr(a?.feeBps) !== fieldStr(b?.feeBps)) return "fee (feeBps)";
-  if (fieldStr(a?.min) !== fieldStr(b?.min)) return "minimum (min)";
-  if (fieldStr(a?.status) !== fieldStr(b?.status)) return "status";
-  return null;
-}
 
 export class Wallet {
   // Unlocked state (memory only): the decrypted accounts, the active index, and the
@@ -916,10 +896,6 @@ export class Wallet {
     const offerId = String(offer?.id ?? "").toLowerCase();
     if (!/^0x[0-9a-f]{64}$/.test(offerId))
       return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
-    // 2nd-source (clarvis) VALUE cross-check. Fail-soft: a 404 (clarvis has not indexed this brand-new fclaim
-    // txid yet), an unreachable host, or a timeout PROCEEDS; ONLY a value-field divergence refuses.
-    const divergence = await this.clarvisFclaimDivergence(fclaimTxid, offer);
-    if (divergence) return divergence;
     // Build the fail-closed SPV seam (PoW-verified tip + merkle-proven offer/fclaim/hold events + the computed
     // cross-offer hold count). Any unverifiable read throws → refuse retryably (never proceed on an unproven grant).
     let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms };
@@ -984,25 +960,6 @@ export class Wallet {
       const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
       return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
     }
-    return null;
-  }
-
-  // Optional 2nd-source (clarvis) value cross-check for an fclaim-lane fill. Returns a refusal ONLY on a
-  // value-field divergence; a clarvis 404 on the fclaim txid (not yet indexed / no D2 alias there), an
-  // unreachable host, a timeout, or an unparseable body are all fail-soft PROCEED (availability, not a value
-  // conflict) — the honest buy must never decline because the 2nd source lags. (B6-scoped to the fclaim lane;
-  // the A2 track generalizes the 2-source offer cross-check to the legacy lane.)
-  private async clarvisFclaimDivergence(fclaimTxid: string, primary: any): Promise<node.SubmitResult | null> {
-    let c: any = null;
-    try {
-      const r = await fetch(`${CLARVIS_TRADE_API}/cairnx/offer/${encodeURIComponent(fclaimTxid)}`, { signal: AbortSignal.timeout(12000) });
-      if (r.status === 404 || !r.ok) return null;  // brand-new/not-indexed, or unreachable/5xx → PROCEED
-      c = await r.json().catch(() => null);
-    } catch { return null; }                        // timeout / network → PROCEED
-    if (!c || typeof c !== "object") return null;   // unparseable 2nd source → single-source PROCEED
-    if (!c.want && !c.give) return null;            // reachable clarvis with NO comparable offer terms (error/degraded/aliased body) → single-source PROCEED, never a false value conflict (keeps clarvis a strictly-OPTIONAL 2nd source)
-    const field = divergentValueField(primary, c);
-    if (field) return { ok: false, error: `your two independent resolvers disagree on this offer's ${field} — refusing to sign until they agree (possible hostile source)`, sighashMatch: false, code: "SOURCE_DIVERGENCE" };
     return null;
   }
 
@@ -1344,23 +1301,28 @@ export class Wallet {
       // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
       const giveAmount = g?.amount != null ? String(g.amount) : undefined;
       const giveName = typeof g?.name === "string" ? g.name : undefined;
-      // 0.2.71: decimals + deploy ids for display (human units, look-alike warning). Fail-soft: a failed
-      // read leaves them absent and the card shows base units only. Never used to decide what is signed.
-      // Review D-2: one bounded per-ticker read each (in parallel), not the whole token list.
-      const meta: Record<string, { decimals?: number; deployId?: string }> = {};
-      await Promise.all([w.ticker, giveTicker].filter((x): x is string => typeof x === "string").map(async (tk) => {
-        try {
-          const tr = await this.tradeGet(`/cairnx/token/${encodeURIComponent(tk)}`, 8000);
-          const t: any = tr.ok ? await tr.json().catch(() => null) : null;
-          if (t && t.ticker === tk) meta[tk] = { decimals: Number.isInteger(t.decimals) ? t.decimals : undefined, deployId: typeof t.deployId === "string" ? t.deployId : undefined };
-        } catch { /* display only */ }
-      }));
+      const meta = await this.tokenDisplayMeta([w.ticker, giveTicker]);
       return {
         ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName,
         wantDecimals: meta[w.ticker]?.decimals, wantDeployId: meta[w.ticker]?.deployId,
         giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined,
       };
     } catch { return { ok: false, error: "offer unavailable" }; }
+  }
+
+  // Decimals + deploy id per ticker for the approval cards (human units, look-alike warning). Fail-soft: a
+  // failed read leaves that ticker absent and the card shows base units only. Display only.
+  async tokenDisplayMeta(tickers: unknown): Promise<TokenDisplayMeta> {
+    const list = [...new Set((Array.isArray(tickers) ? tickers : []).filter(isTicker))].slice(0, 4);
+    const meta: TokenDisplayMeta = {};
+    await Promise.all(list.map(async (tk) => {
+      try {
+        const tr = await this.tradeGet(`/cairnx/token/${encodeURIComponent(tk)}`, 8000);
+        const t: any = tr.ok ? await tr.json().catch(() => null) : null;
+        if (t && t.ticker === tk) meta[tk] = { decimals: Number.isInteger(t.decimals) ? t.decimals : undefined, deployId: typeof t.deployId === "string" ? t.deployId : undefined };
+      } catch { /* display only: the card falls back to base units */ }
+    }));
+    return meta;
   }
 
   // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies

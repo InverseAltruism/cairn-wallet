@@ -158,13 +158,14 @@ export function countMyOtherLiveHolds(
  * RESIDUAL (precise, and ACCEPTED as resolver-compromise-bounded): the ONE leg left open is a hostile PRIMARY
  * resolver WITHHOLDING a genuine PRE-window event (a cancel or consuming fill OLDER than the tip-anchored
  * window), which only an unbounded anchor-to-tip body scan would surface, and that is hot-path-infeasible (a
- * V22+ offer can be weeks old). None of the earlier "mitigations" close it -- Correction 2 only freezes a
- * cancel landing DURING a live hold (a cancel BEFORE the grant is a real cancellation, not frozen); the B6
- * clarvis cross-check gives ZERO protection (a cancel changes no value field, and an honest clarvis simply 404s
- * the denied fclaim = fail-soft PROCEED); reorg depth is irrelevant to a genuinely-buried OLD cancel. Its only
- * closure is the deferred B4 warm-snapshot + chunked lifecycle scan (verified-event proof cache), the same
- * "as-shown" completeness limit namespv already accepts. B6 is a STRICT improvement over the pre-B6 fill, which
- * trusted the resolver's ENTIRE answer; here only this bounded pre-window-withholding leg remains.
+ * V22+ offer can be weeks old). This gap is OPEN. Correction 2 only freezes a cancel landing DURING a live hold
+ * (a cancel BEFORE the grant is a real cancellation, not frozen), and reorg depth is irrelevant to a
+ * genuinely-buried OLD cancel. A second resolver does not close it either: an honest one has no D2 alias for
+ * the denied fclaim and 404s it, which is why the fill lane no longer queries one. Fills are single-source
+ * plus SPV; they are not two-source. Its only closure is the deferred B4 warm-snapshot + chunked lifecycle scan
+ * (verified-event proof cache), the same "as-shown" completeness limit namespv already accepts. B6 is a STRICT
+ * improvement over the pre-B6 fill, which trusted the resolver's ENTIRE answer; here only this bounded
+ * pre-window-withholding leg remains.
  *
  * GIVE-BACKING is separately RESOLVER-TRUSTED (the accepted N1 residual): the offer's token/name backing is
  * synthesized from the merkle-proven offer record (see below) so the offer materializes, and it NEVER affects
