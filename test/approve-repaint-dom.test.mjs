@@ -339,8 +339,8 @@ delete handlers.tokenDisplayMeta;   // the read fails (the bridge answers "no su
 state.pending = [bidReq("cx2")];
 await tick(); await flush(); await settle();
 const failText = registry.get("req").innerHTML.replace(/<[^>]+>/g, "");
-check("(9c) a failed display read paints base units only, with the record-did-not-load warning",
-  failText.includes("463852873290 base units of CAIRN") && !failText.includes("4638.5") && /Could not confirm this CAIRN/.test(failText));
+check("(9c) a failed display read still paints CAIRN at its pinned 8 decimals beside the base units, with the record-did-not-load warning",
+  failText.includes("4638.5287329 CAIRN = 463852873290 base units") && /Could not confirm this CAIRN/.test(failText));
 check("(9c) ...and Approve still arms (display never blocks a buy)", registry.get("btn-approve").disabled === false);
 
 console.log(`\napprove-repaint-dom: ${pass} passed, ${fail} failed`);

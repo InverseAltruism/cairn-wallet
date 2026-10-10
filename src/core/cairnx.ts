@@ -211,6 +211,16 @@ export function buildNameProfile(p: { name: string; profile: Record<string, stri
 // ── decimals-aware display/entry (app-layer; BigInt throughout — never floats) ─
 // Served per-ticker display data (resolver token record). Display only; not an input to signing.
 export type TokenDisplayMeta = Record<string, { decimals?: number; deployId?: string }>;
+// Tokens the wallet pins by deploy id. A ticker names one token (first anchor wins) and its decimals are fixed
+// in the deploy record, so for these the pinned decimals are shown and served decimals are ignored.
+export const PINNED_TOKENS: Readonly<Record<string, { deployId: string; decimals: number }>> = Object.freeze({
+  CAIRN: { deployId: "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517", decimals: 8 },
+});
+/** Decimals for a token's human figure: the pinned value for a pinned ticker, else the served value unchanged. */
+export function displayDecimals(ticker: unknown, served: unknown): { decimals: unknown; pinned: boolean } {
+  const pin = Object.prototype.hasOwnProperty.call(PINNED_TOKENS, String(ticker)) ? PINNED_TOKENS[String(ticker)] : undefined;
+  return pin ? { decimals: pin.decimals, pinned: true } : { decimals: served, pinned: false };
+}
 export function formatUnits(base: unknown, decimals: unknown): string {
   let v: bigint;
   try { v = BigInt(String(base)); } catch { return "?"; }
