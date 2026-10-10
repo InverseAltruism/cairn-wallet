@@ -9,8 +9,8 @@
 // as the B4 core test and namespv test inject a chain-free seam.
 //
 // Proves: honest granted+buried fill ACCEPTED; denied-fclaim REFUSED; forged-holder (someone else's fclaim)
-// REFUSED; below-depth REFUSED; a clarvis 404 on a brand-new fclaim txid is fail-soft PROCEED; a clarvis VALUE
-// divergence REFUSES; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
+// REFUSED; below-depth REFUSED; the fill makes no second-resolver (clarvis) request, and a primary lie on any field
+// the removed clarvis comparison covered is refused by the merkle-proven bind; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
 // ACCEPTED, adding a 3rd FLIPS to REFUSED, never hardcoded 0). The denied-fclaim guard is MUTATION-VERIFIED
 // (removed from the wallet source, the same forgery then SUBMITS, proving the guard is the sole rejecter).
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
@@ -91,12 +91,13 @@ const served = [coin];
 // outputs are offer-term-derived (independent of the buyer), so the same list fills any scenario.
 const outputs = requiredFillOutputs(servedOffer(fcH, H0 + 3), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
 
-function mkStub({ offerReply, clarvisReply = () => ({ ok: false, status: 404, json: async () => ({}) }), tip = 50_000 }) {
-  const stats = { submits: [] };
-  globalThis.fetch = async (url) => {
+function mkStub({ offerReply, tip = 50_000 }) {
+  const stats = { submits: [], clarvis: 0 };
+  globalThis.fetch = async (url, init) => {
     const u = String(url);
-    if (u.includes("/tx/submit")) { stats.submits.push(1); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
-    if (u.includes("clarvis") && u.includes("/cairnx/offer/")) return clarvisReply();
+    if (u.includes("/tx/submit")) { stats.submits.push(init?.body); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
+    // a hostile second resolver: it would serve a diverging payto if it were ever asked
+    if (u.includes("clarvis")) { stats.clarvis++; return { ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, { want: { value: String(V), payto: "0x" + "ee".repeat(20) } }) }; }
     if (u.includes("/cairnx/offer/")) return offerReply();
     if (u.match(/\/utxos\//)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
     if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: tip }) };
@@ -164,45 +165,64 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
   check("…and nothing was submitted", s.submits.length === 0);
 }
 
-// 5a. clarvis 404 on a brand-new fclaim txid is FAIL-SOFT PROCEED (an honest buy is never blocked by a lagging 2nd source).
+// 5a. The fclaim fill makes NO second-resolver (clarvis) request: the comparison was removed in 0.2.72 because the
+// merkle-proven bind below covers every field it compared. A clarvis that would serve a diverging payto (the
+// stub) therefore no longer blocks an honest buy. (Replaces the old 404-proceed and degraded-body-proceed cases.)
+let honestBody = null, honestWallet = null;
 {
-  const { w } = await freshWallet("pw-clarvis404");
+  const { w } = await freshWallet("pw-noclarvis");
+  honestWallet = w;
   w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
-  const s = mkStub({
-    offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }),
-    clarvisReply: () => ({ ok: false, status: 404, json: async () => ({ error: "not found" }) }),
-  });
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
   const r = await w.fillOffer({ proposalId: fcH, outputs });
-  check(`clarvis 404 on the fclaim txid is fail-soft PROCEED (honest buy submits) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+  check(`honest fclaim fill submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+  check(`...with ZERO clarvis requests (was one round trip per fill, up to 12 s) (${s.clarvis})`, s.clarvis === 0);
+  honestBody = s.submits[0];
 }
 
-// 5b. clarvis VALUE divergence REFUSES (a second source disagrees on want.payto), even though SPV would pass.
+// 5b. Re-pointed from the clarvis value comparison: for every field it compared, a PRIMARY resolver lying on that
+// field (the case a second source was meant to catch) is refused by the merkle-proven check, with nothing
+// submitted. The proven offer is the honest one in every row; outputs are the honest outputs.
 {
-  const { w } = await freshWallet("pw-clarvisdiv");
-  w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
-  const s = mkStub({
-    offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }),
-    clarvisReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, { want: { value: String(V), payto: "0x" + "ee".repeat(20) } }) }),
-  });
-  const r = await w.fillOffer({ proposalId: fcH, outputs });
-  check(`clarvis value divergence (want.payto) REFUSES (${r?.error})`, r?.ok === false && r?.code === "SOURCE_DIVERGENCE");
-  check("…and nothing was submitted", s.submits.length === 0);
+  const lies = [
+    ["want.payto", { want: { value: String(V), payto: "0x" + "ee".repeat(20) } }],
+    ["want.value", { want: { value: String(V * 2), payto: S } }],
+    ["want.ticker", { want: { value: String(V), payto: S, ticker: "AAA" } }],
+    ["give.ticker", { give: { ticker: "BBB", amount: "10" } }],
+    ["give.amount", { give: { ticker: "AAA", amount: "11" } }],
+    ["give.name", { give: { ticker: "AAA", amount: "10", name: "alice" } }],
+    ["feeBps", { feeBps: 100 }],
+    ["min", { min: "1" }],
+  ];
+  for (const [field, patch] of lies) {
+    const { w } = await freshWallet("pw-lie-" + field);
+    w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, patch) }) });
+    const r = await w.fillOffer({ proposalId: fcH, outputs });
+    check(`primary lie on ${field} is REFUSED by the merkle-proven bind, nothing submitted, no clarvis request (${r?.error})`,
+      r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0 && s.clarvis === 0);
+  }
 }
-
-// 5c. clarvis-OPTIONAL: a REACHABLE clarvis returning HTTP 200 with a degraded body that carries NO offer terms
-// (an error/aliased/unknown-offer body, no want AND no give) is fail-soft PROCEED, NOT a false value divergence.
-// This keeps clarvis a strictly-optional second source: a reachable-but-useless clarvis can never turn into a
-// hard blocker of a legit buy. (A reachable clarvis that DOES serve a real offer with a conflicting want/give
-// still REFUSES per 5b.)
+// want.amount on a CSD-priced offer is read by nothing on this lane (the lane is CSD-only and every signed output
+// must equal the proven need-map), so a served value there cannot change the signed bytes.
 {
-  const { w } = await freshWallet("pw-clarvisdegraded");
+  const w = honestWallet;   // same key and coin as the honest fill, so deterministic signing makes equal bytes comparable
   w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
-  const s = mkStub({
-    offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }),
-    clarvisReply: () => ({ ok: true, status: 200, json: async () => ({ ok: false, error: "unknown offer" }) }), // 200, no want/give
-  });
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, { want: { value: String(V), payto: S, amount: "999" } }) }) });
   const r = await w.fillOffer({ proposalId: fcH, outputs });
-  check(`reachable clarvis with no offer terms is fail-soft PROCEED (honest buy submits) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+  check(`served want.amount on a CSD offer cannot change what is signed (same bytes as the honest fill) (${r?.error ?? "ok"})`,
+    r?.ok === true && s.submits.length === 1 && typeof honestBody === "string" && s.submits[0] === honestBody);
+}
+// status: the primary serves "open" for an offer the seller cancelled before this fclaim. The grant replay over
+// proven events sees the cancel and refuses. (An honest clarvis 404s this denied fclaim, so it never caught it.)
+{
+  const { w } = await freshWallet("pw-lie-status");
+  const cancelled = (me) => [...baseFor(), PE(id("0c"), offerCancelAll({ ticker: "AAA" }), H0 + 3, S, 9e9), fcFor(fcH, OID, H0 + 4, me)];
+  w.fillSpvIoForTest = (oid, fc, me) => makeIo(cancelled(me), HOLD_END - 5, me, H0 + 4);
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 4) }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`primary serving status "open" for a pre-grant-cancelled offer is REFUSED by the proven replay (${r?.error})`,
+    r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
 }
 
 // 6. CROSS-OFFER cap: the count is COMPUTED from the scan. 2 other-offer holds ACCEPTS; adding a 3rd FLIPS to REFUSE.
@@ -232,7 +252,7 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
 
 // F2. a lying resolver swaps the served want.payto (or seller) to an attacker while the PROVEN offer still pays
 // the real seller S. verifyFillSpv proves DELIVERY but NOT the payment recipients; the F2 bind must REFUSE and
-// nothing may submit. (clarvis is fail-soft 404 here, exactly the residual F2 closes at the fund boundary.)
+// nothing may submit.
 {
   const ATT = "0x" + "a7".repeat(20);
   const attackOffer = (extra = {}) => ({ ...servedOffer(fcH, H0 + 3), ...extra });
@@ -582,7 +602,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 // F2 (amount leg): a lying resolver serves HONEST payto/seller but a DEFLATED feeBps=0 while the offer's
 // merkle-proven creation height implies 150. requiredFillOutputs would size treasury=0; resolve() (using the
 // REAL proven fee) rejects the fill AFTER the payment leg moved = pay-without-delivery burn (theft if the
-// attacker is the seller). clarvis is fail-soft 404 here, so the SPV fee-terms bind is the sole robust defense.
+// attacker is the seller). The SPV fee-terms bind is the sole defense.
 {
   const { w } = await freshWallet("pw-f2-fee");
   const served = servedOffer(fcH, H0 + 3, { feeBps: 0 });   // DEFLATED (proven feeBpsAt(H0+2) = 150)

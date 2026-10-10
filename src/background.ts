@@ -116,6 +116,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "confirmName": return wallet.confirmName(args[0]); // 0.2.70: hint-set confirm (popup-only, READ_ONLY)
     case "verifyName": return wallet.verifyName(args[0]);
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
+    case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
     case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2]); // args[2] = expectSigner (A1)
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
@@ -242,7 +243,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "pendingMerge", "prewarmSpv"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "pendingMerge", "prewarmSpv"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

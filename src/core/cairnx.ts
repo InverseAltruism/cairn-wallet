@@ -115,7 +115,7 @@ const PROFILE_RESERVED_KEYS = new Set(["addr", "address", "coin"]);
 // parseAmount is the vendored canonical one since B9 (semantics verified identical: AMOUNT_RE +
 // MAX_AMOUNT + allowZero); only the option-object signature is adapted at this one seam.
 const parseAmount = (s: unknown, allowZero = false): bigint | null => parseAmountCanonical(s, { allowZero });
-const isTicker = (t: unknown): t is string => typeof t === "string" && TICKER_RE.test(t);
+export const isTicker = (t: unknown): t is string => typeof t === "string" && TICKER_RE.test(t);
 const isAddr = (a: unknown): a is string => typeof a === "string" && ADDR_RE.test(a);
 const isName = (n: unknown): n is string => typeof n === "string" && NAME_RE.test(n) && !RESERVED_NAMES.has(n);
 const isSalt = (s: unknown): s is string => typeof s === "string" && SALT_RE.test(s);
@@ -209,6 +209,8 @@ export function buildNameProfile(p: { name: string; profile: Record<string, stri
 }
 
 // ── decimals-aware display/entry (app-layer; BigInt throughout — never floats) ─
+// Served per-ticker display data (resolver token record). Display only; not an input to signing.
+export type TokenDisplayMeta = Record<string, { decimals?: number; deployId?: string }>;
 export function formatUnits(base: unknown, decimals: unknown): string {
   let v: bigint;
   try { v = BigInt(String(base)); } catch { return "?"; }

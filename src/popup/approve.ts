@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, type NameFetchResult } from "./clearsign.js";
+import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, cairnxTokenTickers, type NameFetchResult } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -45,12 +45,17 @@ async function render() {
   // ~2.5s await, re-enabling the buttons well before the new request paints (relocating the very window this
   // closes). The re-enable timer still fires only from the armButtons call AFTER the paint below.
   disableButtons();
+  // CX-35: decimals for the token amounts this record clear-signs, fetched in parallel with the reads below.
+  // Bounded and display only; a miss paints base units alone.
+  const p0 = current.params || {};
+  const tickers = current.method === "propose" && String(p0.domain) === CAIRNX_DOMAIN ? cairnxTokenTickers(p0.uri, p0.payloadHash) : [];
+  const metaP = tickers.length ? bounded(call("tokenDisplayMeta", tickers)) : null;
   // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
   // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
   // before building the request HTML (not per ~1.2s tick — this block runs once per new request).
   // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
   if (current.method === "propose" && (current.params || {}).expiresEpoch !== undefined) {
-    // These are the ONLY network awaits before the request paints. Bound (module-level `bounded`) and
+    // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
     // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
     // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
     const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
@@ -66,6 +71,7 @@ async function render() {
     const f = await bounded(call("tipFloor"));
     if (f != null) current.tipFloor = f;
   }
+  if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
   const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
