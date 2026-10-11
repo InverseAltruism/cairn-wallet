@@ -115,7 +115,7 @@ prints a standing commit-mismatch warning because csd-sdk HEAD has advanced past
 is authoritative and passes. **OWED before tagging:** re-run `node scripts/check-vendor-fresh.mjs --write`
 after Plan 75-B batch C0 lands on csd-sdk master, so the PROVENANCE pin names csd-sdk HEAD, and commit the
 bundle and PROVENANCE together. **OWED before uploading:** the packaged-zip human click-through,
-`docs/QA-0.2.66-packaged-clickthrough.md`, which is the only control on a vehicle with no rollback.
+`docs/archive/QA-0.2.66-packaged-clickthrough.md`, which is the only control on a vehicle with no rollback.
 Also known and deliberately NOT shipped here: the namespv checkpoint at `src/core/namespv.ts:40` stays
 29,960 (a checkpoint is a trust decision, not a perf knob, and the diff on this vehicle is kept minimal);
 `package-lock.json` still records 0.2.60 and is not one of the four lockstep literals.

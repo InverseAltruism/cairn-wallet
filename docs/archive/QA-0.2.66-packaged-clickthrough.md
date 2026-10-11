@@ -11,7 +11,7 @@ that nothing verifies the clear-sign at the DOM level in a real browser. Three o
 ## Before you start
 
 ```bash
-cd /opt/cairn_substrate/cairn-wallet
+cd <your cairn-wallet checkout>
 git rev-parse --abbrev-ref HEAD        # expect the 0.2.66 branch or master after merge
 npm run package                        # builds dist/ and emits both zips + sha256
 sha256sum -c cairn-wallet.zip.sha256 cairn-wallet-store.zip.sha256
