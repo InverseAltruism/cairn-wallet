@@ -6,7 +6,7 @@ Everything needed to list and update Cairn Wallet on the Chrome Web Store. For a
 |---|---|
 | `PUBLISH-RUNBOOK.md` | The dual-control, reproduce-then-publish procedure for each release (security-critical). |
 | `STORE-LISTING.md` | Paste-ready copy for every dashboard field (name, description, single purpose, permission justifications, data disclosures, remote-code=No, trader status, reviewer notes). |
-| `PRIVACY-POLICY.md` | The privacy policy to host at a public URL (fill in the contact-email placeholders first). |
+| `PRIVACY-POLICY.md` | The privacy policy text; the same text is served at https://cairn-substrate.com/wallet-privacy.html, the URL the store listing uses. Change both together. |
 | `assets/screenshot-1..4.png` | 1280×800 store screenshots (self-custody, HD backup, on-chain actions, safe send). |
 | `assets/promo-440x280.png` | Small promo tile (required). |
 | `assets/marquee-1400x560.png` | Marquee tile (optional, for featuring). |
