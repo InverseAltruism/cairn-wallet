@@ -110,7 +110,7 @@ collected, so leave ALL data categories UNCHECKED.
 ```
 (Do NOT check ANY category: web history, personal communications, location, financial/
 payment info, health, personal info, authentication information; none are collected or
-transmitted. This matches store/CHROME-SUBMISSION.md.)
+transmitted. This matches docs/archive/store/CHROME-SUBMISSION.md.)
 
 **Data usage: required certifications** (check all three; they are true for this extension)
 - [x] I do not sell or transfer user data to third parties, outside of the approved use cases.

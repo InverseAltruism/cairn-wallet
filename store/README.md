@@ -1,10 +1,10 @@
 # Chrome Web Store submission package
 
-Everything needed to list Cairn Wallet. Start with **SUBMISSION-CHECKLIST.md**.
+Everything needed to list and update Cairn Wallet on the Chrome Web Store. For a release, start with **PUBLISH-RUNBOOK.md**; for listing copy, **STORE-LISTING.md**. The first-listing checklist and console answers are archived in `../docs/archive/store/`.
 
 | File | What it is |
 |---|---|
-| `SUBMISSION-CHECKLIST.md` | Ordered checklist; **(you)** items are operator account/legal/host steps. |
+| `PUBLISH-RUNBOOK.md` | The dual-control, reproduce-then-publish procedure for each release (security-critical). |
 | `STORE-LISTING.md` | Paste-ready copy for every dashboard field (name, description, single purpose, permission justifications, data disclosures, remote-code=No, trader status, reviewer notes). |
 | `PRIVACY-POLICY.md` | The privacy policy to host at a public URL (fill in the contact-email placeholders first). |
 | `assets/screenshot-1..4.png` | 1280×800 store screenshots (self-custody, HD backup, on-chain actions, safe send). |

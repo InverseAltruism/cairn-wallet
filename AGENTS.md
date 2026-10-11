@@ -112,6 +112,20 @@ SPV snapshot growth (the honest picture, established 2026-07-10): the baked chec
 - fillOffer once trusted a caller-supplied verified flag and could underpay a maker on a partial fill; both closed by the BigInt exact-compare need-map preflight in fillOffer and fail-closed registered-vs-unregistered handling in the union path. These guards are load-bearing; keep them.
 - Misc: rename/removeAccount take an ADDRESS not an index; sighashMatch in SubmitResult is vestigial but dApp-visible, keep it; a .csd recipient must never reach a URL un-validated (NAME_RE first); Google Safe Browsing once flagged the sites for self-serving the zip (site-side; wallet distribution is CWS + GH only).
 
+## Docs
+
+| Doc | Holds |
+|---|---|
+| `README.md` | what the wallet is, install, accounts and recovery |
+| `SECURITY.md` | threat model, trust boundaries, how to report |
+| `WALLET-ERROR-CODES.md` | the dApp error-code contract (read by `test/wallet-0270-hygiene.test.mjs`; stays at the root) |
+| `CHANGELOG.md` | release notes, including the earlier release notes moved out of this file |
+| `docs/DESIGN-namespv-scaling.md` | design note for the namespv snapshot scaling roadmap (not built) |
+| `store/README.md` | index of the Chrome Web Store package |
+| `store/PUBLISH-RUNBOOK.md`, `store/STORE-LISTING.md`, `store/PRIVACY-POLICY.md` | release procedure, listing copy, privacy policy text |
+| `.githooks/README.md` | the secret-scan pre-commit hook |
+| `docs/archive/` | superseded docs, indexed in `docs/archive/README.md`; moved with `git mv`, basenames kept |
+
 ## State snapshot (2026-10-11; verify with `git log`, `git tag` and the GitHub releases page)
 
 `package.json` reads 0.2.73, tagged `v0.2.73` at 6275446. 0.2.73 was uploaded to the Chrome Web Store on 2026-10-11 and the store review is pending, so the store may still serve an older version. The vendored bundle pins csd-sdk 0.1.42 (`src/vendor/PROVENANCE.json`). The upload stays the operator's manual step. This block is not updated per release; release notes are in CHANGELOG.md.
