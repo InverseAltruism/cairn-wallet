@@ -20,3 +20,110 @@
   build checks that it was stamped.
 
 Earlier releases are described in their tag messages.
+
+## Earlier release notes (moved from AGENTS.md on 2026-10-11)
+
+These were dated status snapshots in AGENTS.md. They are kept as written; they describe their own date, not the current tree.
+
+### As of 2026-10-09 (Plan 83 batch 1)
+
+**Version 0.2.72 on `lts/83-wallet-0.2.72` (draft PR), not tagged, not uploaded.** Chrome Web Store field version: 0.2.71. What it carries: the vendored bundle rebuilt from csd-sdk `fb37dbb` (cairnx-core 0.1.42, the expiry-index resolver change; replay byte-identical); the vendor build runs esbuild from the csd-sdk root and the freshness gate re-runs the build script instead of keeping its own copy of the entry, so the bundle bytes no longer depend on checkout layout (from a worktree the gate used to report STALE on identical code); nprofile values are shown in full in the approval window (they were cut at 120 chars with no marker, so the tail of a signed value was hidden); the SLSA attestation step in release.yml is required (the repo is public and the step has succeeded on every release since); the version is written once, in package.json, and stamped into the manifest and the provider at build time.
+
+
+### As of 2026-09-23 (Plan 80 Phase D)
+
+**Version 0.2.71 on `wallet/0.2.71` (PR #4), to be tagged `v0.2.71` after the packaged QA.** Chrome Web Store field version before it: 0.2.70. What it carries: token-debiting fills are signed only against the complete exchange the approval window showed (`REVIEW_REQUIRED` when the reviewed quote is missing or lacks fee and total; fee and total bound to the merkle-proven terms, CX-15); approval review state is kept per request id, so the 1.2 s re-poll cannot drop the reviewed quote (CX-23); two-stage arming (Reject at once, Approve only after the token quote paints); human units on the token card; look-alike ticker warning keyed on the CAIRN deploy id, which warns when the record did not load (CX-16.3); per-ticker token reads for the preview; a duplicate approval window closes itself. Gate: 64/64 test files, typecheck, build tripwires; the vendored bundle is byte-identical to 0.2.70 (release.yml re-verifies it from the pinned csd-sdk commit `06c3780`). Packaged QA on the extracted store zip (sha256 `eaeac36f…`): token-for-token fill with a human-unit card and broadcast; a fill whose quote cannot load never arms Approve. Known and not in this release: the **bid** card still shows base units (0.2.72); after Approve the wallet verifies and broadcasts about 9 s later, and a fresh install's first fill first syncs its light client from 29,960 (73 s in QA). Upload to the Chrome Web Store stays the operator's manual step.
+
+
+### As of 2026-08-02 (Plan 75-B batch C2)
+
+**Version 0.2.66, MERGED to master `a036261`, TAGGED `v0.2.66`, GitHub release built by `release.yml`
+with all four assets (2026-08-03). The Chrome Web Store upload is the ONE remaining action.** Store-zip
+sha256 `5446a71bedab8072dc6742c61c2c81d017c119d0bc1fdfd41e1df92b44db0870`, matching the released
+`.sha256` asset byte for byte; the manifest inside the zip reads 0.2.66.
+★**The packaged-artifact QA PASSED** (see cairn/docs/Plans/75-TRACKER.md section L): 5 of 7 scenarios
+executed in real headed Chrome against the PACKAGED zip on the live chain, 43 assertions, 0 FAIL, and the
+three lock-dependent ones (W1, poisoning, W8) driven by the REAL 15-minute idle auto-lock timer rather
+than a scripted `lock()`. W2 was proven by forcing the race with a 6 s CDP request pause, because at real
+network speed the window does not exist and the test would be vacuous. S4 (token fill) is N-A, no live
+subject exists; S5 (Renew) is N-A, register-then-renew costs 6.00 CSD against the 2.00 CSD test ceiling,
+so **W5's Renew happy path is untested on the packaged artifact** and is covered instead by
+`test/fee-tier-clamp.test.mjs`, which pins that a fractional tip returns null and is NOT normalized to 0.
+★**ROLLBACK, corrected by the operator 2026-08-03:** the Chrome Web Store IS rollback-capable, and nobody
+installs from the GitHub release. Any doc saying "no rollback, only a forward 0.2.67" is wrong. The Chrome Web Store
+field version is **0.2.64** (the listing has read 0.2.64 since 2026-07-23); the repo and the GitHub release
+are at 0.2.65, which was minted by Plan 75 and never reached the store, so this ships as 0.2.66 and the
+store jumps 0.2.64 to 0.2.66. Rollback on this vehicle is FORWARD ONLY, as 0.2.67.
+
+What 0.2.66 carries (Plan 75-B C2, items W1 to W8, seven code edits):
+W1 (AW-4) the approval window resets four of its five once-per-request latches at the `$("req").innerHTML`
+rebuild, so an approval left open across an idle auto-lock repaints its address-poisoning and
+first-time-recipient warnings and its token debit quote instead of showing empty boxes; the 1.2s poll adds
+zero fetches (pinned by `test/approve-repaint-dom.test.mjs`). The FIFTH latch is the approve-gate latch and
+is deliberately not reset; it is W8 below.
+W2 (AW-3) the async DOM fillers (`fillBalance`, `fillSendWarning`, `fillTokenSim`) carry the
+`renderedId !== r.id` guard after their await, so a superseded request's late balance fetch can no longer
+repaint the money row of the request now on screen.
+W3 (N-05) `fillOffer`'s score guard uses `!= null`, so an explicit `score: null` is treated as absent
+again (it never shipped; the store still serves 0.2.64, and this release must not be the one that
+introduces the refusal). A present-and-not-100 score is still refused.
+W4 (AW-SEAL-LOCK-1) `lock()` no longer wipes `pendingHist`/`pendingSeals`. An idle auto-lock destroyed a
+PAID commit's only reveal nonce and the parked history rows behind the double-pay backstop. `doReset()`
+still clears both, so reset discipline is unchanged, and `test/storage-durability.test.mjs` case I is
+revised (with its reasoning) from M9's old pin. HONESTY: both arrays are RAM on the MV3 service worker and
+still die at SW idle kill; this buys survival across a lock and unlock inside ONE service-worker lifetime,
+not durability.
+W5 (Q-02) `feePricingTip` normalizes with `Number.isSafeInteger` and returns `number | null`. A served tip
+of `65100.5` or `1e16` is finite but is not a height: it used to reach the vendored `buildFeeHeight`, throw
+RangeError, and be swallowed by clearsign's bare catch, silently disarming the CLEARSIGN-FEE-1
+underpayment warning. Normalizing to 0 would have been WORSE (it prices the cheapest tier, so the wallet's
+own Renew would build an underpaid record and BURN the fee), so both build sites refuse on null. That
+refusal IS UX-6's refusal and is recorded as such; the paired happy-path (fresh install, live tip, floor 0)
+prices and signs unchanged.
+W6 (ND-1) a fifth input verdict, `unrepresentable`, with code `VERIFY_UNREPRESENTABLE`. There is no upper
+bound on `expires_epoch` in consensus, so a stranger could anchor one tx with
+`expires_epoch = 9007199254740993` and 1 sat to a victim: `JSON.parse` rounds it, the recomputed txid
+differs, the coin classified `tamper`, and tamper is decisive for the whole spend. `consolidate()` selects
+smallest-first, so that dust coin bricked the documented remedy for the large-send class, permanently. The
+new verdict is classified on the RAW body before `nodeTxToTx`, mirrors `horizon` (per-coin skippable, own
+array, own reporting rung after horizon and before notfound), adds NO rung to the decisive fold, and is
+never aliased to `notfound` (that copy would call a real coin missing). A well-formed body with a wrong
+txid is still `tamper`.
+W7 the four version literals (`package.json`, `public/manifest.json`, `src/inpage.ts` x2) at 0.2.66, and
+this snapshot. No new version tripwire was built: `build.mjs:32-38` already matches EVERY `version:`
+string in `inpage.ts` and was re-verified live by mutating the manifest and the second inpage literal
+(both aborted the build).
+W8 (AW-4, the fifth latch) the nfinalize/nrenew/nset approve-gate note survives the unlock repaint. Its
+latch (`nfinForId`) was outside W1's reset line while its output is written with `insertAdjacentHTML` into
+the very element the rebuild destroys, so a FEE-BURN warning (for example that the name is a pending
+reservation rather than a finalized registration, so the renewal would be ignored on-chain and the fee
+burned) was still silently lost across an idle auto-lock, inside W1's own stated rule. The fix RE-ATTACHES the already-settled verdict and
+nothing else. Adding `nfinForId` to W1's reset line instead would have AUTHORED A NEW DEFECT: it re-runs
+the bounded 6s name fetch on every repaint AND resets `nfinBlocked` to false with a fresh in-flight
+verdict, so `armButtons`' 700ms timer re-enables Approve on a request the gate had already BLOCKED until
+the new verdict lands. Both shapes are pinned in `test/approve-repaint-dom.test.mjs` (cases 5 to 7): the
+naive reset is what turns the blocked-button assertion red. Not handled and stated plainly rather than
+left implied: a verdict that settles WHILE the wallet is locked is still dropped by the `renderedId` guard,
+so it has no note to re-attach and `nfinBlocked` stays false; `resolve()` still awaits `nfinGate` and
+refuses a blocking verdict at the click, which is the fund-safety belt in that corner.
+
+Gate as run 2026-08-02 on this branch: `npm run typecheck` clean, `npm test` **57/57 files** (up from 54;
+three new files: `approve-repaint-dom`, `seal-lock-park`, `unrepresentable-coin`), `npm run build` green
+with all three tripwires, `npm run verify:vendor` PASSES byte-identically against csd-sdk 0.1.41 dists.
+Vendored bundle: `csdSdkVersion 0.1.41`, `csdSdkCommit 82175f98`, `bundleSha256 f34994f2c58c`. The gate
+prints a standing commit-mismatch warning because csd-sdk HEAD has advanced past that pin; the byte-diff
+is authoritative and passes. **OWED before tagging:** re-run `node scripts/check-vendor-fresh.mjs --write`
+after Plan 75-B batch C0 lands on csd-sdk master, so the PROVENANCE pin names csd-sdk HEAD, and commit the
+bundle and PROVENANCE together. **OWED before uploading:** the packaged-zip human click-through,
+`docs/QA-0.2.66-packaged-clickthrough.md`, which is the only control on a vehicle with no rollback.
+Also known and deliberately NOT shipped here: the namespv checkpoint at `src/core/namespv.ts:40` stays
+29,960 (a checkpoint is a trust decision, not a perf knob, and the diff on this vehicle is kept minimal);
+`package-lock.json` still records 0.2.60 and is not one of the four lockstep literals.
+
+
+Version 0.2.64 on master, RELEASED: tag v0.2.64 (6ff9615), PROVENANCE byte-verified at csd-sdk 0.1.40/722b427, CI GitHub release built, and the CWS upload is DONE (0.2.64 live in the Chrome Web Store as of 2026-07-23; field adoption feeds the ~tip-80,000 V29 checkpoint). Master is one merge ahead of the tag: rebind/bp6-wallet (BP6 wallet half, the OBS-3 legacy-claim tombstone) was rebased onto 0.2.64 and merged 2026-07-23 once the tip passed 60,134 (below that the tombstone would have shipped a burn window); it rides the NEXT wallet vehicle, suite 48/48 at merge. What shipped IN 0.2.64 (the S-06 mega-vehicle): B4a (single-source), the B5 WALLET-HARDEN chain B5a..B5f + B5g/h/i, BP8b (namespv partial-progress snapshot persistence, see the namespv bullet: partial persists write the header-chain key only, the lapse floor never advances on one), BP8-design (docs/DESIGN-namespv-scaling.md, the N14 scaling roadmap), BN0w (the node SCAN_HORIZON 503 consumed as a fourth per-coin-skippable "horizon" verify verdict; inert until node v0.1.6 emits it), B8w (the runner-guards N24 guard-of-the-guard + lazy dist walk + the N18 pin), the re-vendor to cairnx-core 0.1.40 (PROVENANCE re-pinned at release per R3), and B7e + B7e-FIX (BOTH fill lanes bind; the token lane now merkle-proves the offer record and binds give/want content, see the trust-model bullet; CONF_TOKEN_FILL de-duped across its 5 sites). 0.2.64 carried ~15 batches in one CWS upload (the named mega-vehicle risk, accepted in writing; upload completed 2026-07-23). M3 residual, accepted in writing: the tokenFillQuote clear-sign DISPLAY number stays resolver-served and explicitly unverified (bounded: the fill itself is content-bound, so the worst case is a warning-ignoring user overpaying up to the genuine on-chain price, not theft; loud verify-on-explorer warning; recorded cheap tightening = echo the preflight's proven wantAmount into the clear-sign). History below this line is prior-release narrative, not the current tree.
+
+0.2.63 (2026-07-20, REBIND S-03: BP4 fclaim scan transport - the ~224-block by-height fclaim scan parallelized into bounded-concurrency waves (pool 12, ascending) with a per-height bindBlock memo and a shared light client behind a single-flight LC.sync serializer so two concurrent consumers cannot interleave ingests; plus a source-pinned guard that the serializer is applied at its use-site, and the B0c glob test runner. Zero verification-logic change. Git-level released + tagged v0.2.63 + CI GitHub release rebuilt; the CWS upload is the operator's manual step). 0.2.62 (2026-07-18: the legacy dApp fill lane now MERKLE-PROVE-binds want-TYPE - refuse to sign a CSD payment on an offer whose proven on-chain terms carry no `want.value`, closing a lying-resolver token-priced-as-CSD pay-without-delivery burn; mirrors the fclaim lane's isTokenWant rejection. Git-level released + tagged; the CWS upload is the operator's manual step). 0.2.61 was Plan 70 R1/R1.1/R2 fund-boundary binds: F2/F2-legacy payto+seller+fee+min on both fill lanes, L5 seal-preimage encrypt-at-rest; vendored cairnx-core 0.1.38 @ csd-sdk commit 84f22d7. The dated batch narratives BELOW (0.2.55-0.2.58) are historical context, not the current tree. // 0.2.58 batch: persistVault serialized behind a promise chain + cleartext mirror captured from the same pre-await snapshot as the sealed doc, so concurrent account-management can no longer drop a just-added imported (non-recoverable) key (pinned by persistvault-race.test.mjs); nfinalize gate comment corrected to honest resolver-trust scope (the finalize window is best-effort against an honest-but-stale resolver, not a Byzantine one); F-CLIP btn-backup-done clears a copied first-backup secret on dismiss; expectSigner throw consolidated to one helper.
+
+The 0.2.57 batch (Plans/68 Tracks A + B1/B2 + C2): signing-context capture closes the fillOffer account-switch race (captureSigner/signerUnchanged + the expectSigner backstop threaded from the approval window AND the popup review snapshots; ACCOUNT_CHANGED now fires at the sign tick, not only pre-dispatch); imported-key removal is password-gated with an irreversibility warning (HD removal stays one-click; sentinel REMOVE_IMPORTED_REAUTH); the fillOffer preflight fails CLOSED on a clean 404 or status-less 200 (new code OFFER_UNKNOWN - filling a proposal the resolver will not settle burned the whole payment); the nfinalize approve gate gains the freeze-window half via the completed vendored finalizeWinnerCheck (cairnx-core 0.1.36) and the gate now also covers nrenew/nset (nameActApproveGate: block only definitive no-ops, warn on transport failure); flushPending keeps paid bodies on a refused registration and survives concurrent queueing; getPermissions requires unlocked; single-source/low-depth name badges read honestly weaker; maybe-entries get a post-expiry tombstone and maybe-path seals are flagged; CI actions SHA-pinned (attest v2). Vendored core: cairnx-core 0.1.36 + csd-light 0.1.17 (snapshot anchor containment + restore-time timestamp rules) at the csd-sdk commit pinned in src/vendor/PROVENANCE.json. The 0.2.55 batch (unreleased, riding in 0.2.56): honest structured send errors (SUBMIT_MAYBE_INFLIGHT / SUBMIT_DUPLICATE with locally computed txids), coin consolidation + preview + the pending-merge indicator and merge-aware refusal copy, bounded verify concurrency, timeout-inversion fixes, unlimitedStorage, clarvis resolve fallback, 7-day pending-content retention. The 0.2.56 batch: maybe-inflight outcomes recorded in history for EVERY value flow at the maybeRecord chokepoint (maybe:true entries with the local txid; cleared in place on a definitive ok/duplicate or when the txid shows up in the utxo set; time-bounded "may be in flight" marker in the history UI), history filed under the account that SIGNED (pre-await histKey capture), maybe-inflight cairnPost content + sealClaim preimages persisted (a landed ambiguous tx no longer loses its body/reveal), ~4x faster SPV snapshot restore (vendored csd-light 0.1.16 LWMA memo, byte-identical), Terms of Use + Privacy links in Settings, spendableCoins/clarvis-fallback/2xx-unparseable test pins, store-listing unlimitedStorage justification, em-dash-free user-facing docs, portable ux-shots (no machine paths in the public repo). Vendored core: cairnx-core 0.1.35 + csd-light 0.1.16 at the csd-sdk commit pinned in src/vendor/PROVENANCE.json.
+
