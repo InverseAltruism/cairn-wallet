@@ -462,8 +462,8 @@ export function describe(r: any): string {
   // Atomic fill (CairnX DvP): an Attest AND payment outputs in ONE tx. Funds move to a
   // page-chosen recipient, so this clear-signs like send — full recipients + amounts +
   // total + fee — PLUS the offer (proposal) id the attest commits to. What the user
-  // receives in return is convention-level (token semantics) and is the SITE's claim,
-  // not something the wallet can verify — so we sign only what is cryptographically true.
+  // receives in return is convention-level (token semantics); a CSD-paid fill paints it into
+  // #fill-view from the offer service's listing (fillViewHtml), attributed to that service.
   if (r.method === "fillOffer") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
@@ -480,9 +480,27 @@ export function describe(r: any): string {
     return `<b>Fill offer</b> — pay + attest in ONE atomic transaction<br>`
       + `offer: <code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>${tokenFill}<br>${rows}<br>`
       + `${feeLine(p.fee, defaultFeeFor(r.method))} · score ${(Number(p.score ?? 100) >>> 0)} · confidence ${(Number(p.confidence ?? 100) >>> 0)}${totalLine}`
+      + (tokenFill ? "" : `<div id="fill-view" class="req" style="margin-top:6px" hidden></div>`)
       + `<div id="send-warn" class="err" style="margin-top:8px" hidden></div>`;
   }
   return `<b>${escapeHtml(r.method)}</b>`;
+}
+
+// #fill-view for a CSD-paid fill: the asset the offer service lists as received, and the listing id when the
+// attested id is a reservation of it (the claim lane). Resolver-served, so attributed; a failed read says so.
+export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number } | null | undefined, proposalId: string): string {
+  if (!view || !view.ok) return `<span class="err">⚠ could not load this listing from the offer service, so what you receive is not shown here. Check the listing on the site before approving.</span>`;
+  const lines: string[] = [];
+  if (view.offerId && view.offerId.toLowerCase() !== String(proposalId).toLowerCase())
+    lines.push(`listing: <code>${escapeHtml(view.offerId)}</code><br><span class="dim">the offer id above is your reservation of this listing</span>`);
+  const gets = view.giveName !== undefined ? `<b>${escapeHtml(view.giveName)}.csd</b>`
+    : view.giveTicker !== undefined && view.giveAmount !== undefined
+      ? (view.giveDecimals !== undefined
+        ? `<b>${escapeHtml(tokenAmountBothScales(view.giveAmount, view.giveDecimals, view.giveTicker))}</b>`
+        : `<b>${escapeHtml(view.giveAmount)} base units of ${escapeHtml(view.giveTicker)}</b>`)
+      : "";
+  lines.push(gets ? `you receive (as listed by the offer service): ${gets}` : `<span class="err">⚠ the offer service did not say what this listing gives. Check the listing on the site before approving.</span>`);
+  return lines.join("<br>");
 }
 
 // Base units that will LEAVE the wallet if this request is approved (for balance-after).
@@ -515,16 +533,32 @@ export function lookalikeOf(to: string, known: string[]): string | null {
 // OWN address on an operation that sends nothing. An exact own address is suppressed; a LOOK-ALIKE of one of
 // yours still fires (lookalikeOf runs against `known` and short-circuits before the first-time check); a
 // genuinely-new external recipient is in neither set and still warns.
-export function sendWarnings(recipients: string[], sentTo: string[], ownAddrs: string[]): string[] {
+export function recipientStatus(to: string, sentTo: string[], ownAddrs: string[]): { firstTime: boolean; lookalike: string | null } {
   const known = [...sentTo, ...ownAddrs];
+  return { lookalike: lookalikeOf(to, known), firstTime: !known.some((a) => a.toLowerCase() === to.toLowerCase()) };
+}
+// What the address receives decides the warning's wording: only a payment moves CSD, and a name record
+// moves none. A bare string is a payment.
+export type RecipientKind = "payment" | "token" | "name-point" | "name-transfer" | "proceeds";
+const FIRST_TIME_LEAD: Record<RecipientKind, string> = {
+  payment: "First time sending to", token: "First time sending tokens to", "name-point": "First time pointing a name at",
+  "name-transfer": "First time transferring a name to", proceeds: "First time using this payout address:",
+};
+const WARN_TAIL: Record<RecipientKind, string> = {
+  payment: "Payments are irreversible.", token: "Token transfers are irreversible.",
+  "name-point": "Sends to this name will go to this address.", "name-transfer": "The new owner controls the name.",
+  proceeds: "The sale proceeds will be paid to this address.",
+};
+export function sendWarnings(recipients: (string | { to: string; kind: RecipientKind })[], sentTo: string[], ownAddrs: string[]): string[] {
   const warns: string[] = [];
   for (const raw of recipients) {
-    const to = String(raw || "");
+    const to = String((typeof raw === "string" ? raw : raw?.to) || "");
+    const kind: RecipientKind = typeof raw === "string" || !raw || !(raw.kind in WARN_TAIL) ? "payment" : raw.kind;
     if (to.toLowerCase() === TREASURY_ADDR) continue;          // fixed protocol sink, never a user recipient
     const tag = `<code>${escapeHtml(to.slice(0, 10))}…${escapeHtml(to.slice(-6))}</code>`;
-    const la = lookalikeOf(to, known);
-    if (la) warns.push(`⚠ <b>Possible address-poisoning:</b> ${tag} resembles <code>${escapeHtml(la.slice(0, 10))}…${escapeHtml(la.slice(-6))}</code> you've seen before but is NOT identical. Verify every character — payments are irreversible.`);
-    else if (!known.some((a) => a.toLowerCase() === to.toLowerCase())) warns.push(`⚠ First time sending to ${tag} — verify every character. Payments are irreversible.`);
+    const { lookalike: la, firstTime } = recipientStatus(to, sentTo, ownAddrs);
+    if (la) warns.push(`⚠ <b>Possible address-poisoning:</b> ${tag} resembles <code>${escapeHtml(la.slice(0, 10))}…${escapeHtml(la.slice(-6))}</code> you've seen before but is NOT identical. Verify every character. ${WARN_TAIL[kind]}`);
+    else if (firstTime) warns.push(`⚠ ${FIRST_TIME_LEAD[kind]} ${tag}. Verify every character. ${WARN_TAIL[kind]}`);
   }
   return warns;
 }

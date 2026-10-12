@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, cairnxTokenTickers, type NameFetchResult } from "./clearsign.js";
+import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, type NameFetchResult, type RecipientKind } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -22,7 +22,8 @@ let current: any = null;
 // 0.2.71 (CX-23): per-request review state, keyed by request id. `current` is a FRESH object on every
 // 1.2 s poll (background "pending" maps new objects each call), so state stored on it was lost after one
 // tick: in 0.2.70 the RT-W2 displayed quote therefore almost never reached the signer. Keep it here.
-const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any }>();
+// `balShort`: the balance read showed the debit exceeds the spendable balance (a pending spend holds coins).
+const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean }>();
 const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
@@ -99,7 +100,8 @@ async function render() {
     // address-poisoning and first-time-recipient warnings silently ABSENT and the token debit quote an
     // empty box. Reset them exactly HERE, where the rebuild happens, and nowhere else: resetting on the
     // 1.2s tick would refetch balance and history twice a second per open approval window.
-    balForId = warnForId = tokenSimForId = revealForId = null;
+    balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
+    rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
     $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>${queued}`
       + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
       + connectNote
@@ -111,6 +113,7 @@ async function render() {
     armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
     fillBalance(current);
     fillRevealPreview(current); // M14: which secret a revealClaim makes public (local sealedClaims read)
+    fillFillView(current);      // a CSD-paid fill: the listing and the asset it gives (display only)
     armNfinalizeGate(current, st);
   } catch (e) {
     renderedId = null;   // AW-1: a describe()/paint throw must NOT latch renderedId, or `if (renderedId === current.id) return` (above) leaves the request permanently unpaintable AND (disableButtons ran, armButtons did not) unapprovable/unrejectable. Reset so the next tick retries.
@@ -279,7 +282,25 @@ async function fillBalance(r: any) {
     if (renderedId !== r.id) return; // W2 (AW-3): superseded, never paint a resolved request's money row over the one now on screen
     const el = document.getElementById("cost");
     if (el) el.textContent = `${costLine(r)}  balance: ${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`;
+    // The engine spends only the coins this balance counts, so a negative balance-after can only end in an
+    // INSUFFICIENT refusal: keep Approve down and say why. Reject stays available.
+    rs(r.id).balShort = Number(b.confirmed) - debitOf(r) < 0;
+    if (rs(r.id).balShort) {
+      ($("btn-approve") as HTMLButtonElement).disabled = true;
+      $("req").insertAdjacentHTML("beforeend", `<div class="req"><b class="err">⚠ your spendable balance does not cover this request. A recent transaction may still hold some of your coins until it is mined. Reject this, and retry once that transaction is mined.</b></div>`);
+    }
   } catch { /* offline — leave the static cost line */ }
+}
+let fillViewForId: string | null = null;
+async function fillFillView(r: any) {
+  if (r.method !== "fillOffer" || fillViewForId === r.id) return; fillViewForId = r.id;
+  const el = document.getElementById("fill-view");
+  if (!el) return;   // token-priced fills carry #token-sim instead
+  const id = String((r.params || {}).proposalId || "");
+  const view = await bounded(call("fillOfferView", id));
+  if (renderedId !== r.id) return;
+  el.innerHTML = fillViewHtml(view as any, id);
+  (el as HTMLElement).hidden = false;
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning
 // lookalike — checked against this account's send history + own addresses. The recipient
@@ -292,23 +313,23 @@ async function fillSendWarning(r: any) {
   // payout, so they get the warning too — they're shown neutrally as "transfers OUT" in clearsign.)
   if ((r.method !== "send" && r.method !== "fillOffer" && r.method !== "propose") || warnForId === r.id) return; warnForId = r.id;
   const p = r.params || {};
-  const outs = Array.isArray(p.outputs) ? p.outputs.slice() : (p.to ? [{ to: p.to }] : []);
+  const outs: { to: string; kind: RecipientKind }[] = (Array.isArray(p.outputs) ? p.outputs : (p.to ? [{ to: p.to }] : [])).map((o: any) => ({ to: String(o?.to || ""), kind: "payment" as const }));
   // A dApp-proposed CairnX token transfer carries its recipient in the decoded record's `to` (NOT a CSD
   // output), so the first-time / address-poisoning check would otherwise skip it (audit POPUP-1). Decode
   // the canonical+hash-committed record and include the token recipient in the same check.
   if (r.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
     const rec = decodeCairnxRecord(p.uri, p.payloadHash);
-    if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to });
+    if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "token" });
     // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
     // nxfer hands the name to a new owner — both carry an attacker-influenceable address that deserves the
     // same first-time / address-poisoning (look-alike) check as a transfer recipient.
-    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient — skip the poisoning check (0x0 sends are hard-blocked anyway)
-    if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to });
+    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr, kind: "name-point" });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient — skip the poisoning check (0x0 sends are hard-blocked anyway)
+    if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "name-transfer" });
     // M1 (deep-review 2026-07-03): an `offer` routes its SALE PROCEEDS to want.payto when it fills. A
     // bad-faith dApp can set payto to a look-alike of the user's OWN address, silently redirecting the
     // proceeds. The field is shown at clear-sign but had no automated look-alike flag — add it here so it
     // gets the same first-time / address-poisoning check as every other dApp-supplied recipient.
-    if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto });
+    if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto, kind: "proceeds" });
   }
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
@@ -318,7 +339,7 @@ async function fillSendWarning(r: any) {
     // (approve.ts owns only the DOM read + mount). It keys the first-time check on `known` = paid recipients
     // PLUS the wallet's OWN account addresses, so an nset pre-filled with the user's own address (the "set as
     // primary" prompt right after registration) no longer warns about the user's own address on a no-CSD op.
-    const warns = sendWarnings(outs.map((o: any) => String(o.to || "")), sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
+    const warns = sendWarnings(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
     const el = document.getElementById("send-warn");
     if (el && warns.length) { el.innerHTML = warns.join("<br>"); (el as HTMLElement).hidden = false; }
   } catch { /* no history → no warning */ }
@@ -348,7 +369,7 @@ function armButtons() {
   base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
   Promise.all([base, Promise.resolve(tokenPainted).catch(() => {})]).then(() => {
     if (current?.id !== armedId) return;   // superseded: the new request arms itself
-    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current); ($("btn-reject") as HTMLButtonElement).disabled = false;
+    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
 }
 async function resolve(approve: boolean) {
@@ -358,6 +379,7 @@ async function resolve(approve: boolean) {
   const displayedQuote = rs(id).tokenQuoteDisplayed; // RT-W2: the number the user actually saw (survives the 1.2 s re-poll)
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
   if (approve && tokenNotReady(current)) { msg("the token amount is not shown yet; wait for it or reject", "err"); return; }
+  if (approve && rs(id).balShort) { msg("your spendable balance does not cover this request; reject it and retry once your pending transaction is mined", "err"); return; }
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip).
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
   // verdict proceeds (fail-open). Reject never waits.

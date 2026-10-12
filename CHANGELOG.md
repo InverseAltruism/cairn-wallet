@@ -21,6 +21,27 @@
 - `window.cairn`: the per-page reply nonce between the content script and the page provider is removed. Replies
   are posted on `window`, so any script on the page could read it from the first reply; it protected nothing.
   Signing and connecting still require approval in the wallet window, bound to the requesting site's origin.
+- Failure messages say what happened. "May already be in flight" now appears only when a transaction may have
+  reached the node (`SUBMIT_MAYBE_INFLIGHT`, or the popup lost its connection to the wallet mid-call). Any other
+  error from a send, token send, merge, renewal, set-primary, post or seal says "Nothing was sent". Renewal,
+  set-primary, post and seal results are read the same way as a send (they used to show "... failed" for an
+  ambiguous or already-pending submit).
+- A node answer without a coin list (`/utxos`) is refused before signing as `VERIFY_UNAVAILABLE`; a submit
+  answered with a 2xx body that is not a JSON object is `SUBMIT_MAYBE_INFLIGHT` (it used to throw after the
+  submit).
+- New code `VERIFY_INCOMPLETE` (retryable): coin selection used its three rounds on coins the node could not prove
+  yet, typically while a restarted node rebuilds its index. It used to read as "the remaining coins couldn't
+  cover this spend".
+- New code `SEAL_NOT_MINED`: Reveal waits until the seal's commit is mined.
+- A locked wallet answers `WALLET_LOCKED` (not `INTERNAL`) when a popup action or an approval runs into the lock.
+- An open-offer fill refused for a reason the chain tip does not decide (for example the claim cap) keeps
+  `FILL_UNSAFE` even when the tip was floor-clamped; only tip-decided reasons read "wait a moment and try again".
+- Settlement wording no longer promises "next block" or "a block or two": items settle once they are mined.
+- Approval window: a CSD-paid fill shows the asset the listing gives (as listed by the offer service) and, on a
+  reserved offer, the listing behind the reservation; Approve stays disabled while the spendable balance does not
+  cover the request; the first-time recipient warning for a name record says what the address receives instead
+  of "Payments are irreversible".
+- Sending to the wallet's own other account no longer shows the first-time recipient warning.
 
 ## 0.2.73 (2026-10-10)
 
