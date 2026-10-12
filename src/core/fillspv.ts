@@ -153,6 +153,8 @@ export const V29_GATE: number = typeof V29_RAW === "number" && Number.isSafeInte
  * FULL fill of the proven offer (want.value to payto, the fee, the maker rebate). With the hold live and the
  * offer open at the grant, such a fill was routed to this offer and accepted, and a payment of the full
  * want.value completes the offer in both the whole and the partial lane, so the resolver marked it filled.
+ * A partial-lane offer this wallet closed with a remainder fill (paying `remaining` < want.value) stays
+ * counted: `remaining` depends on the resolver-served `paid`, so it cannot decide. That is an over-count.
  */
 export function myProvenFillClosedOffer(
   fill: ProvenEvent | null, fclaim: { id: string; height: number; offer: string },

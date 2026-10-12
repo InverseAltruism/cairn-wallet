@@ -13,7 +13,7 @@ import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import {
   deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs,
-  V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, feeBpsAt,
+  V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, feeBpsAt, tradeFee,
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
 
@@ -177,6 +177,8 @@ await test("a served offer height that does not prove the offer excludes nothing
   assert.equal(throwing.myLiveHoldsAtGrant, 3);
   const none = await live(s, { noLookup: true });
   assert.equal(none.myLiveHoldsAtGrant, 3);
+  const notFound = await live(s, { offerHeightOf: async () => null });   // the primary 404s the other offer
+  assert.equal(notFound.myLiveHoldsAtGrant, 3);
 });
 
 await test("below V29 the resolver still counts filled offers, so nothing is excluded", async () => {
@@ -247,6 +249,106 @@ await test("below the cap nothing is looked up: two other holds cost no resolver
   const io = await live(s, { offerHeightOf: async (id) => { calls++; return heightsOf(s)(id); } });
   assert.equal(io.myLiveHoldsAtGrant, 2);
   assert.equal(calls, 0);
+});
+
+// Second-review scenarios: same rig, one hold per call so each world can differ.
+const placeOffer = (w, extra = {}) => w.place(H_OFF, proposeTx({ ...pick(offerRec(extra)), priv: sellerKey, expiresEpoch: 9e9 }), SELLER);
+const claimOn = (w, oid, h, key = meKey) => w.place(h, proposeTx({ ...pick(fclaim({ offer: oid })), priv: key, expiresEpoch: eFor(h) }), addrFromPriv(key).toLowerCase());
+const fillOn = (w, cid, h, outputs, key = meKey) => w.place(h, attestTx({ proposalId: cid, score: SCORE_FILL, priv: key, outputs }), addrFromPriv(key).toLowerCase());
+const outsAt = (id, pay, extra = {}) => requiredFillOutputs(servedShape(id, extra), BigInt(pay)).map(({ to, value }) => ({ to, value: Number(value) }));
+const liveAt = (s, tip, offerHeightOf) => liveFillSpvSource({
+  rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(s.blocks, tip),
+  hints: { offerId: s.mainOffer, fclaimTxid: s.fourth, me: ME, offerHeight: H_OFF },
+  offerHeightOf: offerHeightOf ?? (async (id) => (s.others.includes(id) ? H_OFF : null)),
+});
+// three other offers, my claims at hC, my full fills at hF, the fourth claim at hG
+function threeFilled(hC, hF, hG) {
+  const w = makeWorld();
+  const others = [placeOffer(w), placeOffer(w), placeOffer(w)];
+  const mainOffer = placeOffer(w);
+  const claims = others.map((o) => claimOn(w, o, hC));
+  claims.forEach((c, i) => fillOn(w, c, hF, outsAt(others[i], V)));
+  return { ...w, others, mainOffer, fourth: claimOn(w, mainOffer, hG) };
+}
+
+await test("tail fill: an offer I closed with a partial-lane remainder fill still counts (over-count)", async () => {
+  const w = makeWorld();
+  const others = [placeOffer(w, { min: "1000000" }), placeOffer(w), placeOffer(w)];
+  const mainOffer = placeOffer(w);
+  const claims = others.map((o) => claimOn(w, o, H_C));
+  fillOn(w, claims[0], H_F, outsAt(others[0], 1_000_000, { min: "1000000" }));
+  const rem = 4_000_000;
+  fillOn(w, claims[0], H_F + 1, [{ to: SELLER, value: rem }, { to: TREASURY_ADDR, value: Number(tradeFee(BigInt(rem), feeBpsAt(H_OFF))) }]);
+  fillOn(w, claims[1], H_F, outsAt(others[1], V));
+  fillOn(w, claims[2], H_F, outsAt(others[2], V));
+  const s = { ...w, others, mainOffer, fourth: claimOn(w, mainOffer, H_G) };
+  assert.equal(resolve(s.events, TIP).offers[others[0]].status, "filled", "fixture: the remainder fill completed offer 0");
+  assert.equal(resolverGranted(s), true);
+  const io = await liveAt(s, TIP);
+  assertNotBelowResolver(io.myLiveHoldsAtGrant, s);
+  assert.equal(io.myLiveHoldsAtGrant, 1);
+});
+
+await test("two of my fclaims on one offer: a denied one I paid is skipped, the granted one still counts", async () => {
+  const tip = V29_HEIGHT + 140;
+  const w = makeWorld();
+  const O = placeOffer(w), A = placeOffer(w), B = placeOffer(w);
+  const mainOffer = placeOffer(w);
+  claimOn(w, O, V29_HEIGHT + 30, strangerKey);
+  const C1 = claimOn(w, O, V29_HEIGHT + 100);
+  claimOn(w, A, V29_HEIGHT + 100); claimOn(w, B, V29_HEIGHT + 100);
+  const C2 = claimOn(w, O, V29_HEIGHT + 115);
+  fillOn(w, C1, V29_HEIGHT + 120, outsAt(O, V));
+  const s = { ...w, others: [O, A, B], mainOffer, fourth: claimOn(w, mainOffer, V29_HEIGHT + 130) };
+  const st = resolve(s.events, tip);
+  assert.equal(st.fclaims[C1], undefined, "fixture: C1 denied");
+  assert.notEqual(st.fclaims[C2], undefined, "fixture: C2 granted");
+  assert.equal(st.offers[O].status, "open", "fixture: the fill on the denied claim left O open");
+  assert.equal(resolverGranted(s, tip), false);
+  const io = await liveAt(s, tip);
+  assertNotBelowResolver(io.myLiveHoldsAtGrant, s, tip);
+  assert.equal(io.myLiveHoldsAtGrant, 3);
+  assert.equal((await verifyFillSpv(s.mainOffer, s.fourth, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant })).safe, false);
+});
+
+await test("a fill in the same block as its fclaim keeps the hold counted, in either order", async () => {
+  for (const order of ["claim-then-fill", "fill-then-claim"]) {
+    const w = makeWorld();
+    const others = [placeOffer(w), placeOffer(w), placeOffer(w)];
+    const mainOffer = placeOffer(w);
+    const claimTxs = others.map((o) => proposeTx({ ...pick(fclaim({ offer: o })), priv: meKey, expiresEpoch: eFor(H_C) }));
+    const claims = claimTxs.map((t) => ctxid(rpcTxToTx(t)).toLowerCase());
+    const placeClaims = () => claimTxs.forEach((t) => w.place(H_C, t, ME));
+    const placeFills = () => claims.forEach((c, i) => fillOn(w, c, H_C, outsAt(others[i], V)));
+    if (order === "claim-then-fill") { placeClaims(); placeFills(); } else { placeFills(); placeClaims(); }
+    const s = { ...w, others, mainOffer, fourth: claimOn(w, mainOffer, H_G) };
+    assert.equal(resolverGranted(s), true, `fixture: ${order}`);
+    const io = await liveAt(s, TIP);
+    assert.equal(io.myLiveHoldsAtGrant, 3, order);
+  }
+});
+
+await test("V29 boundary: a grant exactly at V29 skips my filled holds, one block earlier it does not", async () => {
+  const at = threeFilled(V29_HEIGHT - 20, V29_HEIGHT - 10, V29_HEIGHT);
+  assert.equal(resolverGranted(at, V29_HEIGHT + 10), true, "fixture: at V29 the resolver grants");
+  assert.equal((await liveAt(at, V29_HEIGHT + 10)).myLiveHoldsAtGrant, 0);
+  const before = threeFilled(V29_HEIGHT - 21, V29_HEIGHT - 11, V29_HEIGHT - 1);
+  assert.equal(resolverGranted(before, V29_HEIGHT + 9), false, "fixture: at V29 - 1 the resolver denies");
+  assert.equal((await liveAt(before, V29_HEIGHT + 9)).myLiveHoldsAtGrant, 3);
+});
+
+await test("a denied fclaim of mine on an offer a stranger filled still counts (over-count)", async () => {
+  const tip = V29_HEIGHT + 140;
+  const w = makeWorld();
+  const O = placeOffer(w), A = placeOffer(w), B = placeOffer(w);
+  const mainOffer = placeOffer(w);
+  fillOn(w, claimOn(w, O, V29_HEIGHT + 30, strangerKey), V29_HEIGHT + 40, outsAt(O, V), strangerKey);
+  claimOn(w, O, V29_HEIGHT + 100); claimOn(w, A, V29_HEIGHT + 100); claimOn(w, B, V29_HEIGHT + 100);
+  const s = { ...w, others: [O, A, B], mainOffer, fourth: claimOn(w, mainOffer, V29_HEIGHT + 130) };
+  assert.equal(resolverGranted(s, tip), true);
+  const io = await liveAt(s, tip);
+  assertNotBelowResolver(io.myLiveHoldsAtGrant, s, tip);
+  assert.equal(io.myLiveHoldsAtGrant, 3);
 });
 
 console.log(`fill-holds-v29: ${n} passed, 0 failed`);
