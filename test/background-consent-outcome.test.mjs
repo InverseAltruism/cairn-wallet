@@ -14,8 +14,14 @@
 //     RED-FIRST: remove `code` from finish()'s return in background.ts and (B1) and (B2) fail.
 //     PAIRED HONEST PATH: (B3) an approved connect returns ok with no code.
 //
+// (C) The approve-time signer check in resolvePending (displayed signer vs active account).
+//     RED-FIRST: delete the `displayedSigner ... ACCOUNT_CHANGED` block in resolvePending and (C1) fails.
+//     PAIRED HONEST PATH: (C2) the same propose under the displayed active account reaches the wallet.
+//
 // Run: node --import tsx test/background-consent-outcome.test.mjs   (offline)
 import assert from "node:assert/strict";
+import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { mkCoin, txReply } from "./_coin.ts";
 
 const PW = "correct horse battery staple";
 const CONSENT_KEY = "connectedOrigins";
@@ -149,6 +155,47 @@ console.log("(B3) paired: an approved connect returns ok with no code");
 const { r: okConn } = await connect("https://d.example");
 assert.equal(okConn.result.ok, true);
 assert.equal(okConn.result.code, undefined, "(B3) no code on success");
+console.log("  ok");
+
+// ── (C) the approve-time signer check is the only one a `propose` gets ───────────────────────────────
+// send, attest and fillOffer re-check the displayed signer inside the wallet (expectSigner); propose does
+// not, so the check in resolvePending is all that stops it signing with an account the user never saw.
+console.log("(C1) a propose approved under a different displayed signer is refused before the wallet runs");
+const RENEW = buildNameRenew({ name: "satoshi" });
+const proposeParams = { domain: CAIRNX_DOMAIN, uri: RENEW.uri, payloadHash: RENEW.payloadHash, expiresEpoch: 2_300, fee: 1_000_000, outputs: [{ to: TREASURY_ADDR, value: 100_000_000 }] };
+// The active account holds one verifiable 10 CSD coin, so the honest path can sign and submit.
+const coin = mkCoin(10_00000000);
+const seen = [];
+const baseFetch = globalThis.fetch;
+globalThis.fetch = async (url, init) => {
+  const u = String(url);
+  seen.push(u);
+  if (u.includes(`/utxos/${signer}`)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
+  if (u.includes("/tx/submit")) return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  return txReply(u, [coin]) ?? baseFetch(url, init);
+};
+const proposeP = dapp("propose", proposeParams, A);
+await tick(); await tick();
+const reqP = await lastPending("propose");
+assert.equal(reqP?.origin, A, "setup: the propose is queued");
+const outP = (await popup("resolve", reqP.id, true, other)).result;
+assert.equal(outP.ok, false, "(C1) refused");
+assert.equal(outP.code, "ACCOUNT_CHANGED", "(C1) with ACCOUNT_CHANGED");
+assert.equal((await proposeP).code, "ACCOUNT_CHANGED", "(C1) the page receives the same code");
+assert.deepEqual(seen.filter((u) => u.includes("/utxos/") || u.includes("/tx/submit")), [], "(C1) the wallet never selected coins or submitted");
+console.log("  ok");
+
+console.log("(C2) paired: the same propose approved under the displayed active account reaches the wallet");
+seen.length = 0;
+const proposeOk = dapp("propose", proposeParams, A);
+await tick(); await tick();
+const reqOk = await lastPending("propose");
+const outOk = (await popup("resolve", reqOk.id, true, signer)).result;
+assert.equal(outOk.ok, true, "(C2) approved: " + JSON.stringify(outOk));
+assert.ok(seen.some((u) => u.includes(`/utxos/${signer}`)), "(C2) the wallet selected coins for the displayed account");
+assert.equal(seen.filter((u) => u.includes("/tx/submit")).length, 1, "(C2) and submitted once");
+assert.equal((await proposeOk).ok, true, "(C2) the page receives the success");
+globalThis.fetch = baseFetch;
 console.log("  ok");
 
 console.log("\nbackground-consent-outcome: all assertions passed");

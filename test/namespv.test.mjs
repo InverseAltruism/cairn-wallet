@@ -11,6 +11,7 @@ import {
   addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, resolve,
   REG_FEE, proposeTx, world, source, feeOut, pick, prevoutFor, mkFetch as mkFetchByBase,
 } from "./_spvrig.ts";
+import { nameCommit, nameCommitRecord, nameFinalize, V25_HEIGHT, REG_COMMIT_MAX_BLOCKS } from "../src/vendor/cairnx-spv.js";
 
 const { check: ok, done } = checker();
 
@@ -280,6 +281,27 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
     [SRC[1].base]: { ok: true, resolve: { addr: TARGET, owner: A, via: "nset" }, events: [H(fClaim, 33701, 0), H(fNset, 33710, 0)] },
   }));
   ok("D4: a same-txid-different-HEIGHT mismatch stays a tamper conflict", rH.verified === true && rH.disagree === true);
+}
+
+// A v2.5 reservation (commit, then the salted reveal) that has not been finalized confers no address: the
+// audited resolver carries it as `pending`, and a send to it is refused. The resolver still names an owner
+// for it, so without the refusal the reservation verifies green to the reserver's address.
+//   RED-FIRST: delete the `if (rec.pending) return { ok: false, ... }` line in replayName and the first
+//   assertion fails (verified:true to the reserver).
+//   PAIRED HONEST PATH: the same reservation finalized inside its window verifies to its owner.
+{
+  const NM3 = "dora", SALT = "5a".repeat(16);
+  const commitTx = proposeTx({ ...pick(nameCommitRecord({ commit: nameCommit(NM3, SALT, A) })), priv: keyA });
+  const revealTx = proposeTx({ ...pick(buildNameClaim({ name: NM3, salt: SALT })), priv: keyA });
+  const finalizeTx = proposeTx({ ...pick(nameFinalize({ name: NM3, salt: SALT })), priv: keyA, outputs: feeOut() });
+  const C = V25_HEIGHT + 60, R = C + 5, F = C + REG_COMMIT_MAX_BLOCKS + 2;   // the reveal and finalize land inside their windows
+  const TIP = C + REG_COMMIT_MAX_BLOCKS + 10;                                  // before finalizeBy, so the reservation is live
+  const reserved = world([{ height: C, tx: commitTx }, { height: R, tx: revealTx }]);
+  const rRes = await unionOne(NM3, { addr: A, owner: A }, reserved.hints, source(reserved.blocks, TIP));
+  ok("a pending (unfinalized) reservation is REFUSED as a send target", rRes.verified === false && /reservation that has not been finalized/.test(rRes.reason ?? ""));
+  const finalized = world([{ height: C, tx: commitTx }, { height: R, tx: revealTx }, { height: F, tx: finalizeTx }]);
+  const rFin = await unionOne(NM3, { addr: A, owner: A }, finalized.hints, source(finalized.blocks, TIP));
+  ok("paired: the same reservation, finalized, verifies to its owner", rFin.verified === true && rFin.addr === A && rFin.owner === A);
 }
 
 done("namespv");

@@ -1,10 +1,11 @@
 // 0.2.70 source-structure pins: connector hang, popup isolation, snapshot detach,
-// armButtons warning floor, CSD review parallel, proveEventAt pool.
+// CSD review parallel, proveEventAt pool. The approval-window arm and latch behaviour is tested
+// through the real module in approve-guards-dom.test.mjs and approve-repaint-dom.test.mjs.
 import { readFileSync } from "node:fs";
 import { refuse } from "../src/core/refuse.ts";
+import { checker } from "./helpers/check.mjs";
 
-let pass = 0, fail = 0;
-const ok = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
+const { check: ok, done } = checker();
 const src = (rel) => readFileSync(new URL("../" + rel, import.meta.url), "utf8");
 
 console.log("0.2.70 hygiene:");
@@ -27,15 +28,6 @@ ok("popup explorer comes from explorer.ts", /from "\.\.\/core\/explorer\.js"/.te
 ok("popup dynamically imports devshim", /import\("\.\/devshim\.js"\)/.test(popup));
 ok("CSD Review parallelizes recipientChecks+balance",
   /const \[b, checks\] = await Promise\.all\(\[call\("balance"\)\.catch\(\(\) => null\), recipientChecks\(to\)\]\)/.test(popup));
-
-const approve = src("src/popup/approve.ts");
-ok("armButtons still owns the 700ms timer", /function armButtons\(\)[\s\S]*setTimeout\([\s\S]*700\)/.test(approve));
-ok("armButtons waits for fillSendWarning (and, 0.2.71, the token preview) as well as 700ms",
-  /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approve) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approve));
-ok("0.2.71: Approve stays disabled for a token fill until its preview is ready, and review state is keyed by request id",
-  /nfinBlocked \|\| tokenNotReady\(current\)/.test(approve) && /const reviewState = new Map/.test(approve) && /rs\(id\)\.tokenQuoteDisplayed/.test(approve));
-ok("warnPainted is assigned from fillSendWarning before armButtons",
-  approve.indexOf("warnPainted = fillSendWarning") > 0 && approve.indexOf("warnPainted = fillSendWarning") < approve.indexOf("armButtons();"));
 
 const fillspv = src("src/core/fillspv.ts");
 ok("proveEventAt fan-out uses mapPool at SCAN_POOL", /await mapPool\(liveOthers, SCAN_POOL/.test(fillspv) && /await mapPool\(scanned, SCAN_POOL/.test(fillspv));
@@ -74,5 +66,4 @@ ok("devshim throws when chrome.runtime.sendMessage exists",
 ok("devshim forwards removeAccount password (args[1])", /removeAccount\(args\[0\], args\[1\]\)/.test(shim));
 ok("devshim forwards send expectSigner (args[3])", /w\.send\(args\[0\], args\[1\], args\[2\], args\[3\]\)/.test(shim));
 
-console.log(`\nwallet-0270-hygiene: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+done("wallet-0270-hygiene");
