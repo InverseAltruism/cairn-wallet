@@ -9,6 +9,9 @@ import { PortRegistry } from "./core/events.js";
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
 try { (chrome as any).storage?.session?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }); } catch { /* older runtime */ }
+// storage.local holds the vault ciphertext and the header snapshot; content scripts can reach it by default, and
+// content.ts never uses chrome.storage, so restrict it to extension pages and this worker.
+try { (chrome as any).storage?.local?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }); } catch { /* older runtime */ }
 const wallet = new Wallet(chromeStore(), chromeSessionStore());
 // Test-only wallet handle: the E2E boundary suite (extension-boundary.ts) injects the documented Wallet test
 // seams (fillSpvIoForTest / provenPaytoForTest) through this. Guarded by a global the harness sets BEFORE
