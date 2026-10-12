@@ -10,6 +10,8 @@
 //   - The merge flow's locked throw is honest and leaves Confirm usable.
 //   - Sending to the wallet's own other account is not a first send.
 //
+//   - The popup's own send review keeps Confirm disabled while the balance-after is negative (section 9;
+//     RED-FIRST: drop the `short` gate in the btn-send handler and 9a, 9b fail; 9c, 9d are the honest path).
 // RED-FIRST: revert popup.ts to e67bd5f and sections 1b, 2a, 3a, 4a-4c, 5a, 6a, 7a and 8a go red.
 // HONEST PATH: sections 1a, 1c, 1d, 3b, 4d and 8b run the production call shapes and keep their copy.
 //
@@ -200,6 +202,28 @@ console.log("8. first-send warning");
   t("8b honest: a never-paid external address still warns", () => {
     assert.match(shown(), /First time sending to this address/);
   });
+}
+
+console.log("9. the popup's own send review with a negative balance-after (same rule as the approval window)");
+{
+  let sends = 0;
+  h.send = () => { sends++; return { ok: true, txid: TXID }; };
+  h.balance = () => ({ confirmed: 50_000_000, utxos: [] });   // 0.5 CSD spendable while a pending spend holds the rest
+  await byId("btn-send-back").click();
+  await csdReview(EXTERNAL);
+  t("9a Confirm is disabled and the review says why", () => {
+    assert.equal(byId("btn-send-confirm").disabled, true);
+    assert.ok(!byId("c-warn").hidden); assert.match(byId("c-warn").innerHTML, /spendable balance does not cover this request/);
+  });
+  await byId("btn-send-confirm").click(); await flush();
+  t("9b a click that lands anyway sends nothing", () => { assert.equal(sends, 0); });
+  h.balance = () => ({ confirmed: 100e8, utxos: [] });
+  await byId("btn-send-back").click();
+  await csdReview(EXTERNAL);
+  t("9c honest: a covered send keeps Confirm enabled", () => { assert.equal(byId("btn-send-confirm").disabled, false); });
+  const before = sends;
+  await byId("btn-send-confirm").click(); await flush();
+  t("9d honest: and it sends", () => { assert.equal(sends, before + 1); assert.match(text(), /^sent 1 CSD/); });
 }
 
 console.log(`\npopup-outcome-dom: ${pass} passed, ${fail} failed`);

@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, type NameFetchResult, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, type NameFetchResult, type RecipientKind } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -287,7 +287,7 @@ async function fillBalance(r: any) {
     rs(r.id).balShort = Number(b.confirmed) - debitOf(r) < 0;
     if (rs(r.id).balShort) {
       ($("btn-approve") as HTMLButtonElement).disabled = true;
-      $("req").insertAdjacentHTML("beforeend", `<div class="req"><b class="err">⚠ your spendable balance does not cover this request. A recent transaction may still hold some of your coins until it is mined. Reject this, and retry once that transaction is mined.</b></div>`);
+      $("req").insertAdjacentHTML("beforeend", `<div class="req"><b class="err">${escapeHtml(balanceShortNote("Reject this"))}</b></div>`);
     }
   } catch { /* offline — leave the static cost line */ }
 }

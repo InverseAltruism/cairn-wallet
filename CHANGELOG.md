@@ -42,6 +42,8 @@
   cover the request; the first-time recipient warning for a name record says what the address receives instead
   of "Payments are irreversible".
 - Sending to the wallet's own other account no longer shows the first-time recipient warning.
+- Popup send review: Confirm stays disabled, with the same note as the approval window, while the spendable
+  balance does not cover the amount plus fee.
 
 ## 0.2.73 (2026-10-10)
 

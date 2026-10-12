@@ -503,6 +503,12 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
   return lines.join("<br>");
 }
 
+// The balance-after is negative: the node's spendable balance (the sum of its available coins, the same
+// coins the engine selects from) does not cover the debit, so signing could only end in INSUFFICIENT.
+export function balanceShortNote(back: "Reject this" | "Go back"): string {
+  return `⚠ your spendable balance does not cover this request. A recent transaction may still hold some of your coins until it is mined. ${back}, and retry once that transaction is mined.`;
+}
+
 // Base units that will LEAVE the wallet if this request is approved (for balance-after).
 export function debitOf(r: any): number {
   const p = r.params || {};

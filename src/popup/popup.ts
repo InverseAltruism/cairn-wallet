@@ -4,7 +4,7 @@
 import type { Wallet } from "../core/wallet.js";
 import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
 import { formatUnits, parseUnits, isPlainName, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales } from "./clearsign.js";
+import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
 
@@ -1295,7 +1295,12 @@ $("btn-send").addEventListener("click", async () => {
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
-  setWarn($("c-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun));
+  // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's
+  // INSUFFICIENT refusal stays the backstop). An unreadable balance does not block.
+  const short = !!b && Number(b.confirmed) - amt - SEND_FEE < 0;
+  const warn = composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun);
+  setWarn($("c-warn") as HTMLElement, short ? `${escapeHtml(balanceShortNote("Go back"))}${warn ? "<br><br>" + warn : ""}` : warn);
+  ($("btn-send-confirm") as HTMLButtonElement).disabled = short;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note — same race, same backstop.
   reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
@@ -1304,7 +1309,7 @@ $("btn-send").addEventListener("click", async () => {
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
 $("btn-send-confirm").addEventListener("click", async () => {
-  if (!reviewState.reviewedSend) return;
+  if (!reviewState.reviewedSend || ($("btn-send-confirm") as HTMLButtonElement).disabled) return;
   const { to, amt, name, verified, signer } = reviewState.reviewedSend;
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7) — fail-closed to a re-review either way.
