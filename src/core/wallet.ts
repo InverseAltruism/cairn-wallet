@@ -1003,6 +1003,13 @@ export class Wallet {
       cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
       hints: { offerId, fclaimTxid, me, offerHeight }, spvSource: await this.spvSource(),
+      // Served height only selects the block the source merkle-proves the other offer in.
+      offerHeightOf: async (id) => {
+        const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(id)}`);
+        if (!r.ok) return null;
+        const h = Number(((await r.json()) as { height?: unknown } | null)?.height);
+        return Number.isSafeInteger(h) && h >= 0 ? h : null;
+      },
     });
   }
 

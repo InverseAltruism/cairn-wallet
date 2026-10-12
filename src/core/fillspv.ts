@@ -17,9 +17,10 @@ import {
   rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, V28_HEIGHT, ACTIVATION_HEIGHT,
-  provenOfferTerms,
-  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms,
+  provenOfferTerms, bindProvenOffer, requiredFillOutputs, MAX_ACTIVE_CLAIMS, SCORE_FILL,
+  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms, type CxOfferState,
 } from "../vendor/cairnx-spv.js";
+import * as cairnxVendor from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
@@ -119,14 +120,16 @@ export interface FillSpvHints { offerId: string; fclaimTxid: string; me: string;
 // PURE so the live scan and the tests drive the identical predicate. The caller supplies AUTHENTICATED
 // proposers (production: prevout-ownership bound, with any UNBINDABLE hold attributed to `me` = over-count) and
 // the fclaim's PROVEN grant height (never a resolver-served height).
+// `closed` holds fclaim txids whose offer myProvenFillClosedOffer showed this wallet's own fill had closed.
 export function countMyOtherLiveHolds(
-  events: readonly { kind?: string; proposer?: string; uri?: string; payloadHash?: string; expiresEpoch?: number }[],
-  offerId: string, me: string, grantHeight: number,
+  events: readonly { kind?: string; id?: string; proposer?: string; uri?: string; payloadHash?: string; expiresEpoch?: number }[],
+  offerId: string, me: string, grantHeight: number, closed: ReadonlySet<string> = new Set(),
 ): number {
   const oid = String(offerId).toLowerCase(), meL = String(me).toLowerCase();
   let n = 0;
   for (const e of events) {
     if (e?.kind !== "propose" || String(e.proposer ?? "").toLowerCase() !== meL) continue;
+    if (e.id !== undefined && closed.has(String(e.id).toLowerCase())) continue;
     const rec = parseRecord(String(e.uri ?? ""), String(e.payloadHash ?? "")) as { t?: string; offer?: string } | null;
     if (!rec || rec.t !== "fclaim") continue;
     if (String(rec.offer ?? "").toLowerCase() === oid) continue;      // this offer's own holds do NOT count
@@ -134,6 +137,47 @@ export function countMyOtherLiveHolds(
     n++;
   }
   return n;
+}
+
+// The vendored d.ts does not declare V29_HEIGHT and src/vendor/ is not hand-edited, so it is read from the
+// bundle's runtime exports. A missing or malformed export disables the exclusion below (over-count side).
+const V29_RAW: unknown = (cairnxVendor as unknown as Record<string, unknown>)["V29_HEIGHT"];
+export const V29_GATE: number = typeof V29_RAW === "number" && Number.isSafeInteger(V29_RAW) ? V29_RAW : Number.POSITIVE_INFINITY;
+
+/**
+ * True only when `fill` proves this wallet's own fill CLOSED the offer behind `fclaim` before `grantHeight`,
+ * so the resolver (at a grant height >= V29) no longer counts that hold toward MAX_ACTIVE_CLAIMS. Every leg is
+ * proven data: `fill` and `offerEv` are merkle-bound and prevout-bound (proveEventAt); only the block the
+ * offer was looked for in came from a served height. The fill must be a SCORE_FILL by `me` on exactly this
+ * fclaim, mined strictly after the fclaim and strictly before the grant, and it must carry every output of a
+ * FULL fill of the proven offer (want.value to payto, the fee, the maker rebate). With the hold live and the
+ * offer open at the grant, such a fill was routed to this offer and accepted, and a payment of the full
+ * want.value completes the offer in both the whole and the partial lane, so the resolver marked it filled.
+ */
+export function myProvenFillClosedOffer(
+  fill: ProvenEvent | null, fclaim: { id: string; height: number; offer: string },
+  offerEv: ProvenEvent | null, me: string, grantHeight: number,
+): boolean {
+  if (!(grantHeight >= V29_GATE)) return false;
+  if (!fill || fill.kind !== "attest" || fill.score !== SCORE_FILL) return false;
+  if (fill.attester.toLowerCase() !== me.toLowerCase() || fill.proposalId.toLowerCase() !== fclaim.id.toLowerCase()) return false;
+  if (!(fill.height > fclaim.height && fill.height < grantHeight)) return false;
+  if (!offerEv || offerEv.kind !== "propose" || offerEv.id.toLowerCase() !== fclaim.offer.toLowerCase()) return false;
+  const bound = bindProvenOffer(offerEv);
+  if (!bound || bound.terms.value === undefined) return false;   // a token-priced want carries no value
+  const t = bound.terms;
+  const give = t.giveName !== undefined ? { name: t.giveName } : { ticker: String(t.giveTicker ?? ""), amount: String(t.giveAmount ?? "") };
+  // height, fee, taker, bid and min come from the canonical proven terms as they are, never re-derived here.
+  const state: CxOfferState = { ...t, id: offerEv.id.toLowerCase(), seller: bound.seller, give, want: { value: t.value!, payto: bound.payto }, status: "open", paid: "0", delivered: "0" };
+  let need: { to: string; value: bigint }[] | null;
+  try { need = requiredFillOutputs(state, BigInt(t.value!)); } catch { return false; }
+  if (!need) return false;
+  for (const { to, value } of need) {
+    let paid: bigint;
+    try { paid = BigInt(fill.paidTo[to.toLowerCase()] ?? "0"); } catch { return false; }
+    if (paid < value) return false;
+  }
+  return true;
 }
 
 /**
@@ -176,7 +220,7 @@ export function countMyOtherLiveHolds(
  * sunset hold), which stays resolver-trusted exactly as pre-V28 (N1). A hostile primary that also relabels
  * `offer.id === proposalId` lands in that same pre-existing legacy N1 residual, not a new V28 lane.
  */
-export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: MintedProvenOfferTerms; tipFloored: boolean }> {
+export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource; offerHeightOf?: (offerId: string) => Promise<number | null> }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: MintedProvenOfferTerms; tipFloored: boolean }> {
   const spv = opts.spvSource ?? await liveSpvSource(opts);
   const offerId = String(opts.hints.offerId).toLowerCase();
   const fclaimTxid = String(opts.hints.fclaimTxid).toLowerCase();
@@ -206,7 +250,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const scannedIds = new Set<string>();                // ids merkle-proven DURING the scan (TRUE mined height)
   const laneProposals = new Set<string>([offerId]);    // the offer + every fclaim-for-this-offer
   const attestBuf: { id: string; height: number; proposalId: string }[] = [];
-  const otherFclaims: { id: string; height: number; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
+  const otherFclaims: { id: string; height: number; offer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
   const add = (id: string, h: number) => { const k = id.toLowerCase(); if (!heightOf.has(k)) heightOf.set(k, h); ids.add(k); };
   const markScanned = (id: string, h: number) => { scannedIds.add(id.toLowerCase()); add(id, h); };
 
@@ -284,7 +328,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
         if (rec.t === "ocancel") { markScanned(id, h); continue; } // MUTATE_OCANCEL_SCAN
         if (rec.t !== "fclaim") continue;
         if (String(rec.offer).toLowerCase() === offerId) { laneProposals.add(id); markScanned(id, h); }
-        else otherFclaims.push({ id, height: h, uri: app.uri, payloadHash: String(app.payloadHash), expiresEpoch: Number(app.expiresEpoch) });
+        else otherFclaims.push({ id, height: h, offer: String(rec.offer).toLowerCase(), uri: app.uri, payloadHash: String(app.payloadHash), expiresEpoch: Number(app.expiresEpoch) });
       } else {
         const proposalId = String(app.proposalId).toLowerCase();
         attestBuf.push({ id, height: h, proposalId });
@@ -305,18 +349,36 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // (recoverSigner alone is spoofable). Fail toward OVER-count: a hold that is MINE **or that cannot be bound**
   // is counted (dropping a possibly-mine hold under-counts and burns); only a hold provably bound to ANOTHER
   // address is excluded. Only holds still live at the grant height are considered.
-  const held: { kind: "propose"; proposer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
-  // 0.2.70: proveEventAt fan-out at SCAN_POOL (12). countMyOtherLiveHolds is UNCHANGED (advisor: fix
-  // site+wallet together or neither). Order of completion does not matter: the predicate just counts.
+  const held: { kind: "propose"; id: string; proposer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
+  // proveEventAt fan-out at SCAN_POOL (12). Order of completion does not matter: the predicate just counts.
   const liveOthers = otherFclaims.filter((c) => fclaimHoldEnd(c.expiresEpoch) >= grantHeight);
   const heldBuf: typeof held = new Array(liveOthers.length);
   await mapPool(liveOthers, SCAN_POOL, async (c, i) => {
     const ev = await proveEventAt(c.id, c.height);
     const proposer = ev && ev.kind === "propose" ? ev.proposer : me;   // unbindable -> attribute to me (over-count)
-    heldBuf[i] = { kind: "propose", proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch };
+    heldBuf[i] = { kind: "propose", id: c.id, proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch };
   });
   for (const h of heldBuf) if (h) held.push(h);
-  const myLiveHoldsAtGrant = countMyOtherLiveHolds(held, offerId, me, grantHeight);
+  // Past V29 the resolver skips holds on offers that are no longer open. Only when the plain count would refuse
+  // (so no fill that passes today pays any extra read) look for this wallet's own proven fill of each counted
+  // hold. Any lookup or proof failure leaves the hold counted.
+  const closed = new Set<string>();
+  const rawCount = countMyOtherLiveHolds(held, offerId, me, grantHeight);
+  if (rawCount >= MAX_ACTIVE_CLAIMS && opts.offerHeightOf) {
+    const lookup = opts.offerHeightOf;
+    const provenClosed = async (c: (typeof liveOthers)[number]): Promise<boolean> => {
+      const fills = attestBuf.filter((a) => a.proposalId === c.id);
+      if (fills.length === 0) return false;
+      const oh = await lookup(c.offer);
+      if (oh === null) return false;
+      const offerEv = await proveEventAt(c.offer, oh);
+      for (const a of fills) if (myProvenFillClosedOffer(await proveEventAt(a.id, a.height), c, offerEv, me, grantHeight)) return true;
+      return false;
+    };
+    const counted = liveOthers.filter((c) => held.some((h) => h.id === c.id && h.proposer.toLowerCase() === me));
+    await mapPool(counted, SCAN_POOL, async (c) => { if (await provenClosed(c).catch(() => false)) closed.add(c.id); });
+  }
+  const myLiveHoldsAtGrant = closed.size === 0 ? rawCount : countMyOtherLiveHolds(held, offerId, me, grantHeight, closed);
   // D1 (register §3, 2026-09-12): the OBS-3 legacy SCORE_CLAIM scan+count is DELETED. Its gate
   // (verifiedTip < 60,134) is unreachable at any tip a fillable fclaim can exist at, and the deletion
   // removes the only hostile-minable prevout fetch in this scan (an attacker-plantable SCORE_CLAIM
