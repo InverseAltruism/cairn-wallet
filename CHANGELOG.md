@@ -11,8 +11,11 @@
 - Connected sites: a site's connect and your Disconnect of another site are applied one after the other, so the
   disconnected site can no longer be restored by the race.
 - A lock (including the idle auto-lock) between a send's broadcast and its history write no longer drops the
-  history row: it is held in memory, shown in history after unlock, and written to storage with the next
-  history write. It does not survive the service worker stopping before then. A reset still drops it.
+  history row: it is held in memory and written to storage at the next unlock. It does not survive the
+  service worker stopping before then. A reset still drops it.
+- Sealed claims: the reveal preimage is encrypted before the commit is broadcast, so a lock between the
+  broadcast and the seal write no longer loses it (the paid commit stayed unrevealable). Like the history row it
+  is held in memory while locked and written at the next unlock; a reset drops it.
 - Sign in with CSD: a `statement` longer than 256 characters is refused, like `requestId`.
 - Epoch math uses the vendored consensus `EPOCH_LEN` instead of a local copy of the number (no value changes).
 

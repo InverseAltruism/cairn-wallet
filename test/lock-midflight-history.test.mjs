@@ -59,7 +59,7 @@ console.log("(1) an idle lock between broadcast and record keeps an ok send's hi
   assert.equal(h[0].txid, r.txid);
   assert.equal(h[0].type, "send");
   assert.equal(h[0].maybe, undefined);
-  // the parked row drains to the store on the next history write
+  // the parked row was written at unlock; the next send adds its own row beside it
   const r2 = await w.send(RCPT, 1_00000000, 1_000_000);
   assert.equal(r2.ok, true);
   await settle();
