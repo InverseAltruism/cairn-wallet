@@ -362,8 +362,16 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const rawCount = countMyOtherLiveHolds(held, offerId, me, grantHeight);
   if (rawCount >= MAX_ACTIVE_CLAIMS && opts.offerHeightOf) {
     const lookup = opts.offerHeightOf;
+    // Recover each candidate fill's signer from its already-bound block before any network read, so attests
+    // anyone can mine naming my fclaim cannot force prevout or resolver reads. A swapped scriptSig can only
+    // drop an exclusion here (over-count); proveEventAt still binds the signer to the spent coin.
+    const signerIsMe = (id: string, height: number): boolean => {
+      const b = blockMemo.get(height);
+      const pos = b ? b.ids.findIndex((x) => x.toLowerCase() === id) : -1;
+      return pos >= 0 && String(recoverSigner(b!.rebuilt[pos]!) ?? "").toLowerCase() === me;
+    };
     const provenClosed = async (c: (typeof liveOthers)[number]): Promise<boolean> => {
-      const fills = attestBuf.filter((a) => a.proposalId === c.id);
+      const fills = attestBuf.filter((a) => a.proposalId === c.id && signerIsMe(a.id, a.height));
       if (fills.length === 0) return false;
       const oh = await lookup(c.offer);
       if (oh === null) return false;

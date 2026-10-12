@@ -160,6 +160,25 @@ await test("a fill signed by someone else on my claim does not exclude it", asyn
   assert.equal(io.myLiveHoldsAtGrant, 3);
 });
 
+await test("attests by someone else that name my claims cause no prevout read and no resolver lookup", async () => {
+  const s = fourBuys({ fills: { 0: "stranger", 1: "stranger", 2: "stranger" } });
+  const planted = new Set(s.events.filter((e) => e.kind === "attest").map((e) => e.txid));
+  const plantedPrevouts = new Set([...s.blocks.values()].flat()
+    .filter((tx) => planted.has(ctxid(rpcTxToTx(tx)).toLowerCase())).map((tx) => String(tx.inputs[0].prev_txid).toLowerCase()));
+  assert.equal(plantedPrevouts.size, 3, "fixture: three planted attests");
+  const base = fillSource(s.blocks, TIP), read = [];
+  let lookups = 0;
+  const io = await liveFillSpvSource({
+    rpcBase: "http://x", headersBase: "http://x",
+    spvSource: { ...base, prevoutScriptPubkey: async (t, v) => { read.push(String(t).toLowerCase()); return base.prevoutScriptPubkey(t, v); } },
+    hints: { offerId: s.mainOffer, fclaimTxid: s.fourth, me: ME, offerHeight: H_OFF },
+    offerHeightOf: async (id) => { lookups++; return heightsOf(s)(id); },
+  });
+  assert.equal(io.myLiveHoldsAtGrant, 3);
+  assert.equal(read.filter((t) => plantedPrevouts.has(t)).length, 0, "a planted attest's coin was read");
+  assert.equal(lookups, 0);
+});
+
 await test("a non-fill attest on my claim, even fully paid, does not exclude it", async () => {
   const s = fourBuys({ fills: { 0: "notfill", 1: "notfill", 2: "notfill" } });
   assert.equal(resolverGranted(s), false, "fixture: a score-0 attest on an fclaim is a no-op");
@@ -211,6 +230,11 @@ await test("the predicate binds the fill to this fclaim and the proof to this of
   assert.equal(myProvenFillClosedOffer(f1, c0, ev(s.offerIds[0]), ME, H_G), false, "a fill on another fclaim");
   assert.equal(myProvenFillClosedOffer(f0, c0, ev(s.offerIds[1]), ME, H_G), false, "a proof of another offer");
   assert.equal(myProvenFillClosedOffer(null, c0, ev(s.offerIds[0]), ME, H_G), false);
+  const st = fourBuys({ fills: { 0: "stranger" } });
+  const strangerFill = { ...st.events.find((x) => x.kind === "attest" && x.proposalId === st.claims[0]), depth: 1 };
+  const sc0 = { id: st.claims[0], height: H_C, offer: st.offerIds[0] };
+  const stEv = { ...st.events.find((x) => x.kind === "propose" && x.id === st.offerIds[0]), depth: 1 };
+  assert.equal(myProvenFillClosedOffer(strangerFill, sc0, stEv, ME, H_G), false, "a fill signed by someone else");
   assert.equal(myProvenFillClosedOffer(f0, c0, null, ME, H_G), false);
   const tokenWant = offer({ give: { ticker: "AAA", amount: "10" }, want: { ticker: "BBB", amount: "5", payto: SELLER } });
   const tokenEv = { ...ev(s.offerIds[0]), uri: tokenWant.uri, payloadHash: tokenWant.payloadHash };
