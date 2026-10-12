@@ -31,7 +31,7 @@ Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runt
 
 - `build.mjs`: build + two HARD TRIPWIRES: (1) forbidden external message surface (externally_connectable/onMessageExternal anywhere aborts), (2) source-host coverage (every hardcoded https fetch host must be in CSP connect-src AND host_permissions). The release version lives only in package.json; the build stamps it into dist/manifest.json and the inpage provider (esbuild define `__WALLET_VERSION__`).
 - `src/background.ts`: MV3 service worker; owns the unlocked key, the dApp approval queue, per-origin consent, the DAPP_METHODS allowlist (enforced twice: pre-queue and in resolvePending), the popup sender-origin gate, provider events, queue caps (MAX_PENDING_GLOBAL=32 / PER_ORIGIN=5), alarm-driven auto-lock.
-- `src/content.ts` / `src/inpage.ts`: inject the frozen window.cairn provider; per-page-load nonce handshake; csd:announceProvider discovery.
+- `src/content.ts` / `src/inpage.ts`: inject the frozen window.cairn provider and relay it over same-origin `window` messages (source, target and origin checked; replies are not authenticated, a script on the page can read and forge them); csd:announceProvider discovery.
 - `src/core/`:
   - `keystore.ts`: AES-256-GCM vault; PBKDF2-SHA256 600k iters; MIN_ITERS=100k downgrade floor + MAX_ITERS=30M DoS ceiling.
   - `account.ts`: BIP-39/32/44, coin type 7779.

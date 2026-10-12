@@ -18,6 +18,9 @@
   is held in memory while locked and written at the next unlock; a reset drops it.
 - Sign in with CSD: a `statement` longer than 256 characters is refused, like `requestId`.
 - Epoch math uses the vendored consensus `EPOCH_LEN` instead of a local copy of the number (no value changes).
+- `window.cairn`: the per-page reply nonce between the content script and the page provider is removed. Replies
+  are posted on `window`, so any script on the page could read it from the first reply; it protected nothing.
+  Signing and connecting still require approval in the wallet window, bound to the requesting site's origin.
 
 ## 0.2.73 (2026-10-10)
 
