@@ -67,7 +67,7 @@ function chromiumExe() {
 // IDs that exist only after runtime innerHTML rendering (never in the static HTML):
 const DYNAMIC_IDS = new Set([
   "assets-retry", "rpc-add-input", "rpc-add-btn", "exp-add-input", "exp-add-btn", // popup menus/assets
-  "cost", "send-warn", "token-sim", "fill-view", // approve window, injected by clearsign describe()
+  "cost", "send-warn", "token-sim", "fill-view", "reveal-preview", // approve window, injected by clearsign describe()
 ]);
 function idsFromSource(file) {
   const src = readFileSync(join(ROOT, "src", "popup", file), "utf8");
