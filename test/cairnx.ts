@@ -469,16 +469,18 @@ async function main() {
   // L5: a custom RPC/API endpoint must be https (or loopback http) with NO embedded credentials.
   {
     const w = new Wallet(memoryStore()); await w.create("pw-rpc-validation");
-    let credRej = false, httpRej = false, schemeRej = false, httpsOk = false, loopbackOk = false;
+    let credRej = false, httpRej = false, schemeRej = false, remoteRej = false, proxyOk = false, loopbackOk = false;
     try { await w.setRpc("https://user:pass@evil.example/api"); } catch { credRej = true; }
     try { await w.setApi("http://evil.example"); } catch { httpRej = true; }            // plain-http remote
     try { await w.addRpc("ftp://nope"); } catch { schemeRej = true; }
-    try { await w.setRpc("https://good.example/api/rpc"); httpsOk = true; } catch { /* */ }
+    try { await w.setRpc("https://good.example/api/rpc"); } catch { remoteRej = true; }   // D-W3: no remote RPC
+    try { await w.setRpc("https://cairn-substrate.com/api/rpc"); proxyOk = true; } catch { /* */ }
     try { await w.setRpc("http://localhost:8789"); loopbackOk = true; } catch { /* */ }
     check("L5: setRpc rejects an embedded-credential URL (https://user:pass@…)", credRej);
     check("L5: setApi rejects a plain-http remote URL", httpRej);
     check("L5: addRpc rejects a non-http(s) scheme", schemeRej);
-    check("L5: setRpc accepts a clean https URL", httpsOk);
+    check("D-W3: setRpc refuses a remote https RPC (no host access to reach it)", remoteRej);
+    check("D-W3: setRpc accepts the Cairn proxy", proxyOk);
     check("L5: setRpc accepts http://localhost for dev", loopbackOk);
     // explorer setting (nav-only): accept presets + https/loopback custom; reject junk + embedded creds; status reflects it
     let expCairn = false, expOfficial = false, expCustom = false, expJunk = false, expCred = false;

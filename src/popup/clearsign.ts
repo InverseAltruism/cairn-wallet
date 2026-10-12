@@ -1,6 +1,7 @@
 // Pure clear-signing formatters for the approval window — NO DOM / chrome, so they're unit-testable
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
-import { decodeCairnxRecord, type TokenDisplayMeta, PINNED_TOKENS, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, type TokenDisplayMeta, PINNED_TOKENS, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -30,27 +31,14 @@ export function paidRecipients(history: unknown): string[] {
 
 // Surface a fee in CSD and flag an unusually large one so a phishing site can't slip a huge fee past
 // a user skimming the dialog. propose min is 0.25 CSD; >5 CSD is odd.
-const FEE_WARN = 5 * 1e8;
+const FEE_WARN = 5n * 100_000_000n;
 
-// Coerce a base-unit value for DISPLAY: a malicious/garbage value renders "invalid amount", never
-// "NaN CSD" — which a user skimming the clear-signing dialog might approve as a meaningless amount. C-WL5
-export function fmtCsd(raw: any): string { const n = Number(raw); return Number.isFinite(n) ? `${n / 1e8} CSD` : "invalid amount"; }
-// BigInt-safe variant for canonical record amounts (offer/bid `value` is a base-unit STRING up to
-// 2^96): Number() would lose precision above 2^53, so format the exact integer via BigInt. C-WL5
-export function fmtCsdBig(raw: any): string {
-  let v: bigint;
-  try { v = BigInt(String(raw)); } catch { return "invalid amount"; }
-  if (v < 0n) return "invalid amount";
-  const frac = (v % 100000000n).toString().padStart(8, "0").replace(/0+$/, "");
-  return `${(v / 100000000n).toString()}${frac ? "." + frac : ""} CSD`;
-}
+// The signer screens format CSD through core/cairnx.ts fmtCsd (exact, "invalid amount" on garbage) and
+// balances through fmtBalance; both are re-exported here for the popup and the approval window.
+export { fmtCsd, fmtBalance };
 // Finite base-unit number for sums / balance-after math (garbage → 0; the tx won't build anyway —
 // node.send/sendMany hard-reject non-numeric amounts, so this only keeps the DISPLAY sane).
 export function baseVal(raw: any): number { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
-// Locale-grouped base-units → CSD display (max 4 fraction digits, NO unit suffix) — the one format
-// the popup + approval window share for balance / balance-after lines. fmtCsd above stays the
-// exact-value formatter for amounts/fees; this one is for at-a-glance balances.
-export function fmtBalance(base: number): string { return (base / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 }); }
 // The zero address is the un-spendable burn sink (and, on an nset, the V23 "un-point" sentinel).
 // 0x-OPTIONAL by design: resolver/record fields can carry bare-hex, and the stricter 0x-required
 // variant that lived in popup.ts silently missed those. One test, one threat model (3 former sites).
@@ -81,6 +69,7 @@ const DOMAIN_CAP = 128;
 // while the base-unit integer is the value that actually gets SIGNED. Neither scale may appear alone:
 // human-only can hide a rescale, base-only mismatches the "5 TOK" idiom every other panel uses (F12).
 export function tokenAmountBothScales(base: unknown, decimals: unknown, ticker: unknown): string {
+  if (!isTokenDecimals(decimals)) return `${String(base)} base units of ${String(ticker)}`;
   return `${formatUnits(base, decimals)} ${String(ticker)} = ${String(base)} base units`;
 }
 
@@ -94,7 +83,7 @@ export function tokenQuoteHtml(q: any): string {
   const amt = (base: unknown, served: unknown, tk: unknown, deployId: unknown) => {
     const b = String(base ?? "");
     const { decimals: dec, pinned } = displayDecimals(tk, served);
-    const human = Number.isInteger(dec) ? formatBase(b, Number(dec)) : null;
+    const human = isTokenDecimals(dec) && /^\d+$/.test(b) ? formatUnits(b, dec) : null;
     if (human == null) return `<b>${escapeHtml(b)}</b> base units of <b>${escapeHtml(String(tk))}</b>`;
     return `<b>${escapeHtml(human)} ${escapeHtml(String(tk))}</b> <span class="dim">(${escapeHtml(b)} base units)</span>${unverifiedMark(tk, pinned, deployId)}`;
   };
@@ -103,15 +92,6 @@ export function tokenQuoteHtml(q: any): string {
     : "";
   const warn = [tickerWarning(q.ticker, q.wantDeployId), q.giveTicker ? tickerWarning(q.giveTicker, q.giveDeployId) : ""].filter(Boolean).join(" ");
   return `Filling this debits ${amt(q.total, q.wantDecimals, q.ticker, q.wantDeployId)} <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span>.${giveBit} Quoted by the offer service; the wallet refuses to sign if the offer's on-chain record differs from what is shown here.${warn ? ` <b class="err">${warn}</b>` : ""}`;
-}
-
-/** Base units to a display string with `dec` decimals, trailing zeros trimmed. Null on bad input. */
-export function formatBase(base: string, dec: number): string | null {
-  if (!/^\d+$/.test(base) || !Number.isInteger(dec) || dec < 0 || dec > 18) return null;
-  if (dec === 0) return base;
-  const s = base.padStart(dec + 1, "0");
-  const whole = s.slice(0, s.length - dec), frac = s.slice(s.length - dec).replace(/0+$/, "");
-  return frac ? `${whole}.${frac}` : whole;
 }
 
 // 0.2.71 (CX-16 item 3): the same look-alike rule as the site's verified-tokens.json. A warning, never a block.
@@ -162,20 +142,21 @@ export function renderOutputs(outs: any[], shown = 12): string {
 export function feeLine(raw: number, fallback = 0): string {
   // `??` (not `||`): an explicit fee:0 must RENDER as 0 — the engine refuses it BAD_FEE, and the
   // screen must show the refused value, not the table default (Fable final QC nit).
-  const fee = Number(raw ?? fallback);
-  if (!Number.isFinite(fee)) return `fee: <span class="err">invalid amount</span>`;
+  const fee = csdBase(raw ?? fallback);
+  if (fee === null) return `fee: <span class="err">invalid amount</span>`;
   const warn = fee > FEE_WARN ? ` <span class="err">⚠ unusually large fee</span>` : "";
-  return `fee: ${fee / 1e8} CSD${warn}`;
+  return `fee: ${fmtCsd(fee)}${warn}`;
 }
 
 // A propose's dApp-supplied `expiresEpoch` IS signed (csdtx.ts u64) but was never shown — a site could
 // commit a record that stays claimable for years past what the user expects. Render it humanized: an
-// epoch = 30 blocks ≈ 60 min, so 24 epochs ≈ 1 day. When the current epoch is known (approve.ts fills
+// epoch is EPOCH_LEN blocks (30, about 60 min), so 24 epochs are about 1 day. When the current epoch is known (approve.ts fills
 // it from the node tip) we show the remaining window from NOW and WARN past a year-plus horizon
 // (mirrors the FEE_WARN pattern); otherwise we show the raw epoch alone (the exact signed value).
 const EXPIRY_WARN_EPOCHS = 100000; // epochs past current ≈ >11 years — unusually long for a propose
+const BLOCK_SECS = 120; // target block time; not exported by the vendored bundle
 function humanEpochs(epochs: number): string {
-  const days = epochs * 30 * 120 / 86400; // 30 blocks/epoch · 120s/block / 86400s/day = epochs/24
+  const days = epochs * EPOCH_LEN * BLOCK_SECS / 86400;
   if (days < 1) return `~${Math.max(1, Math.round(days * 24))} h`;
   if (days < 365) return `~${Math.round(days)} day(s)`;
   return `~${(days / 365).toFixed(1)} year(s)`;
@@ -218,7 +199,7 @@ function tokenAmt(amount: unknown, ticker: unknown, meta?: TokenDisplayMeta): st
 }
 function sideStr(s: any, meta?: TokenDisplayMeta): string {
   if (s && typeof s === "object" && "name" in s) return `name <code>${esc(s.name)}.csd</code>`;
-  if (s && typeof s === "object" && "value" in s) return fmtCsdBig(s.value);
+  if (s && typeof s === "object" && "value" in s) return fmtCsd(s.value);
   return tokenAmt(s?.amount, s?.ticker, meta);
 }
 /** Tickers whose amounts a cairnx record clear-signs (the approval window fetches their display meta). */
@@ -495,9 +476,7 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
     lines.push(`listing: <code>${escapeHtml(view.offerId)}</code><br><span class="dim">the offer id above is your reservation of this listing</span>`);
   const gets = view.giveName !== undefined ? `<b>${escapeHtml(view.giveName)}.csd</b>`
     : view.giveTicker !== undefined && view.giveAmount !== undefined
-      ? (view.giveDecimals !== undefined
-        ? `<b>${escapeHtml(tokenAmountBothScales(view.giveAmount, view.giveDecimals, view.giveTicker))}</b>`
-        : `<b>${escapeHtml(view.giveAmount)} base units of ${escapeHtml(view.giveTicker)}</b>`)
+      ? `<b>${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))}</b>`
       : "";
   lines.push(gets ? `you receive (as listed by the offer service): ${gets}` : `<span class="err">⚠ the offer service did not say what this listing gives. Check the listing on the site before approving.</span>`);
   return lines.join("<br>");
@@ -723,7 +702,7 @@ export function costLine(r: any): string {
   if (r.method === "fillOffer") {
     const fee = baseVal(r.params?.fee ?? defaultFeeFor(r.method)); const sent = debitOf(r) - fee;
     const tok = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL ? " PLUS tokens debited from your CairnX balance per the offer's terms" : "";
-    return `cost: ${fmtCsd(sent)} paid to the seller + ${fmtCsd(fee)} network fee${tok} — atomic with the fill.`;
+    return `cost: ${fmtCsd(sent)} to the recipients listed above + ${fmtCsd(fee)} network fee${tok}, atomic with the fill.`;
   }
   if (r.method === "propose") {
     const outs = Array.isArray(r.params?.outputs) ? r.params.outputs : [];

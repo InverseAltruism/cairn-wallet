@@ -542,7 +542,7 @@ try {
     const nodeSrc = readFileSync(new URL("../src/core/node.ts", import.meta.url), "utf8");
     check("POST timeout pinned at 20s (submit must outwait the proxy's 4s+6s failover chain)", /POST_TIMEOUT_MS = 20_000/.test(nodeSrc));
     const popupSrc = readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
-    check("token send pre-checks the CSD anchor fee with a message naming the actual problem", /needs \$\{fmtCsd\(CAIRNX_FEE\)\} CSD for the on-chain anchor fee/.test(popupSrc));
+    check("token send pre-checks the CSD anchor fee with a message naming the actual problem", /needs \$\{fmtCsd\(CAIRNX_FEE\)\} for the on-chain anchor fee/.test(popupSrc));
   }
 } finally {
   globalThis.fetch = origFetch;

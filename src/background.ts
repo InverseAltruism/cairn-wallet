@@ -116,8 +116,6 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "tipFloor": return wallet.tipFloor(); // M11/B5b: PoW-backed floor for review-side fee clamping (popup-only; READ_ONLY so it never extends the idle lock)
-    case "propose": return wallet.propose(args[0]);
-    case "attest": return wallet.attest(args[0]);
     case "send": return wallet.send(args[0], args[1], args[2], args[3]); // args[3] = expectSigner (A1 popup snapshot)
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS — a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
@@ -129,7 +127,6 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnxTransfer": return wallet.cairnxTransfer(args[0]);
     case "resolveName": return wallet.resolveName(args[0]);
     case "confirmName": return wallet.confirmName(args[0]); // 0.2.70: hint-set confirm (popup-only, READ_ONLY)
-    case "verifyName": return wallet.verifyName(args[0]);
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
     case "fillOfferView": return wallet.fillOfferView(args[0]); // listing id + listed asset for a CSD-paid fill card (display only)
@@ -137,7 +134,6 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
     case "setTradeApi": return wallet.setTradeApi(args[0]);
-    case "signin": return wallet.signIn();
     case "export": return wallet.exportKey(args[0]);
     case "exportMnemonic": return wallet.exportMnemonic(args[0]);
     case "setRpc": return wallet.setRpc(args[0]);
@@ -145,6 +141,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "rpcList": return wallet.rpcList();
     case "addRpc": return wallet.addRpc(args[0]);
     case "removeRpc": return wallet.removeRpc(args[0]);
+    case "dismissRpcNotice": return wallet.dismissRpcNotice();
     case "setExplorer": return wallet.setExplorer(args[0]);
     case "explorerList": return wallet.explorerList();
     case "addExplorer": return wallet.addExplorer(args[0]);
@@ -155,7 +152,6 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1], args[2], args[3]); // (id, approve, displayedSigner?, displayedTokenQuote?)
-    case "flushPending": return wallet.flushPending();
     case "history": return wallet.history();
     case "sealClaim": return wallet.sealClaim(args[0]);
     case "revealClaim": return wallet.revealClaim(args[0]);
@@ -264,7 +260,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

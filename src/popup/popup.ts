@@ -3,7 +3,7 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import type { Wallet } from "../core/wallet.js";
 import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
-import { formatUnits, parseUnits, isPlainName, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
+import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
 import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
@@ -93,7 +93,18 @@ function busy(text: string) {
   m.innerHTML = `<span class="spinner"></span>${escapeHtml(text)}`; m.className = "msg info";
 }
 // Brief visual confirmation on a button (e.g. copy).
-function flashBtn(id: string, label: string) { const b = $(id); const o = b.textContent; b.textContent = label; b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
+function flashBtn(id: string, label: string, ok = true) { const b = $(id); const o = b.textContent; b.textContent = label; if (ok) b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
+// "copied" only once the clipboard write has resolved; a refused or missing clipboard says so instead.
+async function copyText(btnId: string, text: string) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
+    await navigator.clipboard.writeText(text);
+    flashBtn(btnId, "copied ✓");
+  } catch {
+    flashBtn(btnId, "copy failed", false);
+    msg("could not copy to the clipboard. Select the text and copy it by hand.", "err");
+  }
+}
 // Send-success moment: one-shot glow sweep across the balance hero (display-only; reduced-motion aware).
 function celebrateSend() {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -136,6 +147,7 @@ async function render() {
   currentRpc = st.rpc || "";
   currentExplorer = st.explorer || "cairn";
   siteApi = st.api || "";
+  if (st.rpcMovedFrom) showRpcMoved(String(st.rpcMovedFrom));
   if (!st.hasVault) return show("setup");
   // On lock (manual or idle auto-lock), wipe any revealed private key / recovery phrase from the DOM and
   // module memory so a secret never lingers on the locked screen (audit POPUP-2).
@@ -299,9 +311,7 @@ async function renderHistory() {
 let curAddr = "";
 let lastBal: number | null = null;
 let balSeq = 0;
-// tween-frame formatter over CSD-UNIT floats (the interpolated `from + (next-from)*e` values) — the
-// base-unit balance display everywhere else is clearsign's fmtBalance.
-const fmtBal = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
+const fmtBal = (base: number) => fmtBalance(base) + " CSD";
 // Identity avatar: a primary .csd name gets its CNS-parity gradient + monogram; a name-less
 // account gets the phosphor cairn mark (a bare gradient + hex nibble read as a placeholder).
 const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
@@ -347,7 +357,7 @@ async function refreshBalance() {
     if (seq !== balSeq) return;                // a newer refresh superseded this one
     void updateMergePending(b.utxos);          // piggybacks the utxos this fetch already carried
     el.classList.remove("loading");
-    const next = b.confirmed / 1e8;
+    const next = Number(b.confirmed);
     const from = lastBal;
     lastBal = next;
     if (from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -357,7 +367,7 @@ async function refreshBalance() {
       const step = (t: number) => {
         if (seq !== balSeq) return;            // superseded mid-tween: let the newer write win
         const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); // ease-out cubic
-        el.textContent = p < 1 ? fmtBal(from + (next - from) * e) : fmtBal(next);
+        el.textContent = p < 1 ? fmtBal(Math.round(from + (next - from) * e)) : fmtBal(next);
         if (p < 1) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
@@ -423,9 +433,11 @@ async function renderAssets() {
   if (!tickers.length && !details.length) { el.hidden = true; el.innerHTML = ""; return; }
   const meta = await tokenMeta();
   if (seq !== assetsSeq) return;
+  // Decimals build the base units a token send signs, so a pinned token uses its pinned decimals, never served ones.
+  const decOf = (t: string): number => { const d = displayDecimals(t, meta[t]?.decimals).decimals; return isTokenDecimals(d) ? d : 0; };
   const rows = tickers.map((t) => {
     const b = balances[t] || { available: "0", locked: "0" };
-    const dec = meta[t]?.decimals ?? 0;
+    const dec = decOf(t);
     const locked = b.locked && b.locked !== "0" ? ` <span class="asset-locked">(+${escapeHtml(formatUnits(b.locked, dec))} locked)</span>` : "";
     return `<div class="asset"><span class="asset-ticker">${escapeHtml(t)}</span>
       <span class="asset-bal">${escapeHtml(formatUnits(b.available, dec))}${locked}</span>
@@ -462,7 +474,7 @@ async function renderAssets() {
   el.innerHTML = `<span class="label">assets</span>${rows}${nameRows}`;
   el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = () => {
     const t = b.dataset.tsend!;
-    openTokenSend(t, meta[t]?.decimals ?? 0, balances[t]?.available ?? "0");
+    openTokenSend(t, decOf(t), balances[t]?.available ?? "0");
   });
   el.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
   el.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
@@ -724,7 +736,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // so a slow node doesn't add serial latency before the review card arms. Offline -> b is null -> the fee
   // check is skipped and the engine still refuses cleanly at sign time.
   const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
-  if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} CSD for the on-chain anchor fee — your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD`, "err");
+  if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} for the on-chain anchor fee; your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD`, "err");
   // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
   const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
@@ -817,10 +829,8 @@ $("setup-pw").addEventListener("input", () => {
   if (h) h.textContent = v ? `password strength: ${pwStrength(v)}` : "";
 });
 $("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
-// F-CLIP (Plans/68 A2 companion): the FIRST-backup copies get the same KEY-6 clipboard auto-clear the
-// export/reveal panels already have — the create-flow phrase/key is exactly as secret as a revealed one.
-$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); flashBtn("btn-copy-seed", "copied ✓"); });
-$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); flashBtn("btn-copy-priv", "copied ✓"); });
+$("btn-copy-seed").addEventListener("click", () => copyText("btn-copy-seed", backupPhrase));
+$("btn-copy-priv").addEventListener("click", () => copyText("btn-copy-priv", backupPriv));
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
 $("btn-backup-done").addEventListener("click", () => {
   backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = "";
@@ -834,7 +844,7 @@ $("btn-import").addEventListener("click", async () => { try { if (!val("import-p
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
 $("btn-refresh").addEventListener("click", () => { refreshBalance(); renderAssets(); });
-$("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("addr").textContent || "")?.catch(() => {}); flashBtn("btn-copy", "copied ✓"); });
+$("btn-copy").addEventListener("click", () => copyText("btn-copy", $("addr").textContent || ""));
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
@@ -914,7 +924,7 @@ async function renderReceive() {
   }
 }
 $("btn-receive").addEventListener("click", () => { if (openPanel("receive-panel")) renderReceive(); });
-$("btn-receive-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("receive-addr").textContent || "")?.catch(() => {}); flashBtn("btn-receive-copy", "copied ✓"); });
+$("btn-receive-copy").addEventListener("click", () => copyText("btn-receive-copy", $("receive-addr").textContent || ""));
 
 // Reveal private key — in-popup panel (password → masked secret box).
 $("btn-export").addEventListener("click", () => { openPanel("reveal-panel"); });
@@ -928,7 +938,7 @@ $("btn-reveal-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-reveal-show").addEventListener("click", () => { ($("reveal-out") as HTMLElement).classList.toggle("shown"); });
-$("btn-reveal-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedKey)?.catch(() => {}); flashBtn("btn-reveal-copy", "copied ✓"); });
+$("btn-reveal-copy").addEventListener("click", () => copyText("btn-reveal-copy", revealedKey));
 $("btn-reveal-close").addEventListener("click", () => { resetRevealPanel(); ($("reveal-panel") as HTMLElement).hidden = true; });
 
 // Reveal recovery phrase — in-popup panel (password → blurred 12-word grid).
@@ -943,7 +953,7 @@ $("btn-phrase-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-phrase-show").addEventListener("click", () => { const o = $("phrase-out"); o.classList.toggle("shown"); o.classList.toggle("blur"); });
-$("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase)?.catch(() => {}); flashBtn("btn-phrase-copy", "copied ✓"); });
+$("btn-phrase-copy").addEventListener("click", () => copyText("btn-phrase-copy", revealedPhrase));
 $("btn-phrase-close").addEventListener("click", () => { resetPhrasePanel(); ($("phrase-panel") as HTMLElement).hidden = true; });
 $("btn-settings").addEventListener("click", () => { if (openPanel("settings")) { renderConnectedSites(); renderCoinsInfo(); } });
 
@@ -1063,11 +1073,9 @@ function originPattern(u: string): string | null {
 }
 // Request host access for a custom RPC/API origin, scoped to that EXACT origin (never a
 // broad pattern). `optional_host_permissions` is deliberately narrowed to local nodes
-// (localhost / 127.0.0.1) — the default Cairn proxy is a required host_permission, so the
-// common cases need no grant. A REMOTE custom https host is not in the optional set, so
-// chrome.permissions.request rejects it (caught → false) and Settings shows "host access
-// denied: use a local node or the Cairn proxy". This keeps least-privilege (no all-https
-// grant / Web-Store red flag); remote custom RPC is a documented power-user limitation.
+// (localhost / 127.0.0.1); the default Cairn proxy is a required host_permission, so the
+// common cases need no grant. The wallet refuses a remote RPC before this point (rpcAllowed);
+// a remote custom API host is not in the optional set, so the request rejects (caught, false).
 async function ensureHostAccess(urls: string[]): Promise<boolean> {
   if (!EXT || !chrome.permissions?.request) return true;
   const origins = [...new Set(urls.map(originPattern).filter(Boolean) as string[])];
@@ -1122,6 +1130,11 @@ function buildMenu(menu: HTMLElement, cfg: {
 }
 const noProto = (u: string) => u.replace(/^https?:\/\//, "");
 
+// A saved remote RPC was moved to the Cairn proxy at load (wallet.init); say so once, then clear the flag.
+function showRpcMoved(from: string) {
+  msgAction(`Your saved node RPC (${from.replace(/^https?:\/\//, "")}) is a remote server, which this wallet no longer supports. It now uses the Cairn proxy. A node on this computer can still be chosen from the RPC menu.`, "OK", () => {}, "info");
+  void call("dismissRpcNotice").catch(() => { /* the notice shows again on the next open */ });
+}
 // ── RPC dropdown (header) — preset + user-added nodes, switch with one click ──
 const RPC_PRESETS = [
   { label: "Cairn proxy", url: "https://cairn-substrate.com/api/rpc" },
@@ -1137,12 +1150,12 @@ async function renderRpcMenu() {
     ],
     isActive: (v) => v === currentRpc,
     pickAttr: "data-url", delAttr: "data-del",
-    addInputId: "rpc-add-input", addBtnId: "rpc-add-btn", placeholder: "https://your-node…",
-    badUrlMsg: "enter a full RPC URL (http(s)://…)",
+    addInputId: "rpc-add-input", addBtnId: "rpc-add-btn", placeholder: "http://127.0.0.1:port",
+    badUrlMsg: "enter a local node URL (http://127.0.0.1:port or http://localhost:port)",
     pick: (v) => selectRpc(v),
     remove: (v) => call("removeRpc", v),
     rerender: renderRpcMenu,
-    add: async (u) => { await call("addRpc", u); await selectRpc(u); },
+    add: async (u) => { try { await call("addRpc", u); await selectRpc(u); } catch (e: any) { msg(e.message, "err"); } },
   });
 }
 async function selectRpc(url: string) {

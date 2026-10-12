@@ -4,6 +4,7 @@
 // We never sign a signing_hash the node handed us, so a malicious/MITM'd RPC cannot steer a signature
 // onto a different transaction. The private key only ever lives in the wallet; nothing here sends it away.
 import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
+import { fmtCsd } from "./cairnx.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever — the popup's "sending…" spinner never settled and there was no in-popup
@@ -323,9 +324,8 @@ const ghostSeen = new Map<string, number>(); // outpoint -> expiry
 // never that the coin "could not be verified". An outpoint lives in exactly ONE of the two caches
 // (each classification event moves it), so the honest counts below cannot double-book a coin.
 const horizonSeen = new Map<string, number>(); // outpoint -> expiry
-const fmtCsd = (v: number) => (v / 1e8).toLocaleString("en-US", { maximumFractionDigits: 8 });
 function roundsExhausted(count: number, value: number): { error: string; code: string } {
-  return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} CSD yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_UNAVAILABLE" };
+  return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_UNAVAILABLE" };
 }
 async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
@@ -415,22 +415,22 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   // Not retryable as-is (same posture as GHOST_INPUTS_SKIPPED): the coins stay excluded until the
   // node's index converges or it is upgraded; a smaller spend covered by provable coins works now.
   if (horizonCount) {
-    console.warn(`cairn-wallet: skipped ${horizonCount} coin(s) beyond the node's scan horizon (real, provable once the node is upgraded); spendable balance is temporarily lower by ~${fmtCsd(horizonValue)} CSD`);
-    const alsoGhosts = ghostCount ? `; ${ghostCount} other coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be found on the chain and were also skipped` : "";
-    return { error: `your node cannot look back far enough to prove ${horizonCount} coin(s) totalling ${fmtCsd(horizonValue)} CSD; they are real and will be spendable once the node is upgraded${alsoGhosts}. The remaining provable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)`, code: "VERIFY_HORIZON" };
+    console.warn(`cairn-wallet: skipped ${horizonCount} coin(s) beyond the node's scan horizon (real, provable once the node is upgraded); spendable balance is temporarily lower by ~${fmtCsd(horizonValue)}`);
+    const alsoGhosts = ghostCount ? `; ${ghostCount} other coin(s) totalling ${fmtCsd(ghostValue)} could not be found on the chain and were also skipped` : "";
+    return { error: `your node cannot look back far enough to prove ${horizonCount} coin(s) totalling ${fmtCsd(horizonValue)}; they are real and will be spendable once the node is upgraded${alsoGhosts}. The remaining provable coins couldn't cover this ${fmtCsd(need)} spend (amount plus fee)`, code: "VERIFY_HORIZON" };
   }
   // W6 (ND-1): reported AFTER horizon and BEFORE notfound. The copy must never say "could not be found"
   // (the coin demonstrably exists) and never say "tampered" (nothing was proved either way): the honest
   // statement is that this wallet cannot represent a number in the source transaction exactly.
   if (unrepCount) {
-    console.warn(`cairn-wallet: skipped ${unrepCount} coin(s) whose source transaction carries a number this wallet cannot represent exactly; spendable balance is temporarily lower by ~${fmtCsd(unrepValue)} CSD`);
-    const alsoGhosts = ghostCount ? `; ${ghostCount} other coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be found on the chain and were also skipped` : "";
-    return { error: `${unrepCount} coin(s) totalling ${fmtCsd(unrepValue)} CSD were skipped because their source transaction carries a number this wallet cannot represent exactly, so it cannot be proved either way${alsoGhosts}. The remaining provable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)`, code: "VERIFY_UNREPRESENTABLE" };
+    console.warn(`cairn-wallet: skipped ${unrepCount} coin(s) whose source transaction carries a number this wallet cannot represent exactly; spendable balance is temporarily lower by ~${fmtCsd(unrepValue)}`);
+    const alsoGhosts = ghostCount ? `; ${ghostCount} other coin(s) totalling ${fmtCsd(ghostValue)} could not be found on the chain and were also skipped` : "";
+    return { error: `${unrepCount} coin(s) totalling ${fmtCsd(unrepValue)} were skipped because their source transaction carries a number this wallet cannot represent exactly, so it cannot be proved either way${alsoGhosts}. The remaining provable coins couldn't cover this ${fmtCsd(need)} spend (amount plus fee)`, code: "VERIFY_UNREPRESENTABLE" };
   }
-  console.warn(`cairn-wallet: skipped ${ghostCount} coin(s) the node could not prove (source tx not found); reported balance may be overstated by ~${fmtCsd(ghostValue)} CSD`);
+  console.warn(`cairn-wallet: skipped ${ghostCount} coin(s) the node could not prove (source tx not found); reported balance may be overstated by ~${fmtCsd(ghostValue)}`);
   // Non-retryable: the skipped coins stay excluded until the node can PROVE them, so an immediate retry
   // changes nothing (distinct from the retryable VERIFY_UNAVAILABLE transient class above).
-  return { error: `${ghostCount} coin(s) totalling ${fmtCsd(ghostValue)} CSD could not be verified on the chain and were skipped; the remaining verifiable coins couldn't cover this ${fmtCsd(need)} CSD spend (amount plus fee)`, code: "GHOST_INPUTS_SKIPPED" };
+  return { error: `${ghostCount} coin(s) totalling ${fmtCsd(ghostValue)} could not be verified on the chain and were skipped; the remaining verifiable coins couldn't cover this ${fmtCsd(need)} spend (amount plus fee)`, code: "GHOST_INPUTS_SKIPPED" };
 }
 
 // `code` (WS5, additive since 0.2.54): a stable UPPER_SNAKE machine tag on every {ok:false} so dApp
@@ -628,7 +628,7 @@ async function assembleValueTx(
   // error up front instead (audit FEE-FLOOR). Non-negative integer / safe-integer checks stay with the
   // callers that own the fee value.
   if (!(fee > 0)) return { ok: false, error: "fee must be positive (the node enforces a minimum fee)", sighashMatch: false, code: "FEE_TOO_LOW" };
-  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${MAX_FEE / 1e8} CSD safety cap — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
+  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
   // Refuse the zero address at the SINGLE place every value tx is assembled — send, sendMany,
   // propose, attest, fillOffer and buildSignSubmit all route through here. A payment to 0x000…0 is an
   // irrecoverable burn; the popup send form already blocks it, but the dApp send/sendMany/fillOffer paths
@@ -649,7 +649,7 @@ async function assembleValueTx(
   // OUTPUTS, never this fee param), 4x under the 1 CSD floor — no honest tx can trip this.
   const propCap = Math.max(100_000_000, Math.floor(sv.total * 0.10));
   if (fee > propCap)
-    return { ok: false, error: `fee exceeds ${propCap / 1e8} CSD (10% of the coins this spend uses) — refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
+    return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this spend uses); refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
   const outs = [...outputs];
   const change = sv.total - need; // CHAIN-VERIFIED input total, not the RPC's report
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
@@ -765,7 +765,7 @@ export async function sendMany(rpc: string, p: { outputs: { to: string; value: n
 export async function consolidate(rpc: string, p: { fee: number }, priv: string): Promise<SubmitResult & { merged?: number; remaining?: number; total?: number }> {
   const fee = Number(p?.fee);
   if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", sighashMatch: false, code: "BAD_FEE" };
-  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${MAX_FEE / 1e8} CSD safety cap — refusing`, sighashMatch: false, code: "FEE_CAP" };
+  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, sighashMatch: false, code: "FEE_CAP" };
   const addr = addrFromPriv(priv);
   let utxos: any[];
   try { ({ utxos } = await balance(rpc, addr)); }
@@ -805,7 +805,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     // compromised UI must not be able to steer this into burning a huge fee past the 0.01 CSD the
     // preview shows. No honest merge approaches it (the popup hardcodes 0.01 CSD).
     const propCap = Math.max(100_000_000, Math.floor(ver.total * 0.10));
-    if (fee > propCap) return { ok: false, error: `fee exceeds ${propCap / 1e8} CSD (10% of the coins this merge uses) — refusing`, sighashMatch: false, code: "FEE_CAP" };
+    if (fee > propCap) return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this merge uses); refusing`, sighashMatch: false, code: "FEE_CAP" };
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
     const r = await signAndSubmit(rpc, tx, priv);
@@ -853,9 +853,10 @@ export async function fillOffer(
   return assembleValueTx(rpc, outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs — add a payment or leave change");
 }
 
-// Register a Cairn item's off-chain content (hash-verified by the server).
-export function registerContent(apiBase: string, content: any, txid: string): Promise<any> {
-  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }) }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
+// Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:
+// a hung request would otherwise hold flushPending's in-flight latch and a revealClaim approval.
+export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<any> {
+  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
 }
 
 // Sign in with CSD against the Cairn API: fetch nonce, sign its digest locally, verify.

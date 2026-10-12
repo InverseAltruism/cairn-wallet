@@ -51,7 +51,7 @@ function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
-export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean }
+export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean; rpcMovedFrom: string | null }
 
 // An in-memory account: its key + label, plus how it was created — `index` is its
 // BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
@@ -108,6 +108,17 @@ function validRpcUrl(u: string): boolean {
   return false;
 }
 const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for dev), with no embedded credentials";
+// The node RPC is the Cairn proxy or a node on this computer: the manifest grants host access to nothing
+// else, so a remote RPC could not be reached (remote RPCs are a future option). Ports are free.
+export function rpcAllowed(u: string): boolean {
+  if (u === DEFAULT_RPC) return true;
+  let x: URL;
+  try { x = new URL(String(u)); } catch { return false; }
+  if (x.username || x.password) return false;
+  if (x.protocol === "http:") return x.hostname === "127.0.0.1" || x.hostname === "localhost";
+  return x.protocol === "https:" && x.hostname === "localhost";
+}
+const RPC_LOCAL_ERR = "RPC must be the Cairn proxy or a node on this computer (http://127.0.0.1:<port> or http://localhost:<port>)";
 
 // Per-account storage namespaces — keep each account's activity + secrets separate.
 const histKey = (addr: string) => "txHistory:" + addr;
@@ -209,19 +220,29 @@ export class Wallet {
   }
 
   async init(): Promise<void> {
-    this.rpc = (await this.store.get("rpc")) || DEFAULT_RPC;
+    const savedRpc: string = (await this.store.get("rpc")) || DEFAULT_RPC;
+    this.rpc = rpcAllowed(savedRpc) ? savedRpc : DEFAULT_RPC;
+    if (this.rpc !== savedRpc) {
+      // A saved remote RPC moves to the Cairn proxy; the popup says so once (rpcNotice, dismissRpcNotice).
+      await this.store.set("rpc", DEFAULT_RPC);
+      await this.store.set("rpcMovedFrom", savedRpc);
+    }
+    const customs = await this.rpcList();
+    if (customs.some((u) => !rpcAllowed(u))) await this.store.set("customRpcs", customs.filter(rpcAllowed));
     this.api = (await this.store.get("api")) || DEFAULT_API;
     this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
     this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
-  async setRpc(u: string) { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); this.rpc = u; await this.store.set("rpc", u); }
+  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); this.api = u; await this.store.set("api", u); }
   async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
-  async addRpc(u: string): Promise<void> { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
+  async addRpc(u: string): Promise<void> { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
   async removeRpc(u: string): Promise<void> { await this.store.set("customRpcs", (await this.rpcList()).filter((x) => x !== u)); }
+  // status().rpcMovedFrom carries the remote RPC init() replaced until the popup has shown the notice once.
+  async dismissRpcNotice(): Promise<void> { await this.store.del("rpcMovedFrom"); }
   // Block-explorer selection (navigation-only; preset id "cairn"/"official" or a custom https base).
   async setExplorer(v: string): Promise<void> {
     if (v === "cairn" || v === "official") { this.explorer = v; await this.store.set("explorer", v); return; }
@@ -237,7 +258,7 @@ export class Wallet {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     const active = this.accts ? this.active : (((await this.store.get("active")) as number) ?? 0);
     const addr = this.accts ? (this.accts[this.active]?.addr ?? null) : (wallets[active]?.addr ?? null);
-    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, tradeApi: this.tradeApi, explorer: this.explorer, hasMnemonic: !!this.mnemonic };
+    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, tradeApi: this.tradeApi, explorer: this.explorer, hasMnemonic: !!this.mnemonic, rpcMovedFrom: (await this.store.get("rpcMovedFrom")) || null };
   }
 
   // Persist the in-memory accounts: re-seal the vault (fresh IV, same salt+key, incl.
@@ -714,7 +735,7 @@ export class Wallet {
   // RT-W2: `reviewedQuote` is the token debit quote the approve window DISPLAYED (threaded from
   // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
   private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote): Promise<node.SubmitResult | null> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return null; // not a well-formed id → the node guard handles it
+    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
     try {
@@ -1396,7 +1417,7 @@ export class Wallet {
 
   // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies
   // itself, replaying the AUDITED resolver over merkle-verified records (see core/namespv.ts). Returns the
-  // fail-closed tri-state. Exposed to dApps (popup "verifyName") so a recipient can be confirmed before a send.
+  // fail-closed tri-state. Called by resolveName; not exposed on the popup or dApp channel.
   async verifyName(name: string): Promise<NameVerification & { name: string }> {
     const nm = normName(name);
     if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
