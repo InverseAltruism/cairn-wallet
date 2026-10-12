@@ -19,7 +19,8 @@ import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { liveFillSpvSource } from "../src/core/fillspv.js";
-import { offer, fclaim, verifyFillSpv, V28_HEIGHT, FILL_TIP_MARGIN, epochOf, fclaimHoldEnd } from "../src/vendor/cairnx-spv.js";
+import { offer, fclaim, verifyFillSpv, V28_HEIGHT, FILL_TIP_MARGIN, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS } from "../src/vendor/cairnx-spv.js";
+import { tipDependentFillReason } from "../src/core/wallet.js";
 import { proposeTx, addrFromPriv, ctxid, rpcTxToTx, merkleRoot, prevoutFor, pick } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 
@@ -137,6 +138,25 @@ async function freshWallet(pw) { const w = new Wallet(memoryStore()); await w.cr
   const r = await w.fillOffer({ proposalId: FID, outputs });
   check(`wallet: a tipFloored refusal is remapped to retryable VERIFY_UNAVAILABLE (${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && /could not confirm this reservation/i.test(String(r?.error)));
   check("...and nothing was submitted", s.submits.length === 0);
+}
+{
+  // AW-TIPFLOOR-COPY-1 (Plan 85 7.3a): under the SAME floored tip, a denial the tip does not decide (the
+  // claim-cap denial) keeps FILL_UNSAFE; only tip-decided reasons may read "wait a moment and try again".
+  // RED-FIRST: drop `&& tipDependentFillReason(verdict.reason)` in wallet.ts and this case reads VERIFY_UNAVAILABLE.
+  const floored = await runLive({ verifiedTip: HOLD_END - 20, nodeTip: HOLD_END - 20, floorTip: HOLD_END + 10 });
+  const io = Object.assign(Object.create(Object.getPrototypeOf(floored)), floored, { myLiveHoldsAtGrant: MAX_ACTIVE_CLAIMS });
+  check("cap-denied io keeps tipFloored", io.tipFloored === true);
+  const w = await freshWallet("pw-floored-cap-123");
+  w.fillSpvIoForTest = () => io;
+  const s = mkStub();
+  const r = await w.fillOffer({ proposalId: FID, outputs });
+  check(`wallet: a permanent denial under a floored tip stays FILL_UNSAFE (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /max active claims/.test(String(r?.error)));
+  check("...and nothing was submitted", s.submits.length === 0);
+  // The classifier reads the bundle's wording: pin it against what the REAL verifier returns.
+  const lapsed = await verifyFillSpv(LOID, FID, ME, floored, { myLiveHoldsAtGrant: floored.myLiveHoldsAtGrant, pay: BigInt(V) });
+  const capped = await verifyFillSpv(LOID, FID, ME, floored, { myLiveHoldsAtGrant: MAX_ACTIVE_CLAIMS, pay: BigInt(V) });
+  check(`the real lapsed-hold reason is tip-dependent (${lapsed.reason})`, lapsed.safe === false && tipDependentFillReason(lapsed.reason));
+  check(`the real cap reason is not (${capped.reason})`, capped.safe === false && !tipDependentFillReason(capped.reason));
 }
 {
   // control: a GENUINE denial with tipFloored FALSE still returns the definitive FILL_UNSAFE reason (no remap).

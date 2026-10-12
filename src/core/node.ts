@@ -58,6 +58,9 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
   // a 2xx we couldn't parse: the server DID process the request — a submit may have been ingested
   // even though we can't read the answer, so this is ambiguous too.
   if (j === undefined) return { ok: false, err: `${path} -> non-JSON response`, maybeInflight: true };
+  // A 2xx body that is not a JSON object (null, an array, a bare number) carries no readable answer
+  // either. Returned as a value so signAndSubmit never throws after a submit (test/submit-outcome.test.mjs).
+  if (j === null || typeof j !== "object" || Array.isArray(j)) return { ok: false, err: `${path} -> unreadable response`, maybeInflight: true };
   // W6 (B5c): `maybeInflight` is THIS function's transport-ambiguity classification, set only on the
   // branches above. Never accept it off a parsed 2xx body — a hostile proxy answering HTTP 200 with
   // {ok:false, maybeInflight:true} could otherwise steer the caller's SUBMIT_MAYBE_INFLIGHT copy and
@@ -70,9 +73,11 @@ export async function tip(rpc: string): Promise<number> { return Number((await g
 export async function getProposal(rpc: string, txid: string): Promise<any | null> {
   try { const j = await get(rpc, `/proposal/${txid}`); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
 }
+// Throws on a body without a `utxos` array, so every spend path refuses it as VERIFY_UNAVAILABLE before signing.
 export async function balance(rpc: string, addr: string): Promise<{ confirmed: number; utxos: any[] }> {
   const j = await get(rpc, `/utxos/${addr}?available=true`);
-  return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos ?? [] };
+  if (!j || typeof j !== "object" || !Array.isArray(j.utxos)) throw new Error(`/utxos -> malformed response`);
+  return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos };
 }
 
 function appToJson(app: App): unknown {
@@ -319,6 +324,9 @@ const ghostSeen = new Map<string, number>(); // outpoint -> expiry
 // (each classification event moves it), so the honest counts below cannot double-book a coin.
 const horizonSeen = new Map<string, number>(); // outpoint -> expiry
 const fmtCsd = (v: number) => (v / 1e8).toLocaleString("en-US", { maximumFractionDigits: 8 });
+function roundsExhausted(count: number, value: number): { error: string; code: string } {
+  return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} CSD yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_INCOMPLETE" };
+}
 async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
@@ -397,6 +405,10 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
       return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows — send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
   }
   if (!ghostCount && !horizonCount && !unrepCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
+  // The round budget ran out while selection still had untried coins, so nothing is known about
+  // whether the provable coins cover `need`. Typical after a node restart: SCAN_HORIZON on many coins
+  // while its tx index converges. Retryable: the session caches above pre-exclude the coins seen.
+  if (!selExhausted) return roundsExhausted(ghostCount + horizonCount + unrepCount, ghostValue + horizonValue + unrepValue);
   // BN0w (W9): horizon outranks ghost in reporting (severity below tamper/transient, above notfound).
   // The copy must stay honest: these coins are REAL and belong to this wallet; the node's bounded
   // back-scan just cannot reach their source txs yet. Never say "could not be verified" about them.
@@ -589,7 +601,7 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
     // rejections keep txid undefined: providing one would read as "it went through".
     txid: sub.ok || sub.maybeInflight || dup ? localTxid : undefined,
     error: dup
-      ? "this transaction, or one spending the same coins, is already pending; it should settle within a block or two"
+      ? "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again"
       : (sub.err ?? (sub.ok ? undefined : "submit rejected")),
     sighashMatch: true,
     code: sub.ok ? undefined : (dup ? "SUBMIT_DUPLICATE" : (sub.maybeInflight ? "SUBMIT_MAYBE_INFLIGHT" : "SUBMIT_REJECTED")),
@@ -799,7 +811,10 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     const r = await signAndSubmit(rpc, tx, priv);
     return { ...r, merged: pool.length, remaining, total: ver.total, ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
   }
-  return { ok: false, error: "couldn't settle on a verifiable set of coins (unprovable coins kept appearing) — try again in a moment", sighashMatch: false, code: "GHOST_INPUTS_SKIPPED" };
+  let skipped = 0, skippedValue = 0;
+  for (const c of spendableCoins(utxos)) if (exclude.has(opKey(c.txid, c.vout))) { skipped++; skippedValue += c.value; }
+  const ex = roundsExhausted(skipped, skippedValue);
+  return { ok: false, error: ex.error, sighashMatch: false, code: ex.code };
 }
 
 // Read-only preview for the consolidate confirmation card: how many coins are spendable, how many

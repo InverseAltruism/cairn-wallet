@@ -196,6 +196,27 @@ assert.ok(seen.some((u) => u.includes(`/utxos/${signer}`)), "(C2) the wallet sel
 assert.equal(seen.filter((u) => u.includes("/tx/submit")).length, 1, "(C2) and submitted once");
 assert.equal((await proposeOk).ok, true, "(C2) the page receives the success");
 globalThis.fetch = baseFetch;
+// ── (D) a popup send while locked answers WALLET_LOCKED, not INTERNAL (Plan 85 7.3a, E1.lock) ────────
+// RED-FIRST: use "INTERNAL" again in the popup listener's catch in background.ts and (D1) fails.
+// PAIRED HONEST PATH: (D2) another thrown error keeps INTERNAL, and (D3) the unlocked send is not refused
+// on the lock: it reaches the engine and returns its own SubmitResult.
+console.log("(D1) a popup-channel send while locked answers WALLET_LOCKED");
+await popup("lock");
+const lockedSend = await popup("send", other, 1_00000000, 1_000_000);
+assert.equal(lockedSend.ok, false);
+assert.equal(lockedSend.code, "WALLET_LOCKED", "(D1) the locked popup send carries WALLET_LOCKED");
+assert.equal(lockedSend.error, "locked", "(D1) the popup still receives the message it routes on");
+console.log("  ok");
+console.log("(D2) paired: an unrelated throw keeps INTERNAL");
+const bad = await popup("setRpc", "ftp://not-allowed");
+assert.equal(bad.ok, false);
+assert.equal(bad.code, "INTERNAL", "(D2) a non-lock throw is still INTERNAL");
+console.log("  ok");
+console.log("(D3) paired: the same send unlocked reaches the engine");
+assert.equal((await popup("unlock", PW)).ok, true);
+const unlockedSend = await popup("send", other, 1_00000000, 1_000_000);
+assert.equal(unlockedSend.ok, true, "(D3) the channel answers ok (the engine result rides inside)");
+assert.equal(unlockedSend.result.code, "INSUFFICIENT", "(D3) the empty test wallet gets the engine's own refusal");
 console.log("  ok");
 
 console.log("\nbackground-consent-outcome: all assertions passed");

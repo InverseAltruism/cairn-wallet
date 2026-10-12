@@ -33,6 +33,13 @@ export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js"
 // FLIPPED ON via the opt-in 3-arg overload. `t` MUST be a MintedProvenOfferTerms (produced only by the
 // vendored provenOfferTerms via fillspv.ts), so a hand-built terms object is a compile error exactly where it
 // would false-refuse every honest fill (the W2 trap the brand exists to make unrepresentable).
+// The vendored verifyFillSpv reasons whose verdict is evaluated at the tip (hold liveness, grant routing,
+// the deadline margin, burial depth). Matched on the bundle's wording; test/fillspv-tip-floor.test.mjs runs
+// the real verifier for both sides, so a reword in the bundle turns that file red.
+export function tipDependentFillReason(reason: string): boolean {
+  return /^(no live claim by you|this fclaim is not the live granted hold|too close to the hold deadline)|not buried deep enough yet/.test(String(reason));
+}
+
 // B7e-FIX (W1 token-lane close): this predicate now runs on the TOKEN-priced lane too (the else branch in
 // fillOfferPreflight), not only the CSD lane. On the token lane the give leg is the load-bearing content bind
 // and the want-type leg is a real rejecter (on the CSD lane the pre-existing value leg shadows it). The
@@ -899,7 +906,7 @@ export class Wallet {
       // payment burned to attacker-directed outputs. Honest cost: a brand-new offer inside the
       // resolver's ~15s scan poll refuses ONCE with retryable copy. This closes the honest-resolver and
       // MITM hole; a coherently LYING resolver is the B3 proof-bound fill-SPV item, not this guard.
-      return { ok: false, error: "this offer is not known to your resolver yet — retry in a few seconds (a brand-new offer appears after the resolver's next scan)", sighashMatch: false, code: "OFFER_UNKNOWN" };
+      return { ok: false, error: "this offer is not known to your resolver yet. A new offer appears once it is mined and the resolver has read that block; try again then", sighashMatch: false, code: "OFFER_UNKNOWN" };
     }
     // a positively-parsed OPEN offer that cleared every check above → proceed to sign
     return null;
@@ -950,7 +957,8 @@ export class Wallet {
     // factually-wrong "would strand"/lapsed-shaped reason is replaced with honest, retryable copy. Both
     // branches REFUSE (fail-closed either way); this only fixes which reason the user sees. `tipFloored` is
     // undefined/falsy under the fillSpvIoForTest synthetic io, so every existing denial keeps FILL_UNSAFE.
-    if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
+    // Only a reason the tip decides is remapped; a permanent denial keeps FILL_UNSAFE under a floored tip.
+    if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored && tipDependentFillReason(verdict.reason) ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
     // F2: bind the PAYMENT recipients to the MERKLE-PROVEN offer author. verifyFillSpv proves DELIVERY (the give)
     // but not payment: requiredFillOutputs sizes the seller-payment leg to the resolver-served offer.want.payto
     // and the rebate leg to the resolver-served offer.seller. A lying read-path swaps want.payto so the buyer
@@ -1312,12 +1320,10 @@ export class Wallet {
   // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
   // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
   async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string }> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
     try {
-      const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): fill-quote read
-      if (!r.ok) return { ok: false, error: "offer not found" };
-      const o: any = await r.json().catch(() => null);
-      if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+      const so = await this.servedOpenOffer(proposalId);
+      if (!so.ok) return so;
+      const o = so.offer;
       const w = o.want;
       if (!w || typeof w.ticker !== "string" || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
       let amount: bigint;
@@ -1341,6 +1347,35 @@ export class Wallet {
         wantDecimals: meta[w.ticker]?.decimals, wantDeployId: meta[w.ticker]?.deployId,
         giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined,
       };
+    } catch { return { ok: false, error: "offer unavailable" }; }
+  }
+
+  // The resolver's OPEN offer behind a fill target (an offer id, or a reservation txid the resolver links to
+  // its offer). Display reads only; the fill preflight does its own read and binds what it signs.
+  private async servedOpenOffer(proposalId: string): Promise<{ ok: true; offer: any } | { ok: false; error: string }> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
+    const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default)
+    if (!r.ok) return { ok: false, error: "offer not found" };
+    const o: any = await r.json().catch(() => null);
+    if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+    return { ok: true, offer: o };
+  }
+
+  // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
+  // attested id on the reservation lane) and the asset the offer service lists as received. Display only.
+  async fillOfferView(proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number }> {
+    try {
+      const so = await this.servedOpenOffer(proposalId);
+      if (!so.ok) return so;
+      const o = so.offer;
+      const offerId = String(o.id ?? "").toLowerCase();
+      if (!/^0x[0-9a-f]{64}$/.test(offerId)) return { ok: false, error: "offer unavailable" };
+      const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
+      const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
+      const giveAmount = g?.amount != null ? String(g.amount) : undefined;
+      const giveName = typeof g?.name === "string" ? g.name : undefined;
+      const meta = giveTicker ? await this.tokenDisplayMeta([giveTicker]) : {};
+      return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined };
     } catch { return { ok: false, error: "offer unavailable" }; }
   }
 
@@ -1635,6 +1670,11 @@ export class Wallet {
     const rec = list.find((x) => x.txid === txid)
       ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec; // a parked seal is revealable too
     if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
+    // The preimage goes public only once the commit is mined (flushPending's getProposal rule): a reveal
+    // against a commit still in the mempool, or one that never lands, would publish the claim uncommitted.
+    const commit = await node.getProposal(this.rpc, txid);
+    if (!(commit && commit.payload_hash))
+      return refuse("SEAL_NOT_MINED", "this seal is not mined yet, or the node could not confirm it; nothing was revealed. Try again once it is mined");
     // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
     const { claim, nonce } = await this.openPreimage(rec);
     const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);

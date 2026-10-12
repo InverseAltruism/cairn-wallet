@@ -26,6 +26,7 @@ function mkFetch(coins, onSubmit) {
     const u = String(url);
     if (u.includes("/tx/submit")) { await onSubmit?.(); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
     if (u.includes("/api/content")) { registered.push(JSON.parse(init?.body ?? "{}")); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+    if (u.includes("/proposal/")) return { ok: true, status: 200, json: async () => ({ payload_hash: "0x" + "11".repeat(32) }) }; // the commit is mined
     if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coins.reduce((s, c) => s + c.coin.value, 0), utxos: coins.map((c) => c.coin) }) };
     if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: 65_000 }) };
     const t = txReply(u, coins);

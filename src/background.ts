@@ -132,6 +132,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "verifyName": return wallet.verifyName(args[0]);
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
+    case "fillOfferView": return wallet.fillOfferView(args[0]); // listing id + listed asset for a CSD-paid fill card (display only)
     case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2]); // args[2] = expectSigner (A1)
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
@@ -162,6 +163,10 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     default: throw new Error("unknown method: " + method);
   }
 }
+
+// Wallet methods that need the key throw Error("locked") while the vault is locked; that is
+// WALLET_LOCKED, not an internal fault. Anything else thrown stays INTERNAL.
+const thrownCode = (e: unknown): string => ((e as { message?: unknown })?.message === "locked" ? "WALLET_LOCKED" : "INTERNAL");
 
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
@@ -245,7 +250,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "fillOffer") result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote });
     else throw new Error("unsupported dApp method: " + p.method);
     return finish({ ok: true, result });
-  } catch (e: any) { return finish({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
+  } catch (e: any) { return finish({ ok: false, code: thrownCode(e), error: e?.message ?? String(e) }); }
 }
 
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
@@ -259,7 +264,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "pendingMerge", "prewarmSpv"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
@@ -421,7 +426,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         sendResponse(res); return;
       }
       sendResponse({ ok: false, code: "UNKNOWN_KIND", error: "unknown message kind" });
-    } catch (e: any) { sendResponse({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
+    } catch (e: any) { sendResponse({ ok: false, code: thrownCode(e), error: e?.message ?? String(e) }); }
   })();
   return true; // async response
 });
