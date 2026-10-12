@@ -16,6 +16,7 @@ import {
   V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, feeBpsAt, tradeFee,
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { mkCoin, txReply } from "./_coin.ts";
 
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log("  ok " + name); };
@@ -372,6 +373,58 @@ await test("a denied fclaim of mine on an offer a stranger filled still counts (
   const io = await liveAt(s, tip);
   assertNotBelowResolver(io.myLiveHoldsAtGrant, s, tip);
   assert.equal(io.myLiveHoldsAtGrant, 3);
+});
+
+// End to end through w.fillOffer: the wallet holds the buyer key, builds its own fill source (nameSpvForTest
+// stands in for the light client), looks the other offers up through its own tradeGet, and fclaimLanePreflight
+// runs verifyFillSpv with production's pay and sums.
+async function fillEndToEnd(s) {
+  const w = new Wallet(memoryStore());
+  assert.equal((await w.importKey(meKey, "pw-four-buys-123")).addr.toLowerCase(), ME);
+  w.nameSpvForTest = fillSource(s.blocks, TIP);
+  const coin = mkCoin(100_000_002);
+  const alias = { ...servedShape(s.mainOffer), fclaimId: s.fourth, fclaimHeight: H_G, fclaimExpiresEpoch: eFor(H_G) };
+  const outputs = fullOutputs(s.mainOffer);
+  const seen = { submits: [], primaryOtherLookups: [] };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes("/tx/submit")) { seen.submits.push(JSON.parse(init?.body || "{}")); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
+    const m = u.match(/\/cairnx\/offer\/(0x[0-9a-f]{64})$/);
+    if (m && u.includes("clarvis")) return { ok: false, status: 404, json: async () => ({}) };
+    if (m && m[1] === s.fourth) return { ok: true, status: 200, json: async () => alias };
+    if (m && s.offerIds.includes(m[1])) { seen.primaryOtherLookups.push(m[1]); return { ok: true, status: 200, json: async () => servedShape(m[1], { status: "filled" }) }; }
+    if (u.match(/\/utxos\//)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
+    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: TIP }) };
+    const t = txReply(u, [coin]);
+    if (t) return t;
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try { return { r: await w.fillOffer({ proposalId: s.fourth, outputs }), outputs, ...seen }; }
+  finally { globalThis.fetch = origFetch; }
+}
+
+await test("end to end: the fourth buy after three proven fills is signed and submitted", async () => {
+  const world = fourBuys();
+  const { r, outputs, submits, primaryOtherLookups } = await fillEndToEnd(world);
+  assert.equal(r?.ok, true, `${r?.code}: ${r?.error}`);
+  assert.equal(submits.length, 1);
+  assert.deepEqual([...primaryOtherLookups].sort(), [...world.offerIds].sort());
+  const hex = (bytes) => "0x" + bytes.map((x) => x.toString(16).padStart(2, "0")).join("");
+  const tx = submits[0].tx;
+  assert.equal(hex(tx.app.Attest.proposal_id), world.fourth, "the attest names the fourth fclaim");
+  assert.equal(tx.app.Attest.score, SCORE_FILL);
+  const paid = new Map();
+  for (const o of tx.outputs) { const k = hex(o.script_pubkey); paid.set(k, (paid.get(k) ?? 0) + Number(o.value)); }
+  for (const { to, value } of outputs) assert.equal(paid.get(to), value, `submitted tx pays ${to} exactly ${value}`);
+});
+
+await test("end to end: three unfilled holds still refuse the fourth buy, nothing submitted", async () => {
+  const { r, submits } = await fillEndToEnd(fourBuys({ fills: {} }));
+  assert.equal(r?.ok, false);
+  assert.equal(r?.code, "FILL_UNSAFE");
+  assert.match(String(r?.error), /max active claims/);
+  assert.equal(submits.length, 0);
 });
 
 console.log(`fill-holds-v29: ${n} passed, 0 failed`);
