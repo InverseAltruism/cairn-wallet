@@ -31,24 +31,36 @@ const consentStore = chromeStore();
 const CONSENT_KEY = "connectedOrigins";
 type ConsentMap = Record<string, { addr: string; ts: number }>;
 async function getConsents(): Promise<ConsentMap> { return (await consentStore.get(CONSENT_KEY)) || {}; }
-async function recordConsent(origin: string, addr: string): Promise<void> {
+// Every write of the consent map runs through this one queue, so a connect's read-modify-write cannot
+// interleave with a Disconnect's and write back an origin the user just removed.
+let consentChain: Promise<void> = Promise.resolve();
+function inConsentChain<T>(work: () => Promise<T>): Promise<T> {
+  const run = consentChain.then(work, work);
+  consentChain = run.then(() => {}, () => {});
+  return run;
+}
+function recordConsent(origin: string, addr: string): Promise<void> {
   // L2: an opaque origin (a sandboxed / data: / some file: page) sends sender.origin === "null" — a SHARED,
   // non-identifying string, not a site. Never store consent under it: every opaque page would collide on the
   // one "null" bucket, so the silent fast-path (and getPermissions) would return the consented address to ANY
   // opaque-origin page — a silent cross-site disclosure. Reject it alongside "unknown"; the fast-path + get-
   // Permissions then fall through to a fresh prompt for every opaque page (an opaque origin has no identity to
   // remember). Deliberately NOT a per-frame ephemeral bucket — more machinery for no legitimate use.
-  if (!origin || origin === "unknown" || origin === "null") return;
-  const c = await getConsents();
-  c[origin] = { addr, ts: Date.now() };
-  await consentStore.set(CONSENT_KEY, c);
+  if (!origin || origin === "unknown" || origin === "null") return Promise.resolve();
+  return inConsentChain(async () => {
+    const c = await getConsents();
+    c[origin] = { addr, ts: Date.now() };
+    await consentStore.set(CONSENT_KEY, c);
+  });
 }
-async function revokeConsent(origin: string): Promise<{ removed: boolean }> {
-  const c = await getConsents();
-  if (!c[origin]) return { removed: false };
-  delete c[origin];
-  await consentStore.set(CONSENT_KEY, c);
-  return { removed: true };
+function revokeConsent(origin: string): Promise<{ removed: boolean }> {
+  return inConsentChain(async () => {
+    const c = await getConsents();
+    if (!c[origin]) return { removed: false };
+    delete c[origin];
+    await consentStore.set(CONSENT_KEY, c);
+    return { removed: true };
+  });
 }
 async function listConsents(): Promise<{ origin: string; addr: string; ts: number }[]> {
   const c = await getConsents();
@@ -133,7 +145,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "explorerList": return wallet.explorerList();
     case "addExplorer": return wallet.addExplorer(args[0]);
     case "removeExplorer": return wallet.removeExplorer(args[0]);
-    case "reset": { await consentStore.set(CONSENT_KEY, {}); return wallet.reset(); }
+    case "reset": { await inConsentChain(() => consentStore.set(CONSENT_KEY, {})); return wallet.reset(); }
     case "connectedSites": return listConsents();
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
@@ -150,7 +162,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
 
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
-async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<{ done: boolean; ok?: boolean; error?: string; txid?: string }> {
+async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<{ done: boolean; ok?: boolean; error?: string; code?: string; txid?: string }> {
   const p = pending.get(id);
   if (!p) return { done: false };
   pending.delete(id);
@@ -163,10 +175,11 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   // POPUP-OUTCOME-1: resolve the dApp promise (UNCHANGED) AND report the TRUE action outcome back to the
   // approval popup, so it shows "sent ✓" / "failed: …" instead of a blanket "approved" when the signed action
   // actually failed (locked, account-switch, a network/guard reject, or a soft {ok:false} builder result).
-  const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }): { done: boolean; ok: boolean; error?: string; txid?: string } => {
+  const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }): { done: boolean; ok: boolean; error?: string; code?: string; txid?: string } => {
     p.resolve(out);
     const actionOk = out.ok && (out.result?.ok !== false);
-    return { done: true, ok: actionOk, error: out.error ?? (out.result?.ok === false ? out.result?.error : undefined), txid: out.result?.txid };
+    const soft = out.result?.ok === false;
+    return { done: true, ok: actionOk, error: out.error ?? (soft ? out.result?.error : undefined), code: out.code ?? (soft ? out.result?.code : undefined), txid: out.result?.txid };
   };
   if (!approve) return finish({ ok: false, code: "USER_REJECTED", error: "rejected by user" });
   try {

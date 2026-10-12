@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Create, restore and import change nothing unless the new vault is sealed and stored. A password under 8
+  characters (or a failed storage write) used to leave the wallet unlocked on an address whose key was stored
+  nowhere.
+- Approval window: it stays open until the outcome of an approved request arrives, and after a failure it keeps
+  the reason and its code on screen (for example `failed: ... (OFFER_SOURCE_CONFLICT)`) until you close it or the
+  next request appears. A success or a rejection still closes it.
+- Connected sites: a site's connect and your Disconnect of another site are applied one after the other, so the
+  disconnected site can no longer be restored by the race.
+- A lock (including the idle auto-lock) between a send's broadcast and its history write no longer drops the
+  history row: it is held in memory, shown in history after unlock, and written to storage with the next
+  history write. It does not survive the service worker stopping before then. A reset still drops it.
+- Sign in with CSD: a `statement` longer than 256 characters is refused, like `requestId`.
+- Epoch math uses the vendored consensus `EPOCH_LEN` instead of a local copy of the number (no value changes).
+
 ## 0.2.73 (2026-10-10)
 
 - Open-offer fills (fclaim lane): the wallet reads the offer by id from the second source (clarvis) in parallel

@@ -44,6 +44,7 @@
 //   RED-FIRST: drop the tokenMeta threading in approve.ts render() and (9a) goes red.
 //
 // Run: node --import tsx test/approve-repaint-dom.test.mjs   (offline)
+import assert from "node:assert/strict";
 import { costLine, debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { bid } from "../src/vendor/cairnx-spv.js";
@@ -342,6 +343,65 @@ const failText = registry.get("req").innerHTML.replace(/<[^>]+>/g, "");
 check("(9c) a failed display read still paints CAIRN at its pinned 8 decimals beside the base units, with the record-did-not-load warning",
   failText.includes("4638.5287329 CAIRN = 463852873290 base units") && /Could not confirm this CAIRN/.test(failText));
 check("(9c) ...and Approve still arms (display never blocks a buy)", registry.get("btn-approve").disabled === false);
+
+// ── 10. The window stays open until the outcome of an approved request is delivered ───────────────────
+// The background removes a request from the queue before running it, so a slow outcome (a fill's
+// preflight reads) left the queue empty and the 1.2 s poll closed the window: a refusal such as
+// OFFER_SOURCE_CONFLICT was never painted. Plain node:assert from here on.
+//   RED-FIRST: make render() call window.close() on an empty queue unconditionally (the 0.2.73 shape) and
+//   (10a) fails.
+//   PAIRED HONEST PATH: (10c) a successful approval and (10d) a rejection still close the window once
+//   the queue is empty, and (10b) a new request after a held failure paints and arms as usual.
+console.log("\nRow 50: the outcome of an approved request is delivered before the window closes");
+let releaseOutcome = null;
+handlers.resolve = () => new Promise((res) => { releaseOutcome = res; });
+state.pending = [sendReq("o1", RCPT_A, 1_00000000)];
+await tick(); await flush(); await settle();
+assert.equal(registry.get("btn-approve").disabled, false, "setup: Approve is armed");
+const closesBefore = closes;
+registry.get("btn-approve")._listeners.click();
+await flush();
+state.pending = [];   // the background has already dropped the request from the queue
+for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
+assert.equal(closes, closesBefore, "(10a) the poll does not close the window while the outcome is in flight");
+assert.equal(registry.get("msg").textContent, "approving\u2026");
+const REFUSAL = "refusing to sign: the independent second resolver reports that this offer was cancelled, while your resolver shows it open.";
+releaseOutcome({ done: true, ok: false, error: REFUSAL, code: "OFFER_SOURCE_CONFLICT" });
+await flush();
+assert.equal(registry.get("msg").textContent, `failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the refusal and its code are painted");
+assert.equal(registry.get("msg").className, "msg err");
+for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
+assert.equal(closes, closesBefore, "(10a) the window stays open on the failure after further polls");
+assert.equal(registry.get("view-req").hidden, true, "(10a) the spent request's buttons are hidden");
+assert.equal(registry.get("msg").textContent, `failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the failure text is still there");
+console.log("  ok (10a)");
+
+state.pending = [sendReq("o2", RCPT_B, 2_00000000)];
+await tick(); await flush(); await settle();
+assert.equal(registry.get("view-req").hidden, false, "(10b) a new request is shown");
+assert.equal(registry.get("msg").textContent, "", "(10b) the old failure is cleared by the new paint");
+assert.equal(registry.get("btn-approve").disabled, false, "(10b) and Approve arms");
+console.log("  ok (10b)");
+
+registry.get("btn-approve")._listeners.click();
+await flush();
+state.pending = [];
+await tick(); await flush(3);
+assert.equal(closes, closesBefore, "(10c) still open while this outcome is in flight");
+releaseOutcome({ done: true, ok: true, txid: "0x" + "ab".repeat(32) });
+await flush();
+assert.equal(closes, closesBefore + 1, "(10c) a successful outcome closes the window as before");
+console.log("  ok (10c)");
+
+handlers.resolve = () => ({ done: true, ok: false, error: "rejected by user", code: "USER_REJECTED" });
+state.pending = [sendReq("o3", RCPT_A, 3_00000000)];
+await tick(); await flush(); await settle();
+registry.get("btn-reject")._listeners.click();
+state.pending = [];
+await flush();
+assert.equal(registry.get("msg").textContent, "rejected");
+assert.equal(closes, closesBefore + 2, "(10d) a rejection closes the window as before");
+console.log("  ok (10d)");
 
 console.log(`\napprove-repaint-dom: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

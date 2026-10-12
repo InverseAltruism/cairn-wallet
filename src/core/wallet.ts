@@ -11,7 +11,7 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
-import { fclaimHoldEnd, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -50,10 +50,14 @@ export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: stri
 // BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
 // NOT recoverable from the seed phrase.
 type Acct = Account & { label: string; index?: number; imported?: boolean };
+// The cleartext account list mirrored beside the vault for the locked UI (no key material).
+const mirrorOf = (accts: Acct[]): PubAcct[] => accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported }));
 // Encrypted-vault document (the plaintext sealed under the password). v2 adds the
 // HD seed phrase + the next free derivation index; v1 (no mnemonic) still opens.
 interface StoredAcct { priv: string; label: string; index?: number; imported?: boolean }
 interface VaultDoc { v: 1 | 2; mnemonic?: string; nextIndex?: number; accounts: StoredAcct[]; active: number }
+// The in-memory unlocked state a vault doc is built from.
+interface VaultState { mnemonic: string | null; nextIndex: number; accts: Acct[] | null; active: number }
 
 const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
 const DEFAULT_API = "https://cairn-substrate.com";
@@ -131,10 +135,8 @@ const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => refuse("ACCOUNT_CHANGED
 // (CSD lanes default; the token lane passes 100), so this declines no honest fill (WALLET-ERROR-CODES.md).
 const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refusing to sign: this fill's score is not the value the marketplace requires, so the chain would ignore it and your payment would be lost. Retry the purchase from the site's Buy button.");
 
-// Epoch math + record-expiry windows (all in EPOCHS; one epoch = BLOCKS_PER_EPOCH blocks). BLOCKS_PER_EPOCH
-// mirrors the vendored cairnx-core EPOCH_LEN (30) — kept as a named local because the wallet .d.ts does not
-// yet export it. Each +N offset below sets a Propose's expiresEpoch = currentEpoch + window.
-const BLOCKS_PER_EPOCH = 30;
+// Record-expiry windows, in epochs of the vendored EPOCH_LEN blocks. Each +N offset below sets a Propose's
+// expiresEpoch = currentEpoch + window.
 const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim — ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
@@ -236,11 +238,11 @@ export class Wallet {
   // each is an imported non-HD key) in cleartext for the UI.
   // Serialize the in-memory unlocked state into the encrypted-vault plaintext. Single source for the doc
   // shape shared by persistVault (re-seal) and sealFresh (first seal), so the two can't drift.
-  private buildDoc(): VaultDoc {
+  private buildDoc(s: VaultState = { mnemonic: this.mnemonic, nextIndex: this.nextIndex, accts: this.accts, active: this.active }): VaultDoc {
     return {
-      v: 2, mnemonic: this.mnemonic ?? undefined, nextIndex: this.nextIndex,
-      accounts: (this.accts ?? []).map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })),
-      active: this.active,
+      v: 2, mnemonic: s.mnemonic ?? undefined, nextIndex: s.nextIndex,
+      accounts: (s.accts ?? []).map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })),
+      active: s.active,
     };
   }
 
@@ -254,8 +256,8 @@ export class Wallet {
   // Throw-safe: the chain always continues (both settle paths run the next persist; persistChain is
   // reset to an always-resolved promise) and each caller still observes its own rejection.
   private persistChain: Promise<void> = Promise.resolve();
-  private persistVault(): Promise<void> {
-    const run = this.persistChain.then(() => this.doPersistVault(), () => this.doPersistVault());
+  private persistVault(write: () => Promise<void> = () => this.doPersistVault()): Promise<void> {
+    const run = this.persistChain.then(write, write);
     this.persistChain = run.then(() => {}, () => {});
     return run;
   }
@@ -263,9 +265,12 @@ export class Wallet {
     if (!this.accts || !this.vaultKey) throw new Error("locked");
     const doc = this.buildDoc();
     // capture the cleartext mirror from the SAME synchronous state as `doc`, BEFORE the async seal
-    const mirror = this.accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported }));
+    const mirror = mirrorOf(this.accts);
     const active = this.active;
     const vault = await sealWith(JSON.stringify(doc), this.vaultKey, this.salt, this.iter);
+    await this.writeVault(vault, mirror, active);
+  }
+  private async writeVault(vault: Vault, mirror: PubAcct[], active: number): Promise<void> {
     await this.store.set("vault", vault);
     await this.store.set("wallets", mirror);
     await this.store.set("active", active);
@@ -279,7 +284,7 @@ export class Wallet {
   // returned so each caller still observes its own outcome.
   // Boundary rule: a chain callback contains STORAGE ops only, never a network await (send()
   // awaits maybeRecord, so anything inside histChain sits on the send hot path). WRITE callbacks
-  // bail on !this.accts (a write parked across lock()/reset() must not land on a wiped wallet);
+  // do not write while !this.accts (recordTx parks its row in RAM instead, except after reset());
   // DELETE callbacks do not bail (deletes are teardown and safe while locked).
   private histChain: Promise<void> = Promise.resolve();
   private inHistChain<T>(work: () => Promise<T>): Promise<T> {
@@ -300,14 +305,21 @@ export class Wallet {
   // removeAccount: the reset discipline is exactly "clear the array".
   private pendingHist: { k: string; entry: Record<string, unknown> }[] = [];
   private pendingSeals: { k: string; rec: any }[] = [];
+  // Set by reset(), cleared when a new vault is sealed. `!this.accts` alone cannot tell an ordinary lock
+  // (the signed tx's history must survive it) from a reset (nothing of the old wallet may land again).
+  private wiped = false;
 
   private acct(priv: string, label: string, extra: { index?: number; imported?: boolean } = {}): Acct { return { ...fromPriv(priv), label, ...extra }; }
 
-  // Seal a brand-new vault from an in-memory state already set on `this`.
-  private async sealFresh(password: string) {
-    const { vault, key } = await sealNew(JSON.stringify(this.buildDoc()), password);
+  // Seal and store a brand-new vault for `next`, then adopt `next` as the unlocked state. Nothing on
+  // `this` changes until the seal (password check included) and the store write have succeeded, so a
+  // refused password or a failed write leaves the wallet exactly as it was.
+  private async sealFresh(password: string, next: VaultState) {
+    const { vault, key } = await sealNew(JSON.stringify(this.buildDoc(next)), password);
+    await this.persistVault(() => this.writeVault(vault, mirrorOf(next.accts ?? []), next.active));
+    this.mnemonic = next.mnemonic; this.nextIndex = next.nextIndex; this.accts = next.accts; this.active = next.active;
     this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter;
-    await this.persistVault();
+    this.wiped = false;
     this.touch();
     await this.persistSession(); // a freshly created/restored wallet is unlocked → persist the session
   }
@@ -320,8 +332,7 @@ export class Wallet {
     if (await this.store.get("vault")) throw new Error("wallet already exists");
     const mnemonic = newMnemonic();
     const a = { ...deriveAccount(mnemonic, 0), label: "Account 1", index: 0 } as Acct;
-    this.mnemonic = mnemonic; this.nextIndex = 1; this.accts = [a]; this.active = 0;
-    await this.sealFresh(password);
+    await this.sealFresh(password, { mnemonic, nextIndex: 1, accts: [a], active: 0 });
     // Return the account-0 private key too so the backup screen can show BOTH the
     // recovery phrase and the (portable) private key. Same trusted SW→popup channel
     // as the mnemonic; never crosses the dApp boundary.
@@ -333,16 +344,14 @@ export class Wallet {
     if (!isValidMnemonic(mnemonic)) throw new Error("invalid recovery phrase (check the words and order)");
     const m = normalizeMnemonic(mnemonic);
     const a = { ...deriveAccount(m, 0), label: "Account 1", index: 0 } as Acct;
-    this.mnemonic = m; this.nextIndex = 1; this.accts = [a]; this.active = 0;
-    await this.sealFresh(password);
+    await this.sealFresh(password, { mnemonic: m, nextIndex: 1, accts: [a], active: 0 });
     return { addr: a.addr };
   }
   // Import a single raw private key (NOT part of any seed phrase → no recovery phrase).
   async importKey(priv: string, password: string): Promise<{ addr: string }> {
     if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to replace the key");
     const a = this.acct(priv, "Account 1", { imported: true }); // fromPriv validates
-    this.mnemonic = null; this.nextIndex = 0; this.accts = [a]; this.active = 0;
-    await this.sealFresh(password);
+    await this.sealFresh(password, { mnemonic: null, nextIndex: 0, accts: [a], active: 0 });
     return { addr: a.addr };
   }
 
@@ -609,7 +618,7 @@ export class Wallet {
   // Current epoch (= floor(tip/30), matching this wallet's own propose math) — lets the approval
   // window show a dApp-supplied expiresEpoch as a real "expires in N days from now". Best-effort:
   // returns null offline so the clear-signer just shows the raw epoch.
-  async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH); } catch { return null; } }
+  async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / EPOCH_LEN); } catch { return null; } }
   // CLEARSIGN-FEE-1: exact tip for the clear-sign fee-sufficiency check on a dApp-built name registration/
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
@@ -1036,6 +1045,8 @@ export class Wallet {
     if (!/^[A-Za-z0-9]{8,}$/.test(nonce)) throw new Error("sign-in: a server-issued nonce (>=8 alphanumeric chars) is required");
     const statement = p.statement != null && String(p.statement) !== "" ? String(p.statement) : undefined;
     if (statement !== undefined && /[\r\n]/.test(statement)) throw new Error("sign-in: statement must be a single line");
+    // Rejected, not truncated, for the same WYSIWYS reason as requestId below.
+    if (statement !== undefined && statement.length > 256) throw new Error("sign-in: statement exceeds 256 chars");
     const expSecs = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600))); // clamp 60s..1h, default 10m
     const now = Date.now();
     // Cap dApp-supplied resources (audit SIWC-RESOURCES): the user now sees them in the approval popup,
@@ -1176,7 +1187,7 @@ export class Wallet {
     const hk = this.histKeyNow(); // captured with the signer (F5): the tip fetch below is an await
     const content = { v: 1, domain: p.domain, title: p.title, body: p.body ?? "", links: p.links ?? [] };
     const ph = cairnPayloadHash(content);
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
     // Queue the off-chain content on the ambiguous path too (0.2.56, review F13): a maybe-inflight
     // propose that MINES would otherwise lose its body forever — the user paid, the content never
@@ -1391,7 +1402,7 @@ export class Wallet {
     if (tip == null || !Number.isFinite(tip)) return;
     this.nameHints.set(nm, {
       name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
-      ts: Date.now(), epoch: Math.floor(tip / BLOCKS_PER_EPOCH),
+      ts: Date.now(), epoch: Math.floor(tip / EPOCH_LEN),
     });
   }
 
@@ -1409,7 +1420,7 @@ export class Wallet {
       conflict: bundle.conflict,
       existenceDisagree: bundle.existenceDisagree,
       now: Date.now(),
-      epoch: tip == null ? null : Math.floor(tip / BLOCKS_PER_EPOCH),
+      epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
       hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,
     });
     if (!verdict.skip) return null;
@@ -1479,7 +1490,7 @@ export class Wallet {
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
-    const expiresEpoch = Math.floor(tip / BLOCKS_PER_EPOCH) + NAME_RENEW_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor(tip / EPOCH_LEN) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
     await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
     return r;
@@ -1490,7 +1501,7 @@ export class Wallet {
     const hk = this.histKeyNow(); // captured with the signer (F5)
     this.throwOnSignerChange(expectSigner);
     const built = buildNameSet({ name, addr: this.addr() });
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + SET_PRIMARY_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + SET_PRIMARY_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
     await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;
@@ -1511,7 +1522,7 @@ export class Wallet {
     const hk = this.histKeyNow(); // captured with the signer (F5)
     this.throwOnSignerChange(p.expectSigner);
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
     if (fee < CAIRNX_PROPOSE_FEE) throw new Error("cairnx anchor fee must be ≥ 0.25 CSD");
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
@@ -1566,7 +1577,7 @@ export class Wallet {
     const nonce = bytesToHex(randomBytes(32));
     const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
     const ph = cairnPayloadHash(content);
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE; // propose min 0.25 CSD
     const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
     // A maybe-inflight seal may still MINE: persist the reveal preimage (claim+nonce) on the
@@ -1740,7 +1751,12 @@ export class Wallet {
   // so a recovered store cannot make one legitimate send pay off the whole backlog.
   private recordTx(k: string, entry: Record<string, unknown>): Promise<void> {
     const own = this.inHistChain(async () => {
-      if (!this.accts) return; // locked/reset mid-flight: deliberate teardown, do not write or park
+      if (!this.accts) {
+        // Locked mid-flight: the tx is already broadcast, so park the row (it is the double-pay backstop);
+        // it is merged into history() and drains on the next history write after unlock. Reset drops it.
+        if (!this.wiped) this.pendingHist.push({ k, entry });
+        return;
+      }
       try {
         // a definitive record supersedes a parked maybe twin for the same txid
         this.pendingHist = this.pendingHist.filter(
@@ -1861,6 +1877,7 @@ export class Wallet {
   // not a reset and destroying a PAID commit's only reveal nonce was the defect; the reset path's
   // clear was already independent, which is why the deletion did not touch this property.)
   async reset(): Promise<void> {
+    this.wiped = true;
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
     const wipe = () => this.doReset(wallets);

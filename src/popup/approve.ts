@@ -26,11 +26,19 @@ const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "erro
 const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
+// The background drops a request from the queue before its outcome is known, so an empty queue alone
+// does not mean the window is done: it stays open while a result is in flight, and after a failure
+// until the user closes it or a new request is painted.
+let inFlight = 0;
+let holdFailure = false;
 async function render() {
   const st = await call("status");
   ($("view-locked") as HTMLElement).hidden = st.unlocked;
   const pend = await call("pending");
-  if (!pend.length) { window.close(); return; }
+  if (!pend.length) {
+    if (inFlight || holdFailure) { ($("view-req") as HTMLElement).hidden = true; return; }
+    window.close(); return;
+  }
   current = pend[0];
   const reqView = $("view-req") as HTMLElement;
   reqView.hidden = !st.unlocked;
@@ -97,6 +105,7 @@ async function render() {
       + connectNote
       + `<div class="req dim" id="cost">${costLine(current)}</div>`;
     msg(""); // clear any stale "approved"/"rejected" from a previous request
+    holdFailure = false;
     warnPainted = fillSendWarning(current);
     tokenPainted = fillTokenSim(current);   // 0.2.71: Approve waits for the token preview of THIS request
     armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
@@ -363,8 +372,11 @@ async function resolve(approve: boolean) {
   msg("approving…");
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
-  let r: any; try { r = await call("resolve", id, true, signer, displayedQuote); } catch (e: any) { r = { ok: false, error: e?.message }; }
-  if (r && r.ok === false) msg("failed: " + (r.error || "?"), "err");
+  let r: any;
+  inFlight++;
+  try { r = await call("resolve", id, true, signer, displayedQuote); } catch (e: any) { r = { ok: false, error: e?.message }; }
+  finally { inFlight--; }
+  if (r && r.ok === false) { msg("failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdFailure = true; }
   else if (r && r.txid) msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
   else msg("approved", "ok");
   render();
