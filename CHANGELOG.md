@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Amounts on the signing screens are exact decimals from one formatter (1 base unit reads 0.00000001 CSD, not
+  1e-8 CSD); token amounts use the pinned decimals, never the ones a server reports.
+- Copy buttons say "copied" only after the clipboard write succeeded; a failed copy says so.
+- Content registration after a post gives up after 20 seconds instead of waiting on a hung request.
+- A fill with a malformed offer id is refused before anything is signed (`BAD_REQUEST`).
+- The fill cost line no longer says the fee and rebate are paid to the seller.
+- RPC: the wallet talks to the Cairn proxy or to a node on this computer (`http://127.0.0.1:<port>` or
+  `http://localhost:<port>`). A saved remote RPC is moved to the Cairn proxy once, with a notice; the manifest
+  never allowed the wallet to reach a remote node, so that setting could not work.
+- Five popup-channel methods that nothing called are removed (`verifyName`, `signin`, `propose`, `attest`,
+  `flushPending`); the dApp paths for sign-in, propose and attest are unchanged.
 - Create, restore and import change nothing unless the new vault is sealed and stored. A password under 8
   characters (or a failed storage write) used to leave the wallet unlocked on an address whose key was stored
   nowhere.
