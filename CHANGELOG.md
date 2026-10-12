@@ -55,6 +55,17 @@
 - Sending to the wallet's own other account no longer shows the first-time recipient warning.
 - Popup send review: Confirm stays disabled, with the same note as the approval window, while the spendable
   balance does not cover the amount plus fee.
+- SECURITY.md and README describe `.csd` name verification as the code does it: a disagreeing name source is
+  a warning, not a refusal; an unprovable name shows the served address as not chain-verified; the two default
+  name sources share one operator and one registrable domain. Also corrected: storage is closed to content
+  scripts, page messages are not authenticated, there is no reset screen.
+- Release workflow: no default token permissions (each job gets its own), checkouts do not keep credentials, a
+  typecheck step, and deleting an existing release for a re-pushed tag fails the job instead of being ignored.
+  The CI workflow gets the same permissions and checkout settings. All vendor gates are unchanged.
+- The vendor-freshness gate labels its csd-sdk commit check as advisory; the rebuild byte-diff is the check that
+  fails it. Pass and fail are unchanged.
+- Publish runbook: one maintainer (no dual control), the four files a release carries, the local-vs-release
+  sha256 comparison, and the commands for the post-publish CRX comparison.
 
 ## 0.2.73 (2026-10-10)
 

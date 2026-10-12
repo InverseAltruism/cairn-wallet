@@ -1,15 +1,14 @@
 name: ci
 
-# Push/PR gate (audit NSPV-SUPPLY-1 — the wallet previously had release-tag-only CI, so a regression or a
-# stale vendored SPV bundle could land on master uncaught). Runs the full suite, the typecheck, a build, and
-# the vendor-freshness gate on every push and PR.
+# Push/PR gate: runs the typecheck, the full suite, a build, and the vendor-freshness gate on every push
+# and PR, so a regression or a stale vendored SPV bundle cannot land on master uncaught.
 on:
   push:
     branches: ["master", "main"]
   pull_request:
 
-permissions:
-  contents: read
+# Nothing by default; each job asks for what it needs.
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -18,8 +17,12 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
@@ -34,32 +37,34 @@ jobs:
       # still gate), so this job needs no token.
       - run: npm run verify:vendor
 
-  # Full vendor-freshness gate (audit NSPV-SUPPLY-1 / NSPV-MIRROR-1): rebuild the SPV bundle from the PINNED
-  # csd-sdk source and require byte-identity with the committed bundle (+ source @noble == wallet pins). This
-  # is the structural drift guarantee — it needs the (private) csd-sdk repo, so it runs only when the operator
-  # has set the ECOSYSTEM_RO_TOKEN secret (same token cairnx's CI already uses). Without it, the job no-ops and
-  # the cheap gate above still runs. To fully close NSPV-SUPPLY-1 in CI, set ECOSYSTEM_RO_TOKEN.
+  # Full vendor-freshness gate: rebuild the SPV bundle from the PINNED csd-sdk source and require
+  # byte-identity with the committed bundle (+ source @noble == wallet pins). This is the load-bearing drift
+  # check. Its csd-sdk checkout uses the ECOSYSTEM_RO_TOKEN secret, so it runs only when that secret is set.
+  # Without it, the job no-ops and the cheap gate above still runs.
   vendor-fresh-full:
     runs-on: ubuntu-latest
     # Run on push + same-repo PRs (where secrets are available); skip fork PRs (no secrets). The `secrets`
     # context is illegal in a job-level `if:`, so the actual token-presence is checked at step level below
-    # (HAS_TOKEN): without ECOSYSTEM_RO_TOKEN the private-repo steps self-skip and the cheap gate in `test`
-    # still gates — this preserves the by-design no-op, it is NOT a failure.
+    # (HAS_TOKEN): without ECOSYSTEM_RO_TOKEN the csd-sdk steps self-skip and the cheap gate in `test`
+    # still gates. That no-op is by design, not a failure.
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      contents: read
     env:
       HAS_TOKEN: ${{ secrets.ECOSYSTEM_RO_TOKEN != '' }}
     steps:
       - if: ${{ env.HAS_TOKEN != 'true' }}
-        run: echo "ECOSYSTEM_RO_TOKEN not set — skipping the full rebuild-vs-source gate (cheap vendor gate in 'test' still runs)."
+        run: echo "ECOSYSTEM_RO_TOKEN not set; skipping the full rebuild-vs-source gate (cheap vendor gate in 'test' still runs)."
       - if: ${{ env.HAS_TOKEN == 'true' }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with: { path: cairn-wallet }
+        with:
+          path: cairn-wallet
+          persist-credentials: false
       # Pin the csd-sdk checkout to the EXACT commit the committed bundle records (PROVENANCE.csdSdkCommit),
-      # NOT the moving master (audit M2). This makes the rebuild-vs-source byte-diff REPRODUCIBLE and turns the
-      # gate into a true "the bundle matches the source commit it claims" integrity check — a benign csd-sdk
-      # advance no longer false-fails the gate (the prior unpinned master checkout flipped STALE/DRIFTED on
-      # every csd-sdk bump, training maintainers to ignore it). Re-vendoring updates PROVENANCE.csdSdkCommit,
-      # which moves this pin in lockstep.
+      # NOT the moving master. This makes the rebuild-vs-source byte-diff reproducible: the gate checks that the
+      # bundle matches the source commit it claims, and a csd-sdk advance does not false-fail it. Re-vendoring
+      # updates PROVENANCE.csdSdkCommit, which moves this pin in lockstep. Because of this pin, the script's
+      # csdSdkCommit-equals-HEAD arm compares the pin with itself here; it is advisory either way.
       - if: ${{ env.HAS_TOKEN == 'true' }}
         id: prov
         run: echo "commit=$(node -p "require('./cairn-wallet/src/vendor/PROVENANCE.json').csdSdkCommit")" >> "$GITHUB_OUTPUT"
@@ -70,6 +75,7 @@ jobs:
           ref: ${{ steps.prov.outputs.commit }}
           token: ${{ secrets.ECOSYSTEM_RO_TOKEN }}
           path: csd-sdk
+          persist-credentials: false   # the token is not left in csd-sdk/.git/config for the install and build below
       - if: ${{ env.HAS_TOKEN == 'true' }}
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "22" }

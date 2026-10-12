@@ -90,13 +90,16 @@ The signing core is verified against external ground truth, not only its own ass
    version is written: `build.mjs` stamps it into `dist/manifest.json` and the `window.cairn` provider. Then
    `npm test && npm run package` must pass locally.
 2. **Tag and push**: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z` triggers
-   `.github/workflows/release.yml`: `npm ci` → `npm test` (full gate) → `npm run package` (deterministic
+   `.github/workflows/release.yml`: the `vendor-fresh-full` rebuild byte-diff job, then `npm ci` →
+   `npm run typecheck` → `npm test` (full gate) → `npm run verify:vendor` → `npm run package` (deterministic
    `cairn-wallet.zip` *load-unpacked* variant **and** `cairn-wallet-store.zip` *Web-Store* variant with
    `manifest.json` at the zip root, each with a `.sha256`) → **SLSA build-provenance attestation** → publish the
-   GitHub Release.
-3. **Chrome Web Store**: upload `cairn-wallet-store.zip` (manifest at the zip root) to the
-   [Developer Dashboard](https://chrome.google.com/webstore/devconsole). This is the primary distribution
-   channel; `store/` holds the listing copy, privacy policy, and submission checklist.
+   GitHub Release with those four files.
+3. **Chrome Web Store**: upload the locally reproduced `cairn-wallet-store-X.Y.Z.zip` (byte-identical to the
+   release's `cairn-wallet-store.zip`; the sha256 must match its `.sha256`) to the
+   [Developer Dashboard](https://chrome.google.com/webstore/devconsole), then check the published CRX, both per
+   `store/PUBLISH-RUNBOOK.md`. This is the primary distribution channel; `store/` holds the listing copy,
+   privacy policy, and the runbook.
 
 [cairn-substrate.com](https://cairn-substrate.com) links users to the Chrome Web Store for install and to this
 repo for source. It does not host the extension binary.
@@ -126,33 +129,34 @@ The extension layer:
 * `content.ts` and `inpage.ts`: inject the `window.cairn` provider and relay requests to the background, behind explicit approval and same-origin checks.
 * `popup/`: the user interface.
 
-## Dual-source `.csd` name verification (XREPO-1 / NSPV-COMPLETE-1 cure)
+## Two-source `.csd` name verification
 
 Sending to a `.csd` name never trusts a resolver's word. The wallet:
 
-1. fetches the name's on-chain record **hints** from **two independent resolvers**, `cairn-substrate.com` (primary) and `clarvis.cairn-substrate.com` (an independent second source running its
-   own node→indexer→cairnx; see [cairn doc 36](https://github.com/InverseAltruism/cairn/blob/master/docs/ecosystem/36-clarvis-second-source-handoff.md));
+1. fetches the name's on-chain record **hints** from **two sources**: the configured CairnX API (default
+   `cairn-substrate.com`) and `clarvis.cairn-substrate.com`;
 2. **unions** them and **SPV-verifies every event** against a PoW header chain the wallet builds itself
    (`src/core/namespv.ts` → vendored `LightClient`): full-block merkle-bind + per-record signer-auth, so a
    resolver can only ever *add* real mined events, **never fabricate** one;
-3. replays the audited CairnX resolver over the verified union and **sends to the chain-proven winner:** not
+3. replays the audited CairnX resolver over the verified union and **sends to the chain-proven winner**, not
    to any resolver's bare claim, and flags any source whose stated answer disagrees.
 
-A single resolver can't redirect funds (every record is SPV-verified), and it can't *withhold* its way to a
-redirect either, because the other independent source fills the omission, an attacker would have to make
-**both** hosts hide the **same** event. It is **fail-soft**: if the second source is unreachable the wallet
-falls back to single-source with a caution; nothing the wallet signs ever depends on a resolver being up.
+The two default sources are run by one operator under one registrable domain, so they are not independent:
+the union covers one source being stale or broken, not that operator hiding a transfer from both.
 
-The dual-resolver architecture (topology, routing, how each host runs, and the wallet union contract) is
-documented in [cairn doc 38, wallet dual-source handoff](https://github.com/InverseAltruism/cairn/blob/master/docs/handoffs/38-wallet-dual-source-clarvis-handoff.md)
-(wallet side) and [doc 36](https://github.com/InverseAltruism/cairn/blob/master/docs/ecosystem/36-clarvis-second-source-handoff.md) (clarvis host side).
+A disagreeing source is a **warning, not a refusal**. When the records cannot be proven at all, the wallet
+shows the address the name service served, marked **not chain-verified**, and you decide whether to send
+after confirming it out-of-band; a hostile name service can redirect funds in that case if you confirm. A
+lapsed lease, or an address that changes between review and confirm, is refused. If the second source is
+unreachable the wallet works from the first, with a caution. Sending to a `0x` address never involves a name
+service. Details are in [SECURITY.md](SECURITY.md).
 
 ## Configuration
 
 * **Node RPC.** Switch from the RPC menu at the top right. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`) or a node on your own computer: `http://127.0.0.1:8789`, or another `http://127.0.0.1` or `localhost` port added in the menu. A saved remote RPC from an older version is moved to the Cairn proxy, and the wallet says so once.
 * Remote RPC servers are not supported; they may come in a later release.
 * **Cairn API.** Set in Settings. Defaults to `https://cairn-substrate.com`.
-* **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet simply shows no assets (with a retry), the CSD balance and sends are unaffected, and nothing the wallet signs ever depends on it.
+* **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet shows no assets (with a retry) and the CSD balance and sends to a `0x` address are unaffected. Name lookups fall back to the second name source; offer fills need it.
 
 The derivation path `m/44'/7779'/0'/0/i` is public metadata. It describes which keys are
 derived, not the keys themselves. 7779 is an unregistered SLIP-44 coin type, used as Cairn
