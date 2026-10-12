@@ -29,9 +29,9 @@
 - A node answer without a coin list (`/utxos`) is refused before signing as `VERIFY_UNAVAILABLE`; a submit
   answered with a 2xx body that is not a JSON object is `SUBMIT_MAYBE_INFLIGHT` (it used to throw after the
   submit).
-- New code `VERIFY_INCOMPLETE` (retryable): coin selection used its three rounds on coins the node could not prove
-  yet, typically while a restarted node rebuilds its index. It used to read as "the remaining coins couldn't
-  cover this spend".
+- When coin selection uses its three rounds on coins the node could not prove yet (typically while a restarted
+  node rebuilds its index), the refusal is the retryable `VERIFY_UNAVAILABLE`. It used to read as "the remaining
+  coins couldn't cover this spend".
 - New code `SEAL_NOT_MINED`: Reveal waits until the seal's commit is mined.
 - A locked wallet answers `WALLET_LOCKED` (not `INTERNAL`) when a popup action or an approval runs into the lock.
 - An open-offer fill refused for a reason the chain tip does not decide (for example the claim cap) keeps

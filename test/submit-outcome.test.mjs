@@ -95,9 +95,9 @@ try {
     const w = await wallet();
     let s = node({ coins: [a, b, c, d], horizon });
     let r;
-    await t("C1 three horizon coins exhaust the rounds while a provable coin covers it: VERIFY_INCOMPLETE", async () => {
+    await t("C1 three horizon coins exhaust the rounds while a provable coin covers it: VERIFY_UNAVAILABLE", async () => {
       r = await w.send(RCPT, 5e8, 1e6);
-      assert.equal(r.ok, false); assert.equal(r.code, "VERIFY_INCOMPLETE");
+      assert.equal(r.ok, false); assert.equal(r.code, "VERIFY_UNAVAILABLE");
       assert.match(r.error, /could not prove 3 coin\(s\) totalling 36\.00000369 CSD yet/); assert.match(r.error, /Nothing was signed; try again shortly/);
       assert.doesNotMatch(r.error, /couldn't cover/);
       assert.equal(s.submits, 0);
@@ -113,12 +113,12 @@ try {
       const r2 = await (await wallet()).send(RCPT, 5e8, 1e6);
       assert.equal(r2.code, "VERIFY_HORIZON");
     });
-    await t("C4 merge: horizon coins entering every round exhaust the budget: VERIFY_INCOMPLETE", async () => {
+    await t("C4 merge: horizon coins entering every round exhaust the budget: VERIFY_UNAVAILABLE", async () => {
       const coins = Array.from({ length: 520 }, (_, i) => mkCoin(1_000_000 + i * 1000 + 31));
       const hz = new Set([coins[0], coins[512], coins[513]].map((x) => x.coin.txid.toLowerCase()));
       const s4 = node({ coins, horizon: hz });
       const r4 = await (await wallet()).consolidate(1e6);
-      assert.equal(r4.ok, false); assert.equal(r4.code, "VERIFY_INCOMPLETE"); assert.match(r4.error, /could not prove 3 coin\(s\)/);
+      assert.equal(r4.ok, false); assert.equal(r4.code, "VERIFY_UNAVAILABLE"); assert.match(r4.error, /could not prove 3 coin\(s\)/);
       assert.equal(s4.submits, 0);
     });
   }

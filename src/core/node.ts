@@ -325,7 +325,7 @@ const ghostSeen = new Map<string, number>(); // outpoint -> expiry
 const horizonSeen = new Map<string, number>(); // outpoint -> expiry
 const fmtCsd = (v: number) => (v / 1e8).toLocaleString("en-US", { maximumFractionDigits: 8 });
 function roundsExhausted(count: number, value: number): { error: string; code: string } {
-  return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} CSD yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_INCOMPLETE" };
+  return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} CSD yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_UNAVAILABLE" };
 }
 async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
