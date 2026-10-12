@@ -8,7 +8,7 @@
 // the wallet never counts below the cap while the resolver denies the claim.
 // Run: npx tsx test/fill-holds-v29.test.mjs
 import assert from "node:assert/strict";
-import { liveFillSpvSource, countMyOtherLiveHolds, myProvenFillClosedOffer, V29_GATE } from "../src/core/fillspv.ts";
+import { liveFillSpvSource, countMyOtherLiveHolds, myProvenFillClosedOffer } from "../src/core/fillspv.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import {
@@ -97,9 +97,8 @@ const assertNotBelowResolver = (count, s, tip) => assert.ok(count >= MAX_ACTIVE_
 
 console.log("P74-29: past V29 the cross-offer hold count skips offers this wallet provably filled:");
 
-await test("the V29 gate is the vendored constant (a missing export would disable the exclusion)", async () => {
-  assert.equal(V29_GATE, V29_HEIGHT);
-  assert.equal(V29_GATE, 88_000);
+await test("the vendored V29 gate is the activation height the plan names", async () => {
+  assert.equal(V29_HEIGHT, 88_000);
 });
 
 await test("four buys: three proven full fills no longer count, the fourth fill verifies (red before the fix)", async () => {

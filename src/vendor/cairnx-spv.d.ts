@@ -132,6 +132,7 @@ export const REG_FINALIZE_GRACE_BLOCKS: number;  // finalize window past the fre
 // re-derives the ENTIRE grant + hold from PoW-buried, MERKLE-PROVEN events (never a served "granted" flag).
 // The wallet builds the FillSpvIo from its PoW light client (core/fillspv.ts) and fails CLOSED on safe:false.
 export const V28_HEIGHT: number;              // open-lane fclaim gate (planning placeholder until Batch P)
+export const V29_HEIGHT: number;              // from here the cross-offer claim cap counts holds on open offers only
 export const FILL_TIP_MARGIN: number;         // refuse a fill within this many blocks of the hold deadline
 export const CONF_TOKEN_FILL: number;         // the app-layer confidence SENTINEL for a token-priced fill (= 1_000_000)
 export const MAX_ACTIVE_CLAIMS: number;       // cross-offer live-hold cap (the myLiveHoldsAtGrant clause)

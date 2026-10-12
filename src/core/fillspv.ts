@@ -17,10 +17,9 @@ import {
   rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, V28_HEIGHT, ACTIVATION_HEIGHT,
-  provenOfferTerms, bindProvenOffer, requiredFillOutputs, MAX_ACTIVE_CLAIMS, SCORE_FILL,
+  provenOfferTerms, bindProvenOffer, requiredFillOutputs, MAX_ACTIVE_CLAIMS, SCORE_FILL, V29_HEIGHT,
   type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms, type CxOfferState,
 } from "../vendor/cairnx-spv.js";
-import * as cairnxVendor from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
@@ -139,11 +138,6 @@ export function countMyOtherLiveHolds(
   return n;
 }
 
-// The vendored d.ts does not declare V29_HEIGHT and src/vendor/ is not hand-edited, so it is read from the
-// bundle's runtime exports. A missing or malformed export disables the exclusion below (over-count side).
-const V29_RAW: unknown = (cairnxVendor as unknown as Record<string, unknown>)["V29_HEIGHT"];
-export const V29_GATE: number = typeof V29_RAW === "number" && Number.isSafeInteger(V29_RAW) ? V29_RAW : Number.POSITIVE_INFINITY;
-
 /**
  * True only when `fill` proves this wallet's own fill CLOSED the offer behind `fclaim` before `grantHeight`,
  * so the resolver (at a grant height >= V29) no longer counts that hold toward MAX_ACTIVE_CLAIMS. Every leg is
@@ -160,7 +154,7 @@ export function myProvenFillClosedOffer(
   fill: ProvenEvent | null, fclaim: { id: string; height: number; offer: string },
   offerEv: ProvenEvent | null, me: string, grantHeight: number,
 ): boolean {
-  if (!(grantHeight >= V29_GATE)) return false;
+  if (!(grantHeight >= V29_HEIGHT)) return false;
   if (!fill || fill.kind !== "attest" || fill.score !== SCORE_FILL) return false;
   if (fill.attester.toLowerCase() !== me.toLowerCase() || fill.proposalId.toLowerCase() !== fclaim.id.toLowerCase()) return false;
   if (!(fill.height > fclaim.height && fill.height < grantHeight)) return false;
