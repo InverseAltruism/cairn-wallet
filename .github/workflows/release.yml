@@ -9,7 +9,7 @@ on:
     tags: ["v*"]
   # Only the `anchors` job runs on a PR; the publish jobs are gated to tag pushes below.
   pull_request:
-    paths: ["src/core/spvanchors.ts"]
+    paths: ["src/core/spvanchors.ts", "scripts/update-spv-anchors.mjs", "src/vendor/cairnx-spv.js"]
 
 # Nothing by default; each job asks for what it needs.
 permissions: {}
@@ -21,6 +21,9 @@ jobs:
   # The script imports only the committed vendored bundle, so no install runs here.
   anchors:
     runs-on: ubuntu-latest
+    # About 188 requests (166 header pages, 21 entry checks, the tip) paced at about 109 a minute is under 2 minutes;
+    # 2 min 40 s measured 2026-10-13. 15 minutes leaves room for several 60 s Retry-After waits, not a wedged run.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
