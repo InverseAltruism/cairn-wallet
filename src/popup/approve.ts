@@ -27,6 +27,9 @@ const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "erro
 const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
+// Bumped on every paint. The unlock repaint keeps the same request id, so renderedId alone cannot tell
+// a superseded paint's in-flight quote or arm timer from the current paint's; those check this instead.
+let paintGen = 0;
 // The background drops a request from the queue before its outcome is known, so an empty queue alone
 // does not mean the window is done: it stays open while a result is in flight, and after a failure
 // until the user closes it or a new request is painted.
@@ -48,6 +51,7 @@ async function render() {
   // wipe the async-filled balance-after AND the security warning — so we don't.
   if (renderedId === current.id) return;
   renderedId = current.id;
+  paintGen++;
   // AW-1: disable BOTH buttons the instant a NEW request is detected, BEFORE the pre-paint RPC await, so a
   // click landing during that await cannot resolve the new request against the still-visible OLD paint. Split
   // from armButtons deliberately: hoisting armButtons ENTIRE would start its 700ms re-enable timer DURING the
@@ -222,20 +226,20 @@ async function fillTokenSim(r: any) {
   rs(r.id).tokenPreview = "loading";
   const el = document.getElementById("token-sim");
   if (!el) return;
+  // `el` is resolved before the await, so a superseded paint (including the same-id unlock repaint) would
+  // write into the detached old node AND mark this request `ready` with a quote that is not on screen.
+  const gen = paintGen;
+  const live = () => gen === paintGen && renderedId === r.id;
   const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };
   try {
     let q: any = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       q = await call("tokenFillQuote", (r.params || {}).proposalId).catch(() => null);
       if (q && q.ok) break;
-      if (renderedId !== r.id) return;
+      if (!live()) return;
       await new Promise((ok) => setTimeout(ok, 1500));
     }
-    // W2 (AW-3), the same rule applied uniformly: any async filler that writes into the DOM after an
-    // await carries the guard. This one is defense in depth rather than a live hole (`el` is resolved
-    // BEFORE the await, so a superseded write lands on the detached old node, not on the request now on
-    // screen); keeping the shape identical across all fillers is what stops the next one from drifting.
-    if (renderedId !== r.id) return;
+    if (!live()) return;
     // RT-W2: remember the quote actually DISPLAYED so the approve click can thread it to the
     // preflight, which refuses unless it equals the chain-proven want (a resolver that quotes low
     // at review and honest at click used to debit the larger proven amount behind the low card).
@@ -277,9 +281,10 @@ async function fillRevealPreview(r: any) {
 let balForId: string | null = null;
 async function fillBalance(r: any) {
   if (balForId === r.id) return; balForId = r.id;
+  const gen = paintGen;   // a same-id repaint's read owns #cost and balShort; this one must not override it
   try {
     const b = await call("balance");
-    if (renderedId !== r.id) return; // W2 (AW-3): superseded, never paint a resolved request's money row over the one now on screen
+    if (gen !== paintGen || renderedId !== r.id) return;
     const el = document.getElementById("cost");
     if (el) el.textContent = `${costLine(r)}  balance: ${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`;
     // The engine spends only the coins this balance counts, so a negative balance-after can only end in an
@@ -363,12 +368,13 @@ function armButtons() {
   // AFTER this timer disables it directly in armNfinalizeGate), and for a token-debiting fill until its
   // preview for THIS request is ready (0.2.71). Reject is always re-enabled.
   const armedId = current?.id;
+  const armedGen = paintGen;   // a same-id repaint re-arms with its own floor and its own quote
   const minWait = new Promise((r) => setTimeout(r, 700));
   const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => {})]);
   // Reject never waits for the token preview: a hanging quote must not lock the user out of rejecting.
   base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
   Promise.all([base, Promise.resolve(tokenPainted).catch(() => {})]).then(() => {
-    if (current?.id !== armedId) return;   // superseded: the new request arms itself
+    if (current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the current paint arms itself
     ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
 }
