@@ -8,7 +8,9 @@
 // is derived from them the way the node derives it (node src/api/mod.rs: the mempool's spends removed).
 //   RED-FIRST (clock): put `&& Date.now() - (x.ts || 0) <= 3_600_000` back into isMergeCandidate and (1)
 //   fails. RED-FIRST (gone): judge "spent" against the available set instead of the mined one, or latch
-//   gone on one reading, and (6a)-(6c) fail; drop the two-tip rule and (6e) fails at its first tip.
+//   gone on one reading, and (6a)-(6c) fail; drop the two-tip rule and (6e) fails at its first tip; treat
+//   an unknown that could not look (no `definite`) as "not mined" and (6h) fails; let a read that could
+//   not look clear gone and (6i) fails.
 //   PAIRED HONEST PATH: (5) a mined txid clears the row; (6e) an input spent by a different mined tx,
 //   with our txid unknown at two tips, shows gone. Calls use the popup's shape: pendingMerge(<the utxos the
 //   balance fetch got>).
@@ -30,7 +32,7 @@ const op = (c) => opKey(c.txid, c.vout);
 // /tx/:id/status by txid (default pending). `statusRoute: false` models a bare loopback node.
 function mkChain(coins) {
   const c = { tip: 1_000, mined: coins.map((x) => x.coin), held: new Set(), status: new Map(), minedTx: new Map(),
-    statusRoute: true, minedRead: true, submit: "maybe", submits: 0, statusReads: 0, minedReads: 0 };
+    absent: new Set(), statusRoute: true, minedRead: true, submit: "maybe", submits: 0, statusReads: 0, minedReads: 0 };
   c.available = () => c.mined.filter((u) => !c.held.has(op(u)));
   const utxos = (list) => ({ ok: true, status: 200, json: async () => ({ confirmed_balance: list.reduce((s, x) => s + x.value, 0), utxos: list }) });
   c.fetch = async (url) => {
@@ -60,6 +62,8 @@ function mkChain(coins) {
     }
     const tx = u.match(/\/tx\/(0x[0-9a-f]{64})$/i);
     if (tx && c.minedTx.has(tx[1].toLowerCase())) return { ok: true, status: 200, json: async () => ({ ok: true, txid: tx[1], height: c.minedTx.get(tx[1].toLowerCase()) }) };
+    // the node's complete scan (ScanOutcome::Absent) carries complete:true; any other miss does not
+    if (tx && c.absent.has(tx[1].toLowerCase())) return { ok: true, status: 200, json: async () => ({ ok: false, txid: tx[1], err: "not found", complete: true }) };
     return txReply(u, coins) ?? { ok: false, status: 404, json: async () => ({}) };
   };
   // Effects of our own tx: pending holds its inputs; mined removes them and adds its outputs.
@@ -225,6 +229,49 @@ try {
     await at(chain, 1_001, refresh);
     check("(6g) the mined utxo set unreadable: not gone", !(await row(r.txid)).gone);
   }
+  {
+    // (6h) a status that could not look (the proxy's unknown without `definite`, e.g. a node 503
+    // SCAN_BUSY) is not "not mined": a change-less send that WAS mined stays open and reaches the notice.
+    //   RED-FIRST: drop `st.definite !== true ||` from inclusionVerdict and (6h) fails (gone at tip 1001).
+    const coins = [mkCoin(351e8)];
+    const chain = mkChain(coins);
+    const { w, row, refresh } = await mkWallet(chain);
+    const r = await w.send(TO, 351e8 - FEE, FEE);
+    chain.mine(r.txid, r.inputs, []);
+    chain.status.set(r.txid, { state: "unknown", definite: false });
+    let everGone = false;
+    for (let t = 1_000; t <= 1_012; t++) { await at(chain, t, refresh); everGone = everGone || !!(await row(r.txid)).gone; }
+    const e = await row(r.txid);
+    check("(6h) a mined send read unknown/not-definite at tips 1000-1012 is never gone", !everGone && !e.gone && e.goneTip === undefined);
+    check("(6h) ...it shows the standing notice instead", inclusionMark(e) === "stuck");
+  }
+  {
+    // (6i) gone stays gone across readings that cannot look; (6j) a row gone for over 100 blocks is not read
+    //   RED-FIRST: call goneStep on a "noreading" verdict and (6i) fails (gone, then sent).
+    const coins = [mkCoin(361e8), mkCoin(362e8)];
+    const chain = mkChain(coins);
+    const { w, row, refresh } = await mkWallet(chain);
+    const r = await w.send(TO, 1e8, FEE);
+    chain.mined = chain.mined.filter((u) => !r.inputs.includes(op(u)));
+    chain.status.set(r.txid, { state: "unknown", definite: true });
+    await refresh();
+    await at(chain, 1_001, refresh);
+    check("(6i) setup: gone at the second tip", (await row(r.txid)).gone === true);
+    chain.minedRead = false;
+    await at(chain, 1_002, refresh);
+    check("(6i) the mined set unreadable at the next tip: still gone, not 'sent'", (await row(r.txid)).gone === true && inclusionMark(await row(r.txid)) === "gone");
+    chain.minedRead = true;
+    chain.status.set(r.txid, { state: "unknown", definite: false });
+    await at(chain, 1_003, refresh);
+    check("(6i) a status that could not look: still gone", (await row(r.txid)).gone === true);
+    chain.status.set(r.txid, { state: "unknown", definite: true });
+    let reads = chain.statusReads;
+    await at(chain, 1_100, refresh);
+    check("(6j) gone for 100 blocks: still read", chain.statusReads === reads + 1);
+    reads = chain.statusReads;
+    await at(chain, 1_101, refresh);
+    check("(6j) gone for more than 100 blocks: no status read", chain.statusReads === reads && (await row(r.txid)).gone === true);
+  }
 
   // ── (7) the utxo set settles a merge; a loopback node; where the mined set is read ─────────────────────
   {
@@ -253,6 +300,21 @@ try {
     chain2.minedTx.set(r2.txid, 1_000);
     await b.refresh();
     check("(7) loopback node: /tx/:id mined clears the row", (await b.row(r2.txid)).maybe === undefined);
+
+    // a loopback node's not-found is `definite` only when its scan was complete (complete:true)
+    const coins3 = [mkCoin(421e8), mkCoin(422e8)];
+    const chain3 = mkChain(coins3);
+    chain3.statusRoute = false;
+    const c3 = await mkWallet(chain3, "http://127.0.0.1:8789");
+    const r3 = await c3.w.send(TO, 1e8, FEE);
+    chain3.mined = chain3.mined.filter((u) => !r3.inputs.includes(op(u)));
+    await c3.refresh();
+    await at(chain3, 1_001, c3.refresh);
+    check("(7) loopback node: an input spent elsewhere but no complete scan: not gone", !(await c3.row(r3.txid)).gone);
+    chain3.absent.add(r3.txid);
+    await at(chain3, 1_002, c3.refresh);
+    await at(chain3, 1_003, c3.refresh);
+    check("(7) loopback node: complete scans at two tips with the input spent elsewhere: gone", (await c3.row(r3.txid)).gone === true);
 
     const asked = [];
     const answer = (u) => { asked.push(u); return u.includes("/utxos-all/") ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => ({ utxos: [{ txid: "0x" + "aa".repeat(32), vout: 0 }] }) }; };

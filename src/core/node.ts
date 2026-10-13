@@ -73,8 +73,8 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
 
 export async function tip(rpc: string): Promise<number> { return Number((await get(rpc, "/tip")).height ?? 0); }
 // Display only. The Cairn proxy answers /tx/:id/status (mined, pending or unknown across both backends); a
-// loopback node has no such route (404), so its /tx/:id says mined or, without a mempool view, a non-definite
-// unknown. null: nothing knowable this time.
+// loopback node has no such route (404), so its /tx/:id says mined, or not mined (`definite` when its scan was
+// complete; it has no mempool view). null: nothing knowable this time.
 export async function txInclusion(rpc: string, txid: string): Promise<TxInclusion | null> {
   try {
     const r = await fetch(`${rpc}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
@@ -87,7 +87,7 @@ export async function txInclusion(rpc: string, txid: string): Promise<TxInclusio
     if (r.status !== 404) return null;
     const t: any = await get(rpc, `/tx/${txid}`);
     if (t?.ok === true && Number.isSafeInteger(t.height)) return { state: "mined", height: t.height };
-    return t?.ok === false ? { state: "unknown", definite: false } : null;
+    return t?.ok === false ? { state: "unknown", definite: t.complete === true } : null;
   } catch { return null; }   // unreachable or unreadable: the row stays open and is read again next block
 }
 export async function getProposal(rpc: string, txid: string): Promise<any | null> {

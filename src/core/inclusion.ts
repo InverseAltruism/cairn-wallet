@@ -7,20 +7,27 @@ export const INCLUSION_NOTICE_BLOCKS = 10;
 export const INCLUSION_INPUTS_KEPT = 8;
 /** Status reads per reconcile, newest rows first. */
 export const INCLUSION_READS_MAX = 8;
+/** A row gone for more than this many blocks is no longer read (a utxo set showing its txid still settles it). */
+export const INCLUSION_GONE_READ_BLOCKS = 100;
 
-/** One status read: `definite` (unknown only) means every source answered completely. */
+/**
+ * One status read, as the RPC reports it (one source: the wallet cannot check it). `definite` (unknown only):
+ * the source looked completely, so the tx is not mined there; without it the source could not look.
+ */
 export type TxInclusion = { state: "mined" | "pending" | "unknown"; height?: number; definite?: boolean };
 
 /**
- * included: mined. spent: not mined, and a kept input is missing from the MINED utxo set (`mined`, `txid:vout`
- * keys), so a different mined transaction spent it; our own pending tx leaves its inputs in that set.
- * open: anything else, including a missing read.
+ * included: mined. spent: definitely not mined, and a kept input is missing from the MINED utxo set (`mined`,
+ * `txid:vout` keys), so a different mined transaction spent it; our own pending tx leaves its inputs there.
+ * noreading: no status, a status that could not look, or no mined set: says nothing either way.
+ * open: anything else.
  */
-export function inclusionVerdict(st: TxInclusion | null, inputs: unknown, mined: ReadonlySet<string> | null): "included" | "spent" | "open" {
+export function inclusionVerdict(st: TxInclusion | null, inputs: unknown, mined: ReadonlySet<string> | null): "included" | "spent" | "open" | "noreading" {
   if (st?.state === "mined") return "included";
-  if (st?.state === "unknown" && mined && Array.isArray(inputs)
-    && inputs.some((op) => typeof op === "string" && !mined.has(op))) return "spent";
-  return "open";
+  if (!st) return "noreading";
+  if (st.state !== "unknown") return "open";
+  if (st.definite !== true || !mined) return "noreading";
+  return Array.isArray(inputs) && inputs.some((op) => typeof op === "string" && !mined.has(op)) ? "spent" : "open";
 }
 
 /**
