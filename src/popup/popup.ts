@@ -569,12 +569,10 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
   if (looksLikeName(r)) {
     const nm = r.toLowerCase().replace(/\.csd$/, "");
     const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
-    // XREPO-1 cure: resolveName SPV-verifies the name → address against a PoW header chain the wallet checks
-    // itself AND cross-checks ≥2 name-history sources (NSPV-COMPLETE-1, doc 36). A fabricated redirect is
-    // REFUSED here (res.ok === false). The send target is the chain-PROVEN union winner; the badge tells the
-    // user how strong the confirmation is (2 servers agree / 1 source / a flagged disagreement). NOTE: the two
-    // sources are currently CO-LOCATED (same operator/apex), so the badge does not claim "independent" — the
-    // withholding residual is unchanged until a genuinely independent second source exists (red-team 2026-06-27).
+    // resolveName SPV-verifies the name over two name sources (primary and clarvis, same operator). A disagreeing
+    // source warns rather than refuses: the target is the proven winner with `disagree` set, and an unprovable
+    // name comes back verified:false for the badge to caution. res.ok is false only for an invalid, unregistered,
+    // address-less or lapsed name, or a failed lookup.
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
     if (isZeroAddr(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address — refusing (sends would be burned)` };
     const verified = res.verified === true;
