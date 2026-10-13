@@ -191,7 +191,7 @@ try {
     await at(chain, 1_001, refresh);
     check("(6d) a second lagging read at another tip: gone (the residual two wrong reads can cause)", (await row(r.txid)).gone === true);
     chain.status.set(r.txid, { state: "mined", height: 1_000 });
-    await at(chain, 1_002, refresh);
+    await at(chain, 1_101, refresh);                       // a gone row's next reading: 100 blocks on
     const e = await row(r.txid);
     check("(6d) the next reading says mined: gone is cleared, the row is settled", !e.gone && e.goneTip === undefined && e.maybe === undefined && inclusionMark(e) === null);
   }
@@ -212,9 +212,9 @@ try {
     chain.mined.push(...coins.filter((x) => r.inputs.includes(op(x.coin))).map((x) => x.coin));
     chain.pending(r.inputs);
     chain.status.set(r.txid, { state: "pending" });
-    await at(chain, 1_002, refresh);
+    await at(chain, 1_101, refresh);                       // a gone row's next reading: 100 blocks on
     e = await row(r.txid);
-    check("(6f) a later reading that disagrees clears gone", !e.gone && e.goneTip === undefined && inclusionMark(e) === "sent");
+    check("(6f) a later reading that disagrees clears gone (101 blocks on, the row shows the notice)", !e.gone && e.goneTip === undefined && e.maybe === true && inclusionMark(e) === "stuck");
   }
   {
     // (6g) no mined-set read, no gone verdict
@@ -246,7 +246,7 @@ try {
     check("(6h) ...it shows the standing notice instead", inclusionMark(e) === "stuck");
   }
   {
-    // (6i) gone stays gone across readings that cannot look; (6j) a row gone for over 100 blocks is not read
+    // (6i) gone stays gone across readings that cannot look; (6j) a gone row is read once per 100 blocks
     //   RED-FIRST: call goneStep on a "noreading" verdict and (6i) fails (gone, then sent).
     const coins = [mkCoin(361e8), mkCoin(362e8)];
     const chain = mkChain(coins);
@@ -257,20 +257,37 @@ try {
     await refresh();
     await at(chain, 1_001, refresh);
     check("(6i) setup: gone at the second tip", (await row(r.txid)).gone === true);
-    chain.minedRead = false;
-    await at(chain, 1_002, refresh);
-    check("(6i) the mined set unreadable at the next tip: still gone, not 'sent'", (await row(r.txid)).gone === true && inclusionMark(await row(r.txid)) === "gone");
-    chain.minedRead = true;
-    chain.status.set(r.txid, { state: "unknown", definite: false });
-    await at(chain, 1_003, refresh);
-    check("(6i) a status that could not look: still gone", (await row(r.txid)).gone === true);
-    chain.status.set(r.txid, { state: "unknown", definite: true });
     let reads = chain.statusReads;
     await at(chain, 1_100, refresh);
-    check("(6j) gone for 100 blocks: still read", chain.statusReads === reads + 1);
-    reads = chain.statusReads;
+    check("(6j) a gone row is not read again within 100 blocks of its last read", chain.statusReads === reads);
+    chain.minedRead = false;
     await at(chain, 1_101, refresh);
-    check("(6j) gone for more than 100 blocks: no status read", chain.statusReads === reads && (await row(r.txid)).gone === true);
+    check("(6j) ...and is read again 100 blocks after it", chain.statusReads === reads + 1);
+    check("(6i) the mined set unreadable at that reading: still gone, not 'sent'", (await row(r.txid)).gone === true && inclusionMark(await row(r.txid)) === "gone");
+    chain.minedRead = true;
+    chain.status.set(r.txid, { state: "unknown", definite: false });
+    reads = chain.statusReads;
+    await at(chain, 1_201, refresh);
+    check("(6i) a status that could not look: still gone", chain.statusReads === reads + 1 && (await row(r.txid)).gone === true);
+  }
+  {
+    // (6k) a false gone on a change-less send that WAS mined (its txid is in no utxo set) is undone once the
+    // source says mined: the slow cadence keeps reading it.
+    //   RED-FIRST: stop reading rows gone for over 100 blocks (`t - goneTip > 100`) and (6k) fails.
+    const coins = [mkCoin(371e8)];
+    const chain = mkChain(coins);
+    const { w, row, refresh } = await mkWallet(chain);
+    const r = await w.send(TO, 371e8 - FEE, FEE);
+    chain.mine(r.txid, r.inputs, []);
+    chain.status.set(r.txid, { state: "unknown", definite: true });   // a lying or broken source, twice
+    await refresh();
+    await at(chain, 1_001, refresh);
+    check("(6k) setup: two false readings make it gone", (await row(r.txid)).gone === true);
+    chain.status.set(r.txid, { state: "mined", height: 1_000 });
+    await at(chain, 1_102, refresh);
+    await at(chain, 1_103, refresh);
+    const e = await row(r.txid);
+    check("(6k) the source then says mined: the row is settled, not gone", !e.gone && e.maybe === undefined && inclusionMark(e) === null);
   }
 
   // ── (7) the utxo set settles a merge; a loopback node; where the mined set is read ─────────────────────

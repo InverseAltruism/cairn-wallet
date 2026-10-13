@@ -36,7 +36,7 @@ rejected transaction or a misleading display, not a key or fund compromise). If 
 for your threat model, point the wallet at your own node (`http://127.0.0.1:8789`) instead of
 the public proxy.
 
-The Activity markers for a transaction whose submit answer was lost come from that same RPC (its tip,
+The Activity markers for a transaction not yet seen as included come from that same RPC (its tip,
 whether it reports the transaction mined, and its mined coin set), so a lying RPC can show a transaction
 that was mined as "not included: its coins were spent by another transaction". The wallet signs and sends
 nothing because of a marker, and the marker says to check the explorer before sending again.

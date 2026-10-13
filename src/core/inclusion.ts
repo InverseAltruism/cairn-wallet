@@ -7,8 +7,8 @@ export const INCLUSION_NOTICE_BLOCKS = 10;
 export const INCLUSION_INPUTS_KEPT = 8;
 /** Status reads per reconcile, newest rows first. */
 export const INCLUSION_READS_MAX = 8;
-/** A row gone for more than this many blocks is no longer read (a utxo set showing its txid still settles it). */
-export const INCLUSION_GONE_READ_BLOCKS = 100;
+/** A gone row is status-read once per this many blocks, so a later "mined" still undoes it. */
+export const INCLUSION_GONE_READ_INTERVAL = 100;
 
 /**
  * One status read, as the RPC reports it (one source: the wallet cannot check it). `definite` (unknown only):

@@ -18,7 +18,7 @@ import { refuse } from "./refuse.js";
 import { secondSourceOfferConflict, startSecondSourceOfferRead, type SecondSourceRead } from "./offerxcheck.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
-import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_BLOCKS, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
+import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
@@ -1152,8 +1152,8 @@ export class Wallet {
   // Pending-merge line and inclusion reconcile (popup-only; test/inclusion-chain.test.mjs). Each open row is
   // settled from chain reads, not the clock: included once its txid is in a utxo set or reported mined;
   // `gone` (a different mined tx spent one of its inputs) only after two tips agree, cleared by any later
-  // reading that disagrees (a read that could not look changes nothing), and no longer read once gone for
-  // INCLUSION_GONE_READ_BLOCKS; `stuck` INCLUSION_NOTICE_BLOCKS past `subTip`, the first tip read after submit.
+  // reading that disagrees (a read that could not look changes nothing), and read once per
+  // INCLUSION_GONE_READ_INTERVAL blocks while gone; `stuck` INCLUSION_NOTICE_BLOCKS past `subTip`.
   // A merge latches `confirmed` because the next step spends its output. Cost per refresh: one tip read, at
   // most INCLUSION_READS_MAX status reads (each 2 to 4 node reads behind the proxy's caches), one per row per
   // block (`chkTip`), and one mined-utxo read when a status came back unknown. Reads stay OUTSIDE histChain
@@ -1214,7 +1214,7 @@ export class Wallet {
     const states = new Map<string, TxInclusion>();
     const t = await node.tip(this.rpc).catch(() => 0);
     if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
-    const due = open.filter((x) => !(Number(x.chkTip) >= t) && !(x.gone && t - Number(x.goneTip) > INCLUSION_GONE_READ_BLOCKS)).slice(0, INCLUSION_READS_MAX);
+    const due = open.filter((x) => !(Number(x.chkTip) >= t) && !(x.gone && t - Number(x.chkTip) < INCLUSION_GONE_READ_INTERVAL)).slice(0, INCLUSION_READS_MAX);
     const got = await Promise.all(due.map((x) => node.txInclusion(this.rpc, String(x.txid))));
     due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
     if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
