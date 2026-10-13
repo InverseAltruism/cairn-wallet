@@ -281,9 +281,10 @@ async function fillRevealPreview(r: any) {
 let balForId: string | null = null;
 async function fillBalance(r: any) {
   if (balForId === r.id) return; balForId = r.id;
+  const gen = paintGen;   // a same-id repaint's read owns #cost and balShort; this one must not override it
   try {
     const b = await call("balance");
-    if (renderedId !== r.id) return; // W2 (AW-3): superseded, never paint a resolved request's money row over the one now on screen
+    if (gen !== paintGen || renderedId !== r.id) return;
     const el = document.getElementById("cost");
     if (el) el.textContent = `${costLine(r)}  balance: ${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`;
     // The engine spends only the coins this balance counts, so a negative balance-after can only end in an

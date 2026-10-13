@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Approval window: after an idle auto-lock and unlock, a token quote or balance read started before the lock no
+  longer lands on the repainted screen. Approve now waits for the repaint's own quote, and the balance line and
+  the "does not cover" check come from the repaint's own read, so the amount you approve is the one shown.
+
 ## 0.2.74 (2026-10-13)
 
 - Amounts on the signing screens are exact decimals from one formatter (1 base unit reads 0.00000001 CSD, not

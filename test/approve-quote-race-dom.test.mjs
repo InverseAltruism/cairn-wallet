@@ -1,20 +1,24 @@
-// Approve-window quote race across an idle auto-lock (src/popup/approve.ts, fillTokenSim + armButtons).
+// Approve-window races across an idle auto-lock (src/popup/approve.ts, fillTokenSim, fillBalance, armButtons).
 //
 // The unlock repaint rebuilds the request view for the SAME request id, so a check on renderedId alone
 // cannot tell the first paint's in-flight work from the repaint's. A token quote started by the first
 // paint that lands after the repaint used to mark the preview `ready` (and record its quote as the
 // displayed one) while writing into the detached old #token-sim, and the first paint's armButtons chain
-// then re-enabled Approve with the visible preview still empty. These cases drive the real module
+// then re-enabled Approve with the visible preview still empty. A balance read from the first paint has
+// the same shape: it looks #cost up after its await, so a stale read used to repaint the visible money row
+// and overwrite balShort in either direction. These cases drive the real module
 // through the element registry in helpers/approve-dom.mjs and assert on what is on screen and on the
 // exact resolve() call the background receives.
 //
 //   RED-FIRST: on the pre-fix approve.ts, cases (1), (2), (3) and (7) go red. Removing only the
 //   generation check in fillTokenSim turns (2), (3) and (7) red; removing only the one in armButtons
-//   turns (3) red.
+//   turns (3) red. Removing the generation check in fillBalance turns (8), (8b) and (9) red.
 //   PAIRED HONEST PATHS: (4) a normal token-priced fill, (5) an unlock repaint whose own quote arrives,
-//   (6) a non-token send, each approved with the production resolve() call shape.
+//   (6) a non-token send, each approved with the production resolve() call shape; (10) a single balance
+//   read that covers the send enables Approve, (11) one that does not keeps it disabled.
 //
 // Run: node --import tsx test/approve-quote-race-dom.test.mjs   (offline)
+import { costLine, debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 
@@ -27,10 +31,13 @@ const resolves = [];
 let quoteMode = "manual";       // "manual": each tokenFillQuote call parks its resolver in quoteCalls
 let autoQuote = null;
 const quoteCalls = [];
+let balanceMode = "auto";       // "manual": each balance call parks its resolver in balanceCalls
+let autoBalance = 100_00000000;
+const balanceCalls = [];
 const handlers = {
   status: () => ({ unlocked: state.unlocked, accounts: [{ label: "Main", addr: ME }], active: 0, addr: ME, tradeApi: "" }),
   pending: () => structuredClone(state.pending),
-  balance: () => ({ confirmed: 100_00000000 }),
+  balance: () => balanceMode === "auto" ? { confirmed: autoBalance } : new Promise((r) => balanceCalls.push(r)),
   history: () => [{ to: RCPT }],
   sealedClaims: () => [],
   tokenFillQuote: () => quoteMode === "auto" ? autoQuote : new Promise((r) => quoteCalls.push(r)),
@@ -49,6 +56,11 @@ const lockThenUnlock = async (tick) => {
   state.unlocked = true; await tick(); await flush();
 };
 const lastResolve = () => resolves[resolves.length - 1];
+const sendReq = (id, amount) => ({ id, method: "send", origin: "https://dapp.example", params: { to: RCPT, amount } });
+const costText = () => registry.get("cost").textContent;
+const costFor = (r, confirmed) => `${costLine(r)}  balance: ${fmtBalance(confirmed)} → ~${fmtBalance(confirmed - debitOf(r))} CSD`;
+const shortNoteShown = () => registry.get("req").innerHTML.includes("does not cover");
+const reject = async () => { registry.get("btn-reject")._listeners.click(); await flush(); await sleep(20); await flush(); };
 
 state.pending = [tokenReq("r1")];
 const tick = await loadApprove();
@@ -172,6 +184,92 @@ await flush();
   const before = resolves.length;
   await click();
   check("(7) the click resolves with quote #2", resolves.length === before + 1 && lastResolve()[0] === "r7" && lastResolve()[3]?.amount === "9");
+}
+
+// (8) Stale ok over fresh short: the repaint's read says the balance does not cover the send; the first
+// paint's late read (which does cover it) must neither repaint #cost nor clear balShort.
+{
+  balanceMode = "manual";
+  balanceCalls.length = 0;
+  const req = sendReq("b1", 5_00000000);
+  state.pending = [req]; await tick(); await flush();
+  check("(8) setup: balance read #1 in flight", balanceCalls.length === 1);
+  await lockThenUnlock(tick);
+  check("(8) setup: the repaint started balance read #2", balanceCalls.length === 2);
+  balanceCalls[1]({ confirmed: 1_00000000 }); await flush();
+  await sleep(750); await flush();
+  check("(8) setup: short balance shown, Approve disabled", shortNoteShown() && approveBtn().disabled === true && costText() === costFor(req, 1_00000000));
+  balanceCalls[0]({ confirmed: 100_00000000 }); await flush(); await sleep(20); await flush();
+  check("(8) the visible money row still shows read #2", costText() === costFor(req, 1_00000000));
+  check("(8) Approve stays disabled", approveBtn().disabled === true);
+  const before = resolves.length;
+  await click();
+  check("(8) a click reaches no resolve", resolves.length === before);
+  await reject();
+  check("(8) Reject still resolves the request", lastResolve()[0] === "b1" && lastResolve()[1] === false);
+}
+
+// (8b) The same order with the stale read landing inside the repaint's 700 ms floor, so the repaint's own
+// arm runs after it: a cleared balShort there would enable Approve over the "does not cover" note.
+{
+  balanceCalls.length = 0;
+  const req = sendReq("b1b", 5_00000000);
+  state.pending = [req]; await tick(); await flush();
+  await lockThenUnlock(tick);
+  check("(8b) setup: two balance reads in flight", balanceCalls.length === 2);
+  balanceCalls[1]({ confirmed: 1_00000000 }); await flush();
+  balanceCalls[0]({ confirmed: 100_00000000 }); await flush();
+  await sleep(750); await flush();
+  check("(8b) after the floor: read #2 on screen, short note shown, Approve disabled",
+    costText() === costFor(req, 1_00000000) && shortNoteShown() && approveBtn().disabled === true);
+  const before = resolves.length;
+  await click();
+  check("(8b) a click reaches no resolve", resolves.length === before);
+  await reject();
+  check("(8b) Reject resolves the request", lastResolve()[0] === "b1b" && lastResolve()[1] === false);
+}
+
+// (9) Stale short over fresh ok: the first paint's late short read must not disable an honest approval.
+{
+  balanceCalls.length = 0;
+  const req = sendReq("b2", 5_00000000);
+  state.pending = [req]; await tick(); await flush();
+  await lockThenUnlock(tick);
+  check("(9) setup: two balance reads in flight", balanceCalls.length === 2);
+  balanceCalls[1]({ confirmed: 100_00000000 }); await flush();
+  await sleep(750); await flush();
+  check("(9) setup: Approve enabled on read #2", approveBtn().disabled === false);
+  balanceCalls[0]({ confirmed: 1_00000000 }); await flush(); await sleep(20); await flush();
+  check("(9) the visible money row still shows read #2 and no short note", costText() === costFor(req, 100_00000000) && !shortNoteShown());
+  check("(9) Approve stays enabled", approveBtn().disabled === false);
+  await click();
+  const r = lastResolve();
+  check("(9) resolve(id, true, signer, undefined)", r[0] === "b2" && r[1] === true && r[2] === ME && r[3] === undefined);
+}
+
+// (10) Honest path: one balance read that covers the send; Approve enabled after the floor.
+{
+  balanceMode = "auto"; autoBalance = 100_00000000;
+  const req = sendReq("b3", 5_00000000);
+  state.pending = [req]; await tick(); await flush();
+  await sleep(750); await flush();
+  check("(10) money row painted, no short note, Approve enabled", costText() === costFor(req, 100_00000000) && !shortNoteShown() && approveBtn().disabled === false);
+  await click();
+  check("(10) resolve(id, true, signer, undefined)", lastResolve()[0] === "b3" && lastResolve()[1] === true && lastResolve()[2] === ME);
+}
+
+// (11) Honest refusal: one balance read that does not cover the send keeps Approve disabled.
+{
+  autoBalance = 1_00000000;
+  const req = sendReq("b4", 5_00000000);
+  state.pending = [req]; await tick(); await flush();
+  await sleep(750); await flush();
+  check("(11) short note shown, Approve disabled", costText() === costFor(req, 1_00000000) && shortNoteShown() && approveBtn().disabled === true);
+  const before = resolves.length;
+  await click();
+  check("(11) a click reaches no resolve", resolves.length === before);
+  await reject();
+  check("(11) Reject resolves the request", lastResolve()[0] === "b4" && lastResolve()[1] === false);
 }
 
 done("approve-quote-race-dom");
