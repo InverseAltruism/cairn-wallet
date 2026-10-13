@@ -1,9 +1,9 @@
 // Wallet.verifyName unions the configured primary resolver with clarvis, the independent second source.
 // That second entry is what defeats a primary that withholds the winning claim: with the primary alone the
 // SPV replay proves the attacker's later claim, a valid record on its own, and the name verifies green to
-// the attacker's address.
-//   RED-FIRST: drop the clarvis entry from the source list in Wallet.verifyName and (1) fails (the name
-//   verifies to ATTACKER, from one source, and clarvis is never asked).
+// the attacker's address. The list is Wallet.nameSources(), which the confirm-time hint check reads too.
+//   RED-FIRST: drop the clarvis entry from Wallet.nameSources() and (1) fails (the name verifies to
+//   ATTACKER, from one source, and clarvis is never asked).
 //   PAIRED HONEST PATH: (2) both sources honest: verified to the owner's address, two sources, no
 //   disagreement, with the production call shape (default trade API, live clarvis base).
 // Run: node --import tsx test/name-sources-clarvis.test.mjs   (offline)

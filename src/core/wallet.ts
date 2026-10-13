@@ -1425,8 +1425,7 @@ export class Wallet {
       // Cross-check the user's configured primary resolver against the independent clarvis second source
       // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
       // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
-      const sources: ResolverSource[] = [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
-      const res = await verifyNameUnion(nm, sources, await this.spvSource());
+      const res = await verifyNameUnion(nm, this.nameSources(), await this.spvSource());
       try { await this.rememberHintSet(nm, res); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
       return { ...res, name: nm };
     } catch (e) {
