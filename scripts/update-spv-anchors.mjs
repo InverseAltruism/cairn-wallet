@@ -149,7 +149,7 @@ export async function canonicalAt(rpc, height, hash, io) {
   return d.height === height && String(d.hash).toLowerCase() === hash ? "yes" : "no";
 }
 
-/** Check mode: every committed entry equals the walk from `headers` and is canonical at `rpc`; the newest is fresh. */
+/** Check mode: every entry equals the walk from `headers` and is canonical at `rpc`; the newest is 1000 to 6000 deep. */
 export async function check({ tablePath = TABLE, headers, rpc, pageSize = PAGE, paceMs = 550, io = {} }) {
   if (!headers || !rpc) throw new Error("--check needs --headers <base> and --rpc <base>");
   const t = parseTable(readFileSync(tablePath, "utf8"));
@@ -167,6 +167,7 @@ export async function check({ tablePath = TABLE, headers, rpc, pageSize = PAGE, 
   const tip = Number((await getJson(`${rpc.replace(/\/$/, "")}/tip`, io))?.height);
   const newest = tops[tops.length - 1];
   if (!Number.isSafeInteger(tip) || tip - newest > MAX_LAG) throw new Error(`newest entry ${newest} is more than ${MAX_LAG} below the public tip ${tip}: regenerate the table`);
+  if (newest > tip - MIN_MARGIN) throw new Error(`newest entry ${newest} is less than ${MIN_MARGIN} below the public tip ${tip}: too shallow to pin`);
   return { entries: tops.length, newest, tip };
 }
 

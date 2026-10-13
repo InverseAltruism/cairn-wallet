@@ -111,6 +111,8 @@ for (const [name, text, re] of BAD_C1) { const p = table(); await refuses(`C1 ${
   const r = await ck(good);
   t.check("check honest: passes with 2 entries", r.entries === 2 && r.newest === TOP2);
   t.check("check honest: tip exactly 6000 above the newest entry passes", (await ck(good, { tip: TOP2 + 6000 })).tip === TOP2 + 6000);
+  t.check("check honest: tip exactly 1000 above the newest entry passes", (await ck(good, { tip: TOP2 + 1000 })).tip === TOP2 + 1000);
+  await refuses("check: newest entry less than 1000 below the tip", good, () => ck(good, { tip: TOP2 + 999 }), /less than 1000 below/);
   await refuses("check: newest entry more than 6000 below the tip", good, () => ck(good, { tip: TOP2 + 6001 }), /more than 6000 below/);
   const forged = table([at(TOP1).hash, at(TOP2 - 1).hash]);
   await refuses("check: an entry the walk does not reach", forged, () => ck(forged), /entry 1 \(height 30079\)/);
