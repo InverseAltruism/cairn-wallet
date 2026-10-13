@@ -25,7 +25,8 @@
 import http from "node:http";
 import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join, extname, resolve, dirname } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { loadChromium } from "./playwright-core.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = join(ROOT, "dist");
@@ -34,24 +35,6 @@ const MODE = process.env.MODE || "standalone";
 const STRICT_CONFIRM = process.env.STRICT_CONFIRM === "1";
 const VIEWPORT = { width: Number(process.env.SHOT_W || 340), height: Number(process.env.SHOT_H || 600) }; // Chrome caps action popups around 600px tall; 360x640 for store raw captures
 
-// ── deps: playwright-core is not a dependency of this repo. Resolution order: an explicit
-// PLAYWRIGHT_CORE env path, this repo's own node_modules, then a normal module resolution from
-// here (finds any parent/sibling install on the resolution path). No machine-specific paths.
-async function loadChromium() {
-  const candidates = [
-    process.env.PLAYWRIGHT_CORE,
-    join(ROOT, "node_modules", "playwright-core", "index.mjs"),
-  ].filter(Boolean);
-  for (const c of candidates) {
-    if (existsSync(c)) return (await import(pathToFileURL(c).href)).chromium;
-  }
-  try {
-    const { createRequire } = await import("node:module");
-    const req = createRequire(import.meta.url);
-    return (await import(pathToFileURL(req.resolve("playwright-core")).href)).chromium;
-  } catch { /* fall through to the actionable error */ }
-  throw new Error("playwright-core not found: set PLAYWRIGHT_CORE=/path/to/playwright-core/index.mjs or `npm i -D playwright-core`");
-}
 function chromiumExe() {
   const base = process.env.HOME + "/.cache/ms-playwright";
   for (const rev of ["chromium-1228", "chromium-1208", "chromium-1200"]) {
