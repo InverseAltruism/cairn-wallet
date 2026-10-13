@@ -24,7 +24,7 @@ every upload to a CI-attested build of a tag, and detect a store build that does
 4. **Single maintainer.** One GitHub account can push a `v*` tag, which runs `release.yml`, and the same person
    holds the CWS account. There is no required-reviewer environment and no second approver. What stands in
    for a second person: the release is built by CI from the tag and attested (5 below), the uploaded zip must
-   have the attested zip's sha256 (step 5), and the store's CRX is compared with it after publication (step 7).
+   have the attested zip's sha256 (step 6), and the store's CRX is compared with it after publication (step 8).
 5. **SLSA provenance** is produced for every release (`attest-build-provenance` in `release.yml`); the repo is
    public, so the step is required and a failed attestation fails the release.
 
@@ -45,29 +45,55 @@ name makes a stale local file self-evident.
 ## Release procedure (every version)
 1. **Bump the version** in `package.json` only; `build.mjs` stamps it into `dist/manifest.json` and
    `window.cairn` (provider `version` and `getCapabilities().version`).
-2. **Vendor freshness:** `npm run verify:vendor` must pass. The load-bearing arm is the rebuild byte-diff: with a
+2. **SPV anchor table.** `src/core/spvanchors.ts` is generated, not edited by hand (`test/spvanchors.test.mjs` fails a file the generator would not write). Regenerate it for every
+   release so its newest entry is the newest chunk top (height 4096k + 4095) at least 1,000 blocks below the tip.
+   On the deploy host, ask the node, the miner and clarvis for that height's hash (cairn's
+   `bump-swapguard-cp.mjs`, run from the cairn checkout; all three must say yes, there is no override), then walk
+   the headers to it and rewrite the table:
+   ```bash
+   TIP=$(curl -fsS http://127.0.0.1:8789/tip | node -pe 'JSON.parse(require("fs").readFileSync(0)).height')
+   T=$(( (TIP - 999) / 4096 * 4096 - 1 ))      # newest 4096k+4095 at or below TIP - 1000
+   CSD_RPC3=https://clarvis.cairn-substrate.com/api/rpc node scripts/bump-swapguard-cp.mjs --emit-json --target $T > /tmp/anchor.json   # in cairn
+   node scripts/update-spv-anchors.mjs /tmp/anchor.json            # dry run: prints the entry count
+   node scripts/update-spv-anchors.mjs /tmp/anchor.json --write    # rewrites src/core/spvanchors.ts
+   ```
+   The generator refuses, and writes nothing, when the anchor JSON fails any check, a header page is short or
+   out of order, the walk from the floor pin does not reach the corroborated hash, or the new table does not
+   extend the committed one. Commit the table on its own and keep the anchor JSON line with the release record.
+   The `anchors` job in `release.yml` runs on that PR and on the tag (the release job needs it): it re-walks the
+   chain from clarvis's public `/api/headers`, requires every entry to equal the walk, requires
+   `https://cairn-substrate.com/api/rpc/block/height/<h>` to answer with that hash at every entry, and requires
+   the newest entry to be between 1,000 and 6,000 blocks below the public tip. When it fails:
+   - `more than 6000 below the public tip`: the table is stale; regenerate it (this step) and tag the new commit.
+   - `less than 1000 below the public tip`: the table is too shallow; regenerate it at a lower target.
+   - `answers "unreachable"`, a 429 or a timeout: a source was down or rate limited; re-run the job.
+   - `the walk from ... reaches` another hash, or `answers "no"`: a served chain contradicts a pinned entry (a reorg
+     deeper than 1,000 blocks, a wrong entry or a compromised source). Do not release and do not regenerate over
+     it; compare the hash at that height on the node, the miner and clarvis, and investigate first.
+   - `does not match the generator's output`: the file was edited by hand; regenerate it with the script.
+3. **Vendor freshness:** `npm run verify:vendor` must pass. The load-bearing arm is the rebuild byte-diff: with a
    csd-sdk checkout at `PROVENANCE.json`'s `csdSdkCommit` (`CSD_SDK_DIR=<path>`), the script rebuilds the
    bundle and requires byte-identity. Without a csd-sdk checkout it skips that arm and runs only the cheap
    checks (bundle sha256 equals `PROVENANCE.json`, `@noble` pins agree). The line comparing csd-sdk's HEAD with
    `csdSdkCommit` is advisory and does not fail the gate. In CI the byte-diff runs in the `vendor-fresh-full` job,
    which needs the `ECOSYSTEM_RO_TOKEN` secret and skips its steps without it.
-3. **Green gate:** `npm run typecheck && npm test` (full suite) must pass; CI must be green on the tag.
-4. **Reproducible build.** Run `npm ci && npm run package`. This writes the version-stamped upload file
+4. **Green gate:** `npm run typecheck && npm test` (full suite) must pass; CI must be green on the tag.
+5. **Reproducible build.** Run `npm ci && npm run package`. This writes the version-stamped upload file
    `cairn-wallet-store-X.Y.Z.zip` + its `.sha256`, the byte-identical `cairn-wallet-store.zip`, and
    `cairn-wallet.zip`, via a deterministic (fixed-timestamp, sorted, STORE) zip writer, byte-identical across
    machines. The packager also HARD-FAILS if the manifest baked into the zip does not match `package.json`, so
    a stale `dist/` is not packaged silently. `node_modules` must be the real directory `npm ci` creates: a
    symlinked one makes esbuild write different source-path comments, and the hash no longer matches.
-5. **Cross-check the artifact:** after `release.yml` finishes for the tag, the sha256 of the local
+6. **Cross-check the artifact:** after `release.yml` finishes for the tag, the sha256 of the local
    `cairn-wallet-store-X.Y.Z.zip` must equal the release's `cairn-wallet-store.zip.sha256`. Two builds made on
    different machines (CI and yours) agreeing is the check; a mismatch stops the release.
    ```bash
    gh release download vX.Y.Z -R InverseAltruism/cairn-wallet -p 'cairn-wallet-store.zip.sha256' -O - | cut -d' ' -f1
    sha256sum cairn-wallet-store-X.Y.Z.zip | cut -d' ' -f1      # must print the same hash
    ```
-6. **Upload manually** to the CWS dashboard (hardware-2FA): the local `cairn-wallet-store-X.Y.Z.zip` checked in
-   step 5, never an unversioned copy.
-7. **Post-publish CRX check.** Once the store serves the new version, download the CRX it serves and compare it
+7. **Upload manually** to the CWS dashboard (hardware-2FA): the local `cairn-wallet-store-X.Y.Z.zip` checked in
+   step 6, never an unversioned copy.
+8. **Post-publish CRX check.** Once the store serves the new version, download the CRX it serves and compare it
    with the attested `cairn-wallet-store.zip`. The store adds two things: an `update_url` key in `manifest.json`
    and a `_metadata/` folder. Everything else must be identical.
    ```bash
@@ -88,7 +114,7 @@ name makes a stale local file self-evident.
    ```
    Any other difference means the store serves something that is not the attested build: follow "If a
    credential is suspected leaked" below.
-8. **Publish the version + sha256** (GitHub release + the website) so users can verify the build they installed
+9. **Publish the version + sha256** (GitHub release + the website) so users can verify the build they installed
    is the reviewed one.
 
 ## If a credential is suspected leaked
