@@ -2,23 +2,10 @@
 // background service worker (which owns the keys + approval flow).
 const chrome: any = (globalThis as any).chrome;
 
-// Per-page-load handshake secret (audit SEQ-INJECT). We hand it to the inpage provider via a data-
-// attribute on its own <script> and stamp it on every response/event we send back; inpage rejects any
-// inbound message lacking it (and clears the attribute the instant it reads it). Combined with the
-// unpredictable per-request id, this removes the trivial response-forgery a co-present page script could
-// do before (post any {target:'cairn-inpage', id} message). RESIDUAL: the attribute sits on a <script
-// src> that loads asynchronously, so a page script running in that load window could read it from the DOM
-// — full isolation would need inline injection (blocked by strict page CSP). The security-critical path
-// is unaffected regardless: signing/connect require popup approval bound to the unforgeable sender origin,
-// and the key never reaches the page. onload-removal below is a backstop in case inpage's self-clear is
-// pre-empted.
-const NONCE = (() => { try { return crypto.randomUUID() + crypto.randomUUID(); } catch { return Date.now().toString(36) + Math.random().toString(36).slice(2); } })();
-
 const s = document.createElement("script");
 s.src = chrome.runtime.getURL("inpage.js");
-s.dataset.cairnNonce = NONCE;
 (document.head || document.documentElement).appendChild(s);
-s.onload = () => { s.removeAttribute("data-cairn-nonce"); s.remove(); };
+s.onload = () => { s.remove(); };
 
 window.addEventListener("message", (ev: MessageEvent) => {
   if (ev.source !== window || ev.origin !== window.location.origin || (ev.data as any)?.target !== "cairn-content") return;
@@ -34,19 +21,18 @@ window.addEventListener("message", (ev: MessageEvent) => {
         window.postMessage({
           target: "cairn-inpage", id,
           res: { ok: false, error: "the wallet is unavailable — it may have reloaded; refresh this page to reconnect", code: "WALLET_UNAVAILABLE" },
-          nonce: NONCE,
         }, window.location.origin);
         return;
       }
       // Reply only to our own origin (not "*") — the inpage provider lives in the same page.
-      window.postMessage({ target: "cairn-inpage", id, res, nonce: NONCE }, window.location.origin);
+      window.postMessage({ target: "cairn-inpage", id, res }, window.location.origin);
     });
   } catch {
     // The extension was updated/reloaded and THIS page still runs the orphaned content script: its
     // chrome.runtime is invalidated and sendMessage THROWS ("Extension context invalidated"). Without
     // this catch the dApp saw an uncaught error and its call hung forever. Resolve the call with a
     // clean, actionable error instead; the page works again after a refresh (fresh content script).
-    window.postMessage({ target: "cairn-inpage", id, res: { ok: false, error: "WALLET_RELOADED: the wallet extension was updated or reloaded - refresh this page to reconnect" }, nonce: NONCE }, window.location.origin);
+    window.postMessage({ target: "cairn-inpage", id, res: { ok: false, error: "WALLET_RELOADED: the wallet extension was updated or reloaded - refresh this page to reconnect" } }, window.location.origin);
   }
 });
 
@@ -59,7 +45,7 @@ function connectEvents() {
     const port = chrome.runtime.connect({ name: "cairn-events" });
     port.onMessage.addListener((m: any) => {
       if (m?.kind !== "cairn-event") return;
-      window.postMessage({ target: "cairn-inpage-event", event: m.event, data: m.data, nonce: NONCE }, window.location.origin);
+      window.postMessage({ target: "cairn-inpage-event", event: m.event, data: m.data }, window.location.origin);
     });
     port.onDisconnect.addListener(() => {
       // reconnect only while the extension context is still alive; an orphaned (post-update)

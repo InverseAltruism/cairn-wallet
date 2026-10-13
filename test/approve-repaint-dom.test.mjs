@@ -1,11 +1,8 @@
 // W1 (AW-4) + W2 (AW-3): DOM-BEHAVIOR gates for the clear-signing window (src/popup/approve.ts).
 //
-// Both defects are invisible to a source-only pass, and a source-only pass DID miss them once:
-// approve-clickthrough-guard.test.mjs pins render()'s ORDERING and argues that "adding jsdom for one
-// function is over-engineering". That argument holds for ordering. It does not hold for these two, whose
-// entire failure mode is which ELEMENT a write lands in after the innerHTML rebuild has swapped it. So
-// this file drives the REAL module against a ~60-line element registry (no jsdom, no browser) and asserts
-// on the rendered DOM, which is the only instrument that can see either bug.
+// Both defects are invisible to a source-only pass: their entire failure mode is which ELEMENT a write
+// lands in after the innerHTML rebuild has swapped it. So this file drives the REAL module against the
+// element registry in helpers/approve-dom.mjs (no jsdom, no browser) and asserts on the rendered DOM.
 //
 // W1 (AW-4, FUNDS): render() returns early while locked and nulls renderedId; `status` is in
 // READ_ONLY_METHODS precisely so the 1.2s poll does not defer the idle auto-lock. So an approval left open
@@ -44,44 +41,14 @@
 //   RED-FIRST: drop the tokenMeta threading in approve.ts render() and (9a) goes red.
 //
 // Run: node --import tsx test/approve-repaint-dom.test.mjs   (offline)
+import assert from "node:assert/strict";
 import { costLine, debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { bid } from "../src/vendor/cairnx-spv.js";
+import { checker } from "./helpers/check.mjs";
+import { mountApproveWindow, loadApprove, flush } from "./helpers/approve-dom.mjs";
 
-let pass = 0, fail = 0;
-const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
-
-// ── the element registry (a DOM only to the extent approve.ts uses one) ────────────────────────────────
-// The one behavior that matters: assigning innerHTML REPLACES the subtree, so every id inside the old
-// markup stops being reachable through getElementById and every id inside the new markup starts being
-// reachable as a FRESH element. That is exactly the swap both defects hinge on.
-const registry = new Map();
-const TAG_WITH_ID = /<[a-zA-Z][^>]*\sid="([^"]+)"[^>]*>/g;
-class El {
-  constructor(id) { this.id = id; this._html = ""; this.textContent = ""; this.className = ""; this.hidden = false; this.disabled = false; this._kids = []; }
-  get innerHTML() { return this._html; }
-  set innerHTML(v) {
-    for (const k of this._kids) if (registry.get(k)?._parent === this) registry.delete(k);
-    this._kids = [];
-    this._html = String(v);
-    this._adopt(this._html);
-  }
-  _adopt(html) {
-    for (const m of String(html).matchAll(TAG_WITH_ID)) {
-      const el = new El(m[1]);
-      el._parent = this;
-      el.hidden = /\shidden(\s|>|=)/.test(m[0]);
-      registry.set(m[1], el);
-      this._kids.push(m[1]);
-    }
-  }
-  insertAdjacentHTML(_pos, html) { this._html += String(html); this._adopt(html); }
-  addEventListener(type, fn) { (this._listeners ||= {})[type] = fn; }   // recorded; only section 8 clicks
-}
-for (const id of ["view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw"]) registry.set(id, new El(id));
-globalThis.document = { getElementById: (id) => registry.get(id) ?? null };
-let closes = 0;
-globalThis.window = { close: () => { closes++; } };
+const { check, done } = checker();
 
 // ── the background message bridge ──────────────────────────────────────────────────────────────────────
 const ME = "0x" + "ab".repeat(20);
@@ -109,19 +76,7 @@ const handlers = {
   resolve: () => ({ ok: true }),
   unlock: () => true,
 };
-globalThis.chrome = {
-  runtime: {
-    lastError: undefined,
-    sendMessage(m, cb) {
-      // async delivery, exactly like the real port: every filler's write lands on a later turn.
-      Promise.resolve().then(async () => {
-        const h = handlers[m.method];
-        if (!h) return cb({ ok: false, error: "no such popup method: " + m.method });
-        try { cb({ ok: true, result: await h(...(m.args || [])) }); } catch (e) { cb({ ok: false, error: String(e?.message || e) }); }
-      });
-    },
-  },
-};
+const { registry, closes } = mountApproveWindow(handlers);
 
 // The name-service fetch behind the nfinalize/nrenew/nset approve gate (W8). It is the gate's ONLY
 // network call, so counting it is how "the repaint fires zero new gate fetches" is asserted.
@@ -137,12 +92,6 @@ globalThis.fetch = async (url) => {
     : { status: 200, ok: true, json: async () => nameRecord };
 };
 
-// setInterval is captured, not scheduled: `tick()` IS the 1.2s poll, driven deterministically.
-let tick = null;
-const realSetInterval = globalThis.setInterval;
-globalThis.setInterval = (fn) => { tick = fn; return 0; };
-
-const flush = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0)); };
 const sendReq = (id, to, amount) => ({ id, method: "send", origin: "https://dapp.example", params: { to, amount, fee: 1_000_000 } });
 
 console.log("W1 (AW-4) + W2 (AW-3) - approval-window repaint behavior:\n");
@@ -150,8 +99,7 @@ console.log("W1 (AW-4) + W2 (AW-3) - approval-window repaint behavior:\n");
 // ── 1. W1: an approval left open across an idle auto-lock ──────────────────────────────────────────────
 const REQ_A = sendReq("a1", RCPT_A, 1_00000000);
 state.pending = [REQ_A];
-await import("../src/popup/approve.js");   // module load fires the first render()
-globalThis.setInterval = realSetInterval;
+const tick = await loadApprove();   // module load fires the first render(); `tick()` IS the 1.2s poll, driven deterministically
 await flush();
 check("the poll callback was captured (setInterval(render, 1200))", typeof tick === "function");
 
@@ -216,7 +164,7 @@ await tick(); await flush();
 const expected = `${costLine(S)}  balance: ${fmtBalance(nextBalance)} → ~${fmtBalance(nextBalance - debitOf(S))} CSD`;
 check(`(4) the rendered money row is exactly the pre-fix string (${JSON.stringify(registry.get("cost").textContent)})`,
   registry.get("cost").textContent === expected);
-check("(4) the window was never closed during any of this", closes === 0);
+check("(4) the window was never closed during any of this", closes() === 0);
 
 // ── 5. W8: the nrenew/nfinalize/nset gate note across an idle auto-lock ────────────────────────────────
 // Production's exact call shape for this lane: the /names site raises a `propose` on the cairnx:v1 domain
@@ -288,7 +236,7 @@ state.pending = [nrenewReq("g4")];
 await tick(); await flush(); await settle();
 check("(7) a genuinely NEW nrenew request DOES re-arm the gate (one new fetch)", nameFetches === 2);
 check("(7) ...and paints its own verdict", noteRe.test(registry.get("req").innerHTML));
-check("(7) the window was never closed during the W8 section", closes === 0);
+check("(7) the window was never closed during the W8 section", closes() === 0);
 
 // ── 8. 0.2.71 (CX-23 + CX-15): the reviewed token quote survives the 1.2 s re-poll and gates Approve ──
 // The real extension port CLONES every reply, so `pending` yields a fresh object on each poll. 0.2.70
@@ -343,5 +291,63 @@ check("(9c) a failed display read still paints CAIRN at its pinned 8 decimals be
   failText.includes("4638.5287329 CAIRN = 463852873290 base units") && /Could not confirm this CAIRN/.test(failText));
 check("(9c) ...and Approve still arms (display never blocks a buy)", registry.get("btn-approve").disabled === false);
 
-console.log(`\napprove-repaint-dom: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+// ── 10. The window stays open until the outcome of an approved request is delivered ───────────────────
+// The background removes a request from the queue before running it, so a slow outcome (a fill's
+// preflight reads) left the queue empty and the 1.2 s poll closed the window: a refusal such as
+// OFFER_SOURCE_CONFLICT was never painted. Plain node:assert from here on.
+//   RED-FIRST: make render() call window.close() on an empty queue unconditionally (the 0.2.73 shape) and
+//   (10a) fails.
+//   PAIRED HONEST PATH: (10c) a successful approval and (10d) a rejection still close the window once
+//   the queue is empty, and (10b) a new request after a held failure paints and arms as usual.
+console.log("\nRow 50: the outcome of an approved request is delivered before the window closes");
+let releaseOutcome = null;
+handlers.resolve = () => new Promise((res) => { releaseOutcome = res; });
+state.pending = [sendReq("o1", RCPT_A, 1_00000000)];
+await tick(); await flush(); await settle();
+assert.equal(registry.get("btn-approve").disabled, false, "setup: Approve is armed");
+const closesBefore = closes();
+registry.get("btn-approve")._listeners.click();
+await flush();
+state.pending = [];   // the background has already dropped the request from the queue
+for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
+assert.equal(closes(), closesBefore, "(10a) the poll does not close the window while the outcome is in flight");
+assert.equal(registry.get("msg").textContent, "approving\u2026");
+const REFUSAL = "refusing to sign: the independent second resolver reports that this offer was cancelled, while your resolver shows it open.";
+releaseOutcome({ done: true, ok: false, error: REFUSAL, code: "OFFER_SOURCE_CONFLICT" });
+await flush();
+assert.equal(registry.get("msg").textContent, `failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the refusal and its code are painted");
+assert.equal(registry.get("msg").className, "msg err");
+for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
+assert.equal(closes(), closesBefore, "(10a) the window stays open on the failure after further polls");
+assert.equal(registry.get("view-req").hidden, true, "(10a) the spent request's buttons are hidden");
+assert.equal(registry.get("msg").textContent, `failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the failure text is still there");
+console.log("  ok (10a)");
+
+state.pending = [sendReq("o2", RCPT_B, 2_00000000)];
+await tick(); await flush(); await settle();
+assert.equal(registry.get("view-req").hidden, false, "(10b) a new request is shown");
+assert.equal(registry.get("msg").textContent, "", "(10b) the old failure is cleared by the new paint");
+assert.equal(registry.get("btn-approve").disabled, false, "(10b) and Approve arms");
+console.log("  ok (10b)");
+
+registry.get("btn-approve")._listeners.click();
+await flush();
+state.pending = [];
+await tick(); await flush(3);
+assert.equal(closes(), closesBefore, "(10c) still open while this outcome is in flight");
+releaseOutcome({ done: true, ok: true, txid: "0x" + "ab".repeat(32) });
+await flush();
+assert.equal(closes(), closesBefore + 1, "(10c) a successful outcome closes the window as before");
+console.log("  ok (10c)");
+
+handlers.resolve = () => ({ done: true, ok: false, error: "rejected by user", code: "USER_REJECTED" });
+state.pending = [sendReq("o3", RCPT_A, 3_00000000)];
+await tick(); await flush(); await settle();
+registry.get("btn-reject")._listeners.click();
+state.pending = [];
+await flush();
+assert.equal(registry.get("msg").textContent, "rejected");
+assert.equal(closes(), closesBefore + 2, "(10d) a rejection closes the window as before");
+console.log("  ok (10d)");
+
+done("approve-repaint-dom");

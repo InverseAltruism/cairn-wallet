@@ -9,6 +9,9 @@ import { PortRegistry } from "./core/events.js";
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
 try { (chrome as any).storage?.session?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }); } catch { /* older runtime */ }
+// storage.local holds the vault ciphertext and the header snapshot; content scripts can reach it by default, and
+// content.ts never uses chrome.storage, so restrict it to extension pages and this worker.
+try { (chrome as any).storage?.local?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }); } catch { /* older runtime */ }
 const wallet = new Wallet(chromeStore(), chromeSessionStore());
 // Test-only wallet handle: the E2E boundary suite (extension-boundary.ts) injects the documented Wallet test
 // seams (fillSpvIoForTest / provenPaytoForTest) through this. Guarded by a global the harness sets BEFORE
@@ -31,24 +34,36 @@ const consentStore = chromeStore();
 const CONSENT_KEY = "connectedOrigins";
 type ConsentMap = Record<string, { addr: string; ts: number }>;
 async function getConsents(): Promise<ConsentMap> { return (await consentStore.get(CONSENT_KEY)) || {}; }
-async function recordConsent(origin: string, addr: string): Promise<void> {
+// Every write of the consent map runs through this one queue, so a connect's read-modify-write cannot
+// interleave with a Disconnect's and write back an origin the user just removed.
+let consentChain: Promise<void> = Promise.resolve();
+function inConsentChain<T>(work: () => Promise<T>): Promise<T> {
+  const run = consentChain.then(work, work);
+  consentChain = run.then(() => {}, () => {});
+  return run;
+}
+function recordConsent(origin: string, addr: string): Promise<void> {
   // L2: an opaque origin (a sandboxed / data: / some file: page) sends sender.origin === "null" — a SHARED,
   // non-identifying string, not a site. Never store consent under it: every opaque page would collide on the
   // one "null" bucket, so the silent fast-path (and getPermissions) would return the consented address to ANY
   // opaque-origin page — a silent cross-site disclosure. Reject it alongside "unknown"; the fast-path + get-
   // Permissions then fall through to a fresh prompt for every opaque page (an opaque origin has no identity to
   // remember). Deliberately NOT a per-frame ephemeral bucket — more machinery for no legitimate use.
-  if (!origin || origin === "unknown" || origin === "null") return;
-  const c = await getConsents();
-  c[origin] = { addr, ts: Date.now() };
-  await consentStore.set(CONSENT_KEY, c);
+  if (!origin || origin === "unknown" || origin === "null") return Promise.resolve();
+  return inConsentChain(async () => {
+    const c = await getConsents();
+    c[origin] = { addr, ts: Date.now() };
+    await consentStore.set(CONSENT_KEY, c);
+  });
 }
-async function revokeConsent(origin: string): Promise<{ removed: boolean }> {
-  const c = await getConsents();
-  if (!c[origin]) return { removed: false };
-  delete c[origin];
-  await consentStore.set(CONSENT_KEY, c);
-  return { removed: true };
+function revokeConsent(origin: string): Promise<{ removed: boolean }> {
+  return inConsentChain(async () => {
+    const c = await getConsents();
+    if (!c[origin]) return { removed: false };
+    delete c[origin];
+    await consentStore.set(CONSENT_KEY, c);
+    return { removed: true };
+  });
 }
 async function listConsents(): Promise<{ origin: string; addr: string; ts: number }[]> {
   const c = await getConsents();
@@ -101,8 +116,6 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "tipFloor": return wallet.tipFloor(); // M11/B5b: PoW-backed floor for review-side fee clamping (popup-only; READ_ONLY so it never extends the idle lock)
-    case "propose": return wallet.propose(args[0]);
-    case "attest": return wallet.attest(args[0]);
     case "send": return wallet.send(args[0], args[1], args[2], args[3]); // args[3] = expectSigner (A1 popup snapshot)
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS — a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
@@ -114,14 +127,13 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnxTransfer": return wallet.cairnxTransfer(args[0]);
     case "resolveName": return wallet.resolveName(args[0]);
     case "confirmName": return wallet.confirmName(args[0]); // 0.2.70: hint-set confirm (popup-only, READ_ONLY)
-    case "verifyName": return wallet.verifyName(args[0]);
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
+    case "fillOfferView": return wallet.fillOfferView(args[0]); // listing id + listed asset for a CSD-paid fill card (display only)
     case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2]); // args[2] = expectSigner (A1)
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
     case "setTradeApi": return wallet.setTradeApi(args[0]);
-    case "signin": return wallet.signIn();
     case "export": return wallet.exportKey(args[0]);
     case "exportMnemonic": return wallet.exportMnemonic(args[0]);
     case "setRpc": return wallet.setRpc(args[0]);
@@ -129,17 +141,17 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "rpcList": return wallet.rpcList();
     case "addRpc": return wallet.addRpc(args[0]);
     case "removeRpc": return wallet.removeRpc(args[0]);
+    case "dismissRpcNotice": return wallet.dismissRpcNotice();
     case "setExplorer": return wallet.setExplorer(args[0]);
     case "explorerList": return wallet.explorerList();
     case "addExplorer": return wallet.addExplorer(args[0]);
     case "removeExplorer": return wallet.removeExplorer(args[0]);
-    case "reset": { await consentStore.set(CONSENT_KEY, {}); return wallet.reset(); }
+    case "reset": { await inConsentChain(() => consentStore.set(CONSENT_KEY, {})); return wallet.reset(); }
     case "connectedSites": return listConsents();
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1], args[2], args[3]); // (id, approve, displayedSigner?, displayedTokenQuote?)
-    case "flushPending": return wallet.flushPending();
     case "history": return wallet.history();
     case "sealClaim": return wallet.sealClaim(args[0]);
     case "revealClaim": return wallet.revealClaim(args[0]);
@@ -148,9 +160,13 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
   }
 }
 
+// Wallet methods that need the key throw Error("locked") while the vault is locked; that is
+// WALLET_LOCKED, not an internal fault. Anything else thrown stays INTERNAL.
+const thrownCode = (e: unknown): string => ((e as { message?: unknown })?.message === "locked" ? "WALLET_LOCKED" : "INTERNAL");
+
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
-async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<{ done: boolean; ok?: boolean; error?: string; txid?: string }> {
+async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<{ done: boolean; ok?: boolean; error?: string; code?: string; txid?: string }> {
   const p = pending.get(id);
   if (!p) return { done: false };
   pending.delete(id);
@@ -163,10 +179,11 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   // POPUP-OUTCOME-1: resolve the dApp promise (UNCHANGED) AND report the TRUE action outcome back to the
   // approval popup, so it shows "sent ✓" / "failed: …" instead of a blanket "approved" when the signed action
   // actually failed (locked, account-switch, a network/guard reject, or a soft {ok:false} builder result).
-  const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }): { done: boolean; ok: boolean; error?: string; txid?: string } => {
+  const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }): { done: boolean; ok: boolean; error?: string; code?: string; txid?: string } => {
     p.resolve(out);
     const actionOk = out.ok && (out.result?.ok !== false);
-    return { done: true, ok: actionOk, error: out.error ?? (out.result?.ok === false ? out.result?.error : undefined), txid: out.result?.txid };
+    const soft = out.result?.ok === false;
+    return { done: true, ok: actionOk, error: out.error ?? (soft ? out.result?.error : undefined), code: out.code ?? (soft ? out.result?.code : undefined), txid: out.result?.txid };
   };
   if (!approve) return finish({ ok: false, code: "USER_REJECTED", error: "rejected by user" });
   try {
@@ -229,7 +246,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "fillOffer") result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote });
     else throw new Error("unsupported dApp method: " + p.method);
     return finish({ ok: true, result });
-  } catch (e: any) { return finish({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
+  } catch (e: any) { return finish({ ok: false, code: thrownCode(e), error: e?.message ?? String(e) }); }
 }
 
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
@@ -243,7 +260,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative — anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "pendingMerge", "prewarmSpv"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
@@ -405,7 +422,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         sendResponse(res); return;
       }
       sendResponse({ ok: false, code: "UNKNOWN_KIND", error: "unknown message kind" });
-    } catch (e: any) { sendResponse({ ok: false, code: "INTERNAL", error: e?.message ?? String(e) }); }
+    } catch (e: any) { sendResponse({ ok: false, code: thrownCode(e), error: e?.message ?? String(e) }); }
   })();
   return true; // async response
 });

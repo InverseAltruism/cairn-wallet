@@ -11,7 +11,7 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
-import { fclaimHoldEnd, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -33,6 +33,13 @@ export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js"
 // FLIPPED ON via the opt-in 3-arg overload. `t` MUST be a MintedProvenOfferTerms (produced only by the
 // vendored provenOfferTerms via fillspv.ts), so a hand-built terms object is a compile error exactly where it
 // would false-refuse every honest fill (the W2 trap the brand exists to make unrepresentable).
+// The vendored verifyFillSpv reasons whose verdict is evaluated at the tip (hold liveness, grant routing,
+// the deadline margin, burial depth). Matched on the bundle's wording; test/fillspv-tip-floor.test.mjs runs
+// the real verifier for both sides, so a reword in the bundle turns that file red.
+export function tipDependentFillReason(reason: string): boolean {
+  return /^(no live claim by you|this fclaim is not the live granted hold|too close to the hold deadline)|not buried deep enough yet/.test(String(reason));
+}
+
 // B7e-FIX (W1 token-lane close): this predicate now runs on the TOKEN-priced lane too (the else branch in
 // fillOfferPreflight), not only the CSD lane. On the token lane the give leg is the load-bearing content bind
 // and the want-type leg is a real rejecter (on the CSD lane the pre-existing value leg shadows it). The
@@ -44,16 +51,20 @@ function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
-export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean }
+export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean; rpcMovedFrom: string | null }
 
 // An in-memory account: its key + label, plus how it was created — `index` is its
 // BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
 // NOT recoverable from the seed phrase.
 type Acct = Account & { label: string; index?: number; imported?: boolean };
+// The cleartext account list mirrored beside the vault for the locked UI (no key material).
+const mirrorOf = (accts: Acct[]): PubAcct[] => accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported }));
 // Encrypted-vault document (the plaintext sealed under the password). v2 adds the
 // HD seed phrase + the next free derivation index; v1 (no mnemonic) still opens.
 interface StoredAcct { priv: string; label: string; index?: number; imported?: boolean }
 interface VaultDoc { v: 1 | 2; mnemonic?: string; nextIndex?: number; accounts: StoredAcct[]; active: number }
+// The in-memory unlocked state a vault doc is built from.
+interface VaultState { mnemonic: string | null; nextIndex: number; accts: Acct[] | null; active: number }
 
 const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
 const DEFAULT_API = "https://cairn-substrate.com";
@@ -97,6 +108,17 @@ function validRpcUrl(u: string): boolean {
   return false;
 }
 const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for dev), with no embedded credentials";
+// The node RPC is the Cairn proxy or a node on this computer: the manifest grants host access to nothing
+// else, so a remote RPC could not be reached (remote RPCs are a future option). Ports are free.
+export function rpcAllowed(u: string): boolean {
+  if (u === DEFAULT_RPC) return true;
+  let x: URL;
+  try { x = new URL(String(u)); } catch { return false; }
+  if (x.username || x.password) return false;
+  if (x.protocol === "http:") return x.hostname === "127.0.0.1" || x.hostname === "localhost";
+  return x.protocol === "https:" && x.hostname === "localhost";
+}
+const RPC_LOCAL_ERR = "RPC must be the Cairn proxy or a node on this computer (http://127.0.0.1:<port> or http://localhost:<port>)";
 
 // Per-account storage namespaces — keep each account's activity + secrets separate.
 const histKey = (addr: string) => "txHistory:" + addr;
@@ -131,10 +153,8 @@ const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => refuse("ACCOUNT_CHANGED
 // (CSD lanes default; the token lane passes 100), so this declines no honest fill (WALLET-ERROR-CODES.md).
 const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refusing to sign: this fill's score is not the value the marketplace requires, so the chain would ignore it and your payment would be lost. Retry the purchase from the site's Buy button.");
 
-// Epoch math + record-expiry windows (all in EPOCHS; one epoch = BLOCKS_PER_EPOCH blocks). BLOCKS_PER_EPOCH
-// mirrors the vendored cairnx-core EPOCH_LEN (30) — kept as a named local because the wallet .d.ts does not
-// yet export it. Each +N offset below sets a Propose's expiresEpoch = currentEpoch + window.
-const BLOCKS_PER_EPOCH = 30;
+// Record-expiry windows, in epochs of the vendored EPOCH_LEN blocks. Each +N offset below sets a Propose's
+// expiresEpoch = currentEpoch + window.
 const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim — ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
@@ -200,19 +220,29 @@ export class Wallet {
   }
 
   async init(): Promise<void> {
-    this.rpc = (await this.store.get("rpc")) || DEFAULT_RPC;
+    const savedRpc: string = (await this.store.get("rpc")) || DEFAULT_RPC;
+    this.rpc = rpcAllowed(savedRpc) ? savedRpc : DEFAULT_RPC;
+    if (this.rpc !== savedRpc) {
+      // A saved remote RPC moves to the Cairn proxy; the popup says so once (rpcNotice, dismissRpcNotice).
+      await this.store.set("rpc", DEFAULT_RPC);
+      await this.store.set("rpcMovedFrom", savedRpc);
+    }
+    const customs = await this.rpcList();
+    if (customs.some((u) => !rpcAllowed(u))) await this.store.set("customRpcs", customs.filter(rpcAllowed));
     this.api = (await this.store.get("api")) || DEFAULT_API;
     this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
     this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
-  async setRpc(u: string) { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); this.rpc = u; await this.store.set("rpc", u); }
+  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); this.api = u; await this.store.set("api", u); }
   async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
-  async addRpc(u: string): Promise<void> { if (!validRpcUrl(u)) throw new Error("RPC " + RPC_URL_ERR); const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
+  async addRpc(u: string): Promise<void> { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
   async removeRpc(u: string): Promise<void> { await this.store.set("customRpcs", (await this.rpcList()).filter((x) => x !== u)); }
+  // status().rpcMovedFrom carries the remote RPC init() replaced until the popup has shown the notice once.
+  async dismissRpcNotice(): Promise<void> { await this.store.del("rpcMovedFrom"); }
   // Block-explorer selection (navigation-only; preset id "cairn"/"official" or a custom https base).
   async setExplorer(v: string): Promise<void> {
     if (v === "cairn" || v === "official") { this.explorer = v; await this.store.set("explorer", v); return; }
@@ -228,7 +258,7 @@ export class Wallet {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     const active = this.accts ? this.active : (((await this.store.get("active")) as number) ?? 0);
     const addr = this.accts ? (this.accts[this.active]?.addr ?? null) : (wallets[active]?.addr ?? null);
-    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, tradeApi: this.tradeApi, explorer: this.explorer, hasMnemonic: !!this.mnemonic };
+    return { hasVault: !!(await this.store.get("vault")), unlocked: !!this.accts, addr, accounts: wallets, active, rpc: this.rpc, api: this.api, tradeApi: this.tradeApi, explorer: this.explorer, hasMnemonic: !!this.mnemonic, rpcMovedFrom: (await this.store.get("rpcMovedFrom")) || null };
   }
 
   // Persist the in-memory accounts: re-seal the vault (fresh IV, same salt+key, incl.
@@ -236,11 +266,11 @@ export class Wallet {
   // each is an imported non-HD key) in cleartext for the UI.
   // Serialize the in-memory unlocked state into the encrypted-vault plaintext. Single source for the doc
   // shape shared by persistVault (re-seal) and sealFresh (first seal), so the two can't drift.
-  private buildDoc(): VaultDoc {
+  private buildDoc(s: VaultState = { mnemonic: this.mnemonic, nextIndex: this.nextIndex, accts: this.accts, active: this.active }): VaultDoc {
     return {
-      v: 2, mnemonic: this.mnemonic ?? undefined, nextIndex: this.nextIndex,
-      accounts: (this.accts ?? []).map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })),
-      active: this.active,
+      v: 2, mnemonic: s.mnemonic ?? undefined, nextIndex: s.nextIndex,
+      accounts: (s.accts ?? []).map((a) => ({ priv: a.privkey, label: a.label, index: a.index, imported: a.imported })),
+      active: s.active,
     };
   }
 
@@ -254,8 +284,8 @@ export class Wallet {
   // Throw-safe: the chain always continues (both settle paths run the next persist; persistChain is
   // reset to an always-resolved promise) and each caller still observes its own rejection.
   private persistChain: Promise<void> = Promise.resolve();
-  private persistVault(): Promise<void> {
-    const run = this.persistChain.then(() => this.doPersistVault(), () => this.doPersistVault());
+  private persistVault(write: () => Promise<void> = () => this.doPersistVault()): Promise<void> {
+    const run = this.persistChain.then(write, write);
     this.persistChain = run.then(() => {}, () => {});
     return run;
   }
@@ -263,9 +293,12 @@ export class Wallet {
     if (!this.accts || !this.vaultKey) throw new Error("locked");
     const doc = this.buildDoc();
     // capture the cleartext mirror from the SAME synchronous state as `doc`, BEFORE the async seal
-    const mirror = this.accts.map((a) => ({ addr: a.addr, label: a.label, imported: a.imported }));
+    const mirror = mirrorOf(this.accts);
     const active = this.active;
     const vault = await sealWith(JSON.stringify(doc), this.vaultKey, this.salt, this.iter);
+    await this.writeVault(vault, mirror, active);
+  }
+  private async writeVault(vault: Vault, mirror: PubAcct[], active: number): Promise<void> {
     await this.store.set("vault", vault);
     await this.store.set("wallets", mirror);
     await this.store.set("active", active);
@@ -279,7 +312,7 @@ export class Wallet {
   // returned so each caller still observes its own outcome.
   // Boundary rule: a chain callback contains STORAGE ops only, never a network await (send()
   // awaits maybeRecord, so anything inside histChain sits on the send hot path). WRITE callbacks
-  // bail on !this.accts (a write parked across lock()/reset() must not land on a wiped wallet);
+  // do not write while !this.accts (recordTx parks its row in RAM instead, except after reset());
   // DELETE callbacks do not bail (deletes are teardown and safe while locked).
   private histChain: Promise<void> = Promise.resolve();
   private inHistChain<T>(work: () => Promise<T>): Promise<T> {
@@ -300,14 +333,21 @@ export class Wallet {
   // removeAccount: the reset discipline is exactly "clear the array".
   private pendingHist: { k: string; entry: Record<string, unknown> }[] = [];
   private pendingSeals: { k: string; rec: any }[] = [];
+  // Set by reset(), cleared when a new vault is sealed. `!this.accts` alone cannot tell an ordinary lock
+  // (the signed tx's history must survive it) from a reset (nothing of the old wallet may land again).
+  private wiped = false;
 
   private acct(priv: string, label: string, extra: { index?: number; imported?: boolean } = {}): Acct { return { ...fromPriv(priv), label, ...extra }; }
 
-  // Seal a brand-new vault from an in-memory state already set on `this`.
-  private async sealFresh(password: string) {
-    const { vault, key } = await sealNew(JSON.stringify(this.buildDoc()), password);
+  // Seal and store a brand-new vault for `next`, then adopt `next` as the unlocked state. Nothing on
+  // `this` changes until the seal (password check included) and the store write have succeeded, so a
+  // refused password or a failed write leaves the wallet exactly as it was.
+  private async sealFresh(password: string, next: VaultState) {
+    const { vault, key } = await sealNew(JSON.stringify(this.buildDoc(next)), password);
+    await this.persistVault(() => this.writeVault(vault, mirrorOf(next.accts ?? []), next.active));
+    this.mnemonic = next.mnemonic; this.nextIndex = next.nextIndex; this.accts = next.accts; this.active = next.active;
     this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter;
-    await this.persistVault();
+    this.wiped = false;
     this.touch();
     await this.persistSession(); // a freshly created/restored wallet is unlocked → persist the session
   }
@@ -320,8 +360,7 @@ export class Wallet {
     if (await this.store.get("vault")) throw new Error("wallet already exists");
     const mnemonic = newMnemonic();
     const a = { ...deriveAccount(mnemonic, 0), label: "Account 1", index: 0 } as Acct;
-    this.mnemonic = mnemonic; this.nextIndex = 1; this.accts = [a]; this.active = 0;
-    await this.sealFresh(password);
+    await this.sealFresh(password, { mnemonic, nextIndex: 1, accts: [a], active: 0 });
     // Return the account-0 private key too so the backup screen can show BOTH the
     // recovery phrase and the (portable) private key. Same trusted SW→popup channel
     // as the mnemonic; never crosses the dApp boundary.
@@ -333,16 +372,14 @@ export class Wallet {
     if (!isValidMnemonic(mnemonic)) throw new Error("invalid recovery phrase (check the words and order)");
     const m = normalizeMnemonic(mnemonic);
     const a = { ...deriveAccount(m, 0), label: "Account 1", index: 0 } as Acct;
-    this.mnemonic = m; this.nextIndex = 1; this.accts = [a]; this.active = 0;
-    await this.sealFresh(password);
+    await this.sealFresh(password, { mnemonic: m, nextIndex: 1, accts: [a], active: 0 });
     return { addr: a.addr };
   }
   // Import a single raw private key (NOT part of any seed phrase → no recovery phrase).
   async importKey(priv: string, password: string): Promise<{ addr: string }> {
     if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to replace the key");
     const a = this.acct(priv, "Account 1", { imported: true }); // fromPriv validates
-    this.mnemonic = null; this.nextIndex = 0; this.accts = [a]; this.active = 0;
-    await this.sealFresh(password);
+    await this.sealFresh(password, { mnemonic: null, nextIndex: 0, accts: [a], active: 0 });
     return { addr: a.addr };
   }
 
@@ -398,6 +435,9 @@ export class Wallet {
     await this.persistVault();
     this.touch();
     await this.persistSession(); // remember the unlocked key in chrome.storage.session (in-RAM)
+    // Rows parked while locked are written now rather than waiting for the next write of their kind.
+    if (this.pendingHist.length) await this.inHistChain(() => this.drainPendingHist());
+    if (this.pendingSeals.length) await this.persistSeal();
     return { addr: this.accts![this.active].addr };
   }
 
@@ -609,7 +649,7 @@ export class Wallet {
   // Current epoch (= floor(tip/30), matching this wallet's own propose math) — lets the approval
   // window show a dApp-supplied expiresEpoch as a real "expires in N days from now". Best-effort:
   // returns null offline so the clear-signer just shows the raw epoch.
-  async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH); } catch { return null; } }
+  async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / EPOCH_LEN); } catch { return null; } }
   // CLEARSIGN-FEE-1: exact tip for the clear-sign fee-sufficiency check on a dApp-built name registration/
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
@@ -695,7 +735,7 @@ export class Wallet {
   // RT-W2: `reviewedQuote` is the token debit quote the approve window DISPLAYED (threaded from
   // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
   private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote): Promise<node.SubmitResult | null> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return null; // not a well-formed id → the node guard handles it
+    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
     try {
@@ -887,7 +927,7 @@ export class Wallet {
       // payment burned to attacker-directed outputs. Honest cost: a brand-new offer inside the
       // resolver's ~15s scan poll refuses ONCE with retryable copy. This closes the honest-resolver and
       // MITM hole; a coherently LYING resolver is the B3 proof-bound fill-SPV item, not this guard.
-      return { ok: false, error: "this offer is not known to your resolver yet — retry in a few seconds (a brand-new offer appears after the resolver's next scan)", sighashMatch: false, code: "OFFER_UNKNOWN" };
+      return { ok: false, error: "this offer is not known to your resolver yet. A new offer appears once it is mined and the resolver has read that block; try again then", sighashMatch: false, code: "OFFER_UNKNOWN" };
     }
     // a positively-parsed OPEN offer that cleared every check above → proceed to sign
     return null;
@@ -938,7 +978,8 @@ export class Wallet {
     // factually-wrong "would strand"/lapsed-shaped reason is replaced with honest, retryable copy. Both
     // branches REFUSE (fail-closed either way); this only fixes which reason the user sees. `tipFloored` is
     // undefined/falsy under the fillSpvIoForTest synthetic io, so every existing denial keeps FILL_UNSAFE.
-    if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
+    // Only a reason the tip decides is remapped; a permanent denial keeps FILL_UNSAFE under a floored tip.
+    if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored && tipDependentFillReason(verdict.reason) ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
     // F2: bind the PAYMENT recipients to the MERKLE-PROVEN offer author. verifyFillSpv proves DELIVERY (the give)
     // but not payment: requiredFillOutputs sizes the seller-payment leg to the resolver-served offer.want.payto
     // and the rebate leg to the resolver-served offer.seller. A lying read-path swaps want.payto so the buyer
@@ -991,6 +1032,13 @@ export class Wallet {
       cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
       hints: { offerId, fclaimTxid, me, offerHeight }, spvSource: await this.spvSource(),
+      // Served height only selects the block the source merkle-proves the other offer in.
+      offerHeightOf: async (id) => {
+        const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(id)}`);
+        if (!r.ok) return null;
+        const h = Number(((await r.json()) as { height?: unknown } | null)?.height);
+        return Number.isSafeInteger(h) && h >= 0 ? h : null;
+      },
     });
   }
 
@@ -1036,6 +1084,8 @@ export class Wallet {
     if (!/^[A-Za-z0-9]{8,}$/.test(nonce)) throw new Error("sign-in: a server-issued nonce (>=8 alphanumeric chars) is required");
     const statement = p.statement != null && String(p.statement) !== "" ? String(p.statement) : undefined;
     if (statement !== undefined && /[\r\n]/.test(statement)) throw new Error("sign-in: statement must be a single line");
+    // Rejected, not truncated, for the same WYSIWYS reason as requestId below.
+    if (statement !== undefined && statement.length > 256) throw new Error("sign-in: statement exceeds 256 chars");
     const expSecs = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600))); // clamp 60s..1h, default 10m
     const now = Date.now();
     // Cap dApp-supplied resources (audit SIWC-RESOURCES): the user now sees them in the approval popup,
@@ -1176,7 +1226,7 @@ export class Wallet {
     const hk = this.histKeyNow(); // captured with the signer (F5): the tip fetch below is an await
     const content = { v: 1, domain: p.domain, title: p.title, body: p.body ?? "", links: p.links ?? [] };
     const ph = cairnPayloadHash(content);
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
     // Queue the off-chain content on the ambiguous path too (0.2.56, review F13): a maybe-inflight
     // propose that MINES would otherwise lose its body forever — the user paid, the content never
@@ -1291,12 +1341,10 @@ export class Wallet {
   // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
   // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
   async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string }> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
     try {
-      const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): fill-quote read
-      if (!r.ok) return { ok: false, error: "offer not found" };
-      const o: any = await r.json().catch(() => null);
-      if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+      const so = await this.servedOpenOffer(proposalId);
+      if (!so.ok) return so;
+      const o = so.offer;
       const w = o.want;
       if (!w || typeof w.ticker !== "string" || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
       let amount: bigint;
@@ -1323,6 +1371,35 @@ export class Wallet {
     } catch { return { ok: false, error: "offer unavailable" }; }
   }
 
+  // The resolver's OPEN offer behind a fill target (an offer id, or a reservation txid the resolver links to
+  // its offer). Display reads only; the fill preflight does its own read and binds what it signs.
+  private async servedOpenOffer(proposalId: string): Promise<{ ok: true; offer: any } | { ok: false; error: string }> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
+    const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default)
+    if (!r.ok) return { ok: false, error: "offer not found" };
+    const o: any = await r.json().catch(() => null);
+    if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+    return { ok: true, offer: o };
+  }
+
+  // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
+  // attested id on the reservation lane) and the asset the offer service lists as received. Display only.
+  async fillOfferView(proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number }> {
+    try {
+      const so = await this.servedOpenOffer(proposalId);
+      if (!so.ok) return so;
+      const o = so.offer;
+      const offerId = String(o.id ?? "").toLowerCase();
+      if (!/^0x[0-9a-f]{64}$/.test(offerId)) return { ok: false, error: "offer unavailable" };
+      const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
+      const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
+      const giveAmount = g?.amount != null ? String(g.amount) : undefined;
+      const giveName = typeof g?.name === "string" ? g.name : undefined;
+      const meta = giveTicker ? await this.tokenDisplayMeta([giveTicker]) : {};
+      return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined };
+    } catch { return { ok: false, error: "offer unavailable" }; }
+  }
+
   // Decimals + deploy id per ticker for the approval cards (human units, look-alike warning). Fail-soft: a
   // failed read leaves that ticker absent and the card shows base units only. Display only.
   async tokenDisplayMeta(tickers: unknown): Promise<TokenDisplayMeta> {
@@ -1340,7 +1417,7 @@ export class Wallet {
 
   // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies
   // itself, replaying the AUDITED resolver over merkle-verified records (see core/namespv.ts). Returns the
-  // fail-closed tri-state. Exposed to dApps (popup "verifyName") so a recipient can be confirmed before a send.
+  // fail-closed tri-state. Called by resolveName; not exposed on the popup or dApp channel.
   async verifyName(name: string): Promise<NameVerification & { name: string }> {
     const nm = normName(name);
     if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
@@ -1391,7 +1468,7 @@ export class Wallet {
     if (tip == null || !Number.isFinite(tip)) return;
     this.nameHints.set(nm, {
       name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
-      ts: Date.now(), epoch: Math.floor(tip / BLOCKS_PER_EPOCH),
+      ts: Date.now(), epoch: Math.floor(tip / EPOCH_LEN),
     });
   }
 
@@ -1409,7 +1486,7 @@ export class Wallet {
       conflict: bundle.conflict,
       existenceDisagree: bundle.existenceDisagree,
       now: Date.now(),
-      epoch: tip == null ? null : Math.floor(tip / BLOCKS_PER_EPOCH),
+      epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
       hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,
     });
     if (!verdict.skip) return null;
@@ -1479,7 +1556,7 @@ export class Wallet {
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
-    const expiresEpoch = Math.floor(tip / BLOCKS_PER_EPOCH) + NAME_RENEW_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor(tip / EPOCH_LEN) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
     await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
     return r;
@@ -1490,7 +1567,7 @@ export class Wallet {
     const hk = this.histKeyNow(); // captured with the signer (F5)
     this.throwOnSignerChange(expectSigner);
     const built = buildNameSet({ name, addr: this.addr() });
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + SET_PRIMARY_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + SET_PRIMARY_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
     await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;
@@ -1511,7 +1588,7 @@ export class Wallet {
     const hk = this.histKeyNow(); // captured with the signer (F5)
     this.throwOnSignerChange(p.expectSigner);
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
     if (fee < CAIRNX_PROPOSE_FEE) throw new Error("cairnx anchor fee must be ≥ 0.25 CSD");
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
@@ -1564,9 +1641,12 @@ export class Wallet {
     const hk = this.histKeyNow(), sk = sealKey(this.addr()); // captured with the signer (F5)
     const domain = (p.domain && p.domain.trim()) || "csd:sealed";
     const nonce = bytesToHex(randomBytes(32));
+    // The reveal preimage is encrypted BEFORE the commit is broadcast (no await since must() above, so the
+    // vault key is still loaded): after the broadcast nothing needs the key, and a lock there cannot lose it.
+    const enc = await this.sealPreimage(p.claim, nonce);
     const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
     const ph = cairnPayloadHash(content);
-    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / BLOCKS_PER_EPOCH) + PROPOSE_EXPIRY_EPOCHS;
+    const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE; // propose min 0.25 CSD
     const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
     // A maybe-inflight seal may still MINE: persist the reveal preimage (claim+nonce) on the
@@ -1575,36 +1655,35 @@ export class Wallet {
     if (r.txid && (r.ok || r.code === "SUBMIT_MAYBE_INFLIGHT")) {
       // maybe-path seals are FLAGGED (0.2.57, reviewer nit) so the sealed-claims UI can say the
       // anchor may not have landed instead of listing it like a confirmed commit.
-      // L5: persist the {claim, nonce} preimage ENCRYPTED at rest (fresh IV) — the front-running lever.
-      // Encrypt BEFORE entering the chain (vault crypto, no list dependency); the parked record
-      // then carries ciphertext, so a retry is a pure store write needing no key. A locked-vault
-      // throw here is caught: the commit already broadcast, so we must still record history and
-      // return the result (the nonce is lost in that sub-ms window; stated residual, not new).
-      let rec: any = null;
-      try {
-        const enc = await this.sealPreimage(p.claim, nonce);
-        rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) };
-      } catch { /* locked between broadcast and seal: history row below still records the commit */ }
-      if (rec) await this.inSealChain(async () => {
-        if (!this.accts) return; // locked/reset mid-flight: do not write; lock()/reset() own the discipline
-        try {
-          const list: any[] = (await this.store.get(sk)) || [];
-          for (const p of this.pendingSeals) // retry parked records first (drain rides this write)
-            if (p.k === sk && !list.find((x) => x.txid === p.rec.txid)) list.unshift(p.rec);
-          if (!list.find((x) => x.txid === rec.txid)) list.unshift(rec);
-          await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
-          await this.store.set(sk, capSeals(list));
-          this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk);
-        } catch {
-          // SEAL-WRITE-02 guard: the commit fee is PAID and the tx is broadcast; a storage failure
-          // must neither throw out of sealClaim nor lose the only copy of the nonce. Park the
-          // encrypted record: sealedClaims()/revealClaim see it; the next seal-list write retries.
-          if (!this.pendingSeals.some((p) => p.k === sk && p.rec.txid === rec.txid)) this.pendingSeals.push({ k: sk, rec });
-        }
-      });
+      // L5: the {claim, nonce} preimage is stored ENCRYPTED at rest (`enc`, fresh IV), so a parked
+      // record is a pure store write needing no key.
+      const rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) };
+      await this.persistSeal({ k: sk, rec });
     }
     await this.maybeRecord(hk, r, { type: "seal", domain, fee });
     return r;
+  }
+  // Every sealed-claim record passes through pendingSeals: parked first, removed once its list write
+  // succeeds. A record parked while locked (or after a failed write: the commit fee is paid and this is
+  // the only copy of the nonce) is merged into sealedClaims(), is revealable, and is written on unlock or
+  // with the next seal write. After reset() a new record is dropped. Never throws.
+  private persistSeal(add?: { k: string; rec: any }): Promise<void> {
+    return this.inSealChain(async () => {
+      if (add && !this.pendingSeals.some((p) => p.k === add.k && p.rec.txid === add.rec.txid)) {
+        if (this.wiped) return;
+        this.pendingSeals.push(add);
+      }
+      if (!this.accts) return;
+      for (const sk of new Set(this.pendingSeals.map((p) => p.k))) {
+        try {
+          const list: any[] = (await this.store.get(sk)) || [];
+          for (const p of this.pendingSeals) if (p.k === sk && !list.find((x) => x.txid === p.rec.txid)) list.unshift(p.rec);
+          await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
+          await this.store.set(sk, capSeals(list));
+          this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk);
+        } catch { /* SEAL-WRITE-02: stays parked and visible; the next seal write or unlock retries */ }
+      }
+    });
   }
   async revealClaim(txid: string) {
     const k = sealKey(this.addr());
@@ -1612,6 +1691,11 @@ export class Wallet {
     const rec = list.find((x) => x.txid === txid)
       ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec; // a parked seal is revealable too
     if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
+    // The preimage goes public only once the commit is mined (flushPending's getProposal rule): a reveal
+    // against a commit still in the mempool, or one that never lands, would publish the claim uncommitted.
+    const commit = await node.getProposal(this.rpc, txid);
+    if (!(commit && commit.payload_hash))
+      return refuse("SEAL_NOT_MINED", "this seal is not mined yet, or the node could not confirm it; nothing was revealed. Try again once it is mined");
     // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
     const { claim, nonce } = await this.openPreimage(rec);
     const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);
@@ -1740,7 +1824,12 @@ export class Wallet {
   // so a recovered store cannot make one legitimate send pay off the whole backlog.
   private recordTx(k: string, entry: Record<string, unknown>): Promise<void> {
     const own = this.inHistChain(async () => {
-      if (!this.accts) return; // locked/reset mid-flight: deliberate teardown, do not write or park
+      if (!this.accts) {
+        // Locked mid-flight: the tx is already broadcast, so park the row (it is the double-pay backstop);
+        // it is merged into history() and drains on the next history write after unlock. Reset drops it.
+        if (!this.wiped) this.pendingHist.push({ k, entry });
+        return;
+      }
       try {
         // a definitive record supersedes a parked maybe twin for the same txid
         this.pendingHist = this.pendingHist.filter(
@@ -1861,6 +1950,7 @@ export class Wallet {
   // not a reset and destroying a PAID commit's only reveal nonce was the defect; the reset path's
   // clear was already independent, which is why the deletion did not touch this property.)
   async reset(): Promise<void> {
+    this.wiped = true;
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
     const wipe = () => this.doReset(wallets);

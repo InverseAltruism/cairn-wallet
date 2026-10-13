@@ -1,13 +1,12 @@
 // Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, fmtCsdBig, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
+import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck } from "../src/vendor/cairnx-spv.js";
-declare const process: { exit(code: number): void };
+import { checker } from "./helpers/check.mjs";
 
-let pass = 0, fail = 0;
-const ok = (n: string, c: boolean) => { c ? pass++ : fail++; console.log(`  ${c ? "PASS" : "FAIL"} ${n}`); };
+const { check: ok, done } = checker();
 const ADDR = "0x" + "ab".repeat(20);
 
 // C-WL5 — a malicious/garbage amount must NEVER render "NaN CSD"
@@ -16,17 +15,18 @@ ok("fmtCsd('abc') → 'invalid amount' (not NaN)", fmtCsd("abc") === "invalid am
 ok("fmtCsd(NaN) → 'invalid amount'", fmtCsd(NaN) === "invalid amount");
 ok("fmtCsd({}) → 'invalid amount'", fmtCsd({}) === "invalid amount");
 
-// LOW-2 — offer/bid CSD `value` (a base-unit STRING up to 2^96) rendered EXACTLY via BigInt.
+// LOW-2: offer/bid CSD `value` (a base-unit STRING up to 2^96) rendered EXACTLY via BigInt
+// by the one formatter, fmtCsd.
 // Independent ground truth: the exact decimal is hand-derived, and the old Number() path is shown
 // to diverge above 2^53, so this is non-self-fulfilling.
 const bigVal = "9007199254740993"; // 2^53 + 1 base units
-ok("fmtCsdBig exact above 2^53 (no precision loss)", fmtCsdBig(bigVal) === "90071992.54740993 CSD");
+ok("fmtCsd exact above 2^53 (no precision loss)", fmtCsd(bigVal) === "90071992.54740993 CSD");
 ok("old Number() path WOULD have diverged (independent check)", `${Number(bigVal) / 1e8} CSD` !== "90071992.54740993 CSD");
-ok("fmtCsdBig('500000000') → '5 CSD'", fmtCsdBig("500000000") === "5 CSD");
-ok("fmtCsdBig('100000000') → '1 CSD'", fmtCsdBig("100000000") === "1 CSD");
-ok("fmtCsdBig('1') → '0.00000001 CSD'", fmtCsdBig("1") === "0.00000001 CSD");
-ok("fmtCsdBig('-1') → 'invalid amount'", fmtCsdBig("-1") === "invalid amount");
-ok("fmtCsdBig('abc') → 'invalid amount'", fmtCsdBig("abc") === "invalid amount");
+ok("fmtCsd('500000000') → '5 CSD'", fmtCsd("500000000") === "5 CSD");
+ok("fmtCsd('100000000') → '1 CSD'", fmtCsd("100000000") === "1 CSD");
+ok("fmtCsd('1') → '0.00000001 CSD'", fmtCsd("1") === "0.00000001 CSD");
+ok("fmtCsd('-1') → 'invalid amount'", fmtCsd("-1") === "invalid amount");
+ok("fmtCsd('abc') → 'invalid amount'", fmtCsd("abc") === "invalid amount");
 ok("baseVal('abc') → 0 (finite for sums)", baseVal("abc") === 0);
 ok("baseVal(5) → 5", baseVal(5) === 5);
 const badSend = describe({ method: "send", params: { to: ADDR, amount: "evil" } });
@@ -391,5 +391,4 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   ok("NS-1 badge control: a real 2-source agreement still reads 'servers agree' (strong badge unchanged)", /servers agree/i.test(strong) && !/only ONE name source/i.test(strong));
 }
 
-console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+done();

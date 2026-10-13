@@ -374,6 +374,7 @@ async function main() {
     const tr = txReply(u, [CS]); if (tr) return tr;
     if (u.includes("/tx/submit")) { n++; return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + String(n).padStart(64, "0") }) }; }
     if (u.includes("/api/content")) return { ok: true, status: 200, json: async () => ({ ok: true, revealed: true }) };
+    if (u.includes("/proposal/")) return { ok: true, status: 200, json: async () => ({ payload_hash: "0x" + "11".repeat(32) }) }; // the commit is mined
     return { ok: false, status: 404, json: async () => ({}) };
   }; };
   try {

@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.2.74 (2026-10-13)
+
+- Amounts on the signing screens are exact decimals from one formatter (1 base unit reads 0.00000001 CSD, not
+  1e-8 CSD); token amounts use the pinned decimals, never the ones a server reports.
+- Copy buttons say "copied" only after the clipboard write succeeded; a failed copy says so.
+- Content registration after a post gives up after 20 seconds instead of waiting on a hung request.
+- A fill with a malformed offer id is refused before anything is signed (`BAD_REQUEST`).
+- The fill cost line no longer says the fee and rebate are paid to the seller.
+- RPC: the wallet talks to the Cairn proxy or to a node on this computer (`http://127.0.0.1:<port>` or
+  `http://localhost:<port>`). A saved remote RPC is moved to the Cairn proxy once, with a notice; the manifest
+  never allowed the wallet to reach a remote node, so that setting could not work.
+- Five popup-channel methods that nothing called are removed (`verifyName`, `signin`, `propose`, `attest`,
+  `flushPending`); the dApp paths for sign-in, propose and attest are unchanged.
+- Create, restore and import change nothing unless the new vault is sealed and stored. A password under 8
+  characters (or a failed storage write) used to leave the wallet unlocked on an address whose key was stored
+  nowhere.
+- Approval window: it stays open until the outcome of an approved request arrives, and after a failure it keeps
+  the reason and its code on screen (for example `failed: ... (OFFER_SOURCE_CONFLICT)`) until you close it or the
+  next request appears. A success or a rejection still closes it.
+- Connected sites: a site's connect and your Disconnect of another site are applied one after the other, so the
+  disconnected site can no longer be restored by the race.
+- A lock (including the idle auto-lock) between a send's broadcast and its history write no longer drops the
+  history row: it is held in memory and written to storage at the next unlock. It does not survive the
+  service worker stopping before then. A reset still drops it.
+- Sealed claims: the reveal preimage is encrypted before the commit is broadcast, so a lock between the
+  broadcast and the seal write no longer loses it (the paid commit stayed unrevealable). Like the history row it
+  is held in memory while locked and written at the next unlock; a reset drops it.
+- Sign in with CSD: a `statement` longer than 256 characters is refused, like `requestId`.
+- Epoch math uses the vendored consensus `EPOCH_LEN` instead of a local copy of the number (no value changes).
+- `window.cairn`: the per-page reply nonce between the content script and the page provider is removed. Replies
+  are posted on `window`, so any script on the page could read it from the first reply; it protected nothing.
+  Signing and connecting still require approval in the wallet window, bound to the requesting site's origin.
+- Failure messages say what happened. "May already be in flight" now appears only when a transaction may have
+  reached the node (`SUBMIT_MAYBE_INFLIGHT`, or the popup lost its connection to the wallet mid-call). Any other
+  error from a send, token send, merge, renewal, set-primary, post or seal says "Nothing was sent". Renewal,
+  set-primary, post and seal results are read the same way as a send (they used to show "... failed" for an
+  ambiguous or already-pending submit).
+- A node answer without a coin list (`/utxos`) is refused before signing as `VERIFY_UNAVAILABLE`; a submit
+  answered with a 2xx body that is not a JSON object is `SUBMIT_MAYBE_INFLIGHT` (it used to throw after the
+  submit).
+- When coin selection uses its three rounds on coins the node could not prove yet (typically while a restarted
+  node rebuilds its index), the refusal is the retryable `VERIFY_UNAVAILABLE`. It used to read as "the remaining
+  coins couldn't cover this spend".
+- New code `SEAL_NOT_MINED`: Reveal waits until the seal's commit is mined.
+- A locked wallet answers `WALLET_LOCKED` (not `INTERNAL`) when a popup action or an approval runs into the lock.
+- An open-offer fill refused for a reason the chain tip does not decide (for example the claim cap) keeps
+  `FILL_UNSAFE` even when the tip was floor-clamped; only tip-decided reasons read "wait a moment and try again".
+- Settlement wording no longer promises "next block" or "a block or two": items settle once they are mined.
+- Approval window: a CSD-paid fill shows the asset the listing gives (as listed by the offer service) and, on a
+  reserved offer, the listing behind the reservation; Approve stays disabled while the spendable balance does not
+  cover the request; the first-time recipient warning for a name record says what the address receives instead
+  of "Payments are irreversible".
+- Sending to the wallet's own other account no longer shows the first-time recipient warning.
+- Popup send review: Confirm stays disabled, with the same note as the approval window, while the spendable
+  balance does not cover the amount plus fee.
+- SECURITY.md and README describe `.csd` name verification as the code does it: a disagreeing name source is
+  a warning, not a refusal; an unprovable name shows the served address as not chain-verified; the two default
+  name sources share one operator and one registrable domain. Also corrected: storage is closed to content
+  scripts, page messages are not authenticated, there is no reset screen.
+- Release workflow: no default token permissions (each job gets its own), checkouts do not keep credentials, a
+  typecheck step, and deleting an existing release for a re-pushed tag fails the job instead of being ignored.
+  The CI workflow gets the same permissions and checkout settings. All vendor gates are unchanged.
+- The vendor-freshness gate labels its csd-sdk commit check as advisory; the rebuild byte-diff is the check that
+  fails it. Pass and fail are unchanged.
+- Publish runbook: one maintainer (no dual control), the four files a release carries, the local-vs-release
+  sha256 comparison, and the commands for the post-publish CRX comparison.
+
 ## 0.2.73 (2026-10-10)
 
 - Open-offer fills (fclaim lane): the wallet reads the offer by id from the second source (clarvis) in parallel

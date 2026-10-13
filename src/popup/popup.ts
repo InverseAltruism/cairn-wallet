@@ -3,23 +3,46 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import type { Wallet } from "../core/wallet.js";
 import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
-import { formatUnits, parseUnits, isPlainName, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged, lookalikeOf, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales } from "./clearsign.js";
+import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
+import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
 
+// The background ran the method and it threw. The engine returns every outcome after a submit as a
+// value (node.ts post() never throws; test/submit-outcome.test.mjs), so a method that threw submitted
+// nothing. A broken channel (the service worker died mid-call) is the only ambiguous rejection.
+class AnsweredError extends Error {}
 async function call(method: string, ...args: any[]): Promise<any> {
   if (EXT) return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
     if (chrome.runtime.lastError) return rej(new Error(chrome.runtime.lastError.message));
-    r?.ok ? res(r.result) : rej(new Error(r?.error || "error"));
+    r?.ok ? res(r.result) : rej(new AnsweredError(r?.error || "error"));
   }));
   // Dev/E2E only: the Wallet class lives in a dynamically imported chunk so popup.js never
   // statically embeds it (MV3 isolation). The shim throws at load if chrome.runtime.sendMessage exists.
   const { runDevPopupMethod } = await import("./devshim.js");
-  return runDevPopupMethod(method, args);
+  try { return await runDevPopupMethod(method, args); }
+  catch (e: any) { throw new AnsweredError(String(e?.message ?? e)); }
+}
+// One reading of a submit outcome for every popup flow (send, token send, merge, name actions, post,
+// seal): only SUBMIT_MAYBE_INFLIGHT and a broken channel may say "may already be in flight".
+type Outcome = { text: string; cls: "err" | "info"; maybe: boolean };
+const clause = (s: unknown): string => String(s).replace(/[.\s]+$/, "");
+function inFlightCopy(prefix: string, what: string, txid?: string): Outcome {
+  const where = txid ? ` It's in your history as ${String(txid).slice(0, 12)}…` : "";
+  return { text: `${prefix}${prefix ? "The" : "the"} ${what} didn't confirm; it may already be in flight. Check your history before trying again.${where}`, cls: "err", maybe: true };
+}
+function refusedCopy(r: any, what: string): Outcome {
+  if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return inFlightCopy(r?.error ? clause(r.error) + ". " : "", what, r?.txid);
+  if (r?.code === "SUBMIT_DUPLICATE") return { text: String(r?.error ?? "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again"), cls: "info", maybe: true };
+  return { text: `${r?.error ? clause(r.error) : `the ${what} was refused`}. Nothing was sent.`, cls: "err", maybe: false };
+}
+function thrownCopy(e: any, what: string): Outcome {
+  if (!(e instanceof AnsweredError)) return inFlightCopy(e?.message ? clause(e.message) + ". " : "", what);
+  if (e.message === "locked") return { text: "the wallet locked before anything was signed. Nothing was sent. Unlock and try again.", cls: "err", maybe: false };
+  return { text: `${clause(e.message)}. Nothing was sent.`, cls: "err", maybe: false };
 }
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -70,7 +93,18 @@ function busy(text: string) {
   m.innerHTML = `<span class="spinner"></span>${escapeHtml(text)}`; m.className = "msg info";
 }
 // Brief visual confirmation on a button (e.g. copy).
-function flashBtn(id: string, label: string) { const b = $(id); const o = b.textContent; b.textContent = label; b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
+function flashBtn(id: string, label: string, ok = true) { const b = $(id); const o = b.textContent; b.textContent = label; if (ok) b.classList.add("copied"); setTimeout(() => { b.textContent = o; b.classList.remove("copied"); }, 1100); }
+// "copied" only once the clipboard write has resolved; a refused or missing clipboard says so instead.
+async function copyText(btnId: string, text: string) {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
+    await navigator.clipboard.writeText(text);
+    flashBtn(btnId, "copied ✓");
+  } catch {
+    flashBtn(btnId, "copy failed", false);
+    msg("could not copy to the clipboard. Select the text and copy it by hand.", "err");
+  }
+}
 // Send-success moment: one-shot glow sweep across the balance hero (display-only; reduced-motion aware).
 function celebrateSend() {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -113,6 +147,7 @@ async function render() {
   currentRpc = st.rpc || "";
   currentExplorer = st.explorer || "cairn";
   siteApi = st.api || "";
+  if (st.rpcMovedFrom) showRpcMoved(String(st.rpcMovedFrom));
   if (!st.hasVault) return show("setup");
   // On lock (manual or idle auto-lock), wipe any revealed private key / recovery phrase from the DOM and
   // module memory so a secret never lingers on the locked screen (audit POPUP-2).
@@ -259,7 +294,7 @@ async function renderHistory() {
     // /tx/:id goes permanently not-found past its 100k scan horizon anyway — W9).
     const maybeMark = t.maybe && t.ts
       ? (Date.now() - t.ts <= 3_600_000
-        ? ` <span class="dim">· may be in flight — resolves next block</span>`
+        ? ` <span class="dim">· may be in flight; not yet seen on chain</span>`
         : ` <span class="dim">· unconfirmed: this device only sees a send once change returns to it, so a send with no change output cannot be confirmed from here - check this txid in the explorer before resending</span>`)
       : "";
     return `<div class="tx">
@@ -276,9 +311,7 @@ async function renderHistory() {
 let curAddr = "";
 let lastBal: number | null = null;
 let balSeq = 0;
-// tween-frame formatter over CSD-UNIT floats (the interpolated `from + (next-from)*e` values) — the
-// base-unit balance display everywhere else is clearsign's fmtBalance.
-const fmtBal = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 }) + " CSD";
+const fmtBal = (base: number) => fmtBalance(base) + " CSD";
 // Identity avatar: a primary .csd name gets its CNS-parity gradient + monogram; a name-less
 // account gets the phosphor cairn mark (a bare gradient + hex nibble read as a placeholder).
 const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
@@ -309,8 +342,8 @@ async function updateMergePending(utxos: unknown) {
     mergePendingNow = await call("pendingMerge", utxos);
     if (mergePendingNow?.pending) {
       line.textContent = mergePendingNow.maybe
-        ? `up to +${fmtBalance(mergePendingNow.amount)} CSD may be merging — back in your balance next block`
-        : `+${fmtBalance(mergePendingNow.amount)} CSD merging — back in your balance next block`;
+        ? `up to +${fmtBalance(mergePendingNow.amount)} CSD may be merging; back in your balance once the merge is mined`
+        : `+${fmtBalance(mergePendingNow.amount)} CSD merging; back in your balance once the merge is mined`;
       line.hidden = false;
     } else line.hidden = true;
   } catch { line.hidden = true; mergePendingNow = { pending: false, amount: 0, maybe: false }; }
@@ -324,7 +357,7 @@ async function refreshBalance() {
     if (seq !== balSeq) return;                // a newer refresh superseded this one
     void updateMergePending(b.utxos);          // piggybacks the utxos this fetch already carried
     el.classList.remove("loading");
-    const next = b.confirmed / 1e8;
+    const next = Number(b.confirmed);
     const from = lastBal;
     lastBal = next;
     if (from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -334,7 +367,7 @@ async function refreshBalance() {
       const step = (t: number) => {
         if (seq !== balSeq) return;            // superseded mid-tween: let the newer write win
         const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); // ease-out cubic
-        el.textContent = p < 1 ? fmtBal(from + (next - from) * e) : fmtBal(next);
+        el.textContent = p < 1 ? fmtBal(Math.round(from + (next - from) * e)) : fmtBal(next);
         if (p < 1) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
@@ -400,9 +433,11 @@ async function renderAssets() {
   if (!tickers.length && !details.length) { el.hidden = true; el.innerHTML = ""; return; }
   const meta = await tokenMeta();
   if (seq !== assetsSeq) return;
+  // Decimals build the base units a token send signs, so a pinned token uses its pinned decimals, never served ones.
+  const decOf = (t: string): number => { const d = displayDecimals(t, meta[t]?.decimals).decimals; return isTokenDecimals(d) ? d : 0; };
   const rows = tickers.map((t) => {
     const b = balances[t] || { available: "0", locked: "0" };
-    const dec = meta[t]?.decimals ?? 0;
+    const dec = decOf(t);
     const locked = b.locked && b.locked !== "0" ? ` <span class="asset-locked">(+${escapeHtml(formatUnits(b.locked, dec))} locked)</span>` : "";
     return `<div class="asset"><span class="asset-ticker">${escapeHtml(t)}</span>
       <span class="asset-bal">${escapeHtml(formatUnits(b.available, dec))}${locked}</span>
@@ -439,7 +474,7 @@ async function renderAssets() {
   el.innerHTML = `<span class="label">assets</span>${rows}${nameRows}`;
   el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = () => {
     const t = b.dataset.tsend!;
-    openTokenSend(t, meta[t]?.decimals ?? 0, balances[t]?.available ?? "0");
+    openTokenSend(t, decOf(t), balances[t]?.available ?? "0");
   });
   el.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
   el.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
@@ -499,8 +534,13 @@ async function doNameAction() {
     // signing) if the tip crossed a fee-gate since review, so the user never signs a different amount.
     // A1: the reviewed signer rides along — a mid-flight account switch refuses instead of signing.
     const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee, signer ?? undefined] : [signer ?? undefined]));
-    if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (settles ~1 block)`, "ok"); refreshBalance(); renderAssets(); }
-    else msg(`${kind === "renew" ? "renew" : "set primary"} failed: ${r.error || "?"}`, "err");
+    const what = kind === "renew" ? "renewal" : "set-primary";
+    if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (takes effect once it is mined)`, "ok"); refreshBalance(); renderAssets(); }
+    else {
+      const o = refusedCopy(r, what);
+      if (o.maybe) { ($("name-action-form") as HTMLElement).hidden = true; refreshBalance(); }
+      msg(o.text, o.cls);
+    }
   } catch (e: any) {
     const m = String(e?.message || e);
     if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm — nothing was signed
@@ -509,7 +549,8 @@ async function doNameAction() {
       msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed — re-check and confirm again`, "err");  // …then explain
       return;
     }
-    msg(m, "err");
+    const o = thrownCopy(e, kind === "renew" ? "renewal" : "set-primary");
+    msg(o.text, o.cls);
   }
 }
 
@@ -604,17 +645,14 @@ function armReview(f: SendFlow) {
   ($(f.ids.confirm) as HTMLElement).hidden = false;
   msg("");
 }
-// First-time-recipient + address-poisoning look-alike, computed from the SAME paid-recipient set on
-// every send surface (audit NSPV-POISON-FILTERS). History unavailable → treat as first time.
+// First-time-recipient + address-poisoning look-alike, computed by the same clearsign.recipientStatus
+// as the approval window: paid recipients plus this wallet's own accounts (sending to your own other
+// account is not a first send). History unavailable → treat as first time.
 async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookalike: string | null }> {
-  let firstTime = true, lookalike: string | null = null;
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
-    const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
-    firstTime = !sentTo.some((a) => a.toLowerCase() === to.toLowerCase());
-    lookalike = lookalikeOf(to, [...sentTo, ...((st.accounts || []).map((a: any) => a.addr))]);
-  } catch { /* no history → treat as first time */ }
-  return { firstTime, lookalike };
+    return recipientStatus(to, paidRecipients(h), (st.accounts || []).map((a: any) => String(a.addr)));
+  } catch { return { firstTime: true, lookalike: null }; }
 }
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD — deliberate per-flow copy); the strings are
@@ -626,60 +664,30 @@ function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCa
   return nameCaution;
 }
 function setWarn(el: HTMLElement, html: string) { if (html) { el.innerHTML = html; el.hidden = false; } else el.hidden = true; }
-// FOOT-3 double-send guard, shared by both flows' ok:false and thrown branches: a failed submit is
-// AMBIGUOUS — the tx may already have reached the mempool (lost response / timeout / 429 AFTER the
-// node ingested it). Do NOT leave Confirm armed on the same frozen snapshot (one more click selects a
-// DIFFERENT coin and double-pays): tear the review down (draft preserved) so resending takes a
-// deliberate re-Review, refresh, and tell the user to check first. Only the failure branches route
-// here — the happy path is untouched (no added send latency, nothing declined that would succeed).
-function sendDidntConfirm(f: SendFlow, thrownPrefix?: string, txid?: string) {
+// FOOT-3 double-send guard, shared by both flows' ok:false and thrown branches: do NOT leave Confirm
+// armed on the same frozen snapshot after a failure (one more click after an ambiguous submit selects a
+// DIFFERENT coin and double-pays). Tear the review down (draft preserved) so resending takes a
+// deliberate re-Review, and refresh. Only the failure branches route here; the happy path is untouched.
+function sendOutcome(f: SendFlow, o: Outcome) {
   teardownReview(f, false);
   f.refresh();
-  // 0.2.56: the engine records the ambiguous outcome in history under its locally computed txid,
-  // so "check history" now points at a CONCRETE entry — name it here instead of asking for faith.
-  const where = txid ? ` It's in your history as ${String(txid).slice(0, 12)}…` : "";
-  msg((thrownPrefix !== undefined
-    ? thrownPrefix + "send didn't confirm; it may already be in flight. Check history before resending."
-    : "send didn't confirm — it may already be in flight. Check your balance/history before resending; re-Review to try again.") + where, "err");
+  msg(o.text, o.cls);
 }
-
-// W-B11: a thrown bridge error is genuinely ambiguous EXCEPT "locked" (the vault auto-locked while
-// the review sat open) - then NOTHING was signed, and the "may already be in flight" copy would
-// teach a double-spend (or block an honest retry). Say the honest thing instead.
-function sendThrew(f: SendFlow, e: any) {
-  if (String(e?.message ?? "") === "locked") {
-    teardownReview(f, false);
-    f.refresh();
-    msg("the wallet locked before anything was signed — nothing was sent. Unlock and Review again to retry.", "err");
-    return;
-  }
-  sendDidntConfirm(f, e?.message ? String(e.message) + " — " : "");
-}
-// A structured {ok:false} from the send engine (2026-07-09): every code EXCEPT the genuinely
-// ambiguous SUBMIT_MAYBE_INFLIGHT is a CLEAN refusal — either pre-broadcast (INSUFFICIENT,
-// TOO_MANY_INPUTS, VERIFY_*, FEE_*, BAD_*, GHOST_INPUTS_SKIPPED: nothing was even signed) or a
-// definitive server rejection (SUBMIT_REJECTED: the node answered, the tx is NOT in the mempool).
-// The old routing collapsed ALL of these into sendDidntConfirm's alarming "may already be in
-// flight" copy, discarding the real r.error — a plain overspend read like a maybe-double-send.
-// Show the actual reason (the engine's errors are already user-facing copy) and reserve the
-// in-flight caution for SUBMIT_MAYBE_INFLIGHT and the thrown/catch branch only. Same FOOT-3
-// teardown either way: Confirm must never stay armed on a stale snapshot.
+// A throw is routed by whether anything could have been submitted (see AnsweredError).
+function sendThrew(f: SendFlow, e: any) { sendOutcome(f, thrownCopy(e, "send")); }
+// A structured {ok:false} from the send engine: only SUBMIT_MAYBE_INFLIGHT is ambiguous; every other
+// code is a clean pre-broadcast refusal or a definitive rejection, shown with the engine's own reason.
 function sendRefused(f: SendFlow, r: any) {
-  if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return sendDidntConfirm(f, r?.error ? String(r.error) + " — " : "", r?.txid);
+  const o = refusedCopy(r, "send");
+  if (o.maybe) return sendOutcome(f, o);
   teardownReview(f, false);
   f.refresh();
-  // SUBMIT_DUPLICATE: a tx spending these coins IS pending (usually this exact one — a resubmit
-  // after an ambiguous failure is byte-identical), so "nothing was sent" would be false. The
-  // engine's copy is already the truthful hedge; info-class, not an error.
-  if (r?.code === "SUBMIT_DUPLICATE") {
-    return msg(String(r?.error ?? "this transaction is already pending; it should settle within a block or two."), "info");
-  }
-  let text = (r?.error ? String(r.error) : "the send was refused") + " — nothing was sent.";
+  let text = o.text;
   // Merge-aware refusals (Plans/66 B4b): right after a consolidate, the confirmed balance is
-  // legitimately short by the whole merging amount — say so instead of leaving "insufficient"
+  // legitimately short by the whole merging amount; say so instead of leaving "insufficient"
   // to read as lost funds.
   if ((r?.code === "INSUFFICIENT" || r?.code === "TOO_MANY_INPUTS") && mergePendingNow.pending) {
-    text += ` A coin merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming — retry after the next block.`;
+    text += ` A coin merge (${fmtBalance(mergePendingNow.amount)} CSD) is still confirming; retry once it is mined.`;
   }
   // TOO_MANY_INPUTS: the remedy is one click away — surface it as an action, not a breadcrumb
   // in a toast that fades mid-read (Plans/66 B5).
@@ -728,7 +736,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // so a slow node doesn't add serial latency before the review card arms. Offline -> b is null -> the fee
   // check is skipped and the engine still refuses cleanly at sign time.
   const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
-  if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} CSD for the on-chain anchor fee — your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD`, "err");
+  if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} for the on-chain anchor fee; your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD`, "err");
   // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
   const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
@@ -761,10 +769,10 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
   try {
     busy("sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
-    if (r.ok) sentOk(TOKEN_FLOW, `sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)} · ${String(r.txid).slice(0, 12)}… (settles after ~1 block)`); // W8: both scales here too
+    if (r.ok) sentOk(TOKEN_FLOW, `sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)} · ${String(r.txid).slice(0, 12)}… (settles once it is mined)`); // W8: both scales here too
     else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
   } catch (e: any) {
-    sendThrew(TOKEN_FLOW, e);       // W-B11: "locked" is honest (nothing signed); other throws stay ambiguous
+    sendThrew(TOKEN_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
   }
 });
 
@@ -821,10 +829,8 @@ $("setup-pw").addEventListener("input", () => {
   if (h) h.textContent = v ? `password strength: ${pwStrength(v)}` : "";
 });
 $("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
-// F-CLIP (Plans/68 A2 companion): the FIRST-backup copies get the same KEY-6 clipboard auto-clear the
-// export/reveal panels already have — the create-flow phrase/key is exactly as secret as a revealed one.
-$("btn-copy-seed").addEventListener("click", () => { navigator.clipboard?.writeText(backupPhrase)?.catch(() => {}); flashBtn("btn-copy-seed", "copied ✓"); });
-$("btn-copy-priv").addEventListener("click", () => { navigator.clipboard?.writeText(backupPriv)?.catch(() => {}); flashBtn("btn-copy-priv", "copied ✓"); });
+$("btn-copy-seed").addEventListener("click", () => copyText("btn-copy-seed", backupPhrase));
+$("btn-copy-priv").addEventListener("click", () => copyText("btn-copy-priv", backupPriv));
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
 $("btn-backup-done").addEventListener("click", () => {
   backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = "";
@@ -838,7 +844,7 @@ $("btn-import").addEventListener("click", async () => { try { if (!val("import-p
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
 $("btn-refresh").addEventListener("click", () => { refreshBalance(); renderAssets(); });
-$("btn-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("addr").textContent || "")?.catch(() => {}); flashBtn("btn-copy", "copied ✓"); });
+$("btn-copy").addEventListener("click", () => copyText("btn-copy", $("addr").textContent || ""));
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
@@ -918,7 +924,7 @@ async function renderReceive() {
   }
 }
 $("btn-receive").addEventListener("click", () => { if (openPanel("receive-panel")) renderReceive(); });
-$("btn-receive-copy").addEventListener("click", () => { navigator.clipboard?.writeText($("receive-addr").textContent || "")?.catch(() => {}); flashBtn("btn-receive-copy", "copied ✓"); });
+$("btn-receive-copy").addEventListener("click", () => copyText("btn-receive-copy", $("receive-addr").textContent || ""));
 
 // Reveal private key — in-popup panel (password → masked secret box).
 $("btn-export").addEventListener("click", () => { openPanel("reveal-panel"); });
@@ -932,7 +938,7 @@ $("btn-reveal-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-reveal-show").addEventListener("click", () => { ($("reveal-out") as HTMLElement).classList.toggle("shown"); });
-$("btn-reveal-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedKey)?.catch(() => {}); flashBtn("btn-reveal-copy", "copied ✓"); });
+$("btn-reveal-copy").addEventListener("click", () => copyText("btn-reveal-copy", revealedKey));
 $("btn-reveal-close").addEventListener("click", () => { resetRevealPanel(); ($("reveal-panel") as HTMLElement).hidden = true; });
 
 // Reveal recovery phrase — in-popup panel (password → blurred 12-word grid).
@@ -947,7 +953,7 @@ $("btn-phrase-go").addEventListener("click", async () => {
   } catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-phrase-show").addEventListener("click", () => { const o = $("phrase-out"); o.classList.toggle("shown"); o.classList.toggle("blur"); });
-$("btn-phrase-copy").addEventListener("click", () => { navigator.clipboard?.writeText(revealedPhrase)?.catch(() => {}); flashBtn("btn-phrase-copy", "copied ✓"); });
+$("btn-phrase-copy").addEventListener("click", () => copyText("btn-phrase-copy", revealedPhrase));
 $("btn-phrase-close").addEventListener("click", () => { resetPhrasePanel(); ($("phrase-panel") as HTMLElement).hidden = true; });
 $("btn-settings").addEventListener("click", () => { if (openPanel("settings")) { renderConnectedSites(); renderCoinsInfo(); } });
 
@@ -996,7 +1002,7 @@ async function openConsolidatePanel(force = false) {
     // Round plan: merging 512 coins into 1 retires 511 per pass, and intermediate outputs get
     // swept into a later pass once confirmed — so ceil((coins-1)/511) covers the whole plan.
     const rounds = Math.ceil((p.coins - 1) / 511);
-    note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins — about ${rounds} merges needed in total. You can run the next one right away; only the final combining pass needs the earlier merges confirmed (about a block). ` : "")
+    note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins, so about ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
       + (consolidating ? "a merge is already in progress in this window; wait for it to finish." : "")
       + (!consolidating && mergePendingNow.pending ? `a previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming — merging more coins now is safe. ` : "")
       + "This is a normal payment to yourself: your balance only changes by the fee.";
@@ -1020,23 +1026,19 @@ $("btn-consolidate-confirm").addEventListener("click", async () => {
       msg(`merged ${r.merged} coins into one · ${String(r.txid).slice(0, 12)}…` + (r.remaining >= 1 ? ` — ${r.remaining} coin(s) left; you can run the next merge right away` : ""), "ok sent");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
-    } else if (r?.code === "SUBMIT_MAYBE_INFLIGHT" || r?.code === "SUBMIT_DUPLICATE") {
-      // maybe-inflight: recorded maybe:true in history, so the pending line takes over from here.
-      // duplicate: the merge IS pending (a retry was byte-identical) — same treatment, calmer copy.
-      msg(r?.code === "SUBMIT_DUPLICATE"
-        ? String(r.error ?? "this merge is already pending; it should settle within a block or two.")
-        : (r.error ? String(r.error) + " — " : "") + "the merge didn't confirm; it may already be in flight. Check your balance/history before retrying.",
-        r?.code === "SUBMIT_DUPLICATE" ? "info" : "err");
-      ($("consolidate-form") as HTMLElement).hidden = true;
-      refreshBalance();
     } else {
-      msg((r?.error ? String(r.error) : "the merge was refused") + " — nothing was sent.", "err");
-      btn.disabled = false;
+      // maybe-inflight is recorded maybe:true and duplicate means the merge IS pending, so the pending
+      // line takes over and Confirm stays down; any other code is a clean refusal.
+      const o = refusedCopy(r, "merge");
+      msg(o.text, o.cls);
+      if (o.maybe) { ($("consolidate-form") as HTMLElement).hidden = true; refreshBalance(); }
+      else btn.disabled = false;
     }
   } catch (e: any) {
-    msg((e?.message ? e.message + " — " : "") + "the merge didn't confirm; it may already be in flight. Check your balance/history before retrying.", "err");
-    ($("consolidate-form") as HTMLElement).hidden = true;
-    refreshBalance();
+    const o = thrownCopy(e, "merge");
+    msg(o.text, o.cls);
+    if (o.maybe) { ($("consolidate-form") as HTMLElement).hidden = true; refreshBalance(); }
+    else btn.disabled = false;
   } finally { consolidating = false; }
 });
 
@@ -1071,11 +1073,9 @@ function originPattern(u: string): string | null {
 }
 // Request host access for a custom RPC/API origin, scoped to that EXACT origin (never a
 // broad pattern). `optional_host_permissions` is deliberately narrowed to local nodes
-// (localhost / 127.0.0.1) — the default Cairn proxy is a required host_permission, so the
-// common cases need no grant. A REMOTE custom https host is not in the optional set, so
-// chrome.permissions.request rejects it (caught → false) and Settings shows "host access
-// denied: use a local node or the Cairn proxy". This keeps least-privilege (no all-https
-// grant / Web-Store red flag); remote custom RPC is a documented power-user limitation.
+// (localhost / 127.0.0.1); the default Cairn proxy is a required host_permission, so the
+// common cases need no grant. The wallet refuses a remote RPC before this point (rpcAllowed);
+// a remote custom API host is not in the optional set, so the request rejects (caught, false).
 async function ensureHostAccess(urls: string[]): Promise<boolean> {
   if (!EXT || !chrome.permissions?.request) return true;
   const origins = [...new Set(urls.map(originPattern).filter(Boolean) as string[])];
@@ -1130,6 +1130,11 @@ function buildMenu(menu: HTMLElement, cfg: {
 }
 const noProto = (u: string) => u.replace(/^https?:\/\//, "");
 
+// A saved remote RPC was moved to the Cairn proxy at load (wallet.init); say so once, then clear the flag.
+function showRpcMoved(from: string) {
+  msgAction(`Your saved node RPC (${from.replace(/^https?:\/\//, "")}) is a remote server, which this wallet no longer supports. It now uses the Cairn proxy. A node on this computer can still be chosen from the RPC menu.`, "OK", () => {}, "info");
+  void call("dismissRpcNotice").catch(() => { /* the notice shows again on the next open */ });
+}
 // ── RPC dropdown (header) — preset + user-added nodes, switch with one click ──
 const RPC_PRESETS = [
   { label: "Cairn proxy", url: "https://cairn-substrate.com/api/rpc" },
@@ -1145,12 +1150,12 @@ async function renderRpcMenu() {
     ],
     isActive: (v) => v === currentRpc,
     pickAttr: "data-url", delAttr: "data-del",
-    addInputId: "rpc-add-input", addBtnId: "rpc-add-btn", placeholder: "https://your-node…",
-    badUrlMsg: "enter a full RPC URL (http(s)://…)",
+    addInputId: "rpc-add-input", addBtnId: "rpc-add-btn", placeholder: "http://127.0.0.1:port",
+    badUrlMsg: "enter a local node URL (http://127.0.0.1:port or http://localhost:port)",
     pick: (v) => selectRpc(v),
     remove: (v) => call("removeRpc", v),
     rerender: renderRpcMenu,
-    add: async (u) => { await call("addRpc", u); await selectRpc(u); },
+    add: async (u) => { try { await call("addRpc", u); await selectRpc(u); } catch (e: any) { msg(e.message, "err"); } },
   });
 }
 async function selectRpc(url: string) {
@@ -1238,9 +1243,13 @@ $("btn-seal").addEventListener("click", async () => {
   const claim = val("seal-claim").trim(); if (!claim) return msg("enter a claim to seal", "err");
   const domain = val("seal-domain").trim() || "csd:sealed";
   try { busy("sealing…"); const r = await call("sealClaim", { domain, claim });
-    if (r.ok) { msg("sealed on-chain ✓ — reveal it whenever you like", "ok"); (($("seal-claim")) as HTMLTextAreaElement).value = ""; renderSealed(); refreshBalance(); }
-    else msg("seal failed: " + (r.error || "?"), "err");
-  } catch (e: any) { msg(e.message, "err"); }
+    if (r.ok) { msg(`seal submitted · ${String(r.txid).slice(0, 12)}…; you can reveal it once it is mined`, "ok"); (($("seal-claim")) as HTMLTextAreaElement).value = ""; renderSealed(); refreshBalance(); }
+    else {
+      const o = refusedCopy(r, "seal");
+      if (o.maybe) { (($("seal-claim")) as HTMLTextAreaElement).value = ""; renderSealed(); refreshBalance(); }
+      msg(o.text, o.cls);
+    }
+  } catch (e: any) { const o = thrownCopy(e, "seal"); msg(o.text, o.cls); }
 });
 async function renderSealed() {
   const list: any[] = await call("sealedClaims");
@@ -1268,8 +1277,8 @@ async function renderSealed() {
 // Address-poisoning lookalike: attackers seed your history with an address that
 // shares the head+tail you eyeball but differs in the middle. Flag a recipient that
 // matches a previously-seen address on first 6 + last 4 hex chars but isn't identical.
-// lookalikeOf (the address-poisoning heuristic) is imported from ./clearsign.js — one definition,
-// so a tuning change can't land in only one of two copies of a security check.
+// lookalikeOf (the address-poisoning heuristic) lives in ./clearsign.js and reaches this file through
+// recipientStatus: one definition, so a tuning change can't land in only one of two copies of a security check.
 // Two-step send: "Review" shows a confirmation with the FULL recipient address,
 // amount, fee, and projected balance-after (defends against address-poisoning /
 // clipboard-swap — the user verifies exactly what will be signed), warns on a
@@ -1299,7 +1308,12 @@ $("btn-send").addEventListener("click", async () => {
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
-  setWarn($("c-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun));
+  // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's
+  // INSUFFICIENT refusal stays the backstop). An unreadable balance does not block.
+  const short = !!b && Number(b.confirmed) - amt - SEND_FEE < 0;
+  const warn = composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun);
+  setWarn($("c-warn") as HTMLElement, short ? `${escapeHtml(balanceShortNote("Go back"))}${warn ? "<br><br>" + warn : ""}` : warn);
+  ($("btn-send-confirm") as HTMLButtonElement).disabled = short;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note — same race, same backstop.
   reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
@@ -1308,7 +1322,7 @@ $("btn-send").addEventListener("click", async () => {
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
 $("btn-send-confirm").addEventListener("click", async () => {
-  if (!reviewState.reviewedSend) return;
+  if (!reviewState.reviewedSend || ($("btn-send-confirm") as HTMLButtonElement).disabled) return;
   const { to, amt, name, verified, signer } = reviewState.reviewedSend;
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7) — fail-closed to a re-review either way.
@@ -1318,7 +1332,7 @@ $("btn-send-confirm").addEventListener("click", async () => {
     if (r.ok) sentOk(CSD_FLOW, "sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
     else sendRefused(CSD_FLOW, r);                    // structured refusal: show the REAL reason (FOOT-3 teardown inside)
   } catch (e: any) {
-    sendThrew(CSD_FLOW, e);       // W-B11: "locked" is honest (nothing signed); other throws stay ambiguous
+    sendThrew(CSD_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
   }
 });
 $("btn-name-confirm").addEventListener("click", () => doNameAction());
@@ -1340,9 +1354,13 @@ $("btn-post").addEventListener("click", async () => {
     const fee = Math.max(feeNum, CAIRNX_PROPOSE_FEE);
     busy("posting…");
     const r = await call("cairnPost", { domain, title: val("p-title"), body: val("p-body"), fee });
-    if (r.ok) { msg("posted · " + String(r.txid).slice(0, 12) + "… (shows on Cairn after ~1 block)", "ok"); refreshBalance(); }
-    else msg("post failed: " + (r.error || "?"), "err");
-  } catch (e: any) { msg(e.message, "err"); }
+    if (r.ok) { msg("posted · " + String(r.txid).slice(0, 12) + "… (shows on Cairn once it is mined)", "ok"); refreshBalance(); }
+    else {
+      const o = refusedCopy(r, "post");
+      if (o.maybe) refreshBalance();
+      msg(o.text, o.cls);
+    }
+  } catch (e: any) { const o = thrownCopy(e, "post"); msg(o.text, o.cls); }
 });
 
 render();

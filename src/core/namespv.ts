@@ -339,7 +339,9 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // 404 veto was meant to catch (V17 claim cap / token-balance fills) stay fail-closed via the viaFill /
     // scopedReplaySufficient gates below — those are computed from OUR verified events, not a served flag.
     // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
-    const rep = await replayName(name, hints, src);
+    // A throw here (one source's hint naming a block the SPV source cannot serve) is a failed replay like
+    // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
+    const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     if (!rep.ok) {
       // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 independent name sources served the
       // events establishing the lease, OR the persisted tip floor is also past expiry. A lone usable source

@@ -60,6 +60,7 @@ function mkStub({ coins, served, submit, gateUtxosOnce = false }) {
     }
     if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: 50_000 }) };
     if (u.includes("/api/content")) { stats.content = JSON.parse(init?.body ?? "{}"); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+    if (u.includes("/proposal/")) return { ok: true, status: 200, json: async () => ({ payload_hash: "0x" + "11".repeat(32) }) }; // the commit is mined
     const idm = u.match(/\/tx\/(0x[0-9a-fA-F]{64})\b/);
     if (idm) return txReply(u, served);
     return { ok: false, status: 404, json: async () => ({}) };

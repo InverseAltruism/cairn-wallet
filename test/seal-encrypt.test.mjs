@@ -31,6 +31,7 @@ globalThis.fetch = async (url, init) => {
   const tr = txReply(u, [MC]); if (tr) return tr; // source-tx reads for TXB-1 input verification
   if (u.includes("/tx/submit")) { lastSubmit = JSON.parse(init.body); const id = "0x" + (submitN++).toString(16).padStart(64, "5"); return { ok: true, json: async () => ({ ok: true, txid: id }) }; }
   if (u.includes("/api/content")) { lastContent = JSON.parse(init.body); return { ok: true, json: async () => ({ ok: true }) }; }
+  if (u.includes("/proposal/")) return { ok: true, status: 200, json: async () => ({ payload_hash: "0x" + "11".repeat(32) }) }; // the commit is mined
   return { ok: true, json: async () => ({ ok: true }) };
 };
 const hexOf = (bytes) => "0x" + bytes.map((b) => Number(b).toString(16).padStart(2, "0")).join("");

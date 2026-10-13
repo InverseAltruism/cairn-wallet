@@ -47,9 +47,9 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "cairnxTransfer": return w.cairnxTransfer(args[0]);
     case "resolveName": return w.resolveName(args[0]);
     case "confirmName": return w.confirmName(args[0]);
-    case "verifyName": return w.verifyName(args[0]);
     case "tokenFillQuote": return w.tokenFillQuote(args[0]);
     case "tokenDisplayMeta": return w.tokenDisplayMeta(args[0]);
+    case "fillOfferView": return w.fillOfferView(args[0]);
     case "cairnxNameRenew": return w.cairnxNameRenew(args[0], args[1], args[2]);
     case "cairnxNameRenewFee": return w.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return w.cairnxSetPrimary(args[0], args[1]);
@@ -61,6 +61,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "rpcList": return w.rpcList();
     case "addRpc": return w.addRpc(args[0]);
     case "removeRpc": return w.removeRpc(args[0]);
+    case "dismissRpcNotice": return w.dismissRpcNotice();
     case "setExplorer": return w.setExplorer(args[0]);
     case "explorerList": return w.explorerList();
     case "addExplorer": return w.addExplorer(args[0]);
@@ -74,7 +75,6 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "pending": return [];
     case "resolve": return { done: true };
     case "openApproval": return { opened: false };
-    case "flushPending": return w.flushPending();
     default: throw new Error("unknown " + method);
   }
 }

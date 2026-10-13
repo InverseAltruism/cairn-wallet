@@ -221,16 +221,40 @@ export function displayDecimals(ticker: unknown, served: unknown): { decimals: u
   const pin = Object.prototype.hasOwnProperty.call(PINNED_TOKENS, String(ticker)) ? PINNED_TOKENS[String(ticker)] : undefined;
   return pin ? { decimals: pin.decimals, pinned: true } : { decimals: served, pinned: false };
 }
+/** A token's decimals as the record schema allows them: an integer 0..8. */
+export const isTokenDecimals = (d: unknown): d is number => typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= 8;
+/** The one base-units to decimal-string formatter: exact (bigint), trailing zeros trimmed, "?" on bad input. */
 export function formatUnits(base: unknown, decimals: unknown): string {
   let v: bigint;
   try { v = BigInt(String(base)); } catch { return "?"; }
   if (v < 0n) return "?";
-  const d = typeof decimals === "number" && Number.isInteger(decimals) && decimals >= 0 && decimals <= 8 ? decimals : 0;
+  const d = isTokenDecimals(decimals) ? decimals : 0;
   if (d === 0) return v.toString();
   const scale = 10n ** BigInt(d);
   const whole = v / scale, frac = v % scale;
   if (frac === 0n) return whole.toString();
   return whole.toString() + "." + frac.toString().padStart(d, "0").replace(/0+$/, "");
+}
+const CSD_DECIMALS = 8;
+/** A CSD amount in base units as an exact bigint: an integer number, a bigint or a decimal-digit string; else null. */
+export function csdBase(raw: unknown): bigint | null {
+  if (typeof raw === "bigint") return raw >= 0n ? raw : null;
+  if (typeof raw === "number") return Number.isInteger(raw) && raw >= 0 ? BigInt(raw) : null;
+  if (typeof raw === "string" && /^\d+$/.test(raw)) return BigInt(raw);
+  return null;
+}
+/** "<amount> CSD" from base units through formatUnits; "invalid amount" (never NaN or an exponent) on bad input. */
+export function fmtCsd(raw: unknown): string {
+  const v = csdBase(raw);
+  return v === null ? "invalid amount" : `${formatUnits(v, CSD_DECIMALS)} CSD`;
+}
+/** At-a-glance balance: the exact formatUnits string, rounded to 4 fraction digits and grouped for the locale. No unit. */
+export function fmtBalance(raw: unknown): string {
+  const n = typeof raw === "bigint" ? raw : typeof raw === "number" && Number.isInteger(raw) ? BigInt(raw) : null;
+  if (n === null) return "?";
+  const exact = (n < 0n ? "-" : "") + formatUnits(n < 0n ? -n : n, CSD_DECIMALS);
+  // Intl.NumberFormat formats a decimal string without a float conversion; the 4-digit rounding is the display choice.
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(exact as unknown as number);
 }
 export function parseUnits(human: string, decimals: number): string | null {
   if (typeof human !== "string") return null;
