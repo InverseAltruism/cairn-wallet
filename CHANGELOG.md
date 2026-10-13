@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.74 (2026-10-13)
 
 - Amounts on the signing screens are exact decimals from one formatter (1 base unit reads 0.00000001 CSD, not
   1e-8 CSD); token amounts use the pinned decimals, never the ones a server reports.
