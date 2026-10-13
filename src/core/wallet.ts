@@ -18,7 +18,7 @@ import { refuse } from "./refuse.js";
 import { secondSourceOfferConflict, startSecondSourceOfferRead, type SecondSourceRead } from "./offerxcheck.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
-import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, inclusionVerdict, type TxInclusion } from "./inclusion.js";
+import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
@@ -125,7 +125,8 @@ const RPC_LOCAL_ERR = "RPC must be the Cairn proxy or a node on this computer (h
 const histKey = (addr: string) => "txHistory:" + addr;
 // A merge whose output is not yet seen and that is not known to be gone.
 const isMergeCandidate = (x: any): boolean => x?.type === "consolidate" && !x.confirmed && !x.gone;
-const INCLUSION_READS_MAX = 8;
+// A row pendingMerge still evaluates; `gone` stays here so a later reading can undo it.
+const isOpenRow = (x: any): boolean => !!x && (x.maybe || isMergeCandidate(x) || x.gone || x.goneTip !== undefined);
 const sealKey = (addr: string) => "sealedClaims:" + addr;
 
 // SEAL-EVICT-01 (P75-6 F2): the sealed-claims cap must never evict an UNREVEALED preimage; it is the only
@@ -1148,37 +1149,29 @@ export class Wallet {
   }
   consolidatePreview(fee = 1_000_000) { return node.consolidatePreview(this.rpc, this.addr(), fee); }
 
-  // Pending-merge detection and inclusion reconcile (popup-only). While a merge sits in the mempool the
-  // node's available-utxo view drops its inputs and does not yet show its output, so the balance visibly
-  // loses the merged amount; this says why. Every open row (a merge not yet confirmed, or any row whose
-  // submit answer was lost, maybe:true) is settled from chain state, not the clock (test/inclusion-chain.test.mjs):
-  //   included: its txid is in the utxo set the balance fetch already holds (a merge output or a send's
-  //     change carries the tx's own txid), or the node reports it mined. A merge latches `confirmed`,
-  //     persisted because the next step spends that output and its absence must not re-derive "pending".
-  //   gone: no node holds or has mined it and one of its inputs is no longer available.
-  //   open: anything else; `stuck` once the tip is INCLUSION_NOTICE_BLOCKS past the tip at submit.
-  // `subTip` is the first tip this pass reads after the submit, so the notice can come late, not early.
-  // Status reads cost one /tx scan on the node each: at most INCLUSION_READS_MAX rows per pass and one read
-  // per row per block (`chkTip`). Network reads sit strictly OUTSIDE histChain (a read inside the chain
-  // would park send()'s own history write behind a hung RPC); the chained step re-reads history fresh.
+  // Pending-merge line and inclusion reconcile (popup-only; test/inclusion-chain.test.mjs). Each open row is
+  // settled from chain reads, not the clock: included once its txid is in a utxo set or reported mined;
+  // `gone` (a different mined tx spent one of its inputs) only after two tips agree, and cleared by any later
+  // reading that disagrees; `stuck` INCLUSION_NOTICE_BLOCKS past `subTip`, the first tip read after submit.
+  // A merge latches `confirmed` because the next step spends its output. Cost per refresh: one tip read, at
+  // most INCLUSION_READS_MAX status reads (each 2 to 4 node reads behind the proxy's caches), one per row per
+  // block (`chkTip`), and one mined-utxo read when a status came back unknown. Reads stay OUTSIDE histChain
+  // (a read inside it would park send()'s own history write behind a hung RPC); the chained step re-reads.
   async pendingMerge(utxos?: { txid: string; vout?: number }[]): Promise<{ pending: boolean; amount: number; maybe: boolean; stuck: boolean }> {
     const quiet = { pending: false, amount: 0, maybe: false, stuck: false };
     const addr = this.addr(), k = histKey(addr); // captured once (F5): history, latch and balance stay on ONE account
     // pre-read ONLY for the early return, the fetch decision and the read list; the chained work RE-READS fresh.
     const peek: any[] = (await this.store.get(k)) || [];
     const hasCandidates = peek.some(isMergeCandidate);
-    const hasMaybes = peek.some((x) => x?.maybe);
     // Nothing to derive AND nothing reconcilable against a caller-supplied utxo set: no network at all.
-    if (!hasCandidates && !(hasMaybes && utxos)) return quiet;
+    if (!hasCandidates && !(utxos && peek.some(isOpenRow))) return quiet;
     let set = utxos;
     if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return quiet; } }
     // filter hostile/degenerate elements (0.2.57, reviewer nit): a null utxo entry from a hostile RPC
     // used to throw here and land in the caller's ambiguous catch — a misleading "pending unknown".
-    const live = (set || []).filter((u) => u && u.txid != null);
-    const present = new Set(live.map((u) => String(u.txid).toLowerCase()));
-    const available = new Set(live.map((u) => node.opKey(u.txid, u.vout)));
-    const open = peek.filter((x) => (x?.maybe || isMergeCandidate(x)) && !present.has(String(x.txid).toLowerCase()));
-    const reads = open.length ? await this.inclusionReads(open) : { tip: null, states: new Map<string, TxInclusion>() };
+    const present = new Set((set || []).filter((u) => u && u.txid != null).map((u) => String(u.txid).toLowerCase()));
+    const open = peek.filter((x) => isOpenRow(x) && !present.has(String(x.txid).toLowerCase()));
+    const reads = open.length ? await this.inclusionReads(open, addr) : { tip: null, states: new Map<string, TxInclusion>(), mined: null };
     return this.inHistChain(async () => {
       if (!this.accts) return quiet;
       // RE-READ inside the chain: the pre-network read above is stale across the reads, and writing it
@@ -1186,19 +1179,20 @@ export class Wallet {
       const h: any[] = (await this.store.get(k)) || [];
       let dirty = false;
       for (const e of h) {
-        if (!(e?.maybe || isMergeCandidate(e))) continue;
+        if (!isOpenRow(e)) continue;
         const id = String(e.txid).toLowerCase();
-        const verdict = present.has(id) ? "included" : inclusionVerdict(reads.states.get(id) ?? null, e.inputs, available);
+        const st = reads.states.get(id) ?? null;
+        const verdict = present.has(id) || reads.mined?.txids.has(id) ? "included" : inclusionVerdict(st, e.inputs, reads.mined?.ops ?? null);
         if (verdict === "included") {
-          delete e.maybe; delete e.stuck;
+          delete e.maybe; delete e.stuck; delete e.gone; delete e.goneTip;
           if (e.type === "consolidate") e.confirmed = true;
           dirty = true;
           continue;
         }
-        if (verdict === "gone") { delete e.maybe; delete e.stuck; e.gone = true; dirty = true; continue; }
         if (reads.tip == null) continue;
+        if (st && goneStep(e, verdict, reads.tip)) dirty = true;
         if (!(Number(e.subTip) > 0)) { e.subTip = reads.tip; dirty = true; }
-        if (reads.states.has(id) && e.chkTip !== reads.tip) { e.chkTip = reads.tip; dirty = true; }
+        if (st && e.chkTip !== reads.tip) { e.chkTip = reads.tip; dirty = true; }
         if (!e.stuck && reads.tip - Number(e.subTip) >= INCLUSION_NOTICE_BLOCKS) { e.stuck = true; dirty = true; }
       }
       let amount = 0, maybe = false, pending = false, stuck = false;
@@ -1213,16 +1207,20 @@ export class Wallet {
       return { pending, amount, maybe, stuck };
     }).catch(() => quiet);
   }
-  // The tip once, then a status read for each open row not yet read at this tip (newest first, capped).
-  // No tip means no chain-derived step this pass; the utxo-set reconcile still runs.
-  private async inclusionReads(open: any[]): Promise<{ tip: number | null; states: Map<string, TxInclusion> }> {
+  // The tip once, a status read for each open row not yet read at this tip (newest first, capped), and the
+  // mined utxo set once if any status came back unknown. No tip: no chain-derived step this pass.
+  private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string> } | null }> {
     const states = new Map<string, TxInclusion>();
     const t = await node.tip(this.rpc).catch(() => 0);
-    if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states };
+    if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
     const due = open.filter((x) => !(Number(x.chkTip) >= t)).slice(0, INCLUSION_READS_MAX);
     const got = await Promise.all(due.map((x) => node.txInclusion(this.rpc, String(x.txid))));
     due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
-    return { tip: t, states };
+    if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
+    const list = await node.confirmedUtxos(this.rpc, addr);
+    const live = (list || []).filter((u) => u && u.txid != null);
+    const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())) } : null;
+    return { tip: t, states, mined };
   }
 
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally

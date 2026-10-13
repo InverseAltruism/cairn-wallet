@@ -99,6 +99,19 @@ export async function balance(rpc: string, addr: string): Promise<{ confirmed: n
   if (!j || typeof j !== "object" || !Array.isArray(j.utxos)) throw new Error(`/utxos -> malformed response`);
   return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos };
 }
+// The mined utxo set, coins held by the mempool included (balance() leaves those out). The proxy serves it
+// at /utxos-all/:addr; its /utxos/:addr is mempool-filtered, so only a bare node origin falls back to the
+// node's own /utxos/:addr. null: not readable, and no caller may conclude anything from it.
+export async function confirmedUtxos(rpc: string, addr: string): Promise<{ txid: string; vout: number }[] | null> {
+  try {
+    const r = await fetch(`${rpc}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    let j: any;
+    if (r.ok) j = await r.json();
+    else if (r.status === 404 && new URL(rpc).pathname.replace(/\/+$/, "") === "") j = await get(rpc, `/utxos/${addr}`);
+    else return null;
+    return j && typeof j === "object" && Array.isArray(j.utxos) ? j.utxos : null;
+  } catch { return null; }   // unreachable or unreadable: no "gone" verdict this pass
+}
 
 function appToJson(app: App): unknown {
   if (app.type === "None") return "None";
@@ -457,13 +470,9 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
 // `sighashMatch` is DEPRECATED and vestigial — it is constant-equal to `ok` (true only when WE computed
 // and matched the sighash, which is the entire local-build flow) and no reader was found — but it is KEPT
 // on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
-// spentTxids: the source txids of the inputs this spend consumed (successful submits only) —
-// lets the wallet latch a pending-merge history entry the moment its output is SPENT (a spend
-// proves the merge confirmed even if no balance refresh ever saw the output; Plans/66 review
-// finding: the final combining pass spends earlier rounds' outputs directly, which otherwise
-// left their entries deriving a false "merging" line until a balance refresh saw them). Additive, internal.
-// inputs: the spent outpoints (`txid:vout`) on every result that carries a txid, so a history row whose
-// submit answer was lost can later be told apart from one whose coins another transaction spent.
+// spentTxids (successful submits: the source txids of the inputs spent, so the merge rows they consumed
+// latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
+// rows for the "gone" check) are internal; background.ts strips both before a result reaches a page.
 export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[]; inputs?: string[] }
 
 interface SelectedInput { txid: string; vout: number; value: number }

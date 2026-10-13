@@ -1,24 +1,41 @@
-// Whether a transaction this wallet sent is included, derived from chain reads, not the clock. Display only:
-// nothing may gate a signature or a spend on it, and the reconcile submits nothing (test/inclusion-chain.test.mjs).
+// Whether a transaction this wallet sent is included, derived from chain reads, not the clock. Used for
+// display (the history markers and the merge line); the reconcile submits nothing (test/inclusion-chain.test.mjs).
 
 /** A row still not included this many blocks past the tip at submit shows the standing notice. */
 export const INCLUSION_NOTICE_BLOCKS = 10;
-/** Input outpoints kept on a history row; one input spent by another transaction is enough to say "gone". */
+/** Input outpoints kept on a history row for the "spent" check. */
 export const INCLUSION_INPUTS_KEPT = 8;
+/** Status reads per reconcile, newest rows first. */
+export const INCLUSION_READS_MAX = 8;
 
 /** One status read: `definite` (unknown only) means every source answered completely. */
 export type TxInclusion = { state: "mined" | "pending" | "unknown"; height?: number; definite?: boolean };
 
 /**
- * included: mined. gone: no node holds or has mined it and an input it spent is no longer available, so a
- * different transaction spent that coin. open: anything else, including no read at all.
- * `available` holds `txid:vout` keys of the account's available utxo set.
+ * included: mined. spent: not mined, and a kept input is missing from the MINED utxo set (`mined`, `txid:vout`
+ * keys), so a different mined transaction spent it; our own pending tx leaves its inputs in that set.
+ * open: anything else, including a missing read.
  */
-export function inclusionVerdict(st: TxInclusion | null, inputs: unknown, available: ReadonlySet<string>): "included" | "gone" | "open" {
+export function inclusionVerdict(st: TxInclusion | null, inputs: unknown, mined: ReadonlySet<string> | null): "included" | "spent" | "open" {
   if (st?.state === "mined") return "included";
-  if (st?.state === "unknown" && st.definite === true && Array.isArray(inputs)
-    && inputs.some((op) => typeof op === "string" && !available.has(op))) return "gone";
+  if (st?.state === "unknown" && mined && Array.isArray(inputs)
+    && inputs.some((op) => typeof op === "string" && !mined.has(op))) return "spent";
   return "open";
+}
+
+/**
+ * Applies one fresh reading at `tip` to a row: `gone` only once "spent" held at two different tips, and any
+ * other fresh reading clears it, so a wrong or racing read is undone by the next one. Returns true on a change.
+ */
+export function goneStep(row: { goneTip?: number; gone?: boolean }, verdict: "spent" | "open", tip: number): boolean {
+  if (verdict === "open") {
+    if (row.goneTip === undefined && !row.gone) return false;
+    delete row.goneTip; delete row.gone;
+    return true;
+  }
+  if (!(Number(row.goneTip) > 0)) { row.goneTip = tip; return true; }
+  if (tip > Number(row.goneTip) && !row.gone) { row.gone = true; return true; }
+  return false;
 }
 
 /** The history marker for a row: null once included or for a row whose submit was answered. */
