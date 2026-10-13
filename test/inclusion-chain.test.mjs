@@ -161,6 +161,9 @@ try {
     chain2.available = [coins2[0].coin];
     await b.refresh();
     check("(7) loopback node: open while /tx/:id does not find it", (await b.row(r2.txid)).maybe === true);
+    const reads2 = chain2.statusReads;
+    await b.refresh();
+    check("(7) loopback node: a second refresh at the same tip reads no status again", chain2.statusReads === reads2);
     chain2.mined.set(r2.txid, 1_000);
     chain2.tip = 1_001;
     await b.refresh();
