@@ -79,4 +79,17 @@ merge = { pending: false, amount: 0, maybe: false, stuck: false };
 await refresh();
 check("(6) the merge line hides once nothing is open", byId("merge-pending").hidden === true);
 
+// ── (7) a merge accepted by the node is sent and confirming, not merged ──────────────────────────────────
+//   RED-FIRST: restore the "merged N coins into one" success copy and (7a) fails.
+const MTX = id("m7");
+h.consolidate = () => ({ ok: true, txid: MTX, merged: 3, remaining: 0, total: 3e8, sighashMatch: true });
+await byId("btn-consolidate-confirm").click(); await flush();
+check("(7a) the success copy says sent and confirming", byId("msg").textContent === `merge sent (${MTX.slice(0, 12)}…); confirming`);
+check("(7a) ...and does not claim the coins are merged", !/merged/.test(byId("msg").textContent));
+h.consolidate = () => ({ ok: true, txid: MTX, merged: 512, remaining: 40, total: 3e8, sighashMatch: true });
+byId("btn-consolidate-confirm").disabled = false;
+await byId("btn-consolidate-confirm").click(); await flush();
+check("(7b) paired: with coins left it still says the next merge can run now",
+  byId("msg").textContent === `merge sent (${MTX.slice(0, 12)}…); confirming. 40 coin(s) left; you can run the next merge right away`);
+
 done("popup-inclusion-dom");

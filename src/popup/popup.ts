@@ -1018,10 +1018,10 @@ $("btn-consolidate-confirm").addEventListener("click", async () => {
     busy("verifying & merging coins… (can take ~10s)");
     const r = await call("consolidate", SEND_FEE);
     if (r.ok) {
-      // Honest cadence (Plans/66 B7): the next round selects DISJOINT coins (the node's available
-      // view excludes this round's inputs), so "run again right away" is true; only the final
-      // combining pass waits on confirmations.
-      msg(`merged ${r.merged} coins into one · ${String(r.txid).slice(0, 12)}…` + (r.remaining >= 1 ? ` — ${r.remaining} coin(s) left; you can run the next merge right away` : ""), "ok sent");
+      // Sent, not merged: the merge line under the balance says when it is mined. The next round selects
+      // DISJOINT coins (the node's available view excludes this round's inputs), so "run the next merge
+      // right away" is true; only the final combining pass waits on confirmations.
+      msg(`merge sent (${String(r.txid).slice(0, 12)}…); confirming` + (r.remaining >= 1 ? `. ${r.remaining} coin(s) left; you can run the next merge right away` : ""), "ok sent");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
     } else {
