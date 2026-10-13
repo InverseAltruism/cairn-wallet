@@ -7,11 +7,31 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Only the `anchors` job runs on a PR; the publish jobs are gated to tag pushes below.
+  pull_request:
+    paths: ["src/core/spvanchors.ts"]
 
 # Nothing by default; each job asks for what it needs.
 permissions: {}
 
 jobs:
+  # The SPV anchor table, re-derived off the deploy host (cairn docs/Plans/86 section 3.3): walk the chain from the
+  # floor pin over clarvis's public /api/headers, require every entry to equal the walk, require the public front door
+  # to put each entry on its canonical chain, and fail when the newest entry is more than 6,000 below the public tip.
+  # The script imports only the committed vendored bundle, so no install runs here.
+  anchors:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - run: node scripts/update-spv-anchors.mjs --check --headers https://clarvis.cairn-substrate.com --rpc https://cairn-substrate.com/api/rpc
+
   # Publish-path structural vendor gate. A MIRROR of ci.yml's vendor-fresh-full:
   # rebuild the SPV bundle from the PINNED csd-sdk source and require byte-identity with the committed bundle.
   # The release job `needs:` this, so a tag cut from a commit that bypassed master CI still cannot publish a
@@ -19,6 +39,7 @@ jobs:
   # (a skipped job succeeds), so the release still cuts via the cheap gate below. Keep in lockstep with
   # ci.yml's vendor-fresh-full.
   vendor-fresh-full:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,7 +82,8 @@ jobs:
         run: npm -C cairn-wallet run verify:vendor
 
   release:
-    needs: vendor-fresh-full
+    needs: [vendor-fresh-full, anchors]
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write       # create the release + upload assets
