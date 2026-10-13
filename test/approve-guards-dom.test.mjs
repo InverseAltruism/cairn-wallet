@@ -20,6 +20,10 @@
 //     PAIRED HONEST PATH: (3b) a quote that answers arms Approve and reaches the signer; (3c) one that
 //     answers after the 700 ms floor arms Approve when it lands (drop the `tokenPainted` wait from armButtons
 //     and (3c) fails: the arm runs at 700 ms while the preview is loading and nothing re-arms it).
+//     resolve() repeats the check at the click, so an Approve left live over a preview that is not `ready`
+//     (by any path that re-enables the button) still reaches no signer.
+//     RED-FIRST: delete the `if (approve && tokenNotReady(current))` line in resolve() and (3d) fails.
+//     PAIRED HONEST PATH: (3b) a painted quote approves with the displayed quote.
 // (4) The re-enable after a paint waits for the 700 ms floor AND for the send-warning fill, so a slow history
 //     read cannot leave Approve live over an unpainted address-poisoning warning; and the timer starts after
 //     the paint, never during the pre-paint reads.
@@ -157,6 +161,12 @@ check("(3a) ...and Reject is available", registry.get("btn-reject").disabled ===
 click("btn-approve");
 await flush();
 check("(3a) a click reaches no signer", resolves.length === 0);
+approveBtn().disabled = false;   // Approve live over the failed preview: only the click-time check is left
+click("btn-approve");
+await flush(); await settle(50);
+check("(3d) a click on Approve over a failed preview reaches no signer", resolves.length === 0);
+check("(3d) ...and says the token amount is not shown", /token amount is not shown yet/.test(registry.get("msg").textContent) && registry.get("msg").className === "msg err");
+check("(3d) the request is not consumed: its view is still shown", registry.get("view-req").hidden === false);
 
 quote = { ok: true, ticker: "PAY", amount: "7", fee: "1", total: "8", giveTicker: "AAA", giveAmount: "10" };
 state.pending = [tokenReq("t2")];
