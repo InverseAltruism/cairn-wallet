@@ -136,8 +136,9 @@ function wrap(db: IDBDatabase): HeaderStore {
       for (const k of w.del ?? []) checkKey(k);
       if (w.deleteAbove !== undefined) checkKey(w.deleteAbove);
       if (w.head !== undefined && !isHeadHint(w.head)) throw new TypeError("header store head is malformed");
-      // Every request is issued before the first await: awaiting anything between two requests lets
-      // IndexedDB auto-commit the first half (test/headerstore-chrome.test.mjs pins this in real Chrome).
+      // One transaction, every request issued in this task: once control returns to the event loop with no
+      // request pending, IndexedDB auto-commits, so a request after a timer or fetch await lands outside it
+      // (test/headerstore-chrome.test.mjs pins both the single transaction and that failure in real Chrome).
       const tx = db.transaction([CHUNKS, META], "readwrite");
       const done = txDone(tx);
       const chunks = tx.objectStore(CHUNKS);
@@ -204,7 +205,7 @@ export interface AcquireDeps {
 }
 
 export interface ChunkAcquirer {
-  /** The verified chunk holding `height`; rejects for a height outside the anchored range or a chunk that fails. */
+  /** The verified chunk holding `height`; rejects outside the anchored range or for a failing chunk. The bytes are the LRU's own: callers must not mutate them. */
   acquire(height: number): Promise<{ spec: ChunkSpec; records: Uint8Array }>;
   /** Settles when the detached store writes issued so far have finished. */
   writes(): Promise<void>;

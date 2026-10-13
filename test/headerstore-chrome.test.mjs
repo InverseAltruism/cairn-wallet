@@ -2,7 +2,7 @@
 // lands in an auto-committed transaction, which an in-memory IndexedDB stand-in does not model), the bounded key
 // listing, truncation, malformed values, VersionError recreate, a blocked recreate, and acquisition over the real store.
 // Needs playwright-core (PLAYWRIGHT_CORE, see scripts/playwright-core.mjs) and a Chromium (PLAYWRIGHT_CHROMIUM, or
-// playwright's own). Without playwright-core it prints SKIP; it runs wherever playwright-core is installed.
+// playwright's own). Without playwright-core or a Chromium binary it prints SKIP; it runs where both are installed.
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { checker } from "./helpers/check.mjs";
@@ -18,7 +18,14 @@ const bundle = (await build({
   entryPoints: [fileURLToPath(new URL("../src/core/headerstore.ts", import.meta.url))],
   bundle: true, format: "iife", globalName: "HS", platform: "browser", target: "es2022", write: false, logLevel: "warning",
 })).outputFiles[0].text;
-const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM || undefined, args: ["--no-sandbox"] });
+let browser;
+try {
+  browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM || undefined, args: ["--no-sandbox"] });
+} catch (e) {
+  if (!/executable doesn't exist|ENOENT/i.test(String(e?.message))) throw e;
+  console.log(`SKIP: no Chromium binary for playwright-core (set PLAYWRIGHT_CHROMIUM): ${String(e.message).split("\n")[0]}`);
+  process.exit(0);
+}
 
 // Each scenario runs in a fresh context (its own storage) on a routed http origin, where IndexedDB is available.
 async function scenario(name, fn, arg) {
@@ -70,6 +77,21 @@ const trunc = await scenario("truncation", async (H) => {
   return { keys: await s.listChunks(), len: c8.length, b: c8[0], tip: (await s.getHead()).tip };
 }, H);
 t.check("a truncation rewrites the top chunk and deletes those above in one write", trunc?.keys.join() === "7,8" && trunc.len === 168 && trunc.b === 80 && trunc.tip === 32769);
+
+const onetx = await scenario("one transaction per write", async (H) => {
+  const s = await HS.openHeaderStore();
+  await s.write({ put: [7, 8, 9].map((k) => ({ k, records: new Uint8Array(84).fill(k) })) });
+  const real = IDBDatabase.prototype.transaction;
+  let n = 0;
+  IDBDatabase.prototype.transaction = function (...a) { n++; return real.apply(this, a); };
+  try {
+    await s.write({ put: [{ k: 8, records: new Uint8Array(84).fill(88) }], deleteAbove: 8, head: { v: 2, tip: 32768, tipHash: H } });
+  } finally {
+    IDBDatabase.prototype.transaction = real;
+  }
+  return n;
+}, H);
+t.check(`a truncation (put, deleteAbove and head) is one transaction, so it commits whole or not at all (${onetx})`, onetx === 1);
 
 const bad = await scenario("malformed values", async () => {
   const s = await HS.openHeaderStore();
