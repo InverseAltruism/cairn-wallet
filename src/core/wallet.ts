@@ -18,6 +18,7 @@ import { refuse } from "./refuse.js";
 import { secondSourceOfferConflict, startSecondSourceOfferRead, type SecondSourceRead } from "./offerxcheck.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
+import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
@@ -122,6 +123,10 @@ const RPC_LOCAL_ERR = "RPC must be the Cairn proxy or a node on this computer (h
 
 // Per-account storage namespaces — keep each account's activity + secrets separate.
 const histKey = (addr: string) => "txHistory:" + addr;
+// A merge whose output is not yet seen and that is not known to be gone.
+const isMergeCandidate = (x: any): boolean => x?.type === "consolidate" && !x.confirmed && !x.gone;
+// A row pendingMerge still evaluates; `gone` stays here so a later reading can undo it.
+const isOpenRow = (x: any): boolean => !!x && (x.maybe || isMergeCandidate(x) || x.gone || x.goneTip !== undefined);
 const sealKey = (addr: string) => "sealedClaims:" + addr;
 
 // SEAL-EVICT-01 (P75-6 F2): the sealed-claims cap must never evict an UNREVEALED preimage; it is the only
@@ -1144,65 +1149,79 @@ export class Wallet {
   }
   consolidatePreview(fee = 1_000_000) { return node.consolidatePreview(this.rpc, this.addr(), fee); }
 
-  // Pending-merge detection (popup-only, Plans/66 B4). The moment a merge enters the mempool the
-  // node's available-utxo view drops its inputs AND doesn't yet show its output, so the balance
-  // hero visibly loses the whole merged amount until the next block — the single most alarming
-  // moment in the consolidate flow. This derives "a merge is confirming" from data the popup
-  // ALREADY holds (history + the utxo set from its balance fetch — zero extra requests, no
-  // dependency on the node's expensive /tx/:id not-found scan):
-  //   pending  = a consolidate history entry <60min whose merge-output txid is NOT in the utxos;
-  //   confirmed = the txid APPEARS in the utxos → latch `confirmed:true` ON the entry (persisted:
-  //     the designed next step SPENDS that output, and without the latch its later absence would
-  //     re-derive "pending" forever after a popup reopen);
-  //   stale    = >60min unconfirmed → stop claiming (a dropped merge returns its coins anyway).
-  // Multi-round aware: sums every in-flight round. `maybe` marks rounds whose submit answer was
-  // lost (recorded maybe:true) so the copy can hedge.
-  // The RMW rides histChain and the balance fetch sits strictly OUTSIDE it (a network call inside the
-  // chain would park send()'s own history write behind a hung RPC).
-  async pendingMerge(utxos?: { txid: string }[]): Promise<{ pending: boolean; amount: number; maybe: boolean }> {
+  // Pending-merge line and inclusion reconcile (popup-only; test/inclusion-chain.test.mjs). Each open row is
+  // settled from chain reads, not the clock: included once its txid is in a utxo set or reported mined;
+  // `gone` (a different mined tx spent one of its inputs) only after two tips agree, cleared by any later
+  // reading that disagrees (a read that could not look changes nothing), and read once per
+  // INCLUSION_GONE_READ_INTERVAL blocks while gone; `stuck` INCLUSION_NOTICE_BLOCKS past `subTip`.
+  // A merge latches `confirmed` because the next step spends its output. Cost per refresh: one tip read, at
+  // most INCLUSION_READS_MAX status reads (each 2 to 4 node reads behind the proxy's caches), one per row per
+  // block (`chkTip`), and one mined-utxo read when a status came back unknown. Reads stay OUTSIDE histChain
+  // (a read inside it would park send()'s own history write behind a hung RPC); the chained step re-reads.
+  async pendingMerge(utxos?: { txid: string; vout?: number }[]): Promise<{ pending: boolean; amount: number; maybe: boolean; stuck: boolean }> {
+    const quiet = { pending: false, amount: 0, maybe: false, stuck: false };
     const addr = this.addr(), k = histKey(addr); // captured once (F5): history, latch and balance stay on ONE account
-    // pre-read ONLY for the early return + the fetch decision; the chained work RE-READS fresh (below).
+    // pre-read ONLY for the early return, the fetch decision and the read list; the chained work RE-READS fresh.
     const peek: any[] = (await this.store.get(k)) || [];
-    const hasCandidates = peek.some((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
-    const hasMaybes = peek.some((x) => x?.maybe);
-    // Nothing to derive AND nothing reconcilable against a caller-supplied utxo set → done. The
-    // maybe-reconcile below never triggers its own fetch: this method's zero-extra-requests
-    // property is load-bearing (B4), and flag hygiene is not worth a network call.
-    if (!hasCandidates && !(hasMaybes && utxos)) return { pending: false, amount: 0, maybe: false };
+    const hasCandidates = peek.some(isMergeCandidate);
+    // Nothing to derive AND nothing reconcilable against a caller-supplied utxo set: no network at all.
+    if (!hasCandidates && !(utxos && peek.some(isOpenRow))) return quiet;
     let set = utxos;
-    if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return { pending: false, amount: 0, maybe: false }; } }
+    if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return quiet; } }
     // filter hostile/degenerate elements (0.2.57, reviewer nit): a null utxo entry from a hostile RPC
     // used to throw here and land in the caller's ambiguous catch — a misleading "pending unknown".
     const present = new Set((set || []).filter((u) => u && u.txid != null).map((u) => String(u.txid).toLowerCase()));
+    const open = peek.filter((x) => isOpenRow(x) && !present.has(String(x.txid).toLowerCase()));
+    const reads = open.length ? await this.inclusionReads(open, addr) : { tip: null, states: new Map<string, TxInclusion>(), mined: null };
     return this.inHistChain(async () => {
-      if (!this.accts) return { pending: false, amount: 0, maybe: false };
-      // RE-READ inside the chain: the pre-network read above is stale across the balance RPC, and
-      // writing it back clobbered anything recorded during the fetch (P75-6 correction 1).
+      if (!this.accts) return quiet;
+      // RE-READ inside the chain: the pre-network read above is stale across the reads, and writing it
+      // back clobbered anything recorded during them (P75-6 correction 1).
       const h: any[] = (await this.store.get(k)) || [];
-      const candidates = h.filter((x) => x?.type === "consolidate" && !x.confirmed && Date.now() - (x.ts || 0) <= 3_600_000);
-      const maybes = h.filter((x) => x?.maybe);
-      let amount = 0, maybe = false, pending = false, dirty = false;
-      // Generic maybe-reconcile (0.2.56, review F2): an entry recorded maybe:true is RESOLVED the
-      // moment its txid shows up in the utxo set — a send's change output and a merge's self-output
-      // both carry the tx's own txid, so presence proves the ambiguous submit landed. (Blind spot,
-      // accepted: a change-less send never reconciles this way; the popup time-bounds its marker
-      // rather than trusting this pass.)
-      for (const e of maybes) if (present.has(String(e.txid).toLowerCase())) { delete e.maybe; dirty = true; }
-      for (const e of candidates) {
-        if (present.has(String(e.txid).toLowerCase())) {
-          // merge output visible on-chain → latch confirmed IN PLACE (persisted below; the designed
-          // next step SPENDS that output, and without the latch its later absence would re-derive
-          // "pending" forever after a popup reopen)
-          if (!e.confirmed) { e.confirmed = true; dirty = true; }
+      let dirty = false;
+      for (const e of h) {
+        if (!isOpenRow(e)) continue;
+        const id = String(e.txid).toLowerCase();
+        const st = reads.states.get(id) ?? null;
+        const verdict = present.has(id) || reads.mined?.txids.has(id) ? "included" : inclusionVerdict(st, e.inputs, reads.mined?.ops ?? null);
+        if (verdict === "included") {
+          delete e.maybe; delete e.stuck; delete e.gone; delete e.goneTip;
+          if (e.type === "consolidate") e.confirmed = true;
+          dirty = true;
           continue;
         }
-        // amount = what actually comes back next block: the merge OUTPUT (inputs minus fee) — the
+        if (reads.tip == null) continue;
+        if (verdict !== "noreading" && goneStep(e, verdict, reads.tip)) dirty = true;
+        if (!(Number(e.subTip) > 0)) { e.subTip = reads.tip; dirty = true; }
+        if (st && e.chkTip !== reads.tip) { e.chkTip = reads.tip; dirty = true; }
+        if (!e.stuck && reads.tip - Number(e.subTip) >= INCLUSION_NOTICE_BLOCKS) { e.stuck = true; dirty = true; }
+      }
+      let amount = 0, maybe = false, pending = false, stuck = false;
+      for (const e of h) {
+        if (!isMergeCandidate(e)) continue;
+        // amount = what actually comes back once mined: the merge OUTPUT (inputs minus fee); the
         // recorded e.amount is the input total, which would overstate by the fee.
-        pending = true; amount += Math.max(0, (Number(e.amount) || 0) - (Number(e.fee) || 0)); maybe = maybe || !!e.maybe;
+        pending = true; amount += Math.max(0, (Number(e.amount) || 0) - (Number(e.fee) || 0));
+        maybe = maybe || !!e.maybe; stuck = stuck || !!e.stuck;
       }
       if (dirty) await this.store.set(k, h);
-      return { pending, amount, maybe };
-    }).catch(() => ({ pending: false, amount: 0, maybe: false }));
+      return { pending, amount, maybe, stuck };
+    }).catch(() => quiet);
+  }
+  // The tip once, a status read for each open row not yet read at this tip (newest first, capped), and the
+  // mined utxo set once if any status came back unknown. No tip: no chain-derived step this pass.
+  private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string> } | null }> {
+    const states = new Map<string, TxInclusion>();
+    const t = await node.tip(this.rpc).catch(() => 0);
+    if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
+    const due = open.filter((x) => !(Number(x.chkTip) >= t) && !(x.gone && t - Number(x.chkTip) < INCLUSION_GONE_READ_INTERVAL)).slice(0, INCLUSION_READS_MAX);
+    const got = await Promise.all(due.map((x) => node.txInclusion(this.rpc, String(x.txid))));
+    due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
+    if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
+    const list = await node.confirmedUtxos(this.rpc, addr);
+    const live = (list || []).filter((u) => u && u.txid != null);
+    const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())) } : null;
+    return { tip: t, states, mined };
   }
 
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
@@ -1425,8 +1444,7 @@ export class Wallet {
       // Cross-check the user's configured primary resolver against the independent clarvis second source
       // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
       // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
-      const sources: ResolverSource[] = [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
-      const res = await verifyNameUnion(nm, sources, await this.spvSource());
+      const res = await verifyNameUnion(nm, this.nameSources(), await this.spvSource());
       try { await this.rememberHintSet(nm, res); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
       return { ...res, name: nm };
     } catch (e) {
@@ -1744,9 +1762,11 @@ export class Wallet {
   // post-await histKey(this.addr()) would file the entry (and everything the pending-merge line
   // derives from it) under the switched-to account.
   private histKeyNow() { return histKey(this.addr()); }
-  private async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[] }, meta: Record<string, unknown>) {
+  private async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[] }, meta: Record<string, unknown>) {
     // PCD-2: every branch below is non-rejecting (chained + guarded), so an awaiting flow can never report a succeeded broadcast as a failure.
-    if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta });
+    // Rows pendingMerge may settle keep a few input outpoints for its "gone" verdict.
+    const inputs = Array.isArray(r?.inputs) && r.inputs.length ? { inputs: r.inputs.slice(0, INCLUSION_INPUTS_KEPT) } : {};
+    if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
     // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool — a timeout / gateway
     // 5xx / unreadable answer AFTER signing. Record it maybe:true under the LOCALLY computed txid
     // so the failure copy's "check history before resending" is actionable: this entry is what
@@ -1758,7 +1778,7 @@ export class Wallet {
     // clear-signed once — entries only originate from the user's own reviewed sends, no poisoning
     // vector.
     else if (r && !r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
-      await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, maybe: true });
+      await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
     }
     // A duplicate answer RESOLVES an earlier ambiguity — a tx spending these coins IS pending, and
     // a deterministic retry of an ingested submit is byte-identical, so this is the common way a
@@ -1771,7 +1791,7 @@ export class Wallet {
     // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
     // this spend just consumed (Plans/66 review finding — the final combining pass spends earlier
     // rounds' outputs with no balance refresh in between, which otherwise left those entries
-    // deriving a false "merging" line for up to an hour).
+    // deriving a false "merging" line until a balance refresh saw them).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
   }
   private clearMaybe(k: string, txid: string): Promise<void> {

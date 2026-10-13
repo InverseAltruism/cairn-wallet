@@ -5,6 +5,7 @@
 // onto a different transaction. The private key only ever lives in the wallet; nothing here sends it away.
 import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
 import { fmtCsd } from "./cairnx.js";
+import type { TxInclusion } from "./inclusion.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever — the popup's "sending…" spinner never settled and there was no in-popup
@@ -71,6 +72,24 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
 }
 
 export async function tip(rpc: string): Promise<number> { return Number((await get(rpc, "/tip")).height ?? 0); }
+// Display only. The Cairn proxy answers /tx/:id/status (mined, pending or unknown across both backends); a
+// loopback node has no such route (404), so its /tx/:id says mined, or not mined (`definite` when its scan was
+// complete; it has no mempool view). null: nothing knowable this time.
+export async function txInclusion(rpc: string, txid: string): Promise<TxInclusion | null> {
+  try {
+    const r = await fetch(`${rpc}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    if (r.ok) {
+      const j: any = await r.json();
+      if (j?.ok !== true || !["mined", "pending", "unknown"].includes(j.state)) return null;
+      if (j.state === "mined") return Number.isSafeInteger(j.height) ? { state: "mined", height: j.height } : null;
+      return j.state === "pending" ? { state: "pending" } : { state: "unknown", definite: j.definite === true };
+    }
+    if (r.status !== 404) return null;
+    const t: any = await get(rpc, `/tx/${txid}`);
+    if (t?.ok === true && Number.isSafeInteger(t.height)) return { state: "mined", height: t.height };
+    return t?.ok === false ? { state: "unknown", definite: t.complete === true } : null;
+  } catch { return null; }   // unreachable or unreadable: the row stays open and is read again next block
+}
 export async function getProposal(rpc: string, txid: string): Promise<any | null> {
   try { const j = await get(rpc, `/proposal/${txid}`); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
 }
@@ -79,6 +98,19 @@ export async function balance(rpc: string, addr: string): Promise<{ confirmed: n
   const j = await get(rpc, `/utxos/${addr}?available=true`);
   if (!j || typeof j !== "object" || !Array.isArray(j.utxos)) throw new Error(`/utxos -> malformed response`);
   return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos };
+}
+// The mined utxo set, coins held by the mempool included (balance() leaves those out). The proxy serves it
+// at /utxos-all/:addr; its /utxos/:addr is mempool-filtered, so only a bare node origin falls back to the
+// node's own /utxos/:addr. null: not readable, and no caller may conclude anything from it.
+export async function confirmedUtxos(rpc: string, addr: string): Promise<{ txid: string; vout: number }[] | null> {
+  try {
+    const r = await fetch(`${rpc}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    let j: any;
+    if (r.ok) j = await r.json();
+    else if (r.status === 404 && new URL(rpc).pathname.replace(/\/+$/, "") === "") j = await get(rpc, `/utxos/${addr}`);
+    else return null;
+    return j && typeof j === "object" && Array.isArray(j.utxos) ? j.utxos : null;
+  } catch { return null; }   // unreachable or unreadable: no "gone" verdict this pass
 }
 
 function appToJson(app: App): unknown {
@@ -220,7 +252,7 @@ type VerifyResult =
   | { ok: false; kind: "horizon"; horizons: { txid: string; vout: number }[]; ghosts: { txid: string; vout: number }[] }
   | { ok: false; kind: "unrepresentable"; unrepresentables: { txid: string; vout: number }[]; ghosts: { txid: string; vout: number }[] }
   | { ok: false; kind: "notfound"; ghosts: { txid: string; vout: number }[] };
-const opKey = (txid: unknown, vout: unknown) => `${String(txid).toLowerCase()}:${Number(vout)}`;
+export const opKey = (txid: unknown, vout: unknown) => `${String(txid).toLowerCase()}:${Number(vout)}`;
 async function verifyInputValues(
   rpc: string,
   inputs: { txid: string; vout: number }[],
@@ -438,12 +470,10 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
 // `sighashMatch` is DEPRECATED and vestigial — it is constant-equal to `ok` (true only when WE computed
 // and matched the sighash, which is the entire local-build flow) and no reader was found — but it is KEPT
 // on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
-// spentTxids: the source txids of the inputs this spend consumed (successful submits only) —
-// lets the wallet latch a pending-merge history entry the moment its output is SPENT (a spend
-// proves the merge confirmed even if no balance refresh ever saw the output; Plans/66 review
-// finding: the final combining pass spends earlier rounds' outputs directly, which otherwise
-// left their entries deriving a false "merging" line for up to an hour). Additive, internal.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[] }
+// spentTxids (successful submits: the source txids of the inputs spent, so the merge rows they consumed
+// latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
+// rows for the "gone" check) are internal; background.ts strips both before a result reaches a page.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[]; inputs?: string[] }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 interface Selection { inputs: SelectedInput[]; total: number }
@@ -656,7 +686,8 @@ async function assembleValueTx(
   if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false, code: "NO_OUTPUTS" };
   const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
   const r = await signAndSubmit(rpc, tx, priv);
-  return r.ok ? { ...r, spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : r;
+  if (!r.txid) return r;
+  return { ...r, inputs: sv.inputs.map((i) => opKey(i.txid, i.vout)), ...(r.ok ? { spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : {}) };
 }
 
 // Per-output validation shared by buildSignSubmit / sendMany / fillOffer. D7 (register §3,
@@ -809,7 +840,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
     const r = await signAndSubmit(rpc, tx, priv);
-    return { ...r, merged: pool.length, remaining, total: ver.total, ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
+    return { ...r, merged: pool.length, remaining, total: ver.total, ...(r.txid ? { inputs: pool.map((i) => opKey(i.txid, i.vout)) } : {}), ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
   }
   let skipped = 0, skippedValue = 0;
   for (const c of spendableCoins(utxos)) if (exclude.has(opKey(c.txid, c.vout))) { skipped++; skippedValue += c.value; }

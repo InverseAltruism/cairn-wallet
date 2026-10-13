@@ -18,6 +18,11 @@
 //     RED-FIRST: delete the `displayedSigner ... ACCOUNT_CHANGED` block in resolvePending and (C1) fails.
 //     PAIRED HONEST PATH: (C2) the same propose under the displayed active account reaches the wallet.
 //
+// (E) A submit result carries `spentTxids` and `inputs` for the wallet's history; resolvePending strips both
+//     before the page receives it (asserted on (C2)'s result).
+//     RED-FIRST: pass `result` instead of `pageResult(result)` to finish() and (E1) fails.
+//     PAIRED HONEST PATH: (E2) the page still receives ok and the txid.
+//
 // Run: node --import tsx test/background-consent-outcome.test.mjs   (offline)
 import assert from "node:assert/strict";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
@@ -194,7 +199,13 @@ const outOk = (await popup("resolve", reqOk.id, true, signer)).result;
 assert.equal(outOk.ok, true, "(C2) approved: " + JSON.stringify(outOk));
 assert.ok(seen.some((u) => u.includes(`/utxos/${signer}`)), "(C2) the wallet selected coins for the displayed account");
 assert.equal(seen.filter((u) => u.includes("/tx/submit")).length, 1, "(C2) and submitted once");
-assert.equal((await proposeOk).ok, true, "(C2) the page receives the success");
+const pageOk = await proposeOk;
+assert.equal(pageOk.ok, true, "(C2) the page receives the success");
+// (E) the wallet's history bookkeeping on a submit result stays off the page.
+// RED-FIRST: pass `result` instead of `pageResult(result)` to finish() in resolvePending and (E1) fails.
+assert.match(String(pageOk.result?.txid), /^0x[0-9a-f]{64}$/, "(E2) paired: the page still receives ok and the txid");
+assert.equal("inputs" in pageOk.result, false, "(E1) the page result carries no spent outpoints");
+assert.equal("spentTxids" in pageOk.result, false, "(E1) ...and no spent source txids");
 globalThis.fetch = baseFetch;
 // ── (D) a popup send while locked answers WALLET_LOCKED, not INTERNAL (Plan 85 7.3a, E1.lock) ────────
 // RED-FIRST: use "INTERNAL" again in the popup listener's catch in background.ts and (D1) fails.

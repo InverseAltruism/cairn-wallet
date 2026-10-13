@@ -166,6 +166,13 @@ const thrownCode = (e: unknown): string => ((e as { message?: unknown })?.messag
 
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
+// spentTxids and inputs are the wallet's history bookkeeping (node.ts SubmitResult): kept off what a page receives.
+function pageResult(r: any): any {
+  if (!r || typeof r !== "object" || Array.isArray(r)) return r;
+  const out = { ...r };
+  delete out.spentTxids; delete out.inputs;
+  return out;
+}
 async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<{ done: boolean; ok?: boolean; error?: string; code?: string; txid?: string }> {
   const p = pending.get(id);
   if (!p) return { done: false };
@@ -245,7 +252,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // and change only ever returns to the wallet's own address.
     else if (p.method === "fillOffer") result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote });
     else throw new Error("unsupported dApp method: " + p.method);
-    return finish({ ok: true, result });
+    return finish({ ok: true, result: pageResult(result) });
   } catch (e: any) { return finish({ ok: false, code: thrownCode(e), error: e?.message ?? String(e) }); }
 }
 

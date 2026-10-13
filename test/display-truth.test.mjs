@@ -170,7 +170,8 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("PIN W8: the token review card renders via tokenAmountBothScales at its use-site", /\$\("tc-amt"\)\.textContent = tokenAmountBothScales\(/.test(popupSrc));
   ok("PIN W8: the sent toast renders via tokenAmountBothScales", popupSrc.includes("sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)}"));
   ok("PIN M10: the affirmative 'likely never landed' claim is gone from popup.ts", !popupSrc.includes("likely never landed"));
-  ok("PIN M10: the >1h tombstone states the change-output blind spot honestly", popupSrc.includes("cannot be confirmed from here"));
+  // The >1h tombstone this pinned is gone: an open row's marker now comes from chain state, and
+  // test/popup-inclusion-dom.test.mjs (1)-(3) asserts no marker calls a possibly-landed send lost.
   ok("PIN M3: approve.ts renders the quote via the attributed tokenQuoteHtml", approveSrc.includes("show(tokenQuoteHtml(q))"));
   ok("PIN M3: no first-person 'You will pay' debit assertion remains in approve.ts", !approveSrc.includes("You will pay"));
   ok("PIN 0.2.70: armButtons fail-softs a rejected fillSendWarning (Approve/Reject cannot stay disabled)",

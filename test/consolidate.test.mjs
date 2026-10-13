@@ -293,12 +293,13 @@ try {
     // keep this from re-deriving "pending" after a popup reopen
     const p3 = await w.pendingMerge([]);
     check("spent-after-confirm stays not-pending (latch survives)", p3.pending === false);
-    // stale: an unconfirmed entry older than 60min stops claiming
+    // no clock window: an unconfirmed entry older than 60min keeps claiming until chain state settles it
+    // (the chain-state cases are in test/inclusion-chain.test.mjs)
     const h2 = await store.get("txHistory:" + addr);
     const e = h2.find((x) => x.txid === r.txid); e.confirmed = false; e.ts = Date.now() - 3_700_000;
     await store.set("txHistory:" + addr, h2);
     const p4 = await w.pendingMerge([]);
-    check("stale (>60min) unconfirmed merge stops claiming pending", p4.pending === false);
+    check("an unconfirmed merge older than 60min still claims pending (no clock window)", p4.pending === true);
   }
 
   // ── 13. ambiguous merge is recorded maybe:true with the LOCAL txid (detection must not be blind
