@@ -5,6 +5,7 @@
 // onto a different transaction. The private key only ever lives in the wallet; nothing here sends it away.
 import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
 import { fmtCsd } from "./cairnx.js";
+import type { TxInclusion } from "./inclusion.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever — the popup's "sending…" spinner never settled and there was no in-popup
@@ -71,6 +72,22 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
 }
 
 export async function tip(rpc: string): Promise<number> { return Number((await get(rpc, "/tip")).height ?? 0); }
+// Display only. The Cairn proxy answers /tx/:id/status (mined, pending or unknown across both backends); a
+// loopback node has no such route (404), so its /tx/:id can only say mined. null: nothing knowable this time.
+export async function txInclusion(rpc: string, txid: string): Promise<TxInclusion | null> {
+  try {
+    const r = await fetch(`${rpc}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    if (r.ok) {
+      const j: any = await r.json();
+      if (j?.ok !== true || !["mined", "pending", "unknown"].includes(j.state)) return null;
+      if (j.state === "mined") return Number.isSafeInteger(j.height) ? { state: "mined", height: j.height } : null;
+      return j.state === "pending" ? { state: "pending" } : { state: "unknown", definite: j.definite === true };
+    }
+    if (r.status !== 404) return null;
+    const t: any = await get(rpc, `/tx/${txid}`);
+    return t?.ok === true && Number.isSafeInteger(t.height) ? { state: "mined", height: t.height } : null;
+  } catch { return null; }   // unreachable or unreadable: the row stays open and is read again next block
+}
 export async function getProposal(rpc: string, txid: string): Promise<any | null> {
   try { const j = await get(rpc, `/proposal/${txid}`); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
 }
@@ -220,7 +237,7 @@ type VerifyResult =
   | { ok: false; kind: "horizon"; horizons: { txid: string; vout: number }[]; ghosts: { txid: string; vout: number }[] }
   | { ok: false; kind: "unrepresentable"; unrepresentables: { txid: string; vout: number }[]; ghosts: { txid: string; vout: number }[] }
   | { ok: false; kind: "notfound"; ghosts: { txid: string; vout: number }[] };
-const opKey = (txid: unknown, vout: unknown) => `${String(txid).toLowerCase()}:${Number(vout)}`;
+export const opKey = (txid: unknown, vout: unknown) => `${String(txid).toLowerCase()}:${Number(vout)}`;
 async function verifyInputValues(
   rpc: string,
   inputs: { txid: string; vout: number }[],
@@ -442,8 +459,10 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
 // lets the wallet latch a pending-merge history entry the moment its output is SPENT (a spend
 // proves the merge confirmed even if no balance refresh ever saw the output; Plans/66 review
 // finding: the final combining pass spends earlier rounds' outputs directly, which otherwise
-// left their entries deriving a false "merging" line for up to an hour). Additive, internal.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[] }
+// left their entries deriving a false "merging" line until a balance refresh saw them). Additive, internal.
+// inputs: the spent outpoints (`txid:vout`) on every result that carries a txid, so a history row whose
+// submit answer was lost can later be told apart from one whose coins another transaction spent.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[]; inputs?: string[] }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 interface Selection { inputs: SelectedInput[]; total: number }
@@ -656,7 +675,8 @@ async function assembleValueTx(
   if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false, code: "NO_OUTPUTS" };
   const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
   const r = await signAndSubmit(rpc, tx, priv);
-  return r.ok ? { ...r, spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : r;
+  if (!r.txid) return r;
+  return { ...r, inputs: sv.inputs.map((i) => opKey(i.txid, i.vout)), ...(r.ok ? { spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : {}) };
 }
 
 // Per-output validation shared by buildSignSubmit / sendMany / fillOffer. D7 (register §3,
@@ -809,7 +829,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
     const r = await signAndSubmit(rpc, tx, priv);
-    return { ...r, merged: pool.length, remaining, total: ver.total, ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
+    return { ...r, merged: pool.length, remaining, total: ver.total, ...(r.txid ? { inputs: pool.map((i) => opKey(i.txid, i.vout)) } : {}), ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
   }
   let skipped = 0, skippedValue = 0;
   for (const c of spendableCoins(utxos)) if (exclude.has(opKey(c.txid, c.vout))) { skipped++; skippedValue += c.value; }

@@ -3,6 +3,7 @@
 // against localStorage so the exact UI flows can be tested in a real browser.
 import type { Wallet } from "../core/wallet.js";
 import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
+import { INCLUSION_NOTICE_BLOCKS, inclusionMark } from "../core/inclusion.js";
 import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
 import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
@@ -283,19 +284,12 @@ async function renderHistory() {
       : t.domain ? escapeHtml(String(t.domain))
       : t.target ? `${escapeHtml(String(t.target).slice(0, 12))}…` : "";
     const when = t.ts ? new Date(t.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-    // maybe:true = the submit's answer was lost (recorded under the locally computed txid); honest
-    // while fresh, TIME-BOUNDED to the same 60min staleness rule as the pending-merge line. Past the
-    // window the marker goes honest-UNKNOWN, not the old affirmative it-is-dead verdict (M10, B5g,
-    // pinned by test/display-truth.test.mjs): the utxo reconcile
-    // can only ever confirm a send whose CHANGE returned to this wallet, so a change-less send that
-    // LANDED looks identical here to one that never did — this device cannot tell them apart, and the
-    // old copy affirmatively called a possibly-landed payment dead. No chain read is added (Plan 71
-    // section 8 decline 10: a passive history render must not gain network latency, and the node's
-    // /tx/:id goes permanently not-found past its 100k scan horizon anyway — W9).
-    const maybeMark = t.maybe && t.ts
-      ? (Date.now() - t.ts <= 3_600_000
-        ? ` <span class="dim">· may be in flight; not yet seen on chain</span>`
-        : ` <span class="dim">· unconfirmed: this device only sees a send once change returns to it, so a send with no change output cannot be confirmed from here - check this txid in the explorer before resending</span>`)
+    // The marker reads what the balance refresh's reconcile (pendingMerge) stored on the row; the render
+    // itself makes no chain read. Only a gone row (no node holds it, an input spent elsewhere) says not included.
+    const mark = inclusionMark(t);
+    const maybeMark = mark === "sent" ? ` <span class="dim">· sent, not yet included</span>`
+      : mark === "stuck" ? ` <span class="dim">· still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer</span>`
+      : mark === "gone" ? ` <span class="dim">· not included: its coins were spent by another transaction; check the explorer</span>`
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
@@ -335,18 +329,22 @@ function paintAvatar(name: string | null, addr: string) {
 // balance fetch ALREADY returned (zero extra requests). Cached module-level so the refusal copy
 // (sendRefused) can consult it synchronously; refreshed on every balance refresh, which runs on
 // open, after sends, and after merges — exactly the moments the state can change.
-let mergePendingNow: { pending: boolean; amount: number; maybe: boolean } = { pending: false, amount: 0, maybe: false };
+let mergePendingNow: { pending: boolean; amount: number; maybe: boolean; stuck: boolean } = { pending: false, amount: 0, maybe: false, stuck: false };
 async function updateMergePending(utxos: unknown) {
   const line = $("merge-pending") as HTMLElement;
   try {
     mergePendingNow = await call("pendingMerge", utxos);
     if (mergePendingNow?.pending) {
-      line.textContent = mergePendingNow.maybe
-        ? `up to +${fmtBalance(mergePendingNow.amount)} CSD may be merging; back in your balance once the merge is mined`
-        : `+${fmtBalance(mergePendingNow.amount)} CSD merging; back in your balance once the merge is mined`;
+      line.textContent = mergePendingNow.stuck
+        ? `merge of ${fmtBalance(mergePendingNow.amount)} CSD still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer`
+        : mergePendingNow.maybe
+          ? `up to +${fmtBalance(mergePendingNow.amount)} CSD may be merging; back in your balance once the merge is mined`
+          : `+${fmtBalance(mergePendingNow.amount)} CSD merging; back in your balance once the merge is mined`;
       line.hidden = false;
     } else line.hidden = true;
-  } catch { line.hidden = true; mergePendingNow = { pending: false, amount: 0, maybe: false }; }
+  } catch { line.hidden = true; mergePendingNow = { pending: false, amount: 0, maybe: false, stuck: false }; }
+  // the reconcile may have settled history rows: repaint their markers if the list is on screen
+  if (!($("activity") as HTMLElement).hidden) void renderHistory();
 }
 async function refreshBalance() {
   const el = $("balance");
