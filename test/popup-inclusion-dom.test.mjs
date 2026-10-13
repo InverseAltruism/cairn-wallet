@@ -60,9 +60,9 @@ await openActivity();
 check("setup: the activity list is painted", byId("activity").hidden === false && rowOf(id("a4")).length > 0);
 check("(1) a 61-minute-old open row reads: sent, not yet included", rowOf(id("a1")).includes("sent, not yet included"));
 check("(1) ...and does not call it unconfirmable, lost or never landed", !/cannot be confirmed|never landed|lost|failed/.test(rowOf(id("a1"))));
-check("(2) a row the reconcile marked stuck shows the standing notice", rowOf(id("a2")).includes("still not included after 10 blocks; check the explorer"));
-check("(2) ...and the notice offers no resend", !/resend|send again|retry/i.test(rowOf(id("a2"))));
-check("(3) a gone row says it was not included and why", rowOf(id("a3")).includes("not included: its coins were spent by another transaction; check the explorer"));
+check("(2) a row the reconcile marked stuck shows the standing notice", rowOf(id("a2")).includes("still not included after 10 blocks; check the explorer before sending again"));
+check("(2) ...and offers no resend or rebroadcast action", !/<button|resend|rebroadcast|retry/i.test(rowOf(id("a2"))));
+check("(3) a gone row says it was not included and why", rowOf(id("a3")).includes("not included: its coins were spent by another transaction; check the explorer before sending again"));
 check("(4) paired: a row whose submit was answered carries no marker", !/included|in flight/.test(rowOf(id("a4"))));
 
 // ── (5)-(6) the merge line, and the repaint after a refresh ──────────────────────────────────────────────

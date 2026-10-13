@@ -285,11 +285,12 @@ async function renderHistory() {
       : t.target ? `${escapeHtml(String(t.target).slice(0, 12))}…` : "";
     const when = t.ts ? new Date(t.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     // The marker reads what the balance refresh's reconcile (pendingMerge) stored on the row; the render
-    // itself makes no chain read. Only a gone row (no node holds it, an input spent elsewhere) says not included.
+    // itself makes no chain read. Only a gone row (an input spent by a different mined tx, seen at two tips)
+    // says not included.
     const mark = inclusionMark(t);
     const maybeMark = mark === "sent" ? ` <span class="dim">· sent, not yet included</span>`
-      : mark === "stuck" ? ` <span class="dim">· still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer</span>`
-      : mark === "gone" ? ` <span class="dim">· not included: its coins were spent by another transaction; check the explorer</span>`
+      : mark === "stuck" ? ` <span class="dim">· still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer before sending again</span>`
+      : mark === "gone" ? ` <span class="dim">· not included: its coins were spent by another transaction; check the explorer before sending again</span>`
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
