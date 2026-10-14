@@ -207,7 +207,7 @@ tipNow = LAST_OK - 10;
 await show(finReq("f5b"));
 const t5b = tipCalls, f5b = nameFetches;
 for (let i = 0; i < 50; i++) await pollAfter();                             // 60 s of a focused window, tip unchanged
-check("(5b) 60 s of polling reads the tip once per 20.4 s of 1.2 s ticks (2 reads) and never refetches an unchanged tip", tipCalls === t5b + 2 && nameFetches === f5b);
+check("(5b) 60 s of polling reads the tip once per 20.4 s of 1.2 s ticks (2 reads); the first refresh refetches the reservation (the paint read it before its tip), the second does not (the tip did not move)", tipCalls === t5b + 2 && nameFetches === f5b + 1);
 const t5bClick = tipCalls, n5b = resolves.length;
 registry.get("btn-approve")._listeners.click();
 await flush();
@@ -326,7 +326,7 @@ tipNow = FIRST_OK + 1;                                                      // t
 fetchDelays.push(300);                                                      // the refresh's name fetch lands inside the unlock repaint's floor
 state.unlocked = true; await pollAfter(20_400);                             // unlock: the refresh is due and runs beside the repaint
 await sleep(450);
-check("(7d) a pass that lands during the unlock repaint's 700 ms floor does not re-enable Approve early", approveBtn().disabled === true);
+check("(7d) a pass that lands during the unlock repaint's 700 ms floor does not re-enable Approve early", note() === "" && approveBtn().disabled === true);
 await settle();
 check("(7d) ...the floor re-enables it, with the too-early note gone", approveBtn().disabled === false && note() === "");
 

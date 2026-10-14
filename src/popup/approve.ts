@@ -145,8 +145,8 @@ let nfinSettled: { block: boolean; note: string | null } | null = null;
 // stays open (too late: Approve would burn the fee; too early: the user is stuck until a reopen).
 // `tip`/`at`/`seq`: the tip of the latest verdict, when its read started (its age) and that read's start order, so
 // a read that started earlier never replaces a verdict from one that started later (a clock tick is too coarse).
-// `recTip`: the tip when `fetched` was read, so the reservation is refetched whenever the tip moved since, whoever
-// read the newer tip. `tried`: the last refresh attempt, so an RPC that is down is retried at the refresh cadence
+// `recTip`: a tip read no later than `fetched` (null after the first check, which reads the record before the tip),
+// so the reservation is refetched whenever the tip may have moved since, whoever read the newer tip. `tried`: the last refresh attempt, so an RPC that is down is retried at the refresh cadence
 // instead of on every poll tick.
 type NfinLive = { id: string; name: string; tradeApi: string; me: string; fetched: NameFetchResult; recTip: number | null; tip: number | null; at: number; seq: number; tried: number; busy: boolean };
 let nfinLive: NfinLive | null = null;
@@ -177,7 +177,8 @@ async function checkNfinalize(live: NfinLive): Promise<{ block: boolean; note: s
   live.fetched = await fetchNameRecord(live.name, live.tradeApi);
   live.at = live.tried = Date.now();
   live.seq = ++nfinReadSeq;
-  live.tip = live.recTip = await readTip();
+  live.tip = await readTip();
+  live.recTip = null;
   live.busy = false;
   return nfinalizeApproveGate(live.fetched, live.me, live.tip);
 }
