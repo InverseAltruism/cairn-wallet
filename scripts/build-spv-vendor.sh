@@ -9,6 +9,8 @@
 #
 # It exports exactly what core/namespv.ts (the XREPO-1 name verifier) needs:
 #   • LightClient + CsdClient  — PoW-verified header chain + node-RPC reads (block/tx)
+#   • verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW: the 84-byte header records of
+#                                  the header store and the hash-link walk that binds a chunk to the anchor table
 #   • rpcTxToTx                 — decode a node-JSON tx into the consensus codec Tx
 #   • txid / sighash / merkleRoot — recompute txids, bind a block's tx-set to the verified header root,
 #                                  and re-derive the signing digest to authenticate a tx's signer
@@ -40,9 +42,9 @@ mkdir -p "$(dirname "$OUT")"
 TMP_ENTRY="$(mktemp --suffix=.mjs)"
 trap 'rm -f "$TMP_ENTRY"' EXIT
 {
-  printf 'export { LightClient, CsdClient } from "%s";\n' "$LIGHT"
+  printf 'export { LightClient, CsdClient, verifyLinkedRecords } from "%s";\n' "$LIGHT"
   printf 'export { rpcTxToTx } from "%s";\n' "$CLIENT"
-  printf 'export { txid, sighash, merkleRoot, verifyMerkleProof } from "%s";\n' "$CODEC"
+  printf 'export { txid, sighash, merkleRoot, verifyMerkleProof, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW } from "%s";\n' "$CODEC"
   printf 'export { addrFromPub, verifyDigest, recoverSigner } from "%s";\n' "$CRYPTO"
   # cairnx-core: the WHOLE convention (constants, fee/name math, canonicalJson, parseRecord, the record
   # builders, *_KEYS, the §4 regexes) — so core/cairnx.ts IMPORTS them instead of hand-typing a second copy
@@ -59,4 +61,4 @@ trap 'rm -f "$TMP_ENTRY"' EXIT
   --legal-comments=none --log-level=warning --outfile="$OUT")
 
 echo "built $OUT ($(du -h "$OUT" | cut -f1))"
-node --input-type=module -e "import('$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"
+node --input-type=module -e "import('$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','verifyLinkedRecords','serializeHeader','deserializeHeader','HEADER_BYTES','LWMA_WINDOW','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"
