@@ -17,6 +17,9 @@
 //   in-window finalize approves on the first click with no tip read and no timer at the click; (5b) a
 //   running poll keeps the verdict young enough that the click never pays the re-check; (5c) a send and an
 //   nrenew get no refresh reads; (6) a dead or lying RPC yields at most a refusal the user can retry.
+//   ORDERING AND RE-ENABLE GUARDS (7): a click acts on the latest verdict recorded for its request, never on an
+//   older read; a pass re-enables Approve only after the current paint's floor, never over a balance that does
+//   not cover the request, and never for a request other than the one it was computed for.
 //
 // Run: npx tsx test/approve-nfinalize-fresh-dom.test.mjs   (offline)
 import { CAIRNX_DOMAIN, TREASURY_ADDR, buildNameRenew } from "../src/core/cairnx.js";
@@ -40,16 +43,18 @@ let tipNow = FIRST_OK + 5;
 let tipCalls = 0;
 let tipHang = false;
 let tipRefuse = false;
+let tipDefer = null;   // when an array, each tip read waits until the test calls its resolver
+let balanceNow = 1_000_00000000;
 const resolves = [];
 const handlers = {
   status: () => ({ unlocked: state.unlocked, accounts: [{ label: "Main", addr: ME }], active: 0, addr: ME, tradeApi: "https://cairn-substrate.com/trade/api" }),
   pending: () => structuredClone(state.pending),
-  balance: () => ({ confirmed: 1_000_00000000 }),
+  balance: () => ({ confirmed: balanceNow }),
   history: () => [],
   sealedClaims: () => [],
   tokenFillQuote: () => null,
   tokenDisplayMeta: () => ({}),
-  tip: () => { tipCalls++; if (tipRefuse) throw new Error("rpc down"); return tipHang ? new Promise(() => {}) : tipNow; },
+  tip: () => { tipCalls++; if (tipRefuse) throw new Error("rpc down"); if (tipDefer) return new Promise((res) => tipDefer.push(res)); return tipHang ? new Promise(() => {}) : tipNow; },
   epoch: () => Math.floor(tipNow / 30),
   tipFloor: () => 0,
   resolve: (...a) => { resolves.push(a); state.pending = state.pending.filter((r) => r.id !== a[0]); return { done: true, ok: true, txid: "0x" + "ee".repeat(32) }; },
@@ -61,10 +66,12 @@ const { registry } = mountApproveWindow(handlers);
 let nameMode = "ok";
 let nameFetches = 0;
 let fetchDelayMs = 0;
+const fetchDelays = [];   // per-fetch delays, used before fetchDelayMs
 globalThis.fetch = async (url) => {
   if (!/\/cairnx\/name\/satoshi$/.test(String(url))) throw new Error("unexpected fetch: " + url);
   nameFetches++;
-  if (fetchDelayMs) await sleep(fetchDelayMs);
+  const delay = fetchDelays.length ? fetchDelays.shift() : fetchDelayMs;
+  if (delay) await sleep(delay);
   if (nameMode === "500") return { status: 500, ok: false, json: async () => null };
   if (nameMode === "404") return { status: 404, ok: false, json: async () => null };
   return { status: 200, ok: true, json: async () => ({ name: "satoshi", owner: ME, pending: true, effectiveHeight: EFF }) };
@@ -118,7 +125,7 @@ console.log("\n(2) a click on a verdict older than the bound re-reads the tip fi
 tipNow = LAST_OK - 1;
 await show(finReq("f2"));
 check("(2) setup: in-window verdict, Approve live", approveBtn().disabled === false);
-now += 31_000;                                                               // no poll ticks: the timer was throttled
+now += 36_000;                                                               // no poll ticks: the timer was throttled
 tipNow = LAST_OK + 1;
 const tipsBeforeClick = tipCalls;
 registry.get("btn-approve")._listeners.click();
@@ -134,7 +141,7 @@ check("(2a) Reject resolves it as a rejection", resolves.length === 1 && resolve
 // 2b. paired: the stale verdict is re-checked, the tip is still inside the window, the click goes through
 tipNow = LAST_OK - 3;
 await show(finReq("f2b"));
-now += 31_000;
+now += 36_000;
 tipNow = LAST_OK - 2;
 registry.get("btn-approve")._listeners.click();
 await flush();
@@ -211,7 +218,7 @@ for (const [label, req] of [["a send", sendReq("s5")], ["an nrenew", renewReq("r
   const tc = tipCalls, fc = nameFetches, nr = resolves.length;
   for (let i = 0; i < 50; i++) await pollAfter();
   check(`(5c) ${label}: 60 s of polling adds no tip read and no name fetch`, tipCalls === tc && nameFetches === fc);
-  now += 31_000;
+  now += 36_000;
   registry.get("btn-approve")._listeners.click();
   await flush();
   check(`(5c) ${label}: approves on the click with no tip read`, resolves.length === nr + 1 && resolves[nr][1] === true && tipCalls === tc);
@@ -225,7 +232,7 @@ tipHang = true;                                                              // 
 for (let i = 0; i < 20; i++) await pollAfter();
 await settle(2600);                                                          // past the 2.5 s bound of the hung read
 check("(6a) a hung tip read during refresh keeps the last verdict: Approve stays live, no note", approveBtn().disabled === false && note() === "");
-now += 31_000;
+now += 36_000;
 const n6 = resolves.length;
 registry.get("btn-approve")._listeners.click();
 await settle(2600);
@@ -259,5 +266,93 @@ check("(6e) a refused tip read is retried once per refresh period (2 reads in 40
 check("(6e) ...and the last verdict stands: Approve stays live, no note", approveBtn().disabled === false && note() === "");
 tipRefuse = false;
 check("(6d) no refresh signed or broadcast anything: every resolve call above came from a click", resolves.length === n6 + 1);
+
+// ── 7. ordering, and the guards on the re-enable path ──────────────────────────────────────────────────
+console.log("\n(7) click and refresh ordering, re-enable guards");
+let n7 = resolves.length;
+const click = async () => { registry.get("btn-approve")._listeners.click(); await flush(); };
+
+// 7a. a stale click's tip read is pending; a refresh puts a block on screen; the click's read then times out
+tipNow = LAST_OK - 1;
+await show(finReq("g1"));
+now += 36_000;
+tipDefer = [];
+await click();                                                              // the click's read: tipDefer[0]
+await pollAfter();                                                          // the refresh's read: tipDefer[1]
+tipDefer[1](LAST_OK + 1); await flush();
+check("(7a) setup: the refresh put the window-closed block on screen while the click waited", tipDefer.length === 2 && approveBtn().disabled === true && /window has closed/.test(note()));
+await settle(2600);                                                         // the click's read times out (2.5 s bound)
+check("(7a) the click acts on the block on screen, not on the pass it started from: nothing is signed", resolves.length === n7 && /window has closed/.test(registry.get("msg").textContent));
+tipDefer = null;
+
+n7 = resolves.length;
+// 7b. the same, but the click's read (started before the refresh's) answers late with the older, in-window tip
+tipNow = LAST_OK - 1;
+await show(finReq("g2"));
+now += 36_000;
+tipDefer = [];
+await click();
+await pollAfter();
+tipDefer[1](LAST_OK + 1); await flush();
+tipDefer[0](LAST_OK - 1); await flush();
+check("(7b) an older click read cannot overwrite the refresh's newer block: nothing is signed, the block stays on screen", resolves.length === n7 && approveBtn().disabled === true && /window has closed/.test(note()));
+tipDefer = null;
+
+n7 = resolves.length;
+// 7c. the reverse: a refresh's read started before the click's lands after it
+tipNow = LAST_OK - 1;
+await show(finReq("g3"));
+now += 36_000;
+tipDefer = [];
+await pollAfter();                                                          // the refresh's read: tipDefer[0]
+await click();                                                              // the click's read, started later: tipDefer[1]
+tipDefer[1](LAST_OK + 1); await flush();                                    // newer: the window has closed, refused
+tipDefer[0](LAST_OK - 1); await flush();                                    // older, in-window: dropped
+check("(7c) an older refresh read does not repaint over the click's newer block", resolves.length === n7 && approveBtn().disabled === true && /window has closed/.test(note()));
+await click();
+check("(7c) ...so a second click signs nothing", resolves.length === n7);
+tipDefer = null;
+tipNow = LAST_OK + 1;
+const f7c = nameFetches;
+for (let i = 0; i < 17; i++) await pollAfter();
+check("(7c) the next refresh refetches the reservation: its record was read at an older tip than the one now held", nameFetches === f7c + 1);
+
+// 7d. a pass that lands inside a same-id repaint's 700 ms floor waits for the floor
+tipNow = FIRST_OK - 3;
+await show(finReq("g4"));
+check("(7d) setup: too early, Approve down", approveBtn().disabled === true && /too early/.test(note()));
+state.unlocked = false; await tick(); await flush();                       // idle auto-lock
+tipNow = FIRST_OK + 1;                                                      // the window opens while locked
+fetchDelays.push(300);                                                      // the refresh's name fetch lands inside the unlock repaint's floor
+state.unlocked = true; await pollAfter(20_400);                             // unlock: the refresh is due and runs beside the repaint
+await sleep(450);
+check("(7d) a pass that lands during the unlock repaint's 700 ms floor does not re-enable Approve early", approveBtn().disabled === true);
+await settle();
+check("(7d) ...the floor re-enables it, with the too-early note gone", approveBtn().disabled === false && note() === "");
+
+// 7e. a pass never re-enables Approve over a balance that does not cover the request
+balanceNow = 1_00000000;                                                    // 1 CSD against 5.25 CSD out
+tipNow = FIRST_OK - 3;
+await show(finReq("g5"));
+check("(7e) setup: too early and the balance does not cover it, Approve down", approveBtn().disabled === true && /does not cover this request/.test(reqHtml()));
+tipNow = FIRST_OK + 1;
+for (let i = 0; i < 17; i++) await pollAfter();
+check("(7e) the window opening does not re-enable Approve over the short balance", approveBtn().disabled === true && note() === "" && /does not cover this request/.test(reqHtml()));
+balanceNow = 1_000_00000000;
+
+n7 = resolves.length;
+// 7f. a superseded request's late verdict never lands on the request that replaced it
+tipNow = FIRST_OK - 3;
+fetchDelays.push(1500);                                                     // A's name fetch is slow
+state.pending = [finReq("gA")]; await tick(); await flush();
+state.pending = [finReq("gB")]; await tick(); await flush(); await settle();
+check("(7f) setup: B replaced A and is too early, Approve down", approveBtn().disabled === true && /too early/.test(note()));
+tipNow = FIRST_OK + 1;                                                      // A's tip read, after its slow fetch, sees an open window
+await settle(900);
+state.unlocked = false; await tick(); await flush();
+state.unlocked = true; await tick(); await flush(); await settle();
+check("(7f) after a repaint B is still refused: A's late pass did not replace B's verdict", approveBtn().disabled === true && /too early/.test(reqHtml()));
+await click();
+check("(7f) ...and a click on B signs nothing", resolves.length === n7);
 
 done("approve-nfinalize-fresh-dom");

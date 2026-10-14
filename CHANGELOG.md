@@ -8,7 +8,7 @@
 
 - Approval window: the finalize check on a .csd registration stays current while the request is open. Approve
   goes down when the finalize window closes and comes back when a request opened too early becomes valid,
-  without a reopen. A click on a check older than 30 seconds re-reads the chain tip first, and a result that
+  without a reopen. A click on a check older than 35 seconds re-reads the chain tip first, and a result that
   arrived while the wallet was locked is shown after unlock.
 
 ## 0.2.74 (2026-10-13)

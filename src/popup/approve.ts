@@ -135,7 +135,7 @@ async function render() {
 // racing the fetch cannot slip past a blocking verdict. Armed once per request; an nfinalize verdict is
 // then kept current by refreshNfinalize (poll) and nfinAtClick (click), because its window moves with the tip.
 let nfinForId: string | null = null;
-let nfinBlocked = false;   // read by armButtons' re-enable + belt for the resolve() gate
+let nfinBlocked = false;   // read by armButtons' re-enable
 let nfinGate: Promise<{ block: boolean; note: string | null }> | null = null;
 // The latest verdict for nfinForId. Kept per request id, never per paint: a verdict that settles while the
 // wallet is locked must still reach the unlock repaint (note and button state).
@@ -143,18 +143,24 @@ let nfinSettled: { block: boolean; note: string | null } | null = null;
 // nfinalize only: the inputs of the last verdict, so the poll and the click can re-derive it at a newer tip.
 // The finalize window is a function of the tip, so a verdict computed once goes wrong while the request
 // stays open (too late: Approve would burn the fee; too early: the user is stuck until a reopen).
-// `at` is when the verdict's tip was read (its age); `tried` is the last refresh attempt, so an RPC that is down
-// is retried at the refresh cadence instead of on every poll tick.
-type NfinLive = { id: string; name: string; tradeApi: string; me: string; fetched: NameFetchResult; tip: number | null; at: number; tried: number; busy: boolean };
+// `tip`/`at`/`seq`: the tip of the latest verdict, when its read started (its age) and that read's start order, so
+// a read that started earlier never replaces a verdict from one that started later (a clock tick is too coarse).
+// `recTip`: the tip when `fetched` was read, so the reservation is refetched whenever the tip moved since, whoever
+// read the newer tip. `tried`: the last refresh attempt, so an RPC that is down is retried at the refresh cadence
+// instead of on every poll tick.
+type NfinLive = { id: string; name: string; tradeApi: string; me: string; fetched: NameFetchResult; recTip: number | null; tip: number | null; at: number; seq: number; tried: number; busy: boolean };
 let nfinLive: NfinLive | null = null;
+let nfinReadSeq = 0;
 // Re-read the tip this often while an nfinalize request is open (driven by the 1.2 s poll, also while
 // locked). Blocks average 120 s and finalizeWinnerCheck keeps a 2-block margin before the window closes,
-// so a verdict up to one refresh old is at most a fraction of a block behind the chain.
+// so on average a verdict is a fraction of a block behind the chain.
 const NFIN_REFRESH_MS = 20_000;
-// A click on a verdict older than this re-reads the tip first (one bounded read). Above the refresh period
-// plus one read, so a focused window whose poll is running never pays it; it fires when the poll was
-// throttled or suspended (background tab, sleep), which is when the verdict can be blocks stale.
-const NFIN_CLICK_MAX_AGE_MS = 30_000;
+// A click on a verdict older than this re-reads the tip first (one bounded read). In a focused window the
+// verdict is at most about 30 s old (a refresh starts within one 1.2 s tick of the 20 s period and lands after
+// at most a 2.5 s tip read and a 6 s name fetch), so the bound sits above that and an honest click never pays
+// the read; it fires when the poll was throttled or suspended (background tab, sleep), when the verdict can be
+// blocks stale.
+const NFIN_CLICK_MAX_AGE_MS = 35_000;
 async function fetchNameRecord(name: string, tradeApi: string): Promise<NameFetchResult> {
   try {
     const res = await fetch(`${String(tradeApi || "").replace(/\/$/, "")}/cairnx/name/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
@@ -170,7 +176,8 @@ async function readTip(): Promise<number | null> {
 async function checkNfinalize(live: NfinLive): Promise<{ block: boolean; note: string | null }> {
   live.fetched = await fetchNameRecord(live.name, live.tradeApi);
   live.at = live.tried = Date.now();
-  live.tip = await readTip();
+  live.seq = ++nfinReadSeq;
+  live.tip = live.recTip = await readTip();
   live.busy = false;
   return nfinalizeApproveGate(live.fetched, live.me, live.tip);
 }
@@ -197,8 +204,9 @@ function applyNfin(id: string, g: { block: boolean; note: string | null }) {
   if (renderedId !== id) return;                     // locked or mid-repaint: the repaint re-attaches nfinSettled
   paintNfinNote(g);
   const btn = $("btn-approve") as HTMLButtonElement;
+  // render() sets renderedId only to current.id (or null), so here current is the request `id`.
   if (g.block) btn.disabled = true;
-  else if (approveArmedGen === paintGen && current?.id === id) btn.disabled = tokenNotReady(current) || !!rs(id).balShort;
+  else if (approveArmedGen === paintGen) btn.disabled = tokenNotReady(current) || !!rs(id).balShort;
 }
 // Called on every poll tick for the request at the head of the queue. Reads the tip at most once per
 // NFIN_REFRESH_MS and refetches the reservation only when the tip moved (resolver state changes per block).
@@ -208,34 +216,37 @@ async function refreshNfinalize(id: string) {
   if (!live || live.id !== id || nfinForId !== id || live.busy || Date.now() - live.tried < NFIN_REFRESH_MS) return;
   live.busy = true; live.tried = Date.now();
   try {
-    const at = Date.now();
+    const at = Date.now(), seq = ++nfinReadSeq;
     const t = await readTip();
     if (t == null) return;                           // keep the last verdict; its age makes the click re-check
-    let fetched = live.fetched;
-    if (t !== live.tip || fetched.failed) {
+    let fetched = live.fetched, recTip = live.recTip;
+    if (t !== recTip || fetched.failed) {
       const f = await fetchNameRecord(live.name, live.tradeApi);
-      // A transient miss keeps the last good record, so a name-service outage cannot turn a refusal into
-      // the fail-open warning while the tip has moved past the window.
+      // A transient miss keeps the last good record (and its tip, so the next refresh retries the fetch), so a
+      // name-service outage cannot turn a refusal into the fail-open warning while the tip has moved past the window.
       if (!f.failed || fetched.failed) fetched = f;
+      if (!f.failed) recTip = t;
     }
-    if (nfinLive !== live || live.at > at) return;   // superseded, or a click re-check read a newer tip
-    live.fetched = fetched; live.tip = t; live.at = at;
+    if (nfinLive !== live || live.seq > seq) return; // superseded, or a click re-check started a read after this one
+    live.fetched = fetched; live.recTip = recTip; live.tip = t; live.at = at; live.seq = seq;
     applyNfin(id, nfinalizeApproveGate(fetched, live.me, t));
   } finally { live.busy = false; }
 }
 // Click-time re-check: a verdict older than NFIN_CLICK_MAX_AGE_MS is re-derived from a fresh tip and the
 // last fetched record (no name fetch, so at most one bounded tip read). An unreadable tip keeps the last
-// verdict, so a dead RPC adds no refusal here.
+// verdict, so a dead RPC adds no refusal here. The click acts on the latest verdict recorded for the request
+// once its read is back: a refresh that landed a newer one meanwhile (a block now on screen) wins over both
+// `g` and this read when this read started earlier.
 async function nfinAtClick(id: string, g: { block: boolean; note: string | null } | null) {
   const live = nfinLive;
   if (!live || live.id !== id || Date.now() - live.at <= NFIN_CLICK_MAX_AGE_MS) return g;
-  const at = Date.now();
+  const at = Date.now(), seq = ++nfinReadSeq;
   const t = await readTip();
-  if (t == null || nfinLive !== live) return g;
-  live.tip = t; live.at = at;
-  const fresh = nfinalizeApproveGate(live.fetched, live.me, t);
-  applyNfin(id, fresh);
-  return fresh;
+  if (t != null && nfinLive === live && seq > live.seq) {
+    live.tip = t; live.at = at; live.seq = seq;
+    applyNfin(id, nfinalizeApproveGate(live.fetched, live.me, t));
+  }
+  return nfinForId === id && nfinSettled ? nfinSettled : g;
 }
 function armNfinalizeGate(r: any, st: any) {
   if (nfinForId === r.id) {
@@ -260,7 +271,7 @@ function armNfinalizeGate(r: any, st: any) {
   // signer captured at arm time = the account this request is DISPLAYED as signing with (M5 pairing:
   // the background refuses the resolve anyway if the active account changed since render)
   if (rec.t === "nfinalize") {
-    nfinLive = { id: r.id, name: rec.name, tradeApi: String(st.tradeApi || ""), me: String(st.addr || ""), fetched: { failed: true }, tip: null, at: Date.now(), tried: Date.now(), busy: true };
+    nfinLive = { id: r.id, name: rec.name, tradeApi: String(st.tradeApi || ""), me: String(st.addr || ""), fetched: { failed: true }, recTip: null, tip: null, at: Date.now(), seq: 0, tried: Date.now(), busy: true };
     nfinGate = checkNfinalize(nfinLive);
   } else {
     nfinGate = checkNameAct(rec.t, rec.name, String(st.tradeApi || ""), String(st.addr || ""));
@@ -429,7 +440,7 @@ let approveArmedGen = -1;   // the paintGen whose re-enable floor has run; a lat
 function armButtons() {
   disableButtons();  // AW-1: same immediate disable; the 700ms RE-ENABLE timer stays here, after the paint
   // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
-  // AFTER this timer disables it directly in armNfinalizeGate), and for a token-debiting fill until its
+  // after this timer sets the button itself, in applyNfin), and for a token-debiting fill until its
   // preview for THIS request is ready (0.2.71). Reject is always re-enabled.
   const armedId = current?.id;
   const armedGen = paintGen;   // a same-id repaint re-arms with its own floor and its own quote
@@ -452,7 +463,7 @@ async function resolve(approve: boolean) {
   if (approve && tokenNotReady(current)) { msg("the token amount is not shown yet; wait for it or reject", "err"); return; }
   if (approve && rs(id).balShort) { msg("your spendable balance does not cover this request; reject it and retry once your pending transaction is mined", "err"); return; }
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip, plus one
-  // 2.5s tip read when the verdict is older than NFIN_CLICK_MAX_AGE_MS).
+  // 2.5s tip read when the verdict is older than NFIN_CLICK_MAX_AGE_MS), then acts on the latest one recorded.
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
   // verdict proceeds (fail-open). Reject never waits.
   if (approve && nfinGate && nfinForId === id) {
