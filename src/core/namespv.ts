@@ -483,7 +483,8 @@ interface AnchorTable { anchors: readonly string[]; newestK: number; newest: num
 /**
  * The anchor table a source runs on: the release table, or a prefix of it (tests and the acceptance harness, whose
  * header fixtures end below the newest entry). Any other table is refused, so this cannot add a hash the release
- * does not carry; a prefix only moves the newest anchor down, and the heights above it are forward-verified.
+ * does not carry; a prefix only moves the newest anchor down, and the heights above it are forward-verified against
+ * the full release checkpoint map (SPV_CHECKPOINTS), so a prefix removes no pin.
  */
 function anchorTable(anchors: readonly string[] = SPV_ANCHORS): AnchorTable {
   // A longer table fails the comparison too: its extra entry compares against undefined.
@@ -602,7 +603,7 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
 }
 
 async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): Promise<SpvSource> {
-  const { anchors, newestK, newest, checkpoints } = anchorTable(opts.anchors);
+  const { anchors, newestK, newest } = anchorTable(opts.anchors);
   const boundFetch = (...a: Parameters<typeof fetch>) => fetch(...a);
   // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
   // default TIED the inner chain exactly — an abort could fire the instant the proxy's fallback
@@ -644,7 +645,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (a !== from && from + count === a + PAGE) return (await headersBatch(a, PAGE)).slice(from - a);
     return headersBatch(from, count);
   };
-  const lcOpts = { client, headersBatchProvider: pageBatch, checkpoints: checkpoints as Record<number, string> };
+  const lcOpts = { client, headersBatchProvider: pageBatch, checkpoints: SPV_CHECKPOINTS as Record<number, string> };
 
   const fetchChunk = async (spec: ChunkSpec): Promise<Uint8Array> => {
     const out = new Uint8Array((spec.lastHeight - spec.firstHeight + 1) * HB);

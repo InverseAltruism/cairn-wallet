@@ -56,8 +56,8 @@ ok("suffixWrite has exactly two callers: persist(), and the one-time legacy migr
 ok("flushSpvStoreWrites is exported for tests", /export async function flushSpvStoreWrites/.test(namespv));
 ok("hashAt/merkleAt are on the live source", /async hashAt\(height/.test(namespv) && /async merkleAt\(height/.test(namespv));
 ok("the names floor is still 29960 (no checkpoint bump) and the light client holds it as a checkpoint",
-  SPV_FLOOR.height === 29960 && SPV_CHECKPOINTS[29960] === SPV_FLOOR.hash && /checkpoints: checkpoints as Record<number, string>/.test(namespv)
-  && /const \{ anchors, newestK, newest, checkpoints \} = anchorTable\(opts\.anchors\);/.test(namespv)
+  SPV_FLOOR.height === 29960 && SPV_CHECKPOINTS[29960] === SPV_FLOOR.hash && /checkpoints: SPV_CHECKPOINTS as Record<number, string>/.test(namespv)
+  && /const \{ anchors, newestK, newest \} = anchorTable\(opts\.anchors\);/.test(namespv)
   && /\[SPV_FLOOR\.height, SPV_FLOOR\.hash\],/.test(namespv));
 
 const build = src("build.mjs");

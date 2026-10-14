@@ -262,6 +262,19 @@ console.log("cases 9 and 17: a corrupt chunk:");
   check(`  the second proof re-walks chunk 26 on load and refetches it (${net.log.length} requests)`, b.merkle === headerOf(110591).merkle && same(net.log, pages(106496, 110591)) && bytesEq(st.chunks.get(26), records(106496, 110591)));
 }
 
+{
+  // A chunk stored above a partial suffix chunk (left by an older session or written by the profile writer) is never
+  // read by the restore, and the next persist deletes it (deleteAbove), so the stored suffix is the light client's.
+  const st = await storeTo(115000);
+  await st.write({ put: [{ k: 29, records: records(110592, 110592 + 4095) }] });   // real records at the wrong heights
+  const readsBefore = st.reads;
+  const src = await liveSpvSource(opts(st));
+  check(`a chunk stored above the partial suffix chunk is not read by the restore (${st.reads - readsBefore} chunk reads: 27 and 28)`, st.reads - readsBefore === 2 && (await src.hashAt(118784)) === null);
+  await src.prepare(FIX_TOP - 12);
+  await flushSpvStoreWrites();
+  check(`  the next persist deletes it: the store holds chunks ${[...st.chunks.keys()].sort((x, y) => x - y)} and the head names the verified tip`, !st.chunks.has(29) && st.head.tip === FIX_TOP && bytesEq(st.chunks.get(28), records(114688, FIX_TOP)));
+}
+
 console.log("case 16: proofs while an acquisition is in flight:");
 {
   reset();
