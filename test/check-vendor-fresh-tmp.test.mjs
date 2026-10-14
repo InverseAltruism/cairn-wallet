@@ -13,10 +13,11 @@ const { check, done } = checker();
 const WALLET = join(import.meta.dirname, "..");
 const SCRIPT = join(WALLET, "scripts/check-vendor-fresh.mjs");
 const pkg = JSON.parse(readFileSync(join(WALLET, "package.json"), "utf8"));
-const leftovers = (dir) => readdirSync(dir).filter((n) => n.startsWith("vendor-fresh-"));
+// The gate's rebuild dir and the build script's entry file (mktemp, removed by its trap).
+const leftovers = (dir) => readdirSync(dir).filter((n) => n.startsWith("vendor-fresh-") || /^tmp\..*\.mjs$/.test(n));
 const run = (env) => {
-  try { execFileSync(process.execPath, [SCRIPT], { env: { ...process.env, ...env }, stdio: "pipe" }); return 0; }
-  catch (e) { return e.status ?? -1; }
+  try { execFileSync(process.execPath, [SCRIPT], { env: { ...process.env, ...env }, stdio: "pipe" }); return { code: 0, err: "" }; }
+  catch (e) { return { code: e.status ?? -1, err: String(e.stderr ?? "") }; }
 };
 
 const work = mkdtempSync(join(tmpdir(), "vftmp-test-"));
@@ -30,15 +31,15 @@ try {
   writeFileSync(join(sdk, "packages/crypto/package.json"), JSON.stringify({ dependencies: { "@noble/curves": pkg.dependencies["@noble/curves"], "@noble/hashes": pkg.dependencies["@noble/hashes"] } }));
   const tmp1 = join(work, "tmp1");
   mkdirSync(tmp1);
-  const code = run({ CSD_SDK_DIR: sdk, TMPDIR: tmp1 });
-  check(`a rebuild that fails exits 1 (got ${code})`, code === 1);
+  const { code, err } = run({ CSD_SDK_DIR: sdk, TMPDIR: tmp1 });
+  check(`a rebuild that fails exits 1 through the gate's own message, not a crash (got ${code})`, code === 1 && /rebuild failed/.test(err) && !/^\s+at /m.test(err));
   check(`...and leaves no temp dir behind (${leftovers(tmp1).join(",") || "none"})`, leftovers(tmp1).length === 0);
 
   const real = process.env.CSD_SDK_DIR;
   if (real && existsSync(join(real, "packages/cairnx/dist/index.js"))) {
     const tmp2 = join(work, "tmp2");
     mkdirSync(tmp2);
-    const ok = run({ CSD_SDK_DIR: real, TMPDIR: tmp2 });
+    const { code: ok } = run({ CSD_SDK_DIR: real, TMPDIR: tmp2 });
     check(`honest path: the gate passes against CSD_SDK_DIR (exit ${ok})`, ok === 0);
     check(`...and leaves no temp dir behind (${leftovers(tmp2).join(",") || "none"})`, leftovers(tmp2).length === 0);
   } else {
