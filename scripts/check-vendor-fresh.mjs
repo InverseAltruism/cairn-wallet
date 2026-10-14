@@ -20,7 +20,7 @@
 //   node scripts/check-vendor-fresh.mjs            verify (CI / pre-publish gate; exit 1 on drift)
 //   node scripts/check-vendor-fresh.mjs --write     regenerate PROVENANCE.json after a legit rebuild
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -95,14 +95,18 @@ if (!sdkPresent) {
     if (sdkNoble[k] === walletNoble[k]) ok(`csd-sdk crypto ${k} ${sdkNoble[k]} == wallet pin`);
     else fail(`csd-sdk crypto ${k} ${sdkNoble[k]} != wallet pin ${walletNoble[k]} (would inline a different @noble than the signing path)`);
   }
-  // rebuild the bundle from current dists into a temp and require byte-identity
+  // rebuild the bundle from current dists into a temp dir, removed on every path, and require byte-identity
   const tmp = mkdtempSync(join(tmpdir(), "vendor-fresh-"));
   const outTmp = join(tmp, "out.js");
+  let rebuilt = null;
   try {
     execFileSync("bash", [join(WALLET, "scripts/build-spv-vendor.sh")],
       { env: { ...process.env, CSD_SDK_DIR: SDK, VENDOR_OUT: outTmp }, stdio: ["ignore", "ignore", "inherit"] });
-  } catch (e) { fail("rebuild failed (scripts/build-spv-vendor.sh could not bundle the current dists)"); process.exit(1); }
-  const rebuiltSha = sha256(readFileSync(outTmp));
+    rebuilt = readFileSync(outTmp);
+  } catch { fail("rebuild failed (scripts/build-spv-vendor.sh could not bundle the current dists)"); }
+  finally { rmSync(tmp, { recursive: true, force: true }); }
+  if (!rebuilt) process.exit(1);
+  const rebuiltSha = sha256(rebuilt);
   if (rebuiltSha === bundleSha) ok(`committed bundle is byte-identical to a rebuild from csd-sdk@${sdkVersion} dists`);
   else fail(`STALE/DRIFTED: a rebuild from csd-sdk@${sdkVersion} dists (${rebuiltSha.slice(0, 12)}…) != committed bundle (${bundleSha.slice(0, 12)}…); run scripts/build-spv-vendor.sh && node scripts/check-vendor-fresh.mjs --write`);
   // Advisory only (console.warn, exitCode untouched): the byte-diff above is the load-bearing check.
