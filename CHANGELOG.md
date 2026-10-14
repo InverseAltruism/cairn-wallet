@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+- Name verification keeps block headers in a compact store in the browser (IndexedDB), anchored by block hashes
+  built into each release, instead of a JSON snapshot that was read and re-verified whole at every start. A start
+  reads the newest built-in chunk and the headers above it; an older name costs one chunk the first time it is
+  needed. The old snapshot is moved into the store once after the update and then deleted.
 - Approval window: after an idle auto-lock and unlock, a token quote or balance read started before the lock no
   longer lands on the repainted screen. Approve now waits for the repaint's own quote, and the balance line and
   the "does not cover" check come from the repaint's own read, so the amount you approve is the one shown.
-
 - Approval window: the finalize check on a .csd registration stays current while the request is open. Approve
   goes down when the finalize window closes and comes back when a request opened too early becomes valid,
   without a reopen. A click on a check older than 35 seconds re-reads the chain tip first, and a result that
