@@ -32,7 +32,19 @@ export function mountApproveWindow(handlers) {
         this._kids.push(m[1]);
       }
     }
-    insertAdjacentHTML(_pos, html) { this._html += String(html); this._adopt(html); }
+    insertAdjacentHTML(_pos, html) {
+      const ids = [...String(html).matchAll(TAG_WITH_ID)].map((m) => m[1]);
+      this._html += String(html); this._adopt(html);
+      // remember the inserted chunk, so remove() can take exactly that markup back out of the parent
+      for (const id of ids) registry.get(id)._chunk = String(html);
+    }
+    // Element.remove() for an element that arrived through insertAdjacentHTML: drops its whole chunk.
+    remove() {
+      const p = this._parent;
+      if (!p || this._chunk === undefined) throw new Error("approve-dom: remove() only models elements inserted with insertAdjacentHTML");
+      p._html = p._html.replace(this._chunk, "");
+      for (const m of this._chunk.matchAll(TAG_WITH_ID)) { if (registry.get(m[1])?._parent === p) registry.delete(m[1]); p._kids = p._kids.filter((k) => k !== m[1]); }
+    }
     addEventListener(type, fn) { (this._listeners ||= {})[type] = fn; }
   }
   for (const id of STATIC_IDS) registry.set(id, new El(id));
