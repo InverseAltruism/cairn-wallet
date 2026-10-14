@@ -44,6 +44,7 @@ async function render() {
     window.close(); return;
   }
   current = pend[0];
+  void refreshNfinalize(current.id);   // runs while locked too, so the unlock repaint shows a current verdict
   const reqView = $("view-req") as HTMLElement;
   reqView.hidden = !st.unlocked;
   if (!st.unlocked) { renderedId = null; return; }
@@ -131,59 +132,123 @@ async function render() {
 // the fee (the C1 class; the pure verdict is clearsign.nfinalizeApproveGate). A clean 404 is a
 // definitive "no reservation" → refuse; 5xx/timeout fails OPEN (warn card, Approve stays live) so
 // approval never gains a hard network dependency. resolve() AWAITS the (bounded) verdict, so a click
-// racing the fetch cannot slip past a blocking verdict. Once per request (render doesn't rebuild).
+// racing the fetch cannot slip past a blocking verdict. Armed once per request; an nfinalize verdict is
+// then kept current by refreshNfinalize (poll) and nfinAtClick (click), because its window moves with the tip.
 let nfinForId: string | null = null;
 let nfinBlocked = false;   // read by armButtons' re-enable + belt for the resolve() gate
 let nfinGate: Promise<{ block: boolean; note: string | null }> | null = null;
-// W8 (AW-4, the fifth latch): the SETTLED verdict for nfinForId, retained for one reason only — so a
-// repaint can put its note back. Never read by the approve/refuse path (that still awaits nfinGate).
+// The latest verdict for nfinForId. Kept per request id, never per paint: a verdict that settles while the
+// wallet is locked must still reach the unlock repaint (note and button state).
 let nfinSettled: { block: boolean; note: string | null } | null = null;
-async function checkNfinalize(name: string, tradeApi: string, me: string): Promise<{ block: boolean; note: string | null }> {
-  let fetched: NameFetchResult = { failed: true };
+// nfinalize only: the inputs of the last verdict, so the poll and the click can re-derive it at a newer tip.
+// The finalize window is a function of the tip, so a verdict computed once goes wrong while the request
+// stays open (too late: Approve would burn the fee; too early: the user is stuck until a reopen).
+// `at` is when the verdict's tip was read (its age); `tried` is the last refresh attempt, so an RPC that is down
+// is retried at the refresh cadence instead of on every poll tick.
+type NfinLive = { id: string; name: string; tradeApi: string; me: string; fetched: NameFetchResult; tip: number | null; at: number; tried: number; busy: boolean };
+let nfinLive: NfinLive | null = null;
+// Re-read the tip this often while an nfinalize request is open (driven by the 1.2 s poll, also while
+// locked). Blocks average 120 s and finalizeWinnerCheck keeps a 2-block margin before the window closes,
+// so a verdict up to one refresh old is at most a fraction of a block behind the chain.
+const NFIN_REFRESH_MS = 20_000;
+// A click on a verdict older than this re-reads the tip first (one bounded read). Above the refresh period
+// plus one read, so a focused window whose poll is running never pays it; it fires when the poll was
+// throttled or suspended (background tab, sleep), which is when the verdict can be blocks stale.
+const NFIN_CLICK_MAX_AGE_MS = 30_000;
+async function fetchNameRecord(name: string, tradeApi: string): Promise<NameFetchResult> {
   try {
     const res = await fetch(`${String(tradeApi || "").replace(/\/$/, "")}/cairnx/name/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
-    if (res.status === 404) fetched = { record: null };
-    else if (res.ok) { const j = await res.json().catch(() => null); if (j && typeof j === "object") fetched = { record: j }; }
+    if (res.status === 404) return { record: null };
+    if (res.ok) { const j = await res.json().catch(() => null); if (j && typeof j === "object") return { record: j }; }
   } catch { /* unreachable → fail-open (gate warns, never blocks) */ }
+  return { failed: true };
+}
+async function readTip(): Promise<number | null> {
   const t = await bounded(call("tip"));
-  return nfinalizeApproveGate(fetched, me, t == null ? null : Number(t));
+  return t == null ? null : Number(t);
+}
+async function checkNfinalize(live: NfinLive): Promise<{ block: boolean; note: string | null }> {
+  live.fetched = await fetchNameRecord(live.name, live.tradeApi);
+  live.at = live.tried = Date.now();
+  live.tip = await readTip();
+  live.busy = false;
+  return nfinalizeApproveGate(live.fetched, live.me, live.tip);
 }
 // same fetch, lighter verdict: nrenew/nset existence + ownership (Plans/68 B2)
 async function checkNameAct(kind: "nrenew" | "nset", name: string, tradeApi: string, me: string): Promise<{ block: boolean; note: string | null }> {
-  let fetched: NameFetchResult = { failed: true };
-  try {
-    const res = await fetch(`${String(tradeApi || "").replace(/\/$/, "")}/cairnx/name/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
-    if (res.status === 404) fetched = { record: null };
-    else if (res.ok) { const j = await res.json().catch(() => null); if (j && typeof j === "object") fetched = { record: j }; }
-  } catch { /* unreachable → fail-open (gate warns, never blocks) */ }
-  return nameActApproveGate(kind, fetched, me);
+  return nameActApproveGate(kind, await fetchNameRecord(name, tradeApi), me);
 }
 // The gate's note is written INTO $("req"), so the innerHTML rebuild in render() destroys it exactly like
-// #send-warn. One emitter, used by both the settle path and the repaint re-attach.
+// #send-warn. One emitter, used by the settle path, the refresh and the repaint re-attach; it replaces the
+// previous note so a changed verdict never leaves the old one on screen.
 function paintNfinNote(g: { block: boolean; note: string | null }) {
+  document.getElementById("nfin-note")?.remove();
   if (!g.note) return;
   $("req").insertAdjacentHTML("beforeend",
-    g.block ? `<div class="req"><b class="err">⚠ ${escapeHtml(g.note)}</b></div>`
-            : `<div class="req dim">⚠ ${escapeHtml(g.note)}</div>`);
+    g.block ? `<div class="req" id="nfin-note"><b class="err">⚠ ${escapeHtml(g.note)}</b></div>`
+            : `<div class="req dim" id="nfin-note">⚠ ${escapeHtml(g.note)}</div>`);
+}
+// Record a verdict for request `id` and, when that request is on screen, show it: note in place, Approve
+// down on a block, back up on a pass once this paint's own re-enable floor has run.
+function applyNfin(id: string, g: { block: boolean; note: string | null }) {
+  if (nfinForId !== id) return;                      // a different request was armed since: never paint over it (the AW-3 class)
+  nfinSettled = g;
+  nfinBlocked = g.block;
+  if (renderedId !== id) return;                     // locked or mid-repaint: the repaint re-attaches nfinSettled
+  paintNfinNote(g);
+  const btn = $("btn-approve") as HTMLButtonElement;
+  if (g.block) btn.disabled = true;
+  else if (approveArmedGen === paintGen && current?.id === id) btn.disabled = tokenNotReady(current) || !!rs(id).balShort;
+}
+// Called on every poll tick for the request at the head of the queue. Reads the tip at most once per
+// NFIN_REFRESH_MS and refetches the reservation only when the tip moved (resolver state changes per block).
+// It computes a verdict and nothing else: no signing, no broadcast.
+async function refreshNfinalize(id: string) {
+  const live = nfinLive;
+  if (!live || live.id !== id || nfinForId !== id || live.busy || Date.now() - live.tried < NFIN_REFRESH_MS) return;
+  live.busy = true; live.tried = Date.now();
+  try {
+    const at = Date.now();
+    const t = await readTip();
+    if (t == null) return;                           // keep the last verdict; its age makes the click re-check
+    let fetched = live.fetched;
+    if (t !== live.tip || fetched.failed) {
+      const f = await fetchNameRecord(live.name, live.tradeApi);
+      // A transient miss keeps the last good record, so a name-service outage cannot turn a refusal into
+      // the fail-open warning while the tip has moved past the window.
+      if (!f.failed || fetched.failed) fetched = f;
+    }
+    if (nfinLive !== live || live.at > at) return;   // superseded, or a click re-check read a newer tip
+    live.fetched = fetched; live.tip = t; live.at = at;
+    applyNfin(id, nfinalizeApproveGate(fetched, live.me, t));
+  } finally { live.busy = false; }
+}
+// Click-time re-check: a verdict older than NFIN_CLICK_MAX_AGE_MS is re-derived from a fresh tip and the
+// last fetched record (no name fetch, so at most one bounded tip read). An unreadable tip keeps the last
+// verdict, so a dead RPC adds no refusal here.
+async function nfinAtClick(id: string, g: { block: boolean; note: string | null } | null) {
+  const live = nfinLive;
+  if (!live || live.id !== id || Date.now() - live.at <= NFIN_CLICK_MAX_AGE_MS) return g;
+  const at = Date.now();
+  const t = await readTip();
+  if (t == null || nfinLive !== live) return g;
+  live.tip = t; live.at = at;
+  const fresh = nfinalizeApproveGate(live.fetched, live.me, t);
+  applyNfin(id, fresh);
+  return fresh;
 }
 function armNfinalizeGate(r: any, st: any) {
   if (nfinForId === r.id) {
-    // W8 (AW-4, the fifth latch): SAME request, repainted — the unlock-after-idle-auto-lock rebuild just
-    // destroyed this gate's note, and that note is a FEE-BURN warning. Re-attach the ALREADY-SETTLED
-    // verdict and return. This latch is deliberately NOT in W1's reset line: clearing it would RE-ARM,
-    // i.e. re-run the ≤6s name fetch on every repaint AND reset nfinBlocked to false with a fresh
-    // in-flight verdict, so armButtons' 700ms timer would RE-ENABLE Approve on a request this gate had
-    // already BLOCKED, until the new verdict landed. Re-attaching makes no network call and touches no
-    // latch, so a blocked request stays blocked (armButtons still reads the unchanged nfinBlocked).
-    // NOT handled here, stated plainly rather than left implied: a verdict that settles WHILE the wallet
-    // is locked is still dropped by the renderedId guard below (renderedId is null while locked), so
-    // there is nothing to re-attach and nfinBlocked stays false. resolve() still awaits nfinGate and
-    // refuses a blocking verdict at the click, which is the fund-safety belt in that corner.
+    // W8 (AW-4, the fifth latch): SAME request, repainted. The unlock-after-idle-auto-lock rebuild just
+    // destroyed this gate's note, and that note is a FEE-BURN warning. Re-attach the latest verdict
+    // (including one that settled while locked) and return. Re-arming instead would re-run the name
+    // fetch on every repaint and reset nfinBlocked, so armButtons' 700ms timer would re-enable Approve on
+    // a blocked request until the new verdict landed. armButtons reads the unchanged nfinBlocked.
     if (nfinSettled) paintNfinNote(nfinSettled);
     return;
   }
   nfinForId = r.id;
-  nfinBlocked = false; nfinGate = null; nfinSettled = null;
+  nfinBlocked = false; nfinGate = null; nfinSettled = null; nfinLive = null;
   const p = r.params || {};
   if (r.method !== "propose" || String(p.domain) !== CAIRNX_DOMAIN) return;
   const rec = decodeCairnxRecord(p.uri, p.payloadHash);
@@ -194,15 +259,13 @@ function armNfinalizeGate(r: any, st: any) {
   if (rec.t !== "nfinalize" && rec.t !== "nrenew" && rec.t !== "nset") return;
   // signer captured at arm time = the account this request is DISPLAYED as signing with (M5 pairing:
   // the background refuses the resolve anyway if the active account changed since render)
-  nfinGate = rec.t === "nfinalize"
-    ? checkNfinalize(rec.name, String(st.tradeApi || ""), String(st.addr || ""))
-    : checkNameAct(rec.t, rec.name, String(st.tradeApi || ""), String(st.addr || ""));
-  nfinGate.then((g) => {
-    if (renderedId !== r.id) return;                 // superseded — never paint over a different request
-    nfinSettled = g;                                 // W8: retained for a later repaint. Recorded AFTER the guard on purpose: a superseded verdict must not be re-attached to the request now on screen (the AW-3 class).
-    if (g.block) { nfinBlocked = true; ($("btn-approve") as HTMLButtonElement).disabled = true; }
-    paintNfinNote(g);
-  });
+  if (rec.t === "nfinalize") {
+    nfinLive = { id: r.id, name: rec.name, tradeApi: String(st.tradeApi || ""), me: String(st.addr || ""), fetched: { failed: true }, tip: null, at: Date.now(), tried: Date.now(), busy: true };
+    nfinGate = checkNfinalize(nfinLive);
+  } else {
+    nfinGate = checkNameAct(rec.t, rec.name, String(st.tradeApi || ""), String(st.addr || ""));
+  }
+  nfinGate.then((g) => applyNfin(r.id, g));
 }
 
 // M3 (token-fill simulation): for a TOKEN-priced fill (confidence===1e6 on fillOffer/attest), show the token
@@ -362,6 +425,7 @@ function disableButtons() {
 // an unpainted poisoning warning.
 let warnPainted: Promise<unknown> = Promise.resolve();
 let tokenPainted: Promise<unknown> = Promise.resolve();
+let approveArmedGen = -1;   // the paintGen whose re-enable floor has run; a later verdict may re-enable Approve only then
 function armButtons() {
   disableButtons();  // AW-1: same immediate disable; the 700ms RE-ENABLE timer stays here, after the paint
   // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
@@ -375,6 +439,7 @@ function armButtons() {
   base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
   Promise.all([base, Promise.resolve(tokenPainted).catch(() => {})]).then(() => {
     if (current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the current paint arms itself
+    approveArmedGen = armedGen;
     ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
 }
@@ -386,12 +451,15 @@ async function resolve(approve: boolean) {
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
   if (approve && tokenNotReady(current)) { msg("the token amount is not shown yet; wait for it or reject", "err"); return; }
   if (approve && rs(id).balShort) { msg("your spendable balance does not cover this request; reject it and retry once your pending transaction is mined", "err"); return; }
-  // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip).
+  // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip, plus one
+  // 2.5s tip read when the verdict is older than NFIN_CLICK_MAX_AGE_MS).
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
   // verdict proceeds (fail-open). Reject never waits.
   if (approve && nfinGate && nfinForId === id) {
-    const g = await nfinGate.catch(() => null);
+    const first = await nfinGate.catch(() => null);
     if (!current || current.id !== id) return;   // superseded while awaiting the verdict
+    const g = await nfinAtClick(id, nfinSettled ?? first);   // the latest verdict, re-derived first when stale
+    if (!current || current.id !== id) return;
     if (g?.block) { msg(g.note || "refusing to approve this finalize", "err"); return; }
   }
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
