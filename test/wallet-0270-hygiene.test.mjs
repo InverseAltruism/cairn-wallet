@@ -1,8 +1,10 @@
-// 0.2.70 source-structure pins: connector hang, popup isolation, snapshot detach,
+// 0.2.70 source-structure pins: connector hang, popup isolation, header-store write detach,
 // CSD review parallel, proveEventAt pool. The approval-window arm and latch behaviour is tested
 // through the real module in approve-guards-dom.test.mjs and approve-repaint-dom.test.mjs.
 import { readFileSync } from "node:fs";
 import { refuse } from "../src/core/refuse.ts";
+import { SPV_CHECKPOINTS } from "../src/core/namespv.ts";
+import { SPV_FLOOR } from "../src/core/spvanchors.ts";
 import { checker } from "./helpers/check.mjs";
 
 const { check: ok, done } = checker();
@@ -35,11 +37,28 @@ ok("countMyOtherLiveHolds body is still the conservative over-count (unchanged t
   /export function countMyOtherLiveHolds\([\s\S]*?\bn\+\+;/.test(fillspv));
 
 const namespv = src("src/core/namespv.ts");
-ok("toSnapshot stays inside the serialized block; cache.set is detached",
-  /const snap = LC\.toSnapshot\(\); detachSnapshotWrite/.test(namespv));
-ok("flushSpvSnapshotWrites is exported for tests", /export function flushSpvSnapshotWrites/.test(namespv));
+// The store write is built (LC.toRecords) only inside the serialized block and only its transaction is detached:
+// never awaited on the proof path.
+const suffixFn = namespv.slice(namespv.indexOf("const suffixWrite = "), namespv.indexOf("const persist = "));
+const prepBody = namespv.slice(namespv.indexOf("async prepare(maxEventHeight"), namespv.indexOf("async blockAt("));
+const blockStart = prepBody.indexOf("await serializeSync(async () => {");
+const blockEnd = prepBody.indexOf("const verifiedTip = tipOf(LC)");
+const persistUses = [...prepBody.matchAll(/\bpersist\b(?=[()])/g)].map((m) => m.index);
+ok("LC.toRecords is read in exactly one place, suffixWrite(), which persist() calls and detaches",
+  (namespv.match(/LC\.toRecords\(/g) || []).length === 1 && /LC\.toRecords\(/.test(suffixFn)
+  && /const persist = \(\) => \{ const w = suffixWrite\(\); if \(w\) detachStoreWrite\(store!, w\); \};/.test(namespv));
+ok("persist() is used only inside the serialized block of prepare() (the write is built under the lock)",
+  blockStart > 0 && blockEnd > blockStart && persistUses.length >= 3 && persistUses.every((i) => i > blockStart && i < blockEnd));
+ok("the detached write is never awaited on the proof path (no await on persist or detachStoreWrite)",
+  !/await\s+(persist|detachStoreWrite)\(/.test(namespv));
+ok("suffixWrite has exactly two callers: persist(), and the one-time legacy migration before the source is returned",
+  (namespv.match(/\bsuffixWrite\(\)/g) || []).length === 2 && namespv.indexOf("suffixWrite() ??") > 0 && namespv.indexOf("suffixWrite() ??") < namespv.indexOf("async prepare(maxEventHeight"));
+ok("flushSpvStoreWrites is exported for tests", /export async function flushSpvStoreWrites/.test(namespv));
 ok("hashAt/merkleAt are on the live source", /async hashAt\(height/.test(namespv) && /async merkleAt\(height/.test(namespv));
-ok("CP is still 29960 (no checkpoint bump)", /height: 29960/.test(namespv));
+ok("the names floor is still 29960 (no checkpoint bump) and the light client holds it as a checkpoint",
+  SPV_FLOOR.height === 29960 && SPV_CHECKPOINTS[29960] === SPV_FLOOR.hash && /checkpoints: SPV_CHECKPOINTS as Record<number, string>/.test(namespv)
+  && /const \{ anchors, newestK, newest \} = anchorTable\(opts\.anchors\);/.test(namespv)
+  && /\[SPV_FLOOR\.height, SPV_FLOOR\.hash\],/.test(namespv));
 
 const build = src("build.mjs");
 ok("popup entry is its own esbuild build with splitting:true",

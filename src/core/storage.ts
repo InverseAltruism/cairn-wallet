@@ -1,7 +1,11 @@
 // Tiny async key/value abstraction so the Wallet brain works in the extension
 // service worker (chrome.storage.local), a plain page (localStorage, dev/E2E),
 // or a test (in-memory).
-export interface Store { get(k: string): Promise<any>; set(k: string, v: any): Promise<void>; del(k: string): Promise<void> }
+export interface Store {
+  get(k: string): Promise<any>; set(k: string, v: any): Promise<void>; del(k: string): Promise<void>;
+  /** Bytes a key occupies, where the area can say (chrome.storage.local); read before a value too large to load. */
+  bytesInUse?(k: string): Promise<number>;
+}
 
 export const memoryStore = (): Store => {
   const m = new Map<string, any>();
@@ -25,6 +29,7 @@ export const chromeStore = (): Store => {
     async get(k) { return (await c.storage.local.get(k))[k] ?? null; },
     async set(k, v) { await c.storage.local.set({ [k]: v }); },
     async del(k) { await c.storage.local.remove(k); },
+    async bytesInUse(k) { return Number(await c.storage.local.getBytesInUse(k)) || 0; },
   };
 };
 

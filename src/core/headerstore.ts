@@ -30,14 +30,14 @@ export interface ChunkSpec {
   lastHash: string;
 }
 
-/** The spec of chunk k when the release table anchors it, else null (k is in the forward-verified suffix). */
-export function chunkSpec(k: number): ChunkSpec | null {
+/** The spec of chunk k when the table anchors it, else null (k is in the forward-verified suffix). */
+export function chunkSpec(k: number, anchors: readonly string[] = SPV_ANCHORS): ChunkSpec | null {
   const i = k - FIRST_CHUNK;
-  if (!Number.isSafeInteger(k) || i < 0 || i >= SPV_ANCHORS.length) return null;
+  if (!Number.isSafeInteger(k) || i < 0 || i >= anchors.length) return null;
   const lastHeight = k * SPV_CHUNK + SPV_CHUNK - 1;
-  const lastHash = SPV_ANCHORS[i]!;
+  const lastHash = anchors[i]!;
   if (i === 0) return { k, firstHeight: SPV_FLOOR.height, firstHash: SPV_FLOOR.hash, lastHash, lastHeight };
-  return { k, firstHeight: k * SPV_CHUNK, prevHash: SPV_ANCHORS[i - 1]!, lastHash, lastHeight };
+  return { k, firstHeight: k * SPV_CHUNK, prevHash: anchors[i - 1]!, lastHash, lastHeight };
 }
 
 /** A hint only: chunk presence is the truth, a head that disagrees is recomputed. */
@@ -196,6 +196,8 @@ export class ChunkLru {
 
 export interface AcquireDeps {
   store: HeaderStore | null;
+  /** The anchor table; SPV_ANCHORS unless the caller narrowed it to a prefix. */
+  anchors?: readonly string[];
   lru: ChunkLru;
   /** The caller's sync serializer, so concurrent proofs fetch one chunk once. */
   serialize: <T>(op: () => Promise<T>) => Promise<T>;
@@ -213,6 +215,7 @@ export interface ChunkAcquirer {
 
 export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
   const { store, lru } = deps;
+  const anchors = deps.anchors ?? SPV_ANCHORS;
   let writeTail: Promise<void> = Promise.resolve();
   // Store writes are detached from the proof path: chained, and a failure is warned.
   const detachWrite = (w: StoreWrite) => {
@@ -233,8 +236,8 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
   };
   return {
     async acquire(height) {
-      const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height)) : null;
-      if (!spec) throw new Error(`height ${height} is outside the release-anchored range ${SPV_FLOOR.height} to ${FIRST_CHUNK * SPV_CHUNK + SPV_ANCHORS.length * SPV_CHUNK - 1}`);
+      const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height), anchors) : null;
+      if (!spec) throw new Error(`height ${height} is outside the release-anchored range ${SPV_FLOOR.height} to ${FIRST_CHUNK * SPV_CHUNK + anchors.length * SPV_CHUNK - 1}`);
       const hit = lru.get(spec.k);
       if (hit) return { spec, records: hit };
       return deps.serialize(async () => {

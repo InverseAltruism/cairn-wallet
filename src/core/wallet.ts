@@ -12,7 +12,8 @@ import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
-import { verifyNameUnion, liveSpvSource, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import { verifyNameUnion, liveSpvSource, fetchNameUnion, type LiveSpvOpts, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
 import { secondSourceOfferConflict, startSecondSourceOfferRead, type SecondSourceRead } from "./offerxcheck.js";
@@ -1033,9 +1034,7 @@ export class Wallet {
     // floor as the singleton, so this only changes transport, never what is verified. The source's prepare()
     // serializes LC.sync, so sharing it with a concurrent name verify cannot interleave ingests.
     return await liveFillSpvSource({
-      rpcBase: this.rpc, headersBase: this.api,
-      cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
-      floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
+      ...this.spvOpts(),
       hints: { offerId, fclaimTxid, me, offerHeight }, spvSource: await this.spvSource(),
       // Served height only selects the block the source merkle-proves the other offer in.
       offerHeightOf: async (id) => {
@@ -1055,9 +1054,7 @@ export class Wallet {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({
-      rpcBase: this.rpc, headersBase: this.api,
-      cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
-      floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
+      ...this.spvOpts(),
       offerId, offerHeight, spvSource: await this.spvSource(),
     });
   }
@@ -1515,18 +1512,27 @@ export class Wallet {
     };
   }
 
-  // Lazily built PoW-verified-header SPV source (singleton per wallet), with the header-chain snapshot
-  // persisted in the wallet store so only the FIRST verify pays the cold-sync cost. Rebuilt on failure.
+  // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates
+  // and then deletes, and (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts.
+  private spvOpts(): LiveSpvOpts {
+    return {
+      rpcBase: this.rpc, headersBase: this.api,
+      store: () => openHeaderStore(),
+      legacy: {
+        get: () => this.store.get("spvHeaderChain"),
+        del: () => this.store.del("spvHeaderChain"),
+        bytes: async () => (this.store.bytesInUse ? await this.store.bytesInUse("spvHeaderChain") : null),
+        attempts: { get: async () => Number(await this.store.get("spvMigrateAttempts")) || 0, set: (n) => (n ? this.store.set("spvMigrateAttempts", n) : this.store.del("spvMigrateAttempts")) },
+      },
+      floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
+    };
+  }
+  // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure.
   private _spvSrc: Promise<SpvSource> | null = null;
   private spvSource(): Promise<SpvSource> {
     if (this.nameSpvForTest) return Promise.resolve(this.nameSpvForTest);
     if (!this._spvSrc) {
-      this._spvSrc = liveSpvSource({
-        rpcBase: this.rpc, headersBase: this.api,
-        cache: { get: () => this.store.get("spvHeaderChain"), set: (s) => this.store.set("spvHeaderChain", s) },
-        // NAME-4: persist the node-tip high-water so the lapse floor survives a service-worker restart.
-        floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
-      }).catch((e) => { this._spvSrc = null; throw e; });
+      this._spvSrc = liveSpvSource(this.spvOpts()).catch((e) => { this._spvSrc = null; throw e; });
     }
     return this._spvSrc;
   }

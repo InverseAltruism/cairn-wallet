@@ -30,13 +30,7 @@ export class LightClient {
   readonly chain: VerifiedHeader[];
   baseHeight: number;
   constructor(opts: { client?: CsdClient; baseUrl?: string; headersBatchProvider?: (from: number, count: number) => Promise<{ header: unknown; hash: string }[]>; checkpoints?: Record<number, string> });
-  static fromSnapshot(s: unknown, opts?: ConstructorParameters<typeof LightClient>[0]): LightClient;
-  // S5-a: the chunked async twin — identical verification (shared restoreOne), yields every `chunk`
-  // headers so a long restore doesn't freeze the MV3 UI thread. Rejection semantics unchanged.
-  static fromSnapshotAsync(s: unknown, opts?: ConstructorParameters<typeof LightClient>[0], chunk?: number): Promise<LightClient>;
-  syncFromCheckpoint(height: number, hash: string, context?: number): Promise<void>;
   sync(to: number, from?: number): Promise<VerifiedHeader>;
-  toSnapshot(): unknown;
   /** Seeds `anchorHeight - firstHeight + 1` (LWMA_WINDOW or LWMA_WINDOW + 1) records through seedTrusted against
    *  `checkpoints[anchorHeight]` (a seed failure throws), then ingests the rest with every consensus check, the
    *  wall-clock drift bound included; the first failing record stops the restore and is named in `failed`. */

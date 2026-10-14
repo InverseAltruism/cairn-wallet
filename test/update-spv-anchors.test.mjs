@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checker } from "./helpers/check.mjs";
 import { generate, check, renderTable, parseTable, getJson } from "../scripts/update-spv-anchors.mjs";
-import { CP } from "../src/core/namespv.ts";
+import { SPV_FLOOR } from "../src/core/spvanchors.ts";
 
 const t = checker("update-spv-anchors: generator refusals, honest path, CI check");
 const ROWS = JSON.parse(readFileSync(new URL("./fixtures/headers-29888-30079.json", import.meta.url), "utf8"));
@@ -37,7 +37,7 @@ const rpcFetch = ({ tip = TOP2 + 2000, answer = (h) => ({ ok: true, height: h, h
 
 function table(anchors = []) {
   const p = join(mkdtempSync(join(tmpdir(), "spvanchors-")), "spvanchors.ts");
-  writeFileSync(p, renderTable({ floor: CP, chunk: CHUNK, anchors }));
+  writeFileSync(p, renderTable({ floor: SPV_FLOOR, chunk: CHUNK, anchors }));
   return p;
 }
 const c1 = (over = {}) => JSON.stringify({
@@ -62,7 +62,7 @@ async function refuses(name, tablePath, run, msgRe) {
   const back = parseTable(readFileSync(p, "utf8"));
   t.check("honest: 2 entries written, newest 30079", r.entries === 2 && r.newest === TOP2);
   t.check("honest: entries are the walked hashes at 30015 and 30079", back.anchors[0] === at(TOP1).hash && back.anchors[1] === at(TOP2).hash);
-  t.check("honest: floor carried forward from the committed table", back.floor.hash === CP.hash && back.floor.height === CP.height);
+  t.check("honest: floor carried forward from the committed table", back.floor.hash === SPV_FLOOR.hash && back.floor.height === SPV_FLOOR.height);
   const dry = table();
   const before = readFileSync(dry);
   await generate({ c1Text: c1(), tablePath: dry, base: "http://h.test", chunk: CHUNK, pageSize: PAGE, paceMs: 0, io: { ...quiet, fetch: headersFetch() } });

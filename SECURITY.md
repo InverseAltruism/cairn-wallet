@@ -14,17 +14,18 @@ are happy to credit you once it is resolved.
 
 * **Encrypted at rest.** Keys and the recovery phrase are stored only as an AES-256-GCM vault, sealed with a key derived from your password using PBKDF2-SHA256 (600,000 iterations). A wrong password fails authenticated decryption and reveals nothing. The stored iteration count is validated on open, so a tampered vault cannot weaken the key derivation.
 * **In memory only while unlocked.** The decrypted key lives only in the background service worker and is cleared by a 15-minute idle auto-lock.
-* **Storage closed to web pages.** At start the service worker restricts both `chrome.storage.local` (the vault ciphertext and the header snapshot) and `chrome.storage.session` to the extension's own pages and worker (`TRUSTED_CONTEXTS`), so the content script that runs on web pages cannot read or write them.
+* **Storage closed to web pages.** At start the service worker restricts both `chrome.storage.local` (the vault ciphertext) and `chrome.storage.session` to the extension's own pages and worker (`TRUSTED_CONTEXTS`), so the content script that runs on web pages cannot read or write them.
 * **Local signing.** The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node. The wallet never signs a digest handed to it by a server, so a malicious or intercepted RPC cannot redirect funds or change what you approved. The "sign in with CSD" digest is structurally distinct from a transaction sighash, so a hostile site cannot turn a sign-in into a spend.
 * **Deterministic, non-malleable signatures.** secp256k1 with RFC 6979 nonces and low-S enforcement.
 
 The wallet also declares the `unlimitedStorage` permission. Its trustless `.csd` name
-verification keeps a PoW-verified block-header snapshot in `chrome.storage.local`; the snapshot
-grows with the chain (multi-MB today) and shares the default 10 MB quota with the encrypted
-vault, so without the permission the header cache would eventually hit the quota and degrade
-verification. Everything stays local to the device and nothing is transmitted; the vault is
-unaffected. Nor can a poisoned snapshot forge verification: it is re-verified on load (PoW and
-LWMA difficulty re-derivation), so storage tampering can at worst force a re-sync.
+verification keeps block headers in the extension's own IndexedDB database (84 bytes per header,
+in 4,096-header chunks), which grows with the chain; without the permission the header store
+would eventually hit the quota and degrade verification. Everything stays local to the device and
+nothing is transmitted; the vault is unaffected. A poisoned store cannot forge verification: a
+stored chunk is used only if its headers hash-link to the block hashes built into the release,
+and the headers above the newest built-in hash are re-verified on load (PoW, LWMA difficulty,
+timestamps), so storage tampering can at worst force a re-fetch.
 
 ## What the wallet trusts the RPC for
 
@@ -46,9 +47,11 @@ nothing because of a marker, and the marker says to check the explorer before se
 When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX name services as
 **untrusted** and checks their answers against the chain itself:
 
-* it runs an **in-wallet SPV light client** seeded at a baked checkpoint, verifying every header
-  forward (PoW + LWMA difficulty + prev-link), and proves each name record's inclusion against the
-  PoW-committed merkle root;
+* it runs an **in-wallet SPV light client** anchored by block hashes built into each release (one
+  per 4,096 blocks from the names floor, corroborated by three nodes on two hosts and re-derived from
+  a second host in CI): a header up to the newest built-in hash is used only if its chunk hash-links
+  to those hashes, and every header above it is verified forward (PoW + LWMA difficulty + prev-link);
+  it proves each name record's inclusion against the PoW-committed merkle root;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
   to re-attribute a name's owner;
