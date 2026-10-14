@@ -9,7 +9,7 @@
 #
 # It exports exactly what core/namespv.ts (the XREPO-1 name verifier) needs:
 #   • LightClient + CsdClient  — PoW-verified header chain + node-RPC reads (block/tx)
-#   • verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW — the 84-byte header records of
+#   • verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW: the 84-byte header records of
 #                                  the header store and the hash-link walk that binds a chunk to the anchor table
 #   • rpcTxToTx                 — decode a node-JSON tx into the consensus codec Tx
 #   • txid / sighash / merkleRoot — recompute txids, bind a block's tx-set to the verified header root,
