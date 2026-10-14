@@ -37,7 +37,23 @@ export class LightClient {
   syncFromCheckpoint(height: number, hash: string, context?: number): Promise<void>;
   sync(to: number, from?: number): Promise<VerifiedHeader>;
   toSnapshot(): unknown;
+  /** Seeds `anchorHeight - firstHeight + 1` (LWMA_WINDOW or LWMA_WINDOW + 1) records through seedTrusted against
+   *  `checkpoints[anchorHeight]` (a seed failure throws), then ingests the rest with every consensus check, the
+   *  wall-clock drift bound included; the first failing record stops the restore and is named in `failed`. */
+  static fromRecords(records: Uint8Array, at: { firstHeight: number; anchorHeight: number }, opts?: ConstructorParameters<typeof LightClient>[0], yieldEvery?: number): Promise<{ client: LightClient; failed?: { height: number; reason: string } }>;
+  /** 84-byte records for heights [fromHeight .. tip]; throws below the held base. */
+  toRecords(fromHeight: number): Uint8Array;
 }
+/** Bytes in one serialized header record. */
+export const HEADER_BYTES: number;
+/** The LWMA difficulty window: a forward ingest needs this many headers below it. */
+export const LWMA_WINDOW: number;
+export interface BlockHeader { version: number; prev: string; merkle: string; time: number | bigint; bits: number; nonce: number }
+export function serializeHeader(h: BlockHeader): Uint8Array;
+export function deserializeHeader(rec: Uint8Array): BlockHeader;
+/** Throws naming the failing height unless the records hash-link from `firstHash` (or `prevHash`) to `lastHash`,
+ *  and, with `lastHeight`, number exactly lastHeight - firstHeight + 1. Checks no PoW, time or LWMA rule. */
+export function verifyLinkedRecords(records: Uint8Array, ends: { firstHeight: number; firstHash?: string; prevHash?: string; lastHash: string; lastHeight?: number }): void;
 export function rpcTxToTx(j: RpcTxJson): Tx;
 export function txid(tx: Tx): string;
 export function sighash(tx: Tx): string;

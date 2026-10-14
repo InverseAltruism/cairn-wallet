@@ -450,12 +450,14 @@ var MAX_FUTURE_DRIFT_SECS = 2 * 60 * 60;
 var MTP_WINDOW = 11;
 var MIN_BLOCK_SPACING_SECS = 60;
 var EPOCH_LEN = 30;
+var epochOf = (height) => Math.floor(height / EPOCH_LEN);
 var COIN = 1e8;
 var INITIAL_REWARD = 50 * COIN;
 var HALVING_INTERVAL = 1051200;
 var MAX_HALVINGS = 64;
 var MIN_FEE_PROPOSE = 25e6;
 var MIN_FEE_ATTEST = 5e6;
+var MAX_URI_BYTES = 512;
 var MAX_U128 = (1n << 128n) - 1n;
 function blockReward(height) {
   const halvings = Math.floor(height / HALVING_INTERVAL);
@@ -492,8 +494,9 @@ function taggedHash(tag, msg) {
 function sighash(tx) {
   return hx(sha256d(taggedHash("CSD_SIG_V1", concatBytes(serialize(strippedTx(tx)), CHAIN_ID_HASH))));
 }
+var HEADER_BYTES = 84;
 function serializeHeader(h) {
-  const buf = new Uint8Array(84);
+  const buf = new Uint8Array(HEADER_BYTES);
   buf.set(u32(h.version), 0);
   buf.set(hbFixed(h.prev, 32), 4);
   buf.set(hbFixed(h.merkle, 32), 36);
@@ -501,6 +504,19 @@ function serializeHeader(h) {
   buf.set(u32(h.bits), 76);
   buf.set(u32(h.nonce), 80);
   return buf;
+}
+function deserializeHeader(rec) {
+  if (rec.length !== HEADER_BYTES) throw new Error(`header record must be ${HEADER_BYTES} bytes, got ${rec.length}`);
+  const dv = new DataView(rec.buffer, rec.byteOffset, HEADER_BYTES);
+  const t = dv.getBigUint64(68, true);
+  return {
+    version: dv.getUint32(0, true),
+    prev: hx(rec.subarray(4, 36)),
+    merkle: hx(rec.subarray(36, 68)),
+    time: t <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(t) : t,
+    bits: dv.getUint32(76, true),
+    nonce: dv.getUint32(80, true)
+  };
 }
 function headerHashBytes(h) {
   return sha256d(serializeHeader(h));
@@ -752,9 +768,9 @@ var CsdClient = class {
   tx(id) {
     return this.get(`/tx/${id}`);
   }
-  // Default available=true: excludes immature/locked coinbase UTXOs so callers don't build txs spending
-  // un-spendable outputs (the node would silently reject them) — audit TXB-1-SDK. Pass {available:false}
-  // for the full set (e.g. balance display that wants to show locked coinbases).
+  // Default available=true: the node drops only outpoints already spent by a tx in its mempool, so a builder
+  // does not pick a pending-spent input; coinbase outputs are not filtered. {available:false} returns every
+  // unspent output, pending-spent ones included (e.g. a balance display).
   utxos(addr, opts = {}) {
     return this.get(`/utxos/${addr}${opts.available === false ? "" : "?available=true"}`);
   }
@@ -914,6 +930,56 @@ var satAddWork = (a, bits) => {
   const s = a + workForBitsMemo(bits);
   return s > MAX_U128 ? MAX_U128 : s;
 };
+var sameBytes = (a, b) => {
+  if (a.length !== b.length) return false;
+  for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return false;
+  return true;
+};
+var hash32 = (hex, what) => {
+  const b = hb(hex);
+  if (b.length !== 32) throw new Error(`${what} must be a 32-byte hash`);
+  return b;
+};
+var recordCount = (records) => {
+  if (!records.length || records.length % HEADER_BYTES !== 0) throw new Error(`records: ${records.length} bytes is not a whole number of ${HEADER_BYTES}-byte records`);
+  return records.length / HEADER_BYTES;
+};
+function verifyLinkedRecords(records, ends) {
+  const { firstHeight } = ends;
+  if (!Number.isSafeInteger(firstHeight) || firstHeight < 0) throw new Error(`records: bad firstHeight ${firstHeight}`);
+  const n = recordCount(records);
+  if (ends.lastHeight !== void 0 && ends.lastHeight - firstHeight + 1 !== n) throw new Error(`records: ${n} records from ${firstHeight} do not end at lastHeight ${ends.lastHeight}`);
+  if (ends.firstHash === void 0 && ends.prevHash === void 0) throw new Error("records: firstHash or prevHash is required to bind the first record");
+  const firstHash = ends.firstHash === void 0 ? void 0 : hash32(ends.firstHash, "firstHash");
+  const lastHash = hash32(ends.lastHash, "lastHash");
+  let prev = ends.prevHash === void 0 ? void 0 : hash32(ends.prevHash, "prevHash");
+  for (let i = 0; i < n; i++) {
+    const rec = records.subarray(i * HEADER_BYTES, (i + 1) * HEADER_BYTES);
+    if (prev && !sameBytes(rec.subarray(4, 36), prev)) throw new Error(`records: prev link broken at ${firstHeight + i}`);
+    prev = sha256d(rec);
+    if (i === 0 && firstHash && !sameBytes(prev, firstHash)) throw new Error(`records: first record at ${firstHeight} does not match firstHash`);
+  }
+  if (!sameBytes(prev, lastHash)) throw new Error(`records: last record at ${firstHeight + n - 1} does not match lastHash`);
+}
+function taskYielder() {
+  const mc = new MessageChannel();
+  let wake;
+  mc.port1.onmessage = () => {
+    const w = wake;
+    wake = void 0;
+    w?.();
+  };
+  return {
+    yieldTask: () => new Promise((r) => {
+      wake = r;
+      mc.port2.postMessage(0);
+    }),
+    close: () => {
+      mc.port1.close();
+      mc.port2.close();
+    }
+  };
+}
 var LightClient = class _LightClient {
   client;
   provider;
@@ -1190,6 +1256,14 @@ var LightClient = class _LightClient {
       headers: this.chain.map((c) => ({ height: c.height, hash: c.hash, header: c.header, chainwork: c.chainwork.toString(), trusted: c.trusted ?? false }))
     };
   }
+  /** Serialized records for heights [fromHeight .. tip], 84 bytes each; empty when fromHeight is above the tip. */
+  toRecords(fromHeight) {
+    if (!Number.isSafeInteger(fromHeight) || fromHeight < this.baseHeight) throw new Error(`toRecords: ${fromHeight} is below the held base ${this.baseHeight}`);
+    const rows = this.chain.slice(fromHeight - this.baseHeight);
+    const out = new Uint8Array(rows.length * HEADER_BYTES);
+    rows.forEach((r, i) => out.set(serializeHeader(r.header), i * HEADER_BYTES));
+    return out;
+  }
   /**
    * Restore from a snapshot. The load RE-VERIFIES — hash recomputation, prev links, timestamp
    * rules, PoW on every header, AND `bits` re-derived from the LWMA window for every NON-trusted
@@ -1208,10 +1282,10 @@ var LightClient = class _LightClient {
       fromSnapshotAsync — one copy, so the two entry points can never drift on the anchor rules. */
   static prepareRestore(s, opts) {
     if (s.v !== 1 || !Array.isArray(s.headers) || !s.headers.length) throw new Error("bad snapshot");
-    const lc = new _LightClient(opts);
+    const lc2 = new _LightClient(opts);
     const baseHeight = Number(s.baseHeight);
     if (!Number.isSafeInteger(baseHeight) || baseHeight < 0) throw new Error(`snapshot bad baseHeight: ${baseHeight}`);
-    const pinnedHeights = Object.keys(lc.checkpoints).map(Number);
+    const pinnedHeights = Object.keys(lc2.checkpoints).map(Number);
     if (pinnedHeights.length) {
       const last = baseHeight + s.headers.length - 1;
       const anchored = pinnedHeights.some((cp) => baseHeight + LWMA_WINDOW - 1 <= cp && cp <= last);
@@ -1219,12 +1293,12 @@ var LightClient = class _LightClient {
         throw new Error(`snapshot not anchored: no checkpoint in [${baseHeight + LWMA_WINDOW - 1}..${last}] to cover the trusted seed prefix`);
       }
     }
-    lc.baseHeight = baseHeight;
-    return { lc, baseHeight };
+    lc2.baseHeight = baseHeight;
+    return { lc: lc2, baseHeight };
   }
   /** The per-header restore step, shared VERBATIM by fromSnapshot (sync) and fromSnapshotAsync
       (chunked) — a second verifier copy could drift (S5-a). Carries (prevHash, work) across. */
-  static restoreOne(lc, baseHeight, e, i, prevHash, work) {
+  static restoreOne(lc2, baseHeight, e, i, prevHash, work) {
     const height = Number(e.height);
     if (!Number.isSafeInteger(height) || height < 0) throw new Error(`snapshot bad height at index ${i}: ${height}`);
     if (height !== baseHeight + i) throw new Error(`snapshot not contiguous at ${height}`);
@@ -1238,27 +1312,27 @@ var LightClient = class _LightClient {
     if (prevHash && e.header.prev.toLowerCase() !== prevHash) throw new Error(`snapshot prev link broken at ${height}`);
     const fullWindowAvailable = baseHeight === 0 || height - baseHeight >= LWMA_WINDOW;
     if (height > 0 && (!e.trusted || fullWindowAvailable)) {
-      const window = lc.windowBefore(height);
-      const parent = lc.chain[i - 1];
-      if (parent) lc.checkTimeRules(height, e.header, window, parent);
+      const window = lc2.windowBefore(height);
+      const parent = lc2.chain[i - 1];
+      if (parent) lc2.checkTimeRules(height, e.header, window, parent);
       const exp = expectedBitsFromWindow(window, height);
       if (e.header.bits !== exp) throw new Error(`snapshot bad bits at ${height}: ${e.header.bits.toString(16)} != LWMA ${exp.toString(16)}`);
     }
     if (!powOkMemo(hashBytes, e.header.bits)) throw new Error(`snapshot PoW invalid at ${height}`);
-    lc.pinCheckpoint(height, hash);
+    lc2.pinCheckpoint(height, hash);
     work = satAddWork(work, e.header.bits);
-    lc.chain.push({ height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
+    lc2.chain.push({ height, hash, header: e.header, chainwork: work, ...e.trusted ? { trusted: true } : {} });
     return { prevHash: hash.toLowerCase(), work };
   }
   static fromSnapshot(s, opts = {}) {
-    const { lc, baseHeight } = _LightClient.prepareRestore(s, opts);
+    const { lc: lc2, baseHeight } = _LightClient.prepareRestore(s, opts);
     let prevHash = null, work = 0n;
     for (let i = 0; i < s.headers.length; i++) {
-      const r = _LightClient.restoreOne(lc, baseHeight, s.headers[i], i, prevHash, work);
+      const r = _LightClient.restoreOne(lc2, baseHeight, s.headers[i], i, prevHash, work);
       prevHash = r.prevHash;
       work = r.work;
     }
-    return lc;
+    return lc2;
   }
   /** S5-a (register Phase 4, 2026-09-12): the CHUNKED async restore — the IDENTICAL per-header
       verification (restoreOne, shared with the sync path), but yields to the event loop every
@@ -1267,15 +1341,50 @@ var LightClient = class _LightClient {
       client is ever read. The checkpoint is NEVER bumped and the rejection semantics are unchanged
       (a hostile snapshot is still refused whole — the throw just happens at a later await). */
   static async fromSnapshotAsync(s, opts = {}, chunk = 2e3) {
-    const { lc, baseHeight } = _LightClient.prepareRestore(s, opts);
+    const { lc: lc2, baseHeight } = _LightClient.prepareRestore(s, opts);
     let prevHash = null, work = 0n;
     for (let i = 0; i < s.headers.length; i++) {
-      const r = _LightClient.restoreOne(lc, baseHeight, s.headers[i], i, prevHash, work);
+      const r = _LightClient.restoreOne(lc2, baseHeight, s.headers[i], i, prevHash, work);
       prevHash = r.prevHash;
       work = r.work;
       if (i % chunk === chunk - 1) await new Promise((res) => setTimeout(res, 0));
     }
-    return lc;
+    return lc2;
+  }
+  /**
+   * Builds a client from stored records contiguous from `firstHeight`. Records up to `anchorHeight`
+   * (LWMA_WINDOW or LWMA_WINDOW + 1 of them, a full window for the first ingest) go through `seedTrusted` against `opts.checkpoints[anchorHeight]`,
+   * which must be configured; a seed failure throws. Records above go through `ingest` (the wall-clock
+   * drift bound included), and the first that fails stops the restore: the client keeps the records
+   * below it and `failed` names it.
+   */
+  static async fromRecords(records, at, opts = {}, yieldEvery = 512) {
+    const n = recordCount(records);
+    const { firstHeight, anchorHeight } = at;
+    const seedLen = anchorHeight - firstHeight + 1;
+    if (!Number.isSafeInteger(firstHeight) || firstHeight < 0 || !Number.isSafeInteger(anchorHeight) || seedLen > n || seedLen < LWMA_WINDOW || seedLen > LWMA_WINDOW + 1) {
+      throw new Error(`fromRecords: the seed from ${firstHeight} to anchor ${anchorHeight} must be ${LWMA_WINDOW} or ${LWMA_WINDOW + 1} of the ${n} records`);
+    }
+    if (!Number.isSafeInteger(yieldEvery) || yieldEvery < 1) throw new Error(`fromRecords: yieldEvery must be a positive integer, got ${yieldEvery}`);
+    const lc2 = new _LightClient(opts);
+    const anchorHash = lc2.checkpoints[anchorHeight];
+    if (!anchorHash) throw new Error(`fromRecords: no checkpoint configured at anchor ${anchorHeight}`);
+    const rec = (i) => deserializeHeader(records.subarray(i * HEADER_BYTES, (i + 1) * HEADER_BYTES));
+    lc2.seedTrusted(Array.from({ length: seedLen }, (_, i) => ({ height: firstHeight + i, header: rec(i) })), anchorHash);
+    const { yieldTask, close } = taskYielder();
+    try {
+      for (let i = seedLen; i < n; i++) {
+        try {
+          lc2.ingest(firstHeight + i, rec(i));
+        } catch (e) {
+          return { client: lc2, failed: { height: firstHeight + i, reason: e instanceof Error ? e.message : String(e) } };
+        }
+        if ((i - seedLen) % yieldEvery === yieldEvery - 1) await yieldTask();
+      }
+    } finally {
+      close();
+    }
+    return { client: lc2 };
   }
 };
 
@@ -3308,18 +3417,15 @@ var ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160());
 var ripemd1602 = ripemd160;
 
 // packages/crypto/dist/index.js
-var strip0x2 = (h) => h.startsWith("0x") ? h.slice(2) : h;
-var hb2 = (h) => hexToBytes(strip0x2(h));
-var hx2 = (b) => "0x" + bytesToHex(b);
 function hash160(bytes) {
-  return hx2(ripemd1602(sha2562(bytes)));
+  return hx(ripemd1602(sha2562(bytes)));
 }
 function addrFromPub(pub33) {
-  return hash160(hb2(pub33));
+  return hash160(hb(pub33));
 }
 function verifyDigest(sig64, pub33, digestHex) {
   try {
-    const s = hb2(sig64), p = hb2(pub33), d = hb2(digestHex);
+    const s = hb(sig64), p = hb(pub33), d = hb(digestHex);
     if (s.length !== 64 || p.length !== 33 || d.length !== 32) return false;
     if (secp256k1.Signature.fromCompact(s).hasHighS()) return false;
     return secp256k1.verify(s, d, p, { lowS: true });
@@ -3329,7 +3435,7 @@ function verifyDigest(sig64, pub33, digestHex) {
 }
 function parseScriptSig(scriptSig) {
   if (typeof scriptSig !== "string") return null;
-  const h = strip0x2(scriptSig).toLowerCase();
+  const h = strip0x(scriptSig).toLowerCase();
   if (h.length < 2 + 128 + 2 + 66) return null;
   if (h.slice(0, 2) !== "40") return null;
   if (h.slice(130, 132) !== "21") return null;
@@ -3339,7 +3445,7 @@ function parseScriptSig(scriptSig) {
 }
 function recoverSigner(scriptSig, digestHex) {
   if (typeof scriptSig !== "string") return null;
-  const h = strip0x2(scriptSig).toLowerCase();
+  const h = strip0x(scriptSig).toLowerCase();
   if (h.length !== 198) return null;
   const p = parseScriptSig(h);
   if (!p) return null;
@@ -3372,7 +3478,7 @@ function expiredClaimFee(name, epochsPastGraceEnd, height) {
   const mult = 1n + (NAME_PREMIUM_START - 1n) * left / BigInt(NAME_PREMIUM_DECAY_EPOCHS);
   return base * mult;
 }
-var MAX_RECORD_BYTES = 512;
+var MAX_RECORD_BYTES = MAX_URI_BYTES;
 var MAX_AMOUNT = (1n << 96n) - 1n;
 var SCORE_FILL = 100;
 var SCORE_CANCEL = 0;
@@ -3444,7 +3550,6 @@ var V26_HEIGHT = 46480;
 var V27_HEIGHT = 46520;
 var V28_HEIGHT = 6e4;
 var V29_HEIGHT = 88e3;
-var epochOf = (height) => Math.floor(height / EPOCH_LEN);
 var claimWindowAt = (height) => height >= V20_HEIGHT ? CLAIM_WINDOW_BLOCKS_V20 : CLAIM_WINDOW_BLOCKS;
 var FCLAIM_WINDOW_MIN = CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS + 1;
 var claimWindowOf = (claimUntilHeight, claimTxid) => {
@@ -5073,6 +5178,49 @@ function paidToFromOutputs(outputs) {
   }
   return m;
 }
+function burnedPayment(paidTo, payer, offer2) {
+  const read = (addr) => addr === payer ? 0n : ptAmt(paidTo?.[addr]);
+  let counterparty = 0n;
+  if (offer2) {
+    for (const addr of /* @__PURE__ */ new Set([offer2.seller, offer2.want.payto])) if (addr !== TREASURY_ADDR) counterparty += read(addr);
+  }
+  return { treasury: read(TREASURY_ADDR), counterparty };
+}
+var lc = (v) => String(v).toLowerCase();
+function myProvenFillClosedOffer(fill, fclaim2, offerEv, me, grantHeight) {
+  if (!(grantHeight >= V29_HEIGHT)) return false;
+  if (!fill || fill.kind !== "attest" || fill.score !== SCORE_FILL) return false;
+  if (lc(fill.attester) !== lc(me) || lc(fill.proposalId) !== lc(fclaim2.id)) return false;
+  if (!(fill.height > fclaim2.height && fill.height < grantHeight)) return false;
+  if (!offerEv || offerEv.kind !== "propose" || lc(offerEv.id) !== lc(fclaim2.offer)) return false;
+  const bound = bindProvenOffer(offerEv);
+  const value = bound?.terms.value;
+  if (!bound || value === void 0) return false;
+  const t = bound.terms;
+  const state = {
+    id: lc(offerEv.id),
+    seller: bound.seller,
+    give: t.giveName !== void 0 ? { name: t.giveName } : { ticker: String(t.giveTicker ?? ""), amount: String(t.giveAmount ?? "") },
+    want: { value, payto: bound.payto },
+    status: "open",
+    expiresEpoch: offerEv.expiresEpoch,
+    height: t.height,
+    feeBps: t.feeBps,
+    taker: t.taker,
+    bid: t.bid,
+    min: t.min,
+    paid: "0",
+    delivered: "0"
+  };
+  let need;
+  try {
+    need = requiredFillOutputs(state, BigInt(value));
+  } catch {
+    return false;
+  }
+  if (!need) return false;
+  return need.every((leg) => ptAmt(fill.paidTo?.[lc(leg.to)]) >= leg.value);
+}
 export {
   ACTIVATION_HEIGHT,
   ADDR_RE,
@@ -5103,7 +5251,9 @@ export {
   GAP_NEEDED,
   HALVING_INTERVAL,
   HASH_RE,
+  HEADER_BYTES,
   INITIAL_REWARD,
+  LWMA_WINDOW,
   LightClient,
   MAX_ACTIVE_CLAIMS,
   MAX_AMOUNT,
@@ -5172,12 +5322,14 @@ export {
   blockReward,
   buildFeeHeight,
   buildRecord,
+  burnedPayment,
   canonicalJson,
   canonicalState,
   claimGraceOf,
   claimWindowAt,
   claimWindowOf,
   deploy,
+  deserializeHeader,
   epochOf,
   expiredClaimFee,
   fclaim,
@@ -5197,6 +5349,7 @@ export {
   makerRebate,
   merkleRoot,
   mint,
+  myProvenFillClosedOffer,
   nameClaim,
   nameCommit,
   nameCommitRecord,
@@ -5217,12 +5370,14 @@ export {
   previewFill,
   primaryRankBefore,
   provenOfferTerms,
+  ptAmt,
   recoverSigner,
   replayLiveHold,
   requiredClaimDepth,
   requiredFillOutputs,
   resolve,
   rpcTxToTx,
+  serializeHeader,
   sighash,
   tokenMeta,
   tradeFee,
@@ -5231,5 +5386,6 @@ export {
   unsafeMintProvenOfferTerms,
   verifyDigest,
   verifyFillSpv,
+  verifyLinkedRecords,
   verifyMerkleProof
 };
