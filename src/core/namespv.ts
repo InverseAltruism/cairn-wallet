@@ -31,15 +31,12 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason — never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, paidToFromOutputs, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
+import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, paidToFromOutputs, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
 import { parseSpvJson } from "./node.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
+import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
+import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
 
-// Baked checkpoint: a real finalized CSD header at the NAMES-ACTIVATION floor (V11_HEIGHT). No name can
-// have an effectiveHeight below this, so a forward-only verified chain seeded here covers every name.
-// Trust is anchored HERE, not at the server's word; the LightClient verifies every header forward (PoW +
-// LWMA-bits + prev-link). Bump it (and the snapshot version) periodically to bound forward-sync cost.
-export const CP = { height: 29960, hash: "0x00000000000376f1b00dfa976b2314ee3d1cbe25431b008293fa93e28cdce9fb" };
 
 export interface NameVerification {
   verified: boolean;          // true ⇒ the mapping is chain-backed AS SHOWN
@@ -416,12 +413,31 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
   }
 }
 
-// ── production SPV source: the real PoW-verified light client over the cairn server ──────────────────
+// ── production SPV source: the release anchor table, the header store and the PoW-verified suffix ───────
+// Trust rule (cairn docs/Plans/86 section 3.2): a header at or below the newest table anchor is used only from a
+// chunk whose records hash-link to two baked table hashes in this session; above it, only from the light client,
+// seeded from that anchor's verified chunk and synced forward with every consensus check. Every table entry is a
+// light-client checkpoint for the life of the release; nothing here removes, skips or overrides one.
+
+/** The pre-0.2.99 chrome.storage.local header snapshot, read to migrate it into the store and then deleted. */
+export interface LegacySnapshot {
+  get(): Promise<unknown | null>;
+  del(): Promise<void>;
+  /** Bytes the snapshot occupies, or null when the storage area cannot say. */
+  bytes(): Promise<number | null>;
+  /** Failed migrations so far (a store that cannot be written); the snapshot is deleted after MIGRATE_MAX. */
+  attempts: { get(): Promise<number>; set(n: number): Promise<void> };
+}
+
 export interface LiveSpvOpts {
   rpcBase: string;       // e.g. https://cairn-substrate.com/api/rpc  (CsdClient block/tx reads)
   headersBase: string;   // e.g. https://cairn-substrate.com          (/api/headers batch header source)
-  // optional header-chain snapshot cache (the wallet store) so we don't re-sync every verify; re-verified on load
-  cache?: { get(): Promise<unknown | null>; set(s: unknown): Promise<void> };
+  /** The anchor table: the release table when absent; only a prefix of it is accepted (see anchorTable). */
+  anchors?: readonly string[];
+  /** Opens the IndexedDB header store; null, a throw or absence runs the session in memory. */
+  store?: () => Promise<HeaderStore | null>;
+  /** The legacy snapshot to migrate (section 3.8 of the plan). */
+  legacy?: LegacySnapshot;
   // optional persisted node-tip high-water (NSPV-STALE-LAPSE / NAME-4). The monotonic floor below only
   // protects WITHIN a session; persisting it lets the floor survive MV3 service-worker restarts so a deflated
   // tip served on the first verify of a fresh session cannot roll lease-state back below a height we have
@@ -458,8 +474,135 @@ export function isTransientSyncError(msg: string): boolean {
     || /unexpected (token|end)|json/i.test(msg);
 }
 
-/** Build the live SPV source. The LightClient seeds at the baked checkpoint and verifies forward to tip. */
+const HB = HEADER_BYTES;
+/** /api/headers page: sync and backfill requests start on a multiple of it, so finalized pages share edge-cached URLs. */
+const PAGE = 512;
+/** Records that seed the light client: the LWMA window below the anchor plus the anchor itself. */
+const SEED = LWMA_WINDOW + 1;
+interface AnchorTable { anchors: readonly string[]; newestK: number; newest: number; checkpoints: Readonly<Record<number, string>> }
+/**
+ * The anchor table a source runs on: the release table, or a prefix of it (tests and the acceptance harness, whose
+ * header fixtures end below the newest entry). Any other table is refused, so this cannot add a hash the release
+ * does not carry; a prefix only moves the newest anchor down, and the heights above it are forward-verified.
+ */
+function anchorTable(anchors: readonly string[] = SPV_ANCHORS): AnchorTable {
+  // A longer table fails the comparison too: its extra entry compares against undefined.
+  if (!anchors.length || anchors.some((h, i) => h !== SPV_ANCHORS[i])) {
+    throw new Error("liveSpvSource: the anchor table must be the release table or a prefix of it");
+  }
+  const newestK = FIRST_CHUNK + anchors.length - 1;
+  return {
+    anchors, newestK, newest: newestK * SPV_CHUNK + SPV_CHUNK - 1,
+    checkpoints: Object.freeze(Object.fromEntries([
+      [SPV_FLOOR.height, SPV_FLOOR.hash],
+      ...anchors.map((hash, i) => [(FIRST_CHUNK + i) * SPV_CHUNK + SPV_CHUNK - 1, hash]),
+    ])),
+  };
+}
+const RELEASE_TABLE = anchorTable();
+/** The newest release anchor. Heights at or below it are read from verified chunks, heights above it from the light client. */
+export const SPV_NEWEST = RELEASE_TABLE.newest;
+/** Every release table entry, floor included, as light-client checkpoints. */
+export const SPV_CHECKPOINTS = RELEASE_TABLE.checkpoints;
+/** A legacy snapshot above this is absurd or hostile: it is deleted unread. */
+export const LEGACY_MAX_BYTES = 200 * 1024 * 1024;
+export const MIGRATE_MAX = 3;
+/** The light client's wall-clock future-drift refusal (time > now + 2 h), the one refusal the user's clock can cause. */
+const CLOCK_FAULT = /time too far in future/;
+
+const tipOf = (lc: { baseHeight: number; chain: { length: number } }) => lc.baseHeight + lc.chain.length - 1;
+const concatBytes = (parts: Uint8Array[]): Uint8Array => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+};
+const yieldTask = () => new Promise<void>((r) => setTimeout(r, 0));
+
+function verifyChunk(records: Uint8Array, spec: ChunkSpec): void {
+  verifyLinkedRecords(records, { firstHeight: spec.firstHeight, firstHash: spec.firstHash, prevHash: spec.prevHash, lastHash: spec.lastHash, lastHeight: spec.lastHeight });
+}
+
+const pinRefusal = (spec: ChunkSpec, e: unknown) =>
+  new Error(`the wallet could not match the chain to its built-in checkpoints (height ${spec.lastHeight}); update the wallet or try again later. ${(e as Error)?.message ?? e}`);
+// The header may also be forged (the time check runs before PoW), so the copy says what was seen, not who is wrong.
+const clockRefusal = (detail: string) =>
+  new Error(`a block header is dated more than 2 hours ahead of this computer's clock. If the clock is behind, set it correctly and try again (${detail})`);
+
+/** The record at `h` of a verified chunk, its hash (the next record's prev, or the chunk's baked top hash) and merkle root. */
+function chunkHeader(records: Uint8Array, spec: ChunkSpec, h: number): { hash: string; merkle: string } {
+  const i = h - spec.firstHeight;
+  const n = records.length / HB;
+  const merkle = deserializeHeader(records.subarray(i * HB, (i + 1) * HB)).merkle;
+  const hash = i + 1 < n ? deserializeHeader(records.subarray((i + 1) * HB, (i + 2) * HB)).prev : spec.lastHash;
+  return { hash: hash.toLowerCase(), merkle };
+}
+
+interface LegacyRecords { base: number; top: number; records(from: number, to: number): Uint8Array }
+
+/** The v1 snapshot as records, or null when it is not one. Records are serialized per range, on demand. */
+function legacyRecords(raw: unknown): LegacyRecords | null {
+  const s = raw as { v?: unknown; baseHeight?: unknown; headers?: unknown } | null;
+  if (!s || typeof s !== "object" || s.v !== 1 || !Array.isArray(s.headers) || !s.headers.length) return null;
+  const base = Number(s.baseHeight);
+  if (!Number.isSafeInteger(base) || base < 0) return null;
+  const hs = s.headers as { height?: unknown; header?: unknown }[];
+  return {
+    base, top: base + hs.length - 1,
+    records(from, to) {
+      const out = new Uint8Array((to - from + 1) * HB);
+      for (let h = from; h <= to; h++) {
+        const e = hs[h - base];
+        if (Number(e?.height) !== h) throw new Error(`legacy header snapshot is not contiguous at ${h}`);
+        out.set(serializeHeader(e!.header as BlockHeader), (h - from) * HB);
+      }
+      return out;
+    },
+  };
+}
+
+// Storage failures around the legacy snapshot are warned and never fail the restore.
+async function dropLegacy(l: LegacySnapshot, why: string, e?: unknown): Promise<void> {
+  console.warn(`[namespv] legacy header snapshot ${why}; deleting it`, ...(e === undefined ? [] : [e]));
+  try { await l.del(); } catch (d) { console.warn("[namespv] legacy header snapshot delete failed:", d); }
+}
+async function setAttempts(l: LegacySnapshot, n: number): Promise<void> {
+  try { await l.attempts.set(n); } catch (e) { console.warn("[namespv] migration attempt count not saved:", e); }
+}
+
+async function readLegacy(l: LegacySnapshot): Promise<LegacyRecords | null> {
+  let bytes: number | null = null;
+  try { bytes = await l.bytes(); } catch (e) { console.warn("[namespv] legacy header snapshot size unavailable:", e); }
+  if (bytes !== null && bytes > LEGACY_MAX_BYTES) { await dropLegacy(l, `is ${bytes} bytes, read nothing`); return null; }
+  let raw: unknown = null;
+  try { raw = await l.get(); } catch (e) { console.warn("[namespv] legacy header snapshot unreadable this start:", e); return null; }
+  if (raw == null) return null;
+  const lr = legacyRecords(raw);
+  if (!lr) await dropLegacy(l, "is not a v1 snapshot");
+  return lr;
+}
+
+/**
+ * Builds the live SPV source: restore from the header store (section 3.5 of the plan), migrating the legacy
+ * snapshot first when the store has no head (section 3.8). Restore reads the newest anchor's chunk (store or
+ * 8 aligned requests) and the stored suffix above it, and no other history.
+ */
 export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
+  let store: HeaderStore | null = null;
+  if (opts.store) {
+    try { store = await opts.store(); }
+    catch (e) { console.warn("[namespv] header store unavailable; running without it this session:", e); }
+  }
+  // A failed build is retried by the next caller with a new connection, so this one is released.
+  try { return await restoreSpvSource(opts, store); }
+  catch (e) {
+    if (store) { acquirers.delete(store); store.close(); }
+    throw e;
+  }
+}
+
+async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): Promise<SpvSource> {
+  const { anchors, newestK, newest, checkpoints } = anchorTable(opts.anchors);
   const boundFetch = (...a: Parameters<typeof fetch>) => fetch(...a);
   // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
   // default TIED the inner chain exactly — an abort could fire the instant the proxy's fallback
@@ -494,35 +637,153 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
       return rows.map((row: { header: unknown; hash: string }) => ({ header: row.header, hash: row.hash }));
     }
   };
-  const checkpoints = { [CP.height]: CP.hash };
+  // A request that ends on a page top fetches the whole page: every row of it is at or below the sync target,
+  // so it exists whenever the sync can succeed at all.
+  const pageBatch = async (from: number, count: number) => {
+    const a = from - (from % PAGE);
+    if (a !== from && from + count === a + PAGE) return (await headersBatch(a, PAGE)).slice(from - a);
+    return headersBatch(from, count);
+  };
+  const lcOpts = { client, headersBatchProvider: pageBatch, checkpoints: checkpoints as Record<number, string> };
 
-  let lc: LightClient | null = null;
-  // try a re-verified snapshot first (fromSnapshotAsync recomputes PoW + links + LWMA bits and honours
-  // the checkpoint EXACTLY as the sync path — it shares the one restoreOne verifier — but yields to the
-  // event loop every 2000 headers, so a long restore doesn't freeze the MV3 UI thread on slow hardware).
-  // S5-a (register Phase 4). The view stays atomic: `_spvSrc` holds the PROMISE; only the resolved
-  // client is ever read. The checkpoint is never bumped.
-  if (opts.cache) {
-    try { const snap = await opts.cache.get(); if (snap) lc = await LightClient.fromSnapshotAsync(snap, { client, headersBatchProvider: headersBatch, checkpoints }); }
-    catch { lc = null; }
+  const fetchChunk = async (spec: ChunkSpec): Promise<Uint8Array> => {
+    const out = new Uint8Array((spec.lastHeight - spec.firstHeight + 1) * HB);
+    for (let p = spec.firstHeight - (spec.firstHeight % PAGE); p <= spec.lastHeight; p += PAGE) {
+      const rows = await headersBatch(p, PAGE);
+      for (let i = Math.max(0, spec.firstHeight - p); i < PAGE; i++) {
+        try { out.set(serializeHeader(rows[i].header as BlockHeader), (p + i - spec.firstHeight) * HB); }
+        catch (e) { throw new Error(`chunk ${spec.k} (heights ${spec.firstHeight} to ${spec.lastHeight}) failed verification: the header served at ${p + i} is malformed (${(e as Error)?.message ?? e})`); }
+      }
+    }
+    return out;
+  };
+
+  // BP4/N11: one serializer for every light-client mutation and every chunk acquisition, so concurrent consumers
+  // of this shared source never interleave ingests and never fetch one chunk twice. A serialized op must never
+  // await `acquire` (it would wait on itself), which is why the anchor chunk is held below.
+  const serializeSync = makeSerializer();
+  const lru = new ChunkLru(8);
+  const acq = chunkAcquirer({ store, lru, anchors, serialize: serializeSync, verify: verifyChunk, fetchChunk });
+  if (store) acquirers.set(store, acq);
+  const acquire = async (height: number) => {
+    try { return await acq.acquire(height); }
+    catch (e) {
+      const spec = chunkSpec(chunkOf(height), anchors);
+      if (spec && /failed verification/.test(String((e as Error)?.message))) throw pinRefusal(spec, e);
+      throw e;
+    }
+  };
+
+  // ── restore ──
+  const keys = store ? await store.listChunks().catch((e) => { console.warn("[namespv] header store listing failed:", e); return [] as number[]; }) : [];
+  const head = store ? await store.getHead().catch(() => null) : null;
+  let legacy = opts.legacy ? await readLegacy(opts.legacy) : null;
+  let migrateError: unknown = null;
+  if (legacy && !head) {
+    // Chunk presence is the truth: a chunk already stored is kept (it is walked whenever it is read).
+    try {
+      for (let k = FIRST_CHUNK; k <= newestK && legacy; k++) {
+        const spec = chunkSpec(k, anchors)!;
+        if (spec.firstHeight < legacy.base || spec.lastHeight > legacy.top || (keys.includes(k) && k !== newestK)) continue;
+        let recs: Uint8Array;
+        try { recs = legacy.records(spec.firstHeight, spec.lastHeight); verifyChunk(recs, spec); }
+        catch (e) { await dropLegacy(opts.legacy!, `failed at chunk ${k}, the wallet seeds from the table`, e); legacy = null; break; }
+        if (k === newestK) lru.set(k, recs);
+        if (store && !keys.includes(k)) await store.write({ put: [{ k, records: recs }] });
+        await yieldTask();
+      }
+    } catch (e) { migrateError = e; }
   }
-  if (!lc) {
-    lc = new LightClient({ client, headersBatchProvider: headersBatch, checkpoints });
-    await lc.syncFromCheckpoint(CP.height, CP.hash);
+  const anchorSpec = chunkSpec(newestK, anchors)!;
+  const anchor = (await acquire(newest)).records;
+  const stored: Uint8Array[] = [];
+  for (let k = newestK + 1; store && keys.includes(k); k++) {
+    let r: Uint8Array | null = null;
+    try { r = await store.getChunk(k); } catch (e) { console.warn(`[namespv] stored chunk ${k} unreadable; the sync refetches it:`, e); }
+    if (!r || !r.length || r.length % HB || r.length > SPV_CHUNK * HB) break;
+    stored.push(r);
+    if (r.length < SPV_CHUNK * HB) break;
   }
-  // M8 (B5e): `let`, not `const`, so a STRUCTURAL sync break (a reorg orphaned our tip) can drop the
-  // wedged snapshot and reseed this client from the baked checkpoint in place (below).
-  let LC = lc;
-  // Monotonic tip floor (audit NSPV-STALE-LAPSE): a hostile/MITM resolver can DEFLATE the reported tip so a
-  // genuinely-lapsed lease's expiry epoch is under-computed and an old-but-real mapping looks current. We
-  // never let the tip used for the lapse epoch REGRESS below the highest value this source has already
-  // reported in the session, so a mid-flow deflation can't roll the lease-state back. Cheap (an integer) —
-  // crucially NO extra header sync, so the first name-verify stays fast (syncing the whole chain to tip would
-  // add ~tens of seconds to the cold path and STILL not defeat a consistent MITM, which serves a short chain
-  // anyway). The residual — a wallet that has only ever seen a consistently-deflated source — is the same
-  // single-source-trust limit as NSPV-COMPLETE-1, closed only by a second source.
-  // Seed from the persisted high-water (NAME-4) so the floor survives an MV3 service-worker restart, not just
-  // the current session. Best-effort: a missing/garbage value just starts at 0 (the prior behaviour).
+  const storedSuffix = concatBytes(stored);
+  const storedTip = newest + storedSuffix.length / HB;
+  let fromLegacy: Uint8Array = new Uint8Array(0);
+  if (legacy && legacy.base <= storedTip + 1 && legacy.top > storedTip) {
+    try { fromLegacy = legacy.records(storedTip + 1, legacy.top); }
+    catch (e) { console.warn("[namespv] legacy header snapshot suffix unreadable; the sync refetches it:", e); }
+  }
+  const restored = await LightClient.fromRecords(
+    concatBytes([anchor.subarray(anchor.length - SEED * HB), storedSuffix, fromLegacy]),
+    { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts);
+  let LC = restored.client;
+  // The highest height whose stored record equals the light client's. A record that failed for any reason
+  // but the clock is rewritten or deleted by the next persist; a clock fault leaves the store as it is.
+  let persistedTip = Math.min(storedTip, tipOf(LC));
+  if (restored.failed) {
+    console.warn(CLOCK_FAULT.test(restored.failed.reason)
+      ? `[namespv] restore stopped at ${restored.failed.height}: ${clockRefusal(restored.failed.reason).message}`
+      : `[namespv] restore stopped at ${restored.failed.height} (${restored.failed.reason}); the sync refetches from there`);
+  }
+
+  // One write for every chunk from the one holding persistedTip + 1 to the tip, the head, and the deletion of
+  // anything stored above the tip, so after it lands the stored suffix is exactly the light client's.
+  const suffixWrite = (): StoreWrite | null => {
+    const tip = tipOf(LC);
+    if (!store || tip <= persistedTip) return null;
+    const lo = Math.max(chunkOf(persistedTip + 1) * SPV_CHUNK, newest + 1);
+    const recs = LC.toRecords(lo);
+    const put: { k: number; records: Uint8Array }[] = [];
+    for (let k = chunkOf(lo); k <= chunkOf(tip); k++) {
+      const a = Math.max(k * SPV_CHUNK, lo), b = Math.min(k * SPV_CHUNK + SPV_CHUNK - 1, tip);
+      put.push({ k, records: recs.subarray((a - lo) * HB, (b - lo + 1) * HB) });
+    }
+    persistedTip = tip;
+    return { put, deleteAbove: chunkOf(tip), head: { v: 2, tip, tipHash: String(LC.chain[LC.chain.length - 1]!.hash).toLowerCase() } };
+  };
+  const persist = () => { const w = suffixWrite(); if (w) detachStoreWrite(store!, w); };
+
+  if (opts.legacy && legacy) {
+    const before = persistedTip;
+    try {
+      if (!store) throw new Error("no header store this session");
+      if (migrateError) throw migrateError;
+      const w = suffixWrite() ?? { head: { v: 2 as const, tip: tipOf(LC), tipHash: String(LC.chain[LC.chain.length - 1]!.hash).toLowerCase() } };
+      await store.write(w);
+      const back = await store.getHead();
+      if (back?.tip !== w.head!.tip || back.tipHash !== w.head!.tipHash) throw new Error("the header store head did not read back");
+      try { await opts.legacy.del(); } catch (d) { console.warn("[namespv] migrated legacy header snapshot not deleted; retried next start:", d); }
+      await setAttempts(opts.legacy, 0);
+    } catch (e) {
+      persistedTip = before;
+      const n = (Number(await opts.legacy.attempts.get().catch(() => 0)) || 0) + 1;
+      if (n >= MIGRATE_MAX) {
+        await dropLegacy(opts.legacy, `could not be migrated ${n} times, the session runs from memory`, e);
+        await setAttempts(opts.legacy, 0);
+      } else {
+        console.warn(`[namespv] header store migration failed (attempt ${n} of ${MIGRATE_MAX}); retried next start:`, e);
+        await setAttempts(opts.legacy, n);
+      }
+    }
+  }
+
+  // Seeds a fresh client from the anchor chunk held in memory: no request, every pin enforced by seedTrusted.
+  const seedFromAnchor = async () => (await LightClient.fromRecords(anchor.subarray(anchor.length - SEED * HB), { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts)).client;
+
+  // The verified header at `h`: from a walked chunk at or below the newest anchor, from the light client above it.
+  const headerAt = async (h: number): Promise<{ hash: string; merkle: string } | null> => {
+    if (!Number.isSafeInteger(h) || h < SPV_FLOOR.height) return null;
+    if (h > newest) {
+      const vh = LC.chain[h - LC.baseHeight];
+      return vh ? { hash: String(vh.hash).toLowerCase(), merkle: String(vh.header.merkle) } : null;
+    }
+    if (chunkOf(h) === newestK) return chunkHeader(anchor, anchorSpec, h);
+    const { spec, records } = await acquire(h);
+    return chunkHeader(records, spec, h);
+  };
+  const headerOrNull = async (h: number) => {
+    try { return await headerAt(h); }
+    catch (e) { console.warn(`[namespv] no verified header at ${h}:`, e); return null; }
+  };
+
   let seenFloor = 0;
   if (opts.floor) { try { const f = Number(await opts.floor.get()); if (Number.isFinite(f) && f > 0) seenFloor = f; } catch { /* no persisted floor → start at 0 */ } }
   // WALLET-LAPSE-TIP-1: freeze the floor as seeded from PRIOR sessions, BEFORE any current-session read
@@ -530,93 +791,50 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
   // verdict (replayName re-runs the audited resolver at it). On a fresh install it is 0 → a lapse rests on
   // the current node tip alone → caution; on an established install it is high → a genuine lapse is confident.
   const persistedFloor = seenFloor;
-  // BP4/N11: serialize LC.sync so concurrent consumers of this SHARED source never interleave ingests.
-  const serializeSync = makeSerializer();
-  // BP8b (N10 wallet-half / N14): the partial-progress persist hook for LONG syncs. Invoked ONLY from
-  // inside the serialized critical section below (so no torn snapshot: nothing mutates LC while it
-  // serializes), and best-effort by contract (syncWithPartialPersist and the catch below swallow its
-  // failures): losing a checkpoint write degrades to a re-sync, never a refusal.
-  // 0.2.70: toSnapshot() stays inside the serialized block (capture is the heavy work + must
-  // not race a reseed). Only cache.set is detached (single-flight, latest-wins). floorAdvance
-  // still runs AFTER a fully successful sync.
-  const persistSnap = opts.cache ? (s: unknown) => { detachSnapshotWrite(opts.cache!, s); return Promise.resolve(); } : null;
 
   return {
     async prepare(maxEventHeight: number) {
       let nodeTip = 0;
       try { nodeTip = Number((await client.tip())?.height); } catch { /* node tip unknown → lapse uses the floor / verified tip */ }
-      // M9 (B5a): the floor advance moved BELOW the sync — it is PoW-clamped and sync-gated now (see
-      // floorAdvance). Persisting the raw served tip here made the floor hostile-INFLATABLE: an unbounded
-      // lie, persisted forever (monotonic), driving every later lease-expiry epoch and every guard the
-      // wallet clamps with the floor (W5 legacy-sunset, M11 fee tier). Deflation was always floored;
-      // inflation is now bounded by PoW evidence + FLOOR_SLACK.
       // Inclusion only needs headers up to the record + cushion (kept cheap; an old, sparse name does not
       // pay a full chain sync). LC.sync re-derives PoW+LWMA per header, so a lying-high cushion fails closed.
       const want = Math.min(Number.isFinite(nodeTip) && nodeTip > 0 ? nodeTip : maxEventHeight + CONF_BUFFER, maxEventHeight + CONF_BUFFER);
-      // Run the sync inside the serializer, and re-read the tip INSIDE the critical section so a redundant sync
-      // (another consumer already advanced the chain) is a cheap no-op. A sync throw still propagates to THIS
-      // caller (fail-closed); a prior consumer's failure never wedges the chain (makeSerializer swallows it for
-      // chaining only). blockAt (below) never syncs, so block reads stay fully parallel.
+      // The tip is re-read inside the serializer, so a sync another consumer already did is a no-op here.
       await serializeSync(async () => {
-        const cur = LC.baseHeight + LC.chain.length - 1;
+        const cur = tipOf(LC);
         if (want <= cur) return;
         try {
-          // BP8b: a long sync checkpoints verified progress every SYNC_PERSIST_WINDOW headers
-          // (see syncWithPartialPersist below); the final leg to `want` then lands here.
-          await syncWithPartialPersist(LC, want, persistSnap);
-          await LC.sync(want);                         // a lying-high header THROWS here (fail-closed)
+          await syncWithPartialPersist(LC, want, persist);
+          await syncAligned(LC, want);                  // a lying-high header THROWS here (fail-closed)
         } catch (e) {
-          // BP8b (N10 wallet-half / N14 "hard wall, not a slow retry"): BEFORE classifying the failure,
-          // persist whatever this attempt already ingested, so a 429'd cold bootstrap RESUMES from here
-          // on the next attempt instead of restarting at zero forever. Safe by construction: every
-          // header in LC.chain was PoW/LWMA-verified at ingest, and a restored snapshot is RE-VERIFIED
-          // on load (LightClient.fromSnapshot recomputes hashes, prev links, PoW and LWMA bits,
-          // checkpoint-anchored), so this changes WHEN the wallet writes, never what a restore trusts
-          // (the storage-poisoning defense is untouched). INVARIANT (composes with B5a floorAdvance):
-          // a partial persist NEVER advances the lapse floor. The floor advances only after a FULLY
-          // successful sync, because floorAdvance runs after this serialized block completes and the
-          // rethrow / a failed reseed below skips it, so the floor can never exceed what was actually
-          // verified. Fail-soft: a persist failure only means the next attempt re-syncs.
-          if (opts.cache && LC.baseHeight + LC.chain.length - 1 > cur) {
-            try { const snap = LC.toSnapshot(); detachSnapshotWrite(opts.cache, snap); } catch { /* fail-soft: next attempt re-syncs */ }
-          }
-          // M8 (B5e): port swapguard's transient-vs-STRUCTURAL split (ensureSyncedTo, DOS-HDR-3). The
-          // wallet only ever appended headers and NEVER cleared the cached snapshot on a prev-link break,
-          // so a header later orphaned by a reorg wedged the chain PERMANENTLY: every future session
-          // restored the orphaned tip via fromSnapshot and this sync threw forever. Distinguish a
-          // TRANSIENT transport failure (rate limit / gateway / timeout / non-dense range / a 200 with a
-          // non-JSON body - a CF interstitial served 200 - i.e. data availability, NOT a chain fault) from a
-          // STRUCTURAL break (broken prev-link / bad PoW / hash mismatch). On transient: KEEP the cache and
-          // rethrow fail-closed (the caller retries) - wiping here would turn one /api/headers 429 or a CF
-          // 200-HTML blip into a cache-nuking cold-resync STORM. Only a structural break reseeds from the
-          // baked checkpoint. The JSON-parse markers matter: headersBatch does `(await r.json()).headers`, so
-          // a 200 with a bad body throws "Unexpected end of JSON input"/"Unexpected token" - a transport
-          // fault, never a chain one (structural errors say prev/PoW/bits/hash, never json). (G8 review.)
+          // Verified progress is kept before the failure is classified; it never advances the lapse floor,
+          // which moves only after this block completes.
+          persist();
           const msg = String((e as Error)?.message || e);
+          if (CLOCK_FAULT.test(msg)) throw clockRefusal(msg);
           if (isTransientSyncError(msg)) throw e;
-          // Do NOT drop the snapshot before the reseed: a structurally-lying feed would nuke an HONEST
-          // snapshot and, if the reseed then fails, force a full cold sync every session (N10 budget
-          // pressure). On reseed SUCCESS the post-catch snapshot write below replaces it with the fresh
-          // chain (clearing any real wedge); on reseed FAILURE we keep the old snapshot and heal on the next
-          // healthy prepare(). (G8 review: the set(null)-before-reseed hazard.)
-          const fresh = new LightClient({ client, headersBatchProvider: headersBatch, checkpoints });
-          await fresh.syncFromCheckpoint(CP.height, CP.hash);
-          await fresh.sync(want);                       // a genuinely lying-high header still THROWS here (fail-closed)
-          LC = fresh;                                   // adopt the reseeded chain (blockAt reads LC at call time)
+          // A structural break (a reorg orphaned the stored tip): reseed from the anchor chunk and sync the served
+          // chain again. The stored suffix is replaced only once the new one has verified up to `want`.
+          const fresh = await seedFromAnchor();
+          try { await syncAligned(fresh, want); }
+          catch (e2) {
+            const m2 = String((e2 as Error)?.message || e2);
+            if (CLOCK_FAULT.test(m2)) throw clockRefusal(m2);
+            // Nothing served links to the newest anchor: a reorg deeper than it, a wrong table entry or another chain.
+            if (tipOf(fresh) === newest && !isTransientSyncError(m2)) throw pinRefusal(anchorSpec, e2);
+            throw e2;
+          }
+          LC = fresh;
+          persistedTip = newest;
         }
-        // Snapshot write is best-effort (a failure only means the NEXT verify cold-syncs again),
-        // but never silent: the snapshot is multi-MB and shares chrome.storage.local's quota with
-        // the vault/history — a persistent write failure here is the early smoke of quota
-        // exhaustion (the manifest carries unlimitedStorage precisely to keep this from failing;
-        // if this warning ever fires, investigate storage pressure, don't ignore it).
-        if (opts.cache) { try { const snap = LC.toSnapshot(); detachSnapshotWrite(opts.cache, snap); } catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); } }
+        persist();
       });
       // M9 (B5a): advance + persist the floor ONLY after the sync above succeeded (a throw skips this),
       // and never above verifiedTip + FLOOR_SLACK (floorAdvance). The RETURNED nodeTip still carries the
       // raw served tip for THIS session's lapse epoch (pre-existing design: a lying-high tip only makes
       // leases look expired sooner, over-caution; deflation is floored) — only what the wallet TRUSTS
       // ACROSS SESSIONS is clamped to PoW evidence.
-      const verifiedTip = LC.baseHeight + LC.chain.length - 1;
+      const verifiedTip = tipOf(LC);
       const cand = floorAdvance(seenFloor, nodeTip, verifiedTip);
       if (cand > seenFloor) { seenFloor = cand; if (opts.floor) { try { await opts.floor.set(seenFloor); } catch { /* persist best-effort */ } } }
       // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
@@ -624,24 +842,18 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
       return { verifiedTip, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0), floorTip: persistedFloor };
     },
     async blockAt(height: number) {
-      const vh = LC.chain[height - LC.baseHeight];
+      const vh = await headerAt(height);
       if (!vh) throw new Error(`no PoW-verified header at ${height}`);
       const b = await client.blockByHeight(height);
-      return { merkle: String(vh.header.merkle), txs: b.txs };
+      return { merkle: vh.merkle, txs: b.txs };
     },
+    async hashAt(height: number) { return (await headerOrNull(height))?.hash ?? null; },
+    async merkleAt(height: number) { return (await headerOrNull(height))?.merkle ?? null; },
     // NSPV-SIGSUB-1 (H3): fetch a record's spent prevout and bind it to its txid exactly as verifyInputValues
     // (TXB-1) does — fetch the source tx, recompute its consensus txid, and require it == prevTxid (the txid
     // commits every output incl. its 20-byte scriptPubkey). A hostile node cannot serve a fake body whose
     // recomputed txid still matches the outpoint. Returns the 0x scriptPubkey, or null (→ fail-closed) on any
     // missing / not-yet-mined / mismatched / malformed body. Same untrusted-node read path as blockAt.
-    async hashAt(height: number) {
-      const vh = LC.chain[height - LC.baseHeight];
-      return vh ? String(vh.hash) : null;
-    },
-    async merkleAt(height: number) {
-      const vh = LC.chain[height - LC.baseHeight];
-      return vh ? String(vh.header.merkle) : null;
-    },
     async prevoutScriptPubkey(prevTxid: string, vout: number) {
       try {
         const body = (await client.tx(prevTxid))?.tx;
@@ -659,36 +871,46 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// 0.2.70: detach chrome.storage writes from the serialized sync / click path. toSnapshot() is
-// captured by the caller inside the lock; only set() runs here. Latest-wins: a newer snap
-// arriving while a write is in flight replaces the pending payload (a stale-but-valid snap
-// would only force a short re-sync). Fail-soft: a write error is warned, never a refusal.
-let snapWriteTail: Promise<void> = Promise.resolve();
-let snapWriteBusy = false;
-let snapWriteLatest: { cache: { set(s: unknown): Promise<void> }; snap: unknown } | null = null;
+// Store writes leave the serialized sync and the click path: one chained writer per store, and a write that
+// arrives while another is pending is merged into it by chunk key, so a burst of advances costs one transaction
+// and no chunk a pending write carried is lost. A write error is warned, never a refusal: every chunk is
+// verified when it is read, and a missing one is refetched.
+const storeWriters = new Map<HeaderStore, { tail: Promise<void>; busy: boolean; pending: StoreWrite | null }>();
+const acquirers = new Map<HeaderStore, { writes(): Promise<void> }>();
 
-export function detachSnapshotWrite(cache: { set(s: unknown): Promise<void> }, snap: unknown): void {
-  snapWriteLatest = { cache, snap };
-  if (snapWriteBusy) return;
-  snapWriteBusy = true;
-  snapWriteTail = snapWriteTail.then(async () => {
+/** `newer` after `older` as one write: newer's puts and head win, and older's puts above newer's deleteAbove are dropped. */
+export function mergeStoreWrites(older: StoreWrite, newer: StoreWrite): StoreWrite {
+  if (older.del?.length || newer.del?.length) throw new Error("mergeStoreWrites: suffix writes carry no del");
+  const put = new Map<number, Uint8Array>();
+  for (const p of older.put ?? []) if (newer.deleteAbove === undefined || p.k <= newer.deleteAbove) put.set(p.k, p.records);
+  for (const p of newer.put ?? []) put.set(p.k, p.records);
+  const deleteAbove = newer.deleteAbove ?? older.deleteAbove;
+  const head = newer.head ?? older.head;
+  return { put: [...put].map(([k, records]) => ({ k, records })), ...(deleteAbove !== undefined ? { deleteAbove } : {}), ...(head ? { head } : {}) };
+}
+
+export function detachStoreWrite(store: HeaderStore, w: StoreWrite): void {
+  let s = storeWriters.get(store);
+  if (!s) storeWriters.set(store, s = { tail: Promise.resolve(), busy: false, pending: null });
+  const st = s;
+  st.pending = st.pending ? mergeStoreWrites(st.pending, w) : w;
+  if (st.busy) return;
+  st.busy = true;
+  st.tail = st.tail.then(async () => {
     try {
-      while (snapWriteLatest) {
-        const job = snapWriteLatest;
-        snapWriteLatest = null;
-        try { await job.cache.set(job.snap); }
-        catch (e) { console.warn("[namespv] header-snapshot write failed (will cold-sync next verify):", e); }
+      while (st.pending) {
+        const job = st.pending;
+        st.pending = null;
+        try { await store.write(job); }
+        catch (e) { console.warn("[namespv] header store write failed (the sync refetches next session):", e); }
       }
-    } finally {
-      snapWriteBusy = false;
-      if (snapWriteLatest) detachSnapshotWrite(snapWriteLatest.cache, snapWriteLatest.snap);
-    }
+    } finally { st.busy = false; }
   });
 }
 
-/** Test hook: await the detached snapshot write(s). Production click path never waits. */
-export function flushSpvSnapshotWrites(): Promise<void> {
-  return snapWriteTail;
+/** Test hook: settles when every detached header-store write issued so far has finished. */
+export async function flushSpvStoreWrites(): Promise<void> {
+  await Promise.all([...[...storeWriters.values()].map((s) => s.tail), ...[...acquirers.values()].map((a) => a.writes())]);
 }
 
 // Serialize async operations so they never OVERLAP, while each caller still awaits its own operation and sees
@@ -707,35 +929,26 @@ export function makeSerializer(): <T>(op: () => Promise<T>) => Promise<T> {
   };
 }
 
-// BP8b (N10 wallet-half / N14): partial-progress snapshot persistence for LONG header syncs. namespv
-// used to persist its snapshot only after a FULLY successful LC.sync, so a rate-limited (429'd) cold
-// bootstrap persisted nothing and every retry restarted from the baked checkpoint: the exact N10
-// "hard wall, not a slow retry" shape (and the same defect B0b fixed in the test cache). This helper
-// syncs toward `want` in bounded windows, persisting the verified chain after each fully synced
-// window, so the next attempt (even in a fresh MV3 service worker killed mid-backoff) restores the
-// partial chain and bills only the REMAINING span. The final leg (the last partial window up to
-// `want`) stays at the call site, whose catch persists a mid-window tail before failing closed.
-// Trust posture (ZERO verification change): every persisted header was already PoW/LWMA-verified by
-// LC.sync's ingest, and a restored snapshot is re-verified by LightClient.fromSnapshot exactly as
-// before; only the persistence TIMING changes, never what a restore trusts (storage-poisoning
-// defense intact). This function never touches the lapse floor: floorAdvance runs in prepare() only
-// after a fully successful sync, and a throw here propagates past it (see the invariant comment
-// there). Persist failures are swallowed: fail-soft, the worst case is the pre-BP8b behavior (a
-// re-sync from the last good snapshot), never a refusal.
-// Window sizing: a fresh-install cold span (~28k headers today) checkpoints a handful of times
-// (each persist rewrites the multi-MB snapshot, so per-batch persistence would be pure overhead),
-// while an incremental daily sync (~720 headers) never enters the loop: the warm hot path pays
-// ZERO extra writes. EXPORTED (with a structural lc type) for a direct behavioral unit test; the
-// vendored LightClient satisfies the type, and its sync() ingests header-by-header, so on a throw
-// the already-verified prefix is retained in memory (vendor bundle LightClient.sync/ingest).
+/** Syncs to `want` one /api/headers page at a time, each request ending on a page top or at `want`. */
+export async function syncAligned(lc: { baseHeight: number; chain: { length: number }; sync(to: number): Promise<unknown> }, want: number): Promise<void> {
+  for (let cur = tipOf(lc); cur < want; cur = tipOf(lc)) await lc.sync(Math.min(want, cur + 1 - ((cur + 1) % PAGE) + PAGE - 1));
+}
+
+// BP8b (N10 wallet-half / N14): a long sync persists its verified progress every SYNC_PERSIST_WINDOW headers, so a
+// rate-limited (429'd) or interrupted cold sync, even in a service worker killed mid-backoff, resumes from the
+// stored suffix next time and bills only the remaining span. The final leg to `want` stays at the call site,
+// whose catch persists a mid-window tail before failing closed. Only the persistence timing changes, never
+// what a restore trusts: a restored suffix is re-verified record by record (fromRecords). This function never
+// touches the lapse floor, and a persist failure is the store writer's (warned, refetched next session).
+// A daily sync (about 720 headers) never enters the loop. EXPORTED, with a structural lc type, for a direct test.
 export const SYNC_PERSIST_WINDOW = 8192;
 export async function syncWithPartialPersist(
-  lc: { baseHeight: number; chain: { length: number }; sync(to: number): Promise<unknown>; toSnapshot(): unknown },
+  lc: { baseHeight: number; chain: { length: number }; sync(to: number): Promise<unknown> },
   want: number,
-  persist: ((snapshot: unknown) => Promise<void>) | null,
+  persist: (() => void) | null,
 ): Promise<void> {
-  for (let next = lc.baseHeight + lc.chain.length - 1 + SYNC_PERSIST_WINDOW; next < want; next += SYNC_PERSIST_WINDOW) {
-    await lc.sync(next);              // throws on any verify/transport failure (fail-closed, caller classifies)
-    if (persist) { try { await persist(lc.toSnapshot()); } catch { /* fail-soft: keep syncing */ } }
+  for (let next = tipOf(lc) + SYNC_PERSIST_WINDOW; next < want; next += SYNC_PERSIST_WINDOW) {
+    await syncAligned(lc, next);       // throws on any verify/transport failure (fail-closed, caller classifies)
+    persist?.();
   }
 }
