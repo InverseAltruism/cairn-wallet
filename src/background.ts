@@ -439,6 +439,9 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
 // it, so a post made right before the popup closed still gets its content
 // registered once the tx mines (~30-60s) — no more hash-only placeholders.
 ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }));
+// An install or update builds the SPV source now, so the one-time header store migration runs here and not on
+// the first fill or name verify after the update. The popup's prewarm does the same if it comes first.
+chrome.runtime?.onInstalled?.addListener(() => { void ready.then(() => wallet.prewarmSpv()); });
 // Idle auto-lock: the alarm wipes the in-memory + session key after AUTO_LOCK_MS without activity.
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
