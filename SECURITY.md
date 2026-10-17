@@ -59,14 +59,20 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   built-in hash every header is consensus-checked (PoW, LWMA difficulty, timestamps, prev link). When the served
   chain stops linking to the wallet's stored chain and the wallet re-syncs from the built-in hash, the replacement
   is adopted only if it carries more proof of work than the chain the wallet already verified. Two cases are
-  compared with nothing: a fresh install's first sync, and a chain that extends a stored tip older than about 29
-  hours. There a header source (the front door's operator, or whoever compromises the front door) can serve a fork
-  whose difficulty it lowered with spread timestamps, for about 5 blocks' worth of honest work
+  compared with nothing: the first sync of a fresh install (also a wiped store, or a store that cannot open), and
+  any chain that extends the stored tip, at any tip age. There a header source (the front door's operator, or
+  whoever compromises the front door) can serve a fork whose difficulty it lowered with spread timestamps: above
+  the newest built-in hash for about 5 blocks' worth of honest work however long the fork; above a stored tip for
+  about one sixth of the honest work per header (7.7 blocks' worth for 30 headers, 161 for 1,000)
   (`docs/DESIGN-namespv-scaling.md`, "Work above the newest anchor", has the derivation). What that reaches: a
-  name shown without a later transfer (the forged blocks cannot carry signatures the source does not have, and the
-  second name source's records then fail against them, so the result is flagged, not green), and a reservation
-  fill with a competing hold or cancel hidden from the scan window, which the second-resolver check below covers
-  only when it answers. A second header source would close both cases; it is not built in this release;
+  name shown without a later transfer, for the 5 blocks' worth (the forged blocks cannot carry signatures the
+  source does not have, and the second name source's records then fail against them, so the result is flagged,
+  not green); and a reservation fill with a competing hold or cancel hidden from the scan window, where the buyer's
+  own reservation must still appear within 2 epochs of its real height, so the fork must run to about the chain's
+  real height (about one sixth of the headers forged in work: about 160 blocks' worth for a wallet 1,000 blocks
+  behind), covered by the second-resolver check below only when it answers. A second header source would close
+  both for a compromised front door, not for a compromised operator; it is not built in this release (proposed
+  as D-86-10 in the design note);
   it proves each name record's inclusion against the PoW-committed merkle root;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
