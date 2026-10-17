@@ -14,20 +14,12 @@
 // RED-FIRST: replace the secondSourceOfferConflict call in wallet.ts fclaimLanePreflight with `null` and the
 // refusal rows of sections 2 and 3 go red.
 // Run: node --import tsx test/fill-offer-crosscheck.test.mjs   (offline)
-import { createHash } from "node:crypto";
-import { Wallet } from "../src/core/wallet.js";
-import { memoryStore } from "../src/core/storage.js";
 import { secondSourceOfferConflict } from "../src/core/offerxcheck.js";
-import {
-  deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, provenOfferTerms, parseRecord, fclaimHoldEnd,
-  epochOf, TREASURY_ADDR, DEPLOY_FEE, SCORE_FILL, SCORE_CANCEL, MAX_SCAN,
-} from "../src/vendor/cairnx-spv.js";
-import { mkCoin, txReply } from "./_coin.js";
+import { verifyFillSpv, requiredFillOutputs, MAX_SCAN } from "../src/vendor/cairnx-spv.js";
+import { H, PAY, world, body, always, notFound, netErr, garbage, delayed, fill, digest } from "./helpers/fillworld.mjs";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
-const H = (n) => "0x" + n.toString(16).padStart(64, "0");
-const PRIV = "0x" + "42".repeat(32);
 
 console.log("1. secondSourceOfferConflict (pure)");
 {
@@ -54,83 +46,6 @@ console.log("1. secondSourceOfferConflict (pure)");
   for (const g of [null, undefined, "cancelled", 7, [], { ok: false, error: "unknown offer" }]) check(`garbage ${JSON.stringify(g)} proceeds`, x(g) === null);
 }
 
-// ── a PoC-shaped world (same heights and amounts as the security PoC), over the vendored resolver ──
-const S = "0x" + "aa".repeat(20), C = "0x" + "cc".repeat(20);
-const PAY = BigInt(1000e8);
-const coin = mkCoin(2_000_00000000);
-
-function world(me, withheldKind) {
-  let n = withheldKind === "partial" ? 1000 : withheldKind === "cancel" ? 2000 : 3000;
-  const id = () => H(++n);
-  const PE = (who, built, h, E, paidTo = {}) => ({ kind: "propose", id: id(), proposer: who, uri: built.uri, payloadHash: built.payloadHash, expiresEpoch: E ?? epochOf(h) + 5000, height: h, pos: 1, paidTo });
-  const AT = (who, pid, score, h, paidTo = {}) => ({ kind: "attest", txid: id(), proposalId: pid, attester: who, score, confidence: 0, height: h, pos: 2, paidTo });
-  const ev = [
-    PE(S, deploy({ ticker: "TOKA", decimals: 0, supply: "1000000", mint: "issuer" }), 115000, undefined, { [TREASURY_ADDR]: String(DEPLOY_FEE) }),
-    PE(S, mint({ ticker: "TOKA", amount: "1000000" }), 115001),
-  ];
-  const offerEv = PE(S, offer({ give: { ticker: "TOKA", amount: "1000" }, want: { value: String(1000e8) }, ...(withheldKind === "partial" ? { min: String(100e8) } : {}) }), 115010, epochOf(115010) + 200);
-  ev.push(offerEv);
-  const withheld = [];
-  if (withheldKind === "cancel") withheld.push(AT(S, offerEv.id, SCORE_CANCEL, 115100));
-  if (withheldKind === "partial") {
-    const fcC = PE(C, fclaim({ offer: offerEv.id }), 115100, epochOf(115100) + 1);
-    const outs = requiredFillOutputs(resolve([...ev, fcC], 115110).offers[offerEv.id], BigInt(900e8));
-    withheld.push(fcC, AT(C, fcC.id, SCORE_FILL, 115110, Object.fromEntries(outs.map((o) => [o.to, o.value.toString()]))));
-  }
-  const tip = 116520, fH = 116490;
-  const fc = PE(me, fclaim({ offer: offerEv.id }), fH, epochOf(fH) + 2);
-  const shown = resolve([...ev, fc], tip), truth = resolve([...ev, ...withheld, fc], tip);
-  // The primary's D2 alias answer for GET /cairnx/offer/{fclaimTxid} (cairnx service.ts), built from the withheld view.
-  const primary = { ...shown.offers[offerEv.id], fclaimId: fc.id, fclaimHeight: fH, fclaimExpiresEpoch: fc.expiresEpoch };
-  const outputs = requiredFillOutputs(primary, PAY).map(({ to, value }) => ({ to, value: Number(value) }));
-  const pool = new Map([...ev, fc].map((e) => [(e.kind === "propose" ? e.id : e.txid).toLowerCase(), { ...e, depth: tip - e.height + 1 }]));
-  const rec = parseRecord(offerEv.uri, offerEv.payloadHash);
-  // The scan sees only in-window events: the withheld ones sit ~1,400 blocks below tip - (MAX_SCAN + 89).
-  const io = (scanMs = 0) => ({
-    myLiveHoldsAtGrant: 0, provenTerms: provenOfferTerms(rec, offerEv.height),
-    async tip() { return tip; },
-    async offerEventIds() { if (scanMs) await new Promise((r) => setTimeout(r, scanMs)); return [...pool.keys()]; },
-    async provenEvent(x) { return pool.get(String(x).toLowerCase()) ?? null; },
-  });
-  return { offerId: offerEv.id, fc, tip, primary, truth: truth.offers[offerEv.id], truthFclaimGranted: !!truth.fclaims[fc.id], withheld, outputs, io, holdEnd: fclaimHoldEnd(fc.expiresEpoch) };
-}
-
-// clarvis behaviours (fetch handlers): a body, 404, a network error, a non-JSON 200, or a delayed reply that
-// honours abort. fill() takes a factory w => handler so a body can be built from the world.
-function stub(w, clarvis) {
-  const st = { submits: [], clarvisUrls: [] };
-  globalThis.fetch = async (url, init) => {
-    const u = String(url);
-    if (u.includes("/tx/submit")) { st.submits.push(init?.body); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
-    if (u.includes("clarvis")) { st.clarvisUrls.push(u); return clarvis(init); }
-    if (u.includes("/cairnx/offer/")) return { ok: true, status: 200, json: async () => w.primary };
-    if (/\/utxos\//.test(u)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
-    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: w.tip }) };
-    return txReply(u, [coin]) ?? { ok: false, status: 404, json: async () => ({}) };
-  };
-  return st;
-}
-const body = (b) => () => ({ ok: true, status: 200, json: async () => b });
-const always = (h) => () => h;
-const notFound = () => ({ ok: false, status: 404, json: async () => ({ ok: false, error: "unknown offer" }) });
-const netErr = () => { throw new TypeError("fetch failed"); };
-const garbage = () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } });
-const delayed = (ms, handler) => (init) => new Promise((res, rej) => {
-  const t = setTimeout(() => { try { res(handler(init)); } catch (e) { rej(e); } }, ms);
-  init?.signal?.addEventListener("abort", () => { clearTimeout(t); rej(new DOMException("aborted", "AbortError")); });
-});
-
-async function fill(kind, clarvis, scanMs = 0) {
-  const w0 = new Wallet(memoryStore());
-  const { addr } = await w0.importKey(PRIV, "pw-xcheck");
-  const w = world(addr.toLowerCase(), kind);
-  w0.fillSpvIoForTest = () => w.io(scanMs);
-  const st = stub(w, clarvis(w));
-  const t0 = performance.now();
-  const r = await w0.fillOffer({ proposalId: w.fc.id, outputs: w.outputs });
-  return { r, st, w, ms: performance.now() - t0 };
-}
-const digest = (b) => (b ? createHash("sha256").update(b).digest("hex") : "");
 // Submit body of the honest fill below, captured on the unmodified 0.2.72 tree (origin/master 5945710) with the
 // same key, world and coin. That tree makes no clarvis request on this lane.
 const DIGEST_0272 = "7bab37e2d90cb06be538cb11f31c6829831801a23a2c6c22cba7d8a712397c11";
@@ -150,7 +65,8 @@ for (const kind of ["cancel", "partial"]) {
   const told = await fill(kind, (w) => body(w.truth));
   check(`${label}: clarvis tells the truth -> REFUSED with OFFER_SOURCE_CONFLICT (${told.r?.error})`, told.r?.ok === false && told.r?.code === "OFFER_SOURCE_CONFLICT");
   check(`${label}: ...nothing submitted`, told.st.submits.length === 0);
-  check(`${label}: ...clarvis was asked by OFFER id`, told.st.clarvisUrls.length === 1 && told.st.clarvisUrls[0].endsWith(`/cairnx/offer/${told.w.offerId}`));
+  const offerReads = told.st.clarvisUrls.filter((u) => u.includes("/cairnx/offer/"));
+  check(`${label}: ...clarvis was asked for the offer once, by OFFER id`, offerReads.length === 1 && offerReads[0].endsWith(`/cairnx/offer/${told.w.offerId}`));
 }
 
 console.log("\n3. acceptance (a)-(g)");

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reservation fills: beside the offer read, the wallet asks the second source (clarvis) for its verdict on the
+  buyer's own reservation (`/cairnx/record/{fclaimTxid}`), started with the SPV scan and never waited for past it.
+  When clarvis reports that it replayed the reservation and did not apply it, the fill refuses with the new code
+  `RESERVATION_DENIED` and clarvis's reason. This covers a header source that hides a competing reservation placed
+  just before the buyer's, whose hold ends before the buyer's and so passes the offer check. An applied
+  reservation, a 404, a timeout, an error or an unusable answer proceed as before, with no added wait.
 - Name verification keeps block headers in a compact store in the browser (IndexedDB), anchored by block hashes
   built into each release, instead of a JSON snapshot that was read and re-verified whole at every start. A start
   reads the newest built-in chunk and the headers above it; an older name costs one chunk the first time it is
