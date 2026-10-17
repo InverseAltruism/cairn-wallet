@@ -191,4 +191,17 @@ await test("8. the window closing settles a confirm-step request APPROVAL_CLOSED
   assert.deepEqual(await queuedIds(), []);
 });
 
+await test("9. the window closing during the Sign anyway re-run still signs: the user chose", async () => {
+  const G = await request(null, unknown, { scanMs: 200 });
+  assert.equal((await resolveAs(G, true, ME)).code, "RESERVATION_UNCONFIRMED");
+  const inFlight = resolveAs(G, true, ME, undefined, ackFor(G));
+  await new Promise((r) => setTimeout(r, 50));
+  onRemoved(WIN);
+  const r = await inFlight;
+  assert.equal(r.ok, true, String(r.error));
+  assert.equal(G.st.submits.length, 1);
+  assert.equal(G.reply?.ok, true);
+  assert.equal(typeof G.reply?.result?.txid, "string");
+});
+
 console.log(`fill-reservation-confirm: ${n} passed, 0 failed`);
