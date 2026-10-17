@@ -19,7 +19,7 @@
   built-in block hash, the replacement chain is adopted only if it carries more proof of work than the chain the
   wallet already verified; otherwise the wallet keeps its chain and says so ("the block headers from <source> above
   height N carry less proof of work than the chain this wallet already verified to height M; the wallet keeps its
-  verified chain. Try again later."). An honest chain that outgrew the stored one always has more work.
+  verified chain. Try again later."). An honest chain that outgrew the stored one has more work and is adopted.
 - Reservation fills: a served payment recipient or seller that differs from the offer's on-chain record is refused
   by the payment check against the proven offer ("payment does not match the proven fill progress"); the separate
   recipient check that used to give the reason "the seller payment recipient does not match the offer's on-chain

@@ -41,7 +41,7 @@ The rule the code keeps:
   otherwise the refusal is "the block headers from <headers source> above height N carry less proof of work than
   the chain this wallet already verified to height M; the wallet keeps its verified chain. Try again later." and
   the held chain and its stored suffix stay. A fresh install has no chain to compare with, and a chain that extends
-  the stored tip is never compared with anything: what a header source can still do there, and what a work floor
+  the stored tip is not compared with anything: what a header source can still do there, and what a work floor
   would and would not change, is the section "Work above the newest anchor" below.
 - The light client gets every table entry, floor included, as a checkpoint (`SPV_CHECKPOINTS`), for the life of
   the release. No code path removes, skips or overrides an entry. The `anchors` option of `liveSpvSource` takes only
@@ -137,8 +137,8 @@ A minimum-work floor was considered for the fresh-install case (Plan 86 D-86-9 p
   of work over a 78-block span, which no floor tolerating an honest 17-fold difficulty fall refuses. The table
   change buys nothing.
 - A floor against elapsed time instead (the work since the anchor, against the anchor-era work per block times the
-  seconds since the anchor's timestamp, both read from the verified anchor chunk, so no table change) cannot be
-  shortened away: the forged chain's work stays near 4.6 blocks while the anchor ages, so over an anchor age of
+  seconds since the anchor's timestamp, both read from the verified anchor chunk, so no table change) is not
+  bypassed by a short chain: the forged chain's work stays near 4.6 blocks while the anchor ages, so over an anchor age of
   33 h it looks like an honest chain whose hashrate fell 215-fold, 1,096-fold at 7 days, 4,696-fold at 30 days. A
   floor tolerating an F-fold fall refuses the forged chain once the anchor is older than 552 x F seconds (F = 100:
   15 h; F = 1000: 6.4 days) and refuses every honest chain whose hashrate, averaged since the anchor, fell more than
