@@ -66,7 +66,9 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
 /**
  * Installs globalThis.fetch serving /api/headers/:from/:count and the node RPC (/tip, /block/height/:h, /tx/:id)
  * from the fixture. `net.tip` is the node tip; `net.tamper(from, rows)` may rewrite a page; `net.down` answers 500
- * to everything. `net.log` lists every /api/headers path requested. Returns a restore function.
+ * to everything; `net.tipDown` answers 500 to /tip only; `net.unserved(from)` true answers 404 to that page.
+ * `net.blocks` (height to node block JSON) and `net.txs` (txid to node /tx JSON) serve real bodies; other blocks
+ * are served with no transactions. `net.log` lists every /api/headers path requested. Returns a restore function.
  */
 export function serveFixture(net) {
   net.log ??= [];
@@ -80,6 +82,7 @@ export function serveFixture(net) {
       const from = Number(m[1]), n = Number(m[2]);
       net.log.push(`${from}/${n}`);
       if (from + n - 1 > net.tip) return json({ ok: false, error: "headers unavailable" }, 502);
+      if (net.unserved?.(from)) return json({ ok: false, error: "headers not served" }, 404);
       let rows = [];
       for (let h = from; h < from + n; h++) {
         if (!has(h)) return json({ ok: false, error: `fixture has no header ${h}` }, 404);
@@ -88,9 +91,12 @@ export function serveFixture(net) {
       if (net.tamper) rows = net.tamper(from, rows);
       return json({ ok: true, from, count: n, headers: rows });
     }
-    if (u.endsWith("/tip")) return json({ height: net.tip, hash: has(net.tip) ? hashOf(net.tip) : undefined });
+    if (u.endsWith("/tip")) return net.tipDown ? json({ ok: false }, 500) : json({ height: net.tip, hash: has(net.tip) ? hashOf(net.tip) : undefined });
     const b = /\/block\/height\/(\d+)$/.exec(u);
+    if (b && net.blocks?.has(Number(b[1]))) return json(net.blocks.get(Number(b[1])));
     if (b) return json({ ok: true, height: Number(b[1]), hash: hashOf(Number(b[1])), header: headerOf(Number(b[1])), txs: [] });
+    const t = /\/tx\/(0x[0-9a-f]{64})$/.exec(u);
+    if (t && net.txs?.has(t[1])) return json(net.txs.get(t[1]));
     return json({ ok: false, err: "not found" }, 404);
   };
   return () => { globalThis.fetch = prev; };
@@ -137,5 +143,30 @@ export function legacyOf(kv, { bytes = null } = {}) {
     del: async () => { calls.del++; kv.delete("spvHeaderChain"); },
     bytes: async () => bytes,
     attempts: { get: async () => kv.get("spvMigrateAttempts") ?? 0, set: async (n) => { if (n) kv.set("spvMigrateAttempts", n); else kv.delete("spvMigrateAttempts"); } },
+  };
+}
+
+/** A real CSD-priced open offer at 30,332 (chunk 7) with its block body and spent prevout (test/fixtures/offer-30332.json). */
+export const OFFER = JSON.parse(readFileSync(new URL("../fixtures/offer-30332.json", import.meta.url), "utf8"));
+OFFER.height = OFFER.block.height;
+OFFER.seller = OFFER.prevout.tx.outputs[OFFER.block.txs.find((t) => t.txid === OFFER.offerId).inputs[0].vout].script_pubkey;
+/** Adds the offer's block and prevout to a serveFixture `net`. */
+export function serveOffer(net) {
+  net.blocks ??= new Map();
+  net.txs ??= new Map();
+  net.blocks.set(OFFER.height, OFFER.block);
+  net.txs.set(OFFER.prevout.txid, OFFER.prevout);
+}
+
+/**
+ * An SpvSource that answers heights at or below `top` from `live` (the production liveSpvSource over the fixture)
+ * and every other height, the tip and every other prevout from `synthetic` (a test world near its own tip).
+ */
+export function splitSource(live, synthetic, top = 32767) {
+  return {
+    bodySource: live.bodySource,
+    prepare: (h) => synthetic.prepare(h),
+    blockAt: (h) => (h <= top ? live.blockAt(h) : synthetic.blockAt(h)),
+    prevoutScriptPubkey: async (t, v) => (String(t).toLowerCase() === OFFER.prevout.txid ? live.prevoutScriptPubkey(t, v) : synthetic.prevoutScriptPubkey(t, v)),
   };
 }

@@ -96,13 +96,24 @@ export interface NameUnionFetch {
   hints: NameHint[];
   conflict: boolean;
   existenceDisagree: boolean;
+  /** A source served a hint below the names floor; the hint was dropped and the verdict is flagged `disagree`. */
+  belowFloor: boolean;
 }
 
 /** Fetch + union name-history hints (no merkle). Shared by verifyNameUnion and confirm-time skip. */
 export async function fetchNameUnion(name: string, sources: ResolverSource[], fetchImpl: typeof fetch = fetch): Promise<NameUnionFetch> {
   const seen = new Set<string>();
   const uniq = sources.filter((s) => s.base && !seen.has(s.base.replace(/\/$/, "")) && seen.add(s.base.replace(/\/$/, "")));
-  const results = await Promise.all(uniq.map((s) => fetchNameHistory(s, name, fetchImpl)));
+  const fetched = await Promise.all(uniq.map((s) => fetchNameHistory(s, name, fetchImpl)));
+  // No header below the names floor is stored or fetched, so such a hint cannot be proven. It is dropped rather
+  // than refused: a refusal would let one source push every verify into per-source recovery.
+  let belowFloor = false;
+  const results = fetched.map((r) => {
+    const kept = r.hints.filter((h) => !(Number.isInteger(Number(h.height)) && Number(h.height) < SPV_FLOOR.height));
+    if (kept.length === r.hints.length) return r;
+    belowFloor = true;
+    return { ...r, hints: kept };
+  });
   const usable = results.filter((r) => r.ok && r.hints.length > 0);
   const existenceDisagree = results.some((r) => r.unregistered);
   const byTxid = new Map<string, NameHint>();
@@ -114,7 +125,7 @@ export async function fetchNameUnion(name: string, sources: ResolverSource[], fe
     else byTxid.set(k, h);
   }
   const hints = [...byTxid.values()];
-  return { results, usable, pairs: sortHintPairs(hints), hints, conflict, existenceDisagree };
+  return { results, usable, pairs: sortHintPairs(hints), hints, conflict, existenceDisagree, belowFloor };
 }
 
 // The SPV data seam. Production wires the real LightClient (liveSpvSource); tests inject synthetic
@@ -128,7 +139,8 @@ export interface SpvSource {
   // sessions — a tip we already trusted BEFORE this (possibly-MITM'd) session, EXCLUDING the current read.
   // Used ONLY to CORROBORATE a lease-lapse verdict: a lapse that also holds at floorTip is confident; one
   // that holds only at the current nodeTip degrades to caution. Omitted ⇒ no corroboration available.
-  prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number }>;
+  // `tipKnown` false: the node tip could not be read this call, so nothing was synced past the verified tip.
+  prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number; tipKnown?: boolean }>;
   // The PoW-VERIFIED merkle root for `height` + that block's node-JSON txs. THROWS if it cannot verify.
   blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
   // NSPV-SIGSUB-1 (H3): resolve the scriptPubkey of a record's spent prevout, BOUND to its txid — the
@@ -143,6 +155,15 @@ export interface SpvSource {
   // (reorg / reseed). Omitted on synthetic sources that do not carry headers.
   hashAt?(height: number): Promise<string | null>;
   merkleAt?(height: number): Promise<string | null>;
+  /** Where block bodies come from (the configured node RPC), named when a body does not match its header. */
+  bodySource?: string;
+}
+
+/** The refusal for a block body whose transactions do not hash to the verified header's merkle root. */
+export function bodyMismatchReason(height: number, bodySource: string | undefined): string {
+  return bodySource
+    ? `block ${height} from ${bodySource} does not match its verified merkle root: that RPC may be on another chain, or the read was altered`
+    : `block ${height} does not match its verified merkle root (tampered read path)`;
 }
 
 // Headers to sync past the last record so its inclusion proof has a confirmation cushion. The verifier
@@ -242,7 +263,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length) return { ok: false, reason: `block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)` };
     // FULL-block bind: the entire tx-set must hash to the verified header's merkle root, so the node cannot
     // have omitted/altered/added any committed body within this block (completeness-in-block).
-    if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase()) return { ok: false, reason: `block ${height} doesn't match its verified merkle root (tampered read path)` };
+    if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase()) return { ok: false, reason: bodyMismatchReason(height, src.bodySource) };
     for (const hint of hs) {
       const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());
       if (pos < 0) return { ok: false, reason: `record ${hint.txid} is not in verified block ${height}` };
@@ -321,7 +342,7 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
  */
 export async function verifyNameUnion(name: string, sources: ResolverSource[], src: SpvSource, fetchImpl: typeof fetch = fetch): Promise<NameVerification> {
   try {
-    const { results, usable, pairs, hints, conflict, existenceDisagree } = await fetchNameUnion(name, sources, fetchImpl);
+    const { results, usable, pairs, hints, conflict, existenceDisagree, belowFloor } = await fetchNameUnion(name, sources, fetchImpl);
     if (usable.length === 0) {
       if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, disagree: false };
       return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, disagree: false };
@@ -378,7 +399,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
           // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
           const soleSource = recovered.length === 1;
-          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, sources: usable.length, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree, soleSource, viaFill: false, recovered: true };
+          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, sources: usable.length, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree || belowFloor, soleSource, viaFill: false, recovered: true };
         }
       }
       return { ...fail(rep.reason), sources: usable.length, disagree: false };
@@ -406,7 +427,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null;
       if (c !== rep.addr) disagreeing.push(r.label);
     }
-    const disagree = disagreeing.length > 0 || conflict || existenceDisagree; // S-B6: a 404-ing source counts
+    const disagree = disagreeing.length > 0 || conflict || existenceDisagree || belowFloor; // S-B6: a 404-ing source counts
     return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, sources: usable.length, disagree, viaFill: false, hintPairs: pairs };
   } catch (e) {
     return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, disagree: false };
@@ -524,11 +545,15 @@ function verifyChunk(records: Uint8Array, spec: ChunkSpec): void {
   verifyLinkedRecords(records, { firstHeight: spec.firstHeight, firstHash: spec.firstHash, prevHash: spec.prevHash, lastHash: spec.lastHash, lastHeight: spec.lastHeight });
 }
 
-const pinRefusal = (spec: ChunkSpec, e: unknown) =>
-  new Error(`the wallet could not match the chain to its built-in checkpoints (height ${spec.lastHeight}); update the wallet or try again later. ${(e as Error)?.message ?? e}`);
+const pinRefusal = (height: number, e: unknown) =>
+  new Error(`the wallet could not match the chain to its built-in checkpoints (height ${height}); update the wallet or try again later. ${(e as Error)?.message ?? e}`);
 // The header may also be forged (the time check runs before PoW), so the copy says what was seen, not who is wrong.
 const clockRefusal = (detail: string) =>
   new Error(`a block header is dated more than 2 hours ahead of this computer's clock. If the clock is behind, set it correctly and try again (${detail})`);
+// The light client's own reason ("invalid PoW at N") is logged, not shown.
+const headersRefusal = (headersBase: string, verified: number) =>
+  new Error(`the wallet could not verify the block headers from ${headersBase} above height ${verified}: they do not pass the chain's checks. Try again later.`);
+const PIN_MISMATCH = /checkpoint mismatch at (\d+)/;
 
 /** The record at `h` of a verified chunk, its hash (the next record's prev, or the chunk's baked top hash) and merkle root. */
 function chunkHeader(records: Uint8Array, spec: ChunkSpec, h: number): { hash: string; merkle: string } {
@@ -670,7 +695,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     try { return await acq.acquire(height); }
     catch (e) {
       const spec = chunkSpec(chunkOf(height), anchors);
-      if (spec && /failed verification/.test(String((e as Error)?.message))) throw pinRefusal(spec, e);
+      if (spec && /failed verification/.test(String((e as Error)?.message))) throw pinRefusal(spec.lastHeight, e);
       throw e;
     }
   };
@@ -797,9 +822,11 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     async prepare(maxEventHeight: number) {
       let nodeTip = 0;
       try { nodeTip = Number((await client.tip())?.height); } catch { /* node tip unknown → lapse uses the floor / verified tip */ }
+      const tipKnown = Number.isSafeInteger(nodeTip) && nodeTip > 0;
       // Inclusion only needs headers up to the record + cushion (kept cheap; an old, sparse name does not
       // pay a full chain sync). LC.sync re-derives PoW+LWMA per header, so a lying-high cushion fails closed.
-      const want = Math.min(Number.isFinite(nodeTip) && nodeTip > 0 ? nodeTip : maxEventHeight + CONF_BUFFER, maxEventHeight + CONF_BUFFER);
+      // An unknown tip syncs nothing: there is no height the chain is known to reach.
+      const want = tipKnown ? Math.min(nodeTip, maxEventHeight + CONF_BUFFER) : tipOf(LC);
       // The tip is re-read inside the serializer, so a sync another consumer already did is a no-op here.
       await serializeSync(async () => {
         const cur = tipOf(LC);
@@ -821,9 +848,13 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           catch (e2) {
             const m2 = String((e2 as Error)?.message || e2);
             if (CLOCK_FAULT.test(m2)) throw clockRefusal(m2);
+            if (isTransientSyncError(m2)) throw e2;
             // Nothing served links to the newest anchor: a reorg deeper than it, a wrong table entry or another chain.
-            if (tipOf(fresh) === newest && !isTransientSyncError(m2)) throw pinRefusal(anchorSpec, e2);
-            throw e2;
+            if (tipOf(fresh) === newest) throw pinRefusal(newest, e2);
+            const pinned = PIN_MISMATCH.exec(m2);
+            if (pinned) throw pinRefusal(Number(pinned[1]), e2);
+            console.warn(`[namespv] served headers above ${tipOf(fresh)} failed verification:`, m2);
+            throw headersRefusal(headersBase, tipOf(fresh));
           }
           LC = fresh;
           persistedTip = newest;
@@ -840,7 +871,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       if (cand > seenFloor) { seenFloor = cand; if (opts.floor) { try { await opts.floor.set(seenFloor); } catch { /* persist best-effort */ } } }
       // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
       // floorTip is the PRIOR-session high-water (WALLET-LAPSE-TIP-1), for lapse corroboration only.
-      return { verifiedTip, nodeTip: Math.max(seenFloor, Number.isFinite(nodeTip) ? nodeTip : 0), floorTip: persistedFloor };
+      return { verifiedTip, nodeTip: Math.max(seenFloor, tipKnown ? nodeTip : 0), floorTip: persistedFloor, tipKnown };
     },
     async blockAt(height: number) {
       const vh = await headerAt(height);
@@ -848,6 +879,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       const b = await client.blockByHeight(height);
       return { merkle: vh.merkle, txs: b.txs };
     },
+    bodySource: opts.rpcBase.replace(/\/$/, ""),
     async hashAt(height: number) { return (await headerOrNull(height))?.hash ?? null; },
     async merkleAt(height: number) { return (await headerOrNull(height))?.merkle ?? null; },
     // NSPV-SIGSUB-1 (H3): fetch a record's spent prevout and bind it to its txid exactly as verifyInputValues

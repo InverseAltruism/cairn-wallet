@@ -149,7 +149,8 @@ console.log("case 2: a structural break above the anchor:");
   const src = await liveSpvSource(opts(st));
   const err = await rejects(src.prepare(FIX_TOP - 12));
   await flushSpvStoreWrites();
-  check(`a page that stays broken: prepare fails closed (${err})`, /invalid PoW at 114901/.test(err ?? "") && !err.includes("built-in checkpoints"));
+  check(`a page that stays broken: prepare fails closed with the headers copy naming the source and the last verified height (${err})`,
+    err === `the wallet could not verify the block headers from ${API} above height 114900: they do not pass the chain's checks. Try again later.`);
   check(`  the reseed was tried once, from memory (${net.log.join(" ")})`, same(net.log, ["114688/512", "114688/512"]));
   check("  the old suffix survives: the store image is byte-identical", st.image() === before);
   check("  and the source still answers from it", (await src.hashAt(114900)) === hashOf(114900));

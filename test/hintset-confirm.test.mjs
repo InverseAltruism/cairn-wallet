@@ -11,8 +11,8 @@ let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
 const okA = async (n, fn) => { try { ok(n, await fn()); } catch (e) { fail++; console.log("  ✗", n, "\n      ", e.stack || e.message); } };
 
-const PAIRS = sortHintPairs([{ txid: "0xAA", height: 10 }, { txid: "0xbb", height: 12 }]);
-const HASHES = { 10: "0xhash10", 12: "0xhash12" };
+const PAIRS = sortHintPairs([{ txid: "0xAA", height: 33700 }, { txid: "0xbb", height: 33712 }]);
+const HASHES = { 33700: "0xhash33700", 33712: "0xhash33712" };
 const cache = {
   name: "alice", pairs: PAIRS, hashes: HASHES, addr: "0x" + "ab".repeat(20),
   owner: "0x" + "ab".repeat(20), via: "nset", depth: 8, ts: 1_000_000, epoch: 100,
@@ -37,7 +37,7 @@ await okA("recomputes disagree from a fresh claim mismatch even on skip", async 
 });
 
 await okA("sorted (txid,height) compare is order-insensitive", async () => {
-  const shuffled = sortHintPairs([{ txid: "0xbb", height: 12 }, { txid: "0xAA", height: 10 }]);
+  const shuffled = sortHintPairs([{ txid: "0xbb", height: 33712 }, { txid: "0xAA", height: 33700 }]);
   return hintPairsEqual(PAIRS, shuffled);
 });
 
@@ -60,7 +60,7 @@ await okA("served lapsed:true refuses skip (full verify must see the lease)", as
 await okA("header-hash change refuses skip", async () => {
   const v = await evaluateHintSetSkip({
     cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false,
-    now: cache.ts + 1_000, epoch: 100, hashAt: async (h) => h === 12 ? "0xOTHER" : HASHES[h],
+    now: cache.ts + 1_000, epoch: 100, hashAt: async (h) => h === 33712 ? "0xOTHER" : HASHES[h],
   });
   return v.skip === false && v.reason === "header-hash";
 });

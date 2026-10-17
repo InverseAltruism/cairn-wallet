@@ -259,7 +259,7 @@ for (const [label, flip, read, real] of [
   const net = { tip: FIX_TOP };
   await attempt("a transient failure before any header was ingested writes nothing and still fails closed", () => withNet(net, async () => {
     const s = await liveSpvSource(opts(idle));
-    net.down = true;                                                 // the node tip is unknown, so want = maxEventHeight + 12
+    net.tip = FIX_TOP + 100; net.unserved = () => true;              // a known tip above the store; every header page fails
     const { value: threw } = await quietWarn(async () => { try { await s.prepare(FIX_TOP); return false; } catch { return true; } });
     await flushSpvStoreWrites();
     return threw && idle.writes.length === 0;

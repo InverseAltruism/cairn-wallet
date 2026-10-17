@@ -8,15 +8,17 @@
 // the wallet never counts below the cap while the resolver denies the claim.
 // Run: npx tsx test/fill-holds-v29.test.mjs
 import assert from "node:assert/strict";
-import { liveFillSpvSource, countMyOtherLiveHolds, myProvenFillClosedOffer } from "../src/core/fillspv.ts";
+import { liveFillSpvSource, countMyOtherLiveHolds } from "../src/core/fillspv.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import {
-  deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs,
+  deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs, myProvenFillClosedOffer,
   V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, feeBpsAt, tradeFee,
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.ts";
+import { serveFixture, serveOffer, splitSource, memStore, legacyOf, OFFER, FIX_ANCHORS } from "./helpers/spvfixture.mjs";
+import { liveSpvSource } from "../src/core/namespv.ts";
 
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log("  ok " + name); };
@@ -425,6 +427,50 @@ await test("end to end: three unfilled holds still refuse the fourth buy, nothin
   assert.equal(r?.code, "FILL_UNSAFE");
   assert.match(String(r?.error), /max active claims/);
   assert.equal(submits.length, 0);
+});
+
+// Plan 86 section 3.5: an other offer below the newest anchor. The real offer at 30,332 (chunk 7) is proven through
+// the production liveSpvSource over real headers; the claims, fills and the fourth claim are the synthetic world
+// near TIP (splitSource joins the two). The resolver cross-check is not run here: the real offer's give backing is
+// not in this world. Row 62 in 0.2.99: the exclusion holds only when the offer's chunk can be acquired.
+async function belowAnchorWorld(acquirable) {
+  const w = makeWorld();
+  const others = [placeOffer(w), placeOffer(w)];
+  const mainOffer = placeOffer(w);
+  const realClaim = claimOn(w, OFFER.offerId, H_C);
+  others.forEach((o) => claimOn(w, o, H_C));
+  const real = { id: OFFER.offerId, seller: OFFER.seller, give: { ticker: "CAIRN", amount: "500000000" }, want: { value: "100000000", payto: OFFER.seller }, status: "open", height: OFFER.height, feeBps: feeBpsAt(OFFER.height), paid: "0", delivered: "0" };
+  fillOn(w, realClaim, H_F, requiredFillOutputs(real, 100_000_000n).map(({ to, value }) => ({ to, value: Number(value) })));
+  const s = { ...w, others, mainOffer, fourth: claimOn(w, mainOffer, H_G) };
+  const net = {};
+  const restore = serveFixture(net);
+  serveOffer(net);
+  if (!acquirable) net.unserved = (from) => from < 32768;
+  try {
+    const live = await liveSpvSource({ rpcBase: "https://cairn-substrate.test/api/rpc", headersBase: "https://cairn-substrate.test", anchors: FIX_ANCHORS, store: async () => memStore(), legacy: legacyOf(new Map()) });
+    const io = await liveFillSpvSource({
+      rpcBase: "https://cairn-substrate.test/api/rpc", headersBase: "https://cairn-substrate.test", spvSource: splitSource(live, fillSource(s.blocks, TIP)),
+      hints: { offerId: s.mainOffer, fclaimTxid: s.fourth, me: ME, offerHeight: H_OFF },
+      offerHeightOf: async (id) => (id === OFFER.offerId ? OFFER.height : others.includes(id) ? H_OFF : null),
+    });
+    return { s, io, chunk7: net.log.filter((p) => Number(p.split("/")[0]) < 32768).length };
+  } finally { restore(); }
+}
+
+await test("an other offer below the anchor that I filled is excluded when its chunk is acquired: the fourth buy verifies", async () => {
+  const { s, io, chunk7 } = await belowAnchorWorld(true);
+  assert.equal(chunk7, 6, "chunk 7 was acquired once (its 6 aligned pages)");
+  assert.equal(io.myLiveHoldsAtGrant, 2);
+  const v = await verifyFillSpv(s.mainOffer, s.fourth, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant });
+  assert.equal(v.safe, true, v.reason);
+});
+
+await test("the same world with chunk 7 unavailable keeps the hold counted and refuses the fourth buy", async () => {
+  const { s, io } = await belowAnchorWorld(false);
+  assert.equal(io.myLiveHoldsAtGrant, 3);
+  const v = await verifyFillSpv(s.mainOffer, s.fourth, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant });
+  assert.equal(v.safe, false);
+  assert.match(v.reason, /max active claims/);
 });
 
 console.log(`fill-holds-v29: ${n} passed, 0 failed`);
