@@ -157,8 +157,8 @@ and the csd-sdk **version and source commit**. The gate is `scripts/check-vendor
 
 * **Load-bearing:** the rebuild byte-diff. CI checks out csd-sdk at the pinned commit, rebuilds the bundle
   and requires it to be byte-identical to the committed one (the `vendor-fresh-full` job in `ci.yml`, and
-  in `release.yml`, where the release job depends on it). It runs only where the csd-sdk checkout is
-  available: in CI when the repository's read token for csd-sdk is set, locally with a csd-sdk checkout.
+  in `release.yml`, where the release job depends on it). csd-sdk is public, so CI checks it out without a
+  token and the job runs on every push, pull request and tag; locally it needs a csd-sdk checkout.
 * **Always on, cheap:** the committed bundle's sha256 equals `PROVENANCE.json` and the `@noble` pins agree,
   so a bundle edited without a matching `PROVENANCE.json` change fails even without csd-sdk present.
 * **Advisory only:** the check that the csd-sdk checkout's HEAD equals `csdSdkCommit` prints a warning and
@@ -167,7 +167,10 @@ and the csd-sdk **version and source commit**. The gate is `scripts/check-vendor
 Releases are built in CI from tagged source with `npm ci` and a deterministic zip writer, so they are
 **byte-for-byte reproducible**: rebuild from the same source and the SHA-256 matches the published
 release. Every release carries a SLSA build-provenance attestation; the release job fails if it
-cannot be produced.
+cannot be produced. The jobs that run repository code (the install, the tests, the packager, the vendor
+rebuild) can only read; the one job that holds the attestation and release permissions checks nothing out and
+installs nothing: it downloads the zips the build job produced, checks them against their `.sha256` files,
+attests and publishes them (`test/release-workflow-permissions.test.mjs` pins the split).
 
 ## Publishing & updates
 

@@ -39,24 +39,14 @@ jobs:
 
   # Full vendor-freshness gate: rebuild the SPV bundle from the PINNED csd-sdk source and require
   # byte-identity with the committed bundle (+ source @noble == wallet pins). This is the load-bearing drift
-  # check. Its csd-sdk checkout uses the ECOSYSTEM_RO_TOKEN secret, so it runs only when that secret is set.
-  # Without it, the job no-ops and the cheap gate above still runs.
+  # check. csd-sdk is a public repository, so the checkout needs no token and the job runs on every push and PR.
+  # Keep in lockstep with release.yml's vendor-fresh-full.
   vendor-fresh-full:
     runs-on: ubuntu-latest
-    # Run on push + same-repo PRs (where secrets are available); skip fork PRs (no secrets). The `secrets`
-    # context is illegal in a job-level `if:`, so the actual token-presence is checked at step level below
-    # (HAS_TOKEN): without ECOSYSTEM_RO_TOKEN the csd-sdk steps self-skip and the cheap gate in `test`
-    # still gates. That no-op is by design, not a failure.
-    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     permissions:
       contents: read
-    env:
-      HAS_TOKEN: ${{ secrets.ECOSYSTEM_RO_TOKEN != '' }}
     steps:
-      - if: ${{ env.HAS_TOKEN != 'true' }}
-        run: echo "ECOSYSTEM_RO_TOKEN not set; skipping the full rebuild-vs-source gate (cheap vendor gate in 'test' still runs)."
-      - if: ${{ env.HAS_TOKEN == 'true' }}
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           path: cairn-wallet
           persist-credentials: false
@@ -65,34 +55,27 @@ jobs:
       # bundle matches the source commit it claims, and a csd-sdk advance does not false-fail it. Re-vendoring
       # updates PROVENANCE.csdSdkCommit, which moves this pin in lockstep. Because of this pin, the script's
       # csdSdkCommit-equals-HEAD arm compares the pin with itself here; it is advisory either way.
-      - if: ${{ env.HAS_TOKEN == 'true' }}
-        id: prov
+      - id: prov
         run: echo "commit=$(node -p "require('./cairn-wallet/src/vendor/PROVENANCE.json').csdSdkCommit")" >> "$GITHUB_OUTPUT"
-      - if: ${{ env.HAS_TOKEN == 'true' }}
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           repository: InverseAltruism/csd-sdk
           ref: ${{ steps.prov.outputs.commit }}
-          token: ${{ secrets.ECOSYSTEM_RO_TOKEN }}
           path: csd-sdk
-          persist-credentials: false   # the token is not left in csd-sdk/.git/config for the install and build below
-      - if: ${{ env.HAS_TOKEN == 'true' }}
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "22" }
-      - if: ${{ env.HAS_TOKEN == 'true' }}
-        # Install csd-sdk's OWN pinned pnpm directly (bypassing corepack). The runner's newer corepack ships a
-        # pnpm that REFUSES to switch to csd-sdk's pin (pnpm 11 vs the pinned 10.x → version-mismatch error),
-        # and `corepack prepare --activate` alone doesn't put pnpm on PATH. `npm i -g <pin>` is bulletproof.
-        run: |
+      # Install csd-sdk's OWN pinned pnpm directly (bypassing corepack). The runner's newer corepack ships a
+      # pnpm that REFUSES to switch to csd-sdk's pin (pnpm 11 vs the pinned 10.x → version-mismatch error),
+      # and `corepack prepare --activate` alone doesn't put pnpm on PATH. `npm i -g <pin>` is bulletproof.
+      - run: |
           PM=$(node -p "require('./csd-sdk/package.json').packageManager")   # e.g. pnpm@10.32.1
           echo "Installing csd-sdk's pinned package manager: $PM"
           npm i -g "$PM"
           pnpm -v
           pnpm -C csd-sdk install --frozen-lockfile && pnpm -C csd-sdk -r build
-      - if: ${{ env.HAS_TOKEN == 'true' }}
-        run: npm -C cairn-wallet ci --ignore-scripts
+      - run: npm -C cairn-wallet ci --ignore-scripts
       - name: rebuild-vs-source byte-diff + noble equality
-        if: ${{ env.HAS_TOKEN == 'true' }}
         env:
           CSD_SDK_DIR: ${{ github.workspace }}/csd-sdk
         run: npm -C cairn-wallet run verify:vendor
