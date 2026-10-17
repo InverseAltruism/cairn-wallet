@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Reservation fills: beside the offer read, the wallet asks the second source (clarvis) for its verdict on the
+  buyer's own reservation (`/cairnx/record/{fclaimTxid}`), started with the SPV scan and never waited for past it.
+  When clarvis reports that it replayed the reservation and did not apply it, the fill refuses with the new code
+  `RESERVATION_DENIED` and clarvis's reason. This covers a header source that hides a competing reservation placed
+  just before the buyer's, whose hold ends before the buyer's and so passes the offer check. An applied
+  reservation, a 404 below the reservation's height plus 12, a timeout, an error or an unusable answer proceed as before,
+  with no added wait.
+- When clarvis has read the chain at least 12 blocks past the buyer's proven reservation and has no record of it,
+  the wallet signs nothing yet: the approval window shows the request again with a warning ("The second source has
+  no record of your reservation. ...") and two buttons, "Sign anyway" and "Cancel", with Cancel as the filled
+  (primary) button. "Sign anyway" re-runs every
+  check and signs once; a reservation clarvis now reports denied still refuses. "Cancel" rejects the request. The
+  page is not told until the user chooses. A granted reservation signs on the first approval as before. New code
+  `RESERVATION_UNCONFIRMED`, seen only by the approval window.
+- SECURITY.md and the header-store design note correct the cost of the forged-header attack on reservation fills:
+  the forged chain needs to start only just below the hidden reservation, so for a small fill it is a few honest
+  blocks' worth of work and succeeds on every attempt once the front door is controlled (the earlier text said it
+  had to run to the chain's real height, about 160 blocks' worth). They describe the reservation verdict above, its
+  residual (clarvis down or slow during the attack, or both hosts compromised), and why the header-hash comparison
+  first proposed was not built (it misses every fill at claim depth 3 to 6).
+- The two `RATE_LIMITED` messages for a full approval queue use a semicolon instead of a dash: "too many pending
+  requests from this site; approve or reject the queued ones first" and "too many pending wallet requests; approve
+  or reject the queued ones first". The code is unchanged.
+- `OFFER_SOURCE_CONFLICT` for a reservation held by someone else now reads "another reservation holds this offer
+  through block N" (the last block it holds) instead of "a later reservation now holds this offer": the check also refuses a holder with the
+  same expiry epoch as yours, which came first, not later.
 - Name verification keeps block headers in a compact store in the browser (IndexedDB), anchored by block hashes
   built into each release, instead of a JSON snapshot that was read and re-verified whole at every start. A start
   reads the newest built-in chunk and the headers above it; an older name costs one chunk the first time it is

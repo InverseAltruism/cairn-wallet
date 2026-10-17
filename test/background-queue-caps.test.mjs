@@ -52,8 +52,8 @@ function dapp(origin, method = "send", params = { to: "0x" + "11".repeat(20), am
   return out;
 }
 const pendingCount = async () => (await popup("pending")).result.length;
-const PER_ORIGIN = { ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site — approve or reject the queued ones first" };
-const GLOBAL = { ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests — approve or reject the queued ones first" };
+const PER_ORIGIN = { ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site; approve or reject the queued ones first" };
+const GLOBAL = { ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests; approve or reject the queued ones first" };
 const CLOSED = { ok: false, code: "APPROVAL_CLOSED", error: "rejected (approval window closed)" };
 const site = (i) => `https://site${i}.test`;
 

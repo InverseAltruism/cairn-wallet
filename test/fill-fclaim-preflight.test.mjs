@@ -9,8 +9,9 @@
 // as the B4 core test and namespv test inject a chain-free seam.
 //
 // Proves: honest granted+buried fill ACCEPTED; denied-fclaim REFUSED; forged-holder (someone else's fclaim)
-// REFUSED; below-depth REFUSED; the fill reads the second resolver (clarvis) only by OFFER id (the second-source
-// verdicts are in test/fill-offer-crosscheck.test.mjs), and a primary lie on any field the 0.2.71 clarvis value
+// REFUSED; below-depth REFUSED; the fill reads the offer from the second resolver (clarvis) only by OFFER id, and
+// asks it for the fclaim's record (the second-source verdicts are in test/fill-offer-crosscheck.test.mjs and
+// test/fill-reservation-verdict.test.mjs), and a primary lie on any field the 0.2.71 clarvis value
 // comparison covered is refused by the merkle-proven bind; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
 // ACCEPTED, adding a 3rd FLIPS to REFUSED, never hardcoded 0). The denied-fclaim guard is MUTATION-VERIFIED
 // (removed from the wallet source, the same forgery then SUBMITS, proving the guard is the sole rejecter).
@@ -164,7 +165,8 @@ console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
   check("…and nothing was submitted", s.submits.length === 0);
 }
 
-// 5a. The fclaim fill reads clarvis once, by the OFFER id (not the fclaim txid), and compares only offer progress
+// 5a. The fclaim fill reads the offer from clarvis once, by the OFFER id (not the fclaim txid), plus the fclaim's
+// record from /cairnx/record (its own verdict, not a value comparison), and compares only offer progress
 // (status, paid/delivered, reservation holder). Value fields are bound by the merkle-proven offer, so a clarvis
 // that serves a diverging payto (the stub) does not block an honest buy.
 let honestBody = null, honestWallet = null;
@@ -175,8 +177,11 @@ let honestBody = null, honestWallet = null;
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
   const r = await w.fillOffer({ proposalId: fcH, outputs });
   check(`honest fclaim fill submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
-  check(`...with one clarvis request, keyed by the offer id, and a diverging clarvis payto does not refuse (${s.clarvisUrls})`,
-    s.clarvis === 1 && s.clarvisUrls[0].endsWith(`/cairnx/offer/${OID.toLowerCase()}`));
+  const offerReads = s.clarvisUrls.filter((u) => u.includes("/cairnx/offer/"));
+  check(`...with one clarvis offer read, keyed by the offer id, and a diverging clarvis payto does not refuse (${s.clarvisUrls})`,
+    offerReads.length === 1 && offerReads[0].endsWith(`/cairnx/offer/${OID.toLowerCase()}`));
+  check(`...and one clarvis record read, keyed by the fclaim txid; nothing else (${s.clarvisUrls})`,
+    s.clarvis === 2 && s.clarvisUrls.filter((u) => u.endsWith(`/cairnx/record/${fcH.toLowerCase()}`)).length === 1);
   honestBody = s.submits[0];
 }
 

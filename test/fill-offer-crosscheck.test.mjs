@@ -4,6 +4,8 @@
 // the scan runs and refuses on positive evidence only (OFFER_SOURCE_CONFLICT).
 //
 //   1. secondSourceOfferConflict unit table (pure).
+//   1b. The holder rule against the vendored replay: another fclaim with our expiry epoch refuses, the previous
+//      holder a lagging source shows does not.
 //   2. The PoC (cancel / 90% partial fill withheld ~1,400 blocks before the buy) through the REAL wallet preflight:
 //      with clarvis telling the truth it is refused and nothing is submitted; with clarvis 404 it still submits
 //      (the gap is open when the second source is down, and this is the red-first for the wallet change).
@@ -14,20 +16,12 @@
 // RED-FIRST: replace the secondSourceOfferConflict call in wallet.ts fclaimLanePreflight with `null` and the
 // refusal rows of sections 2 and 3 go red.
 // Run: node --import tsx test/fill-offer-crosscheck.test.mjs   (offline)
-import { createHash } from "node:crypto";
-import { Wallet } from "../src/core/wallet.js";
-import { memoryStore } from "../src/core/storage.js";
 import { secondSourceOfferConflict } from "../src/core/offerxcheck.js";
-import {
-  deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, provenOfferTerms, parseRecord, fclaimHoldEnd,
-  epochOf, TREASURY_ADDR, DEPLOY_FEE, SCORE_FILL, SCORE_CANCEL, MAX_SCAN,
-} from "../src/vendor/cairnx-spv.js";
-import { mkCoin, txReply } from "./_coin.js";
+import { verifyFillSpv, requiredFillOutputs, resolve, offer, fclaim, fclaimHoldEnd, epochOf, EPOCH_LEN, MAX_SCAN } from "../src/vendor/cairnx-spv.js";
+import { H, S, C, PAY, world, eventMaker, body, always, notFound, netErr, garbage, delayed, fill, digest } from "./helpers/fillworld.mjs";
+import { checker } from "./helpers/check.mjs";
 
-let pass = 0, fail = 0;
-const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
-const H = (n) => "0x" + n.toString(16).padStart(64, "0");
-const PRIV = "0x" + "42".repeat(32);
+const { check, done } = checker();
 
 console.log("1. secondSourceOfferConflict (pure)");
 {
@@ -44,7 +38,7 @@ console.log("1. secondSourceOfferConflict (pure)");
   check("lower or equal paid (a lagging source) proceeds", x({ ...P, paid: "50", delivered: "10" }) === null && x({ ...P, paid: "100" }) === null);
   check("second source omitting paid is not evidence", x({ ...P, paid: undefined, delivered: undefined }) === null);
   check("malformed paid is not evidence", x({ ...P, paid: "1e9" }) === null && x({ ...P, paid: -5 }) === null);
-  check("a later reservation by another fclaim refuses", /later reservation/.test(x({ ...P, claimTxid: OTHER, claimUntilHeight: 1230 }) ?? ""));
+  check("a later reservation by another fclaim refuses, naming its end", x({ ...P, claimTxid: OTHER, claimUntilHeight: 1230 }) === "another reservation holds this offer through block 1229");
   check("an earlier holder (a source that has not seen our grant) proceeds", x({ ...P, claimTxid: OTHER, claimUntilHeight: 1150 }) === null);
   check("a different holder without a usable hold end proceeds", x({ ...P, claimTxid: OTHER, claimUntilHeight: "1230" }) === null && x({ ...P, claimTxid: OTHER, claimUntilHeight: undefined }) === null);
   check("a different holder with our hold end unknown proceeds", x({ ...P, claimTxid: OTHER, claimUntilHeight: 1230 }, { offerId: OID, fclaimTxid: FC }) === null);
@@ -54,83 +48,42 @@ console.log("1. secondSourceOfferConflict (pure)");
   for (const g of [null, undefined, "cancelled", 7, [], { ok: false, error: "unknown offer" }]) check(`garbage ${JSON.stringify(g)} proceeds`, x(g) === null);
 }
 
-// ── a PoC-shaped world (same heights and amounts as the security PoC), over the vendored resolver ──
-const S = "0x" + "aa".repeat(20), C = "0x" + "cc".repeat(20);
-const PAY = BigInt(1000e8);
-const coin = mkCoin(2_000_00000000);
+console.log("\n1b. the holder rule against the replay: an equal expiry epoch is a conflict, an earlier one is not");
+{
+  // ownHoldEnd is the last block our fclaim holds (fclaimHoldEnd); claimUntilHeight is the first block another
+  // fclaim no longer holds ((E + 1) * 30), so the same epoch E gives until = ownHoldEnd + 1.
+  const OID = H(1), FC = H(2), OTHER = H(3), E = 39;
+  const P = { id: OID, status: "open", claimTxid: FC, claimUntilHeight: (E + 1) * EPOCH_LEN };
+  const ctx = { offerId: OID, fclaimTxid: FC, ownHoldEnd: fclaimHoldEnd(E) };
+  check("another fclaim with our expiry epoch refuses, naming its end", secondSourceOfferConflict(P, { ...P, claimTxid: OTHER, claimUntilHeight: (E + 1) * EPOCH_LEN }, ctx) === `another reservation holds this offer through block ${(E + 1) * EPOCH_LEN - 1}`);
+  check("another fclaim one epoch earlier proceeds", secondSourceOfferConflict(P, { ...P, claimTxid: OTHER, claimUntilHeight: E * EPOCH_LEN }, ctx) === null);
 
-function world(me, withheldKind) {
-  let n = withheldKind === "partial" ? 1000 : withheldKind === "cancel" ? 2000 : 3000;
-  const id = () => H(++n);
-  const PE = (who, built, h, E, paidTo = {}) => ({ kind: "propose", id: id(), proposer: who, uri: built.uri, payloadHash: built.payloadHash, expiresEpoch: E ?? epochOf(h) + 5000, height: h, pos: 1, paidTo });
-  const AT = (who, pid, score, h, paidTo = {}) => ({ kind: "attest", txid: id(), proposalId: pid, attester: who, score, confidence: 0, height: h, pos: 2, paidTo });
-  const ev = [
-    PE(S, deploy({ ticker: "TOKA", decimals: 0, supply: "1000000", mint: "issuer" }), 115000, undefined, { [TREASURY_ADDR]: String(DEPLOY_FEE) }),
-    PE(S, mint({ ticker: "TOKA", amount: "1000000" }), 115001),
-  ];
-  const offerEv = PE(S, offer({ give: { ticker: "TOKA", amount: "1000" }, want: { value: String(1000e8) }, ...(withheldKind === "partial" ? { min: String(100e8) } : {}) }), 115010, epochOf(115010) + 200);
-  ev.push(offerEv);
-  const withheld = [];
-  if (withheldKind === "cancel") withheld.push(AT(S, offerEv.id, SCORE_CANCEL, 115100));
-  if (withheldKind === "partial") {
-    const fcC = PE(C, fclaim({ offer: offerEv.id }), 115100, epochOf(115100) + 1);
-    const outs = requiredFillOutputs(resolve([...ev, fcC], 115110).offers[offerEv.id], BigInt(900e8));
-    withheld.push(fcC, AT(C, fcC.id, SCORE_FILL, 115110, Object.fromEntries(outs.map((o) => [o.to, o.value.toString()]))));
-  }
-  const tip = 116520, fH = 116490;
-  const fc = PE(me, fclaim({ offer: offerEv.id }), fH, epochOf(fH) + 2);
-  const shown = resolve([...ev, fc], tip), truth = resolve([...ev, ...withheld, fc], tip);
-  // The primary's D2 alias answer for GET /cairnx/offer/{fclaimTxid} (cairnx service.ts), built from the withheld view.
-  const primary = { ...shown.offers[offerEv.id], fclaimId: fc.id, fclaimHeight: fH, fclaimExpiresEpoch: fc.expiresEpoch };
-  const outputs = requiredFillOutputs(primary, PAY).map(({ to, value }) => ({ to, value: Number(value) }));
-  const pool = new Map([...ev, fc].map((e) => [(e.kind === "propose" ? e.id : e.txid).toLowerCase(), { ...e, depth: tip - e.height + 1 }]));
-  const rec = parseRecord(offerEv.uri, offerEv.payloadHash);
-  // The scan sees only in-window events: the withheld ones sit ~1,400 blocks below tip - (MAX_SCAN + 89).
-  const io = (scanMs = 0) => ({
-    myLiveHoldsAtGrant: 0, provenTerms: provenOfferTerms(rec, offerEv.height),
-    async tip() { return tip; },
-    async offerEventIds() { if (scanMs) await new Promise((r) => setTimeout(r, scanMs)); return [...pool.keys()]; },
-    async provenEvent(x) { return pool.get(String(x).toLowerCase()) ?? null; },
-  });
-  return { offerId: offerEv.id, fc, tip, primary, truth: truth.offers[offerEv.id], truthFclaimGranted: !!truth.fclaims[fc.id], withheld, outputs, io, holdEnd: fclaimHoldEnd(fc.expiresEpoch) };
+  // Replay: a competing fclaim with our epoch, granted first, is still held at our grant, so ours is denied and
+  // the chain shows it as the holder. The previous holder of a granted fclaim has a lower epoch, since replay
+  // grants ours only once that hold has ended.
+  const { PE, token } = eventMaker(5000);
+  const base = token();
+  const o = PE(S, offer({ give: { ticker: "TOKA", amount: "1000" }, want: { value: String(1000e8) } }), 115010, epochOf(115010) + 200);
+  base.push(o);
+  const h = 116490, eh = epochOf(h);
+  const theirs = PE(C, fclaim({ offer: o.id }), h - 3, eh + 1);
+  const ours = PE("0x" + "bb".repeat(20), fclaim({ offer: o.id }), h, eh + 1);
+  const applied = (st, ev) => st.events.find((e) => e.id === ev.id)?.ok;
+  const same = resolve([...base, theirs, ours], h + 10);
+  check("replay: an equal-epoch fclaim granted first denies ours", applied(same, theirs) === true && applied(same, ours) === false);
+  check("replay: ...and the chain's holder ends exactly one block past our hold end",
+    same.offers[o.id].claimTxid === theirs.id && same.offers[o.id].claimUntilHeight === fclaimHoldEnd(ours.expiresEpoch) + 1);
+  check("replay: ...so the second source's honest answer refuses",
+    secondSourceOfferConflict(same.offers[o.id], same.offers[o.id], { offerId: o.id, fclaimTxid: ours.id, ownHoldEnd: fclaimHoldEnd(ours.expiresEpoch) }) !== null);
+  const prev = PE(C, fclaim({ offer: o.id }), h - 40, epochOf(h - 40));
+  const after = PE("0x" + "bb".repeat(20), fclaim({ offer: o.id }), (prev.expiresEpoch + 1) * EPOCH_LEN, prev.expiresEpoch + 2);
+  const seq = resolve([...base, prev, after], after.height + 5);
+  const lagging = resolve([...base, prev], after.height - 1).offers[o.id];
+  check("replay: ours is granted at the first block the previous hold no longer covers", applied(seq, prev) === true && applied(seq, after) === true && after.expiresEpoch > prev.expiresEpoch);
+  check("replay: a lagging source still showing that previous holder proceeds",
+    lagging.claimTxid === prev.id && secondSourceOfferConflict(seq.offers[o.id], lagging, { offerId: o.id, fclaimTxid: after.id, ownHoldEnd: fclaimHoldEnd(after.expiresEpoch) }) === null);
 }
 
-// clarvis behaviours (fetch handlers): a body, 404, a network error, a non-JSON 200, or a delayed reply that
-// honours abort. fill() takes a factory w => handler so a body can be built from the world.
-function stub(w, clarvis) {
-  const st = { submits: [], clarvisUrls: [] };
-  globalThis.fetch = async (url, init) => {
-    const u = String(url);
-    if (u.includes("/tx/submit")) { st.submits.push(init?.body); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
-    if (u.includes("clarvis")) { st.clarvisUrls.push(u); return clarvis(init); }
-    if (u.includes("/cairnx/offer/")) return { ok: true, status: 200, json: async () => w.primary };
-    if (/\/utxos\//.test(u)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
-    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: w.tip }) };
-    return txReply(u, [coin]) ?? { ok: false, status: 404, json: async () => ({}) };
-  };
-  return st;
-}
-const body = (b) => () => ({ ok: true, status: 200, json: async () => b });
-const always = (h) => () => h;
-const notFound = () => ({ ok: false, status: 404, json: async () => ({ ok: false, error: "unknown offer" }) });
-const netErr = () => { throw new TypeError("fetch failed"); };
-const garbage = () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } });
-const delayed = (ms, handler) => (init) => new Promise((res, rej) => {
-  const t = setTimeout(() => { try { res(handler(init)); } catch (e) { rej(e); } }, ms);
-  init?.signal?.addEventListener("abort", () => { clearTimeout(t); rej(new DOMException("aborted", "AbortError")); });
-});
-
-async function fill(kind, clarvis, scanMs = 0) {
-  const w0 = new Wallet(memoryStore());
-  const { addr } = await w0.importKey(PRIV, "pw-xcheck");
-  const w = world(addr.toLowerCase(), kind);
-  w0.fillSpvIoForTest = () => w.io(scanMs);
-  const st = stub(w, clarvis(w));
-  const t0 = performance.now();
-  const r = await w0.fillOffer({ proposalId: w.fc.id, outputs: w.outputs });
-  return { r, st, w, ms: performance.now() - t0 };
-}
-const digest = (b) => (b ? createHash("sha256").update(b).digest("hex") : "");
 // Submit body of the honest fill below, captured on the unmodified 0.2.72 tree (origin/master 5945710) with the
 // same key, world and coin. That tree makes no clarvis request on this lane.
 const DIGEST_0272 = "7bab37e2d90cb06be538cb11f31c6829831801a23a2c6c22cba7d8a712397c11";
@@ -150,7 +103,8 @@ for (const kind of ["cancel", "partial"]) {
   const told = await fill(kind, (w) => body(w.truth));
   check(`${label}: clarvis tells the truth -> REFUSED with OFFER_SOURCE_CONFLICT (${told.r?.error})`, told.r?.ok === false && told.r?.code === "OFFER_SOURCE_CONFLICT");
   check(`${label}: ...nothing submitted`, told.st.submits.length === 0);
-  check(`${label}: ...clarvis was asked by OFFER id`, told.st.clarvisUrls.length === 1 && told.st.clarvisUrls[0].endsWith(`/cairnx/offer/${told.w.offerId}`));
+  const offerReads = told.st.clarvisUrls.filter((u) => u.includes("/cairnx/offer/"));
+  check(`${label}: ...clarvis was asked for the offer once, by OFFER id`, offerReads.length === 1 && offerReads[0].endsWith(`/cairnx/offer/${told.w.offerId}`));
 }
 
 console.log("\n3. acceptance (a)-(g)");
@@ -187,5 +141,4 @@ console.log("\n4. latency: the second-source read never lengthens the honest fil
   check(`a truthful clarvis that answers after the scan is not waited for: proceeds (stated limit) (${late.r?.error ?? "ok"})`, late.r?.ok === true);
 }
 
-console.log(`\nfill-offer-crosscheck: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+done("fill-offer-crosscheck");

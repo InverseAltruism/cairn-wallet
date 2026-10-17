@@ -482,6 +482,19 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
   return lines.join("<br>");
 }
 
+// The approval window's buttons, and their labels in the reservation confirm step (RESERVATION_UNCONFIRMED).
+export const APPROVE_LABELS = { approve: "Approve", reject: "Reject" } as const;
+export const UNCONFIRMED_LABELS = { approve: "Sign anyway", reject: "Cancel" } as const;
+
+// The confirm step: the second resolver (clarvis) has scanned past the reservation's proven height and does not know it.
+export function reservationUnconfirmedHtml(u: { fclaimHeight: number; tipHeight: number }): string {
+  const n = (v: number) => escapeHtml(Number.isSafeInteger(v) ? v.toLocaleString("en-US") : "?");
+  return `<div class="req"><b class="err">⚠ The second source has no record of your reservation.</b><br>`
+    + `The second source has read the chain to block ${n(u.tipHeight)} and does not know the reservation this wallet found at block ${n(u.fclaimHeight)}. `
+    + `If the chain this wallet was shown is false, the reservation may have been rejected and this payment would be lost. `
+    + `Check the offer and your reservation on the explorer before you sign.</div>`;
+}
+
 // The balance-after is negative: the node's spendable balance (the sum of its available coins, the same
 // coins the engine selects from) does not cover the debit, so signing could only end in INSUFFICIENT.
 export function balanceShortNote(back: "Reject this" | "Go back"): string {

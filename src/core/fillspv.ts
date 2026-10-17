@@ -160,7 +160,7 @@ export function countMyOtherLiveHolds(
  * PRE-WINDOW WITHHOLDING: this scan cannot see a cancel or consuming fill OLDER than the tip-anchored window,
  * and a full anchor-to-tip scan is too slow for the hot path (an offer can be weeks old). wallet.ts
  * fclaimLanePreflight therefore reads the OFFER by id from the second resolver (clarvis) beside this scan and
- * refuses when it reports the offer closed, further filled, or held by a later reservation
+ * refuses when it reports the offer closed, further filled, or held by another reservation through our hold
  * (offerxcheck.ts, test/fill-offer-crosscheck.test.mjs). The gap is closed when clarvis answers before the scan
  * ends and is honest. It stays open when clarvis is down, slower than the scan, or withholding the same event.
  * The chain-only closure is still the deferred warm-snapshot lifecycle scan (verified-event proof cache).

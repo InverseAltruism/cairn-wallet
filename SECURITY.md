@@ -67,12 +67,27 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   (`docs/DESIGN-namespv-scaling.md`, "Work above the newest anchor", has the derivation). What that reaches: a
   name shown without a later transfer, for the 5 blocks' worth (the forged blocks cannot carry signatures the
   source does not have, and the second name source's records then fail against them, so the result is flagged,
-  not green); and a reservation fill with a competing hold or cancel hidden from the scan window, where the buyer's
-  own reservation must still appear within 2 epochs of its real height, so the fork must run to about the chain's
-  real height (about one sixth of the headers forged in work: about 160 blocks' worth for a wallet 1,000 blocks
-  behind), covered by the second-resolver check below only when it answers. A second header source would close
-  both for a compromised front door, not for a compromised operator; it is not built in this release (proposed
-  as D-86-10 in the design note);
+  not green); and a reservation fill with a competing hold hidden from the scan. That fork needs to start only
+  just below the hidden hold, because honest headers fill everything below it: for a small fill (claim depth 3, a
+  hold placed 3 blocks before the buyer's) it is 6 forged headers, about 3 blocks' worth of honest work, and once
+  the front door is controlled it succeeds on every attempt, where the claim-depth rule prices a race on the real
+  chain (a miner with a fifth of the hashrate reverses a depth-3 claim 1.563 percent of the time per attempt). It
+  needs a wallet whose stored chain ends below the hidden hold; a stored chain that reaches past it is kept unless
+  the fork carries more work. Against it, while the scan runs, the wallet asks the second resolver (clarvis, which
+  follows its own node) for its verdict on the buyer's own reservation and refuses with `RESERVATION_DENIED` when
+  clarvis replayed it and did not apply it; a cancel or fill older than the scan window is covered by its offer
+  read (`OFFER_SOURCE_CONFLICT`). When clarvis has read at least 12 blocks past the reservation and does not know
+  it, the approval window shows the request again with a warning and asks for "Sign anyway" or "Cancel" before
+  anything is signed; the confirmation is bound to that request and reservation and is taken only from the
+  extension's own pages (the channel the approval window uses), never from a web page or the content script. Both reads are fail-soft and never waited for past the scan, so what remains is
+  clarvis down or slower than the scan during the attack; a front door that withholds or delays the buyer's
+  fclaim, while clarvis has not yet replayed it (the front door also relays the buyer's submits through
+  `/api/rpc`, so it can hold the reservation back, get a competing hold mined first and release the now-denied
+  reservation just before the fill); or both hosts compromised. Both hosts are the operator's. Against a header-source
+  attacker the "unknown" warning is advisory: the reservation's height is proven against the headers that attacker
+  serves, so it chooses the height clarvis's tip is compared with. A second broadcast path for the reservation
+  through the second host, if its relay accepts submits, would narrow the withholding case; it is not built. A header-hash comparison with clarvis was considered and not built: it compares at a buried height
+  and misses every fill at claim depth 3 to 6 (the design note has both);
   it proves each name record's inclusion against the PoW-committed merkle root;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
