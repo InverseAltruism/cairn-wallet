@@ -26,7 +26,7 @@
   requests from this site; approve or reject the queued ones first" and "too many pending wallet requests; approve
   or reject the queued ones first". The code is unchanged.
 - `OFFER_SOURCE_CONFLICT` for a reservation held by someone else now reads "another reservation holds this offer
-  until height N" instead of "a later reservation now holds this offer": the check also refuses a holder with the
+  through block N" (the last block it holds) instead of "a later reservation now holds this offer": the check also refuses a holder with the
   same expiry epoch as yours, which came first, not later.
 - Name verification keeps block headers in a compact store in the browser (IndexedDB), anchored by block hashes
   built into each release, instead of a JSON snapshot that was read and re-verified whole at every start. A start
