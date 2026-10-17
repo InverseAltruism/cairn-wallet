@@ -178,7 +178,7 @@ export function countMyOtherLiveHolds(
  * sunset hold), which stays resolver-trusted exactly as pre-V28 (N1). A hostile primary that also relabels
  * `offer.id === proposalId` lands in that same pre-existing legacy N1 residual, not a new V28 lane.
  */
-export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource; offerHeightOf?: (offerId: string) => Promise<number | null> }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenPayto: string; provenSeller: string; provenTerms: MintedProvenOfferTerms; tipFloored: boolean }> {
+export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHints; spvSource?: SpvSource; offerHeightOf?: (offerId: string) => Promise<number | null> }): Promise<FillSpvIo & { myLiveHoldsAtGrant: number; provenTerms: MintedProvenOfferTerms; tipFloored: boolean }> {
   const spv = opts.spvSource ?? await liveSpvSource(opts);
   const offerId = String(opts.hints.offerId).toLowerCase();
   const fclaimTxid = String(opts.hints.fclaimTxid).toLowerCase();
@@ -382,12 +382,8 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
   if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
   const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string }; want?: { payto?: string; value?: string }; taker?: string; bid?: string; min?: string } | null;
-  // F2: the PAYMENT recipients, derived from the merkle-proven offer (never the resolver-served fields). The
-  // seller (= the prevout-bound author) owns the rebate leg; the payment recipient is the record's explicit
-  // want.payto (merkle-committed) or, absent, the seller. verifyFillSpv proves DELIVERY but not these, so the
-  // caller binds the resolver-served payto/seller to them (fail-closed) before sizing the fill.
-  const provenSeller = String(offerEv.proposer).toLowerCase(); // MUTATE_LIVE_PROVEN_SELLER
-  const provenPayto = (offerRec?.want?.payto && /^0x[0-9a-f]{40}$/.test(String(offerRec.want.payto).toLowerCase())) ? String(offerRec.want.payto).toLowerCase() : provenSeller; // MUTATE_LIVE_PROVEN_PAYTO
+  // The payment recipients are bound by verifyFillSpv's sums option (the caller's planned per-address legs must
+  // equal the need-map of the replayed proven offer), so this source carries no separate payto or seller field.
   // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer, via the ONE vendored
   // producer (B4a; the proven CREATION height is the input, never a served height - a lying resolver
   // deflating feeBps/height/value/taker cannot under-size a leg, which resolve() would reject AFTER the
@@ -416,8 +412,6 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 
   return {
     myLiveHoldsAtGrant,
-    provenPayto,
-    provenSeller,
     provenTerms,
     tipFloored,
     async tip() { return reportedTip; },

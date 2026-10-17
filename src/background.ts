@@ -438,10 +438,13 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
 // periodic alarm. Alarms wake the service worker even after MV3 has idle-killed
 // it, so a post made right before the popup closed still gets its content
 // registered once the tx mines (~30-60s) — no more hash-only placeholders.
-ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }));
+// A wallet whose init rejected answers every message WALLET_UNAVAILABLE (the gate above); the startup drain and
+// the install hook have nothing to add to that, so their chains end in a logged catch, never an unhandled rejection.
+const initFailed = (what: string) => (e: unknown) => console.warn(`[background] ${what} skipped: the wallet did not initialize:`, e);
+ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ })).catch(initFailed("startup flush"));
 // An install or update builds the SPV source now, so the one-time header store migration runs here and not on
 // the first fill or name verify after the update. The popup's prewarm does the same if it comes first.
-chrome.runtime?.onInstalled?.addListener(() => { void ready.then(() => wallet.prewarmSpv()); });
+chrome.runtime?.onInstalled?.addListener(() => { ready.then(() => wallet.prewarmSpv()).catch(initFailed("install prewarm")); });
 // Idle auto-lock: the alarm wipes the in-memory + session key after AUTO_LOCK_MS without activity.
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });

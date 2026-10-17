@@ -86,12 +86,14 @@ const sites = (text) => [...text.matchAll(/await (sync(?:WithPartialPersist|Alig
 
 ok("prepare() body and its serialized block located", pStart > 0 && serStart > 0 && serEnd > serStart);
 ok("exactly one serializeSync block in the file (prepare's)", (code.match(/\bserializeSync\(/g) || []).length === 1);
-ok("the three prepare-level sync call sites are exactly syncWithPartialPersist(LC), syncAligned(LC) and syncAligned(fresh), in that order",
-  sites(prep).join(" | ") === "syncWithPartialPersist(LC, want, persist) | syncAligned(LC, want) | syncAligned(fresh, want)");
+// The fourth site is the reseed's sync on to the node tip when the work comparison at `want` is undecided.
+const PREP_SITES = "syncWithPartialPersist(LC, want, persist) | syncAligned(LC, want) | syncAligned(fresh, want) | syncAligned(fresh, nodeTip)";
+ok("the four prepare-level sync call sites are exactly syncWithPartialPersist(LC), syncAligned(LC), syncAligned(fresh, want) and syncAligned(fresh, nodeTip), in that order",
+  sites(prep).join(" | ") === PREP_SITES);
 ok("every one of them sits INSIDE the serialized block (a sync outside it would race the shared light client)",
-  sites(block).length === 3 && sites(block).join() === sites(prep).join());
+  sites(block).length === 4 && sites(block).join() === sites(prep).join());
 ok("the file's whole sync call-site set is that, plus syncAligned inside syncWithPartialPersist (reached only from the serialized block): an unwrapped new sync trips this",
-  sites(code).join(" | ") === "syncWithPartialPersist(LC, want, persist) | syncAligned(LC, want) | syncAligned(fresh, want) | syncAligned(lc, next)");
+  sites(code).join(" | ") === `${PREP_SITES} | syncAligned(lc, next)`);
 ok("no direct light-client sync outside syncAligned (only lc.sync inside the helper)",
   (code.match(/\b(?:LC|fresh|lc)\.sync\(/g) || []).join() === "lc.sync(");
 ok("the serializer is constructed before the block that uses it", code.indexOf("const serializeSync = makeSerializer()") > 0 && code.indexOf("const serializeSync = makeSerializer()") < code.indexOf("await serializeSync("));

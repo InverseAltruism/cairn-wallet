@@ -29,6 +29,8 @@ export class CsdClient {
 export class LightClient {
   readonly chain: VerifiedHeader[];
   baseHeight: number;
+  /** The tip's cumulative work (0n for an empty chain); relative to the seed for a checkpoint-seeded client. */
+  readonly chainwork: bigint;
   constructor(opts: { client?: CsdClient; baseUrl?: string; headersBatchProvider?: (from: number, count: number) => Promise<{ header: unknown; hash: string }[]>; checkpoints?: Record<number, string> });
   sync(to: number, from?: number): Promise<VerifiedHeader>;
   /** Seeds `anchorHeight - firstHeight + 1` (LWMA_WINDOW or LWMA_WINDOW + 1) records through seedTrusted against

@@ -561,7 +561,18 @@ const clockRefusal = (detail: string) =>
 // The light client's own reason ("invalid PoW at N") is logged, not shown.
 const headersRefusal = (headersBase: string, verified: number) =>
   new Error(`the wallet could not verify the block headers from ${headersBase} above height ${verified}: they do not pass the chain's checks. Try again later.`);
+const lessWorkRefusal = (headersBase: string, anchor: number, current: number) =>
+  new Error(`the block headers from ${headersBase} above height ${anchor} carry less proof of work than the chain this wallet already verified to height ${current}; the wallet keeps its verified chain. Try again later.`);
 const PIN_MISMATCH = /checkpoint mismatch at (\d+)/;
+
+/**
+ * The reseed rule: a replacement chain is adopted only when its cumulative work exceeds the current chain's, the
+ * max-work rule the vendored `tryReorg` applies to a competing branch. Both clients are seeded from the same anchor
+ * records, so the two totals are comparable. A tie keeps the current chain; the next honest block breaks it.
+ */
+export function reseedAdopts(current: { chainwork: bigint }, fresh: { chainwork: bigint }): boolean {
+  return fresh.chainwork > current.chainwork;
+}
 
 /** The record at `h` of a verified chunk, its hash (the next record's prev, or the chunk's baked top hash) and merkle root. */
 function chunkHeader(records: Uint8Array, spec: ChunkSpec, h: number): { hash: string; merkle: string } {
@@ -852,8 +863,13 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           // A structural break (a reorg orphaned the stored tip): reseed from the anchor chunk and sync the served
           // chain again. The stored suffix is replaced only once the new one has verified up to `want`.
           const fresh = await seedFromAnchor();
-          try { await syncAligned(fresh, want); }
-          catch (e2) {
+          try {
+            await syncAligned(fresh, want);
+            // `want` can sit far below the node tip (a name's record height plus the cushion), where an honest
+            // winning branch may still hold less work than the held branch has at its tip; the comparison is
+            // made at the node tip in that case, so the refusal below is never an artefact of a low `want`.
+            if (!reseedAdopts(LC, fresh) && tipKnown && nodeTip > tipOf(fresh)) await syncAligned(fresh, nodeTip); // MUTATE_RESEED_TO_TIP
+          } catch (e2) {
             const m2 = String((e2 as Error)?.message || e2);
             if (CLOCK_FAULT.test(m2)) throw clockRefusal(m2);
             if (isTransientSyncError(m2)) throw e2;
@@ -864,6 +880,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
             console.warn(`[namespv] served headers above ${tipOf(fresh)} failed verification:`, m2);
             throw headersRefusal(headersBase, tipOf(fresh));
           }
+          // A valid chain with no more work than the one held (a fork decayed to low difficulty with spread
+          // timestamps) is not adopted; the held chain and its stored suffix stay.
+          if (!reseedAdopts(LC, fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC)); // MUTATE_RESEED_WORK
           LC = fresh;
           persistedTip = newest;
         }

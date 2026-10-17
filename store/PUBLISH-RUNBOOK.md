@@ -75,8 +75,8 @@ name makes a stale local file self-evident.
    csd-sdk checkout at `PROVENANCE.json`'s `csdSdkCommit` (`CSD_SDK_DIR=<path>`), the script rebuilds the
    bundle and requires byte-identity. Without a csd-sdk checkout it skips that arm and runs only the cheap
    checks (bundle sha256 equals `PROVENANCE.json`, `@noble` pins agree). The line comparing csd-sdk's HEAD with
-   `csdSdkCommit` is advisory and does not fail the gate. In CI the byte-diff runs in the `vendor-fresh-full` job,
-   which needs the `ECOSYSTEM_RO_TOKEN` secret and skips its steps without it.
+   `csdSdkCommit` is advisory and does not fail the gate. In CI the byte-diff runs in the `vendor-fresh-full` job
+   of both workflows on every run; csd-sdk is public, so the checkout needs no token and the job never skips.
 4. **Green gate:** `npm run typecheck && npm test` (full suite) must pass; CI must be green on the tag.
 5. **Reproducible build.** Run `npm ci && npm run package`. This writes the version-stamped upload file
    `cairn-wallet-store-X.Y.Z.zip` + its `.sha256`, the byte-identical `cairn-wallet-store.zip`, and

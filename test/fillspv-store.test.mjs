@@ -63,14 +63,12 @@ await test("fixture: the offer is in its real block and was signed by the owner 
   assert.ok(OFFER.height >= 29960 && OFFER.height <= 32767, "the offer is in chunk 7, below every anchor");
 });
 
-await test("fclaim lane: the offer block is acquired from chunk 7 and the offer's seller, payto and terms are proven", async () => {
+await test("fclaim lane: the offer block is acquired from chunk 7 and the offer's terms are proven", async () => {
   reset();
   const st = memStore();
   const live = await liveSpvSource(opts(st));
   net.log.length = 0;
   const io = await fillIo(live);
-  assert.equal(io.provenSeller, OFFER.seller);
-  assert.equal(io.provenPayto, OFFER.seller, "the offer names no payto, so the payment goes to its author");
   assert.equal(io.provenTerms.height, OFFER.height);
   assert.equal(io.provenTerms.value, "100000000");
   assert.equal(io.provenTerms.feeBps, feeBpsAt(OFFER.height));
@@ -97,7 +95,7 @@ await test("fclaim lane: a later session proves the offer from the stored chunk 
   reset();
   net.unserved = CHUNK7;
   const io = await fillIo(await liveSpvSource(opts(st)));
-  assert.equal(io.provenSeller, OFFER.seller);
+  assert.equal(io.provenTerms.height, OFFER.height);
   assert.deepEqual(chunk7Pages(), []);
 });
 
@@ -139,7 +137,7 @@ await test("honest path: the same Local node serving the canonical body proves t
   reset();
   const live = await liveSpvSource(opts(memStore(), LOCAL));
   const io = await fillIo(live);
-  assert.equal(io.provenSeller, OFFER.seller);
+  assert.equal(io.provenTerms.height, OFFER.height);
 });
 
 console.log("the wallet's fclaim-lane preflight (fillOffer) on the same sources:");

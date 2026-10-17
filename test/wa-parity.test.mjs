@@ -209,11 +209,10 @@ const idOf = (e) => (e.kind === "propose" ? e.id : e.txid).toLowerCase();
 // provenOfferPayto yields the identical {height, feeBps, value, min} for the same honest offer).
 function makeIo(events, tip, me, fillFclaimHeight) {
   const offerEv = events.find((e) => idOf(e) === OID.toLowerCase());
-  let seller = String(offerEv?.proposer ?? "").toLowerCase(), payto = seller, orec = {};
-  try { orec = JSON.parse(offerEv.uri); if (orec?.want?.payto) payto = String(orec.want.payto).toLowerCase(); } catch {}
+  let orec = {};
+  try { orec = JSON.parse(offerEv.uri); } catch {}
   return {
     myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
-    provenPayto: payto, provenSeller: seller,
     provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined, min: orec?.min !== undefined ? String(orec.min) : undefined, giveTicker: orec?.give?.ticker !== undefined ? String(orec.give.ticker) : undefined, giveAmount: orec?.give?.amount !== undefined ? String(orec.give.amount) : undefined, giveName: orec?.give?.name !== undefined ? String(orec.give.name) : undefined, wantType: typeof orec?.want?.ticker === "string" ? "token" : "csd" },   // B7e: full shape so the flipped give/wantType binds see the honest proven give
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },

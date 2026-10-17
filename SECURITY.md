@@ -56,9 +56,23 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   to those hashes, and every header above it is verified forward (PoW + LWMA difficulty + prev-link).
   Every built-in hash stays a checkpoint for the life of the release: a served chain that contradicts one is
   refused, with no fallback to an older hash, and the wallet says to update or try again later. Above the newest
-  built-in hash the headers are checkpoint-bound and consensus-checked, not compared by cumulative work: a header
-  source that mines a valid fork from above that hash can have it adopted (when the wallet re-syncs after the
-  served chain stops linking to its stored tip, or on a fresh install);
+  built-in hash every header is consensus-checked (PoW, LWMA difficulty, timestamps, prev link). When the served
+  chain stops linking to the wallet's stored chain and the wallet re-syncs from the built-in hash, the replacement
+  is adopted only if it carries more proof of work than the chain the wallet already verified. Two cases are
+  compared with nothing: the first sync of a fresh install (also a wiped store, or a store that cannot open), and
+  any chain that extends the stored tip, at any tip age. There a header source (the front door's operator, or
+  whoever compromises the front door) can serve a fork whose difficulty it lowered with spread timestamps: above
+  the newest built-in hash for about 5 blocks' worth of honest work however long the fork; above a stored tip for
+  about one sixth of the honest work per header (7.7 blocks' worth for 30 headers, 161 for 1,000)
+  (`docs/DESIGN-namespv-scaling.md`, "Work above the newest anchor", has the derivation). What that reaches: a
+  name shown without a later transfer, for the 5 blocks' worth (the forged blocks cannot carry signatures the
+  source does not have, and the second name source's records then fail against them, so the result is flagged,
+  not green); and a reservation fill with a competing hold or cancel hidden from the scan window, where the buyer's
+  own reservation must still appear within 2 epochs of its real height, so the fork must run to about the chain's
+  real height (about one sixth of the headers forged in work: about 160 blocks' worth for a wallet 1,000 blocks
+  behind), covered by the second-resolver check below only when it answers. A second header source would close
+  both for a compromised front door, not for a compromised operator; it is not built in this release (proposed
+  as D-86-10 in the design note);
   it proves each name record's inclusion against the PoW-committed merkle root;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
@@ -149,8 +163,8 @@ and the csd-sdk **version and source commit**. The gate is `scripts/check-vendor
 
 * **Load-bearing:** the rebuild byte-diff. CI checks out csd-sdk at the pinned commit, rebuilds the bundle
   and requires it to be byte-identical to the committed one (the `vendor-fresh-full` job in `ci.yml`, and
-  in `release.yml`, where the release job depends on it). It runs only where the csd-sdk checkout is
-  available: in CI when the repository's read token for csd-sdk is set, locally with a csd-sdk checkout.
+  in `release.yml`, where the release job depends on it). csd-sdk is public, so CI checks it out without a
+  token and the job runs on every push, pull request and tag; locally it needs a csd-sdk checkout.
 * **Always on, cheap:** the committed bundle's sha256 equals `PROVENANCE.json` and the `@noble` pins agree,
   so a bundle edited without a matching `PROVENANCE.json` change fails even without csd-sdk present.
 * **Advisory only:** the check that the csd-sdk checkout's HEAD equals `csdSdkCommit` prints a warning and
@@ -159,7 +173,10 @@ and the csd-sdk **version and source commit**. The gate is `scripts/check-vendor
 Releases are built in CI from tagged source with `npm ci` and a deterministic zip writer, so they are
 **byte-for-byte reproducible**: rebuild from the same source and the SHA-256 matches the published
 release. Every release carries a SLSA build-provenance attestation; the release job fails if it
-cannot be produced.
+cannot be produced. The jobs that run repository code (the install, the tests, the packager, the vendor
+rebuild) can only read; the one job that holds the attestation and release permissions checks nothing out and
+installs nothing: it downloads the zips the build job produced, checks them against their `.sha256` files,
+attests and publishes them (`test/release-workflow-permissions.test.mjs` pins the split).
 
 ## Publishing & updates
 
