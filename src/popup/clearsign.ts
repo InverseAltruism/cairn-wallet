@@ -490,7 +490,7 @@ export const UNCONFIRMED_LABELS = { approve: "Sign anyway", reject: "Cancel" } a
 export function reservationUnconfirmedHtml(u: { fclaimHeight: number; tipHeight: number }): string {
   const n = (v: number) => escapeHtml(Number.isSafeInteger(v) ? v.toLocaleString("en-US") : "?");
   return `<div class="req"><b class="err">⚠ The second source has no record of your reservation.</b><br>`
-    + `clarvis has read the chain to block ${n(u.tipHeight)} and does not know the reservation this wallet found at block ${n(u.fclaimHeight)}. `
+    + `The second source has read the chain to block ${n(u.tipHeight)} and does not know the reservation this wallet found at block ${n(u.fclaimHeight)}. `
     + `If the chain this wallet was shown is false, the reservation may have been rejected and this payment would be lost. `
     + `Check the offer and your reservation on the explorer before you sign.</div>`;
 }

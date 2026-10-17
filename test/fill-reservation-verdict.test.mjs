@@ -113,6 +113,7 @@ console.log("\n2b. an unknown reservation goes to the confirm step (the window's
   const x = await fill(null, unknown);
   assert.equal(x.r?.code, "RESERVATION_UNCONFIRMED", String(x.r?.error));
   assert.equal(x.st.submits.length, 0, "nothing submitted");
+  assert.equal(x.r.error, `the second source has read the chain to block ${x.w.fc.height + 30} and has no record of your reservation (block ${x.w.fc.height}); confirm in the approval window to sign anyway`);
   assert.deepEqual(x.r.unconfirmed, { fclaimTxid: x.w.fc.id.toLowerCase(), fclaimHeight: x.w.fc.height, tipHeight: x.w.fc.height + 30 });
   console.log("  ok: 404 past our height plus the margin returns RESERVATION_UNCONFIRMED and signs nothing");
 }

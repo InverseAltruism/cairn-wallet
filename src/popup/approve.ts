@@ -135,6 +135,9 @@ function paintUnconfirmed(id: string) {
   const labels = u ? UNCONFIRMED_LABELS : APPROVE_LABELS;
   $("btn-approve").textContent = labels.approve;
   $("btn-reject").textContent = labels.reject;
+  // In the confirm step the safe choice (Cancel) carries the filled `primary` style; the order is unchanged.
+  $("btn-approve").className = u ? "" : "primary";
+  $("btn-reject").className = u ? "primary" : "";
   if (u) $("req").insertAdjacentHTML("afterbegin", reservationUnconfirmedHtml(u));
 }
 

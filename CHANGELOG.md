@@ -11,7 +11,8 @@
   with no added wait.
 - When clarvis has read the chain at least 12 blocks past the buyer's proven reservation and has no record of it,
   the wallet signs nothing yet: the approval window shows the request again with a warning ("The second source has
-  no record of your reservation. ...") and two buttons, "Sign anyway" and "Cancel". "Sign anyway" re-runs every
+  no record of your reservation. ...") and two buttons, "Sign anyway" and "Cancel", with Cancel as the filled
+  (primary) button. "Sign anyway" re-runs every
   check and signs once; a reservation clarvis now reports denied still refuses. "Cancel" rejects the request. The
   page is not told until the user chooses. A granted reservation signs on the first approval as before. New code
   `RESERVATION_UNCONFIRMED`, seen only by the approval window.
