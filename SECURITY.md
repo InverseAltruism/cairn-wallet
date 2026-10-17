@@ -76,7 +76,10 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   the fork carries more work. Against it, while the scan runs, the wallet asks the second resolver (clarvis, which
   follows its own node) for its verdict on the buyer's own reservation and refuses with `RESERVATION_DENIED` when
   clarvis replayed it and did not apply it; a cancel or fill older than the scan window is covered by its offer
-  read (`OFFER_SOURCE_CONFLICT`). Both reads are fail-soft and never waited for past the scan, so what remains is
+  read (`OFFER_SOURCE_CONFLICT`). When clarvis has read at least 12 blocks past the reservation and does not know
+  it, the approval window shows the request again with a warning and asks for "Sign anyway" or "Cancel" before
+  anything is signed; the confirmation is bound to that request and reservation and is taken only from the
+  approval window, never from a page. Both reads are fail-soft and never waited for past the scan, so what remains is
   clarvis down or slower than the scan during the attack, or both hosts compromised; both hosts are the
   operator's. A header-hash comparison with clarvis was considered and not built: it compares at a buried height
   and misses every fill at claim depth 3 to 6 (the design note has both);

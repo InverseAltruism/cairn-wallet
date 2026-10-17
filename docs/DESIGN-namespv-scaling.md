@@ -190,8 +190,15 @@ same base and timeout), and counts only if it answered before the scan finished,
 - A 200 for this fclaim with `applied: false`: refuse with `RESERVATION_DENIED`, with clarvis's reason when it gives
   a short printable one. The chain clarvis follows denies the reservation, which is where the payment would burn.
 - A 404 whose `tipHeight` is at least the buyer's proven fclaim height plus 12: clarvis has scanned past the
-  reservation and does not know it. The verdict is computed and does not block. The fill lane has no caution step
-  after the scan in which to show it, so it proceeds like no evidence (an open question in Plan 86).
+  reservation and does not know it. The wallet signs nothing yet and returns `RESERVATION_UNCONFIRMED` with both
+  heights to the approval window, which keeps the request queued and shows it again with a warning and two buttons,
+  "Sign anyway" and "Cancel" (`test/fill-reservation-confirm.test.mjs` through the worker channel,
+  `test/approve-unconfirmed-dom.test.mjs` for the window). "Sign anyway" re-sends the approval with an
+  acknowledgement bound to the request id and the fclaim txid; the worker re-runs the whole preflight (the scan and
+  both clarvis reads), so a reservation clarvis now reports denied still refuses, and an "unknown" with a matching
+  acknowledgement, a granted one or no evidence signs once. The acknowledgement is taken only from the approval
+  window's `resolve` call on the extension-page channel; one in the request's params, or for another request or
+  fclaim, is ignored. "Cancel" rejects the request; closing the window settles it `APPROVAL_CLOSED`.
 - Anything else (applied, a 404 below that height, a wrong kind or txid, a malformed body, an error, a timeout, no
   answer before the scan ends): no evidence, the fill proceeds.
 
@@ -199,6 +206,14 @@ The margin of 12: the cairnx service publishes `tipHeight` and its events from o
 at or above a height means it has no record there; with its inclusion check on it applies only events its
 confirmation depth (12 by default) below the verified tip, and 12 also covers a shallow reorg that re-mines the
 fclaim a few blocks higher.
+
+Rule A, the confirm step: clarvis's 404 and `tipHeight` now decide whether a fill needs a second click
+(`offerxcheck.ts` `reservationRecordVerdict`, `wallet.ts` `fclaimLanePreflight`); whether it signs after that click is
+decided by the user's acknowledgement, bound to the request and the fclaim by the worker (`background.ts`
+`reservationAckFor`), and every other check runs again unchanged. Rule B, the confirm step: the warning can be
+triggered by a hostile or broken clarvis (a false 404 with a high `tipHeight`), against any buyer on the fclaim lane;
+at most it makes that buyer click twice or cancel. It cannot sign, refuse a fill outright, or change what is signed.
+A page cannot trigger it or answer it.
 
 Rule B: an honest lagging clarvis answers 404 below the fclaim's height and the fill proceeds; an honest synced one
 answers `applied: true`. A hostile clarvis could refuse an honest fill, as it already can through the offer check,

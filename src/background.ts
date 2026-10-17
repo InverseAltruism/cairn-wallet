@@ -21,7 +21,8 @@ if ((globalThis as { __CAIRN_TEST__?: unknown }).__CAIRN_TEST__) (globalThis as 
 const ready = wallet.init();
 
 // pending dApp approvals: id -> {origin, method, params, resolve}
-const pending = new Map<string, { origin: string; method: string; params: any; resolve: (v: any) => void }>();
+type Pending = { origin: string; method: string; params: any; resolve: (v: any) => void };
+const pending = new Map<string, Pending>();
 let reqSeq = 0;
 
 // Per-origin "connected sites" (MetaMask model): once the user approves a `connect`
@@ -151,7 +152,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
-    case "resolve": return resolvePending(args[0], args[1], args[2], args[3]); // (id, approve, displayedSigner?, displayedTokenQuote?)
+    case "resolve": return resolvePending(args[0], args[1], args[2], args[3], args[4]); // (id, approve, displayedSigner?, displayedTokenQuote?, reservationAck?)
     case "history": return wallet.history();
     case "sealClaim": return wallet.sealClaim(args[0]);
     case "revealClaim": return wallet.revealClaim(args[0]);
@@ -173,7 +174,25 @@ function pageResult(r: any): any {
   delete out.spentTxids; delete out.inputs;
   return out;
 }
-async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }): Promise<{ done: boolean; ok?: boolean; error?: string; code?: string; txid?: string }> {
+// The approval window's "Sign anyway" acknowledgement after RESERVATION_UNCONFIRMED: honoured only for this
+// request id, and passed on as the fclaim txid it names (the wallet signs only if that is the fill's fclaim).
+// It arrives only as a `resolve` argument on the popup channel; a dApp's params do not carry it (see fillOffer;
+// test/fill-reservation-confirm.test.mjs section 3).
+function reservationAckFor(id: string, ack: unknown): string | undefined {
+  const a = ack as { requestId?: unknown; fclaimTxid?: unknown } | null;
+  if (!a || typeof a !== "object" || a.requestId !== id || typeof a.fclaimTxid !== "string") return undefined;
+  return /^0x[0-9a-fA-F]{64}$/.test(a.fclaimTxid) ? a.fclaimTxid.toLowerCase() : undefined;
+}
+// Put a request back at the head of the queue, where it was when the window approved it.
+function requeueFront(id: string, p: Pending): void {
+  const rest = [...pending];
+  pending.clear();
+  pending.set(id, p);
+  for (const [k, v] of rest) pending.set(k, v);
+  try { chrome.action?.setBadgeText?.({ text: String(pending.size) }); } catch { /* no-op */ }
+}
+type ResolveOutcome = { done: boolean; ok?: boolean; error?: string; code?: string; txid?: string; unconfirmed?: unknown };
+async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }, ack?: unknown): Promise<ResolveOutcome> {
   const p = pending.get(id);
   if (!p) return { done: false };
   pending.delete(id);
@@ -250,7 +269,16 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // Atomic fill (Attest + payment in one tx — CairnX DvP). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
     // and change only ever returns to the wallet's own address.
-    else if (p.method === "fillOffer") result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote });
+    else if (p.method === "fillOffer") {
+      // reservationAck is set last so a dApp's params cannot supply it (test/fill-reservation-confirm.test.mjs, 3).
+      result = await wallet.fillOffer({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote, reservationAck: reservationAckFor(id, ack) }); // MUTATE_ACK_CHANNEL
+      // Nothing was signed: the request goes back to the window for its confirm step, unless the window has closed.
+      if (result?.code === "RESERVATION_UNCONFIRMED") {
+        if (approveWinId == null) return finish({ ok: false, code: "APPROVAL_CLOSED", error: "rejected (approval window closed)" });
+        requeueFront(id, p);
+        return { done: false, ok: false, code: result.code, error: result.error, unconfirmed: result.unconfirmed };
+      }
+    }
     else throw new Error("unsupported dApp method: " + p.method);
     return finish({ ok: true, result: pageResult(result) });
   } catch (e: any) { return finish({ ok: false, code: thrownCode(e), error: e?.message ?? String(e) }); }

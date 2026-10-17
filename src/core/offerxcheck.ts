@@ -80,6 +80,9 @@ export const RECORD_LAG_MARGIN = 12;
 // A note is shown to the user, so only short printable ASCII is kept (every vendored fclaim denial reason is).
 const NOTE_RE = /^[\x20-\x7e]{1,160}$/;
 
+/** What the approval window shows for an "unknown" verdict, and what its acknowledgement is bound to. */
+export interface ReservationUnconfirmed { fclaimTxid: string; fclaimHeight: number; tipHeight: number }
+
 export type ReservationVerdict = { kind: "denied"; note: string | null } | { kind: "unknown"; tipHeight: number } | null;
 
 /**

@@ -7,7 +7,14 @@
   When clarvis reports that it replayed the reservation and did not apply it, the fill refuses with the new code
   `RESERVATION_DENIED` and clarvis's reason. This covers a header source that hides a competing reservation placed
   just before the buyer's, whose hold ends before the buyer's and so passes the offer check. An applied
-  reservation, a 404, a timeout, an error or an unusable answer proceed as before, with no added wait.
+  reservation, a 404 below the reservation's height, a timeout, an error or an unusable answer proceed as before,
+  with no added wait.
+- When clarvis has read the chain at least 12 blocks past the buyer's proven reservation and has no record of it,
+  the wallet signs nothing yet: the approval window shows the request again with a warning ("The second source has
+  no record of your reservation. ...") and two buttons, "Sign anyway" and "Cancel". "Sign anyway" re-runs every
+  check and signs once; a reservation clarvis now reports denied still refuses. "Cancel" rejects the request. The
+  page is not told until the user chooses. A granted reservation signs on the first approval as before. New code
+  `RESERVATION_UNCONFIRMED`, seen only by the approval window.
 - SECURITY.md and the header-store design note correct the cost of the forged-header attack on reservation fills:
   the forged chain needs to start only just below the hidden reservation, so for a small fill it is a few honest
   blocks' worth of work and succeeds on every attempt once the front door is controlled (the earlier text said it

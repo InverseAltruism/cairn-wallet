@@ -5,8 +5,9 @@
 // the fclaim (GET /cairnx/record/{fclaimTxid}) shows the denial.
 //
 //   1. The pure verdict over every branch.
-//   2. Through the real preflight: a denied reservation refuses and submits nothing; the honest granted one, a
-//      lagging clarvis, and an unknown-past-our-height 404 proceed with the honest bytes.
+//   2. Through the real preflight: a denied reservation refuses and submits nothing; the honest granted one and a
+//      lagging clarvis proceed with the honest bytes. 2b: a 404 past our height plus the margin signs nothing and
+//      returns RESERVATION_UNCONFIRMED for the approval window's confirm step.
 //   3. Latency: a slow record read does not lengthen the fill past the scan.
 //
 // RED-FIRST: replace `rv?.kind === "denied"` in wallet.ts fclaimLanePreflight (MUTATE_RESERVATION_VERDICT) with
@@ -92,7 +93,6 @@ console.log("\n2. through the real preflight");
   const cases = [
     ["a lagging clarvis (404 below our height)", (w) => (i, u) => (u.includes("/record/") ? recordAnswer(w, w.fc.height - 40) : body(w.truth)())],
     ["a lagging clarvis (404 one block inside the margin)", (w) => (i, u) => (u.includes("/record/") ? recordAnswer(w, w.fc.height + 11) : body(w.truth)())],
-    ["an unknown reservation (404 past our height plus the margin), no caution step to show it", (w) => (i, u) => (u.includes("/record/") ? recordAnswer({ ...w, truthLog: [] }, w.fc.height + 30) : body(w.truth)())],
     ["clarvis 404 everywhere", always(notFound)],
     ["clarvis network error", always(netErr)],
     ["clarvis garbage body", always(garbage)],
@@ -105,6 +105,16 @@ console.log("\n2. through the real preflight");
     assert.equal(digest(x.st.submits[0]), honestDigest, `${label}: same bytes as the honest fill`);
     console.log(`  ok: ${label} proceeds with the honest bytes`);
   }
+}
+
+console.log("\n2b. an unknown reservation goes to the confirm step (the window's side: test/fill-reservation-confirm.test.mjs)");
+{
+  const unknown = (w) => (i, u) => (u.includes("/record/") ? recordAnswer({ ...w, truthLog: [] }, w.fc.height + 30) : body(w.truth)());
+  const x = await fill(null, unknown);
+  assert.equal(x.r?.code, "RESERVATION_UNCONFIRMED", String(x.r?.error));
+  assert.equal(x.st.submits.length, 0, "nothing submitted");
+  assert.deepEqual(x.r.unconfirmed, { fclaimTxid: x.w.fc.id.toLowerCase(), fclaimHeight: x.w.fc.height, tipHeight: x.w.fc.height + 30 });
+  console.log("  ok: 404 past our height plus the margin returns RESERVATION_UNCONFIRMED and signs nothing");
 }
 
 console.log("\n3. latency: the record read never lengthens the fill past the scan");

@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, type NameFetchResult, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, APPROVE_LABELS, UNCONFIRMED_LABELS, type NameFetchResult, type RecipientKind } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -23,7 +23,8 @@ let current: any = null;
 // 1.2 s poll (background "pending" maps new objects each call), so state stored on it was lost after one
 // tick: in 0.2.70 the RT-W2 displayed quote therefore almost never reached the signer. Keep it here.
 // `balShort`: the balance read showed the debit exceeds the spendable balance (a pending spend holds coins).
-const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean }>();
+// `unconfirmed`: the worker returned RESERVATION_UNCONFIRMED for this request; the window shows the confirm step.
+const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean; unconfirmed?: { fclaimTxid: string; fclaimHeight: number; tipHeight: number } }>();
 const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
@@ -111,6 +112,7 @@ async function render() {
       + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
       + connectNote
       + `<div class="req dim" id="cost">${costLine(current)}</div>`;
+    paintUnconfirmed(current.id);
     msg(""); // clear any stale "approved"/"rejected" from a previous request
     holdFailure = false;
     warnPainted = fillSendWarning(current);
@@ -124,6 +126,16 @@ async function render() {
     renderedId = null;   // AW-1: a describe()/paint throw must NOT latch renderedId, or `if (renderedId === current.id) return` (above) leaves the request permanently unpaintable AND (disableButtons ran, armButtons did not) unapprovable/unrejectable. Reset so the next tick retries.
     throw e;
   }
+}
+
+// The reservation confirm step: after RESERVATION_UNCONFIRMED the request is painted again with the warning, and
+// Approve/Reject become "Sign anyway"/"Cancel". The warning goes first, above the fold. Part of the rebuild, so an unlock repaint keeps it.
+function paintUnconfirmed(id: string) {
+  const u = rs(id).unconfirmed;
+  const labels = u ? UNCONFIRMED_LABELS : APPROVE_LABELS;
+  $("btn-approve").textContent = labels.approve;
+  $("btn-reject").textContent = labels.reject;
+  if (u) $("req").insertAdjacentHTML("afterbegin", reservationUnconfirmedHtml(u));
 }
 
 // ── nfinalize finalize-window gate (Plan 63 carry-over, shipped with 0.2.54) ──────────────────
@@ -482,9 +494,14 @@ async function resolve(approve: boolean) {
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
   let r: any;
   inFlight++;
-  try { r = await call("resolve", id, true, signer, displayedQuote); } catch (e: any) { r = { ok: false, error: e?.message }; }
+  const u = rs(id).unconfirmed;
+  const ack = u ? { requestId: id, fclaimTxid: u.fclaimTxid } : undefined;
+  try { r = await call("resolve", id, true, signer, displayedQuote, ...(ack ? [ack] : [])); } catch (e: any) { r = { ok: false, error: e?.message }; }
   finally { inFlight--; }
-  if (r && r.ok === false) { msg("failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdFailure = true; }
+  if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
+    rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
+    msg("");
+  } else if (r && r.ok === false) { msg("failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdFailure = true; }
   else if (r && r.txid) msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
   else msg("approved", "ok");
   render();
