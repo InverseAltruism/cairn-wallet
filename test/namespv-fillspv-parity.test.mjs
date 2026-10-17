@@ -162,11 +162,11 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
   const drive = (mod) => (mod ?? { liveFillSpvSource }).liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(TIP2), hints: { offerId: loid, fclaimTxid: fid, me: MEL, offerHeight: H0 + 2 } });
   const base = await drive();
   const EFEE = feeBpsAt(H0 + 2);
-  check(`MPB-1 baseline: liveFillSpvSource pins provenSeller/provenPayto/provenTerms.feeBps (seller ${base.provenSeller === SL}, payto ${base.provenPayto === PAYTO2})`,
-    base.provenSeller === SL && base.provenPayto === PAYTO2 && base.provenTerms.feeBps === EFEE);
+  // The source carries no payto or seller field since 0.2.99: the fclaim lane binds the payment recipients through
+  // verifyFillSpv's sums option (test/fill-fclaim-preflight.test.mjs F2 and MUTATE_FCLAIM_SUMS_BIND).
+  check(`MPB-1 baseline: liveFillSpvSource pins provenTerms.feeBps (${base.provenTerms.feeBps === EFEE}) and carries no recipient fields`,
+    base.provenTerms.feeBps === EFEE && !("provenSeller" in base) && !("provenPayto" in base));
   const cases = [
-    ["MUTATE_LIVE_PROVEN_SELLER", "provenSeller", SL, (r) => r?.provenSeller],
-    ["MUTATE_LIVE_PROVEN_PAYTO", "provenPayto", PAYTO2, (r) => r?.provenPayto],
     ["MUTATE_LIVE_PROVEN_TERMS", "provenTerms.feeBps", EFEE, (r) => r?.provenTerms?.feeBps],
   ];
   for (const [marker, field, expect, get] of cases) {

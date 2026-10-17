@@ -87,7 +87,7 @@ function world(me, withheldKind) {
   const rec = parseRecord(offerEv.uri, offerEv.payloadHash);
   // The scan sees only in-window events: the withheld ones sit ~1,400 blocks below tip - (MAX_SCAN + 89).
   const io = (scanMs = 0) => ({
-    myLiveHoldsAtGrant: 0, provenPayto: S, provenSeller: S, provenTerms: provenOfferTerms(rec, offerEv.height),
+    myLiveHoldsAtGrant: 0, provenTerms: provenOfferTerms(rec, offerEv.height),
     async tip() { return tip; },
     async offerEventIds() { if (scanMs) await new Promise((r) => setTimeout(r, scanMs)); return [...pool.keys()]; },
     async provenEvent(x) { return pool.get(String(x).toLowerCase()) ?? null; },

@@ -63,16 +63,14 @@ const idOf = (e) => (e.kind === "propose" ? e.id : e.txid).toLowerCase();
 // equality (the use-site provenance pin below) still holds against the live source's minted terms.
 const termsFor = (o) => ({ height: Number(o.height), feeBps: feeBpsAt(Number(o.height)), value: o.want?.value !== undefined ? String(o.want.value) : undefined, taker: o.taker !== undefined ? String(o.taker).toLowerCase() : undefined, bid: o.bid !== undefined ? String(o.bid).toLowerCase() : undefined, min: o.min !== undefined ? String(o.min) : undefined, giveTicker: o.give?.ticker !== undefined ? String(o.give.ticker) : undefined, giveAmount: o.give?.amount !== undefined ? String(o.give.amount) : undefined, giveName: o.give?.name !== undefined ? String(o.give.name) : undefined, wantType: typeof o.want?.ticker === "string" ? "token" : "csd" });
 function makeIo(events, tip, me, fillFclaimHeight) {
-  // F2: the proven payment recipients + fee/rebate terms, derived from the PROVEN offer event (never the
-  // resolver-served offer), exactly as the live source does. The synthetic offer (baseFor) has proposer S,
-  // want.payto S, height H0+2, no taker/bid.
+  // F2: the fee/rebate terms, derived from the PROVEN offer event (never the resolver-served offer), exactly as the
+  // live source does. The synthetic offer (baseFor) has proposer S, want.payto S, height H0+2, no taker/bid; the
+  // payment recipients are bound by verifyFillSpv's sums option, not by a field of the io.
   const offerEv = events.find((e) => idOf(e) === OID.toLowerCase());
-  let seller = String(offerEv?.proposer ?? "").toLowerCase(), payto = seller, orec = {};
-  try { orec = JSON.parse(offerEv.uri); if (orec?.want?.payto) payto = String(orec.want.payto).toLowerCase(); } catch {}
+  let orec = {};
+  try { orec = JSON.parse(offerEv.uri); } catch {}
   return {
     myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
-    provenPayto: payto,
-    provenSeller: seller,
     provenTerms: termsFor({ ...orec, height: Number(offerEv?.height) }),   // B7e: full shape (give legs + wantType), single-sourced through termsFor so the flipped give/wantType binds see the honest proven give
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },
