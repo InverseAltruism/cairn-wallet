@@ -75,4 +75,37 @@ console.log("runtime without onInstalled:");
   t.check("its message gate answers a popup status request", r?.ok === true && r.result?.hasVault === false);
 }
 
+// ── a wallet whose init rejects: the install hook and the startup flush end in a logged catch ──
+// RED-FIRST: drop the `.catch(initFailed(...))` on either chain in src/background.ts and an unhandled rejection
+// is recorded here (the worker would log an error; the message gate already answers WALLET_UNAVAILABLE).
+console.log("wallet init rejects:");
+{
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(String(e?.message ?? e));
+  process.on("unhandledRejection", onUnhandled);
+  const realInit = Wallet.prototype.init;
+  Wallet.prototype.init = async function () { throw new Error("storage unavailable (test)"); };
+  const realWarn = console.warn;
+  const warned = [];
+  console.warn = (...a) => { warned.push(a.map(String).join(" ")); };
+  try {
+    const listeners = [];
+    const { chrome } = mockChrome({ onInstalled: { addListener: (fn) => listeners.push(fn) }, holdReads: { on: false } });
+    globalThis.chrome = chrome;
+    await import("../src/background.ts?init-rejects");
+    for (let i = 0; i < 20; i++) await tick();
+    t.check("loading the background with a rejecting init raises no unhandled rejection (the startup flush chain is caught)", unhandled.length === 0);
+    listeners[0]?.({ reason: "install" });
+    for (let i = 0; i < 20; i++) await tick();
+    t.check("the install hook raises no unhandled rejection and does not prewarm", unhandled.length === 0 && prewarms === 1);
+    t.check("both skips are logged with the reason", warned.filter((w) => /did not initialize/.test(w)).length === 2);
+    const r = await popup(chrome, "status");
+    t.check("honest path for a failed init: the message gate answers WALLET_UNAVAILABLE", r?.ok === false && r?.code === "WALLET_UNAVAILABLE");
+  } finally {
+    Wallet.prototype.init = realInit;
+    console.warn = realWarn;
+    process.off("unhandledRejection", onUnhandled);
+  }
+}
+
 t.done();

@@ -253,8 +253,11 @@ let honestBody = null, honestWallet = null;
 }
 
 // F2. a lying resolver swaps the served want.payto (or seller) to an attacker while the PROVEN offer still pays
-// the real seller S. verifyFillSpv proves DELIVERY but NOT the payment recipients; the F2 bind must REFUSE and
-// nothing may submit.
+// the real seller S. The vendored verifyFillSpv sums bind (planned per-address legs must equal the proven offer's
+// need-map exactly) is the one rejecter on this lane: the per-address distribution changes, so it refuses with the
+// "proven fill progress" reason and nothing submits. The separate served-vs-proven recipient compare that used to
+// follow it was removed in 0.2.99 as a second copy of this check; the MUTATE_FCLAIM_SUMS_BIND case below proves
+// the sums bind is load-bearing for both swaps.
 {
   const ATT = "0x" + "a7".repeat(20);
   const attackOffer = (extra = {}) => ({ ...servedOffer(fcH, H0 + 3), ...extra });
@@ -267,11 +270,7 @@ let honestBody = null, honestWallet = null;
     w.fillSpvIoForTest = (oid, fc, me) => io(me);
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
     const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
-    // B7e: with the sums seam flipped ON, a payto swap changes the per-address distribution, so verifyFillSpv's
-    // sums bind catches it FIRST (proven fill progress) before the downstream payto bind (payment recipient) even
-    // runs. Either layer is a correct FILL_UNSAFE refusal with nothing submitted; the dedicated payto bind stays
-    // load-bearing and is still proven as the SOLE rejecter by the legacy-lane F2 tests below (no sums seam there).
-    check(`F2: a swapped served want.payto is REFUSED (proven author S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient|proven fill progress/.test(r?.error ?? ""));
+    check(`F2: a swapped served want.payto is REFUSED by the sums bind (proven author S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /proven fill progress/.test(r?.error ?? ""));
     check("…and nothing was submitted (the payment did not go to the attacker)", s.submits.length === 0);
   }
   // (b) swapped seller -> the REBATE leg mis-sizes so resolve() would reject the fill (burn)
@@ -282,8 +281,18 @@ let honestBody = null, honestWallet = null;
     w.fillSpvIoForTest = (oid, fc, me) => io(me);
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
     const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
-    check(`F2: a swapped served seller (rebate leg) is REFUSED (proven seller S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient|proven fill progress/.test(r?.error ?? ""));
+    check(`F2: a swapped served seller (rebate leg) is REFUSED by the sums bind (proven seller S != attacker) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /proven fill progress/.test(r?.error ?? ""));
     check("…and nothing was submitted", s.submits.length === 0);
+  }
+  // Honest path on the same call shape: the served offer equals the proven one, so the sums bind passes and the
+  // fill signs and submits (the outputs pay S, the treasury fee and the rebate exactly as the proven need-map sizes them).
+  {
+    const { w } = await freshWallet("pw-f2-honest");
+    const served = attackOffer();
+    w.fillSpvIoForTest = (oid, fc, me) => io(me);
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+    const r = await w.fillOffer({ proposalId: fcH, outputs });
+    check(`F2 honest path: the served offer that matches the proven one signs and submits (${r?.ok ? r.txid : r?.error})`, r?.ok === true && s.submits.length === 1);
   }
 }
 
@@ -729,6 +738,24 @@ const mut = await withGuardRemoved("MUTATE_FCLAIM_GUARD", async (mod) => {
   return { r, submits: s.submits.length };
 });
 check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves the guard is the sole rejecter)`, mut.r?.ok === true && mut.submits === 1);
+
+// The sums bind is the one rejecter of a served recipient swap on this lane: with the `sums` option removed from
+// the verifyFillSpv call, the F2 payto swap above passes the wallet's own `>=` need-map (sized over the SERVED
+// offer, so it pays the attacker) and SUBMITS. Baseline REFUSE is the F2 (a) case above.
+{
+  const ATT = "0x" + "a7".repeat(20);
+  const mutS = await withGuardRemoved("MUTATE_FCLAIM_SUMS_BIND", async (mod) => {
+    const wm = new mod.Wallet(memoryStore());
+    await wm.create("pw-sums-mut");
+    const served = { ...servedOffer(fcH, H0 + 3), want: { value: String(V), payto: ATT } };
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    wm.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+    const r = await wm.fillOffer({ proposalId: fcH, outputs: outs });
+    return { r, submits: s.submits.length, paysAttacker: outs.some((o) => o.to === ATT) };
+  });
+  check("MUTATION[MUTATE_FCLAIM_SUMS_BIND removed]: a swapped served want.payto fill now SUBMITS to the attacker (the sums bind is the sole rejecter)", mutS.paysAttacker && mutS.r?.ok === true && mutS.submits === 1);
+}
 
 // TSA-2 (Plan 75 P75-7): the LEGACY-lane payto guard (MUTATE_LEGACY_PAYTO_GUARD, now on its own load-bearing
 // code line) is the SOLE rejecter of a served want.payto redirect on the SPV-less legacy/dApp CSD lane. The

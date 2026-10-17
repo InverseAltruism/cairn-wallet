@@ -951,7 +951,7 @@ export class Wallet {
       return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
     // Build the fail-closed SPV seam (PoW-verified tip + merkle-proven offer/fclaim/hold events + the computed
     // cross-offer hold count). Any unverifiable read throws → refuse retryably (never proceed on an unproven grant).
-    let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms };
+    let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms };
     try {
       io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
     } catch (e) {
@@ -980,7 +980,12 @@ export class Wallet {
     // the merged rebate) matches the proven need-map exactly and never false-refuses that real honest shape.
     let verdict: FillVerdict;
     try {
-      verdict = await verifyFillSpv(offerId, fclaimTxid, me, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant as number, pay, sums: Object.fromEntries(sums) });
+      verdict = await verifyFillSpv(offerId, fclaimTxid, me, io, {
+        myLiveHoldsAtGrant: io.myLiveHoldsAtGrant as number, pay,
+        // The per-address sums bind: planned payment legs must equal the proven offer's need-map exactly, so a
+        // served payto, seller, fee or remainder that differs from the chain refuses here (FILL_UNSAFE below).
+        sums: Object.fromEntries(sums), // MUTATE_FCLAIM_SUMS_BIND
+      });
     } catch {
       return { ok: false, error: "couldn't verify this reservation against the chain yet — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     }
@@ -991,18 +996,6 @@ export class Wallet {
     // undefined/falsy under the fillSpvIoForTest synthetic io, so every existing denial keeps FILL_UNSAFE.
     // Only a reason the tip decides is remapped; a permanent denial keeps FILL_UNSAFE under a floored tip.
     if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored && tipDependentFillReason(verdict.reason) ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
-    // F2: bind the PAYMENT recipients to the MERKLE-PROVEN offer author. verifyFillSpv proves DELIVERY (the give)
-    // but not payment: requiredFillOutputs sizes the seller-payment leg to the resolver-served offer.want.payto
-    // and the rebate leg to the resolver-served offer.seller. A lying read-path swaps want.payto so the buyer
-    // pays an attacker while resolve() rejects the zero-recipient fill (theft), or swaps offer.seller so the
-    // rebate mis-sizes and resolve() rejects the fill (burn). The SPV source already re-derived both from the
-    // proven offer event. Fail CLOSED-retryable if unprovable, FILL_UNSAFE on a proven mismatch. An honest
-    // offer's payto/seller default to the author, so no honest fill is ever declined.
-    const provenPayto = String((io as { provenPayto?: string }).provenPayto ?? "").toLowerCase();
-    const provenSeller = String((io as { provenSeller?: string }).provenSeller ?? "").toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(provenPayto) || !/^0x[0-9a-f]{40}$/.test(provenSeller))
-      return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-    if (payto !== provenPayto || String(offer?.seller ?? "").toLowerCase() !== provenSeller) return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_PAYTO_GUARD
     // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer so a deflated feeBps/height/
     // value/taker cannot under-size a leg (which resolve() would reject AFTER payment = pay-without-delivery burn).
     const terms = (io as { provenTerms?: MintedProvenOfferTerms }).provenTerms;
@@ -1031,8 +1024,8 @@ export class Wallet {
   // Test seam (fill-SPV fund boundary): production leaves this undefined and builds the LIVE PoW-verified
   // FillSpvIo; tests inject a synthetic (PoW/merkle pre-satisfied) io so the vendored verifyFillSpv boundary
   // is exercised through the real preflight without a chain. The io carries the computed cap over-count.
-  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }>;
-  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }> {
+  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }>;
+  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }> {
     if (this.fillSpvIoForTest) return await this.fillSpvIoForTest(offerId, fclaimTxid, me);
     // BP4/N11: reuse the wallet's ONE PoW light client (its restored + synced header chain) instead of building
     // a fresh one per fill attempt (each fresh build re-pays the O(chain) snapshot restore). Same rpc/api/cache/

@@ -15,6 +15,15 @@
   message naming the block and the RPC, instead of "try again in a moment"; an offer-id fill still refuses as
   `VERIFY_UNAVAILABLE`, and a name shows as not chain-verified. Headers from the Cairn API that keep
   failing the chain's checks are reported in plain words instead of the light client's internal message.
+- When the served headers stop linking to the wallet's verified chain and the wallet re-syncs from its newest
+  built-in block hash, the replacement chain is adopted only if it carries more proof of work than the chain the
+  wallet already verified; otherwise the wallet keeps its chain and says so ("the block headers from <source> above
+  height N carry less proof of work than the chain this wallet already verified to height M; the wallet keeps its
+  verified chain. Try again later."). An honest chain that outgrew the stored one always has more work.
+- Reservation fills: a served payment recipient or seller that differs from the offer's on-chain record is refused
+  by the payment check against the proven offer ("payment does not match the proven fill progress"); the separate
+  recipient check that used to give the reason "the seller payment recipient does not match the offer's on-chain
+  author" was a second copy of the same check and is removed. Nothing that was refused before is accepted now.
 - Activity markers come from chain state, not a clock: a send that may not have reached the chain reads "sent, not
   yet included" until it is seen in a block; after 10 blocks it reads "still not included after 10 blocks; check
   the explorer before sending again", and a send whose coins another mined transaction spent reads "not included:

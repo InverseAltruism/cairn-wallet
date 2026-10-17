@@ -35,11 +35,14 @@ The rule the code keeps:
   (prev link, time rules including the 2-hour future drift, LWMA bits, PoW). The stored suffix is restored through
   the same `ingest`, so a record stored in the profile is checked like a served one.
 - Above the newest anchor the guarantee is checkpoint-bound, consensus-checked headers: each header must pass the
-  consensus checks against its parent, but the light client does not compare cumulative work with any other chain.
-  A reseed (after a sync that no longer links to the stored tip) does not compare chainwork with the chain it
-  replaces, and a fresh install has no chain to compare with. A header source that can mine a valid fork from above
-  the newest anchor can therefore have that fork adopted; the cost is mining the fork's headers at the difficulty the
-  LWMA rule and the 2-hour future-drift bound allow.
+  consensus checks against its parent. A reseed (after a sync that no longer links to the stored tip) replaces the
+  held chain only when the fresh client's cumulative work exceeds the held one's (`reseedAdopts`, the vendored
+  `tryReorg` max-work rule; both clients are seeded from the same anchor records, so the totals are comparable);
+  otherwise the refusal is "the block headers from <headers source> above height N carry less proof of work than
+  the chain this wallet already verified to height M; the wallet keeps its verified chain. Try again later." and
+  the held chain and its stored suffix stay. A fresh install has no chain to compare with, and a chain that extends
+  the stored tip is never compared with anything: what a header source can still do there, and what a work floor
+  would and would not change, is the section "Work above the newest anchor" below.
 - The light client gets every table entry, floor included, as a checkpoint (`SPV_CHECKPOINTS`), for the life of
   the release. No code path removes, skips or overrides an entry. The `anchors` option of `liveSpvSource` takes only
   a prefix of the release table (tests and the acceptance harness); the light client still gets the full map
@@ -69,10 +72,26 @@ that fails its walk on load is deleted and refetched; a fetched chunk that fails
 copy naming the chunk. Store writes are detached from the proof path and merged; a write failure is warned.
 
 A structural sync failure (an ordinary reorg in the suffix) reseeds from the anchor chunk in memory and syncs
-again; the stored suffix is replaced only after the new one verifies. If the served headers still fail above the
-anchor, the refusal is "the wallet could not verify the block headers from <headers source> above height N: they
-do not pass the chain's checks. Try again later."; the light client's own reason is logged. A clock more than 2 hours
-behind a header stops with a reason that names the clock, and the store is kept.
+again; the stored suffix is replaced only after the new one verifies to the sync target and carries more cumulative
+work than the held chain (`reseedAdopts`). If the served headers still fail above the anchor, the refusal is "the
+wallet could not verify the block headers from <headers source> above height N: they do not pass the chain's checks.
+Try again later."; the light client's own reason is logged. A clock more than 2 hours behind a header stops with a
+reason that names the clock, and the store is kept. The reseed costs the suffix's pages again (one request per 512
+headers above the anchor) and the fresh client's verification of them, and nothing below the anchor; the held chain
+keeps serving proofs while it runs. The honest cases it covers (test/namespv-store-pins.test.mjs, case 2): a page
+that breaks once, a stored suffix the served chain has outgrown (the served chain has more work and is adopted), a
+corrupt or short stored suffix (the restore stops below the bad record and the ordinary sync continues from there;
+no reseed is needed). A deep reorg below the stored suffix is the same path with the honest chain carrying more
+work; a lower-work replacement is refused (test/namespv-reseed-work.test.mjs states what that test can and cannot
+show offline).
+
+The `anchors` job (`release.yml`) walks the chain from the floor's page to the newest entry on every tag: one
+`/api/headers` page per 512 heights plus one RPC check per entry, paced at 550 ms, under a 15-minute job timeout.
+At tip 121,667 that is 197 requests (2.8 minutes at the 0.85 s per request measured on 2026-10-13); the count
+grows by one page per 512 blocks, so the timeout is reached near tip 513,000 at that rate (about 544 days after
+2026-10-17 at 720 blocks a day) and near tip 776,000 on pacing alone. Before then either the timeout is raised (a
+public repository's minutes are free) or the check walks from the previous release's newest entry, which the
+previous release's run already derived from the floor.
 
 ## Callers and their tests
 
@@ -84,6 +103,7 @@ behind a header stops with a reason that names the clock, and the store is kept.
 | `provenOfferPayto` | `test/fillspv-store.test.mjs` |
 | the confirm-time skip (`hashAt`) | `test/namespv-hints-floor.test.mjs` |
 | restore, pins, reorg, clock, corrupt chunks, concurrency, migration | `test/namespv-store-pins.test.mjs`, `test/namespv-store-migrate*.test.mjs`, `test/headerstore*.test.mjs` |
+| the reseed's work rule (`reseedAdopts`) | `test/namespv-reseed-work.test.mjs` (the rule on bigint work and on two light clients over real headers; the use-site), `test/namespv-reseed-recover.test.mjs` (the reseed order) |
 | an unreadable node tip (SPV-5) | `test/spv-unknown-tip.test.mjs` |
 
 ## Invariants
