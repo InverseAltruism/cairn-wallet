@@ -1,122 +1,100 @@
-# Design note: namespv snapshot scaling (N14 structural roadmap)
+# Design note: the SPV header store and the release anchor table
 
-Status: DESIGN ONLY, committed under Plan 71 REBIND batch BP8-design (2026-07-20).
-Implementation is a post-CERTIFY campaign; nothing here changes runtime behavior.
-Companion shipped work: BP8b (partial-progress snapshot persistence, this branch),
-BP4 (shared light client + single-flight sync serializer), 0.2.56 (vendored LWMA
-memo, ~4x faster restore). The server-side cap cure is BP8a in the cairn repo.
+Status: built (0.2.99 line), 2026-10-17. The plan with the measurements, the review history and the owner
+decisions is cairn `docs/Plans/86-wallet-0299-2026-10.md` (sections 3 and 6). This note says what the code does
+and which invariant it keeps. It replaces the 2026-07-20 snapshot-scaling roadmap, which is in git history.
 
-## The problem, measured (2026-07-19 audit, finding N14)
+## What it is for
 
-The wallet's trustless name path keeps a PoW-verified header chain from the baked
-checkpoint (height 29,960, the V11 names floor) to the vicinity of the chain tip.
+A `.csd` name proof and the fill lanes need the verified block header at the exact height of each record they
+prove, from the names floor (29,960) up. Headers live in the extension's IndexedDB (`cairn-wallet-spv`, version
+1), as 84-byte records (`serializeHeader`), in chunks of 4,096 heights: chunk k covers 4,096k to 4,096k + 4,095,
+and chunk 7 starts at 29,960. A `meta` row `head` (`{ v: 2, tip, tipHash }`) is a hint; the chunk keys present are
+the truth. Code: `src/core/headerstore.ts` (store, LRU, acquisition), `src/core/namespv.ts` (`liveSpvSource`:
+restore, routing, sync, migration), `src/core/spvanchors.ts` (the table, generated).
 
-- Restore is O(chain) on EVERY MV3 service-worker cold start: the whole JSON
-  snapshot is parsed and every header re-verified. About 1 to 1.3 s today,
-  growing about 35 ms per chain-day.
-- The snapshot is about 10.2 MB of JSON (about 370 bytes per header on disk),
-  growing about 272 KB per day, and it is whole-blob rewritten on advance.
-- A fresh-install cold sync is about 5 to 7 s today; it would hit the N10
-  /api/headers budget wall around 2026-08-30 (owned by BP8a server-side and
-  BP8b wallet-side, not by this note), and restore alone reaches about 1 minute
-  around tip 320k if nothing structural changes.
+## The anchor rule
 
-The checkpoint CANNOT be bumped to shrink any of this: verifying a name event at
-height h needs the PoW-verified header at exactly h, so the chain must span the
-names floor to tip for as long as historical name events must be provable.
-"Bump the checkpoint" is a documented wrong answer (AGENTS.md, SPV snapshot
-growth). Growth is structural; only the roadmap below changes the curve.
+`src/core/spvanchors.ts` carries `SPV_FLOOR` (29,960 and its hash) and `SPV_ANCHORS`: entry i is the hash at height
+4,096 x (7 + i) + 4,095. It is generated per release by `scripts/update-spv-anchors.mjs` from an anchor that
+cairn's `bump-swapguard-cp.mjs --emit-json` corroborated on the node, the miner and clarvis, by walking the
+served headers up from the floor pin through the vendored light client; the `anchors` job in
+`.github/workflows/release.yml` re-walks the whole table from clarvis's public `/api/headers` and checks every
+entry on the front door's RPC. The release runbook (`store/PUBLISH-RUNBOOK.md` step 2) regenerates the table for
+every tag; the job gates the tag and also runs on PRs that touch the table, its generator or the bundle. It fails
+when the newest entry is more than 6,000 below the public tip or less than 1,000 below it.
 
-## Bite dates and the alarm
+The rule the code keeps:
 
-Audit arithmetic (about 720 blocks/day from tip about 57.6k on 2026-07-19):
+- A header at or below the newest anchor is used only from a chunk whose records hash-link, in this session, to
+  its two table hashes: the previous chunk's entry (or, for chunk 7, the floor pin as the first record's hash) and
+  its own entry as the hash of its last record (`verifyLinkedRecords` in csd-light, called by `verifyChunk`).
+  Nothing is adopted on the store's or the head's say-so.
+- Above the newest anchor, headers come only from the light client, seeded with the last 46 records of the anchor
+  chunk (`LightClient.fromRecords`: hash, prev link, PoW, pins) and synced forward with every consensus check
+  (prev link, time rules including the 2-hour future drift, LWMA bits, PoW). The stored suffix is restored through
+  the same `ingest`, so a record stored in the profile is checked like a served one.
+- Above the newest anchor the guarantee is checkpoint-bound, consensus-checked headers: each header must pass the
+  consensus checks against its parent, but the light client does not compare cumulative work with any other chain.
+  A reseed (after a sync that no longer links to the stored tip) does not compare chainwork with the chain it
+  replaces, and a fresh install has no chain to compare with. A header source that can mine a valid fork from above
+  the newest anchor can therefore have that fork adopted; the cost is mining the fork's headers at the difficulty the
+  LWMA rule and the 2-hour future-drift bound allow.
+- The light client gets every table entry, floor included, as a checkpoint (`SPV_CHECKPOINTS`), for the life of
+  the release. No code path removes, skips or overrides an entry. The `anchors` option of `liveSpvSource` takes only
+  a prefix of the release table (tests and the acceptance harness); the light client still gets the full map
+  (`test/namespv-anchor-prefix.test.mjs`).
+- A served chain that contradicts an entry fails closed: the store is kept, and the reason is "the wallet could not
+  match the chain to its built-in checkpoints (height N); update the wallet or try again later". There is no
+  fallback to an older entry, which would let whoever serves `/api/headers` choose the pins.
+- Nothing below 29,960 is stored or fetched. A name-history hint below it is dropped and the verdict flagged
+  `disagree` (`fetchNameUnion`) rather than failing the replay. A source whose hints all sit below the floor is
+  left with none, so when no source has a hint above it the verify has nothing to prove and fails.
 
-| Milestone | Tip | Approximate date | What degrades |
-|---|---|---|---|
-| Slow-hardware bite | ~74k | ~2026-08-11 | cold-start restore becomes user-visible jank on weak machines |
-| N10 cap wall (separate finding) | 87,304 | ~2026-08-30 | fresh-install cold sync exceeds the whole headers budget (cured by BP8a; BP8b makes it resume, not restart) |
-| Fast-hardware bite | ~163k | ~2026-12-12 | restore is disruptive on all hardware |
-| Unmitigated horizon | ~320k | 2027+ | ~1 minute restore per service-worker cold start |
+## What runs when
 
-An alarm exists and is armed: the N10 default-path cold-span alarm plus the
-tip-84,000 watchdog tripwire (cairn BP3, promoted live via OP-16). The window
-between the first bite (~08-11) and the hard wall (~08-30) is why item 1 below
-must start in the first post-CERTIFY slot.
+At start (`liveSpvSource`): open the store (any failure runs the session in memory), list the chunk keys, read the
+head. If the store has no head and the pre-store `spvHeaderChain` snapshot exists in `chrome.storage.local`, migrate
+it: each anchored chunk it covers is walked and written, the suffix above the newest anchor goes through
+`fromRecords`, the head is written and read back, then the snapshot is deleted. A snapshot over 200 MB is deleted
+unread; after three failed migrations it is deleted and the session runs from memory. Then acquire the newest
+anchor's chunk (store, or one `/api/headers` request per 512-aligned page: 8, or 6 for chunk 7), seed from it, and restore the stored chunks above it.
 
-## Roadmap, sequenced safest-first (per AGENTS.md)
+Per proof (`prepare`, `blockAt`, `hashAt`, `merkleAt`): `prepare(h)` syncs to the lower of the node tip and h + 12,
+one 512-aligned page at a time; when the node tip cannot be read it syncs nothing and returns `tipKnown: false`
+(the fclaim fill lane refuses on that, since it needs burial to the tip). A height above the newest anchor reads
+the light client. A height at or below it acquires that one height's chunk under the sync serializer: the LRU of 8
+verified chunks, else the store with a walk, else its aligned pages from `/api/headers` with a walk, then stored and cached. A chunk
+that fails its walk on load is deleted and refetched; a fetched chunk that fails is refused with the checkpoint
+copy naming the chunk. Store writes are detached from the proof path and merged; a write failure is warned.
 
-The ordering rule: pure scheduling first, format second, trust-surface last.
-Each step is independently shippable and independently revertable.
+A structural sync failure (an ordinary reorg in the suffix) reseeds from the anchor chunk in memory and syncs
+again; the stored suffix is replaced only after the new one verifies. If the served headers still fail above the
+anchor, the refusal is "the wallet could not verify the block headers from <headers source> above height N: they
+do not pass the chain's checks. Try again later."; the light client's own reason is logged. A clock more than 2 hours
+behind a header stops with a reason that names the clock, and the store is kept.
 
-### 1. Async/chunked snapshot restore
+## Callers and their tests
 
-Split the restore parse+re-verify loop across event-loop turns (bounded chunks,
-e.g. 2 to 4k headers per turn) so the service worker stays responsive during a
-cold start and user actions are not blocked behind the full O(chain) pass.
-Pure scheduling: byte-identical verification, no format change, no new trust.
-The restore still completes fully before any verify answers (fail-closed
-unchanged); only the blocking shape changes.
+| Caller | Test |
+|---|---|
+| `replayName` (`blockAt` per hinted height) | `test/namespv-store-restore.test.mjs` (a real name in chunk 7, write volume), `test/namespv-hints-floor.test.mjs` (hint floor, case 19) |
+| the fclaim lane's offer block (`fillspv.ts` `bindBlock`) | `test/fillspv-store.test.mjs` |
+| the V29 other offer (`provenClosed`) | `test/fill-holds-v29.test.mjs` (the real offer at 30,332 below the anchor) |
+| `provenOfferPayto` | `test/fillspv-store.test.mjs` |
+| the confirm-time skip (`hashAt`) | `test/namespv-hints-floor.test.mjs` |
+| restore, pins, reorg, clock, corrupt chunks, concurrency, migration | `test/namespv-store-pins.test.mjs`, `test/namespv-store-migrate*.test.mjs`, `test/headerstore*.test.mjs` |
+| an unreadable node tip (SPV-5) | `test/spv-unknown-tip.test.mjs` |
 
-Owner: post-CERTIFY campaign, first implementation slot.
-Bite date covered: the ~74k / ~2026-08-11 slow-hardware bite.
+## Invariants
 
-Status (2026-09-23): SHIPPED. Wallet 0.2.68 restores the snapshot through csd-light's chunked
-`fromSnapshotAsync` (same per-header checks, yields between chunks), and 0.2.70 adds persisted partial
-progress, detached/coalesced storage writes and prewarming. Parsing and re-verifying the full span still
-grow with chain height; this item removed the blocking shape, not the work.
-
-### 2. Binary snapshot v2
-
-Replace the JSON blob with a versioned binary record format (fixed-width header
-records: the native header encoding is 84 bytes per header, not Bitcoin's 80, vs about 370 as JSON), appended
-incrementally instead of whole-blob rewritten per advance. One-shot migration
-from v1 on first load; v1 fallback read kept for one release. Restore
-re-verification is UNCHANGED (same hashes, prev links, PoW, LWMA re-derivation,
-checkpoint anchoring); only the serialization format changes.
-
-Owner: post-CERTIFY campaign, second slot (after 1 is observed live).
-Bite dates covered: the storage-growth curve (10.2 MB +272 KB/day, quota
-pressure shared with the vault) and the parse half of the ~163k bite.
-
-### 3. Verified-event proof cache
-
-The ONLY path that beats the unbumpable checkpoint floor. Cache, per name
-event, the minimal verified proof bundle (the PoW-verified header at the event
-height, the merkle inclusion path, the signer/prevout bind result), keyed by
-header hash. A cached proof lets a repeat verification skip refetching and re-proving
-that event.
-
-Correction (2026-09-23): a cached inclusion proof does NOT by itself justify pruning the
-header span. It proves that one event was included in one header; it does not prove that
-header's ancestry and cumulative work back to the checkpoint, and it says nothing about
-whether the event history is complete. Pruning the span therefore needs a separately
-specified authenticated strategy (for example a new, explicitly trusted checkpoint policy
-with its own review), not just this cache.
-
-This is a LARGE money-path change (it alters what the name-verify trust chain
-is rebuilt from) and is deliberately NOT built inside REBIND: the campaign's D3
-proportionality rule forbids it there, and this note exists precisely so the
-decision and its date are on the record for CERTIFY-A's scalability-headroom
-criterion. It requires its own design review and red-team gate before code.
-
-Owner: post-CERTIFY campaign, third slot, own gated design + adversarial
-review.
-Bite date covered: the ~163k / ~2026-12-12 fast-hardware bite and the 2027+
-horizon.
-
-## Invariants that hold through every step
-
-- NEVER skip restore re-verification. Re-verify-on-load (fromSnapshot
-  recomputing hashes, prev links, PoW, LWMA bits, checkpoint anchoring) IS the
-  storage-poisoning defense: chrome.storage.local is not a trusted input. Steps
-  1 and 2 change scheduling and format, never what a restore trusts. Step 3
-  must re-verify cached proofs against the pinned checkpoint chain on load with
-  the same posture. This is pinned behaviorally by
-  test/namespv-partial-persist.test.mjs (a poisoned snapshot is never adopted).
-- The checkpoint floor (29,960) stays until step 3 ships and is proven; no
-  intermediate step may bump it.
-- Fail-soft on the availability axis: a missing/corrupt snapshot or cache
-  degrades to a re-sync, never to a refusal of a legitimate send (the standing
-  no-UX-regression rule).
-- Consensus math stays vendored (csd-sdk via the PROVENANCE-pinned bundle);
-  none of these steps re-declares a consensus rule in this repo.
+- No stored header is used without its walk to the table or its forward verification in the same session. This is
+  the storage-poisoning defence: the profile is writable by whoever can write it, and a poisoned store can at most
+  cost a refetch.
+- The floor (29,960) does not move: a name event at height h needs the verified header at exactly h.
+- Store and network failures degrade to "no cache this session" or a refetch, not to a refusal of a send that
+  would otherwise verify. The exception is an unreadable node tip (SPV-5): nothing is synced, so a name record above
+  the verified tip shows as not verified for that call, and a reservation fill refuses as retryable.
+- Consensus math stays vendored (csd-sdk through the PROVENANCE-pinned bundle).
+- The cost of a start follows the suffix above the newest anchor, so the table must be refreshed per release
+  (`store/PUBLISH-RUNBOOK.md` step 2), and the `anchors` job refuses a tag whose table is stale.

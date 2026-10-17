@@ -11,8 +11,8 @@ let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
 const okA = async (n, fn) => { try { ok(n, await fn()); } catch (e) { fail++; console.log("  ✗", n, "\n      ", e.stack || e.message); } };
 
-const PAIRS = sortHintPairs([{ txid: "0xAA", height: 10 }, { txid: "0xbb", height: 12 }]);
-const HASHES = { 10: "0xhash10", 12: "0xhash12" };
+const PAIRS = sortHintPairs([{ txid: "0xAA", height: 33700 }, { txid: "0xbb", height: 33712 }]);
+const HASHES = { 33700: "0xhash33700", 33712: "0xhash33712" };
 const cache = {
   name: "alice", pairs: PAIRS, hashes: HASHES, addr: "0x" + "ab".repeat(20),
   owner: "0x" + "ab".repeat(20), via: "nset", depth: 8, ts: 1_000_000, epoch: 100,
@@ -23,7 +23,7 @@ const hashAt = async (h) => HASHES[h] ?? null;
 console.log("evaluateHintSetSkip (advisor 2.4):");
 
 await okA("clean set + hashes + epoch + TTL → skip", async () => {
-  const v = await evaluateHintSetSkip({ cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false, now: cache.ts + 1_000, epoch: 100, hashAt });
+  const v = await evaluateHintSetSkip({ cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false, belowFloor: false, now: cache.ts + 1_000, epoch: 100, hashAt });
   return v.skip === true && v.sources === 2 && v.disagree === false;
 });
 
@@ -31,20 +31,20 @@ await okA("recomputes disagree from a fresh claim mismatch even on skip", async 
   const v = await evaluateHintSetSkip({
     cache, pairs: PAIRS,
     claims: [{ addr: cache.addr }, { addr: "0x" + "ee".repeat(20) }],
-    conflict: false, existenceDisagree: false, now: cache.ts + 1_000, epoch: 100, hashAt,
+    conflict: false, existenceDisagree: false, belowFloor: false, now: cache.ts + 1_000, epoch: 100, hashAt,
   });
   return v.skip === true && v.disagree === true && v.sources === 2;
 });
 
 await okA("sorted (txid,height) compare is order-insensitive", async () => {
-  const shuffled = sortHintPairs([{ txid: "0xbb", height: 12 }, { txid: "0xAA", height: 10 }]);
+  const shuffled = sortHintPairs([{ txid: "0xbb", height: 33712 }, { txid: "0xAA", height: 33700 }]);
   return hintPairsEqual(PAIRS, shuffled);
 });
 
 await okA("hint-set change refuses skip (re-point / new event)", async () => {
   const v = await evaluateHintSetSkip({
     cache, pairs: sortHintPairs([...PAIRS, { txid: "0xcc", height: 13 }]),
-    claims, conflict: false, existenceDisagree: false, now: cache.ts + 1_000, epoch: 100, hashAt,
+    claims, conflict: false, existenceDisagree: false, belowFloor: false, now: cache.ts + 1_000, epoch: 100, hashAt,
   });
   return v.skip === false && v.reason === "hint-set";
 });
@@ -52,22 +52,22 @@ await okA("hint-set change refuses skip (re-point / new event)", async () => {
 await okA("served lapsed:true refuses skip (full verify must see the lease)", async () => {
   const v = await evaluateHintSetSkip({
     cache, pairs: PAIRS, claims: [{ addr: cache.addr, lapsed: true }, { addr: cache.addr }],
-    conflict: false, existenceDisagree: false, now: cache.ts + 1_000, epoch: 100, hashAt,
+    conflict: false, existenceDisagree: false, belowFloor: false, now: cache.ts + 1_000, epoch: 100, hashAt,
   });
   return v.skip === false && v.reason === "lapsed";
 });
 
 await okA("header-hash change refuses skip", async () => {
   const v = await evaluateHintSetSkip({
-    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false,
-    now: cache.ts + 1_000, epoch: 100, hashAt: async (h) => h === 12 ? "0xOTHER" : HASHES[h],
+    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false, belowFloor: false,
+    now: cache.ts + 1_000, epoch: 100, hashAt: async (h) => h === 33712 ? "0xOTHER" : HASHES[h],
   });
   return v.skip === false && v.reason === "header-hash";
 });
 
 await okA("TTL expiry refuses skip (long-open review card)", async () => {
   const v = await evaluateHintSetSkip({
-    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false,
+    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false, belowFloor: false,
     now: cache.ts + HINTSET_TTL_MS + 1, epoch: 100, hashAt,
   });
   return v.skip === false && v.reason === "ttl";
@@ -75,7 +75,7 @@ await okA("TTL expiry refuses skip (long-open review card)", async () => {
 
 await okA("tip-epoch change refuses skip (lapse crossing)", async () => {
   const v = await evaluateHintSetSkip({
-    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false,
+    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false, belowFloor: false,
     now: cache.ts + 1_000, epoch: 101, hashAt,
   });
   return v.skip === false && v.reason === "epoch";
@@ -83,7 +83,7 @@ await okA("tip-epoch change refuses skip (lapse crossing)", async () => {
 
 await okA("missing tip epoch refuses skip", async () => {
   const v = await evaluateHintSetSkip({
-    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false,
+    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false, belowFloor: false,
     now: cache.ts + 1_000, epoch: null, hashAt,
   });
   return v.skip === false && v.reason === "no tip epoch";
@@ -91,7 +91,7 @@ await okA("missing tip epoch refuses skip", async () => {
 
 await okA("no hashAt seam refuses skip (cannot prove headers unchanged)", async () => {
   const v = await evaluateHintSetSkip({
-    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false,
+    cache, pairs: PAIRS, claims, conflict: false, existenceDisagree: false, belowFloor: false,
     now: cache.ts + 1_000, epoch: 100,
   });
   return v.skip === false && v.reason === "no hashAt";

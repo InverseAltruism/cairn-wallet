@@ -6,6 +6,21 @@
   built into each release, instead of a JSON snapshot that was read and re-verified whole at every start. A start
   reads the newest built-in chunk and the headers above it; an older name costs one chunk the first time it is
   needed. The old snapshot is moved into the store once after the update and then deleted.
+- Name verification and fills on the header store: an offer or name record below the newest built-in block hash is
+  proven from its 4,096-block chunk, fetched once and kept. A name-history entry below the names floor (block
+  29,960) is ignored and the result is marked as a source disagreement, instead of failing the check. When the
+  node does not answer its chain tip, the wallet no longer asks for headers past the chain; a reservation fill
+  then refuses as retryable. If the node RPC serves a block that does not match the wallet's verified header (for
+  example a local node on another chain), a reservation fill refuses with the new code `RPC_BLOCK_MISMATCH` and a
+  message naming the block and the RPC, instead of "try again in a moment"; an offer-id fill still refuses as
+  `VERIFY_UNAVAILABLE`, and a name shows as not chain-verified. Headers from the Cairn API that keep
+  failing the chain's checks are reported in plain words instead of the light client's internal message.
+- Activity markers come from chain state, not a clock: a send that may not have reached the chain reads "sent, not
+  yet included" until it is seen in a block; after 10 blocks it reads "still not included after 10 blocks; check
+  the explorer before sending again", and a send whose coins another mined transaction spent reads "not included:
+  its coins were spent by another transaction; check the explorer before sending again". The wallet does not
+  resend on its own. A merge reads "merge sent (txid); confirming" instead of claiming it completed, and a merge
+  still pending after 10 blocks says so.
 - Approval window: after an idle auto-lock and unlock, a token quote or balance read started before the lock no
   longer lands on the repainted screen. Approve now waits for the repaint's own quote, and the balance line and
   the "does not cover" check come from the repaint's own read, so the amount you approve is the one shown.

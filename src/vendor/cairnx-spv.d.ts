@@ -211,6 +211,9 @@ export function bindOfferTerms(servedOffer: unknown, t: MintedProvenOfferTerms, 
 /** Derive {payto (want.payto or, absent, the author), seller (= the event's prevout-bound proposer), terms}
  *  from a merkle-proven offer Propose event; null if the event does not bind to an offer record. */
 export function bindProvenOffer(offerEv: ProvenPropose): { payto: string; seller: string; terms: MintedProvenOfferTerms } | null;
+/** True only when `fill` (merkle-proven, prevout-bound) is this wallet's own SCORE_FILL on `fclaim`, mined after it
+ *  and before `grantHeight` (>= V29), paying every output of a full fill of the proven offer `offerEv`. */
+export function myProvenFillClosedOffer(fill: ProvenEvent | null, fclaim: { id: string; height: number; offer: string }, offerEv: ProvenEvent | null, me: string, grantHeight: number): boolean;
 // v2.8 give-backing synthesis (core/fillspv.ts, the accepted N1 residual): the record builders + constants used
 // to synthesize an offer's resolver-trusted give-backing (token deploy+mint, or a name registration) so resolve()
 // materializes the offer without an unbounded lifecycle scan. The grant/denial VERDICT never rides the backing.

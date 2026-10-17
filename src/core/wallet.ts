@@ -12,7 +12,7 @@ import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
-import { verifyNameUnion, liveSpvSource, fetchNameUnion, type LiveSpvOpts, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import { verifyNameUnion, liveSpvSource, fetchNameUnion, BodyMismatchError, type LiveSpvOpts, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -954,7 +954,12 @@ export class Wallet {
     let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenPayto?: string; provenSeller?: string; provenTerms?: MintedProvenOfferTerms };
     try {
       io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
-    } catch {
+    } catch (e) {
+      // A body that contradicts its verified header comes from the configured RPC (for example a local node on
+      // another chain); a retry does not help that case, so it is named. Every other failure here is a read that
+      // could not complete (no tip, a missing chunk, a timeout) and is retryable.
+      if (e instanceof BodyMismatchError && e.bodySource)
+        return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified. If that is your own node, check that it follows the main chain; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
       return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     }
     // myLiveHoldsAtGrant is COMPUTED by the SPV source: a CONSERVATIVE OVER-count of my OTHER-offer fclaim holds
@@ -1500,6 +1505,7 @@ export class Wallet {
       claims: bundle.usable.map((r) => r.claim ?? {}),
       conflict: bundle.conflict,
       existenceDisagree: bundle.existenceDisagree,
+      belowFloor: bundle.belowFloor,
       now: Date.now(),
       epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
       hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,

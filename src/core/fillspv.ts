@@ -17,10 +17,10 @@ import {
   rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, V28_HEIGHT, ACTIVATION_HEIGHT,
-  provenOfferTerms, bindProvenOffer, requiredFillOutputs, MAX_ACTIVE_CLAIMS, SCORE_FILL, V29_HEIGHT,
-  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms, type CxOfferState,
+  provenOfferTerms, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer,
+  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms,
 } from "../vendor/cairnx-spv.js";
-import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
+import { BodyMismatchError, liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
 // (`provenOfferTerms` + `feeBpsAt`, verifyfill.ts) - this file used to carry its own hand copies of
@@ -88,7 +88,7 @@ async function bindBlock(spv: SpvSource, height: number): Promise<{ ids: string[
   if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length)
     throw new Error(`block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)`);
   if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase())
-    throw new Error(`block ${height} does not match its PoW-verified merkle root (tampered read path)`);
+    throw new BodyMismatchError(height, spv.bodySource);
   return { ids, rebuilt };
 }
 
@@ -136,44 +136,6 @@ export function countMyOtherLiveHolds(
     n++;
   }
   return n;
-}
-
-/**
- * True only when `fill` proves this wallet's own fill CLOSED the offer behind `fclaim` before `grantHeight`,
- * so the resolver (at a grant height >= V29) no longer counts that hold toward MAX_ACTIVE_CLAIMS. Every leg is
- * proven data: `fill` and `offerEv` are merkle-bound and prevout-bound (proveEventAt); only the block the
- * offer was looked for in came from a served height. The fill must be a SCORE_FILL by `me` on exactly this
- * fclaim, mined strictly after the fclaim and strictly before the grant, and it must carry every output of a
- * FULL fill of the proven offer (want.value to payto, the fee, the maker rebate). With the hold live and the
- * offer open at the grant, such a fill was routed to this offer and accepted, and a payment of the full
- * want.value completes the offer in both the whole and the partial lane, so the resolver marked it filled.
- * A partial-lane offer this wallet closed with a remainder fill (paying `remaining` < want.value) stays
- * counted: `remaining` depends on the resolver-served `paid`, so it cannot decide. That is an over-count.
- */
-export function myProvenFillClosedOffer(
-  fill: ProvenEvent | null, fclaim: { id: string; height: number; offer: string },
-  offerEv: ProvenEvent | null, me: string, grantHeight: number,
-): boolean {
-  if (!(grantHeight >= V29_HEIGHT)) return false;
-  if (!fill || fill.kind !== "attest" || fill.score !== SCORE_FILL) return false;
-  if (fill.attester.toLowerCase() !== me.toLowerCase() || fill.proposalId.toLowerCase() !== fclaim.id.toLowerCase()) return false;
-  if (!(fill.height > fclaim.height && fill.height < grantHeight)) return false;
-  if (!offerEv || offerEv.kind !== "propose" || offerEv.id.toLowerCase() !== fclaim.offer.toLowerCase()) return false;
-  const bound = bindProvenOffer(offerEv);
-  if (!bound || bound.terms.value === undefined) return false;   // a token-priced want carries no value
-  const t = bound.terms;
-  const give = t.giveName !== undefined ? { name: t.giveName } : { ticker: String(t.giveTicker ?? ""), amount: String(t.giveAmount ?? "") };
-  // height, fee, taker, bid and min come from the canonical proven terms as they are, never re-derived here.
-  const state: CxOfferState = { ...t, id: offerEv.id.toLowerCase(), seller: bound.seller, give, want: { value: t.value!, payto: bound.payto }, status: "open", paid: "0", delivered: "0" };
-  let need: { to: string; value: bigint }[] | null;
-  try { need = requiredFillOutputs(state, BigInt(t.value!)); } catch { return false; }
-  if (!need) return false;
-  for (const { to, value } of need) {
-    let paid: bigint;
-    try { paid = BigInt(fill.paidTo[to.toLowerCase()] ?? "0"); } catch { return false; }
-    if (paid < value) return false;
-  }
-  return true;
 }
 
 /**
@@ -227,8 +189,10 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 
   // Sync PoW-verified headers to the node tip (prepare caps its sync at the node tip, so a large target forces
   // a full sync) — the fill needs burial-to-tip, not just headers up to a record. A lying-high header throws.
-  const { verifiedTip, floorTip: rawFloorTip } = await spv.prepare(Number.MAX_SAFE_INTEGER);
+  const { verifiedTip, floorTip: rawFloorTip, tipKnown } = await spv.prepare(Number.MAX_SAFE_INTEGER);
   if (!Number.isFinite(verifiedTip)) throw new Error("fill-SPV: no PoW-verified tip");
+  // Without a node tip nothing was synced, and holds would be judged against a verified tip that may be behind.
+  if (tipKnown === false) throw new Error("fill-SPV: the node tip could not be read, so the hold cannot be checked against the chain tip");
   const floorTip = Number.isFinite(rawFloorTip as number) ? Number(rawFloorTip) : 0;
   // FILLSPV-01: the deadline/hold-liveness guards in verifyFillSpv read io.tip(). A DEFLATED served tip
   // under-states verifiedTip (prepare syncs only to the served tip), so a hold that has ACTUALLY lapsed can
