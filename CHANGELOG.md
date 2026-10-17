@@ -23,7 +23,10 @@
 - Reservation fills: a served payment recipient or seller that differs from the offer's on-chain record is refused
   by the payment check against the proven offer ("payment does not match the proven fill progress"); the separate
   recipient check that used to give the reason "the seller payment recipient does not match the offer's on-chain
-  author" was a second copy of the same check and is removed. Nothing that was refused before is accepted now.
+  author" was a second copy of the same check and is removed. One case changes: an offer with a minimum partial
+  fill has no maker-rebate leg, so a served seller that differs from the on-chain one used to refuse and now
+  signs, with the honest outputs (the payment to the on-chain recipient and the treasury fee); no payment can be
+  redirected by that difference. Every other case that was refused before is refused now.
 - Activity markers come from chain state, not a clock: a send that may not have reached the chain reads "sent, not
   yet included" until it is seen in a block; after 10 blocks it reads "still not included after 10 blocks; check
   the explorer before sending again", and a send whose coins another mined transaction spent reads "not included:

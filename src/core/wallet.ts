@@ -983,7 +983,9 @@ export class Wallet {
       verdict = await verifyFillSpv(offerId, fclaimTxid, me, io, {
         myLiveHoldsAtGrant: io.myLiveHoldsAtGrant as number, pay,
         // The per-address sums bind: planned payment legs must equal the proven offer's need-map exactly, so a
-        // served payto, seller, fee or remainder that differs from the chain refuses here (FILL_UNSAFE below).
+        // served payto, fee or remainder that differs from the chain refuses here (FILL_UNSAFE below), and so does a
+        // served seller when the offer has a rebate leg; an offer with `min` has none (previewFill), so a served
+        // seller swap on it changes no leg and signs the honest outputs (payto and the treasury fee).
         sums: Object.fromEntries(sums), // MUTATE_FCLAIM_SUMS_BIND
       });
     } catch {
