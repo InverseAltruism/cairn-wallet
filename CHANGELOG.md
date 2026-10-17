@@ -19,7 +19,7 @@
   yet included" until it is seen in a block; after 10 blocks it reads "still not included after 10 blocks; check
   the explorer before sending again", and a send whose coins another mined transaction spent reads "not included:
   its coins were spent by another transaction; check the explorer before sending again". The wallet does not
-  resends on its own. A merge reads "merge sent (txid); confirming" instead of claiming it completed, and a merge
+  resend on its own. A merge reads "merge sent (txid); confirming" instead of claiming it completed, and a merge
   still pending after 10 blocks says so.
 - Approval window: after an idle auto-lock and unlock, a token quote or balance read started before the lock no
   longer lands on the repainted screen. Approve now waits for the repaint's own quote, and the balance line and

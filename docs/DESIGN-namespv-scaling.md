@@ -48,7 +48,8 @@ The rule the code keeps:
   match the chain to its built-in checkpoints (height N); update the wallet or try again later". There is no
   fallback to an older entry, which would let whoever serves `/api/headers` choose the pins.
 - Nothing below 29,960 is stored or fetched. A name-history hint below it is dropped and the verdict flagged
-  `disagree` (`fetchNameUnion`); it is never a refusal.
+  `disagree` (`fetchNameUnion`) rather than failing the replay. A source whose hints all sit below the floor is
+  left with none, so when no source has a hint above it the verify has nothing to prove and fails.
 
 ## What runs when
 
@@ -91,8 +92,9 @@ behind a header stops with a reason that names the clock, and the store is kept.
   the storage-poisoning defence: the profile is writable by whoever can write it, and a poisoned store can at most
   cost a refetch.
 - The floor (29,960) does not move: a name event at height h needs the verified header at exactly h.
-- Store and network failures degrade to "no cache this session" or a refetch, never to a refusal of a send that
-  would otherwise verify.
+- Store and network failures degrade to "no cache this session" or a refetch, not to a refusal of a send that
+  would otherwise verify. The exception is an unreadable node tip (SPV-5): nothing is synced, so a name record above
+  the verified tip shows as not verified for that call, and a reservation fill refuses as retryable.
 - Consensus math stays vendored (csd-sdk through the PROVENANCE-pinned bundle).
 - The cost of a start follows the suffix above the newest anchor, so the table must be refreshed per release
   (`store/PUBLISH-RUNBOOK.md` step 2), and the `anchors` job refuses a tag whose table is stale.
