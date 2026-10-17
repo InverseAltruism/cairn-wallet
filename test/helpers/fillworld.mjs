@@ -18,15 +18,22 @@ export const S = "0x" + "aa".repeat(20), C = "0x" + "cc".repeat(20);
 export const PAY = BigInt(1000e8);
 const coin = mkCoin(2_000_00000000);
 
-export function world(me, withheldKind) {
-  let n = withheldKind === "partial" ? 1000 : withheldKind === "cancel" ? 2000 : withheldKind === "hidden-hold" ? 4000 : 3000;
+// Resolver events with ids counted up from `start`: PE a propose, AT an attest, token() the TOKA deploy and mint.
+export function eventMaker(start) {
+  let n = start;
   const id = () => H(++n);
   const PE = (who, built, h, E, paidTo = {}) => ({ kind: "propose", id: id(), proposer: who, uri: built.uri, payloadHash: built.payloadHash, expiresEpoch: E ?? epochOf(h) + 5000, height: h, pos: 1, paidTo });
   const AT = (who, pid, score, h, paidTo = {}) => ({ kind: "attest", txid: id(), proposalId: pid, attester: who, score, confidence: 0, height: h, pos: 2, paidTo });
-  const ev = [
+  const token = () => [
     PE(S, deploy({ ticker: "TOKA", decimals: 0, supply: "1000000", mint: "issuer" }), 115000, undefined, { [TREASURY_ADDR]: String(DEPLOY_FEE) }),
     PE(S, mint({ ticker: "TOKA", amount: "1000000" }), 115001),
   ];
+  return { PE, AT, token };
+}
+
+export function world(me, withheldKind) {
+  const { PE, AT, token } = eventMaker(withheldKind === "partial" ? 1000 : withheldKind === "cancel" ? 2000 : withheldKind === "hidden-hold" ? 4000 : 3000);
+  const ev = token();
   const offerEv = PE(S, offer({ give: { ticker: "TOKA", amount: "1000" }, want: { value: String(1000e8) }, ...(withheldKind === "partial" ? { min: String(100e8) } : {}) }), 115010, epochOf(115010) + 200);
   ev.push(offerEv);
   const withheld = [];

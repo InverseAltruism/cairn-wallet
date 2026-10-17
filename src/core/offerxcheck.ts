@@ -19,8 +19,10 @@ function units(v: unknown): bigint | null {
 /**
  * Why the second source contradicts the primary's offer for this fill, or null when it gives no positive
  * evidence. Only states a lagging honest source cannot produce trigger: a closed status, more paid or
- * delivered than the primary served, or a different reservation whose hold ends after ours. A lagging
- * source shows the previous holder, whose hold ended before our grant, so that never refuses.
+ * delivered than the primary served, or a different reservation still held at our last held block
+ * (`claimUntilHeight`, exclusive, above `ownHoldEnd`, inclusive), which includes one with our expiry epoch. A
+ * lagging source shows the previous holder; replay grants ours only after that hold ends, so its epoch is
+ * below ours and it does not refuse (test/fill-offer-crosscheck.test.mjs, section 1b).
  */
 export function secondSourceOfferConflict(primary: unknown, second: unknown, ctx: OfferCrossCheckCtx): string | null {
   if (!second || typeof second !== "object") return null;
