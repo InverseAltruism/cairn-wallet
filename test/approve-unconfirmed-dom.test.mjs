@@ -102,5 +102,62 @@ assert.ok(!req().includes("no record of your reservation"));
 assert.match(registry.get("msg").textContent, /^sent 0xeeeeeeee/);
 console.log("  ok (4) honest path: one click, no extra step");
 
-console.log("approve-unconfirmed-dom: 5 passed, 0 failed");
+// (5) M1 interleaving: a `pending` poll started before the click returns its pre-approval snapshot after resolve()
+// cleared renderedId, and only then RESERVATION_UNCONFIRMED arrives. The warning must be painted and armed, and a
+// click on an "Approve" painted outside the warning state must carry no acknowledgement.
+//   RED-FIRST: drop the renderSeq checks and the forced repaint in approve.ts and (5a) fails ("Approve", no warning).
+let heldPending = null, heldResolve = null;
+const defer = () => { let r; const p = new Promise((res) => { r = res; }); return { p, r }; };
+state.pending = [fill("m1")];
+answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" + "aa".repeat(32) }; };
+await tick(); await armed();
+assert.deepEqual(labels(), ["Approve", "Reject"], "(5) setup");
+const realPending = handlers.pending;
+handlers.pending = () => { const d = defer(); heldPending = d; return d.p; };
+const pollStarted = tick();                        // the poll is now waiting on its pending reply
+await flush();
+answer = () => { const d = defer(); heldResolve = d; return d.p; };
+await click("btn-approve");                        // resolve() clears renderedId and waits on the worker
+assert.ok(heldPending && heldResolve, "(5) both replies are outstanding");
+heldPending.r([fill("m1")]);                      // the stale pre-approval snapshot lands
+await flush(20);
+handlers.pending = realPending;
+state.pending = [fill("m1")];                      // the worker re-queued it
+heldResolve.r({ ...UNCONFIRMED, unconfirmed: { ...U } });
+await pollStarted; await flush(20); await armed();
+assert.ok(req().includes(reservationUnconfirmedHtml(U)), "(5a) the warning is visible");
+assert.deepEqual(labels(), ["Sign anyway", "Cancel"], "(5a) the button reads Sign anyway");
+assert.equal(registry.get("btn-approve").disabled, false, "(5a) and is armed after the delay");
+console.log("  ok (5a) a stale poll reply cannot hide the warning");
+
+// (5b) Sign anyway from the warning paint carries the acknowledgement.
+const n5 = calls.length;
+answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" + "ab".repeat(32) }; };
+await click("btn-approve");
+assert.deepEqual(calls[n5][4], { requestId: "m1", fclaimTxid: FC }, "(5b) Sign anyway carries the acknowledgement");
+console.log("  ok (5b) Sign anyway from the warning paint carries the acknowledgement");
+
+// (5c) a stale "Approve": while the first approval is in flight, a poll whose reply still lists the request paints it
+// in the ordinary state; a click on that Approve sends no acknowledgement, and the warning still arrives after both
+// outcomes. (The acknowledgement is taken from the warning paint, `warnedFor`, never from reviewState alone.)
+state.pending = [fill("m2")];
+answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" + "aa".repeat(32) }; };
+await tick(); await armed();
+answer = () => { const d = defer(); heldResolve = d; return d.p; };
+await click("btn-approve");
+const first = heldResolve;
+state.pending = [fill("m2")];                      // a stale snapshot: the worker has not settled the first call yet
+await tick(); await armed();
+assert.deepEqual(labels(), ["Approve", "Reject"], "(5c) the stale paint shows the ordinary Approve");
+const n6 = calls.length;
+answer = () => ({ ...UNCONFIRMED, unconfirmed: { ...U } });
+await click("btn-approve");                        // a click on the ordinary paint
+assert.equal(calls.length, n6 + 1, "(5c) the click reached the worker");
+assert.equal(calls[n6][4], undefined, "(5c) a click on an ordinary Approve carries no acknowledgement");
+first.r({ ...UNCONFIRMED, unconfirmed: { ...U } });   // the first outcome lands late
+await flush(20); await tick(); await armed();
+assert.deepEqual(labels(), ["Sign anyway", "Cancel"], "(5c) the warning state is painted afterwards");
+console.log("  ok (5c) a stale Approve sends no acknowledgement");
+
+console.log("approve-unconfirmed-dom: 8 passed, 0 failed");
 process.exit(0);

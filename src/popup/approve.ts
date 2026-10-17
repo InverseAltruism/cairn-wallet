@@ -36,10 +36,18 @@ let paintGen = 0;
 // until the user closes it or a new request is painted.
 let inFlight = 0;
 let holdFailure = false;
+// Bumped by resolve() when it sends and when its outcome lands: a render whose status/pending reads started before
+// that is stale (its queue snapshot predates the outcome) and paints nothing.
+let renderSeq = 0;
+// The request id whose current paint is the warning state; only a click on that paint sends the acknowledgement.
+let warnedFor: string | null = null;
 async function render() {
+  const seq = renderSeq;
   const st = await call("status");
+  if (seq !== renderSeq) return;
   ($("view-locked") as HTMLElement).hidden = st.unlocked;
   const pend = await call("pending");
+  if (seq !== renderSeq) return;
   if (!pend.length) {
     if (inFlight || holdFailure) { ($("view-req") as HTMLElement).hidden = true; return; }
     window.close(); return;
@@ -87,6 +95,7 @@ async function render() {
     if (f != null) current.tipFloor = f;
   }
   if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
+  if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
   const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
@@ -132,6 +141,7 @@ async function render() {
 // Approve/Reject become "Sign anyway"/"Cancel". The warning goes first, above the fold. Part of the rebuild, so an unlock repaint keeps it.
 function paintUnconfirmed(id: string) {
   const u = rs(id).unconfirmed;
+  warnedFor = u ? id : null;
   const labels = u ? UNCONFIRMED_LABELS : APPROVE_LABELS;
   $("btn-approve").textContent = labels.approve;
   $("btn-reject").textContent = labels.reject;
@@ -489,18 +499,20 @@ async function resolve(approve: boolean) {
     if (!current || current.id !== id) return;
     if (g?.block) { msg(g.note || "refusing to approve this finalize", "err"); return; }
   }
+  // Only a click on the warning-state paint of this request acknowledges the unconfirmed reservation.
+  const u = warnedFor === id ? rs(id).unconfirmed : undefined;
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
-  current = null; renderedId = null; renderedSigner = null;
+  current = null; renderedId = null; renderedSigner = null; warnedFor = null; renderSeq++;
   if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("rejected"); render(); return; }
   msg("approving…");
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
   let r: any;
   inFlight++;
-  const u = rs(id).unconfirmed;
   const ack = u ? { requestId: id, fclaimTxid: u.fclaimTxid } : undefined;
   try { r = await call("resolve", id, true, signer, displayedQuote, ...(ack ? [ack] : [])); } catch (e: any) { r = { ok: false, error: e?.message }; }
   finally { inFlight--; }
+  renderSeq++; renderedId = null;   // a poll that read the queue before this outcome must not paint; repaint and re-arm
   if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
