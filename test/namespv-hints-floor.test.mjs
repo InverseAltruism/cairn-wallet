@@ -107,13 +107,13 @@ async function walletOn(store) {
   w.nameSpvForTest = await liveSpvSource({ ...opts(store), rpcBase: "https://cairn-substrate.com/api/rpc", headersBase: API });
   return w;
 }
-const sites = { blocks: 0 };
+const sites = { blocks: 0, served: {} };
 {
   const inner = globalThis.fetch;
-  const names = historyFetch({});
   globalThis.fetch = async (url, init) => {
     const u = String(url);
-    if (u.endsWith("/cairnx/name-history/cairn")) return names(u.replace(/^https:\/\/(clarvis\.)?cairn-substrate\.com\/trade\/api/, PRIMARY.base));
+    // Both production sources (cairn-substrate.com and clarvis) answer from PRIMARY's history plus `sites.served`.
+    if (u.endsWith("/cairnx/name-history/cairn")) return historyFetch({ [PRIMARY.base]: sites.served.extra ?? [] })(u.replace(/^https:\/\/(clarvis\.)?cairn-substrate\.com\/trade\/api/, PRIMARY.base));
     if (u.endsWith("/cairnx/resolve/cairn")) return Response.json(NAME.history.resolve);
     if (/\/block\/height\/\d+$/.test(u)) sites.blocks++;
     return inner(url, init);
@@ -153,6 +153,34 @@ await test("a cached hash that differs from the stored chunk's: the skip is refu
   const c = await w.confirmName("cairn");
   assert.equal(c.verified, true, "the full proof still verifies the honest name");
   assert.equal(sites.blocks, blocks + 1, "the skip was refused: the block body was read again");
+});
+
+await test("review then confirm with the same below-floor hint: the disagreement survives the cached skip", async () => {
+  reset();
+  sites.served.extra = [junk(29000)];
+  try {
+    const w = await walletOn(memStore());
+    const review = await w.resolveName("cairn");
+    assert.equal(review.verified, true);
+    assert.equal(review.disagree, true, "the review warns");
+    assert.ok(w.nameHintCacheForTest().has("cairn"), "the clean (non-recovered) verdict was cached");
+    const blocks = sites.blocks;
+    const c = await w.confirmName("cairn");
+    assert.equal(sites.blocks, blocks, "the confirm used the cached skip");
+    assert.equal(c.verified, true);
+    assert.equal(c.disagree, true, "the confirm step still warns");
+  } finally { sites.served.extra = undefined; }
+});
+
+await test("honest path: clean hints show no disagreement at review or at the cached confirm", async () => {
+  reset();
+  const w = await walletOn(memStore());
+  const review = await w.resolveName("cairn");
+  assert.equal(review.disagree, false);
+  const blocks = sites.blocks;
+  const c = await w.confirmName("cairn");
+  assert.equal(sites.blocks, blocks, "the confirm used the cached skip");
+  assert.equal(c.disagree, false);
 });
 
 console.log(`namespv-hints-floor: ${n} passed, 0 failed`);

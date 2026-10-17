@@ -1500,6 +1500,7 @@ export class Wallet {
       claims: bundle.usable.map((r) => r.claim ?? {}),
       conflict: bundle.conflict,
       existenceDisagree: bundle.existenceDisagree,
+      belowFloor: bundle.belowFloor,
       now: Date.now(),
       epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
       hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,

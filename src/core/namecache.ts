@@ -40,6 +40,7 @@ export function claimsMeta(
   provenAddr: string,
   conflict: boolean,
   existenceDisagree: boolean,
+  belowFloor: boolean,
 ): { disagree: boolean; sources: number; anyLapsed: boolean } {
   const want = provenAddr.toLowerCase();
   let disagreeing = 0;
@@ -50,7 +51,7 @@ export function claimsMeta(
     if (a !== want) disagreeing++;
   }
   return {
-    disagree: disagreeing > 0 || conflict || existenceDisagree,
+    disagree: disagreeing > 0 || conflict || existenceDisagree || belowFloor,
     sources: claims.length,
     anyLapsed,
   };
@@ -62,6 +63,8 @@ export async function evaluateHintSetSkip(opts: {
   claims: { addr?: string; lapsed?: boolean }[];
   conflict: boolean;
   existenceDisagree: boolean;
+  /** fetchNameUnion's belowFloor: a source served a hint below the names floor (flags disagree, as the full verify does). */
+  belowFloor: boolean;
   now: number;
   epoch: number | null;
   hashAt?: (height: number) => Promise<string | null>;
@@ -72,7 +75,7 @@ export async function evaluateHintSetSkip(opts: {
   if (opts.now - cache.ts > HINTSET_TTL_MS) return { skip: false, reason: "ttl" };
   if (opts.epoch !== cache.epoch) return { skip: false, reason: "epoch" };
   if (!hintPairsEqual(cache.pairs, opts.pairs)) return { skip: false, reason: "hint-set" };
-  const meta = claimsMeta(opts.claims, cache.addr, opts.conflict, opts.existenceDisagree);
+  const meta = claimsMeta(opts.claims, cache.addr, opts.conflict, opts.existenceDisagree, opts.belowFloor);
   if (meta.anyLapsed) return { skip: false, reason: "lapsed" };
   if (!opts.hashAt) return { skip: false, reason: "no hashAt" };
   const heights = [...new Set(cache.pairs.map((p) => p.height))];
