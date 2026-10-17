@@ -217,9 +217,12 @@ triggered by a hostile or broken clarvis (a false 404 with a high `tipHeight`), 
 at most it makes that buyer click twice or cancel. It cannot sign, refuse a fill outright, or change what is signed.
 A page cannot trigger it or answer it.
 
-Rule B: an honest lagging clarvis answers 404 below the fclaim's height and the fill proceeds; an honest synced one
-answers `applied: true`. A hostile clarvis could refuse an honest fill, as it already can through the offer check,
-so it gains nothing new. An honest clarvis replays the same vendored rules over its own chain, so when the wallet's
+Rule B: an honest lagging clarvis can neither refuse nor warn: it answers 404 below the fclaim's height plus 12 and
+the fill proceeds; an honest synced one answers `applied: true`. A compromised clarvis can choose which buyer gets a
+refusal or a warning: denial of service only, the same class as the existing offer check, and both hosts are the
+operator's. An honest clarvis on a stale fork can keep a denial that the current chain no longer supports; the buyer
+is refused and retries once clarvis follows the current chain. That is accepted, and pinned in
+`test/fill-reservation-verdict.test.mjs` (a denial for a fclaim the current chain grants still refuses). An honest clarvis replays the same vendored rules over its own chain, so when the wallet's
 replay grants a reservation and clarvis's denies it, the difference is an event on clarvis's chain that the wallet's
 scan was not shown, such as the hidden hold; the node accepts no attest to an unknown proposal, so a third party
 cannot manufacture that difference without putting a real event on chain.

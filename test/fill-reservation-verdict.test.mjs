@@ -107,6 +107,17 @@ console.log("\n2. through the real preflight");
   }
 }
 
+console.log("\n2a. accepted: a clarvis on a stale fork denies a reservation the current chain grants; the fill refuses");
+{
+  const stale = await fill(null, (w) => (i, u) => (u.includes("/record/")
+    ? body({ txid: w.fc.id, kind: "fclaim", applied: false, note: "offer already claimed (hold live)", height: w.fc.height, tipHeight: w.tip })()
+    : body(w.truth)()));
+  assert.equal(stale.w.truthFclaimGranted, true, "the current chain grants the fclaim");
+  assert.equal(stale.r?.code, "RESERVATION_DENIED", "the denial still refuses (the buyer retries later)");
+  assert.equal(stale.st.submits.length, 0);
+  console.log("  ok: a stale-fork denial refuses; accepted (Rule B in the design note)");
+}
+
 console.log("\n2b. an unknown reservation goes to the confirm step (the window's side: test/fill-reservation-confirm.test.mjs)");
 {
   const unknown = (w) => (i, u) => (u.includes("/record/") ? recordAnswer({ ...w, truthLog: [] }, w.fc.height + 30) : body(w.truth)());
