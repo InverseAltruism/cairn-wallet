@@ -7,12 +7,9 @@ name: release
 on:
   push:
     tags: ["v*"]
-  # Only the `anchors` job runs on a PR or the schedule; the publish jobs are gated to tag pushes below.
+  # Only the `anchors` job runs on a PR; the publish jobs are gated to tag pushes below.
   pull_request:
     paths: ["src/core/spvanchors.ts", "scripts/update-spv-anchors.mjs", "src/vendor/cairnx-spv.js"]
-  # Daily on the default branch, so a table that has fallen more than 6,000 below the tip is red before a tag needs it.
-  schedule:
-    - cron: "23 5 * * *"
 
 # Nothing by default; each job asks for what it needs.
 permissions: {}
