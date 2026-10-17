@@ -117,14 +117,16 @@ the five lengths below; this one gives 7.7, 21.9, 116.7, 160.9 and 950.9.)
 
 - From the newest anchor (a fresh install, a wiped store, a store that cannot open): the anchor is at least 1,000
   blocks (33 h) old at tag time and ages for the life of the release, so the whole decay fits, and a forged chain
-  above the anchor costs about 4.6 blocks' worth of honest work however long it is. The 60 s spacing bounds its
-  length to (anchor age plus 2 h) / 60 s headers: 2,100 above a 33-hour-old anchor, 10,200 above a 7-day-old one,
-  about twice the honest advance since the anchor plus 120.
+  above the anchor costs about 4.6 blocks' worth of honest work. Its cheap length is bounded by the time rules: the
+  decay takes 30.8 h of the (anchor age plus 2 h) of room, and the remaining room holds one header per 60 s, so
+  about 77 plus (anchor age plus 2 h minus 30.8 h) / 60 s headers: about 329 above a 33-hour-old anchor, about
+  8,430 above a 7-day-old one. (The spacing alone would fit 2,100 and 10,200 headers, but every header before the
+  decay completes costs real work.)
 - Extending the held tip of an installed wallet, at any tip age: the 2 h of drift alone allow 5 headers at 1,440 s,
   after which 120 s spacing is neutral for the rule and the lowered difficulty holds. Forged extensions of 30, 120,
   720, 1,000 and 6,000 headers cost 7.7, 21.9, 116.7, 160.9 and 950.9 honest blocks' worth: a steady discount of
-  about 6.35, about 16 percent of honest work per header. A held tip t old allows at most (t plus 2 h) / 60 s
-  headers: 120 above a tip synced now, 2,100 above one 33 h old. (An earlier version of this note put the exposure
+  about 6.35, about 16 percent of honest work per header. Above a held tip t old at most (t plus 2 h) / 60 s
+  headers fit the time rules: 120 above a tip synced now, 2,100 above one 33 h old. (An earlier version of this note put the exposure
   at tips older than about 29 h; that figure marks when the minimum difficulty is reachable, which is not the
   binding point.)
 

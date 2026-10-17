@@ -94,6 +94,7 @@ export function checkRelease(jobs) {
   for (const s of jobs.release.steps) {
     const bad = releaseScriptOffence(s.run);
     assert.equal(bad, null, `the release job runs only sha256sum and gh (offending line: ${bad})`);
+    assert.equal(s.if, undefined, `no release step is conditional, so the checksum before the attest cannot be skipped (${s.if})`);
   }
   assert.deepEqual([...jobs.release.needs].sort(), ["anchors", "build", "vendor-fresh-full"]);
   for (const name of ["anchors", "vendor-fresh-full", "build"]) assert.deepEqual(jobs[name].permissions, { contents: "read" }, `${name} can only read`);
@@ -108,6 +109,12 @@ export function checkRelease(jobs) {
   for (const [name, j] of Object.entries(jobs)) for (const s of j.steps) {
     assert.ok(!(s.uses ?? "").includes("@v"), `${name}: ${s.uses} is pinned to a commit, not a tag`);
   }
+}
+
+/** The workflow's top-level `permissions:` value (the default every job starts from), or null when absent. */
+export function topLevelPermissions(text) {
+  const m = /^permissions:\s*(.*)$/m.exec(text);
+  return m ? m[1].trim() : null;
 }
 
 /** ci.yml's rule: no write grant anywhere, the rebuild gate runs on every event with no step skipped. */
@@ -128,6 +135,9 @@ test("the publish jobs run only on a tag push; anchors also runs on PRs", () => 
 });
 test("no job gates the csd-sdk rebuild on a secret", () => {
   for (const f of ["release.yml", "ci.yml"]) assert.ok(!/secrets\.|HAS_TOKEN|ECOSYSTEM_RO_TOKEN/.test(wf(f)), `${f} reads no secret`);
+});
+test("both workflows start every job from permissions: {} at the top level", () => {
+  for (const f of ["release.yml", "ci.yml"]) assert.equal(topLevelPermissions(wf(f)), "{}", f);
 });
 test("the scanner sees the steps it judges: the release job's scripts and the shape of a conditional step", () => {
   assert.equal(release.release.steps.filter((s) => s.run !== undefined).length, 2);
@@ -163,6 +173,13 @@ test("a release step running a script file or an interpreter fails the check", (
     const mutated = mutate("release.yml", "      - run: sha256sum -c cairn-wallet-store.zip.sha256 cairn-wallet.zip.sha256\n", `      - run: sha256sum -c cairn-wallet-store.zip.sha256 cairn-wallet.zip.sha256\n      - run: ${cmd}\n`);
     assert.throws(() => checkRelease(scanWorkflow(mutated)), /runs only sha256sum and gh/, cmd);
   }
+});
+test("a release step with an if: (the checksum step skipped) fails the check", () => {
+  const mutated = mutate("release.yml", "      - run: sha256sum -c cairn-wallet-store.zip.sha256 cairn-wallet.zip.sha256\n", "      - if: ${{ false }}\n        run: sha256sum -c cairn-wallet-store.zip.sha256 cairn-wallet.zip.sha256\n");
+  assert.throws(() => checkRelease(scanWorkflow(mutated)), /no release step is conditional/);
+});
+test("a top-level permissions: write-all fails the check", () => {
+  for (const f of ["release.yml", "ci.yml"]) assert.equal(topLevelPermissions(mutate(f, "\npermissions: {}\n", "\npermissions: write-all\n")), "write-all", f);
 });
 test("a ci.yml step with an if: skip fails the check", () => {
   const mutated = mutate("ci.yml", "      - run: npm -C cairn-wallet ci --ignore-scripts\n", "      - if: ${{ env.HAS_TOKEN == 'true' }}\n        run: npm -C cairn-wallet ci --ignore-scripts\n");
