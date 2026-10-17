@@ -863,8 +863,13 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           // A structural break (a reorg orphaned the stored tip): reseed from the anchor chunk and sync the served
           // chain again. The stored suffix is replaced only once the new one has verified up to `want`.
           const fresh = await seedFromAnchor();
-          try { await syncAligned(fresh, want); }
-          catch (e2) {
+          try {
+            await syncAligned(fresh, want);
+            // `want` can sit far below the node tip (a name's record height plus the cushion), where an honest
+            // winning branch may still hold less work than the held branch has at its tip; the comparison is
+            // made at the node tip in that case, so the refusal below is never an artefact of a low `want`.
+            if (!reseedAdopts(LC, fresh) && tipKnown && nodeTip > tipOf(fresh)) await syncAligned(fresh, nodeTip); // MUTATE_RESEED_TO_TIP
+          } catch (e2) {
             const m2 = String((e2 as Error)?.message || e2);
             if (CLOCK_FAULT.test(m2)) throw clockRefusal(m2);
             if (isTransientSyncError(m2)) throw e2;

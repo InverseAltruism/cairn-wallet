@@ -15,8 +15,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { LightClient, HEADER_BYTES } from "../src/vendor/cairnx-spv.js";
-import { reseedAdopts, SPV_CHECKPOINTS, syncAligned } from "../src/core/namespv.ts";
-import { records, row, FIX_TOP, NEWEST } from "./helpers/spvfixture.mjs";
+import { reseedAdopts, SPV_CHECKPOINTS, syncAligned, liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
+import { records, row, hashOf, serveFixture, memStore, legacyOf, forge, rehash, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log("  ok " + name); };
@@ -78,6 +78,71 @@ await test("real headers: the work the honest suffix adds per block equals the a
   const ratio = perSuffixBlock / perSeedBlock;
   assert.ok(ratio > 0.8 && ratio < 1.2, `suffix work per block is ${ratio.toFixed(3)} of the seed's`);
   assert.equal(synced.chain.length * HEADER_BYTES, synced.toRecords(synced.baseHeight).length);
+});
+
+// The comparison is made at the node tip when the sync target leaves it undecided: a name's `want` is its record
+// height plus 12, and an honest winning branch can carry less work up to `want` than the held branch holds at its
+// tip while carrying more at the node tip. The one real chain offline has no branch with other difficulty, so the
+// held branch's extra work is produced by a test instrument: the vendored `chainwork` getter is overridden for the
+// client whose tip is the held tip (115,000) to report 100 headers' worth more than it has, and restored after.
+// Through the production liveSpvSource over the fixture: the store holds the real chain to 115,000, the served page
+// breaks once at 115,001, the name's `want` is 115,050 (50 headers above the held tip) and the node tip is 115,199.
+// RED-FIRST: without the extra sync (the MUTATE_RESEED_TO_TIP line) prepare refuses with the less-work copy;
+// with it the fresh client syncs to the node tip, carries more work than the held branch and is adopted.
+const API = "https://cairn-substrate.test";
+async function reseedBelowTip({ inflateHeld }) {
+  const net = { tip: 115000 };
+  const restore = serveFixture(net);
+  const desc = Object.getOwnPropertyDescriptor(LightClient.prototype, "chainwork");
+  assert.equal(typeof desc?.get, "function", "the vendored LightClient exposes chainwork as a getter");
+  try {
+    if (inflateHeld) {
+      Object.defineProperty(LightClient.prototype, "chainwork", { configurable: true, get() {
+        const real = desc.get.call(this);
+        return this.chain[this.chain.length - 1]?.height === 115000 ? real + real * 100n / BigInt(this.chain.length) : real;
+      } });
+    }
+    const kv = new Map();
+    const opts = (store) => ({ rpcBase: `${API}/api/rpc`, headersBase: API, anchors: FIX_ANCHORS, store: async () => store, legacy: legacyOf(kv),
+      floor: { get: async () => Number(kv.get("spvNodeTipFloor")) || 0, set: async (v) => { kv.set("spvNodeTipFloor", v); } } });
+    const st = memStore();
+    await (await liveSpvSource(opts(st))).prepare(115000 - 12);
+    await flushSpvStoreWrites();
+    assert.equal(st.head?.tip, 115000, "setup: the store holds the real chain to 115,000");
+    net.tip = FIX_TOP;
+    net.log.length = 0;
+    // The first request that carries 115,001 serves it broken (a consistent hash over a changed merkle root fails
+    // PoW): the held chain's sync breaks there; every later request is honest.
+    let broken = false;
+    net.tamper = (from, rows) => {
+      if (broken || !rows.some((r) => r.height === 115001)) return rows;
+      broken = true;
+      return rows.map((r) => (r.height === 115001 ? rehash(forge(r)) : r));
+    };
+    const src = await liveSpvSource(opts(st));
+    const p = await src.prepare(115050 - 12);
+    await flushSpvStoreWrites();
+    return { p, src, st, log: [...net.log] };
+  } finally {
+    Object.defineProperty(LightClient.prototype, "chainwork", desc);
+    restore();
+  }
+}
+
+await test("liveSpvSource: a held branch with more work than the honest chain at `want` is compared at the node tip and the honest chain is adopted", async () => {
+  const { p, src, st, log } = await reseedBelowTip({ inflateHeld: true });
+  assert.equal(p.verifiedTip, FIX_TOP, "the fresh client synced to the node tip before the comparison and was adopted");
+  assert.equal(await src.hashAt(115100), hashOf(115100));
+  assert.equal(st.head?.tip, FIX_TOP);
+  assert.deepEqual(log, ["115001/50", "114688/363", "114688/512"], "the break, the reseed to `want`, the reseed on to the node tip's page");
+});
+
+await test("honest path: with no extra work on the held branch the reseed adopts at `want` with no further request", async () => {
+  const { p, src, st, log } = await reseedBelowTip({ inflateHeld: false });
+  assert.equal(p.verifiedTip, 115050);
+  assert.equal(await src.hashAt(115050), hashOf(115050));
+  assert.equal(st.head?.tip, 115050);
+  assert.deepEqual(log, ["115001/50", "114688/363"], "the break and the reseed to `want`");
 });
 
 await test("use-site: prepare's reseed adopts the fresh client only through reseedAdopts, before `LC = fresh`", async () => {
