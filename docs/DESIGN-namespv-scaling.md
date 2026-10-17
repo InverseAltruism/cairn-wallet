@@ -20,8 +20,9 @@ restore, routing, sync, migration), `src/core/spvanchors.ts` (the table, generat
 cairn's `bump-swapguard-cp.mjs --emit-json` corroborated on the node, the miner and clarvis, by walking the
 served headers up from the floor pin through the vendored light client; the `anchors` job in
 `.github/workflows/release.yml` re-walks the whole table from clarvis's public `/api/headers` and checks every
-entry on the front door's RPC, on every `v*` tag, on PRs that touch the table, its checker or the bundle, and
-daily. It fails when the newest entry is more than 6,000 below the public tip or less than 1,000 below it.
+entry on the front door's RPC. The release runbook (`store/PUBLISH-RUNBOOK.md` step 2) regenerates the table for
+every tag; the job gates the tag and also runs on PRs that touch the table, its generator or the bundle. It fails
+when the newest entry is more than 6,000 below the public tip or less than 1,000 below it.
 
 The rule the code keeps:
 
@@ -88,4 +89,4 @@ behind a header stops with a reason that names the clock, and the store is kept.
   would otherwise verify.
 - Consensus math stays vendored (csd-sdk through the PROVENANCE-pinned bundle).
 - The cost of a start follows the suffix above the newest anchor, so the table must be refreshed per release
-  (`store/PUBLISH-RUNBOOK.md`); a red scheduled `anchors` run says the refresh is due.
+  (`store/PUBLISH-RUNBOOK.md` step 2), and the `anchors` job refuses a tag whose table is stale.
