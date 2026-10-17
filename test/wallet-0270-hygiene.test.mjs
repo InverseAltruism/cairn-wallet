@@ -55,10 +55,9 @@ ok("suffixWrite has exactly two callers: persist(), and the one-time legacy migr
   (namespv.match(/\bsuffixWrite\(\)/g) || []).length === 2 && namespv.indexOf("suffixWrite() ??") > 0 && namespv.indexOf("suffixWrite() ??") < namespv.indexOf("async prepare(maxEventHeight"));
 ok("flushSpvStoreWrites is exported for tests", /export async function flushSpvStoreWrites/.test(namespv));
 ok("hashAt/merkleAt are on the live source", /async hashAt\(height/.test(namespv) && /async merkleAt\(height/.test(namespv));
-ok("the names floor is still 29960 (no checkpoint bump) and the light client holds it as a checkpoint",
-  SPV_FLOOR.height === 29960 && SPV_CHECKPOINTS[29960] === SPV_FLOOR.hash && /checkpoints: SPV_CHECKPOINTS as Record<number, string>/.test(namespv)
-  && /const \{ anchors, newestK, newest \} = anchorTable\(opts\.anchors\);/.test(namespv)
-  && /\[SPV_FLOOR\.height, SPV_FLOOR\.hash\],/.test(namespv));
+// That the light client gets this whole map under an anchors prefix is pinned by test/namespv-anchor-prefix.test.mjs.
+ok("the names floor is still 29960 (no checkpoint bump) and the release checkpoint map holds it",
+  SPV_FLOOR.height === 29960 && SPV_CHECKPOINTS[29960] === SPV_FLOOR.hash);
 
 const build = src("build.mjs");
 ok("popup entry is its own esbuild build with splitting:true",
