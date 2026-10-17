@@ -93,6 +93,70 @@ grows by one page per 512 blocks, so the timeout is reached near tip 513,000 at 
 public repository's minutes are free) or the check walks from the previous release's newest entry, which the
 previous release's run already derived from the floor.
 
+## Work above the newest anchor
+
+Above the newest anchor the light client checks each header against its parent (prev link, time rules, LWMA bits,
+PoW) and, on a reseed, compares the fresh chain's work with the held chain's. It compares a chain with nothing else:
+a fresh install has no held chain, and a chain that extends the stored tip is accepted header by header.
+
+What a header source can do with that. The vendored difficulty rule (`expectedBitsFromWindow` in
+`src/vendor/cairnx-spv.js`: the next target is the 45-header window's mean target times its weighted mean
+solvetime, each solvetime counted as at least 1 s and at most 1,440 s, over the 120 s block time) lets timestamps
+lower the difficulty. A source that dates every header 1,440 s after its parent raises the target to 1.5, 2.0, 3.1
+and 7.3 times the honest one after 1, 2, 3 and 5 headers, 44 times after 10, 374 times after 20, and reaches the
+minimum difficulty (17.8 million times the target at tip 121,667) after 77 headers; those 77 headers carry 4.58
+blocks' worth of work at the honest difficulty, and every header after them carries about none. The 77 headers
+need 30.8 h of timestamp room; the time rules (`checkTimeRules`: 60 s minimum spacing, median time past, at most
+2 h ahead of the wallet's clock) bound that room by the clock, so such a fork can start from any verified header
+that is at least 28.8 h old. (Simulated on 2026-10-17 from the rule as vendored, with the bits at tip 121,667;
+Plan 86, D-86-9.)
+
+The two cases the reseed rule does not reach:
+
+- A fresh install, a wiped store, or a wallet restored from its seed on another machine: the chain is seeded from
+  the newest anchor, which is at least 1,000 blocks (33 h) old at tag time and ages for the life of the release.
+  A fork from the anchor can be decayed and extended to any height the source names, for about 5 blocks of honest
+  work; the wallet syncs to the lower of the served node tip and the proof's height plus 12, both from that source.
+- An installed wallet whose verified tip is older than about 29 h: a fork grafted onto that tip decays the same
+  way, links to the stored chain, and is synced forward like an honest advance. No reseed runs. A wallet synced
+  within the last day leaves 2 to 26 h of room, so a fork from its tip must mine most of its headers at or near
+  the honest difficulty, which takes hashrate, not a header source.
+
+Who can do it: whoever answers the wallet's `/api/headers` and `/api/rpc` (the front door's operator, or whoever
+compromises the front door); the node tip comes from the same source. What it reaches: for names, withholding
+only, since the forged blocks cannot carry an owner's signature the source does not have, and the second name
+source's records then fail against them, so the result is flagged rather than green; for reservation fills, a
+competing hold or cancel hidden inside the fclaim scan window, which the second-resolver offer check covers only
+when clarvis answers in time (`OFFER_SOURCE_CONFLICT`).
+
+A minimum-work floor was considered for the fresh-install case (Plan 86 D-86-9 part 2) and is not built:
+
+- The candidate of the plan, the table carrying the cumulative work at each anchor and a served chain refused when
+  its work above the newest anchor is implausibly low for its height span, is bypassed by a short chain: the source
+  also serves the node tip, so the forged chain can be 78 headers long (77 to decay, one dated now) with 4.6 blocks
+  of work over a 78-block span, which no floor tolerating an honest 17-fold difficulty fall refuses. The table
+  change buys nothing.
+- A floor against elapsed time instead (the work since the anchor, against the anchor-era work per block times the
+  seconds since the anchor's timestamp, both read from the verified anchor chunk, so no table change) cannot be
+  shortened away: the forged chain's work stays near 4.6 blocks while the anchor ages, so over an anchor age of
+  33 h it looks like an honest chain whose hashrate fell 215-fold, 1,096-fold at 7 days, 4,696-fold at 30 days. A
+  floor tolerating an F-fold fall refuses the forged chain once the anchor is older than 552 x F seconds (F = 100:
+  15 h; F = 1000: 6.4 days) and refuses every honest chain whose hashrate, averaged since the anchor, fell more than
+  F-fold. The simulated honest collapse by a factor f shows exactly an f-fold work shortfall at every age (f = 10,
+  100 and 1,000 at 33 h, 7 days and 30 days), so no F separates a forged chain from an honest collapse of the same
+  factor: a floor that catches a header source with hashrate H/F also refuses an honest chain running at H/F.
+- On this chain one coinbase address mined all 300 blocks from 121,368 to 121,667 (read from the node on
+  2026-10-17). If that miner stops, the remaining hashrate, and with it the honest fall factor, is unknown and can
+  exceed any F; the floor would then refuse every fresh install's name verification and reservation fill until a
+  release re-anchors, for an event the wallet should survive. That is a new refusal on an honest path, so the floor
+  is not built. Built, it would have been about 20 lines in `prepare` plus a test, no table change and no request.
+
+What would close both cases: a second header source on another host for a fresh install's first sync and for an
+extension past a stale tip (one request for the hash at the synced height from clarvis's public `/api/headers`,
+refuse on a disagreement, proceed with the result flagged when it does not answer). That is the two-source pattern
+the name path uses, fail-soft, and not independent of the operator (one registrable domain). Not built in 0.2.99;
+recorded for the owner with D-86-9.
+
 ## Callers and their tests
 
 | Caller | Test |

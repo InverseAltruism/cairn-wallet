@@ -56,9 +56,17 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   to those hashes, and every header above it is verified forward (PoW + LWMA difficulty + prev-link).
   Every built-in hash stays a checkpoint for the life of the release: a served chain that contradicts one is
   refused, with no fallback to an older hash, and the wallet says to update or try again later. Above the newest
-  built-in hash the headers are checkpoint-bound and consensus-checked, not compared by cumulative work: a header
-  source that mines a valid fork from above that hash can have it adopted (when the wallet re-syncs after the
-  served chain stops linking to its stored tip, or on a fresh install);
+  built-in hash every header is consensus-checked (PoW, LWMA difficulty, timestamps, prev link). When the served
+  chain stops linking to the wallet's stored chain and the wallet re-syncs from the built-in hash, the replacement
+  is adopted only if it carries more proof of work than the chain the wallet already verified. Two cases are
+  compared with nothing: a fresh install's first sync, and a chain that extends a stored tip older than about 29
+  hours. There a header source (the front door's operator, or whoever compromises the front door) can serve a fork
+  whose difficulty it lowered with spread timestamps, for about 5 blocks' worth of honest work
+  (`docs/DESIGN-namespv-scaling.md`, "Work above the newest anchor", has the derivation). What that reaches: a
+  name shown without a later transfer (the forged blocks cannot carry signatures the source does not have, and the
+  second name source's records then fail against them, so the result is flagged, not green), and a reservation
+  fill with a competing hold or cancel hidden from the scan window, which the second-resolver check below covers
+  only when it answers. A second header source would close both cases; it is not built in this release;
   it proves each name record's inclusion against the PoW-committed merkle root;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
