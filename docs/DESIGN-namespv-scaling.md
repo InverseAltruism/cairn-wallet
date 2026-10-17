@@ -229,8 +229,19 @@ to start only just below the hidden event, and fills bury their fclaim at depth 
 it misses every fill at depth 3 to 6. Comparing nearer the tip would refuse honest users during a tip race or while
 clarvis lags.
 
-Residual: clarvis down or slower than the scan during the attack, or both hosts compromised. Both hosts are run by
-the operator under one registrable domain.
+Residual:
+
+- clarvis down or slower than the scan during the attack;
+- a front door that withholds or delays the buyer's fclaim, while clarvis has not yet replayed it. The front door
+  relays the buyer's submits through `/api/rpc`, so it can hold the fclaim back, get a competing hold mined first,
+  and release the now-denied fclaim just before the fill. clarvis answers 404 because it has not seen the fclaim yet,
+  and the fclaim's "proven" height is proven only against the headers the front door serves, so the attacker chooses
+  it: within 12 of clarvis's tip gives no evidence and the fill proceeds, further gives the warning. Against a
+  header-source attacker the "unknown" warning is therefore advisory;
+- both hosts compromised. Both hosts are run by the operator under one registrable domain.
+
+A possible later closure for the withholding case, not built: a second broadcast path for the fclaim through the
+second host, if its relay accepts submits, so the front door alone cannot hold the reservation back.
 
 ## Callers and their tests
 
