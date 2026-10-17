@@ -34,6 +34,12 @@ The rule the code keeps:
   chunk (`LightClient.fromRecords`: hash, prev link, PoW, pins) and synced forward with every consensus check
   (prev link, time rules including the 2-hour future drift, LWMA bits, PoW). The stored suffix is restored through
   the same `ingest`, so a record stored in the profile is checked like a served one.
+- Above the newest anchor the guarantee is checkpoint-bound, consensus-checked headers: each header must pass the
+  consensus checks against its parent, but the light client does not compare cumulative work with any other chain.
+  A reseed (after a sync that no longer links to the stored tip) does not compare chainwork with the chain it
+  replaces, and a fresh install has no chain to compare with. A header source that can mine a valid fork from above
+  the newest anchor can therefore have that fork adopted; the cost is mining the fork's headers at the difficulty the
+  LWMA rule and the 2-hour future-drift bound allow.
 - The light client gets every table entry, floor included, as a checkpoint (`SPV_CHECKPOINTS`), for the life of
   the release. No code path removes, skips or overrides an entry. The `anchors` option of `liveSpvSource` takes only
   a prefix of the release table (tests and the acceptance harness); the light client still gets the full map

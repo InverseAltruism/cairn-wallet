@@ -55,7 +55,10 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   a second host in CI): a header up to the newest built-in hash is used only if its chunk hash-links
   to those hashes, and every header above it is verified forward (PoW + LWMA difficulty + prev-link).
   Every built-in hash stays a checkpoint for the life of the release: a served chain that contradicts one is
-  refused, with no fallback to an older hash, and the wallet says to update or try again later;
+  refused, with no fallback to an older hash, and the wallet says to update or try again later. Above the newest
+  built-in hash the headers are checkpoint-bound and consensus-checked, not compared by cumulative work: a header
+  source that mines a valid fork from above that hash can have it adopted (when the wallet re-syncs after the
+  served chain stops linking to its stored tip, or on a fresh install);
   it proves each name record's inclusion against the PoW-committed merkle root;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature
