@@ -72,9 +72,9 @@ export function startSecondSourceRead(base: string, route: "offer" | "record", i
   return { answer: () => ans, stop: () => { clearTimeout(timer); ac.abort(); } };
 }
 
-// How far a resolver's tipHeight may lead the events it has applied. The cairnx service publishes tipHeight and
-// events from one scan (events <= tipHeight); with its inclusion check on it applies only events confDepth (12,
-// cairnx Scanner.FINALITY) below the verified tip. 12 also covers a shallow reorg that re-mines our fclaim higher.
+// A conservative margin before a resolver's 404 counts as "has read past our fclaim". The cairnx service publishes
+// tipHeight and events from one scan with no depth lag (inclusion checking is off by default), so 12 covers a
+// shallow reorg that re-mines our fclaim higher and the race between its indexer and the node it reads from.
 export const RECORD_LAG_MARGIN = 12;
 
 // A note is shown to the user, so only short printable ASCII is kept (every vendored fclaim denial reason is).

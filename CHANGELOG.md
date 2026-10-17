@@ -7,7 +7,7 @@
   When clarvis reports that it replayed the reservation and did not apply it, the fill refuses with the new code
   `RESERVATION_DENIED` and clarvis's reason. This covers a header source that hides a competing reservation placed
   just before the buyer's, whose hold ends before the buyer's and so passes the offer check. An applied
-  reservation, a 404 below the reservation's height, a timeout, an error or an unusable answer proceed as before,
+  reservation, a 404 below the reservation's height plus 12, a timeout, an error or an unusable answer proceed as before,
   with no added wait.
 - When clarvis has read the chain at least 12 blocks past the buyer's proven reservation and has no record of it,
   the wallet signs nothing yet: the approval window shows the request again with a warning ("The second source has

@@ -202,10 +202,11 @@ same base and timeout), and counts only if it answered before the scan finished,
 - Anything else (applied, a 404 below that height, a wrong kind or txid, a malformed body, an error, a timeout, no
   answer before the scan ends): no evidence, the fill proceeds.
 
-The margin of 12: the cairnx service publishes `tipHeight` and its events from one scan, so an honest resolver's 404
-at or above a height means it has no record there; with its inclusion check on it applies only events its
-confirmation depth (12 by default) below the verified tip, and 12 also covers a shallow reorg that re-mines the
-fclaim a few blocks higher.
+The margin of 12 is conservative. The cairnx service publishes `tipHeight` and its events from one scan with no
+depth lag (clarvis's deployed build constructs its scanner with inclusion checking off, the default; with it on, a
+too-shallow record aborts the scan rather than lagging the events), so an honest resolver's 404 at a height means it
+has no record there. The 12 blocks cover a shallow reorg that re-mines the fclaim a few blocks higher and the race
+between the resolver's indexer and the node it reads from.
 
 Rule A, the confirm step: clarvis's 404 and `tipHeight` now decide whether a fill needs a second click
 (`offerxcheck.ts` `reservationRecordVerdict`, `wallet.ts` `fclaimLanePreflight`); whether it signs after that click is
