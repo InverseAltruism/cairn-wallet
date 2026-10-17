@@ -183,7 +183,9 @@ function reservationAckFor(id: string, ack: unknown): string | undefined {
   if (!a || typeof a !== "object" || a.requestId !== id || typeof a.fclaimTxid !== "string") return undefined;
   return /^0x[0-9a-fA-F]{64}$/.test(a.fclaimTxid) ? a.fclaimTxid.toLowerCase() : undefined;
 }
-// Put a request back at the head of the queue, where it was when the window approved it.
+// Put a request back at the head of the queue, where it was when the window approved it. It does not re-check the
+// queue caps: requests that arrived while it was in flight stay queued, so a site can sit one above its cap per
+// request in the confirm step, each of which took a user's approval (test/fill-reservation-confirm.test.mjs, 10).
 function requeueFront(id: string, p: Pending): void {
   const rest = [...pending];
   pending.clear();

@@ -204,4 +204,21 @@ await test("9. the window closing during the Sign anyway re-run still signs: the
   assert.equal(typeof G.reply?.result?.txid, "string");
 });
 
+await test("10. queue caps: a confirm-step request re-queued after five newer ones from its site overshoots by one, bounded", async () => {
+  const H1 = await request(null, unknown, { scanMs: 200 });
+  const inFlight = resolveAs(H1, true, ME);
+  await new Promise((r) => setTimeout(r, 20));
+  const sends = [];
+  for (let i = 0; i < 5; i++) chrome.listener({ kind: "dapp", method: "send", params: { to: "0x" + "11".repeat(20), amount: 1e7, fee: 1e6 } }, { origin: "https://dapp.test" }, (r) => { sends.push(r); });
+  await settle();
+  assert.equal(sends.length, 0, "the five newer requests queued while the fill was in flight");
+  assert.equal((await inFlight).code, "RESERVATION_UNCONFIRMED");
+  assert.equal((await call("pending")).filter((p) => p.origin === "https://dapp.test").length, 6, "one above the per-site cap of 5");
+  let over;
+  chrome.listener({ kind: "dapp", method: "send", params: {} }, { origin: "https://dapp.test" }, (r) => { over = r; });
+  await settle();
+  assert.equal(over?.code, "RATE_LIMITED", "the cap still refuses the next one");
+  for (const p of await call("pending")) await call("resolve", p.id, false);
+});
+
 console.log(`fill-reservation-confirm: ${n} passed, 0 failed`);
