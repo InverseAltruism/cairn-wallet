@@ -58,9 +58,7 @@ check("the reseed re-syncs to `want` BEFORE adopting the client (a lying-high he
   freshSyncIdx > reseedIdx && adoptIdx > freshSyncIdx);
 check("the reseed resets persistedTip only AFTER adopting the fresh client, then the block persists the new suffix",
   resetIdx > adoptIdx && finalPersistIdx > resetIdx);
-check("a reseeded sync that fails at the anchor refuses with the checkpoint message (pinRefusal), not a bare sync error",
-  /if \(isTransientSyncError\(m2\)\) throw e2;[\s\S]*?if \(tipOf\(fresh\) === newest\) throw pinRefusal\(newest, e2\);/.test(prep)
-  && /const pinRefusal = \(height: number, e: unknown\) =>\s*new Error\(`the wallet could not match the chain to its built-in checkpoints/.test(src));
+// The reseed's transient-before-pin order and the checkpoint copy are pinned by behaviour in namespv-store-pins.
 check("a clock fault during the reseeded sync is refused with the clock named, never pinRefusal",
   /catch \(e2\) \{\s*const m2 = String\(\(e2 as Error\)\?\.message \|\| e2\);\s*if \(CLOCK_FAULT\.test\(m2\)\) throw clockRefusal\(m2\);/.test(prep));
 

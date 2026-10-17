@@ -156,6 +156,27 @@ console.log("case 2: a structural break above the anchor:");
   check("  and the source still answers from it", (await src.hashAt(114900)) === hashOf(114900));
 }
 
+{
+  // The reseed's first page above the anchor answers 429 until the client gives up: that is a transient fault,
+  // reported as such, not as a checkpoint contradiction (the fresh client is still at the anchor when it fails).
+  const st = await storeTo(114900);
+  const before = st.image();
+  let calls = 0;
+  net.tamper = (from, rows) => (from === 114688 && ++calls === 1 ? tamperAt([114901], (r) => rehash(forge(r)))(from, rows) : rows);
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => (calls >= 1 && /\/api\/headers\/114688\//.test(String(url)) && ++calls > 1
+    ? new Response(JSON.stringify({ ok: false }), { status: 429, headers: { "retry-after": "1" } }) : inner(url, init));
+  try {
+    const src = await liveSpvSource(opts(st));
+    const err = await rejects(src.prepare(FIX_TOP - 12));
+    await flushSpvStoreWrites();
+    check(`a 429 during the reseed is reported as the transport error, not the checkpoint copy (${err})`, err === "/api/headers 429");
+    check("  the store is kept", st.image() === before);
+  } finally { globalThis.fetch = inner; net.tamper = undefined; }
+  const p = await (await liveSpvSource(opts(st))).prepare(FIX_TOP - 12);
+  check(`  honest path: once the server answers, the same store syncs to ${p.verifiedTip}`, p.verifiedTip === FIX_TOP);
+}
+
 console.log("case 3: the user's clock:");
 {
   const realNow = Date.now;
