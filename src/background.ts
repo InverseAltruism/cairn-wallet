@@ -314,9 +314,9 @@ const MAX_PENDING_GLOBAL = 32;
 const MAX_PENDING_PER_ORIGIN = 5;
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
-  if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests — approve or reject the queued ones first" });
+  if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests; approve or reject the queued ones first" });
   let perOrigin = 0; for (const p of pending.values()) if (p.origin === origin) perOrigin++;
-  if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site — approve or reject the queued ones first" });
+  if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site; approve or reject the queued ones first" });
   return new Promise((resolve) => {
     const id = `${Date.now()}-${reqSeq++}`;
     pending.set(id, { origin, method, params, resolve });
