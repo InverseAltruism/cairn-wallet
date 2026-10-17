@@ -196,8 +196,9 @@ same base and timeout), and counts only if it answered before the scan finished,
   `test/approve-unconfirmed-dom.test.mjs` for the window). "Sign anyway" re-sends the approval with an
   acknowledgement bound to the request id and the fclaim txid; the worker re-runs the whole preflight (the scan and
   both clarvis reads), so a reservation clarvis now reports denied still refuses, and an "unknown" with a matching
-  acknowledgement, a granted one or no evidence signs once. The acknowledgement is taken only from the approval
-  window's `resolve` call on the extension-page channel; one in the request's params, or for another request or
+  acknowledgement, a granted one or no evidence signs once. The acknowledgement is taken only as a `resolve` argument on the
+  extension-page channel (`background.ts` accepts popup-kind messages from any page of the extension; the approval
+  window is the only one that sends it, and the toolbar popup only rejects); one in the request's params, or for another request or
   fclaim, is ignored. "Cancel" rejects the request; closing the window settles it `APPROVAL_CLOSED`.
 - Anything else (applied, a 404 below that height, a wrong kind or txid, a malformed body, an error, a timeout, no
   answer before the scan ends): no evidence, the fill proceeds.
