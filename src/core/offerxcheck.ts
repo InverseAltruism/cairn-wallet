@@ -40,7 +40,7 @@ export function secondSourceOfferConflict(primary: unknown, second: unknown, ctx
   if (HASH_RE.test(holder) && holder !== String(ctx.fclaimTxid).toLowerCase()
     && typeof until === "number" && Number.isSafeInteger(until)
     && typeof ctx.ownHoldEnd === "number" && Number.isSafeInteger(ctx.ownHoldEnd) && until > ctx.ownHoldEnd)
-    return "a later reservation now holds this offer";
+    return `another reservation holds this offer until height ${until}`;
   return null;
 }
 

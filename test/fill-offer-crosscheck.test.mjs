@@ -38,7 +38,7 @@ console.log("1. secondSourceOfferConflict (pure)");
   check("lower or equal paid (a lagging source) proceeds", x({ ...P, paid: "50", delivered: "10" }) === null && x({ ...P, paid: "100" }) === null);
   check("second source omitting paid is not evidence", x({ ...P, paid: undefined, delivered: undefined }) === null);
   check("malformed paid is not evidence", x({ ...P, paid: "1e9" }) === null && x({ ...P, paid: -5 }) === null);
-  check("a later reservation by another fclaim refuses", /later reservation/.test(x({ ...P, claimTxid: OTHER, claimUntilHeight: 1230 }) ?? ""));
+  check("a later reservation by another fclaim refuses, naming its end", x({ ...P, claimTxid: OTHER, claimUntilHeight: 1230 }) === "another reservation holds this offer until height 1230");
   check("an earlier holder (a source that has not seen our grant) proceeds", x({ ...P, claimTxid: OTHER, claimUntilHeight: 1150 }) === null);
   check("a different holder without a usable hold end proceeds", x({ ...P, claimTxid: OTHER, claimUntilHeight: "1230" }) === null && x({ ...P, claimTxid: OTHER, claimUntilHeight: undefined }) === null);
   check("a different holder with our hold end unknown proceeds", x({ ...P, claimTxid: OTHER, claimUntilHeight: 1230 }, { offerId: OID, fclaimTxid: FC }) === null);
@@ -55,7 +55,7 @@ console.log("\n1b. the holder rule against the replay: an equal expiry epoch is 
   const OID = H(1), FC = H(2), OTHER = H(3), E = 39;
   const P = { id: OID, status: "open", claimTxid: FC, claimUntilHeight: (E + 1) * EPOCH_LEN };
   const ctx = { offerId: OID, fclaimTxid: FC, ownHoldEnd: fclaimHoldEnd(E) };
-  check("another fclaim with our expiry epoch refuses", /reservation/.test(secondSourceOfferConflict(P, { ...P, claimTxid: OTHER, claimUntilHeight: (E + 1) * EPOCH_LEN }, ctx) ?? ""));
+  check("another fclaim with our expiry epoch refuses, naming its end", secondSourceOfferConflict(P, { ...P, claimTxid: OTHER, claimUntilHeight: (E + 1) * EPOCH_LEN }, ctx) === `another reservation holds this offer until height ${(E + 1) * EPOCH_LEN}`);
   check("another fclaim one epoch earlier proceeds", secondSourceOfferConflict(P, { ...P, claimTxid: OTHER, claimUntilHeight: E * EPOCH_LEN }, ctx) === null);
 
   // Replay: a competing fclaim with our epoch, granted first, is still held at our grant, so ours is denied and
