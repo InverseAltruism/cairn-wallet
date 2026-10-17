@@ -35,7 +35,9 @@ and CairnX token state. A malicious RPC cannot redirect funds or forge your appr
 could show a wrong balance, hide a transaction, or feed stale/false UTXOs (at worst causing a
 rejected transaction or a misleading display, not a key or fund compromise). If that matters
 for your threat model, point the wallet at your own node (`http://127.0.0.1:8789`) instead of
-the public proxy.
+the public proxy. Block headers still come from the Cairn API (`/api/headers`) and block bodies
+from the node, so a node that follows another chain fails the merkle check on name proofs and
+fills, and the reason names the configured RPC.
 
 The Activity markers for a transaction not yet seen as included come from that same RPC (its tip,
 whether it reports the transaction mined, and its mined coin set), so a lying RPC can show a transaction
@@ -50,7 +52,9 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
 * it runs an **in-wallet SPV light client** anchored by block hashes built into each release (one
   per 4,096 blocks from the names floor, corroborated by three nodes on two hosts and re-derived from
   a second host in CI): a header up to the newest built-in hash is used only if its chunk hash-links
-  to those hashes, and every header above it is verified forward (PoW + LWMA difficulty + prev-link);
+  to those hashes, and every header above it is verified forward (PoW + LWMA difficulty + prev-link).
+  Every built-in hash stays a checkpoint for the life of the release: a served chain that contradicts one is
+  refused, with no fallback to an older hash, and the wallet says to update or try again later;
   it proves each name record's inclusion against the PoW-committed merkle root;
 * it binds each record's signer to the **coin it spends** (the prevout's scriptPubkey must be that
   signer's address), so a hostile block-body provider cannot substitute a foreign-but-valid signature

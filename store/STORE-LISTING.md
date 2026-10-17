@@ -77,7 +77,7 @@ Stores the user's encrypted key vault, public account list, local transaction hi
 ```
 - `unlimitedStorage`
 ```
-The wallet's trustless .csd name verification keeps a proof-of-work-verified block-header snapshot in chrome.storage.local. That snapshot grows with the chain (multi-MB already) and shares the default 10MB quota with the user's encrypted key vault, so without unlimitedStorage the header cache would hit the quota and degrade verification. All of this data stays on the user's own device: nothing is collected or transmitted, and the vault is unaffected.
+The wallet's trustless .csd name verification keeps proof-of-work-verified block headers in the extension's own IndexedDB database (84 bytes per header). That store grows with the chain, so without unlimitedStorage it would eventually hit the storage quota and degrade verification. All of this data stays on the user's own device: nothing is collected or transmitted, and the encrypted key vault is unaffected.
 ```
 - `alarms`
 ```
