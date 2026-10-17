@@ -8,6 +8,12 @@
   `RESERVATION_DENIED` and clarvis's reason. This covers a header source that hides a competing reservation placed
   just before the buyer's, whose hold ends before the buyer's and so passes the offer check. An applied
   reservation, a 404, a timeout, an error or an unusable answer proceed as before, with no added wait.
+- SECURITY.md and the header-store design note correct the cost of the forged-header attack on reservation fills:
+  the forged chain needs to start only just below the hidden reservation, so for a small fill it is a few honest
+  blocks' worth of work and succeeds on every attempt once the front door is controlled (the earlier text said it
+  had to run to the chain's real height, about 160 blocks' worth). They describe the reservation verdict above, its
+  residual (clarvis down or slow during the attack, or both hosts compromised), and why the header-hash comparison
+  first proposed was not built (it misses every fill at claim depth 3 to 6).
 - Name verification keeps block headers in a compact store in the browser (IndexedDB), anchored by block hashes
   built into each release, instead of a JSON snapshot that was read and re-verified whole at every start. A start
   reads the newest built-in chunk and the headers above it; an older name costs one chunk the first time it is

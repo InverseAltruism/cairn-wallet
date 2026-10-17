@@ -137,12 +137,21 @@ What it reaches, and the price:
   hidden. The forged blocks cannot carry an owner's signature the source does not have (`replayName` authenticates
   every record's signer and binds it to the coin it spends), and the second name source's records then fail against
   the forged blocks, so the result is flagged rather than green.
-- Reservation fills: the buyer's own fclaim must be mined within 2 epochs of its real height
-  (`FCLAIM_MAX_EPOCH_AHEAD = 2`, `cairnx-spv.js:4518`), so the forged chain must run to about the chain's real
-  height: for a wallet N blocks behind, about N headers at about N / 6.35 blocks' worth of work (about 160 blocks'
-  worth at a 1,000-block lag; a fresh install at tag time is at least 1,000 blocks behind its anchor). The reach is
-  a competing hold or cancel hidden inside the fclaim scan window, which the second-resolver offer check covers only
-  when clarvis answers in time (`OFFER_SOURCE_CONFLICT`).
+- Reservation fills: the forged chain needs to start only just below the hidden event. The source serves honest
+  headers up to the block before the competing hold (they verify and cost nothing), then forged headers that omit
+  the hold, carry the buyer's fclaim and bury it to the fill's claim depth, and a node tip that ends there. For a
+  hold placed 3 blocks before the buyer's fclaim and a depth-3 fill (every fill up to 5,000 CSD at the 50 CSD
+  reward, the vendored `requiredClaimDepth`) that is 6 forged headers, about 3.2 blocks' worth of honest work by
+  the extension model above (4 headers 2.6, 12 headers 4.6; simulated 2026-10-17, Plan 86 D-86-10). Once the front door
+  is controlled it succeeds on every attempt for a few honest blocks, while the claim-depth rule prices a race on
+  the real chain (a miner with a fifth of the hashrate reverses a depth-3 claim 1.563 percent of the time per
+  attempt). The cheap case needs the wallet's stored chain to end below the fork point: a stored chain that reaches
+  past it is kept unless the forged chain carries more work (the reseed rule), so the forger would then have to
+  out-work the honest headers the wallet holds above the fork. Headers are synced by name verification and fills;
+  the buyer's reservation itself syncs none. The reach: the buyer's fclaim, denied on the real chain, looks granted
+  to the scan, and the payment burns. A competing hold with an expiry epoch below the buyer's passes the offer check
+  (`OFFER_SOURCE_CONFLICT` refuses only a holder still held at the buyer's last held block); the reservation verdict
+  below sees it.
 - Who: whoever answers the wallet's `/api/headers` and `/api/rpc` (the front door's operator, or whoever compromises
   the front door); the node tip the wallet syncs to comes from the same source.
 
@@ -170,25 +179,43 @@ A minimum-work floor was considered (Plan 86 D-86-9 part 2) and is not built:
   release re-anchors, for an event the wallet should survive. That is a new refusal on an honest path, so the floor
   is not built. Built, it would have been about 20 lines in `prepare` plus a test, no table change and no request.
 
-### Proposed, not built: a second header source (D-86-10)
+### Built: the second resolver's verdict on the buyer's reservation (D-86-10)
 
-The closure for a compromised front door is a second host: after a sync that extended the chain, ask clarvis's
-public `/api/headers` (already a name source, already in the extension's CSP) for the header at a buried height and
-compare its hash with the wallet's. Shape, with the review's corrections:
+Beside the clarvis offer read, the fclaim-lane preflight asks clarvis for its record of the buyer's fclaim,
+`GET /trade/api/cairnx/record/{fclaimTxid}` (`src/core/offerxcheck.ts` `reservationRecordVerdict`,
+`test/fill-reservation-verdict.test.mjs`). clarvis replays the chain from its own node and indexer, so headers forged
+by the front door do not change its answer. The read starts with the scan, on the same terms as the offer read (the
+same base and timeout), and counts only if it answered before the scan finished, so an honest fill waits for nothing.
 
-- Run it on every extension (a fresh install, a reseed and an ordinary advance alike), since every extension is
-  uncompared; none when nothing new was synced. One request per extending sync.
-- Compare at a buried height, the synced height minus a finality depth (for example 12), so a tip race between
-  the hosts or a lagging clarvis does not refuse an honest user.
-- On names, flag rather than refuse: a disagreement sets `disagree` on the verdict, as a disagreeing name source
-  does today, and the send proceeds with the caution.
-- On fills, the owner chooses between a refusal and a strong warning. Rule B cost of a refusal: whoever controls
-  the secondary could pick which honest purchase to block by serving a differing hash, and an honest secondary on a
-  temporary branch could refuse one as well, so a disagreement is evidence of a difference between the two sources,
-  not of either source's dishonesty. Fail-soft when clarvis does not answer, as the offer cross-check is.
-- What it closes: a forged chain served by a compromised front door or a path to it, since the second host would
-  have to serve the same forged hash. What it does not close: a compromised operator, who runs both hosts under one
-  registrable domain.
+- A 200 for this fclaim with `applied: false`: refuse with `RESERVATION_DENIED`, with clarvis's reason when it gives
+  a short printable one. The chain clarvis follows denies the reservation, which is where the payment would burn.
+- A 404 whose `tipHeight` is at least the buyer's proven fclaim height plus 12: clarvis has scanned past the
+  reservation and does not know it. The verdict is computed and does not block. The fill lane has no caution step
+  after the scan in which to show it, so it proceeds like no evidence (an open question in Plan 86).
+- Anything else (applied, a 404 below that height, a wrong kind or txid, a malformed body, an error, a timeout, no
+  answer before the scan ends): no evidence, the fill proceeds.
+
+The margin of 12: the cairnx service publishes `tipHeight` and its events from one scan, so an honest resolver's 404
+at or above a height means it has no record there; with its inclusion check on it applies only events its
+confirmation depth (12 by default) below the verified tip, and 12 also covers a shallow reorg that re-mines the
+fclaim a few blocks higher.
+
+Rule B: an honest lagging clarvis answers 404 below the fclaim's height and the fill proceeds; an honest synced one
+answers `applied: true`. A hostile clarvis could refuse an honest fill, as it already can through the offer check,
+so it gains nothing new. An honest clarvis replays the same vendored rules over its own chain, so when the wallet's
+replay grants a reservation and clarvis's denies it, the difference is an event on clarvis's chain that the wallet's
+scan was not shown, such as the hidden hold; the node accepts no attest to an unknown proposal, so a third party
+cannot manufacture that difference without putting a real event on chain.
+
+The header-hash comparison first proposed for D-86-10 is not built. After every extending sync it would have
+compared the wallet's header with clarvis's at the synced height minus a finality depth (12). The forged chain needs
+to start only just below the hidden event, and fills bury their fclaim at depth 3 to 6 (depth 6 covers fills up to
+1,000,000 CSD), so the fork sits within a few blocks of the served tip and both hosts agree at the compared height:
+it misses every fill at depth 3 to 6. Comparing nearer the tip would refuse honest users during a tip race or while
+clarvis lags.
+
+Residual: clarvis down or slower than the scan during the attack, or both hosts compromised. Both hosts are run by
+the operator under one registrable domain.
 
 ## Callers and their tests
 
