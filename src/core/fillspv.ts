@@ -20,7 +20,7 @@ import {
   provenOfferTerms, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer,
   type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type ProvenOfferTerms, type MintedProvenOfferTerms,
 } from "../vendor/cairnx-spv.js";
-import { bodyMismatchReason, liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
+import { BodyMismatchError, liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
 // (`provenOfferTerms` + `feeBpsAt`, verifyfill.ts) - this file used to carry its own hand copies of
@@ -88,7 +88,7 @@ async function bindBlock(spv: SpvSource, height: number): Promise<{ ids: string[
   if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length)
     throw new Error(`block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)`);
   if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase())
-    throw new Error(bodyMismatchReason(height, spv.bodySource));
+    throw new BodyMismatchError(height, spv.bodySource);
   return { ids, rebuilt };
 }
 

@@ -36,8 +36,9 @@ could show a wrong balance, hide a transaction, or feed stale/false UTXOs (at wo
 rejected transaction or a misleading display, not a key or fund compromise). If that matters
 for your threat model, point the wallet at your own node (`http://127.0.0.1:8789`) instead of
 the public proxy. Block headers still come from the Cairn API (`/api/headers`) and block bodies
-from the node, so a node that follows another chain fails the merkle check on name proofs and
-fills, and the reason names the configured RPC.
+from the node, so a node that follows another chain fails the merkle check and nothing is signed
+on its blocks: a reservation fill refuses with `RPC_BLOCK_MISMATCH`, naming the block and the RPC;
+an offer-id fill refuses as `VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified.
 
 The Activity markers for a transaction not yet seen as included come from that same RPC (its tip,
 whether it reports the transaction mined, and its mined coin set), so a lying RPC can show a transaction

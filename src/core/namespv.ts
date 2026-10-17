@@ -166,6 +166,14 @@ export function bodyMismatchReason(height: number, bodySource: string | undefine
     : `block ${height} does not match its verified merkle root (tampered read path)`;
 }
 
+/** Thrown for a block body that does not match its verified header; `bodySource` is the RPC that served it. */
+export class BodyMismatchError extends Error {
+  constructor(readonly height: number, readonly bodySource: string | undefined) {
+    super(bodyMismatchReason(height, bodySource));
+    this.name = "BodyMismatchError";
+  }
+}
+
 // Headers to sync past the last record so its inclusion proof has a confirmation cushion. The verifier
 // never needs the full chain tip for inclusion — only up to the records it must prove.
 const CONF_BUFFER = 12;

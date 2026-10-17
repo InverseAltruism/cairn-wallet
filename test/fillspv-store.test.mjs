@@ -14,6 +14,9 @@ import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { liveFillSpvSource, provenOfferPayto } from "../src/core/fillspv.ts";
 import { fclaim, epochOf, feeBpsAt, V29_HEIGHT } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { Wallet } from "../src/core/wallet.ts";
+import { memoryStore } from "../src/core/storage.ts";
+import { mkCoin, txReply } from "./_coin.ts";
 
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log("  ok " + name); };
@@ -137,6 +140,58 @@ await test("honest path: the same Local node serving the canonical body proves t
   const live = await liveSpvSource(opts(memStore(), LOCAL));
   const io = await fillIo(live);
   assert.equal(io.provenSeller, OFFER.seller);
+});
+
+console.log("the wallet's fclaim-lane preflight (fillOffer) on the same sources:");
+
+// Wallet.fillOffer on my fclaim for the real offer. The light client is the split source over a live store source
+// whose RPC is `rpcBase`; the resolver, the coin and the submit route are stubbed. Returns the result and the submits.
+async function walletFill(rpcBase, { unserved, block } = {}) {
+  reset();
+  if (unserved) net.unserved = unserved;
+  if (block) net.blocks.set(OFFER.height, block);
+  const w = new Wallet(memoryStore());
+  assert.equal((await w.importKey(meKey, "pw-fillspv-store-1")).addr.toLowerCase(), ME);
+  w.nameSpvForTest = splitSource(await liveSpvSource(opts(memStore(), rpcBase)), window);
+  const coin = mkCoin(200_000_000);
+  const served = { id: OFFER.offerId, seller: OFFER.seller, give: { ticker: "CAIRN", amount: "500000000" }, want: { value: "100000000", payto: OFFER.seller }, status: "open", height: OFFER.height, feeBps: feeBpsAt(OFFER.height), paid: "0", delivered: "0", fclaimId: FCLAIM, fclaimHeight: TIP - 10, fclaimExpiresEpoch: epochOf(TIP - 10) + 2 };
+  const submits = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes("/tx/submit")) { submits.push(u); return Response.json({ ok: true, txid: "0x" + "aa".repeat(32) }); }
+    if (/\/cairnx\/offer\//.test(u)) return u.includes("clarvis") || !u.endsWith(FCLAIM) ? new Response("{}", { status: 404 }) : Response.json(served);
+    if (/\/utxos\//.test(u)) return Response.json({ confirmed_balance: coin.coin.value, utxos: [coin.coin] });
+    if (u.endsWith(`/tx/${OFFER.prevout.txid}`)) return inner(url, init);
+    const t = txReply(u, [coin]);
+    if (t) return t;
+    return inner(url, init);
+  };
+  try {
+    const outputs = [{ to: OFFER.seller, value: 100_000_000 }, { to: "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016", value: 1_000_000 }];
+    return { r: await w.fillOffer({ proposalId: FCLAIM, outputs }), submits };
+  } finally { globalThis.fetch = inner; }
+}
+
+await test("a Local node on another chain: fillOffer refuses RPC_BLOCK_MISMATCH naming the RPC, nothing submitted", async () => {
+  const other = { ...JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json", import.meta.url), "utf8")).block, height: OFFER.height };
+  const { r, submits } = await walletFill(LOCAL, { block: other });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, "RPC_BLOCK_MISMATCH", `${r.code}: ${r.error}`);
+  assert.equal(r.error, `refusing to sign: block ${OFFER.height} from ${LOCAL} does not match the block header the wallet verified. If that is your own node, check that it follows the main chain; otherwise try again in a moment.`);
+  assert.equal(submits.length, 0);
+});
+
+await test("a chunk that cannot be fetched stays the retryable VERIFY_UNAVAILABLE, nothing submitted", async () => {
+  const { r, submits } = await walletFill(PROXY, { unserved: CHUNK7 });
+  assert.equal(r.code, "VERIFY_UNAVAILABLE", `${r.code}: ${r.error}`);
+  assert.equal(submits.length, 0);
+});
+
+await test("honest path: the canonical body gets past the SPV io to the grant replay (no RPC or availability refusal)", async () => {
+  const { r } = await walletFill(LOCAL);
+  assert.ok(r.code !== "RPC_BLOCK_MISMATCH" && r.code !== "VERIFY_UNAVAILABLE", `${r.code}: ${r.error}`);
+  console.log(`    (the replay refuses on the offer itself: ${r.code}: ${String(r.error).slice(0, 90)})`);
 });
 
 console.log(`fillspv-store: ${n} passed, 0 failed`);
