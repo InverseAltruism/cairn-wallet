@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.99 (not tagged yet)
+## 0.2.99 (2026-10-18)
 
 - The bundled csd-sdk code is rebuilt from csd-sdk `e25c020` (cairnx-core 0.2.0, csd-codec 0.1.18, csd-light
   0.1.23, csd-client 0.1.18, csd-crypto 0.1.18). Name verification and fill checks give the same results on
