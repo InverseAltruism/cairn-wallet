@@ -182,14 +182,13 @@ export function verifyFillSpv(offerId: string, fclaimTxid: string, me: string, i
 // The fee/rebate-sizing fields of an offer, derived from the MERKLE-PROVEN offer (never a served object). `min`
 // is the ONLY on-chain partial-fill field; paid/delivered are resolver running state, deliberately absent.
 // B6a (REBIND W2/W7): the give legs (giveTicker/giveAmount/giveName, verbatim strings) + wantType ("token" iff
-// the proven want is token-priced, else "csd"). Emitted bit-identically for the legacy fields, so a 2-arg
-// bindOfferTerms over a produced terms object returns the SAME verdict it always did; they participate ONLY
-// under the opt-in legs of the 3-arg overload below.
+// the proven want is token-priced, else "csd"), compared by bindOfferTerms's give and wantType legs (on by default
+// since cairnx-core 0.2.0; a caller that opts out of both gets the pre-B6 verdict and these are ignored).
 export interface ProvenOfferTerms { height: number; feeBps: number; value?: string; taker?: string; bid?: string; min?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantType?: "csd" | "token" }
 // ── the ProvenOfferTerms BRAND (B6a rider, LTS G6 cure): a nominal brand minted ONLY by provenOfferTerms, so
-// the opt-in 3-arg bindOfferTerms cannot be fed a hand-built terms object that leaves the new give/wantType
-// fields undefined (that shape would false-refuse every honest fill, the W2 trap). Type-level only; no byte of
-// output changes and every STRUCTURAL use of ProvenOfferTerms still compiles (the 2-arg overload keeps taking it).
+// bindOfferTerms with a leg on cannot be fed a hand-built terms object that leaves the give/wantType fields
+// undefined (that shape would false-refuse every honest fill, the W2 trap). Type-level only; no byte of output
+// changes. A plain ProvenOfferTerms is accepted only with both legs opted out (LegacyBindOpts).
 declare const PROVEN_TERMS_MINT: unique symbol;
 export type MintedProvenOfferTerms = ProvenOfferTerms & { readonly [PROVEN_TERMS_MINT]: "cairnx-core/provenOfferTerms" };
 /** UNSAFE escape hatch, TESTS ONLY: brand a hand-built terms object. Production must never call it. */
@@ -199,17 +198,19 @@ export function feeBpsAt(height: number): number;
 /** Build the normalized (BRANDED) ProvenOfferTerms from a merkle-proven offer record + its proven creation
  *  height. The sole minter of MintedProvenOfferTerms. Legacy fields emitted bit-identically to pre-B6. */
 export function provenOfferTerms(offerRec: unknown, provenHeight: number): MintedProvenOfferTerms;
-/** OPT-IN legs for the 3-arg bindOfferTerms (default OFF: a 2-arg call is byte-identical to the pre-B6 predicate).
+/** The give and wantType legs, ON unless set to `false` (cairnx-core 0.2.0; omitted or undefined keeps a leg on).
  *  give: bind give.ticker/give.amount/give.name (explicit-presence + verbatim string equality; closes the W7
  *  give-inflation shortchange). wantType: the SYMMETRIC want-type refusal (served want type must equal the proven
  *  type; closes proven-token-served-as-CSD, which the value leg only catches one-sidedly). */
 export interface BindTermsOpts { give?: boolean; wantType?: boolean }
+/** Both legs off: the pre-B6 verdict, for callers that hold hand-built (unminted) terms. */
+export type LegacyBindOpts = { give: false; wantType: false };
 /** true iff any fee/rebate/partial-sizing field of the SERVED offer diverges from the merkle-proven terms `t`
  *  (fail-closed: any divergence => the caller refuses). Binds height/feeBps/value/taker/bid + min presence AND
- *  value. The 2-arg overload is byte-identical to the wallet's old provenTermsMismatch + the site's old inline
- *  amount-leg bind. The 3-arg overload adds the opt-in give/wantType legs and requires MINTED terms (the brand). */
-export function bindOfferTerms(servedOffer: unknown, t: ProvenOfferTerms): boolean;
-export function bindOfferTerms(servedOffer: unknown, t: MintedProvenOfferTerms, opts: BindTermsOpts): boolean;
+ *  value, plus the give and wantType legs unless opted out. With a leg on the terms must be MINTED (the brand);
+ *  hand-built terms compile only with both legs off. */
+export function bindOfferTerms(servedOffer: unknown, t: MintedProvenOfferTerms, opts?: BindTermsOpts): boolean;
+export function bindOfferTerms(servedOffer: unknown, t: ProvenOfferTerms, opts: LegacyBindOpts): boolean;
 /** Derive {payto (want.payto or, absent, the author), seller (= the event's prevout-bound proposer), terms}
  *  from a merkle-proven offer Propose event; null if the event does not bind to an offer record. */
 export function bindProvenOffer(offerEv: ProvenPropose): { payto: string; seller: string; terms: MintedProvenOfferTerms } | null;
