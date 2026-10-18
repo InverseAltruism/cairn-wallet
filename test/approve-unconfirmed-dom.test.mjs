@@ -159,5 +159,44 @@ await flush(20); await tick(); await armed();
 assert.deepEqual(labels(), ["Sign anyway", "Cancel"], "(5c) the warning state is painted afterwards");
 console.log("  ok (5c) a stale Approve sends no acknowledgement");
 
-console.log("approve-unconfirmed-dom: 8 passed, 0 failed");
+// (5d) the gate on the acknowledgement: the "unknown" outcome has landed (rs(id).unconfirmed is set) while the window
+// still shows an armed, warning-less paint of the same request, painted by a poll that started after the click and
+// answered before the outcome; the warning repaint waits on a busy worker. A click on that Approve sends no
+// acknowledgement. Unlike (5c), the click comes after the outcome, so only the `warnedFor` check stops it.
+//   RED-FIRST: make approve.ts resolve() take `rs(id).unconfirmed` without the `warnedFor === id` check and (5d) fails.
+state.pending = [fill("m3")];
+answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" + "aa".repeat(32) }; };
+await tick(); await armed();
+assert.deepEqual(labels(), ["Approve", "Reject"], "(5d) setup");
+answer = () => { const d = defer(); heldResolve = d; return d.p; };
+await click("btn-approve");                        // the first approval is in flight
+handlers.pending = () => { const d = defer(); heldPending = d; return d.p; };
+void tick(); await flush(20);                      // a poll started after the click waits on its pending reply
+heldPending.r([fill("m3")]); await flush(20);     // the worker re-queued the request; the poll paints it ordinarily
+handlers.pending = realPending;
+state.pending = [fill("m3")];
+const realStatus = handlers.status;
+handlers.status = () => new Promise(() => {});    // the busy worker: the warning repaint's status read hangs
+heldResolve.r({ ...UNCONFIRMED, unconfirmed: { ...U } });
+await flush(20); await armed();
+assert.deepEqual(labels(), ["Approve", "Reject"], "(5d) the warning-less paint is still shown");
+assert.equal(registry.get("btn-approve").disabled, false, "(5d) and its Approve is armed");
+assert.ok(!req().includes("no record of your reservation"), "(5d) without the warning");
+const n7 = calls.length;
+answer = () => ({ ...UNCONFIRMED, unconfirmed: { ...U } });
+await click("btn-approve");
+assert.equal(calls.length, n7 + 1, "(5d) the click reached the worker");
+assert.deepEqual(calls[n7].slice(0, 2), ["m3", true]);
+assert.equal(calls[n7][4], undefined, "(5d) a click on the warning-less paint carries no acknowledgement");
+// Paired honest path: once the worker answers, the warning is painted and Sign anyway carries the acknowledgement.
+handlers.status = realStatus;
+await tick(); await armed();
+assert.deepEqual(labels(), ["Sign anyway", "Cancel"], "(5d) the warning state is painted once the worker answers");
+const n8 = calls.length;
+answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" + "ac".repeat(32) }; };
+await click("btn-approve");
+assert.deepEqual(calls[n8][4], { requestId: "m3", fclaimTxid: FC }, "(5d) Sign anyway from the warning paint carries the acknowledgement");
+console.log("  ok (5d) a warning-less paint after the outcome sends no acknowledgement");
+
+console.log("approve-unconfirmed-dom: 9 passed, 0 failed");
 process.exit(0);
