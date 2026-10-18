@@ -481,12 +481,12 @@ ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next a
 chrome.runtime?.onInstalled?.addListener(() => { ready.then(() => wallet.prewarmSpv()).catch(initFailed("install prewarm")); });
 // Idle auto-lock: the alarm wipes the in-memory + session key after AUTO_LOCK_MS without activity.
 // Both alarm chains end in a logged catch like the two above; an auto-lock that throws is logged as an error,
-// since the key then stays in memory until the next tick.
+// since the key then stays in memory until an auto-lock succeeds.
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
   chrome.alarms?.create("cairn-autolock", { periodInMinutes: 1 });
   chrome.alarms?.onAlarm.addListener((a: any) => {
-    if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {}), initFailed("flush alarm"));
+    if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }), initFailed("flush alarm"));
     if (a.name === "cairn-autolock") ready.then(async () => {
       const wasUnlocked = (await wallet.status()).unlocked;
       await wallet.autoLock(AUTO_LOCK_MS);
