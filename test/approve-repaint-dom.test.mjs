@@ -312,7 +312,7 @@ state.pending = [];   // the background has already dropped the request from the
 for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
 assert.equal(closes(), closesBefore, "(10a) the poll does not close the window while the outcome is in flight");
 assert.equal(registry.get("msg").textContent, "approving\u2026");
-const REFUSAL = "refusing to sign: the independent second resolver reports that this offer was cancelled, while your resolver shows it open.";
+const REFUSAL = "refusing to sign: the second source (clarvis) reports that this offer is cancelled, while your resolver shows it open.";
 releaseOutcome({ done: true, ok: false, error: REFUSAL, code: "OFFER_SOURCE_CONFLICT" });
 await flush();
 assert.equal(registry.get("msg").textContent, `failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the refusal and its code are painted");

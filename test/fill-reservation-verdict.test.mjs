@@ -77,6 +77,7 @@ console.log("\n2. through the real preflight");
   assert.equal(denied.r?.code, "RESERVATION_DENIED");
   assert.equal(denied.st.submits.length, 0, "nothing submitted");
   assert.match(denied.r.error, /\(offer already claimed \(hold live\)\)/, "clarvis's note is shown as the reason");
+  assert.equal(denied.r.error, "refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer (offer already claimed (hold live)). The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.", "the refusal text names clarvis the second source");
   const recordReads = denied.st.clarvisUrls.filter((u) => u.includes("/cairnx/record/"));
   assert.deepEqual(recordReads, [`https://clarvis.cairn-substrate.com/trade/api/cairnx/record/${denied.w.fc.id}`], "one record read, by fclaim txid, at clarvis");
   console.log(`  ok: denied reservation refused, nothing submitted (${denied.r.code})`);

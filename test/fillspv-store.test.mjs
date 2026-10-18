@@ -150,6 +150,7 @@ async function walletFill(rpcBase, { unserved, block } = {}) {
   if (block) net.blocks.set(OFFER.height, block);
   const w = new Wallet(memoryStore());
   assert.equal((await w.importKey(meKey, "pw-fillspv-store-1")).addr.toLowerCase(), ME);
+  await w.setApi(API);   // the header source the refusal names is the one the light client reads
   w.nameSpvForTest = splitSource(await liveSpvSource(opts(memStore(), rpcBase)), window);
   const coin = mkCoin(200_000_000);
   const served = { id: OFFER.offerId, seller: OFFER.seller, give: { ticker: "CAIRN", amount: "500000000" }, want: { value: "100000000", payto: OFFER.seller }, status: "open", height: OFFER.height, feeBps: feeBpsAt(OFFER.height), paid: "0", delivered: "0", fclaimId: FCLAIM, fclaimHeight: TIP - 10, fclaimExpiresEpoch: epochOf(TIP - 10) + 2 };
@@ -171,12 +172,12 @@ async function walletFill(rpcBase, { unserved, block } = {}) {
   } finally { globalThis.fetch = inner; }
 }
 
-await test("a Local node on another chain: fillOffer refuses RPC_BLOCK_MISMATCH naming the RPC, nothing submitted", async () => {
+await test("a Local node on another chain: fillOffer refuses RPC_BLOCK_MISMATCH naming the RPC and the header source, nothing submitted", async () => {
   const other = { ...JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json", import.meta.url), "utf8")).block, height: OFFER.height };
   const { r, submits } = await walletFill(LOCAL, { block: other });
   assert.equal(r.ok, false);
   assert.equal(r.code, "RPC_BLOCK_MISMATCH", `${r.code}: ${r.error}`);
-  assert.equal(r.error, `refusing to sign: block ${OFFER.height} from ${LOCAL} does not match the block header the wallet verified. If that is your own node, check that it follows the main chain; otherwise try again in a moment.`);
+  assert.equal(r.error, `refusing to sign: block ${OFFER.height} from ${LOCAL} does not match the block header the wallet verified from ${API}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`);
   assert.equal(submits.length, 0);
 });
 

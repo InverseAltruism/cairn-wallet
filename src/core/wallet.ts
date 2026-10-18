@@ -967,11 +967,12 @@ export class Wallet {
     try {
       io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
     } catch (e) {
-      // A body that contradicts its verified header comes from the configured RPC (for example a local node on
-      // another chain); a retry does not help that case, so it is named. Every other failure here is a read that
-      // could not complete (no tip, a missing chunk, a timeout) and is retryable.
+      // A body that contradicts its verified header means the configured RPC (for example a local node on another
+      // chain) or the header source (a false header with valid PoW) is wrong; the refusal names both and blames
+      // neither. Every other failure here is a read that could not complete (no tip, a missing chunk, a timeout)
+      // and is retryable.
       if (e instanceof BodyMismatchError && e.bodySource)
-        return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified. If that is your own node, check that it follows the main chain; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
+        return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified from ${this.api}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
       return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     }
     // myLiveHoldsAtGrant is COMPUTED by the SPV source: a CONSERVATIVE OVER-count of my OTHER-offer fclaim holds
@@ -1031,11 +1032,11 @@ export class Wallet {
     const fcEv = await io.provenEvent(fclaimTxid).catch(() => null);
     const ownHoldEnd = fcEv && fcEv.kind === "propose" ? fclaimHoldEnd(fcEv.expiresEpoch) : undefined;
     const conflict = secondSourceOfferConflict(offer, okBody(second.offer.answer()), { offerId, fclaimTxid, ownHoldEnd }); // MUTATE_OFFER_XCHECK
-    if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the independent second resolver reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
+    if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the second source (clarvis) reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
     // A header source that hides a competing hold placed just before our fclaim makes the scan grant it while the
     // chain denies it. The second resolver's replay of the real chain shows the denial.
     const rv = reservationRecordVerdict(second.record.answer(), { fclaimTxid, provenHeight: fcEv?.height });
-    if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the independent second resolver reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
+    if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
     // "unknown" goes back to the approval window as a confirm step; the user's acknowledgement for this fclaim signs.
     if (rv?.kind === "unknown" && typeof fcEv?.height === "number" && String(reservationAck ?? "").toLowerCase() !== fclaimTxid.toLowerCase()) // MUTATE_RESERVATION_CONFIRM
       return { ...refuse("RESERVATION_UNCONFIRMED", `the second source has read the chain to block ${rv.tipHeight} and has no record of your reservation (block ${fcEv.height}); confirm in the approval window to sign anyway`), unconfirmed: { fclaimTxid: fclaimTxid.toLowerCase(), fclaimHeight: fcEv.height, tipHeight: rv.tipHeight } };

@@ -111,6 +111,8 @@ console.log("\n3. acceptance (a)-(g)");
 {
   const a = await fill("cancel", (w) => body({ ...w.primary, status: "cancelled" }));
   check(`(a) second source shows the offer cancelled: refused, nothing submitted (${a.r?.code})`, a.r?.code === "OFFER_SOURCE_CONFLICT" && a.st.submits.length === 0);
+  // SECURITY.md: clarvis has the default resolver's operator, so the copy names it the second source, never independent.
+  check(`(a) the refusal text (${a.r?.error})`, a.r?.error === "refusing to sign: the second source (clarvis) reports that this offer is cancelled, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.");
   const b = await fill(null, (w) => body({ ...w.primary, paid: String(100e8), delivered: "100" }));
   check(`(b) second source shows higher paid progress: refused, nothing submitted (${b.r?.code})`, b.r?.code === "OFFER_SOURCE_CONFLICT" && b.st.submits.length === 0);
   const c = await fill(null, (w) => body({ ...w.primary, claimTxid: H(0xdead), claimUntilHeight: w.holdEnd + 1 + 30 }));
