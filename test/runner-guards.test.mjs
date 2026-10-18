@@ -38,9 +38,12 @@ function sandbox(files) {
 // TSA-1: the sandboxes hold only ~1-3 files, so they set a low CAIRN_TEST_EXPECTED_MIN by default to clear the
 // committed file-count floor in the copied run.mjs. A TEST may set this env (it is NOT a workflow); test/pentest.ts
 // pins that no CI/release workflow sets it, so the committed floor always governs the real suite. A per-case env
-// override (spread last) still wins, for GUARD 5's floor-breach cases.
+// override (spread last) still wins, for GUARD 5's floor-breach cases. CAIRN_E2E_REQUIRED is not inherited: a
+// suite run with it set (to require every in-Chrome test) would turn GUARD 3's SKIP fixture into a failure; the
+// case that needs it sets it itself.
+const { CAIRN_E2E_REQUIRED: _inheritedE2E, ...baseEnv } = process.env;
 const runRunner = (dir, env = {}) =>
-  spawnSync(process.execPath, [join(dir, "test", "run.mjs")], { cwd: dir, encoding: "utf8", env: { ...process.env, CAIRN_TEST_EXPECTED_MIN: "1", ...env }, timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
+  spawnSync(process.execPath, [join(dir, "test", "run.mjs")], { cwd: dir, encoding: "utf8", env: { ...baseEnv, CAIRN_TEST_EXPECTED_MIN: "1", ...env }, timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
 
 console.log("test/run.mjs guards:");
 

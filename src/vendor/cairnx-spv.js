@@ -434,6 +434,25 @@ function u64(n) {
   return b;
 }
 var lenBytes = (b) => concatBytes(u64(b.length), b);
+function isWellFormedUtf16(s) {
+  const wf = String.prototype.isWellFormed;
+  if (typeof wf === "function") return wf.call(s);
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 55296 && c <= 56319) {
+      const n = s.charCodeAt(i + 1);
+      if (!(n >= 56320 && n <= 57343)) return false;
+      i++;
+    } else if (c >= 56320 && c <= 57343) {
+      return false;
+    }
+  }
+  return true;
+}
+function utf8Strict(s, field) {
+  if (!isWellFormedUtf16(s)) throw new Error(`${field} must not contain an unpaired surrogate`);
+  return utf8ToBytes(s);
+}
 function hbFixed(h, n) {
   const b = hb(h);
   if (b.length !== n) throw new Error(`expected a ${n}-byte (0x\u2026${n * 2}-hex) field, got ${b.length} bytes`);
@@ -473,7 +492,7 @@ function strippedTx(tx) {
 function serializeApp(app) {
   if (app.type === "None") return u32(0);
   if (app.type === "Propose")
-    return concatBytes(u32(1), lenBytes(utf8ToBytes(app.domain)), hbFixed(app.payloadHash, 32), lenBytes(utf8ToBytes(app.uri)), u64(app.expiresEpoch));
+    return concatBytes(u32(1), lenBytes(utf8Strict(app.domain, "Propose domain")), hbFixed(app.payloadHash, 32), lenBytes(utf8Strict(app.uri, "Propose uri")), u64(app.expiresEpoch));
   return concatBytes(u32(2), hbFixed(app.proposalId, 32), u32(app.score), u32(app.confidence));
 }
 function serialize(tx) {
@@ -600,10 +619,10 @@ function merkleRoot(txidsHex) {
 }
 function verifyMerkleProof(txidHex, pos, branchHex, merkleRootHex) {
   try {
-    let cur = hb(txidHex);
+    let cur = hbFixed(txidHex, 32);
     let idx = pos;
     for (const sibHex of branchHex) {
-      const sib = hb(sibHex);
+      const sib = hbFixed(sibHex, 32);
       const buf = new Uint8Array(64);
       if (idx & 1) {
         buf.set(sib, 0);
@@ -615,7 +634,7 @@ function verifyMerkleProof(txidHex, pos, branchHex, merkleRootHex) {
       cur = sha256d(buf);
       idx >>= 1;
     }
-    return hx(cur) === hx(hb(merkleRootHex));
+    return hx(cur) === hx(hbFixed(merkleRootHex, 32));
   } catch {
     return false;
   }
@@ -643,13 +662,27 @@ function merkleBranch(txidsHex, pos) {
   return branch;
 }
 var MAX_DEPTH = 256;
+var NATIVE_OBJECT_SOURCE = Function.prototype.toString.call(Object);
+var isPlainObject = (v) => {
+  if (Object.prototype.toString.call(v) !== "[object Object]") return false;
+  const p = Object.getPrototypeOf(v);
+  if (p === null || p === Object.prototype) return true;
+  if (typeof p !== "object" || Object.getPrototypeOf(p) !== null) return false;
+  const c = Object.getOwnPropertyDescriptor(p, "constructor")?.value;
+  return typeof c === "function" && c.prototype === p && Function.prototype.toString.call(c) === NATIVE_OBJECT_SOURCE;
+};
 function canonicalJson(v, depth = 0) {
   if (depth > MAX_DEPTH) throw new Error("canonicalJson: max nesting depth exceeded");
+  if (typeof v === "function" || typeof v === "symbol") throw new Error(`canonicalJson: a ${typeof v} is not JSON data`);
   if (v === null || typeof v !== "object") {
     if (v === void 0) return "null";
     return JSON.stringify(v);
   }
-  if (Array.isArray(v)) return "[" + v.map((x) => canonicalJson(x, depth + 1)).join(",") + "]";
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) if (!(i in v)) throw new Error("canonicalJson: an array hole is not JSON data");
+    return "[" + v.map((x) => canonicalJson(x, depth + 1)).join(",") + "]";
+  }
+  if (!isPlainObject(v)) throw new Error(`canonicalJson: ${Object.prototype.toString.call(v)} is not a plain object`);
   const o = v;
   return "{" + Object.keys(o).sort().filter((k) => o[k] !== void 0).map((k) => JSON.stringify(k) + ":" + canonicalJson(o[k], depth + 1)).join(",") + "}";
 }
@@ -658,6 +691,9 @@ function payloadHash(content) {
 }
 
 // packages/client/dist/index.js
+var DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+var DEFAULT_RETRIES = 0;
+var finiteOr = (v, dflt) => v !== void 0 && Number.isFinite(v) ? v : dflt;
 var CsdClient = class {
   base;
   f;
@@ -667,12 +703,12 @@ var CsdClient = class {
   parseJson;
   constructor(opts) {
     this.base = opts.baseUrl.replace(/\/+$/, "");
-    this.maxBytes = Math.max(1, opts.maxResponseBytes ?? 16 * 1024 * 1024);
+    this.maxBytes = Math.max(1, finiteOr(opts.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES));
     this.parseJson = opts.parseJson ?? JSON.parse;
     const gf = globalThis.fetch;
     this.f = opts.fetch ?? (gf ? gf.bind(globalThis) : gf);
     this.timeoutMs = opts.timeoutMs ?? 1e4;
-    this.retries = Math.max(0, opts.retries ?? 0);
+    this.retries = Math.max(0, Math.floor(finiteOr(opts.retries, DEFAULT_RETRIES)));
     if (!this.f) throw new Error("no fetch available \u2014 pass opts.fetch");
   }
   async req(path, init, opts) {
@@ -798,6 +834,8 @@ var CsdClient = class {
    * rejects on timeout (default 10 min — CSD blocks are ~2 min but the live miner is lumpy).
    * A tx that drops OUT of the chain mid-wait (reorg) keeps polling until it re-confirms or
    * times out — never resolves on a stale sighting.
+   * The count is `tip.height - tx.height + 1` from the RPC's own /tx and /tip answers, with no PoW
+   * or inclusion check, so a lying RPC can over-state it. Gate funds on csd-light, not on this.
    */
   async waitForTx(txid2, opts = {}) {
     const want = Math.max(1, opts.confirmations ?? 1);
@@ -3581,27 +3619,12 @@ var isName = (n) => typeof n === "string" && NAME_RE.test(n) && !RESERVED_NAMES.
 function nameCommit(name, salt, owner) {
   return payloadHash({ t: "cairnx:name:commit:v1", name, salt, owner: owner.toLowerCase() });
 }
-function strWellFormed(s) {
-  const wf = String.prototype.isWellFormed;
-  if (typeof wf === "function") return wf.call(s);
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 55296 && c <= 56319) {
-      const n = s.charCodeAt(i + 1);
-      if (!(n >= 56320 && n <= 57343)) return false;
-      i++;
-    } else if (c >= 56320 && c <= 57343) {
-      return false;
-    }
-  }
-  return true;
-}
 function isWellFormedDeep(v) {
-  if (typeof v === "string") return strWellFormed(v);
+  if (typeof v === "string") return isWellFormedUtf16(v);
   if (Array.isArray(v)) return v.every(isWellFormedDeep);
   if (v && typeof v === "object") {
     for (const [k, val] of Object.entries(v)) {
-      if (!strWellFormed(k)) return false;
+      if (!isWellFormedUtf16(k)) return false;
       if (!isWellFormedDeep(val)) return false;
     }
   }
@@ -5151,10 +5174,10 @@ function bindOfferTerms(servedOffer, t, opts) {
   const om = o?.min;
   if ((om !== void 0 && om !== null) !== (t.min !== void 0)) return true;
   if (t.min !== void 0 && String(om) !== t.min) return true;
-  if (opts?.wantType) {
+  if (opts?.wantType !== false) {
     if (t.wantType === void 0 || typeof o?.want?.ticker === "string" !== (t.wantType === "token")) return true;
   }
-  if (opts?.give) {
+  if (opts?.give !== false) {
     const g = o?.give;
     if ((g?.ticker !== void 0 && g?.ticker !== null) !== (t.giveTicker !== void 0) || t.giveTicker !== void 0 && String(g?.ticker) !== t.giveTicker) return true;
     if ((g?.amount !== void 0 && g?.amount !== null) !== (t.giveAmount !== void 0) || t.giveAmount !== void 0 && String(g?.amount) !== t.giveAmount) return true;

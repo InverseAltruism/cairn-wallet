@@ -5,6 +5,8 @@
 // RED-FIRST: delete the `chrome.runtime?.onInstalled?.addListener(...)` line in src/background.ts and the
 // registration and call checks fail.
 // PAIRED HONEST PATH: a runtime without onInstalled still loads the background, and its message gate answers.
+// The alarm handlers (flush, auto-lock) end in a logged catch too: with an init that rejects, or an auto-lock that
+// throws, an alarm leaves no unhandled rejection; on a ready wallet each alarm still runs its method once.
 //
 // Run: npx tsx test/background-oninstalled.test.mjs   (offline)
 import { Wallet } from "../src/core/wallet.ts";
@@ -33,7 +35,7 @@ function mockChrome({ onInstalled, holdReads }) {
       set: async (o) => { for (const k of Object.keys(o)) mem.set(k, structuredClone(o[k])); },
       remove: async (k) => { mem.delete(k); },
     } },
-    alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
+    alarms: { create: () => {}, onAlarm: { addListener: (fn) => { chrome.alarmListener = fn; } } },
     action: { setBadgeText: () => {} },
     windows: { create: () => {} },
   };
@@ -104,6 +106,71 @@ console.log("wallet init rejects:");
   } finally {
     Wallet.prototype.init = realInit;
     console.warn = realWarn;
+    process.off("unhandledRejection", onUnhandled);
+  }
+}
+
+// ── the two alarms: logged catches, and the honest path runs each method once ──
+// RED-FIRST: drop either catch on the onAlarm handlers in src/background.ts and an unhandled rejection is recorded.
+console.log("alarms:");
+{
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(String(e?.message ?? e));
+  process.on("unhandledRejection", onUnhandled);
+  const real = { init: Wallet.prototype.init, autoLock: Wallet.prototype.autoLock, flushPending: Wallet.prototype.flushPending };
+  const realWarn = console.warn, realError = console.error;
+  const warned = [], errored = [];
+  console.warn = (...a) => { warned.push(a.map(String).join(" ")); };
+  console.error = (...a) => { errored.push(a.map(String).join(" ")); };
+  const calls = { flush: 0, autoLock: [] };
+  Wallet.prototype.flushPending = async function () { calls.flush++; };
+  try {
+    // init rejects: both alarms log the skip
+    Wallet.prototype.init = async function () { throw new Error("storage unavailable (test)"); };
+    {
+      const { chrome } = mockChrome({ onInstalled: null, holdReads: { on: false } });
+      globalThis.chrome = chrome;
+      await import("../src/background.ts?alarms-init-rejects");
+      for (let i = 0; i < 20; i++) await tick();
+      const before = warned.length;
+      chrome.alarmListener({ name: "cairn-flush" });
+      chrome.alarmListener({ name: "cairn-autolock" });
+      for (let i = 0; i < 20; i++) await tick();
+      t.check("with a rejecting init, the flush and auto-lock alarms raise no unhandled rejection", unhandled.length === 0);
+      t.check("...and each logs that the wallet did not initialize", warned.slice(before).filter((w) => /alarm skipped: the wallet did not initialize/.test(w)).length === 2);
+      t.check("...and neither runs its method", calls.flush === 0 && calls.autoLock.length === 0);
+    }
+    Wallet.prototype.init = real.init;
+    // a ready wallet whose auto-lock throws: an error is logged, nothing is left unhandled
+    Wallet.prototype.autoLock = async function () { throw new Error("session clear failed (test)"); };
+    {
+      const { chrome } = mockChrome({ onInstalled: null, holdReads: { on: false } });
+      globalThis.chrome = chrome;
+      await import("../src/background.ts?alarms-autolock-throws");
+      for (let i = 0; i < 20; i++) await tick();
+      chrome.alarmListener({ name: "cairn-autolock" });
+      for (let i = 0; i < 20; i++) await tick();
+      t.check("an auto-lock that throws raises no unhandled rejection", unhandled.length === 0);
+      t.check("...and is logged as an error that names the auto-lock", errored.filter((w) => /auto-lock failed/.test(w) && /session clear failed/.test(w)).length === 1);
+    }
+    // honest path: a ready wallet runs each alarm's method exactly once
+    Wallet.prototype.autoLock = async function (ms) { calls.autoLock.push(ms); };
+    {
+      const { chrome } = mockChrome({ onInstalled: null, holdReads: { on: false } });
+      globalThis.chrome = chrome;
+      await import("../src/background.ts?alarms-honest");
+      for (let i = 0; i < 20; i++) await tick();
+      const flushAtLoad = calls.flush, unhandledAt = unhandled.length, errorsAt = errored.length;
+      chrome.alarmListener({ name: "cairn-flush" });
+      chrome.alarmListener({ name: "cairn-autolock" });
+      for (let i = 0; i < 20; i++) await tick();
+      t.check("honest path: the flush alarm calls wallet.flushPending once", calls.flush === flushAtLoad + 1);
+      t.check("honest path: the auto-lock alarm calls wallet.autoLock once with the 15-minute limit", calls.autoLock.length === 1 && calls.autoLock[0] === 15 * 60 * 1000);
+      t.check("honest path: no unhandled rejection and no error logged", unhandled.length === unhandledAt && errored.length === errorsAt);
+    }
+  } finally {
+    Object.assign(Wallet.prototype, real);
+    console.warn = realWarn; console.error = realError;
     process.off("unhandledRejection", onUnhandled);
   }
 }

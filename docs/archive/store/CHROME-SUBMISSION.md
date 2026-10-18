@@ -1,4 +1,4 @@
-# Chrome Web Store — paste-ready answers
+# Chrome Web Store: paste-ready answers
 
 Each console error below maps to an exact value to paste. Items marked **(you)** can only
 be done in your own Google account; everything else is copy and paste.

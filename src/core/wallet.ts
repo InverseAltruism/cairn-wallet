@@ -31,8 +31,9 @@ export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js"
 // repo's hand-copy. It binds height/feeBps/value/taker/bid AND the R1.1 `min` presence+value leg exactly as
 // before (byte-identical behaviour, differential-locked by the WA-PARITY corpus across all three seams).
 // B7e (REBIND W7 + W1 wallet half): the give legs (give.ticker/amount/name, explicit-presence + verbatim
-// string equality, closing the W7 give-inflation shortchange) AND the symmetric want-type refusal are
-// FLIPPED ON via the opt-in 3-arg overload. `t` MUST be a MintedProvenOfferTerms (produced only by the
+// string equality, closing the W7 give-inflation shortchange) AND the symmetric want-type refusal are ON,
+// passed explicitly so the verdict does not depend on the bundle's default (on since cairnx-core 0.2.0;
+// test/vendor-bind-legs.test.mjs pins both). `t` MUST be a MintedProvenOfferTerms (produced only by the
 // vendored provenOfferTerms via fillspv.ts), so a hand-built terms object is a compile error exactly where it
 // would false-refuse every honest fill (the W2 trap the brand exists to make unrepresentable).
 // The vendored verifyFillSpv reasons whose verdict is evaluated at the tip (hold liveness, grant routing,

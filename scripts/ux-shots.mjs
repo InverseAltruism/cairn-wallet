@@ -51,6 +51,7 @@ function chromiumExe() {
 const DYNAMIC_IDS = new Set([
   "assets-retry", "rpc-add-input", "rpc-add-btn", "exp-add-input", "exp-add-btn", // popup menus/assets
   "cost", "send-warn", "token-sim", "fill-view", "reveal-preview", // approve window, injected by clearsign describe()
+  "nfin-note", // approve window, the finalize-window verdict line approve.ts inserts while a finalize request is open
 ]);
 function idsFromSource(file) {
   const src = readFileSync(join(ROOT, "src", "popup", file), "utf8");

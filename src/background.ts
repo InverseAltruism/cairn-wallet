@@ -191,14 +191,18 @@ function requeueFront(id: string, p: Pending): void {
   pending.clear();
   pending.set(id, p);
   for (const [k, v] of rest) pending.set(k, v);
-  try { chrome.action?.setBadgeText?.({ text: String(pending.size) }); } catch { /* no-op */ }
+  showQueueBadge();
+}
+// The toolbar badge shows the queue size, empty when nothing is queued; setting it is best-effort.
+function showQueueBadge(): void {
+  try { chrome.action?.setBadgeText?.({ text: pending.size ? String(pending.size) : "" }); } catch { /* no badge API */ }
 }
 type ResolveOutcome = { done: boolean; ok?: boolean; error?: string; code?: string; txid?: string; unconfirmed?: unknown };
 async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }, ack?: unknown): Promise<ResolveOutcome> {
   const p = pending.get(id);
   if (!p) return { done: false };
   pending.delete(id);
-  try { chrome.action?.setBadgeText?.({ text: pending.size ? String(pending.size) : "" }); } catch { /* no-op */ }
+  showQueueBadge();
   // MACHINE ERROR CODES (Plan 57 B9, additive): every {ok:false} a dApp can see now also carries a
   // stable `code` (USER_REJECTED / WALLET_LOCKED / ACCOUNT_CHANGED / FIRST_PARTY_ONLY /
   // UNSUPPORTED_METHOD / RATE_LIMITED / APPROVAL_CLOSED / FORBIDDEN / UNKNOWN_KIND / INTERNAL) so
@@ -350,7 +354,7 @@ function queueDappRequest(origin: string, method: string, params: any): Promise<
   return new Promise((resolve) => {
     const id = `${Date.now()}-${reqSeq++}`;
     pending.set(id, { origin, method, params, resolve });
-    try { chrome.action?.setBadgeText?.({ text: String(pending.size) }); } catch { /* no-op */ }
+    showQueueBadge();
     // Raise the clear-signing window. If it can't open (rare), the request still sits in the
     // queue + badge; the user opens the toolbar popup and clicks "Review", which calls
     // openApprovalWindow again — approval ALWAYS routes through the disclosure window, never
@@ -371,7 +375,7 @@ try { chrome.windows?.onRemoved?.addListener((wid: number) => {
   if (pending.size) {
     for (const [, p] of pending) { try { p.resolve({ ok: false, code: "APPROVAL_CLOSED", error: "rejected (approval window closed)" }); } catch { /* no-op */ } }
     pending.clear();
-    try { chrome.action?.setBadgeText?.({ text: "" }); } catch { /* no-op */ }
+    showQueueBadge();
   }
 }); } catch { /* no-op */ }
 
@@ -476,15 +480,17 @@ ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next a
 // the first fill or name verify after the update. The popup's prewarm does the same if it comes first.
 chrome.runtime?.onInstalled?.addListener(() => { ready.then(() => wallet.prewarmSpv()).catch(initFailed("install prewarm")); });
 // Idle auto-lock: the alarm wipes the in-memory + session key after AUTO_LOCK_MS without activity.
+// Both alarm chains end in a logged catch like the two above; an auto-lock that throws is logged as an error,
+// since the key then stays in memory until an auto-lock succeeds.
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
   chrome.alarms?.create("cairn-autolock", { periodInMinutes: 1 });
   chrome.alarms?.onAlarm.addListener((a: any) => {
-    if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {}));
+    if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next alarm */ }), initFailed("flush alarm"));
     if (a.name === "cairn-autolock") ready.then(async () => {
       const wasUnlocked = (await wallet.status()).unlocked;
       await wallet.autoLock(AUTO_LOCK_MS);
       if (wasUnlocked && !(await wallet.status()).unlocked) { await emitConnected("accountsChanged", []); await emitConnected("disconnect", { reason: "idle-lock" }); } // idle-lock → tell pages
-    });
+    }, initFailed("auto-lock alarm")).catch((e) => console.error("[background] auto-lock failed:", e));
   });
 } catch { /* alarms permission unavailable — startup flush still runs */ }

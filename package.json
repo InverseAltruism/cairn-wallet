@@ -1,6 +1,6 @@
 {
   "name": "cairn-wallet",
-  "version": "0.2.74",
+  "version": "0.2.99",
   "description": "Cairn Wallet — a non-custodial browser wallet for Compute Substrate (CSD). Likely the first CSD wallet.",
   "license": "MIT",
   "private": true,
@@ -19,7 +19,7 @@
     "@scure/bip39": "1.6.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.12",
+    "esbuild": "0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

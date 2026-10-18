@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.2.99 (2026-10-18)
 
+- The bundled csd-sdk code is rebuilt from csd-sdk `e25c020` (cairnx-core 0.2.0, csd-codec 0.1.18, csd-light
+  0.1.23, csd-client 0.1.18, csd-crypto 0.1.18). Name verification and fill checks give the same results on
+  honest data (signing does not use this code): the wallet already passed both offer-content checks (give and
+  want type) explicitly, which cairnx-core 0.2.0 turns on by default, and the other changes refuse malformed input
+  only (a transaction served with an unpaired surrogate in a record's text, a merkle proof node that is not 32
+  bytes, record data that is not plain JSON).
+- The extension is built with esbuild 0.28.2 (was 0.25.12). The built code differs only in field declarations
+  for constructor parameters, which behave the same; the bundled csd-sdk code is byte-identical.
 - Reservation fills: beside the offer read, the wallet asks the second source (clarvis) for its verdict on the
   buyer's own reservation (`/cairnx/record/{fclaimTxid}`), started with the SPV scan and never waited for past it.
   When clarvis reports that it replayed the reservation and did not apply it, the fill refuses with the new code
