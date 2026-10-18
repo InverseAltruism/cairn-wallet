@@ -5,6 +5,8 @@
 //   - v1 (`spvHeaderChain`) survives a failed migration, which counts one attempt (`spvMigrateAttempts`); the
 //     next healthy start completes it and deletes v1 once; after MIGRATE_MAX failures v1 is deleted and the
 //     session runs from memory. The counter is cleared after a success and after that deletion.
+//   - v1 is deleted only when the head read back after the migration write has the written tip and tip hash; a
+//     head that reads back with another tip or hash counts as a failed attempt.
 //   - The migration writes only `spvHeaderChain` and `spvMigrateAttempts`; every key 0.2.73 reads stays
 //     byte-identical, and after a success `spvHeaderChain` is absent, so a rollback to 0.2.73 cold-syncs.
 //
@@ -89,6 +91,33 @@ console.log("6 three failed starts in a row:");
   }));
   await flushSpvStoreWrites();
   t.check("the fourth start counts nothing and deletes nothing (there is no v1)", legacy.calls.del === 1 && !kv.has("spvMigrateAttempts"));
+}
+
+// ── a write that resolves but whose head does not read back: v1 is kept and the attempt counted ──
+console.log("6 the head does not read back after the migration write:");
+for (const [what, skew] of [["tip", (h) => ({ ...h, tip: h.tip - 1 })], ["tipHash", (h) => ({ ...h, tipHash: hashOf(h.tip - 1) })]]) {
+  const kv = new Map([["spvHeaderChain", v1Snapshot(106496, FIX_TOP)]]);
+  const legacy = legacyOf(kv);
+  const st = memStore();
+  const realGetHead = st.getHead;
+  let lying = true;
+  st.getHead = async () => { const h = await realGetHead(); return h && lying ? skew(h) : h; };
+  const net = { tip: FIX_TOP };
+  await attempt(`a read-back with another ${what}: the session still answers from memory with no request`, () => withNet(net, async () => {
+    const s = await liveSpvSource(opts(st, legacy));
+    return (await s.hashAt(115000)) === hashOf(115000) && net.log.length === 0;
+  }));
+  await flushSpvStoreWrites();
+  t.check(`a read-back with another ${what}: v1 is kept, not deleted, and attempt 1 is counted`,
+    kv.has("spvHeaderChain") && legacy.calls.del === 0 && kv.get("spvMigrateAttempts") === 1);
+  // Paired honest path: the same store reading its head back as written completes the migration.
+  lying = false;
+  await attempt(`after a ${what} mismatch, a start whose head reads back completes with no request`, () => withNet(net, async () => {
+    const s = await liveSpvSource(opts(st, legacy));
+    return (await s.hashAt(108000)) === hashOf(108000) && net.log.length === 0;
+  }));
+  await flushSpvStoreWrites();
+  t.check(`after a ${what} mismatch: v1 deleted once and the counter cleared`, !kv.has("spvHeaderChain") && legacy.calls.del === 1 && !kv.has("spvMigrateAttempts"));
 }
 
 // ── case 11: the downgrade contract, through the Wallet's own spvOpts over a chrome.storage.local double ──
