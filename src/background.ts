@@ -476,15 +476,17 @@ ready.then(() => wallet.flushPending().catch(() => { /* offline; retry on next a
 // the first fill or name verify after the update. The popup's prewarm does the same if it comes first.
 chrome.runtime?.onInstalled?.addListener(() => { ready.then(() => wallet.prewarmSpv()).catch(initFailed("install prewarm")); });
 // Idle auto-lock: the alarm wipes the in-memory + session key after AUTO_LOCK_MS without activity.
+// Both alarm chains end in a logged catch like the two above; an auto-lock that throws is logged as an error,
+// since the key then stays in memory until the next tick.
 try {
   chrome.alarms?.create("cairn-flush", { periodInMinutes: 1 });
   chrome.alarms?.create("cairn-autolock", { periodInMinutes: 1 });
   chrome.alarms?.onAlarm.addListener((a: any) => {
-    if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {}));
+    if (a.name === "cairn-flush") ready.then(() => wallet.flushPending().catch(() => {}), initFailed("flush alarm"));
     if (a.name === "cairn-autolock") ready.then(async () => {
       const wasUnlocked = (await wallet.status()).unlocked;
       await wallet.autoLock(AUTO_LOCK_MS);
       if (wasUnlocked && !(await wallet.status()).unlocked) { await emitConnected("accountsChanged", []); await emitConnected("disconnect", { reason: "idle-lock" }); } // idle-lock → tell pages
-    });
+    }, initFailed("auto-lock alarm")).catch((e) => console.error("[background] auto-lock failed:", e));
   });
 } catch { /* alarms permission unavailable — startup flush still runs */ }
