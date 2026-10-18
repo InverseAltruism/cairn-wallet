@@ -245,8 +245,9 @@ export class Wallet {
     this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
-  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); this.rpc = u; await this.store.set("rpc", u); }
-  async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); this.api = u; await this.store.set("api", u); }
+  // The SPV source reads block bodies from `rpc` and headers from `api`, so a changed endpoint drops it.
+  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this._spvSrc = null; this.rpc = u; await this.store.set("rpc", u); }
+  async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); if (u !== this.api) this._spvSrc = null; this.api = u; await this.store.set("api", u); }
   async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
@@ -1546,12 +1547,14 @@ export class Wallet {
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
     };
   }
-  // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure.
+  // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after
+  // setRpc/setApi change an endpoint; a failed build clears only itself, never a newer one.
   private _spvSrc: Promise<SpvSource> | null = null;
   private spvSource(): Promise<SpvSource> {
     if (this.nameSpvForTest) return Promise.resolve(this.nameSpvForTest);
     if (!this._spvSrc) {
-      this._spvSrc = liveSpvSource(this.spvOpts()).catch((e) => { this._spvSrc = null; throw e; });
+      const built: Promise<SpvSource> = liveSpvSource(this.spvOpts()).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
+      this._spvSrc = built;
     }
     return this._spvSrc;
   }

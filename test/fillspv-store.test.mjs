@@ -192,4 +192,95 @@ await test("honest path: the canonical body gets past the SPV io to the grant re
   console.log(`    (the replay refuses on the offer itself: ${r.code}: ${String(r.error).slice(0, 90)})`);
 });
 
+console.log("the wallet's SPV source follows the RPC and API settings in the same session:");
+
+// The Wallet's own spvSource() and spvOpts(), with only the header store and the anchor table replaced (no IndexedDB
+// in this process; the fixture holds the FIX_ANCHORS chunks). Every request URL is logged.
+const OTHER_BODY = () => ({ ...JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json", import.meta.url), "utf8")).block, height: OFFER.height });
+async function settingsWallet() {
+  const w = new Wallet(memoryStore());
+  await w.init();
+  const prodOpts = Object.getPrototypeOf(w).spvOpts;
+  w.spvOpts = function () { return { ...prodOpts.call(this), store: async () => memStore(), anchors: FIX_ANCHORS }; };
+  return w;
+}
+const logged = async (fn, gate = () => null) => {
+  const urls = [], inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { urls.push(String(url)); const g = gate(String(url)); if (g) return g; return inner(url, init); };
+  try { return { out: await fn(), urls }; } finally { globalThis.fetch = inner; }
+};
+// makeFillSpvIo's call shape: the wallet's spvOpts and its shared source (split with the synthetic fclaim window).
+const walletFillIo = async (w) => liveFillSpvSource({
+  ...w.spvOpts(), spvSource: splitSource(await w.spvSource(), window),
+  hints: { offerId: OFFER.offerId, fclaimTxid: FCLAIM, me: ME, offerHeight: OFFER.height },
+});
+
+await test("setRpc to a Local node: the next fill reads the offer block from it and a refusal names it, not the old RPC", async () => {
+  reset();
+  const w = await settingsWallet();
+  const old = (await w.status()).rpc;
+  assert.equal((await w.spvSource()).bodySource, old, "setup: the source reads bodies from the saved RPC");
+  await w.setRpc(LOCAL);
+  net.blocks.set(OFFER.height, OTHER_BODY());
+  const { out: err, urls } = await logged(() => rejects(walletFillIo(w)));
+  assert.equal((await w.spvSource()).bodySource, LOCAL);
+  assert.ok(err?.includes(`block ${OFFER.height} from ${LOCAL} does not match`), err ?? "no refusal");
+  assert.ok(urls.includes(`${LOCAL}/block/height/${OFFER.height}`), "the offer block is read from the Local node");
+  assert.ok(!urls.some((u) => u.startsWith(old)), "nothing is read from the old RPC");
+});
+
+await test("honest path: after setRpc the Local node serving the canonical body proves the offer", async () => {
+  reset();
+  const w = await settingsWallet();
+  await w.spvSource();
+  await w.setRpc(LOCAL);
+  const io = await walletFillIo(w);
+  assert.equal(io.provenTerms.height, OFFER.height);
+  assert.equal(io.provenTerms.value, "100000000");
+});
+
+await test("setApi: headers for a chunk not yet held come from the new API", async () => {
+  reset();
+  const w = await settingsWallet();
+  const oldApi = (await w.status()).api;
+  await w.spvSource();
+  const API2 = "https://api2.cairn-substrate.test";
+  await w.setApi(API2);
+  const { out: hash, urls } = await logged(async () => (await w.spvSource()).hashAt(OFFER.height));
+  assert.equal(hash, OFFER.block.hash);
+  const headerReads = urls.filter((u) => u.includes("/api/headers/"));
+  assert.ok(headerReads.length > 0 && headerReads.every((u) => u.startsWith(`${API2}/api/headers/`)), headerReads.join(" "));
+  assert.ok(!urls.some((u) => u.startsWith(`${oldApi}/api/headers/`)));
+});
+
+await test("an unchanged setting keeps the built source: no rebuild and no request", async () => {
+  reset();
+  const w = await settingsWallet();
+  const before = await w.spvSource();
+  const st = await w.status();
+  const { urls } = await logged(async () => { await w.setRpc(st.rpc); await w.setApi(st.api); });
+  assert.equal(await w.spvSource(), before);
+  assert.deepEqual(urls, []);
+});
+
+await test("a build on the old endpoints that fails after the switch does not drop the source built on the new ones", async () => {
+  reset();
+  const w = await settingsWallet();
+  const { api: oldApi } = await w.status();
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const { out } = await logged(async () => {
+    const oldBuild = w.spvSource().then(() => "built", (e) => String(e?.message ?? e));
+    await w.setRpc(LOCAL);
+    await w.setApi("https://api2.cairn-substrate.test");
+    const freshP = w.spvSource();                    // started on the new endpoints before the old build fails
+    release();
+    const old = await oldBuild, fresh = await freshP;
+    return { old, fresh, after: await w.spvSource() };
+  }, (u) => (u.startsWith(`${oldApi}/api/headers/`) ? held.then(() => new Response("{}", { status: 503 })) : null));
+  assert.notEqual(out.old, "built", "setup: the old build failed");
+  assert.equal(out.fresh.bodySource, LOCAL);
+  assert.equal(out.after, out.fresh, "the failed old build left the new source in place");
+});
+
 console.log(`fillspv-store: ${n} passed, 0 failed`);
