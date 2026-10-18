@@ -45,7 +45,11 @@ same mismatch, so the message does not blame the node); an offer-id fill refuses
 The Activity markers for a transaction not yet seen as included come from that same RPC (its tip,
 whether it reports the transaction mined, and its mined coin set), so a lying RPC can show a transaction
 that was mined as "not included: its coins were spent by another transaction". The wallet signs and sends
-nothing because of a marker, and the marker says to check the explorer before sending again.
+nothing because of a marker, and the marker says to check the explorer before sending again. That marker needs
+the RPC to report the transaction definitely not mined and not pending: the Cairn proxy
+(`/api/rpc/tx/:id/status`) reports that only when both of its node backends answered their mempool reads in
+full, so with a backend down a row keeps the 10-block notice instead; a node on this computer reports it when its
+own transaction scan was complete (it has no mempool view to add).
 
 ### Sending to a `.csd` name
 
