@@ -50,6 +50,16 @@ export interface SecondSourceReply { ok: boolean; status: number; body: unknown 
 /** A started second-source read. `answer()` is undefined while pending and null when nothing usable came back. */
 export interface SecondSourceRead { answer(): SecondSourceReply | null | undefined; stop(): void }
 
+/**
+ * Why a second-source read gave the fill nothing to judge: "pending" (no reply yet), "failed" (an error, a timeout,
+ * a status other than 200 or 404, or a body that is not a JSON object), else null (it answered).
+ */
+export function secondSourceUnanswered(reply: SecondSourceReply | null | undefined): "pending" | "failed" | null {
+  if (reply === undefined) return "pending";
+  if (!reply || (reply.status !== 200 && reply.status !== 404) || !reply.body || typeof reply.body !== "object" || Array.isArray(reply.body)) return "failed";
+  return null;
+}
+
 /** The body of a 2xx reply, else null. */
 export function okBody(reply: SecondSourceReply | null | undefined): unknown {
   return reply && reply.ok ? reply.body : null;

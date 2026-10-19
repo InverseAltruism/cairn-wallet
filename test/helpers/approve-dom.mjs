@@ -15,7 +15,15 @@ const STATIC_IDS = ["view-locked", "view-req", "req", "msg", "btn-approve", "btn
 export function mountApproveWindow(handlers) {
   const registry = new Map();
   class El {
-    constructor(id) { this.id = id; this._html = ""; this.textContent = ""; this.className = ""; this.hidden = false; this.disabled = false; this._kids = []; }
+    constructor(id) { this.id = id; this._html = ""; this._text = ""; this.className = ""; this.hidden = false; this.disabled = false; this._kids = []; }
+    // Setting textContent replaces the subtree, markup added with insertAdjacentHTML included.
+    get textContent() { return this._text; }
+    set textContent(v) {
+      for (const k of this._kids) if (registry.get(k)?._parent === this) registry.delete(k);
+      this._kids = [];
+      this._text = String(v);
+      this._html = this._text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
     get innerHTML() { return this._html; }
     set innerHTML(v) {
       for (const k of this._kids) if (registry.get(k)?._parent === this) registry.delete(k);

@@ -91,7 +91,9 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   read (`OFFER_SOURCE_CONFLICT`). When clarvis has read at least 12 blocks past the reservation and does not know
   it, the approval window shows the request again with a warning and asks for "Sign anyway" or "Cancel" before
   anything is signed; the confirmation is bound to that request and reservation and is taken only from the
-  extension's own pages (the channel the approval window uses), never from a web page or the content script. Both reads are fail-soft and never waited for past the scan, so what remains is
+  extension's own pages (the channel the approval window uses), never from a web page or the content script. Both reads are fail-soft and never waited for past the scan; when the
+  reservation read had not answered or failed, the approval window says "Second source not consulted" under the
+  sent fill. What remains is
   clarvis down or slower than the scan during the attack; a front door that withholds or delays the buyer's
   fclaim, while clarvis has not yet replayed it (the front door also relays the buyer's submits through
   `/api/rpc`, so it can hold the reservation back, get a competing hold mined first and release the now-denied

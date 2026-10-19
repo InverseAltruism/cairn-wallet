@@ -10,6 +10,7 @@
 //     section 3 fails (the page's acknowledgement signs).
 //   - drop the "unknown" return in wallet.ts (MUTATE_RESERVATION_CONFIRM: `if (false && ...)`): section 1 fails.
 // PAIRED HONEST PATH: section 7, a granted reservation signs on the first approval, with no added latency.
+// Section 11: the "second source not consulted" notice reaches the window's outcome and not the page.
 //
 // Run: npx tsx test/fill-reservation-confirm.test.mjs   (offline)
 import assert from "node:assert/strict";
@@ -219,6 +220,24 @@ await test("10. queue caps: a confirm-step request re-queued after five newer on
   await settle();
   assert.equal(over?.code, "RATE_LIMITED", "the cap still refuses the next one");
   for (const p of await call("pending")) await call("resolve", p.id, false);
+});
+
+// "Second source not consulted" (wallet.ts FillNotes): the window's outcome carries it and the page's result does not.
+//   RED-FIRST: drop `delete out.secondSource` in background.ts pageResult and the page check fails; drop the
+//   second argument of the success `finish(...)` and the window check fails.
+await test("11. a fill signed while the record read is pending: the window is told, the page is not", async () => {
+  const P = await request(null, (w) => (i, u) => (String(u).includes("/cairnx/record/") ? delayed(3000, truthful(w))(i, u) : body(w.truth)()));
+  const r = await resolveAs(P, true, ME);
+  assert.equal(r.ok, true, String(r.error));
+  assert.equal(r.secondSource, "pending", "the window's outcome names the unanswered read");
+  assert.equal(P.st.submits.length, 1, "signed once, no new refusal");
+  assert.equal(P.reply?.ok, true);
+  assert.equal(typeof P.reply?.result?.txid, "string");
+  assert.equal("secondSource" in P.reply.result, false, "the page's result does not carry it");
+  const Q = await request(null, (w) => truthful(w));
+  const q = await resolveAs(Q, true, ME);
+  assert.equal(q.ok, true);
+  assert.equal("secondSource" in q, false, "honest path: an answered read gives the window no notice");
 });
 
 console.log(`fill-reservation-confirm: ${n} passed, 0 failed`);

@@ -9,6 +9,12 @@
   table about 90 days old (64,359 stored headers), the first name verification after a restart took 2.4 to 2.9 s
   instead of 8.7 to 11.6 s at a 4x CPU slowdown. The first start after the browser opens still runs every check,
   and a stored header that was changed fails the hash chain and gets the full checks.
+- A reservation fill signed while the second source (clarvis) had not yet answered, or could not answer, the
+  wallet's question about your reservation now says so under "sent" in the approval window: "Second source not
+  consulted: the second source (clarvis) had not answered yet when this fill was signed, so its check of your
+  reservation did not run. Check on the explorer that the fill delivered." (or "did not give a usable answer"),
+  and the window stays open until you close it. Nothing is refused and nothing waits longer; when clarvis answers
+  in time, nothing changes.
 - Changing the node RPC or the Cairn API in settings now moves name verification and reservation-fill checks
   started after the change to the new endpoint. Before, they kept reading block bodies and headers from the old
   one until the extension's background worker restarted, and a block-mismatch refusal named the old RPC (since

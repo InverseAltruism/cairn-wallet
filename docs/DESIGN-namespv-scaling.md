@@ -249,7 +249,12 @@ same base and timeout), and counts only if it answered before the scan finished,
   window is the only one that sends it, and the toolbar popup only rejects); one in the request's params, or for another request or
   fclaim, is ignored. "Cancel" rejects the request; closing the window settles it `APPROVAL_CLOSED`.
 - Anything else (applied, a 404 below that height, a wrong kind or txid, a malformed body, an error, a timeout, no
-  answer before the scan ends): no evidence, the fill proceeds.
+  answer before the scan ends): no evidence, the fill proceeds. When the read had not answered yet, or failed (an
+  error, a timeout, a status other than 200 or 404, or a body that is not a JSON object; `secondSourceUnanswered`),
+  the signed fill's outcome in the approval window adds "Second source not consulted" and the window stays open
+  until it is closed; the page's result does not carry it (`test/fill-second-source-notice.test.mjs`,
+  `test/fill-reservation-confirm.test.mjs` section 11, `test/approve-second-source-dom.test.mjs`). It adds no
+  refusal and no wait.
 
 The margin of 12 is conservative. The cairnx service publishes `tipHeight` and its events from one scan with no
 depth lag (clarvis's deployed build constructs its scanner with inclusion checking off, the default; with it on, a

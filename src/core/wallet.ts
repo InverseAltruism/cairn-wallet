@@ -17,7 +17,7 @@ import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
-import { secondSourceOfferConflict, reservationRecordVerdict, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
+import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
 import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
@@ -94,6 +94,9 @@ export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
 
 // A fill refusal; RESERVATION_UNCONFIRMED also carries the facts the approval window shows.
 type FillRefusal = node.SubmitResult & { unconfirmed?: ReservationUnconfirmed };
+// Set by a passing fclaim-lane preflight when clarvis's record read had not answered (or failed) at its verdict; a
+// signed fill carries it to the approval window as `secondSource` (background.ts keeps it off the page's result).
+type FillNotes = { secondSource?: "pending" | "failed" };
 
 export type TokenFillQuote = {
   ticker?: string; amount?: string; fee?: string; total?: string;
@@ -729,13 +732,14 @@ export class Wallet {
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
     if (p.score != null && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
     const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? defaultFeeFor("attest") };
-    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck);
+    const notes: FillNotes = {};
+    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck, notes);
     if (refusal) return refusal;
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
     const r = await node.fillOffer(this.rpc, q, ctx.priv);
     const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
     await this.maybeRecord(ctx.histKey, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
-    return r;
+    return r.ok && notes.secondSource ? { ...r, secondSource: notes.secondSource } : r;
   }
 
   // ── fund-safety pre-flight (deep-review 2026-07-03 C2/C3/C4): the wallet's own fillOffer must NEVER sign a
@@ -756,7 +760,7 @@ export class Wallet {
   // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
   // `reservationAck` is the fclaim txid the user confirmed in the approval window after an "unknown" reservation
   // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
-  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string): Promise<FillRefusal | null> {
+  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
@@ -796,7 +800,7 @@ export class Wallet {
           offer: startSecondSourceRead(CLARVIS_TRADE_API, "offer", String(offer.id ?? ""), SECOND_SOURCE_TIMEOUT_MS),
           record: startSecondSourceRead(CLARVIS_TRADE_API, "record", proposalId, SECOND_SOURCE_TIMEOUT_MS),
         };
-        try { return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay, second, reservationAck); } finally { second.offer.stop(); second.record.stop(); }
+        try { return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay, second, reservationAck, notes); } finally { second.offer.stop(); second.record.stop(); }
       }
       // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
       // a live tip. this.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
@@ -965,7 +969,7 @@ export class Wallet {
   // it only ever REJECTS MORE than resolve(), never accepts something resolve() would reject.
   // `second` holds the clarvis reads of the offer and of this fclaim's record, started by the caller before the
   // scan so they run alongside it.
-  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint, second: { offer: SecondSourceRead; record: SecondSourceRead }, reservationAck?: string): Promise<FillRefusal | null> {
+  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint, second: { offer: SecondSourceRead; record: SecondSourceRead }, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
     const offerId = String(offer?.id ?? "").toLowerCase();
     if (!/^0x[0-9a-f]{64}$/.test(offerId))
       return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
@@ -1043,11 +1047,14 @@ export class Wallet {
     if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the second source (clarvis) reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
     // A header source that hides a competing hold placed just before our fclaim makes the scan grant it while the
     // chain denies it. The second resolver's replay of the real chain shows the denial.
-    const rv = reservationRecordVerdict(second.record.answer(), { fclaimTxid, provenHeight: fcEv?.height });
+    const recordReply = second.record.answer();
+    const rv = reservationRecordVerdict(recordReply, { fclaimTxid, provenHeight: fcEv?.height });
     if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
     // "unknown" goes back to the approval window as a confirm step; the user's acknowledgement for this fclaim signs.
     if (rv?.kind === "unknown" && typeof fcEv?.height === "number" && String(reservationAck ?? "").toLowerCase() !== fclaimTxid.toLowerCase()) // MUTATE_RESERVATION_CONFIRM
       return { ...refuse("RESERVATION_UNCONFIRMED", `the second source has read the chain to block ${rv.tipHeight} and has no record of your reservation (block ${fcEv.height}); confirm in the approval window to sign anyway`), unconfirmed: { fclaimTxid: fclaimTxid.toLowerCase(), fclaimHeight: fcEv.height, tipHeight: rv.tipHeight } };
+    const unanswered = secondSourceUnanswered(recordReply);
+    if (unanswered && notes) notes.secondSource = unanswered; // MUTATE_SECOND_SOURCE_NOTE
     return null;
   }
 
