@@ -72,7 +72,7 @@ console.log("FILLSPV-01 - PoW-floor clamp on the tip reported to verifyFillSpv:\
 }
 
 // RED-FIRST mutation: removing the clamp line reverts the reported tip to the deflated verifiedTip, and the
-// lapsed-hold fill FLIPS to safe:true (the exact burn the clamp prevents) — proving the clamp is the sole fix.
+// lapsed-hold fill FLIPS to safe:true (the exact burn the clamp prevents); proving the clamp is the sole fix.
 const FILLSPV_SRC = path.join(coreDir, "fillspv.ts");
 async function withFillspvMutant(marker, run) {
   const lines = readFileSync(FILLSPV_SRC, "utf8").split("\n");

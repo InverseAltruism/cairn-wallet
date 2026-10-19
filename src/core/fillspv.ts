@@ -1,4 +1,4 @@
-// fillspv.ts — the LIVE production FillSpvIo for the V28 open-lane (fclaim) fill fund boundary.
+// fillspv.ts; the LIVE production FillSpvIo for the V28 open-lane (fclaim) fill fund boundary.
 //
 // The pure fail-closed verdict lives in the vendored cairnx-core `verifyFillSpv` (src/vendor/cairnx-spv.js,
 // §31/B4): it re-derives the ENTIRE fclaim grant + hold from PoW-buried, MERKLE-PROVEN events and NEVER
@@ -188,7 +188,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
     throw new Error("fill-SPV: the resolver gave no usable offer height to anchor its proof");
 
   // Sync PoW-verified headers to the node tip (prepare caps its sync at the node tip, so a large target forces
-  // a full sync) — the fill needs burial-to-tip, not just headers up to a record. A lying-high header throws.
+  // a full sync); the fill needs burial-to-tip, not just headers up to a record. A lying-high header throws.
   const { verifiedTip, floorTip: rawFloorTip, tipKnown } = await spv.prepare(Number.MAX_SAFE_INTEGER);
   if (!Number.isFinite(verifiedTip)) throw new Error("fill-SPV: no PoW-verified tip");
   // Without a node tip nothing was synced, and holds would be judged against a verified tip that may be behind.
@@ -351,7 +351,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // (verifiedTip < 60,134) is unreachable at any tip a fillable fclaim can exist at, and the deletion
   // removes the only hostile-minable prevout fetch in this scan (an attacker-plantable SCORE_CLAIM
   // used to force a proveEventAt read). resolve() rejects SCORE_CLAIM at/after V28 anyway, so a
-  // legacy hold could only ever OVER-count (over-refuse), never under-count — nothing is lost.
+  // legacy hold could only ever OVER-count (over-refuse), never under-count; nothing is lost.
 
   // DEFECT-3 fix: EAGERLY authenticate every lane event the scan FOUND in a merkle-bound block, HERE (not in
   // provenEvent alone). verifyFillSpv silently SKIPS a null provenEvent AND its per-event try/catch swallows a

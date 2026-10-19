@@ -36,7 +36,7 @@ tests.unshift(join("test", FIRST));
 // set NO env (mechanically pinned by the workflow scan in test/pentest.ts), so they always get the
 // committed floor and a dropped gate reds the runner. Only a test harness (runner-guards) may set
 // CAIRN_TEST_EXPECTED_MIN, to exercise the gate against a throwaway sandbox; when set to a positive
-// integer it is the floor for THAT run. (A workflow can therefore never disarm this — see pentest.ts.)
+// integer it is the floor for THAT run. (A workflow can therefore never disarm this; see pentest.ts.)
 const COMMITTED_EXPECTED_MIN = 119;
 const envMin = Number(process.env.CAIRN_TEST_EXPECTED_MIN);
 const EXPECTED_MIN = Number.isFinite(envMin) && envMin > 0 ? envMin : COMMITTED_EXPECTED_MIN;
