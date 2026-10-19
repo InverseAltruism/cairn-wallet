@@ -30,6 +30,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts   # no dependency lifecycle scripts (supply-chain hardening)
       - run: npm run typecheck
+      # biome.json: unused imports, focused tests and @ts-ignore fail the step; empty blocks are warnings for now.
+      - run: npm run lint
       - run: npm test
       - run: npm run build
       # Vendor-freshness gate (cheap path): verifies the committed SPV bundle's sha256 == PROVENANCE.json and
