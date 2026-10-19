@@ -137,7 +137,9 @@ unlocked, the key in reach. The session area is memory only: an attacker who wri
 IndexedDB but finds no pin on disk to set, and a changed record fails the walk. The front door and clarvis serve
 nothing the walk reads; the pin can only name a tip the light client already accepted from them, which a full restore
 would accept again (the residuals in "Work above the newest anchor" are unchanged). A pin written ahead of a detached
-store write that never lands fails the walk, and the full restore runs. Measured on 2026-10-19 (64,359 stored
+store write that never lands fails the walk, and the full restore runs. A new release cannot meet an old pin: Chrome documents
+that `storage.session` is cleared when the extension is reloaded, updated or disabled and when the browser restarts
+(not tested here), and the walk also refuses a pin whose `newest` is not this release's table. Measured on 2026-10-19 (64,359 stored
 headers, the table minus 16; raw data outside the repository): in an extension page at 4x CPU throttle, open to
 verified 8,690 to 11,631 ms over 10 runs without the pin and 2,335 to 2,725 ms over 5 runs with it; in the real
 service worker unthrottled after a worker stop, 2,544 to 4,333 ms (tag build, 3 runs) against 947 to 1,129 ms (3
