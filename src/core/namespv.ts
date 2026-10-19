@@ -157,6 +157,8 @@ export interface SpvSource {
   merkleAt?(height: number): Promise<string | null>;
   /** Where block bodies come from (the configured node RPC), named when a body does not match its header. */
   bodySource?: string;
+  /** Where the verified headers come from (the Cairn API this source was built on), named beside bodySource. */
+  headerSource?: string;
 }
 
 /** The refusal for a block body whose transactions do not hash to the verified header's merkle root. */
@@ -166,9 +168,10 @@ export function bodyMismatchReason(height: number, bodySource: string | undefine
     : `block ${height} does not match its verified merkle root (tampered read path)`;
 }
 
-/** Thrown for a block body that does not match its verified header; `bodySource` is the RPC that served it. */
+/** Thrown for a block body that does not match its verified header; `bodySource` is the RPC that served it and
+ *  `headerSource` the API the header came from, both as the source was built (not the current settings). */
 export class BodyMismatchError extends Error {
-  constructor(readonly height: number, readonly bodySource: string | undefined) {
+  constructor(readonly height: number, readonly bodySource: string | undefined, readonly headerSource?: string) {
     super(bodyMismatchReason(height, bodySource));
     this.name = "BodyMismatchError";
   }
@@ -907,6 +910,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       return { merkle: vh.merkle, txs: b.txs };
     },
     bodySource: opts.rpcBase.replace(/\/$/, ""),
+    headerSource: headersBase,
     async hashAt(height: number) { return (await headerOrNull(height))?.hash ?? null; },
     async merkleAt(height: number) { return (await headerOrNull(height))?.merkle ?? null; },
     // NSPV-SIGSUB-1 (H3): fetch a record's spent prevout and bind it to its txid exactly as verifyInputValues

@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-- Changing the node RPC or the Cairn API in settings now moves name verification and reservation-fill checks to
-  the new endpoint at once. Before, they kept reading block bodies and headers from the old one until the
-  extension's background worker restarted, and a block-mismatch refusal named the old RPC (since 0.2.74).
+- Changing the node RPC or the Cairn API in settings now moves name verification and reservation-fill checks
+  started after the change to the new endpoint. Before, they kept reading block bodies and headers from the old
+  one until the extension's background worker restarted, and a block-mismatch refusal named the old RPC (since
+  0.2.74). A check already running when the setting changes finishes on the endpoints it started with, and its
+  name result is not kept for the quick re-check at confirm time; the change also empties that cache.
 - `OFFER_SOURCE_CONFLICT` and `RESERVATION_DENIED` call clarvis "the second source (clarvis)" instead of "the
   independent second resolver": clarvis has the same operator as the default resolver, as SECURITY.md says. The
   codes are unchanged.

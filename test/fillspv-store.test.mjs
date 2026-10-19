@@ -144,7 +144,7 @@ console.log("the wallet's fclaim-lane preflight (fillOffer) on the same sources:
 
 // Wallet.fillOffer on my fclaim for the real offer. The light client is the split source over a live store source
 // whose RPC is `rpcBase`; the resolver, the coin and the submit route are stubbed. Returns the result and the submits.
-async function walletFill(rpcBase, { unserved, block } = {}) {
+async function walletFill(rpcBase, { unserved, block, switchApiTo } = {}) {
   reset();
   if (unserved) net.unserved = unserved;
   if (block) net.blocks.set(OFFER.height, block);
@@ -156,8 +156,10 @@ async function walletFill(rpcBase, { unserved, block } = {}) {
   const served = { id: OFFER.offerId, seller: OFFER.seller, give: { ticker: "CAIRN", amount: "500000000" }, want: { value: "100000000", payto: OFFER.seller }, status: "open", height: OFFER.height, feeBps: feeBpsAt(OFFER.height), paid: "0", delivered: "0", fclaimId: FCLAIM, fclaimHeight: TIP - 10, fclaimExpiresEpoch: epochOf(TIP - 10) + 2 };
   const submits = [];
   const inner = globalThis.fetch;
+  let switched = false;
   globalThis.fetch = async (url, init) => {
     const u = String(url);
+    if (switchApiTo && !switched && u.endsWith(`/block/height/${OFFER.height}`)) { switched = true; await w.setApi(switchApiTo); }
     if (u.includes("/tx/submit")) { submits.push(u); return Response.json({ ok: true, txid: "0x" + "aa".repeat(32) }); }
     if (/\/cairnx\/offer\//.test(u)) return u.includes("clarvis") || !u.endsWith(FCLAIM) ? new Response("{}", { status: 404 }) : Response.json(served);
     if (/\/utxos\//.test(u)) return Response.json({ confirmed_balance: coin.coin.value, utxos: [coin.coin] });
@@ -168,7 +170,7 @@ async function walletFill(rpcBase, { unserved, block } = {}) {
   };
   try {
     const outputs = [{ to: OFFER.seller, value: 100_000_000 }, { to: "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016", value: 1_000_000 }];
-    return { r: await w.fillOffer({ proposalId: FCLAIM, outputs }), submits };
+    return { r: await w.fillOffer({ proposalId: FCLAIM, outputs }), submits, switched };
   } finally { globalThis.fetch = inner; }
 }
 
@@ -178,6 +180,17 @@ await test("a Local node on another chain: fillOffer refuses RPC_BLOCK_MISMATCH 
   assert.equal(r.ok, false);
   assert.equal(r.code, "RPC_BLOCK_MISMATCH", `${r.code}: ${r.error}`);
   assert.equal(r.error, `refusing to sign: block ${OFFER.height} from ${LOCAL} does not match the block header the wallet verified from ${API}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`);
+  assert.equal(submits.length, 0);
+});
+
+await test("the API setting changed while the fill reads the block: the refusal names the header source the fill used", async () => {
+  const other = { ...JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json", import.meta.url), "utf8")).block, height: OFFER.height };
+  const API2 = "https://api2.cairn-substrate.test";
+  const { r, submits, switched } = await walletFill(LOCAL, { block: other, switchApiTo: API2 });
+  assert.ok(switched, "setup: the setting changed during the block read");
+  assert.equal(r.code, "RPC_BLOCK_MISMATCH", `${r.code}: ${r.error}`);
+  assert.ok(r.error.includes(`the block header the wallet verified from ${API}.`), r.error);
+  assert.ok(!r.error.includes(API2), r.error);
   assert.equal(submits.length, 0);
 });
 
