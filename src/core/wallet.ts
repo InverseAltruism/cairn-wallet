@@ -202,6 +202,11 @@ export class Wallet {
   private nameHints = new Map<string, HintSetEntry>();
   /** Test seam: inject a synthetic SpvSource (hashAt / confirm skip). */
   nameSpvForTest?: SpvSource;
+  /** Test seam: replaces liveSpvSource as the singleton's builder (the singleton and the setters stay real). */
+  spvBuildForTest?: (opts: LiveSpvOpts) => Promise<SpvSource>;
+  // Bumped on every endpoint change. A name verification or confirm that started under an older value is
+  // superseded: it may finish, but it never writes or reads the hint-set cache.
+  private spvGen = 0;
   /** Test seam: inspect / seed the hint-set cache. */
   nameHintCacheForTest(): Map<string, HintSetEntry> { return this.nameHints; }
   // `session` is chrome.storage.session (in-RAM) when running as an extension, else null. It lets the
@@ -245,9 +250,11 @@ export class Wallet {
     this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
-  // The SPV source reads block bodies from `rpc` and headers from `api`, so a changed endpoint drops it.
-  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this._spvSrc = null; this.rpc = u; await this.store.set("rpc", u); }
-  async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); if (u !== this.api) this._spvSrc = null; this.api = u; await this.store.set("api", u); }
+  // The SPV source reads block bodies from `rpc` and headers from `api`, so a changed endpoint drops it, and the
+  // hint-set cache, whose header hashes came from it.
+  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this.endpointChanged(); this.rpc = u; await this.store.set("rpc", u); }
+  async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); if (u !== this.api) this.endpointChanged(); this.api = u; await this.store.set("api", u); }
+  private endpointChanged(): void { this._spvSrc = null; this.spvGen++; this.nameHints.clear(); }
   async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
@@ -1461,8 +1468,10 @@ export class Wallet {
       // Cross-check the user's configured primary resolver against the independent clarvis second source
       // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
       // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
-      const res = await verifyNameUnion(nm, this.nameSources(), await this.spvSource());
-      try { await this.rememberHintSet(nm, res); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
+      const gen = this.spvGen;
+      const src = await this.spvSource();
+      const res = await verifyNameUnion(nm, this.nameSources(), src);
+      try { await this.rememberHintSet(nm, res, src, gen); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
       return { ...res, name: nm };
     } catch (e) {
       return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm };
@@ -1486,12 +1495,13 @@ export class Wallet {
     return [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
   }
 
-  private async rememberHintSet(nm: string, res: NameVerification): Promise<void> {
+  // `src` and `gen` are the ones `res` was verified with: the cached hashes come from that source, and a
+  // verification superseded by an endpoint change caches nothing.
+  private async rememberHintSet(nm: string, res: NameVerification, src: SpvSource, gen: number): Promise<void> {
     // Advisor 2.4: cache ONLY a clean union success. Never M12 recovered / soleSource / viaFill / lapse.
     if (!res.verified || !res.addr || res.recovered || res.soleSource || res.viaFill || res.lapsed === true) return;
     const pairs = res.hintPairs && res.hintPairs.length ? sortHintPairs(res.hintPairs) : null;
     if (!pairs || !pairs.length) return;
-    const src = await this.spvSource();
     if (!src.hashAt) return;
     const hashes: Record<number, string> = {};
     for (const p of pairs) {
@@ -1500,7 +1510,7 @@ export class Wallet {
       hashes[p.height] = h.toLowerCase();
     }
     const tip = await this.tip();
-    if (tip == null || !Number.isFinite(tip)) return;
+    if (tip == null || !Number.isFinite(tip) || gen !== this.spvGen) return;
     this.nameHints.set(nm, {
       name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
       ts: Date.now(), epoch: Math.floor(tip / EPOCH_LEN),
@@ -1508,6 +1518,7 @@ export class Wallet {
   }
 
   private async tryConfirmHintSet(nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
+    const gen = this.spvGen;
     const cache = this.nameHints.get(nm);
     if (!cache) return null;
     const bundle = await fetchNameUnion(nm, this.nameSources());
@@ -1525,7 +1536,7 @@ export class Wallet {
       epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
       hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,
     });
-    if (!verdict.skip) return null;
+    if (!verdict.skip || gen !== this.spvGen) return null;
     return {
       ok: true, name: nm, addr: cache.addr, via: cache.via, owner: cache.owner, lapsed: false,
       verified: true, depth: cache.depth, sources: verdict.sources, disagree: verdict.disagree,
@@ -1554,7 +1565,7 @@ export class Wallet {
   private spvSource(): Promise<SpvSource> {
     if (this.nameSpvForTest) return Promise.resolve(this.nameSpvForTest);
     if (!this._spvSrc) {
-      const built: Promise<SpvSource> = liveSpvSource(this.spvOpts()).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
+      const built: Promise<SpvSource> = (this.spvBuildForTest ?? liveSpvSource)(this.spvOpts()).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
       this._spvSrc = built;
     }
     return this._spvSrc;
