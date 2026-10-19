@@ -101,11 +101,14 @@ below the stored tip, and no table entry lies between the anchor and the pin:
 
 1. walks the stored records from the anchor to the pin (`walkToPin`: vendored `verifyLinkedRecords`, one run of
    4,096 records per task): the first record's prev is the table hash at `newest`, each record's sha256d is the next
-   one's prev, and the record at the pin hashes to the pin's hash;
-2. seeds the light client with the 46 records ending at the pin, the pin hash given as the checkpoint at its height
+   one's prev, and the record at the pin hashes to the pin's hash; it also finds the walked record with the latest
+   timestamp;
+2. re-runs the time rules on that record against today's clock (`latestTimeHolds`: the vendored light client seeds
+   the 46 records below it and ingests it with every check); a failure runs the full restore;
+3. seeds the light client with the 46 records ending at the pin, the pin hash given as the checkpoint at its height
    (`fromRecords`, which runs `seedTrusted` on them: hash, prev link, PoW, every table entry, the last hash equal to
    the pin), and ingests any record stored above the pin with every check;
-3. answers heights between the anchor and the seed from the walked records, adds the pin's work to the client's
+4. answers heights between the anchor and the seed from the walked records, adds the pin's work to the client's
    so a reseed compares totals from the same anchor seed, and persists across both.
 
 Any other outcome (no pin, a malformed one, a failed walk, a pin from another table) runs the full restore.
@@ -116,12 +119,17 @@ with the pin, so the walked bytes are the ones whose hash chain ends at the pin;
 needs a sha256d second preimage. The pin is written only from the light client's own chain, whose headers passed
 `ingest` (`verifyOne`, 1097-1114: prev link, `checkTimeRules` at 1130, LWMA bits, PoW, `pinCheckpoint` at 1063) or
 `seedTrusted` (1147-1166, reached through `fromRecords` at 1399) in this browser session, so the walked records
-passed every consensus check earlier in the session. The one check not repeated is the wall-clock drift bound (time
-at most 2 h ahead of now), which a later clock can only relax, unless the computer's clock moved back during the
-session. Table entries are not checked by the walk, so the pin is refused when one lies in the walked range (with the
-release table the newest entry is the anchor, so none lies above it; the prefix tables of tests and the acceptance
-harness can hit it); the pin itself is added to the map only for the pin-seeded client, and the reseed seeds from the
-anchor with the release map alone, so a reorg below the pin is handled as before.
+passed every consensus check earlier in the session. The checks that depend only on the headers (prev link, time
+rules against earlier headers, LWMA bits, PoW, pins) give the same verdict now; the one that depends on today's
+clock, the future-drift bound (`checkTimeRules` 1137-1138: time at most `MAX_FUTURE_DRIFT_SECS` ahead of now), is
+re-run on the walked record with the latest timestamp by the vendored `ingest`. The bound falls only with the
+timestamp, so that record passes it exactly when every walked record does, which keeps restore parity after a
+backward clock correction within the session (test/namespv-session-pin.test.mjs 1b: with the clock moved back, the
+pin restart falls back and accepts exactly the heights the full restore accepts). Table entries are not checked by
+the walk, so the pin is refused when one lies in the walked range (with the release table the newest entry is the
+anchor, so none lies above it; the prefix tables of tests and the acceptance harness can hit it); the pin itself is
+added to the map only for the pin-seeded client, and the reseed seeds from the anchor with the release map alone, so
+a reorg below the pin is handled as before.
 
 Who can do what. Content scripts have no access to `chrome.storage.session` (`TRUSTED_CONTEXTS`, set at start,
 `test/storage-access-level.test.mjs`); code that has it runs as the extension itself, with the vault and, while
@@ -131,9 +139,9 @@ nothing the walk reads; the pin can only name a tip the light client already acc
 would accept again (the residuals in "Work above the newest anchor" are unchanged). A pin written ahead of a detached
 store write that never lands fails the walk, and the full restore runs. Measured on 2026-10-19 (64,359 stored
 headers, the table minus 16; raw data outside the repository): in an extension page at 4x CPU throttle, open to
-verified 8,690 to 11,631 ms over 10 runs without the pin and 2,415 to 2,853 ms over 5 runs with it; in the real
-service worker unthrottled after a worker stop, 2,544 to 4,333 ms (tag build, 3 runs) against 1,595 to 1,721 ms (3
-runs). Test: `test/namespv-session-pin.test.mjs`, and the Chrome case in `test/namespv-store-chrome.test.mjs`.
+verified 8,690 to 11,631 ms over 10 runs without the pin and 2,335 to 2,725 ms over 5 runs with it; in the real
+service worker unthrottled after a worker stop, 2,544 to 4,333 ms (tag build, 3 runs) against 947 to 1,129 ms (3
+runs, a quieter host). Test: `test/namespv-session-pin.test.mjs`, and the Chrome case in `test/namespv-store-chrome.test.mjs`.
 
 The `anchors` job (`release.yml`) walks the chain from the floor's page to the newest entry on every tag: one
 `/api/headers` page per 512 heights plus one RPC check per entry, paced at 550 ms, under a 15-minute job timeout.

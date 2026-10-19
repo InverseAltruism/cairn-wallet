@@ -2,12 +2,16 @@
 // a hash walk to the pin in chrome.storage.session, and every other case runs the full restore. Real mainnet
 // headers through the production liveSpvSource (test/helpers/spvfixture.mjs); the pin slot is an in-memory double.
 //
-// Which restore ran is read from the wall-clock drift bound, the one check the walk does not repeat: with the
-// clock set three hours before the suffix headers, a full restore stops at the first stored header above the
-// anchor and the sync refuses with the clock copy, while the walk restores the stored suffix unchanged.
+// Which restore ran is read from the light clients it builds through the vendored LightClient.fromRecords (a test
+// instrument, restored after each use): the full restore seeds at the anchor and ingests the stored suffix; the pin
+// path seeds at the pin. Restore parity (1b): with the clock moved back, the pin path accepts exactly the heights
+// the full restore accepts, because it re-runs the time rules on the walked record with the latest timestamp.
 //
 // RED-FIRST (each mutation turns the named section red):
-//   (1) the fast path off (`pinned` always false)                         -> 1
+//   (1) the fast path off (walkToPin not called)                          -> 1
+//  (14) no time-rule check on the walked records (MUTATE_PIN_TIME)       -> 1b
+//  (15) walkToPin naming the pin's height instead of the latest-dated    -> 12b
+//       (the real fixture's timestamps rise every block, so 12b re-dates a record in a hash-linked run)
 //   (2) walkToPin returning true without verifyLinkedRecords             -> 2
 //   (3) no `pin.newest !== newest` check                                  -> 4
 //   (4) no checkpoint-range check in walkToPin                            -> 5
@@ -24,9 +28,10 @@
 import { checker } from "./helpers/check.mjs";
 import { serveFixture, memStore, legacyOf, records, hashOf, headerOf, forge, rehash, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 import { liveSpvSource, flushSpvStoreWrites, syncAligned, SPV_CHECKPOINTS } from "../src/core/namespv.ts";
-import { parsePin, walkToPin } from "../src/core/spvpin.ts";
+import { parsePin, walkToPin, latestTimeHolds } from "../src/core/spvpin.ts";
 import { SPV_ANCHORS } from "../src/core/spvanchors.ts";
-import { LightClient } from "../src/vendor/cairnx-spv.js";
+import { createHash } from "node:crypto";
+import { LightClient, deserializeHeader, serializeHeader } from "../src/vendor/cairnx-spv.js";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 
@@ -36,13 +41,24 @@ const net = {};
 serveFixture(net);
 const HB = 84, SEED = 46;
 const realNow = Date.now;
-const clockBefore = (h) => { const t = (Number(headerOf(h).time) - 3 * 3600) * 1000; Date.now = () => t; };
 const clockReal = () => { Date.now = realNow; };
 const reset = (tip = FIX_TOP) => { net.log.length = 0; net.tip = tip; net.tamper = undefined; clockReal(); };
 const bytesEq = (a, b) => !!a && !!b && a.length === b.length && Buffer.from(a).equals(Buffer.from(b));
 // The error a restart's build or first prepare throws, or null; a section whose restart throws fails its checks.
-const restartError = async (o, want = FIX_TOP - 12) => { try { await (await liveSpvSource(o)).prepare(want); return null; } catch (e) { return String(e?.message ?? e); } };
 const restart = async (o, want = FIX_TOP - 12) => { try { const src = await liveSpvSource(o); return { src, p: await src.prepare(want) }; } catch (e) { return { error: String(e?.message ?? e), p: {} }; } };
+
+// Runs `fn` with LightClient.fromRecords recorded. `path` is "pin" when a client was seeded at the pin (pinTip),
+// "full" when one was seeded at the anchor with stored records after it, else "none".
+async function restorePath(fn, { pinTip = FIX_TOP, newest = NEWEST } = {}) {
+  const orig = LightClient.fromRecords, calls = [];
+  LightClient.fromRecords = function (recs, at, ...rest) { calls.push({ n: recs.length / HB, first: at.firstHeight, anchor: at.anchorHeight }); return orig.call(this, recs, at, ...rest); };
+  try {
+    const out = await fn();
+    const pin = calls.some((c) => c.anchor === pinTip && c.first === pinTip - SEED + 1);
+    const full = calls.some((c) => c.anchor === newest && c.n > SEED);
+    return { out, path: pin && !full ? "pin" : full && !pin ? "full" : pin ? "both" : "none", calls };
+  } finally { LightClient.fromRecords = orig; }
+}
 
 function slot(initial = null) {
   const s = { value: initial, sets: 0, get: async () => s.value, set: async (p) => { s.sets++; s.value = p; } };
@@ -74,17 +90,45 @@ console.log("1. the pin is written after a full restore, and a restart restores 
   const { st, pin } = await firstSession();
   check(`the pin is the verified tip (${pin.value?.tip}), its hash and the anchor it counts from`, pin.value?.v === 1 && pin.value.tip === FIX_TOP && pin.value.hash === hashOf(FIX_TOP) && pin.value.newest === NEWEST);
   check("  its work is the vendored chainwork from the anchor seed", pin.value?.work === await workAt(FIX_TOP));
-  reset(); clockBefore(NEWEST + 1);
-  const { src, p, error } = await restart(opts(st, pin));
+  reset();
+  const { out: { src, p, error }, path } = await restorePath(() => restart(opts(st, pin)));
   if (error) console.log(`    restart threw: ${error.slice(0, 120)}`);
-  check(`with the pin and a clock behind the suffix the restart reaches the tip (${p.verifiedTip}) with zero requests (${net.log.length})`, p.verifiedTip === FIX_TOP && net.log.length === 0);
+  check(`with the pin and the real clock the restart takes the pin path (${path}) and reaches the tip (${p.verifiedTip}) with zero requests (${net.log.length})`, path === "pin" && p.verifiedTip === FIX_TOP && net.log.length === 0);
   const lo = FIX_TOP - SEED + 1;
   const ok = [NEWEST + 1, 114800, lo - 1, lo, FIX_TOP];
   const answers = src ? await Promise.all(ok.map(async (h) => (await src.hashAt(h)) === hashOf(h) && (await src.merkleAt(h)) === headerOf(h).merkle)) : [false];
   check(`  hashAt and merkleAt answer the walked heights and the pin-seeded ones (${ok.join(", ")})`, answers.every(Boolean));
-  reset(); clockBefore(NEWEST + 1);
-  const control = await restartError(opts(st, null));
-  check(`  control: without the pin the same restart runs the full restore and refuses on the clock (${control?.slice(0, 60)})`, /dated more than 2 hours ahead/.test(control ?? ""));
+  reset();
+  const { path: control } = await restorePath(() => restart(opts(st, null)));
+  check(`  control: without the pin the restart runs the full restore (${control})`, control === "full");
+}
+
+console.log("1b. restore parity: with the clock moved back, the pin path accepts exactly the heights the full restore accepts:");
+{
+  const { st, pin } = await firstSession();
+  // The clock is set so the stored headers from 115,100 on are dated more than 2 hours ahead of it; F is the first
+  // stored height the drift bound refuses (timestamps need not rise every block).
+  const cutoff = Number(headerOf(115100).time) - 1;
+  const F = (() => { for (let h = NEWEST + 1; h <= FIX_TOP; h++) if (Number(headerOf(h).time) > cutoff) return h; return null; })();
+  const atClock = () => { Date.now = () => (cutoff - 2 * 3600) * 1000; };
+  const accepted = async (src) => { let h = NEWEST; while (h < FIX_TOP && (await src.hashAt(h + 1)) === hashOf(h + 1)) h++; return h; };
+  const run = async (slotOrNull) => {
+    reset(); atClock();
+    const r = await restorePath(async () => {
+      try { const src = await liveSpvSource(opts(st, slotOrNull)); return { top: await accepted(src), refusal: await src.prepare(FIX_TOP - 12).then(() => null, (e) => String(e?.message ?? e)) }; }
+      catch (e) { return { error: String(e?.message ?? e) }; }
+    });
+    clockReal();
+    return r;
+  };
+  const full = await run(null);
+  const pinned = await run(pin);
+  check(`setup: the drift bound refuses from height ${F} with this clock`, F !== null && F > NEWEST + SEED && F <= 115100);
+  check(`the full restore accepts through ${full.out.top} and the sync refuses on the clock`, full.path === "full" && full.out.top === F - 1 && /dated more than 2 hours ahead/.test(full.out.refusal ?? ""));
+  check(`the pin restart falls back (${pinned.path}, ${pinned.calls.length} light clients built) and accepts the same heights (through ${pinned.out.top})`, pinned.path === "full" && pinned.out.top === full.out.top);
+  check("  and refuses the same way", pinned.out.refusal === full.out.refusal);
+  check("latestTimeHolds: the vendored client refuses the latest-dated record under this clock and accepts it under the real one",
+    await (async () => { atClock(); const no = await latestTimeHolds(records(F - SEED, F), F - SEED, SPV_CHECKPOINTS); clockReal(); const yes = await latestTimeHolds(records(F - SEED, F), F - SEED, SPV_CHECKPOINTS); return no === false && yes === true; })());
 }
 
 console.log("2. a stored record changed below the pin fails the walk, and the full restore refetches it:");
@@ -106,18 +150,18 @@ console.log("3. a pin whose hash is not the stored chain's runs the full restore
 {
   const { st, pin } = await firstSession();
   pin.value = { ...pin.value, hash: hashOf(FIX_TOP - 1) };
-  reset(); clockBefore(NEWEST + 1);
-  const r = await restartError(opts(st, pin));
-  check(`full restore, refused on the clock (${r?.slice(0, 50)})`, /dated more than 2 hours ahead/.test(r ?? ""));
+  reset();
+  const { out, path } = await restorePath(() => restart(opts(st, pin)));
+  check(`full restore (${path}), tip ${out.p.verifiedTip}`, path === "full" && out.p.verifiedTip === FIX_TOP);
 }
 
 console.log("4. a pin counted from another anchor runs the full restore:");
 {
   const { st, pin } = await firstSession();
   pin.value = { ...pin.value, newest: NEWEST - 4096 };
-  reset(); clockBefore(NEWEST + 1);
-  const r = await restartError(opts(st, pin));
-  check(`full restore, refused on the clock (${r?.slice(0, 50)})`, /dated more than 2 hours ahead/.test(r ?? ""));
+  reset();
+  const { out, path } = await restorePath(() => restart(opts(st, pin)));
+  check(`full restore (${path}), tip ${out.p.verifiedTip}`, path === "full" && out.p.verifiedTip === FIX_TOP);
 }
 
 console.log("5. a release checkpoint between the anchor and the pin runs the full restore (the walk checks no pin):");
@@ -126,9 +170,9 @@ console.log("5. a release checkpoint between the anchor and the pin runs the ful
   const newest = 110591;
   const { st, pin } = await firstSession(FIX_TOP, anchors);
   check(`setup: the pin counts from 110,591 and covers 114,687 (${pin.value?.newest}, ${pin.value?.tip})`, pin.value?.newest === newest && pin.value.tip === FIX_TOP && SPV_CHECKPOINTS[114687] === SPV_ANCHORS[20]);
-  reset(); clockBefore(newest + 1);
-  const r = await restartError(opts(st, pin, anchors));
-  check(`full restore, refused on the clock (${r?.slice(0, 50)})`, /dated more than 2 hours ahead/.test(r ?? ""));
+  reset();
+  const { out, path } = await restorePath(() => restart(opts(st, pin, anchors)), { newest });
+  check(`full restore (${path}), tip ${out.p.verifiedTip}`, path === "full" && out.p.verifiedTip === FIX_TOP);
 }
 
 console.log("6. headers stored above the pin are restored with every check:");
@@ -219,7 +263,23 @@ console.log("12. the walk yields once per 4,096-record run:");
   const newest = 110591, suffix = records(newest + 1, FIX_TOP);
   let yields = 0;
   const ok = await walkToPin(suffix, newest, { v: 1, newest, tip: FIX_TOP, hash: hashOf(FIX_TOP), work: "1" }, { [newest]: SPV_ANCHORS[19] }, async () => { yields++; });
-  check(`4,608 records walk to the pin in two runs (${ok}, ${yields} yields)`, ok === true && yields === 2);
+  let want = newest + 1;
+  for (let h = newest + 1; h <= FIX_TOP; h++) if (Number(headerOf(h).time) > Number(headerOf(want).time)) want = h;
+  check(`4,608 records walk to the pin in two runs and name the first latest-dated height (${ok}, ${yields} yields)`, ok === want && yields === 2);
+}
+
+console.log("12b. the walk names the latest-dated record, not the newest one (timestamps need not rise):");
+{
+  // A hash-linked run that is not a chain (no PoW: the walk checks links only): the real records 110,592 to 110,691
+  // with the record at 110,641 re-dated past every other and the links after it recomputed.
+  const newest = 110591, recs = records(newest + 1, newest + 100), mid = 49;
+  const h = deserializeHeader(recs.subarray(mid * HB, (mid + 1) * HB));
+  recs.set(serializeHeader({ ...h, time: Number(headerOf(newest + 100).time) + 3600 }), mid * HB);
+  const sha256d = (b) => createHash("sha256").update(createHash("sha256").update(b).digest()).digest();
+  for (let i = mid + 1; i < 100; i++) recs.set(sha256d(recs.subarray((i - 1) * HB, i * HB)), i * HB + 4);
+  const tipHash = "0x" + sha256d(recs.subarray(99 * HB)).toString("hex");
+  const got = await walkToPin(recs, newest, { v: 1, newest, tip: newest + 100, hash: tipHash, work: "1" }, { [newest]: SPV_ANCHORS[19] }, async () => {});
+  check(`the walk returns the re-dated height ${newest + 1 + mid} (${got}), not the pin's ${newest + 100}`, got === newest + 1 + mid);
 }
 
 console.log("13. the Wallet hands the light client its session storage as the pin slot:");

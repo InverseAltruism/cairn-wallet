@@ -36,7 +36,7 @@ import { parseSpvJson } from "./node.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
-import { readPin, walkToPin, type PinSlot, type SpvPin } from "./spvpin.js";
+import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "./spvpin.js";
 
 
 export interface NameVerification {
@@ -763,10 +763,17 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     try { fromLegacy = legacy.records(storedTip + 1, legacy.top); }
     catch (e) { console.warn("[namespv] legacy header snapshot suffix unreadable; the sync refetches it:", e); }
   }
-  // A worker restart in a browser session that already verified the stored suffix walks it to the session pin and
-  // seeds the light client at the pin; anything stored above the pin is ingested with every check.
+  // A worker restart in a browser session that already verified the stored suffix walks it to the session pin,
+  // re-runs the time rules on the walked record with the latest timestamp against today's clock, and seeds the light
+  // client at the pin; anything stored above the pin is ingested with every check.
   const pin = opts.pin && !fromLegacy.length ? await readPin(opts.pin) : null;
-  const pinned = !!pin && pin.tip - newest >= SEED && pin.tip <= storedTip && await walkToPin(storedSuffix, newest, pin, SPV_CHECKPOINTS, yieldTask);
+  const latest = pin && pin.tip - newest >= SEED && pin.tip <= storedTip ? await walkToPin(storedSuffix, newest, pin, SPV_CHECKPOINTS, yieldTask) : null;
+  // Heights newest - SEED + 1 to newest + n in one view: the anchor's seed records, then the stored suffix.
+  const seedAndSuffix = (lo: number, hi: number) => {
+    const tail = anchor.subarray(anchor.length - SEED * HB), from = lo - (newest - SEED + 1), to = hi - (newest - SEED + 1) + 1;
+    return concatBytes([tail.subarray(Math.min(from, SEED) * HB, Math.min(to, SEED) * HB), storedSuffix.subarray(Math.max(0, from - SEED) * HB, Math.max(0, to - SEED) * HB)]);
+  };
+  const pinned = latest !== null && await latestTimeHolds(seedAndSuffix(latest - SEED, latest), latest - SEED, SPV_CHECKPOINTS); // MUTATE_PIN_TIME
   const pinBase = pin && pinned ? pin.tip - SEED + 1 : newest - SEED + 1;
   const restored = pin && pinned
     ? await LightClient.fromRecords(storedSuffix.subarray((pinBase - newest - 1) * HB), { firstHeight: pinBase, anchorHeight: pin.tip },

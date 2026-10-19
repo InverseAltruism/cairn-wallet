@@ -2,13 +2,14 @@
 
 ## Unreleased
 
-- A background-worker restart (Chrome stops an idle worker after about 30 seconds) no longer re-runs every
-  consensus check on the stored block headers when the same browser session already checked them: the wallet
-  keeps the hash of the newest checked header in session storage (memory only, cleared when the browser closes)
-  and confirms that the stored headers hash-chain from the release's newest built-in hash to it. With a release
-  table about 90 days old (64,359 stored headers), the first name verification after a restart took 2.4 to 2.9 s
-  instead of 8.7 to 11.6 s at a 4x CPU slowdown. The first start after the browser opens still runs every check,
-  and a stored header that was changed fails the hash chain and gets the full checks.
+- A background-worker restart (Chrome stops an idle worker after about 30 seconds) no longer re-runs every consensus
+  check on the stored block headers when the same browser session already checked them: the wallet keeps the hash of
+  the newest checked header in session storage (memory only, cleared when the browser closes) and confirms that the
+  stored headers hash-chain from the release's newest built-in hash to it, and that none is dated more than 2 hours
+  ahead of the computer's clock. With a release table about 90 days old (64,359 stored headers), the first name
+  verification after a restart took 2.3 to 2.7 s instead of 8.7 to 11.6 s at a 4x CPU slowdown. The first start
+  after the browser opens still runs every check, and a stored header that was changed fails the hash chain and gets
+  the full checks.
 - A reservation fill signed while the second source (clarvis) had not yet answered, or could not answer, the
   wallet's question about your reservation now says so under "sent" in the approval window: "Second source not
   consulted: the second source (clarvis) had not answered yet when this fill was signed, so its check of your

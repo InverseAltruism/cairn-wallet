@@ -29,7 +29,8 @@ timestamps), so storage tampering can at worst force a re-fetch. The one shortcu
 verified them, the wallet keeps the hash of the newest stored header in `chrome.storage.session`
 (memory only, cleared when the browser closes), and a background-worker restart in the same
 browser session restores the stored headers by checking that their hashes chain from the newest
-built-in hash to that one, instead of re-running every check. Changing any stored header breaks
+built-in hash to that one and re-checking the latest-dated one against the clock, instead of
+re-running every check. Changing any stored header breaks
 the chain, and the full checks run; after a browser start there is no pin (Chrome empties
 session storage when the browser closes), so the first restore runs them.
 
