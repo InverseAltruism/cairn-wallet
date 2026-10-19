@@ -1,4 +1,5 @@
-// Second-source reads for the fclaim-lane fill, both from an independent resolver and both fail-soft. The offer by
+// Second-source reads for the fclaim-lane fill, both from the second resolver (clarvis; it has the default
+// resolver's operator, so it is not independent of it) and both fail-soft. The offer by
 // id covers a cancel or consuming fill older than the SPV scan window (test/fill-offer-crosscheck.test.mjs). The
 // resolver's verdict on the buyer's own fclaim covers a header source that hides a competing hold placed just
 // before it (test/fill-reservation-verdict.test.mjs). Refuse only on positive evidence; absence, lag, errors and

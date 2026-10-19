@@ -23,6 +23,9 @@
 - `OFFER_SOURCE_CONFLICT` and `RESERVATION_DENIED` call clarvis "the second source (clarvis)" instead of "the
   independent second resolver": clarvis has the same operator as the default resolver, as SECURITY.md says. The
   codes are unchanged.
+- The privacy policy no longer calls clarvis "an independent second copy" of the chain data: it is a second copy
+  on its own server, run by the same operator as cairn-substrate.com. Code comments that called the two default
+  name sources independent say the same.
 - `RPC_BLOCK_MISMATCH` names the RPC and the header source and no longer points only at your own node: a header
   source that serves a false header with valid proof of work gives the same mismatch. The message reads "refusing
   to sign: block N from <RPC> does not match the block header the wallet verified from <API>. One of them is

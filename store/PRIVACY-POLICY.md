@@ -29,8 +29,8 @@ data, and there are no analytics, telemetry, or tracking of any kind.
 
 - To the node proxy and Cairn API at `cairn-substrate.com` (or a local node you run): requests for public chain
   data (balances, unspent outputs, blocks, names, offers) and the signed transactions you explicitly approve.
-- To `clarvis.cairn-substrate.com`, an independent second copy of the same public chain data run by the same
-  operator: read-only lookups of the name or offer you are about to use, so the wallet can compare two sources
+- To `clarvis.cairn-substrate.com`, a second copy of the same public chain data, on its own server and run by
+  the same operator: read-only lookups of the name or offer you are about to use, so the wallet can compare two sources
   before you sign. Nothing about you is sent beyond the lookup itself.
 - For "Sign in with CSD", the wallet signs the site's sign-in message locally and returns the signature and that
   message to the site that asked. No password and no key are sent.

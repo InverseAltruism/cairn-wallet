@@ -51,21 +51,21 @@ export interface NameVerification {
   // claim cap is global over ALL offers; a name-for-token fill depends on the buyer's global token balance),
   // so a name-scoped SPV replay cannot soundly prove it. Surfaced so the UI never shows it as plain "verified".
   viaFill?: boolean;
-  // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many INDEPENDENT resolvers were
+  // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many resolvers (name sources) were
   // unioned, and whether any disagreed (a source whose stated claim ≠ the SPV-proven union winner — caught
   // + flagged; the send still goes to the proven winner). (D3: the `agreed` count and the `scope` label
   // were deleted — nothing in production read them; the badge reads sources/disagree/soleSource/viaFill.)
   sources?: number;
   disagree?: boolean;
   // WALLET-LAPSE-TIP-1: a lease-LAPSED verdict is only CONFIDENT (`lapsed:true`) when corroborated — a second
-  // independent name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
+  // name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
   // past expiry. An UNCORROBORATED single-source lapse degrades to CAUTION: `verified:false` + `lapsed` falsy
   // + a "may have lapsed" reason, so a fresh-install + MITM inflating the node tip cannot assert a false
   // confident lapse that hard-blocks a legit send. Fail-soft (availability valve), never a false green.
   lapsed?: boolean;
   // NS-1 (HIGH, RESIDUAL — not a closed defense): true when the union failed and only ONE source solo-
   // recovered the winner, so a lone (possibly hostile) source alone decided the send target — NOT
-  // independently corroborated. Surfaced so the badge stops asserting multi-source "chain-verified"; the
+  // corroborated by another source. Surfaced so the badge stops asserting multi-source "chain-verified"; the
   // send still goes to the PROVEN winner (vetoing would drop back to the resolver-served address = the B5e
   // single-source DoS/trust regression). Real closure remains a genuinely-independent second source.
   soleSource?: boolean;
@@ -86,8 +86,9 @@ export interface NameHint { txid: string; height: number; pos: number; kind?: st
 const COINBASE_TXID = "0x" + "00".repeat(32);
 const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
   String(i.prevTxid).toLowerCase() === COINBASE_TXID && Number(i.vout) === 0xffffffff;
-// An independent name-history source (resolver) to cross-check against. `base` ends at the trade-API root,
-// e.g. "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api".
+// A name-history source (resolver) to cross-check against. `base` ends at the trade-API root, e.g.
+// "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api"; those two defaults
+// have one operator, so they are not independent of each other (SECURITY.md).
 export interface ResolverSource { label: string; base: string }
 export interface SourceResult { label: string; ok: boolean; unregistered?: boolean; claim?: NameClaim; hints: NameHint[]; error?: string; scopedReplaySufficient?: boolean }
 export interface NameUnionFetch {
@@ -342,13 +343,13 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
 }
 
 /**
- * NSPV-COMPLETE-1 cure (doc 36 Part B): verify `name → addr` against ≥2 INDEPENDENT name-history sources
- * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com). Each source's hints are fetched, UNIONed by
+ * NSPV-COMPLETE-1 cure (doc 36 Part B): verify `name → addr` against ≥2 name-history sources
+ * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com, which share one operator). Each source's hints are fetched, UNIONed by
  * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and replayed by the
  * audited resolver to the true winner. Because every unioned event is SPV-authenticated, a source can only
  * ADD real events (filling another's omission) — never fabricate — so the union defeats a WITHHOLDING
- * resolver as long as ONE source is honest (an attacker must make BOTH independent hosts withhold the SAME
- * event). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
+ * resolver as long as ONE source is honest (an attacker must make BOTH hosts withhold the SAME event, which
+ * their common operator, or whoever controls both, can). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
  * it is flagged. Fail-soft: 1 usable source → single-source (caution); ≥2 agree → strong; a disagreement is
  * flagged but the send still goes to the proven winner (the disagreeing source was lying/stale, not trusted).
  */
@@ -373,7 +374,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
     const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     if (!rep.ok) {
-      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 independent name sources served the
+      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 name sources served the
       // events establishing the lease, OR the persisted tip floor is also past expiry. A lone usable source
       // with an uncorroborated (current-tip-only) lapse degrades to CAUTION, never a false confident lapse
       // from a fresh-install + MITM-inflated tip. Fail-soft (availability valve), never a false green.
@@ -407,7 +408,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           // NS-1: keep verified:true + the PROVEN winner addr (vetoing would drop resolveName back to the
           // RESOLVER-SERVED address = the B5e single-source DoS/trust regression, D2 K.5#3). But when only ONE
           // source solo-recovered the winner, that lone source (possibly the poisoner) alone decided the
-          // target - it is NOT independently corroborated. Surface `soleSource` so the badge stops asserting
+          // target - it is NOT corroborated by another source. Surface `soleSource` so the badge stops asserting
           // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
           // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
           const soleSource = recovered.length === 1;

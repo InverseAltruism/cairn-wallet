@@ -589,7 +589,7 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: { sourc
   }
   if (verified) {
     // NS-1: only ONE source solo-recovered the winner (the union failed) — a lone, possibly-hostile source
-    // alone decided the target, NOT independently corroborated. Checked BEFORE disagree/≥2-agree so it can
+    // alone decided the target, NOT corroborated by another source. Checked BEFORE disagree/≥2-agree so it can
     // never read as "servers agree". The address shown is still the chain-PROVEN winner (never the served
     // one); this only stops the badge from asserting multi-source verification (mitigation by disclosure).
     if (info?.soleSource) {

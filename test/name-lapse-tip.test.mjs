@@ -1,7 +1,7 @@
 // WALLET-LAPSE-TIP-1 (Plan 70 R2): a name lease-LAPSE verdict was trusted single-source on the (untrusted)
 // node tip — a fresh install + MITM inflating the tip could assert a FALSE lapse and hard-block a legit send.
 // The fix extends the two-source-union posture to the lapse/tip: a lapse is CONFIDENT (`lapsed:true`, a
-// "refusing" reason) only when corroborated — either ≥2 independent name sources served the events that
+// "refusing" reason) only when corroborated — either ≥2 name sources served the events that
 // establish the lease, OR the persisted monotonic tip floor (a tip trusted across PRIOR sessions) is also
 // past expiry. An uncorroborated single-source lapse DEGRADES TO CAUTION (verified=false, lapsed !== true, a
 // "may have lapsed … confirm out-of-band" reason). Never a false green; never a hard block on a legit send.
@@ -59,7 +59,7 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   check("[2] the confident-lapse reason refuses the send", /lapsed[\s\S]*refusing|refusing[\s\S]*lapsed/i.test(r.reason || ""));
 }
 
-// ── Case 3: TWO independent sources both serve the events → CONFIDENT lapse ──
+// ── Case 3: TWO sources both serve the events → CONFIDENT lapse ──
 {
   const PRIM = "https://cairn-substrate.com/trade/api";
   const CLAR = "https://clarvis.cairn-substrate.com/trade/api";

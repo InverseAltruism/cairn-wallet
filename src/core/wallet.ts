@@ -77,10 +77,12 @@ const DEFAULT_API = "https://cairn-substrate.com";
 // locally (core/cairnx.ts) — a hostile API can at worst show wrong numbers, never change
 // what a signature commits to.
 const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
-// Independent SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
-// node→indexer→cairnx (structurally independent — 0 non-local sockets), so unioning its name-history with
-// the primary's defeats a withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the
-// SAME event). Fail-soft: if clarvis is unreachable the verify falls back to single-source (with caution).
+// SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
+// node→indexer→cairnx (0 non-local sockets), so unioning its name-history with the primary's defeats a
+// withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the SAME event). It has the
+// default primary's operator, so it is not independent of it: that operator, or whoever controls both hosts,
+// can make both withhold (SECURITY.md). Fail-soft: if clarvis is unreachable the verify falls back to
+// single-source (with caution).
 const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 // Abort bound for the fclaim-lane second-source reads (offer and reservation record). The fill does not wait on
 // them: an answer is used only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in
@@ -1328,7 +1330,7 @@ export class Wallet {
     if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
     try {
       // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
-      // EVERY name send with "name lookup failed" even though the independent clarvis source could
+      // EVERY name send with "name lookup failed" even though clarvis, the second source, could
       // answer — and the SPV verifyName below is the trust anchor either way (the base answer is
       // UNTRUSTED no matter which source served it, so falling back is no weaker). Only a definitive
       // 404 from the source that answered short-circuits; network/5xx tries the second source.
@@ -1473,9 +1475,10 @@ export class Wallet {
     const nm = normName(name);
     if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
     try {
-      // Cross-check the user's configured primary resolver against the independent clarvis second source
-      // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
-      // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
+      // Cross-check the user's configured primary resolver against the clarvis second source (same operator as
+      // the default primary, so not independent of it; NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion
+      // fetches name-history from each, unions the SPV-verified events, and resolves to the chain-proven winner —
+      // defeating a withholding resolver.
       const gen = this.spvGen;
       const src = await this.spvSource();
       const res = await verifyNameUnion(nm, this.nameSources(), src);
