@@ -13,10 +13,11 @@ import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNE
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, BodyMismatchError, type LiveSpvOpts, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
-import { secondSourceOfferConflict, reservationRecordVerdict, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
+import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
 import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
@@ -76,10 +77,12 @@ const DEFAULT_API = "https://cairn-substrate.com";
 // locally (core/cairnx.ts) — a hostile API can at worst show wrong numbers, never change
 // what a signature commits to.
 const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
-// Independent SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
-// node→indexer→cairnx (structurally independent — 0 non-local sockets), so unioning its name-history with
-// the primary's defeats a withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the
-// SAME event). Fail-soft: if clarvis is unreachable the verify falls back to single-source (with caution).
+// SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
+// node→indexer→cairnx (0 non-local sockets), so unioning its name-history with the primary's defeats a
+// withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the SAME event). It has the
+// default primary's operator, so it is not independent of it: that operator, or whoever controls both hosts,
+// can make both withhold (SECURITY.md). Fail-soft: if clarvis is unreachable the verify falls back to
+// single-source (with caution).
 const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 // Abort bound for the fclaim-lane second-source reads (offer and reservation record). The fill does not wait on
 // them: an answer is used only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in
@@ -93,6 +96,9 @@ export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
 
 // A fill refusal; RESERVATION_UNCONFIRMED also carries the facts the approval window shows.
 type FillRefusal = node.SubmitResult & { unconfirmed?: ReservationUnconfirmed };
+// Set by a passing fclaim-lane preflight when clarvis's record read had not answered (or failed) at its verdict; a
+// signed fill carries it to the approval window as `secondSource` (background.ts keeps it off the page's result).
+type FillNotes = { secondSource?: "pending" | "failed" };
 
 export type TokenFillQuote = {
   ticker?: string; amount?: string; fee?: string; total?: string;
@@ -728,13 +734,14 @@ export class Wallet {
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
     if (p.score != null && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
     const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? defaultFeeFor("attest") };
-    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck);
+    const notes: FillNotes = {};
+    const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck, notes);
     if (refusal) return refusal;
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
     const r = await node.fillOffer(this.rpc, q, ctx.priv);
     const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
     await this.maybeRecord(ctx.histKey, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
-    return r;
+    return r.ok && notes.secondSource ? { ...r, secondSource: notes.secondSource } : r;
   }
 
   // ── fund-safety pre-flight (deep-review 2026-07-03 C2/C3/C4): the wallet's own fillOffer must NEVER sign a
@@ -755,7 +762,7 @@ export class Wallet {
   // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
   // `reservationAck` is the fclaim txid the user confirmed in the approval window after an "unknown" reservation
   // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
-  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string): Promise<FillRefusal | null> {
+  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
     let offer: CxOfferState | null = null;
     let fetchFailed = false;
@@ -795,7 +802,7 @@ export class Wallet {
           offer: startSecondSourceRead(CLARVIS_TRADE_API, "offer", String(offer.id ?? ""), SECOND_SOURCE_TIMEOUT_MS),
           record: startSecondSourceRead(CLARVIS_TRADE_API, "record", proposalId, SECOND_SOURCE_TIMEOUT_MS),
         };
-        try { return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay, second, reservationAck); } finally { second.offer.stop(); second.record.stop(); }
+        try { return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay, second, reservationAck, notes); } finally { second.offer.stop(); second.record.stop(); }
       }
       // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
       // a live tip. this.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
@@ -964,7 +971,7 @@ export class Wallet {
   // it only ever REJECTS MORE than resolve(), never accepts something resolve() would reject.
   // `second` holds the clarvis reads of the offer and of this fclaim's record, started by the caller before the
   // scan so they run alongside it.
-  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint, second: { offer: SecondSourceRead; record: SecondSourceRead }, reservationAck?: string): Promise<FillRefusal | null> {
+  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint, second: { offer: SecondSourceRead; record: SecondSourceRead }, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
     const offerId = String(offer?.id ?? "").toLowerCase();
     if (!/^0x[0-9a-f]{64}$/.test(offerId))
       return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
@@ -1042,11 +1049,14 @@ export class Wallet {
     if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the second source (clarvis) reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
     // A header source that hides a competing hold placed just before our fclaim makes the scan grant it while the
     // chain denies it. The second resolver's replay of the real chain shows the denial.
-    const rv = reservationRecordVerdict(second.record.answer(), { fclaimTxid, provenHeight: fcEv?.height });
+    const recordReply = second.record.answer();
+    const rv = reservationRecordVerdict(recordReply, { fclaimTxid, provenHeight: fcEv?.height });
     if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
     // "unknown" goes back to the approval window as a confirm step; the user's acknowledgement for this fclaim signs.
     if (rv?.kind === "unknown" && typeof fcEv?.height === "number" && String(reservationAck ?? "").toLowerCase() !== fclaimTxid.toLowerCase()) // MUTATE_RESERVATION_CONFIRM
       return { ...refuse("RESERVATION_UNCONFIRMED", `the second source has read the chain to block ${rv.tipHeight} and has no record of your reservation (block ${fcEv.height}); confirm in the approval window to sign anyway`), unconfirmed: { fclaimTxid: fclaimTxid.toLowerCase(), fclaimHeight: fcEv.height, tipHeight: rv.tipHeight } };
+    const unanswered = secondSourceUnanswered(recordReply);
+    if (unanswered && notes) notes.secondSource = unanswered; // MUTATE_SECOND_SOURCE_NOTE
     return null;
   }
 
@@ -1320,7 +1330,7 @@ export class Wallet {
     if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
     try {
       // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
-      // EVERY name send with "name lookup failed" even though the independent clarvis source could
+      // EVERY name send with "name lookup failed" even though clarvis, the second source, could
       // answer — and the SPV verifyName below is the trust anchor either way (the base answer is
       // UNTRUSTED no matter which source served it, so falling back is no weaker). Only a definitive
       // 404 from the source that answered short-circuits; network/5xx tries the second source.
@@ -1465,9 +1475,10 @@ export class Wallet {
     const nm = normName(name);
     if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
     try {
-      // Cross-check the user's configured primary resolver against the independent clarvis second source
-      // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
-      // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
+      // Cross-check the user's configured primary resolver against the clarvis second source (same operator as
+      // the default primary, so not independent of it; NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion
+      // fetches name-history from each, unions the SPV-verified events, and resolves to the chain-proven winner —
+      // defeating a withholding resolver.
       const gen = this.spvGen;
       const src = await this.spvSource();
       const res = await verifyNameUnion(nm, this.nameSources(), src);
@@ -1545,8 +1556,10 @@ export class Wallet {
   }
 
   // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates
-  // and then deletes, and (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts.
+  // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, and the
+  // session pin in chrome.storage.session that lets a worker restart walk the stored suffix instead of re-verifying it.
   private spvOpts(): LiveSpvOpts {
+    const session = this.session;
     return {
       rpcBase: this.rpc, headersBase: this.api,
       store: () => openHeaderStore(),
@@ -1557,6 +1570,7 @@ export class Wallet {
         attempts: { get: async () => Number(await this.store.get("spvMigrateAttempts")) || 0, set: (n) => (n ? this.store.set("spvMigrateAttempts", n) : this.store.del("spvMigrateAttempts")) },
       },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
+      ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => session.set("spvPin", p) } } : {}),
     };
   }
   // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after

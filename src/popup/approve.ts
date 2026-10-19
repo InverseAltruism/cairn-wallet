@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, APPROVE_LABELS, UNCONFIRMED_LABELS, type NameFetchResult, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type NameFetchResult, type RecipientKind } from "./clearsign.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -32,10 +32,10 @@ let renderedSigner: string | null = null; // M5: the account address DISPLAYED f
 // a superseded paint's in-flight quote or arm timer from the current paint's; those check this instead.
 let paintGen = 0;
 // The background drops a request from the queue before its outcome is known, so an empty queue alone
-// does not mean the window is done: it stays open while a result is in flight, and after a failure
-// until the user closes it or a new request is painted.
+// does not mean the window is done: it stays open while a result is in flight, and after a failure or a
+// sent fill's second-source notice until the user closes it or a new request is painted.
 let inFlight = 0;
-let holdFailure = false;
+let holdOutcome = false;
 // Bumped by resolve() when it sends and when its outcome lands: a render whose status/pending reads started before
 // that is stale (its queue snapshot predates the outcome) and paints nothing.
 let renderSeq = 0;
@@ -49,7 +49,7 @@ async function render() {
   const pend = await call("pending");
   if (seq !== renderSeq) return;
   if (!pend.length) {
-    if (inFlight || holdFailure) { ($("view-req") as HTMLElement).hidden = true; return; }
+    if (inFlight || holdOutcome) { ($("view-req") as HTMLElement).hidden = true; return; }
     window.close(); return;
   }
   current = pend[0];
@@ -123,7 +123,7 @@ async function render() {
       + `<div class="req dim" id="cost">${costLine(current)}</div>`;
     paintUnconfirmed(current.id);
     msg(""); // clear any stale "approved"/"rejected" from a previous request
-    holdFailure = false;
+    holdOutcome = false;
     warnPainted = fillSendWarning(current);
     tokenPainted = fillTokenSim(current);   // 0.2.71: Approve waits for the token preview of THIS request
     armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
@@ -516,8 +516,12 @@ async function resolve(approve: boolean) {
   if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
-  } else if (r && r.ok === false) { msg("failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdFailure = true; }
-  else if (r && r.txid) msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
+  } else if (r && r.ok === false) { msg("failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdOutcome = true; }
+  else if (r && r.txid) {
+    msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
+    const note = secondSourceNote(r.secondSource);
+    if (note) { $("msg").insertAdjacentHTML("beforeend", `<br><b class="err">${escapeHtml(note)}</b>`); holdOutcome = true; }
+  }
   else msg("approved", "ok");
   render();
 }

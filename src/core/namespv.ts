@@ -36,6 +36,7 @@ import { parseSpvJson } from "./node.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
+import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "./spvpin.js";
 
 
 export interface NameVerification {
@@ -50,21 +51,21 @@ export interface NameVerification {
   // claim cap is global over ALL offers; a name-for-token fill depends on the buyer's global token balance),
   // so a name-scoped SPV replay cannot soundly prove it. Surfaced so the UI never shows it as plain "verified".
   viaFill?: boolean;
-  // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many INDEPENDENT resolvers were
+  // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many resolvers (name sources) were
   // unioned, and whether any disagreed (a source whose stated claim ≠ the SPV-proven union winner — caught
   // + flagged; the send still goes to the proven winner). (D3: the `agreed` count and the `scope` label
   // were deleted — nothing in production read them; the badge reads sources/disagree/soleSource/viaFill.)
   sources?: number;
   disagree?: boolean;
   // WALLET-LAPSE-TIP-1: a lease-LAPSED verdict is only CONFIDENT (`lapsed:true`) when corroborated — a second
-  // independent name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
+  // name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
   // past expiry. An UNCORROBORATED single-source lapse degrades to CAUTION: `verified:false` + `lapsed` falsy
   // + a "may have lapsed" reason, so a fresh-install + MITM inflating the node tip cannot assert a false
   // confident lapse that hard-blocks a legit send. Fail-soft (availability valve), never a false green.
   lapsed?: boolean;
   // NS-1 (HIGH, RESIDUAL — not a closed defense): true when the union failed and only ONE source solo-
   // recovered the winner, so a lone (possibly hostile) source alone decided the send target — NOT
-  // independently corroborated. Surfaced so the badge stops asserting multi-source "chain-verified"; the
+  // corroborated by another source. Surfaced so the badge stops asserting multi-source "chain-verified"; the
   // send still goes to the PROVEN winner (vetoing would drop back to the resolver-served address = the B5e
   // single-source DoS/trust regression). Real closure remains a genuinely-independent second source.
   soleSource?: boolean;
@@ -85,8 +86,9 @@ export interface NameHint { txid: string; height: number; pos: number; kind?: st
 const COINBASE_TXID = "0x" + "00".repeat(32);
 const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
   String(i.prevTxid).toLowerCase() === COINBASE_TXID && Number(i.vout) === 0xffffffff;
-// An independent name-history source (resolver) to cross-check against. `base` ends at the trade-API root,
-// e.g. "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api".
+// A name-history source (resolver) to cross-check against. `base` ends at the trade-API root, e.g.
+// "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api"; those two defaults
+// have one operator, so they are not independent of each other (SECURITY.md).
 export interface ResolverSource { label: string; base: string }
 export interface SourceResult { label: string; ok: boolean; unregistered?: boolean; claim?: NameClaim; hints: NameHint[]; error?: string; scopedReplaySufficient?: boolean }
 export interface NameUnionFetch {
@@ -341,13 +343,13 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
 }
 
 /**
- * NSPV-COMPLETE-1 cure (doc 36 Part B): verify `name → addr` against ≥2 INDEPENDENT name-history sources
- * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com). Each source's hints are fetched, UNIONed by
+ * NSPV-COMPLETE-1 cure (doc 36 Part B): verify `name → addr` against ≥2 name-history sources
+ * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com, which share one operator). Each source's hints are fetched, UNIONed by
  * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and replayed by the
  * audited resolver to the true winner. Because every unioned event is SPV-authenticated, a source can only
  * ADD real events (filling another's omission) — never fabricate — so the union defeats a WITHHOLDING
- * resolver as long as ONE source is honest (an attacker must make BOTH independent hosts withhold the SAME
- * event). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
+ * resolver as long as ONE source is honest (an attacker must make BOTH hosts withhold the SAME event, which
+ * their common operator, or whoever controls both, can). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
  * it is flagged. Fail-soft: 1 usable source → single-source (caution); ≥2 agree → strong; a disagreement is
  * flagged but the send still goes to the proven winner (the disagreeing source was lying/stale, not trusted).
  */
@@ -372,7 +374,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
     const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     if (!rep.ok) {
-      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 independent name sources served the
+      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 name sources served the
       // events establishing the lease, OR the persisted tip floor is also past expiry. A lone usable source
       // with an uncorroborated (current-tip-only) lapse degrades to CAUTION, never a false confident lapse
       // from a fresh-install + MITM-inflated tip. Fail-soft (availability valve), never a false green.
@@ -406,7 +408,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           // NS-1: keep verified:true + the PROVEN winner addr (vetoing would drop resolveName back to the
           // RESOLVER-SERVED address = the B5e single-source DoS/trust regression, D2 K.5#3). But when only ONE
           // source solo-recovered the winner, that lone source (possibly the poisoner) alone decided the
-          // target - it is NOT independently corroborated. Surface `soleSource` so the badge stops asserting
+          // target - it is NOT corroborated by another source. Surface `soleSource` so the badge stops asserting
           // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
           // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
           const soleSource = recovered.length === 1;
@@ -477,6 +479,8 @@ export interface LiveSpvOpts {
   // name-resolve path — off the send hot path; a write failure is swallowed (the floor just degrades to
   // within-session, the prior behaviour).
   floor?: { get(): Promise<number | null>; set(v: number): Promise<void> };
+  /** The session pin (chrome.storage.session); without it a restore runs every consensus check. */
+  pin?: PinSlot;
 }
 
 // M9 (B5a): the lapse-floor advance rule, ONE pure function so the clamp and its use-site cannot drift.
@@ -577,8 +581,8 @@ export function reseedAdopts(current: { chainwork: bigint }, fresh: { chainwork:
   return fresh.chainwork > current.chainwork;
 }
 
-/** The record at `h` of a verified chunk, its hash (the next record's prev, or the chunk's baked top hash) and merkle root. */
-function chunkHeader(records: Uint8Array, spec: ChunkSpec, h: number): { hash: string; merkle: string } {
+/** The record at `h` of verified records, its hash (the next record's prev, or `lastHash` for the last) and merkle root. */
+function chunkHeader(records: Uint8Array, spec: Pick<ChunkSpec, "firstHeight" | "lastHash">, h: number): { hash: string; merkle: string } {
   const i = h - spec.firstHeight;
   const n = records.length / HB;
   const merkle = deserializeHeader(records.subarray(i * HB, (i + 1) * HB)).merkle;
@@ -759,10 +763,37 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     try { fromLegacy = legacy.records(storedTip + 1, legacy.top); }
     catch (e) { console.warn("[namespv] legacy header snapshot suffix unreadable; the sync refetches it:", e); }
   }
-  const restored = await LightClient.fromRecords(
-    concatBytes([anchor.subarray(anchor.length - SEED * HB), storedSuffix, fromLegacy]),
-    { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts);
+  // A worker restart in a browser session that already verified the stored suffix walks it to the session pin,
+  // re-runs the time rules on the walked record with the latest timestamp against today's clock, and seeds the light
+  // client at the pin; anything stored above the pin is ingested with every check.
+  const pin = opts.pin && !fromLegacy.length ? await readPin(opts.pin) : null;
+  const latest = pin && pin.tip - newest >= SEED && pin.tip <= storedTip ? await walkToPin(storedSuffix, newest, pin, SPV_CHECKPOINTS, yieldTask) : null;
+  // Heights newest - SEED + 1 to newest + n in one view: the anchor's seed records, then the stored suffix.
+  const seedAndSuffix = (lo: number, hi: number) => {
+    const tail = anchor.subarray(anchor.length - SEED * HB), from = lo - (newest - SEED + 1), to = hi - (newest - SEED + 1) + 1;
+    return concatBytes([tail.subarray(Math.min(from, SEED) * HB, Math.min(to, SEED) * HB), storedSuffix.subarray(Math.max(0, from - SEED) * HB, Math.max(0, to - SEED) * HB)]);
+  };
+  const pinned = latest !== null && await latestTimeHolds(seedAndSuffix(latest - SEED, latest), latest - SEED, SPV_CHECKPOINTS); // MUTATE_PIN_TIME
+  const pinBase = pin && pinned ? pin.tip - SEED + 1 : newest - SEED + 1;
+  const restored = pin && pinned
+    ? await LightClient.fromRecords(storedSuffix.subarray((pinBase - newest - 1) * HB), { firstHeight: pinBase, anchorHeight: pin.tip },
+      { ...lcOpts, checkpoints: { ...SPV_CHECKPOINTS, [pin.tip]: pin.hash } })
+    : await LightClient.fromRecords(
+      concatBytes([anchor.subarray(anchor.length - SEED * HB), storedSuffix, fromLegacy]),
+      { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts);
   let LC = restored.client;
+  // The walked records below a pin-seeded client (heights newest + 1 to LC.baseHeight - 1), and the work they and
+  // the anchor seed carry, so heldWork() compares with a client seeded from the anchor. Both empty otherwise.
+  let walked: Uint8Array = pin && pinned ? storedSuffix.subarray(0, (pinBase - newest - 1) * HB) : new Uint8Array(0);
+  let workBase = pin && pinned ? BigInt(pin.work) - LC.chain[pin.tip - LC.baseHeight]!.chainwork : 0n;
+  const heldWork = () => ({ chainwork: LC.chainwork + workBase });
+  // The pin may run ahead of a detached store write; a store that does not walk to it gets the full restore.
+  const writePin = (tip: number) => {
+    const vh = LC.chain[tip - LC.baseHeight];
+    if (!opts.pin || !vh || tip - newest < SEED || (pin && pin.tip === tip && pin.hash === String(vh.hash).toLowerCase())) return;
+    const next: SpvPin = { v: 1, newest, tip, hash: String(vh.hash).toLowerCase(), work: (vh.chainwork + workBase).toString() };
+    opts.pin.set(next).catch((e) => console.warn("[namespv] session pin not saved:", e));
+  };
   // The highest height whose stored record equals the light client's. A record that failed for any reason
   // but the clock is rewritten or deleted by the next persist; a clock fault leaves the store as it is.
   let persistedTip = Math.min(storedTip, tipOf(LC));
@@ -778,13 +809,15 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     const tip = tipOf(LC);
     if (!store || tip <= persistedTip) return null;
     const lo = Math.max(chunkOf(persistedTip + 1) * SPV_CHUNK, newest + 1);
-    const recs = LC.toRecords(lo);
+    const own = LC.toRecords(Math.max(lo, LC.baseHeight));
+    const recs = lo >= LC.baseHeight ? own : concatBytes([walked.subarray((lo - newest - 1) * HB), own]);
     const put: { k: number; records: Uint8Array }[] = [];
     for (let k = chunkOf(lo); k <= chunkOf(tip); k++) {
       const a = Math.max(k * SPV_CHUNK, lo), b = Math.min(k * SPV_CHUNK + SPV_CHUNK - 1, tip);
       put.push({ k, records: recs.subarray((a - lo) * HB, (b - lo + 1) * HB) });
     }
     persistedTip = tip;
+    writePin(tip);
     return { put, deleteAbove: chunkOf(tip), head: { v: 2, tip, tipHash: String(LC.chain[LC.chain.length - 1]!.hash).toLowerCase() } };
   };
   const persist = () => { const w = suffixWrite(); if (w) detachStoreWrite(store!, w); };
@@ -813,6 +846,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     }
   }
 
+  if (!legacy) writePin(persistedTip);
+
   // Seeds a fresh client from the anchor chunk held in memory: no request, every pin enforced by seedTrusted.
   const seedFromAnchor = async () => (await LightClient.fromRecords(anchor.subarray(anchor.length - SEED * HB), { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts)).client;
 
@@ -820,6 +855,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const headerAt = async (h: number): Promise<{ hash: string; merkle: string } | null> => {
     if (!Number.isSafeInteger(h) || h < SPV_FLOOR.height) return null;
     if (h > newest) {
+      if (h < LC.baseHeight) return chunkHeader(walked, { firstHeight: newest + 1, lastHash: String(LC.chain[0]!.header.prev) }, h);
       const vh = LC.chain[h - LC.baseHeight];
       return vh ? { hash: String(vh.hash).toLowerCase(), merkle: String(vh.header.merkle) } : null;
     }
@@ -871,7 +907,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
             // `want` can sit far below the node tip (a name's record height plus the cushion), where an honest
             // winning branch may still hold less work than the held branch has at its tip; the comparison is
             // made at the node tip in that case, so the refusal below is never an artefact of a low `want`.
-            if (!reseedAdopts(LC, fresh) && tipKnown && nodeTip > tipOf(fresh)) await syncAligned(fresh, nodeTip); // MUTATE_RESEED_TO_TIP
+            if (!reseedAdopts(heldWork(), fresh) && tipKnown && nodeTip > tipOf(fresh)) await syncAligned(fresh, nodeTip); // MUTATE_RESEED_TO_TIP
           } catch (e2) {
             const m2 = String((e2 as Error)?.message || e2);
             if (CLOCK_FAULT.test(m2)) throw clockRefusal(m2);
@@ -885,8 +921,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           }
           // A valid chain with no more work than the one held (a fork decayed to low difficulty with spread
           // timestamps) is not adopted; the held chain and its stored suffix stay.
-          if (!reseedAdopts(LC, fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC)); // MUTATE_RESEED_WORK
+          if (!reseedAdopts(heldWork(), fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC)); // MUTATE_RESEED_WORK
           LC = fresh;
+          walked = new Uint8Array(0);
+          workBase = 0n;
           persistedTip = newest;
         }
         persist();

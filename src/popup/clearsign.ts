@@ -495,6 +495,14 @@ export function reservationUnconfirmedHtml(u: { fclaimHeight: number; tipHeight:
     + `Check the offer and your reservation on the explorer before you sign.</div>`;
 }
 
+// A signed reservation fill whose second-source record read had no answer when the preflight judged it: the check of
+// the reservation against clarvis did not run. Shown under "sent"; null for any other value (the read answered).
+export function secondSourceNote(state: unknown): string | null {
+  const why = state === "pending" ? "had not answered yet" : state === "failed" ? "did not give a usable answer" : null;
+  if (!why) return null;
+  return `⚠ Second source not consulted: the second source (clarvis) ${why} when this fill was signed, so its check of your reservation did not run. Check on the explorer that the fill delivered.`;
+}
+
 // The balance-after is negative: the node's spendable balance (the sum of its available coins, the same
 // coins the engine selects from) does not cover the debit, so signing could only end in INSUFFICIENT.
 export function balanceShortNote(back: "Reject this" | "Go back"): string {
@@ -581,7 +589,7 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: { sourc
   }
   if (verified) {
     // NS-1: only ONE source solo-recovered the winner (the union failed) — a lone, possibly-hostile source
-    // alone decided the target, NOT independently corroborated. Checked BEFORE disagree/≥2-agree so it can
+    // alone decided the target, NOT corroborated by another source. Checked BEFORE disagree/≥2-agree so it can
     // never read as "servers agree". The address shown is still the chain-PROVEN winner (never the served
     // one); this only stops the badge from asserting multi-source verification (mitigation by disclosure).
     if (info?.soleSource) {

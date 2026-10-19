@@ -1,4 +1,5 @@
-// Second-source reads for the fclaim-lane fill, both from an independent resolver and both fail-soft. The offer by
+// Second-source reads for the fclaim-lane fill, both from the second resolver (clarvis; it has the default
+// resolver's operator, so it is not independent of it) and both fail-soft. The offer by
 // id covers a cancel or consuming fill older than the SPV scan window (test/fill-offer-crosscheck.test.mjs). The
 // resolver's verdict on the buyer's own fclaim covers a header source that hides a competing hold placed just
 // before it (test/fill-reservation-verdict.test.mjs). Refuse only on positive evidence; absence, lag, errors and
@@ -49,6 +50,16 @@ export interface SecondSourceReply { ok: boolean; status: number; body: unknown 
 
 /** A started second-source read. `answer()` is undefined while pending and null when nothing usable came back. */
 export interface SecondSourceRead { answer(): SecondSourceReply | null | undefined; stop(): void }
+
+/**
+ * Why a second-source read gave the fill nothing to judge: "pending" (no reply yet), "failed" (an error, a timeout,
+ * a status other than 200 or 404, or a body that is not a JSON object), else null (it answered).
+ */
+export function secondSourceUnanswered(reply: SecondSourceReply | null | undefined): "pending" | "failed" | null {
+  if (reply === undefined) return "pending";
+  if (!reply || (reply.status !== 200 && reply.status !== 404) || !reply.body || typeof reply.body !== "object" || Array.isArray(reply.body)) return "failed";
+  return null;
+}
 
 /** The body of a 2xx reply, else null. */
 export function okBody(reply: SecondSourceReply | null | undefined): unknown {

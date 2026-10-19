@@ -1,4 +1,5 @@
-// Wallet.verifyName unions the configured primary resolver with clarvis, the independent second source.
+// Wallet.verifyName unions the configured primary resolver with clarvis, the second source (same operator, so not
+// independent of the default primary).
 // That second entry is what defeats a primary that withholds the winning claim: with the primary alone the
 // SPV replay proves the attacker's later claim, a valid record on its own, and the name verifies green to
 // the attacker's address. The list is Wallet.nameSources(), which the confirm-time hint check reads too.

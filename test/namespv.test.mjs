@@ -143,7 +143,7 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   ok("a forged addr is never served with an nprofile record in play (proven wins + disagree)", rf.verified === true && rf.addr === TARGET && rf.disagree === true);
 }
 
-// 11-14. UNION cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B) — verifyNameUnion over 2 independent sources
+// 11-14. UNION cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B) — verifyNameUnion over 2 sources
 {
   const NM = "bob";
   const aClaim = proposeTx({ ...pick(buildNameClaim({ name: NM })), priv: keyA, outputs: feeOut() }); // A wins (earlier height)

@@ -33,7 +33,8 @@ The rule the code keeps:
 - Above the newest anchor, headers come only from the light client, seeded with the last 46 records of the anchor
   chunk (`LightClient.fromRecords`: hash, prev link, PoW, pins) and synced forward with every consensus check
   (prev link, time rules including the 2-hour future drift, LWMA bits, PoW). The stored suffix is restored through
-  the same `ingest`, so a record stored in the profile is checked like a served one.
+  the same `ingest`, so a record stored in the profile is checked like a served one, except on a worker restart
+  inside a browser session that already verified it (the section "Session pin" below).
 - Above the newest anchor the guarantee is checkpoint-bound, consensus-checked headers: each header must pass the
   consensus checks against its parent. A reseed (after a sync that no longer links to the stored tip) replaces the
   held chain only when the fresh client's cumulative work exceeds the held one's (`reseedAdopts`, the vendored
@@ -86,6 +87,63 @@ corrupt or short stored suffix (the restore stops below the bad record and the o
 no reseed is needed). A deep reorg below the stored suffix is the same path with the honest chain carrying more
 work; a lower-work replacement is refused (test/namespv-reseed-work.test.mjs states what that test can and cannot
 show offline).
+
+## Session pin
+
+Restoring the stored suffix with every check costs about 24 to 39 us per header in Node and 2.1 s for 64,359
+headers in an unthrottled extension page (`fromRecords`), and Chrome stops an idle service worker after about
+30 s, so a stale table was paid on every popup open after idle. After a restore or a sync, `liveSpvSource` writes
+the pin `{ v: 1, newest, tip, hash, work }` through `opts.pin` (the wallet passes `chrome.storage.session` key
+`spvPin`; `src/core/spvpin.ts`): the newest anchor the chain is seeded from, the verified tip that the store holds
+(or is being written to hold), its hash and its chainwork counted from the anchor seed. The next restore in the
+same browser session, when the pin's `newest` is this table's, the pin is at least 46 above the anchor and at or
+below the stored tip, and no table entry lies between the anchor and the pin:
+
+1. walks the stored records from the anchor to the pin (`walkToPin`: vendored `verifyLinkedRecords`, one run of
+   4,096 records per task): the first record's prev is the table hash at `newest`, each record's sha256d is the next
+   one's prev, and the record at the pin hashes to the pin's hash; it also finds the walked record with the latest
+   timestamp;
+2. re-runs the time rules on that record against today's clock (`latestTimeHolds`: the vendored light client seeds
+   the 46 records below it and ingests it with every check); a failure runs the full restore;
+3. seeds the light client with the 46 records ending at the pin, the pin hash given as the checkpoint at its height
+   (`fromRecords`, which runs `seedTrusted` on them: hash, prev link, PoW, every table entry, the last hash equal to
+   the pin), and ingests any record stored above the pin with every check;
+4. answers heights between the anchor and the seed from the walked records, adds the pin's work to the client's
+   so a reseed compares totals from the same anchor seed, and persists across both.
+
+Any other outcome (no pin, a malformed one, a failed walk, a pin from another table) runs the full restore.
+
+Why the trust is the same, from the vendored source (`src/vendor/cairnx-spv.js`): `verifyLinkedRecords` (985-1001)
+recomputes sha256d of every record and compares it byte for byte with the next record's prev field and, for the last,
+with the pin, so the walked bytes are the ones whose hash chain ends at the pin; finding other bytes with that chain
+needs a sha256d second preimage. The pin is written only from the light client's own chain, whose headers passed
+`ingest` (`verifyOne`, 1097-1114: prev link, `checkTimeRules` at 1130, LWMA bits, PoW, `pinCheckpoint` at 1063) or
+`seedTrusted` (1147-1166, reached through `fromRecords` at 1399) in this browser session, so the walked records
+passed every consensus check earlier in the session. The checks that depend only on the headers (prev link, time
+rules against earlier headers, LWMA bits, PoW, pins) give the same verdict now; the one that depends on today's
+clock, the future-drift bound (`checkTimeRules` 1137-1138: time at most `MAX_FUTURE_DRIFT_SECS` ahead of now), is
+re-run on the walked record with the latest timestamp by the vendored `ingest`. The bound falls only with the
+timestamp, so that record passes it exactly when every walked record does, which keeps restore parity after a
+backward clock correction within the session (test/namespv-session-pin.test.mjs 1b: with the clock moved back, the
+pin restart falls back and accepts exactly the heights the full restore accepts). Table entries are not checked by
+the walk, so the pin is refused when one lies in the walked range (with the release table the newest entry is the
+anchor, so none lies above it; the prefix tables of tests and the acceptance harness can hit it); the pin itself is
+added to the map only for the pin-seeded client, and the reseed seeds from the anchor with the release map alone, so
+a reorg below the pin is handled as before.
+
+Who can do what. Content scripts have no access to `chrome.storage.session` (`TRUSTED_CONTEXTS`, set at start,
+`test/storage-access-level.test.mjs`); code that has it runs as the extension itself, with the vault and, while
+unlocked, the key in reach. The session area is memory only: an attacker who writes the profile on disk can poison
+IndexedDB but finds no pin on disk to set, and a changed record fails the walk. The front door and clarvis serve
+nothing the walk reads; the pin can only name a tip the light client already accepted from them, which a full restore
+would accept again (the residuals in "Work above the newest anchor" are unchanged). A pin written ahead of a detached
+store write that never lands fails the walk, and the full restore runs. A new release cannot meet an old pin: Chrome documents
+that `storage.session` is cleared when the extension is reloaded, updated or disabled and when the browser restarts
+(not tested here), and the walk also refuses a pin whose `newest` is not this release's table. Measured on 2026-10-19 (64,359 stored
+headers, the table minus 16; raw data outside the repository): in an extension page at 4x CPU throttle, open to
+verified 8,690 to 11,631 ms over 10 runs without the pin and 2,335 to 2,725 ms over 5 runs with it; in the real
+service worker unthrottled after a worker stop, 2,544 to 4,333 ms (tag build, 3 runs) against 947 to 1,129 ms (3
+runs, a quieter host). Test: `test/namespv-session-pin.test.mjs`, and the Chrome case in `test/namespv-store-chrome.test.mjs`.
 
 The `anchors` job (`release.yml`) walks the chain from the floor's page to the newest entry on every tag: one
 `/api/headers` page per 512 heights plus one RPC check per entry, paced at 550 ms, under a 15-minute job timeout.
@@ -201,7 +259,12 @@ same base and timeout), and counts only if it answered before the scan finished,
   window is the only one that sends it, and the toolbar popup only rejects); one in the request's params, or for another request or
   fclaim, is ignored. "Cancel" rejects the request; closing the window settles it `APPROVAL_CLOSED`.
 - Anything else (applied, a 404 below that height, a wrong kind or txid, a malformed body, an error, a timeout, no
-  answer before the scan ends): no evidence, the fill proceeds.
+  answer before the scan ends): no evidence, the fill proceeds. When the read had not answered yet, or failed (an
+  error, a timeout, a status other than 200 or 404, or a body that is not a JSON object; `secondSourceUnanswered`),
+  the signed fill's outcome in the approval window adds "Second source not consulted" and the window stays open
+  until it is closed; the page's result does not carry it (`test/fill-second-source-notice.test.mjs`,
+  `test/fill-reservation-confirm.test.mjs` section 11, `test/approve-second-source-dom.test.mjs`). It adds no
+  refusal and no wait.
 
 The margin of 12 is conservative. The cairnx service publishes `tipHeight` and its events from one scan with no
 depth lag (clarvis's deployed build constructs its scanner with inclusion checking off, the default; with it on, a
@@ -260,12 +323,13 @@ second host, if its relay accepts submits, so the front door alone cannot hold t
 | restore, pins, reorg, clock, corrupt chunks, concurrency, migration | `test/namespv-store-pins.test.mjs`, `test/namespv-store-migrate*.test.mjs`, `test/headerstore*.test.mjs` |
 | the reseed's work rule (`reseedAdopts`) | `test/namespv-reseed-work.test.mjs` (the rule on bigint work and on two light clients over real headers; through `liveSpvSource`, a held branch with more work at the sync target compared at the node tip; the use-site), `test/namespv-reseed-recover.test.mjs` (the reseed order) |
 | an unreadable node tip (SPV-5) | `test/spv-unknown-tip.test.mjs` |
+| the session pin (`walkToPin`, the pin-seeded restore) | `test/namespv-session-pin.test.mjs`, `test/namespv-store-chrome.test.mjs` |
 
 ## Invariants
 
-- No stored header is used without its walk to the table or its forward verification in the same session. This is
-  the storage-poisoning defence: the profile is writable by whoever can write it, and a poisoned store can at most
-  cost a refetch.
+- No stored header is used without its walk to the table, its forward verification in the same session, or its walk
+  to the session pin of headers verified earlier in the same browser session. This is the storage-poisoning
+  defence: the profile is writable by whoever can write it, and a poisoned store can at most cost a refetch.
 - The floor (29,960) does not move: a name event at height h needs the verified header at exactly h.
 - Store and network failures degrade to "no cache this session" or a refetch, not to a refusal of a send that
   would otherwise verify. The exception is an unreadable node tip (SPV-5): nothing is synced, so a name record above

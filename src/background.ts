@@ -167,11 +167,12 @@ const thrownCode = (e: unknown): string => ((e as { message?: unknown })?.messag
 
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
-// spentTxids and inputs are the wallet's history bookkeeping (node.ts SubmitResult): kept off what a page receives.
+// spentTxids and inputs are the wallet's history bookkeeping (node.ts SubmitResult), and secondSource is the approval
+// window's notice for a fill (wallet.ts FillNotes): kept off what a page receives.
 function pageResult(r: any): any {
   if (!r || typeof r !== "object" || Array.isArray(r)) return r;
   const out = { ...r };
-  delete out.spentTxids; delete out.inputs;
+  delete out.spentTxids; delete out.inputs; delete out.secondSource;
   return out;
 }
 // The approval window's "Sign anyway" acknowledgement after RESERVATION_UNCONFIRMED: honoured only for this
@@ -197,7 +198,7 @@ function requeueFront(id: string, p: Pending): void {
 function showQueueBadge(): void {
   try { chrome.action?.setBadgeText?.({ text: pending.size ? String(pending.size) : "" }); } catch { /* no badge API */ }
 }
-type ResolveOutcome = { done: boolean; ok?: boolean; error?: string; code?: string; txid?: string; unconfirmed?: unknown };
+type ResolveOutcome = { done: boolean; ok?: boolean; error?: string; code?: string; txid?: string; unconfirmed?: unknown; secondSource?: "pending" | "failed" };
 async function resolvePending(id: string, approve: boolean, displayedSigner?: string, displayedTokenQuote?: { ticker?: string; amount?: string; fee?: string; total?: string }, ack?: unknown): Promise<ResolveOutcome> {
   const p = pending.get(id);
   if (!p) return { done: false };
@@ -211,11 +212,13 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   // POPUP-OUTCOME-1: resolve the dApp promise (UNCHANGED) AND report the TRUE action outcome back to the
   // approval popup, so it shows "sent ✓" / "failed: …" instead of a blanket "approved" when the signed action
   // actually failed (locked, account-switch, a network/guard reject, or a soft {ok:false} builder result).
-  const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }): { done: boolean; ok: boolean; error?: string; code?: string; txid?: string } => {
+  // `secondSource` is read from the wallet's result before pageResult strips it, and goes to the window only.
+  const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }, secondSource?: unknown): ResolveOutcome => {
     p.resolve(out);
     const actionOk = out.ok && (out.result?.ok !== false);
     const soft = out.result?.ok === false;
-    return { done: true, ok: actionOk, error: out.error ?? (soft ? out.result?.error : undefined), code: out.code ?? (soft ? out.result?.code : undefined), txid: out.result?.txid };
+    const notice: Pick<ResolveOutcome, "secondSource"> = actionOk && (secondSource === "pending" || secondSource === "failed") ? { secondSource } : {};
+    return { done: true, ok: actionOk, error: out.error ?? (soft ? out.result?.error : undefined), code: out.code ?? (soft ? out.result?.code : undefined), txid: out.result?.txid, ...notice };
   };
   if (!approve) return finish({ ok: false, code: "USER_REJECTED", error: "rejected by user" });
   try {
@@ -286,7 +289,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
       }
     }
     else throw new Error("unsupported dApp method: " + p.method);
-    return finish({ ok: true, result: pageResult(result) });
+    return finish({ ok: true, result: pageResult(result) }, result?.secondSource);
   } catch (e: any) { return finish({ ok: false, code: thrownCode(e), error: e?.message ?? String(e) }); }
 }
 

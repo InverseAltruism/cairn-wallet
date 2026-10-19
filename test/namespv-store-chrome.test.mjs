@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { checker } from "./helpers/check.mjs";
-import { serveFixture, records, hashOf, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
+import { serveFixture, records, hashOf, headerOf, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 import { findChromium } from "../scripts/playwright-core.mjs";
 
 const chromium = await findChromium();
@@ -18,7 +18,7 @@ if (!chromium) {
 const t = checker("namespv over the header store in Chrome (real IndexedDB)");
 const bundle = (await build({
   stdin: {
-    contents: 'export { liveSpvSource, flushSpvStoreWrites } from "./src/core/namespv.ts"; export { openHeaderStore } from "./src/core/headerstore.ts";',
+    contents: 'export { liveSpvSource, flushSpvStoreWrites } from "./src/core/namespv.ts"; export { openHeaderStore } from "./src/core/headerstore.ts"; export { LightClient } from "./src/vendor/cairnx-spv.js";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url)), loader: "ts",
   },
   bundle: true, format: "iife", globalName: "NS", platform: "browser", target: "es2022", write: false, logLevel: "warning",
@@ -40,16 +40,24 @@ const ORIGIN = "https://spv.test";
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 
 // Wallet.spvOpts() inside the page: the real openHeaderStore(), the chrome.storage keys as in-page doubles.
-async function session({ maxEventHeight, anchors }) {
+async function session({ maxEventHeight, anchors, pinned, clockMs }) {
+  // A clock behind the suffix fails the drift bound on both restore paths. `seeds` records the anchor height of each
+  // light client the restore seeds (vendored fromRecords): the pin path seeds at the pin, the full one at the anchor.
+  if (clockMs) Date.now = () => clockMs;
+  const seeds = [];
+  if (!NS.LightClient.__orig) NS.LightClient.__orig = NS.LightClient.fromRecords;
+  NS.LightClient.fromRecords = function (recs, at, ...rest) { seeds.push(at.anchorHeight); return NS.LightClient.__orig.call(this, recs, at, ...rest); };
   const legacy = { get: async () => null, del: async () => {}, bytes: async () => null, attempts: { get: async () => 0, set: async () => {} } };
   const floor = { get: async () => 0, set: async () => {} };
-  const src = await NS.liveSpvSource({ rpcBase: location.origin + "/api/rpc", headersBase: location.origin, anchors, store: () => NS.openHeaderStore(), legacy, floor });
+  // The session pin over the tab's sessionStorage, which a reload keeps (chrome.storage.session in the extension).
+  const pin = pinned ? { get: async () => JSON.parse(sessionStorage.getItem("spvPin") ?? "null"), set: async (p) => sessionStorage.setItem("spvPin", JSON.stringify(p)) } : undefined;
+  const src = await NS.liveSpvSource({ rpcBase: location.origin + "/api/rpc", headersBase: location.origin, anchors, store: () => NS.openHeaderStore(), legacy, floor, ...(pin ? { pin } : {}) });
   const p = await src.prepare(maxEventHeight);
   await NS.flushSpvStoreWrites();
   const s = await NS.openHeaderStore();
   const hex = async (u8) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", u8))].map((x) => x.toString(16).padStart(2, "0")).join("");
   const c27 = await s.getChunk(27), c28 = await s.getChunk(28);
-  const out = { tip: p.verifiedTip, keys: await s.listChunks(), head: await s.getHead(), h27: c27 && await hex(c27), h28: c28 && await hex(c28), hash: await src.hashAt(115000) };
+  const out = { tip: p.verifiedTip, keys: await s.listChunks(), head: await s.getHead(), h27: c27 && await hex(c27), h28: c28 && await hex(c28), hash: await src.hashAt(115000), pin: pinned ? JSON.parse(sessionStorage.getItem("spvPin") ?? "null") : null, seeds };
   s.close();
   return out;
 }
@@ -79,6 +87,22 @@ try {
   const second = await run({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS] });
   t.check(`after a reload a new build restores from IndexedDB with zero /api/headers requests (${net.log.length}) and the same tip (${second.tip})`, net.log.length === 0 && second.tip === FIX_TOP && second.hash === hashOf(115000));
   t.check("  and the store is unchanged", second.keys.join() === "27,28" && second.head?.tip === FIX_TOP && second.h27 === first.h27 && second.h28 === first.h28);
+  // The session pin: a build with a pin slot writes it, and the build after a reload restores by the walk to it.
+  await page.reload();
+  const pinFirst = await run({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS], pinned: true });
+  t.check(`a build with a pin slot writes the session pin at the verified tip (${pinFirst.pin?.tip})`, pinFirst.pin?.tip === FIX_TOP && pinFirst.pin.hash === hashOf(FIX_TOP) && pinFirst.pin.newest === NEWEST);
+  net.log.length = 0;
+  await page.reload();
+  const pinned = await run({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS], pinned: true });
+  t.check(`  after a reload the build restores from the IndexedDB records by the pin path (seeded at ${pinned.seeds.join(", ")}): zero requests (${net.log.length}), tip ${pinned.tip}, the real hash at 115,000`, pinned.seeds.includes(FIX_TOP) && !pinned.seeds.includes(NEWEST) && net.log.length === 0 && pinned.tip === FIX_TOP && pinned.hash === hashOf(115000) && pinned.h28 === first.h28);
+  // Parity: with the clock behind the suffix, the pin build refuses exactly like the full restore.
+  const clockMs = (Number(headerOf(NEWEST + 1).time) - 3 * 3600) * 1000;
+  const fail = (arg) => run(arg).then(() => null, (e) => String(e?.message ?? e).replace(/^page\.evaluate: /, ""));
+  await page.reload();
+  const pinBack = await fail({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS], pinned: true, clockMs });
+  await page.reload();
+  const fullBack = await fail({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS], clockMs });
+  t.check(`  with the clock moved back the pin build refuses like the full restore (${String(pinBack).slice(0, 60)})`, /dated more than 2 hours ahead/.test(pinBack ?? "") && pinBack === fullBack);
 } catch (e) {
   t.check(`the Chrome session ran (${String(e?.message ?? e).split("\n")[0]})`, false);
 } finally {
