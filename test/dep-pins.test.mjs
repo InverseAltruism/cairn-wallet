@@ -31,6 +31,10 @@ const real = pinOffences(pkg, lock);
 t.check(`package.json pins every dependency to the version package-lock.json installs (${real.join("; ") || "no offences"})`, real.length === 0);
 t.check("the check saw the dev toolchain", ["esbuild", "tsx", "typescript"].every((n) => n in (pkg.devDependencies ?? {})));
 
+// GHSA-g7r4-m6w7-qqqr (low; the dev server on Windows) affects esbuild >=0.27.3 <0.28.1.
+const [maj, min, pat] = pkg.devDependencies.esbuild.split(".").map(Number);
+t.check(`the dev esbuild is 0.28.1 or later (${pkg.devDependencies.esbuild})`, maj > 0 || min > 28 || (min === 28 && pat >= 1));
+
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const caret = clone(pkg);
 caret.devDependencies.tsx = "^" + caret.devDependencies.tsx;
