@@ -1,7 +1,7 @@
-// Cairn Wallet core self-tests — oracle-based (consensus golden vectors + a real
+// Cairn Wallet core self-tests; oracle-based (consensus golden vectors + a real
 // on-chain signature), plus keystore/account adversarial cases. No mocks of our own.
 import { serialize, txid, sighash, verifySig, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
-import { generate, fromPriv, newMnemonic, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";
+import { generate, fromPriv, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";
 import { seal, open, importKeyRaw } from "../src/core/keystore.js";
 import { Wallet, explorerLink } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
@@ -14,7 +14,7 @@ declare const process: { exit(code: number): void };
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean) => { c ? (pass++, console.log("  ✅ " + n)) : (fail++, console.log("  ❌ " + n)); };
 
-// 1) consensus golden vectors (Rust tests/golden_vectors.rs) — external oracle
+// 1) consensus golden vectors (Rust tests/golden_vectors.rs); external oracle
 const makeTx: Tx = {
   version: 1, locktime: 0x3939, app: { type: "None" },
   inputs: [{ prevTxid: "0x" + "00".repeat(32), vout: 3, scriptSig: "0x0102030405" }],
@@ -66,7 +66,7 @@ async function main() {
   check("sign→verify roundtrip", verifySig(sg.sig64, sg.pub33, dg));
   check("verify rejects tampered sig", !verifySig("0x00" + sg.sig64.slice(4), sg.pub33, dg));
 
-  // 5) Wallet brain (memory store) — lifecycle + locked-op guards
+  // 5) Wallet brain (memory store); lifecycle + locked-op guards
   const w = new Wallet(memoryStore());
   const c1 = await w.create("pw1-secret");
   check("wallet create → addr + unlocked", /^0x[0-9a-f]{40}$/.test(c1.addr) && (await w.status()).unlocked);
@@ -129,7 +129,7 @@ async function main() {
   check("sig always LOW-S (no malleability)", lowSAll);
 
   // CQ-6 / KEY-3: importKeyRaw must accept ONLY a full 256-bit (64-hex) key. A short keyRaw would otherwise
-  // be silently imported by WebCrypto as a WEAKER AES-128 key (it infers size from byte length) — the exact
+  // be silently imported by WebCrypto as a WEAKER AES-128 key (it infers size from byte length); the exact
   // downgrade the 64-hex guard blocks. Round-trips a valid key; rejects 16-byte / non-hex / odd-length.
   {
     let valid = false, short = false, nonHex = false, odd = false;
@@ -147,15 +147,15 @@ async function main() {
   check("send rejects non-address recipient", !(await send("x", { to: "0xnotanaddress", amount: 1e7, fee: 1e6 }, TPRIV)).ok);
   check("send rejects zero amount", !(await send("x", { to: "0x" + "cc".repeat(20), amount: 0, fee: 1e6 }, TPRIV)).ok);
   // NETNEW-NO-MAX-FEE-CAP-1: an absurd fee (200 CSD, above the 100-CSD safety cap) is refused at the
-  // assembleValueTx chokepoint BEFORE any network call — defense-in-depth beyond the clear-sign warning.
+  // assembleValueTx chokepoint BEFORE any network call; defense-in-depth beyond the clear-sign warning.
   const overCap = await send("x", { to: "0x" + "cc".repeat(20), amount: 1e7, fee: 200e8 }, TPRIV);
   check("send rejects an over-cap fee (max-fee safety cap)", !overCap.ok && /safety cap/i.test(overCap.error ?? ""));
 
-  // (f) DURABLE content registration — the bug that showed posts as hash-only
+  // (f) DURABLE content registration; the bug that showed posts as hash-only
   // placeholders. flushPending must: register+drop when mined, KEEP when not yet
   // mined (so a later alarm retries), DROP on 24h expiry, and DROP (not loop
   // forever) when mined-but-content-rejected. Drives the real node layer via a
-  // stubbed fetch (URL-routed) — no internal mocks.
+  // stubbed fetch (URL-routed); no internal mocks.
   const origFetch = (globalThis as any).fetch;
   const fakeFetch = (mined: boolean, contentOk = true) => async (url: any) => {
     const u = String(url);
@@ -177,7 +177,7 @@ async function main() {
     await w.flushPending();
     check("flushPending: KEEPS a not-yet-mined item for later retry", ((await s.get("pendingContent")) || []).length === 1);
 
-    // Retention is 7 DAYS (Plans/66 B8; was 24h — which silently dropped the paid-for content of
+    // Retention is 7 DAYS (Plans/66 B8; was 24h; which silently dropped the paid-for content of
     // anyone offline a day). Just-under stays queued; just-over expires.
     (globalThis as any).fetch = fakeFetch(false);
     ({ w, s } = await mkWallet({ content: C, txid: "0xcc", ts: now - (7 * 86_400_000 - 3_600_000) }));
@@ -189,7 +189,7 @@ async function main() {
     check("flushPending: expires items older than 7 days", ((await s.get("pendingContent")) || []).length === 0);
 
     // CONTRACT FLIPPED by Plans/68 F-QUEUE-1 (0.2.57): registerContent answers {ok:false} for BOTH a
-    // real rejection and a transient server refusal, and the wallet cannot tell them apart — dropping
+    // real rejection and a transient server refusal, and the wallet cannot tell them apart; dropping
     // lost the paid-for body on any outage. A mined-but-refused item is now KEPT for retry;
     // "no infinite retry" is preserved by the 7-day expiry above, not by dropping.
     (globalThis as any).fetch = fakeFetch(true, false); // mined but server refuses ({ok:false})
@@ -203,7 +203,7 @@ async function main() {
     check("hasPending false when queue empty", (await w.hasPending()) === false);
   } finally { (globalThis as any).fetch = origFetch; }
 
-  // (g) explorer deep-links — must match the real explorer routes (verified live:
+  // (g) explorer deep-links; must match the real explorer routes (verified live:
   // tx.html?txid= · address.html?addr=). These are what the wallet history links to.
   // explorerLink: Cairn (default, indexer hash route) · Official CSD (static MPA query) · custom base (hash route)
   check("explorerLink(cairn, tx) → indexer hash route", explorerLink("cairn", "tx", "0xdeadbeef") === "https://cairn-substrate.com/explorer#/tx/0xdeadbeef");
@@ -213,7 +213,7 @@ async function main() {
   check("explorerLink(official, addr) → /address.html?addr=", explorerLink("official", "addr", "0x" + "ab".repeat(20)) === "https://explorer.computesubstrate.org/address.html?addr=0x" + "ab".repeat(20));
   check("explorerLink(custom base) → indexer hash route, trailing slash trimmed", explorerLink("https://my.example/exp/", "tx", "0xabc") === "https://my.example/exp#/tx/0xabc");
 
-  // (h) transaction history — records on success, newest-first, idempotent, not on
+  // (h) transaction history; records on success, newest-first, idempotent, not on
   // failure. Drives the real send() path with a URL-routed stubbed fetch.
   const of2 = (globalThis as any).fetch;
   const CS = mkCoin(100e8); const COIN = CS.coin;
@@ -237,7 +237,7 @@ async function main() {
 
     // W6/F10 (B5c): the wallet's txid is LOCALLY COMPUTED; the server echo is IGNORED (cross-check
     // only). Two genuinely DIFFERENT sends whose submit echoes the SAME constant txid must file as
-    // TWO history entries under their own local txids — the pre-B5c code preferred the echo, so a
+    // TWO history entries under their own local txids; the pre-B5c code preferred the echo, so a
     // constant echo deduped every send after the first out of existence (and this very test codified
     // that bug by asserting the collapse). REDS on pre-B5c code.
     w = new Wallet(memoryStore()); await w.create("super-secret-pw");
@@ -248,12 +248,12 @@ async function main() {
     const hDup = await w.history();
     check("…each under its own local txid", sA.txid !== sB.txid && hDup.some((e: any) => e.txid === sA.txid) && hDup.some((e: any) => e.txid === sB.txid));
     // A byte-identical RESUBMIT (same coin, same amount, deterministic signature ⇒ same LOCAL txid)
-    // still dedupes in place — the honest half of the old assertion, now keyed on the local txid.
+    // still dedupes in place; the honest half of the old assertion, now keyed on the local txid.
     w = new Wallet(memoryStore()); await w.create("super-secret-pw");
     (globalThis as any).fetch = txStub(true, "0x" + "ff".repeat(32));
     await w.send(RCPT, 1e8, 1e6); await w.send(RCPT, 1e8, 1e6);
     check("history idempotent on a byte-identical resubmit (same local txid)", (await w.history()).length === 1);
-    // W6 (B5c) second half: `maybeInflight` is post()'s OWN transport classification — a parsed 2xx
+    // W6 (B5c) second half: `maybeInflight` is post()'s OWN transport classification; a parsed 2xx
     // body cannot inject it. A hostile proxy answering HTTP 200 {ok:false, maybeInflight:true} must
     // classify as a DEFINITIVE rejection (no txid, no scary "may be in flight" copy). REDS if the
     // post() strip is removed.
@@ -274,7 +274,7 @@ async function main() {
     check("failed tx is NOT recorded", fr.ok === false && (await w.history()).length === 0);
 
     // WS1.5: the PROPORTIONAL fee cap (KEEP-IN-SYNC with csd-tx feeCap = max(1 CSD, 10% of inputs)),
-    // applied AFTER selection on the chain-verified input total — strictly tighter than the flat
+    // applied AFTER selection on the chain-verified input total; strictly tighter than the flat
     // 100-CSD pre-check. With a single 100-CSD verified coin, propCap = max(1 CSD, 10 CSD) = 10 CSD:
     // a 20-CSD fee clears the flat cap but must be refused here (a whale-coin dApp fee that the flat
     // cap alone would have passed). The refusal names the 10% bound, not the flat "safety cap".
@@ -287,7 +287,7 @@ async function main() {
     check("send ACCEPTS a fee within the proportional cap (5 CSD < 10% of 100 CSD)", okFee.ok === true);
   } finally { (globalThis as any).fetch = of2; }
 
-  // (h1) multi-input coin selection — aggregate several coins, prefer non-coinbase,
+  // (h1) multi-input coin selection; aggregate several coins, prefer non-coinbase,
   // largest-first (fewest inputs), and refuse when the whole balance is short.
   {
     let _v1 = 0; // distinct outpoints (real UTXOs differ; selectInputs now dedups by txid:vout)
@@ -306,7 +306,7 @@ async function main() {
     check("selection treats MISSING confirmations as unconfirmed", selectInputs([{ txid: "0x" + "ff".repeat(32), vout: 0, value: 10e8 }], 1e8) === null);
   }
 
-  // (h1b) BIP-39/BIP-32 HD wallet — deterministic derivation, restore round-trip,
+  // (h1b) BIP-39/BIP-32 HD wallet; deterministic derivation, restore round-trip,
   // recoverable extra accounts, and password-gated phrase export.
   {
     // a known BIP-39 test vector → fixed seed → our path must derive deterministically
@@ -386,7 +386,7 @@ async function main() {
     check("sealClaim returns ok + txid", r1.ok === true && /^0x/.test(String(r1.txid)) && r2.ok === true);
     const sc = await w.sealedClaims();
     check("sealedClaims persists both", sc.length === 2);
-    // L5: the reveal preimage ({claim,nonce}) is ENCRYPTED at rest — no plaintext nonce/claim on disk; the
+    // L5: the reveal preimage ({claim,nonce}) is ENCRYPTED at rest; no plaintext nonce/claim on disk; the
     // display view still decrypts the claim text (UX preserved). Fresh IV + fresh nonce per seal ⇒ two seals
     // of the SAME claim produce DIFFERENT ciphertext (unguessable before reveal).
     const rawSc = (await sealStore.get("sealedClaims:" + sealAddr)) as any[];
@@ -399,7 +399,7 @@ async function main() {
     check("revealClaim marks the claim revealed", (await w.sealedClaims()).find((s: any) => s.txid === r1.txid)!.revealed === true);
     check("revealClaim rejects an unknown txid", !(await w.revealClaim("0xnope")).ok);
 
-    // (h3) reset() must wipe ALL state, not just the key — otherwise a new wallet on
+    // (h3) reset() must wipe ALL state, not just the key; otherwise a new wallet on
     // the same profile would surface the prior owner's history + sealed-claim preimages.
     const rs = memoryStore();
     const rw = new Wallet(rs); const ra = (await rw.create("super-secret-pw")).addr;
@@ -418,7 +418,7 @@ async function main() {
     check("importKey refuses to overwrite an existing wallet", imported === false);
   } finally { (globalThis as any).fetch = of3; }
 
-  // (i) idle auto-lock — wipes the in-memory key after inactivity; stays unlocked while active.
+  // (i) idle auto-lock; wipes the in-memory key after inactivity; stays unlocked while active.
   const wl = new Wallet(memoryStore()); await wl.create("super-secret-pw");
   wl.autoLock(60_000); check("auto-lock keeps wallet unlocked while active", (await wl.status()).unlocked === true);
   wl.autoLock(-1);     check("auto-lock wipes the key once idle past threshold", (await wl.status()).unlocked === false);
@@ -427,7 +427,7 @@ async function main() {
   const kv = await seal(a.privkey, "super-secret-pw");
   check("vault records 600k PBKDF2 iterations", kv.iter === 600_000);
 
-  // (k) session persistence — survive an MV3 service-worker idle-kill WITHOUT re-prompting for the
+  // (k) session persistence; survive an MV3 service-worker idle-kill WITHOUT re-prompting for the
   //     password. A second Wallet over the SAME local+session stores simulates the restarted SW.
   {
     const local = memoryStore(), session = memoryStore();

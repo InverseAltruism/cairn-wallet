@@ -1,7 +1,6 @@
 // Popup UI controller. In the extension it messages the background service worker
 // (which owns the keys); standalone (dev/E2E, no chrome.*) it drives a local Wallet
 // against localStorage so the exact UI flows can be tested in a real browser.
-import type { Wallet } from "../core/wallet.js";
 import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
 import { INCLUSION_NOTICE_BLOCKS, inclusionMark } from "../core/inclusion.js";
 import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
@@ -65,7 +64,7 @@ function msg(text: string, cls = "info") {
     msgFadeTimer = setTimeout(() => { m.textContent = ""; m.className = "msg"; }, 450);
   }, hold);
 }
-// Like msg(), plus ONE inline action button, and NO auto-fade — a refusal whose remedy is a click
+// Like msg(), plus ONE inline action button, and NO auto-fade; a refusal whose remedy is a click
 // away must stay actionable, not vanish mid-read (the old TOO_MANY_INPUTS toast pointed at a
 // settings breadcrumb and faded in 8s). Any later msg()/busy() replaces it, so it never overstays
 // a flow change. textContent + createElement only: r.error strings never touch innerHTML.
@@ -119,12 +118,12 @@ let currentRpc = "";
 let currentExplorer = "cairn"; // selected block explorer (preset id or custom base) for activity/address links
 let siteApi = "";   // the Cairn site base (for the /trade deep-link in the names list)
 // ── frozen review snapshots (WYSIWYS) ──────────────────────────────────────────────────────────
-// ONE owner for every primed value-moving review: `reviewed` (token send — set when the confirm panel
+// ONE owner for every primed value-moving review: `reviewed` (token send; set when the confirm panel
 // opens, signed verbatim on Confirm; `name` is the .csd name typed, re-resolved at confirm so it can't
-// silently re-point), `reviewedSend` (CSD send — same symmetry: sign exactly what was reviewed), and
+// silently re-point), `reviewedSend` (CSD send; same symmetry: sign exactly what was reviewed), and
 // `reviewedNameAct` (name renew / set-primary). The Confirm buttons sign EXACTLY these snapshots,
 // never the live inputs. dropReviews() is the single teardown, used by clearSendDrafts (the lock
-// boundary), closeAllPanels (any panel switch) and the flow handlers — panels are mutually exclusive
+// boundary), closeAllPanels (any panel switch) and the flow handlers; panels are mutually exclusive
 // via openPanel, so dropping all three is always equivalent to dropping the one that was armed.
 const reviewState: {
   reviewed: { to: string; base: string; name?: string | null; verified?: boolean; signer?: string | null } | null;
@@ -141,7 +140,7 @@ function clearSendDrafts() {
   // unlock would sign the stale snapshot). Drop the snapshots + hide both confirm panels.
   dropReviews();
   for (const id of ["send-confirm", "tsend-confirm"]) { const el = document.getElementById(id); if (el) (el as HTMLElement).hidden = true; }
-  { const el = document.getElementById("name-action-form"); if (el) (el as HTMLElement).hidden = true; }   // the name renew/primary review panel signs real CSD — never let a primed one survive a lock
+  { const el = document.getElementById("name-action-form"); if (el) (el as HTMLElement).hidden = true; }   // the name renew/primary review panel signs real CSD; never let a primed one survive a lock
 }
 async function render() {
   const st = await call("status");
@@ -194,7 +193,7 @@ function renderAcctSelect(accounts: { addr: string; label: string }[], active: n
 async function switchAcct(i: number) {
   ($("acct-menu") as HTMLElement).hidden = true;
   // WYSIWYS (R2-WYSIWYS / SIGN-3): tear down any primed send / name-action review BEFORE switching
-  // accounts — a review under the old account must never be Confirmed under the new one.
+  // accounts; a review under the old account must never be Confirmed under the new one.
   clearSendDrafts();
   try { await call("switchAccount", i); msg("switched account", "ok"); render(); }
   catch (err: any) { msg(err.message, "err"); }
@@ -214,7 +213,7 @@ async function renderAccts() {
           <button class="mini" data-save="${escapeHtml(a.addr)}">save</button>
           <button class="mini" data-cancel="1">cancel</button></span>`;
     } else if (editing && a.imported) {
-      // A2 (Plans/68 F4): an imported key is NOT in the recovery phrase — a one-click remove was
+      // A2 (Plans/68 F4): an imported key is NOT in the recovery phrase; a one-click remove was
       // permanent fund loss. Removal is password-gated (the background enforces it; this UI collects
       // it) with the irreversibility spelled out. HD accounts below keep the frictionless yes/no.
       right = `<span class="row" style="gap:6px">
@@ -329,7 +328,7 @@ function paintAvatar(name: string | null, addr: string) {
 // Pending-merge state (Plans/66 B4): derived by the engine from history + the utxo set the
 // balance fetch ALREADY returned (zero extra requests). Cached module-level so the refusal copy
 // (sendRefused) can consult it synchronously; refreshed on every balance refresh, which runs on
-// open, after sends, and after merges — exactly the moments the state can change.
+// open, after sends, and after merges; exactly the moments the state can change.
 let mergePendingNow: { pending: boolean; amount: number; maybe: boolean; stuck: boolean } = { pending: false, amount: 0, maybe: false, stuck: false };
 async function updateMergePending(utxos: unknown) {
   const line = $("merge-pending") as HTMLElement;
@@ -375,7 +374,7 @@ async function refreshBalance() {
   }
   catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "—"; lastBal = null; } }
 }
-// ── CairnX assets (token balances + .csd names) — read-only, never blocks the CSD UI ──
+// ── CairnX assets (token balances + .csd names); read-only, never blocks the CSD UI ──
 // Balances come from the public CairnX resolver API. When it's unreachable we show a
 // single quiet retry line (and nothing else); the CSD balance above is untouched.
 let tokensCache: Record<string, { decimals: number; name?: string }> | null = null; // per-popup
@@ -387,7 +386,7 @@ async function tokenMeta(): Promise<Record<string, { decimals: number; name?: st
   if (r?.ok) tokensCache = m;
   return m;
 }
-// Show the primary .csd name as the account identity (server round-trip-verified — owner===addr===you).
+// Show the primary .csd name as the account identity (server round-trip-verified; owner===addr===you).
 function setIdentity(name: string | null | undefined) {
   const el = document.getElementById("primary-name");
   if (!el) return;
@@ -446,7 +445,7 @@ async function renderAssets() {
   const tip = Number(a.tipHeight) || 0;
   const nameRows = details.length ? `<div class="names-head"><span class="label">.csd names</span></div>` + details.map((n) => {
     const nm = String(n.name);
-    const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized — no owner actions
+    const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized; no owner actions
     const isPrimary = !isPending && nm === primary;
     // a pending reservation with a served finalizeBy gets a REAL countdown (~2 min blocks); older
     // services omit the field and the static label stays.
@@ -457,7 +456,7 @@ async function renderAssets() {
     const lease = isPending ? pendingLabel : leaseLabel(n);
     const cls = isPending ? " pending" : n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
     // A pending reservation MUST be non-actionable here: renew / set-primary on it broadcast a fee the
-    // resolver rejects on a pending record (nrenew/nset both reject `if (n.pending)`) — an honest self-burn
+    // resolver rejects on a pending record (nrenew/nset both reject `if (n.pending)`); an honest self-burn
     // of the anchor + up to the reg fee. Surface only a link to finish the reveal on /trade.
     const acts = isPending
       ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">finalize ↗</a>`
@@ -481,24 +480,24 @@ async function renderAssets() {
 
 // One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
 // A name renew / set-primary spends real CSD, so it must be reviewable and declinable like every other
-// value-moving action — NOT signed from an easy-to-miss inline message. `reviewState.reviewedNameAct` is
+// value-moving action; NOT signed from an easy-to-miss inline message. `reviewState.reviewedNameAct` is
 // the frozen snapshot the Confirm button signs (torn down on lock by clearSendDrafts, so a primed panel
-// can't survive a lock/unlock — and wallet.must() throws if a click somehow lands while locked).
-let nameActSeq = 0;   // QA #18: supersede stale async continuations — a newer invocation bumps this; older ones abort after their awaits
+// can't survive a lock/unlock; and wallet.must() throws if a click somehow lands while locked).
+let nameActSeq = 0;   // QA #18: supersede stale async continuations; a newer invocation bumps this; older ones abort after their awaits
 async function confirmNameAction(kind: "renew" | "primary", name: string) {
   const seq = ++nameActSeq;
   dropReviews();
   openPanel("name-action-form");
-  ($("name-action-form") as HTMLElement).hidden = false;   // always SHOW the review — openPanel toggles, and a name action must never toggle the panel closed
+  ($("name-action-form") as HTMLElement).hidden = false;   // always SHOW the review; openPanel toggles, and a name action must never toggle the panel closed
   $("nc-action").textContent = kind === "renew" ? "Renew lease" : "Set primary name";
   $("nc-name").textContent = `${name}.csd`;
   $("nc-anchor").textContent = fmtCsd(CAIRNX_FEE);
   // renew also pays a height-gated registration fee to the treasury; set-primary is anchor-only. The fee is
-  // priced at the CURRENT tip — the same one cairnxNameRenew signs (WL-V18-1: never show a stale fee curve).
+  // priced at the CURRENT tip; the same one cairnxNameRenew signs (WL-V18-1: never show a stale fee curve).
   let renewFee = 0;
   if (kind === "renew") {
     renewFee = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
-    if (seq !== nameActSeq) return;   // a newer name action superseded this one — don't clobber its panel/snapshot
+    if (seq !== nameActSeq) return;   // a newer name action superseded this one; don't clobber its panel/snapshot
     ($("nc-fee-row") as HTMLElement).hidden = false;
     $("nc-fee").textContent = renewFee ? fmtCsd(renewFee) : "priced at confirm";
   } else {
@@ -510,17 +509,17 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   const total = CAIRNX_FEE + renewFee;
   $("nc-total").textContent = (kind === "renew" && !renewFee) ? "— (priced at confirm)" : fmtCsd(total);
   // M8 residual (Fable final QC): when the renew fee is unpriceable the AFTER balance is likewise
-  // unknown — subtracting the anchor-only 0.25 would understate a 15.25 action in the second row too.
+  // unknown; subtracting the anchor-only 0.25 would understate a 15.25 action in the second row too.
   let after = "";
   try { const b = await call("balance"); after = (kind === "renew" && !renewFee) ? "" : fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
-  if (seq !== nameActSeq) return;   // superseded after the balance fetch — abort before priming the snapshot
+  if (seq !== nameActSeq) return;   // superseded after the balance fetch; abort before priming the snapshot
   $("nc-after").textContent = after || "—";
   $("nc-note").textContent = kind === "renew"
     ? "Extends this name's lease by one term. Anyone may renew a live lease."
-    // QA #5: the wallet's set-primary is a single nset→self — it makes the name primary only if it's your
+    // QA #5: the wallet's set-primary is a single nset→self; it makes the name primary only if it's your
     // OLDEST self-pointing name. Switching from an older name needs the multi-step flow on the website.
     : "Points this name at you (its reverse record). If it's your oldest such name it becomes your primary; to switch from an older name, use cairn-substrate.com/names.";
-  reviewState.reviewedNameAct = { kind, name, total, fee: renewFee, signer: curAddr };   // freeze the reviewed fee + signer — doNameAction signs EXACTLY this
+  reviewState.reviewedNameAct = { kind, name, total, fee: renewFee, signer: curAddr };   // freeze the reviewed fee + signer; doNameAction signs EXACTLY this
   msg("");
 }
 async function doNameAction() {
@@ -531,7 +530,7 @@ async function doNameAction() {
     busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
     // WL-FEE-FREEZE-1: a renew signs EXACTLY the reviewed fee; the background throws FEE_CHANGED (without
     // signing) if the tip crossed a fee-gate since review, so the user never signs a different amount.
-    // A1: the reviewed signer rides along — a mid-flight account switch refuses instead of signing.
+    // A1: the reviewed signer rides along; a mid-flight account switch refuses instead of signing.
     const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee, signer ?? undefined] : [signer ?? undefined]));
     const what = kind === "renew" ? "renewal" : "set-primary";
     if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (takes effect once it is mined)`, "ok"); refreshBalance(); renderAssets(); }
@@ -542,7 +541,7 @@ async function doNameAction() {
     }
   } catch (e: any) {
     const m = String(e?.message || e);
-    if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm — nothing was signed
+    if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm; nothing was signed
       const newFee = Number(m.slice("FEE_CHANGED:".length));
       await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
       msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed — re-check and confirm again`, "err");  // …then explain
@@ -562,7 +561,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
   // replay a cleared name to 0x000..0, and this blocks that burn. It does NOT cover releases predating this
   // guard (no 0x0 check -> they burn after V23); for those the only safeguard is the deploy discipline in
   // types.ts (set V23_HEIGHT only after wallet ADOPTION, not publication).
-  // isZeroAddr is the shared (0x)?-optional guard from clearsign.ts — one test for all three former copies.
+  // isZeroAddr is the shared (0x)?-optional guard from clearsign.ts; one test for all three former copies.
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) {
     if (isZeroAddr(r)) return { ok: false, error: "that is the zero address — sends there are burned and unrecoverable" };
     return { ok: true, addr: r.toLowerCase(), name: null, label: null };
@@ -582,7 +581,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // C2 badge honesty (Plans/68 F2/F4): single-source is the EXACT posture where the documented
     // competing-claim withholding redirect is live, so it must read visibly weaker than 2-source
     // agreement, not like the same green check; and a barely-buried (1-2 conf) resolution gets a
-    // reorg caution instead of a plain check. Both stay informational — never a block.
+    // reorg caution instead of a plain check. Both stay informational; never a block.
     const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < 3;
     const badge = !verified
       ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
@@ -611,16 +610,16 @@ function setNameRow(rowId: string, valId: string, label: string | null | undefin
 
 // ── send a CairnX token: recipient + amount → review (ticker/amount/to/fee) → sign ──
 // The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
-// the existing propose pipeline with the 0.25 CSD convention fee — no value outputs.
-const CAIRNX_FEE = CAIRNX_PROPOSE_FEE; // 0.25 CSD (anchor fee, paid in CSD) — the vendored MIN_FEE_PROPOSE, never a hand-typed literal
+// the existing propose pipeline with the 0.25 CSD convention fee; no value outputs.
+const CAIRNX_FEE = CAIRNX_PROPOSE_FEE; // 0.25 CSD (anchor fee, paid in CSD); the vendored MIN_FEE_PROPOSE, never a hand-typed literal
 let tsend: { ticker: string; decimals: number; available: string } | null = null;
 
 // ── shared send-flow engine ───────────────────────────────────────────────────────────────────
 // The CSD and token send panels are deliberate twins with three real deltas, carried by a flow
-// DESCRIPTOR (the element ids are irregular — send-/s-/c- vs tsend-/ts-/tc- — so a prefix won't do):
+// DESCRIPTOR (the element ids are irregular; send-/s-/c- vs tsend-/ts-/tc-; so a prefix won't do):
 //   • refresh: a token send repaints the token balances too (renderAssets), a CSD send only the balance
-//     (naive sharing would mean a stale token row or a pointless extra fetch — both user-visible);
-//   • warning noun: "transfers" (token) vs "payments" (CSD) — DELIBERATE per-flow copy, not drift;
+//     (naive sharing would mean a stale token row or a pointless extra fetch; both user-visible);
+//   • warning noun: "transfers" (token) vs "payments" (CSD); DELIBERATE per-flow copy, not drift;
 //   • snapshot shape: reviewState.reviewed (token, base-unit string) vs .reviewedSend (CSD, number).
 // Only the SUCCESS path clears the typed recipient/amount (fail/catch keep the draft for a re-Review);
 // Back clears nothing and never refreshes.
@@ -652,7 +651,7 @@ async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookal
   } catch { return { firstTime: true, lookalike: null }; }
 }
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
-// flows ("transfers" for tokens, "payments" for CSD — deliberate per-flow copy); the strings are
+// flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
 // otherwise the historical ones byte-for-byte. Empty return = nothing to warn about (box hidden).
 function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: string, noun: "transfers" | "payments"): string {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
@@ -686,7 +685,7 @@ function sendRefused(f: SendFlow, r: any) {
   if ((r?.code === "INSUFFICIENT" || r?.code === "TOO_MANY_INPUTS") && mergePendingNow.pending) {
     text += ` A coin merge (${fmtBalance(mergePendingNow.amount)} CSD) is still confirming; retry once it is mined.`;
   }
-  // TOO_MANY_INPUTS: the remedy is one click away — surface it as an action, not a breadcrumb
+  // TOO_MANY_INPUTS: the remedy is one click away; surface it as an action, not a breadcrumb
   // in a toast that fades mid-read (Plans/66 B5).
   if (r?.code === "TOO_MANY_INPUTS") {
     return msgAction(text, "Merge coins now", () => { void openConsolidatePanel(true); });
@@ -719,14 +718,14 @@ $("btn-tsend").addEventListener("click", async () => {
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
   setNameRow("tc-name-row", "tc-name", rr.label);
-  // `available` comes from the (configurable) trade API — never let a hostile/garbled value
+  // `available` comes from the (configurable) trade API; never let a hostile/garbled value
   // throw out of the handler and silently kill the send flow; treat unparseable as zero.
   let avail = 0n;
   try { avail = BigInt(tsend.available || "0"); } catch { avail = 0n; }
   if (BigInt(base) > avail) return msg(`amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)})`, "err");
   // A token transfer still anchors on-chain via a Propose carrying the 0.25 CSD fee. "Received
   // tokens but holds no CSD" is a completely normal account state, so pre-check the CSD side HERE
-  // with a message that names the actual problem — otherwise the engine's generic "insufficient
+  // with a message that names the actual problem; otherwise the engine's generic "insufficient
   // confirmed balance" reads as nonsense to someone staring at a big token balance. Best-effort:
   // offline skips the check and the engine still refuses cleanly at sign time.
   // Run the CSD-fee pre-check CONCURRENTLY with the recipient checks (both are best-effort network reads)
@@ -734,13 +733,13 @@ $("btn-tsend").addEventListener("click", async () => {
   // check is skipped and the engine still refuses cleanly at sign time.
   const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
   if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} for the on-chain anchor fee; your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD`, "err");
-  // same first-time / address-poisoning checks as a CSD send — token sends are just as irreversible
+  // same first-time / address-poisoning checks as a CSD send; token sends are just as irreversible
   const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
   $("tc-to").textContent = to.toLowerCase();              // FULL address, as it will appear in the signed record
   // W8 (B5g): BOTH scales on the review card. `decimals` is resolver-served (the popup token list), so a
   // decimals lie rescales the human number by up to 10^8 while the balance guard compares against the SAME
-  // resolver's `available` — the card alone could confirm a rescaled amount back to the user. The base-unit
+  // resolver's `available`; the card alone could confirm a rescaled amount back to the user. The base-unit
   // integer IS the value that gets signed; rendering it beside the scaled number makes any rescale visible
   // at review time (F12: both scales, never either alone).
   $("tc-amt").textContent = tokenAmountBothScales(base, tsend.decimals, tsend.ticker);
@@ -748,7 +747,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
   setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, TOKEN_FLOW.noun));
-  // SNAPSHOT what was reviewed — the confirm step signs EXACTLY this, never the live inputs
+  // SNAPSHOT what was reviewed; the confirm step signs EXACTLY this, never the live inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): the confirm's nameStillPointsTo await can park across an
   // account switch; expectSigner makes the background refuse at the sign tick instead of signing from
   // the switched-to account (the recipient stays correct but the WRONG account would pay).
@@ -778,7 +777,7 @@ async function renderPending() {
   const p = await call("pending"); const el = $("pending") as HTMLElement;
   if (!p.length) { el.hidden = true; el.innerHTML = ""; return; }
   el.hidden = false;
-  // The toolbar popup NEVER approves a request inline — approving a fund-moving send/propose/
+  // The toolbar popup NEVER approves a request inline; approving a fund-moving send/propose/
   // attest requires the full clear-signing window (recipient, amount, fee, balance-after,
   // first-time/poisoning/large-fee warnings). "Review & approve" opens that window; Reject is
   // safe to do blind. This keeps a single, fully-disclosed approval path.
@@ -861,7 +860,7 @@ function resetPhrasePanel() {
 }
 // Close every panel + confirm sub-panel, drop primed value-moving snapshots, wipe revealed
 // secrets. Statement order of the original openPanel body preserved (the two snapshot-null
-// statements collapsed into one dropReviews()) — this teardown is the secret-wipe / WYSIWYS
+// statements collapsed into one dropReviews()); this teardown is the secret-wipe / WYSIWYS
 // boundary and must stay byte-equivalent in behavior.
 function closeAllPanels() {
   for (const p of PANELS) ($(p) as HTMLElement).hidden = true;
@@ -923,7 +922,7 @@ async function renderReceive() {
 $("btn-receive").addEventListener("click", () => { if (openPanel("receive-panel")) renderReceive(); });
 $("btn-receive-copy").addEventListener("click", () => copyText("btn-receive-copy", $("receive-addr").textContent || ""));
 
-// Reveal private key — in-popup panel (password → masked secret box).
+// Reveal private key; in-popup panel (password → masked secret box).
 $("btn-export").addEventListener("click", () => { openPanel("reveal-panel"); });
 $("btn-reveal-go").addEventListener("click", async () => {
   const pw = val("reveal-pw"); if (!pw) return msg("enter your password", "err");
@@ -938,7 +937,7 @@ $("btn-reveal-show").addEventListener("click", () => { ($("reveal-out") as HTMLE
 $("btn-reveal-copy").addEventListener("click", () => copyText("btn-reveal-copy", revealedKey));
 $("btn-reveal-close").addEventListener("click", () => { resetRevealPanel(); ($("reveal-panel") as HTMLElement).hidden = true; });
 
-// Reveal recovery phrase — in-popup panel (password → blurred 12-word grid).
+// Reveal recovery phrase; in-popup panel (password → blurred 12-word grid).
 $("btn-phrase").addEventListener("click", () => { openPanel("phrase-panel"); });
 $("btn-phrase-go").addEventListener("click", async () => {
   const pw = val("phrase-pw"); if (!pw) return msg("enter your password", "err");
@@ -957,7 +956,7 @@ $("btn-settings").addEventListener("click", () => { if (openPanel("settings")) {
 // ── coins / consolidate (popup-only; see node.consolidate for the trust posture) ─────────────
 // Settings shows a live coin count; "merge coins…" appears only when a merge would actually help
 // (≥2 spendable coins). The confirm card previews REPORTED numbers; the spend itself re-verifies
-// every input against the chain (TXB-1) and refuses on any mismatch — a lying preview gains nothing.
+// every input against the chain (TXB-1) and refuses on any mismatch; a lying preview gains nothing.
 async function renderCoinsInfo() {
   const info = $("coins-info") as HTMLElement, btn = $("btn-consolidate") as HTMLButtonElement;
   info.textContent = "…"; btn.hidden = true;
@@ -975,7 +974,7 @@ async function renderCoinsInfo() {
 // two concurrent merges are self-conflicting and harmless, but this keeps a single, clean flow.
 let consolidating = false;
 // Shared opener: the settings button (toggle semantics) and the TOO_MANY_INPUTS "Merge coins now"
-// action (force-open) both land here. The preview arms Confirm for every legitimate case —
+// action (force-open) both land here. The preview arms Confirm for every legitimate case:
 // including while an EARLIER round is still confirming: back-to-back rounds select disjoint coins
 // (the node's available-utxo view already excludes the in-flight round's inputs), so disarming
 // here would be a decline path on a designed flow. Only two things keep Confirm down: a merge
@@ -997,7 +996,7 @@ async function openConsolidatePanel(force = false) {
     $("cs-fee").textContent = fmtCsd(SEND_FEE);
     $("cs-out").textContent = fmtBalance(p.out) + " CSD";
     // Round plan: merging 512 coins into 1 retires 511 per pass, and intermediate outputs get
-    // swept into a later pass once confirmed — so ceil((coins-1)/511) covers the whole plan.
+    // swept into a later pass once confirmed; so ceil((coins-1)/511) covers the whole plan.
     const rounds = Math.ceil((p.coins - 1) / 511);
     note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins, so about ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
       + (consolidating ? "a merge is already in progress in this window; wait for it to finish." : "")
@@ -1093,7 +1092,7 @@ $("btn-save-settings").addEventListener("click", async () => {
   msg("settings saved", "ok"); render();
 });
 
-// ── header dropdown menus (RPC + Explorer) — one builder, two configs ──────────────────────────
+// ── header dropdown menus (RPC + Explorer); one builder, two configs ──────────────────────────
 // The two menus are the same visual component with different plumbing; the deltas ride in the config
 // so the row markup / add-row wiring can never drift between them again. Kept distinct: the data-*
 // hooks and input ids (DOM stability), the add flows (addExplorer validates → try/catch; addRpc does
@@ -1132,7 +1131,7 @@ function showRpcMoved(from: string) {
   msgAction(`Your saved node RPC (${from.replace(/^https?:\/\//, "")}) is a remote server, which this wallet no longer supports. It now uses the Cairn proxy. A node on this computer can still be chosen from the RPC menu.`, "OK", () => {}, "info");
   void call("dismissRpcNotice").catch(() => { /* the notice shows again on the next open */ });
 }
-// ── RPC dropdown (header) — preset + user-added nodes, switch with one click ──
+// ── RPC dropdown (header); preset + user-added nodes, switch with one click ──
 const RPC_PRESETS = [
   { label: "Cairn proxy", url: "https://cairn-substrate.com/api/rpc" },
   { label: "Local node", url: "http://127.0.0.1:8789" },
@@ -1162,7 +1161,7 @@ async function selectRpc(url: string) {
 }
 $("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLElement; if (m.hidden) { renderRpcMenu(); m.hidden = false; } else m.hidden = true; });
 
-// ── Explorer dropdown (header, left of RPC) — choose the block explorer for activity/address links ──
+// ── Explorer dropdown (header, left of RPC); choose the block explorer for activity/address links ──
 // Navigation-only: switching it changes where ↗ links point; it never grants fetch/host access (no ensureHostAccess).
 async function renderExplorerMenu() {
   const customs: string[] = await call("explorerList").catch(() => []);
@@ -1205,7 +1204,7 @@ $("btn-add-acct").addEventListener("click", async () => {
 });
 $("btn-imp-acct").addEventListener("click", async () => {
   const key = val("imp-acct-key").trim(); if (!key) return msg("paste a private key", "err");
-  // A2 defense-in-depth: state the misconception up front — an imported key is NOT covered by the
+  // A2 defense-in-depth: state the misconception up front; an imported key is NOT covered by the
   // recovery phrase, so the user learns it at import time, not at (password-gated) removal time.
   try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported — note: imported keys are NOT in your recovery phrase; keep their own backup", "ok"); render(); }
   catch (e: any) { msg(e.message, "err"); }
@@ -1254,7 +1253,7 @@ async function renderSealed() {
   if (!list.length) { el.innerHTML = `<div class="dim" style="padding:6px 0">No sealed claims yet. Seal one above; it stays secret until you reveal.</div>`; return; }
   el.innerHTML = list.map((s) => {
     const when = s.committedTs ? new Date(s.committedTs).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-    // a maybe-path seal's anchor may never have landed (0.2.57): say so — revealing it would fail
+    // a maybe-path seal's anchor may never have landed (0.2.57): say so; revealing it would fail
     // its on-chain commit check, and the honest state is "verify the anchor first".
     const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>`
       : s.maybe ? `🔒 sealed <span class="dim">(anchor may not have landed — check the txid on the explorer)</span>` : `🔒 sealed`;
@@ -1278,13 +1277,13 @@ async function renderSealed() {
 // recipientStatus: one definition, so a tuning change can't land in only one of two copies of a security check.
 // Two-step send: "Review" shows a confirmation with the FULL recipient address,
 // amount, fee, and projected balance-after (defends against address-poisoning /
-// clipboard-swap — the user verifies exactly what will be signed), warns on a
+// clipboard-swap; the user verifies exactly what will be signed), warns on a
 // never-seen-before recipient, and hard-flags a poisoning lookalike.
 const SEND_FEE = 1_000_000; // 0.01 CSD
 $("btn-send").addEventListener("click", async () => {
   const raw = val("s-to").trim();
   // Strict base-unit parse (audit AMT-1): the lax Math.round(parseFloat()) accepted "1e3" (→1000 CSD),
-  // "1,000" (→1), "1abc", "+1", ".5" and half-sat rounding — so the signed amount could differ from what
+  // "1,000" (→1), "1abc", "+1", ".5" and half-sat rounding; so the signed amount could differ from what
   // the user typed/saw. parseUnits enforces /^\d+(\.\d{0,8})?$/ and exact base-unit conversion (same path
   // the token send already uses), so a malformed amount is rejected up front instead of silently coerced.
   const amtStr = parseUnits(val("s-amt").trim(), 8);
@@ -1303,7 +1302,7 @@ $("btn-send").addEventListener("click", async () => {
   $("c-fee").textContent = fmtCsd(SEND_FEE);
   $("c-after").textContent = after || "—";
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
-  // look-alike status — verifying the resolved address is the whole defense the wallet can offer here.
+  // look-alike status; verifying the resolved address is the whole defense the wallet can offer here.
   const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
   // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's
   // INSUFFICIENT refusal stays the backstop). An unreadable balance does not block.
@@ -1312,7 +1311,7 @@ $("btn-send").addEventListener("click", async () => {
   setWarn($("c-warn") as HTMLElement, short ? `${escapeHtml(balanceShortNote("Go back"))}${warn ? "<br><br>" + warn : ""}` : warn);
   ($("btn-send-confirm") as HTMLButtonElement).disabled = short;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
-  // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note — same race, same backstop.
+  // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
   reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
   armReview(CSD_FLOW);
 });
@@ -1322,7 +1321,7 @@ $("btn-send-confirm").addEventListener("click", async () => {
   if (!reviewState.reviewedSend || ($("btn-send-confirm") as HTMLButtonElement).disabled) return;
   const { to, amt, name, verified, signer } = reviewState.reviewedSend;
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
-  // chain-verification regressed since review (L7) — fail-closed to a re-review either way.
+  // chain-verification regressed since review (L7); fail-closed to a re-review either way.
   if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
   try {
     busy("sending…"); const r = await call("send", to, amt, SEND_FEE, signer ?? undefined);
@@ -1344,7 +1343,7 @@ $("btn-post").addEventListener("click", async () => {
   if (!/^csd:[a-z0-9:_-]+$/i.test(domain)) return msg("pick a category or enter one like csd:tools", "err");
   if (!val("p-title").trim()) return msg("enter a title", "err");
   try {
-    const feeStr = parseUnits((val("p-fee").trim() || "0.25"), 8); // strict parse (audit AMT-1) — no "1e3"/"1,000"/half-sat
+    const feeStr = parseUnits((val("p-fee").trim() || "0.25"), 8); // strict parse (audit AMT-1); no "1e3"/"1,000"/half-sat
     if (feeStr === null) return msg("enter a valid fee (e.g. 0.25)", "err");
     const feeNum = Number(feeStr);
     if (!Number.isSafeInteger(feeNum)) return msg("fee out of range", "err"); // parity with the send-amount path (safe-integer backstop)

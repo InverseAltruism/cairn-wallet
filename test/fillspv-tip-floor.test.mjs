@@ -19,7 +19,7 @@ import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { liveFillSpvSource } from "../src/core/fillspv.js";
-import { offer, fclaim, verifyFillSpv, V28_HEIGHT, FILL_TIP_MARGIN, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS } from "../src/vendor/cairnx-spv.js";
+import { offer, fclaim, verifyFillSpv, V28_HEIGHT, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS } from "../src/vendor/cairnx-spv.js";
 import { tipDependentFillReason } from "../src/core/wallet.js";
 import { proposeTx, addrFromPriv, ctxid, rpcTxToTx, merkleRoot, prevoutFor, pick } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
@@ -72,7 +72,7 @@ console.log("FILLSPV-01 - PoW-floor clamp on the tip reported to verifyFillSpv:\
 }
 
 // RED-FIRST mutation: removing the clamp line reverts the reported tip to the deflated verifiedTip, and the
-// lapsed-hold fill FLIPS to safe:true (the exact burn the clamp prevents) — proving the clamp is the sole fix.
+// lapsed-hold fill FLIPS to safe:true (the exact burn the clamp prevents); proving the clamp is the sole fix.
 const FILLSPV_SRC = path.join(coreDir, "fillspv.ts");
 async function withFillspvMutant(marker, run) {
   const lines = readFileSync(FILLSPV_SRC, "utf8").split("\n");

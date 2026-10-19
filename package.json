@@ -1,12 +1,14 @@
 {
   "name": "cairn-wallet",
   "version": "0.2.99",
-  "description": "Cairn Wallet — a non-custodial browser wallet for Compute Substrate (CSD). Likely the first CSD wallet.",
+  "description": "Cairn Wallet: a non-custodial browser wallet for Compute Substrate (CSD). Likely the first CSD wallet.",
   "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
+    "lint": "biome lint --max-diagnostics=none .",
+    "check:dashes-paths": "node scripts/check-dashes-paths.mjs",
     "package": "node build.mjs && node scripts/package.mjs",
     "test": "node test/run.mjs",
     "typecheck": "tsc --noEmit",
@@ -19,8 +21,9 @@
     "@scure/bip39": "1.6.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "esbuild": "0.28.2",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "tsx": "4.22.3",
+    "typescript": "5.9.3"
   }
 }

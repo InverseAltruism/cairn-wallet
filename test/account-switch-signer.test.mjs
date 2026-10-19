@@ -2,19 +2,19 @@
 //
 // fillOffer is the ONE signing method with awaits between validation and the key read: its preflight
 // awaits the offer fetch and the chain tip. Pre-0.2.57, a switchAccount parked in those awaits made the
-// preflight validate account A while account B's key signed and paid — pay-without-delivery on a
+// preflight validate account A while account B's key signed and paid; pay-without-delivery on a
 // taker-bound offer (the resolver delivers to A, B paid), whole-payment loss on the open-CSD lane.
 // The fix captures the signer BEFORE the first await (captureSigner), threads the captured address into
 // the preflight as `me`, re-asserts the signer at the sign tick (signerUnchanged), and signs/records
 // with the CAPTURED key/histKey. expectSigner is the same guard for callers that displayed a signer
-// (popup review snapshots, the background's displayedSigner) — refusal-only, never widens what signs.
+// (popup review snapshots, the background's displayedSigner); refusal-only, never widens what signs.
 //
 // MUTATION CONTRACT: the race case and the expectSigner case FAIL on 0.2.56 (the fill submits from the
 // switched-to account; send ignores the 4th argument). Harness style: consolidate.test.mjs (URL-routed
 // fetch stub, real Wallet + memoryStore, mkCoin/txReply for TXB-1 verification).
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { requiredFillOutputs, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
@@ -82,7 +82,7 @@ const offer = {
 };
 const outputs = requiredFillOutputs(offer, 5_000_000n).map(({ to, value }) => ({ to, value: Number(value) }));
 
-console.log("A1 — fillOffer account-switch race (the FILL-RACE-1 mutation case):");
+console.log("A1: fillOffer account-switch race (the FILL-RACE-1 mutation case):");
 {
   const { fetchStub, stats } = mkStub({ coinsByAddr, served, offer, parkFirstTip: true });
   globalThis.fetch = fetchStub;
@@ -96,7 +96,7 @@ console.log("A1 — fillOffer account-switch race (the FILL-RACE-1 mutation case
   await w.switchAccount(A);
 }
 
-console.log("A1 — no-switch control (no over-refusal on the legit path):");
+console.log("A1: no-switch control (no over-refusal on the legit path):");
 {
   const { fetchStub, stats } = mkStub({ coinsByAddr, served, offer });
   globalThis.fetch = fetchStub;
@@ -104,7 +104,7 @@ console.log("A1 — no-switch control (no over-refusal on the legit path):");
   check("the identical fill without a switch proceeds and submits", r?.ok === true && stats.submits.length === 1);
 }
 
-console.log("A1 — expectSigner backstop on send:");
+console.log("A1: expectSigner backstop on send:");
 {
   const { fetchStub, stats } = mkStub({ coinsByAddr, served, offer });
   globalThis.fetch = fetchStub;

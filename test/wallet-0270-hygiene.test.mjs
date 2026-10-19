@@ -25,7 +25,8 @@ ok("confirmName is popup-bridged and READ_ONLY", /case "confirmName"/.test(bg) &
 
 const popup = src("src/popup/popup.ts");
 ok("popup has no Wallet value import", !/import\s*\{[^}]*\bWallet\b/.test(popup));
-ok("popup imports Wallet as type only (or not at all as a value)", /import type \{ Wallet \}/.test(popup));
+ok("popup imports nothing from core/wallet.js as a value (a type-only import or none)", !/^import (?!type )[^;]*from "\.\.\/core\/wallet\.js"/m.test(popup));
+ok("popup has no side-effect import of core/wallet.js", !/^import\s*["']\.\.\/core\/wallet(\.js)?["']/m.test(popup));
 ok("popup explorer comes from explorer.ts", /from "\.\.\/core\/explorer\.js"/.test(popup));
 ok("popup dynamically imports devshim", /import\("\.\/devshim\.js"\)/.test(popup));
 ok("CSD Review parallelizes recipientChecks+balance",

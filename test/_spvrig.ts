@@ -1,4 +1,4 @@
-// _spvrig.ts — the shared SPV name-verifier test rig. Builds REAL signed cairnx txs, places them in
+// _spvrig.ts; the shared SPV name-verifier test rig. Builds REAL signed cairnx txs, places them in
 // synthetic PoW-verified blocks, and exposes the SpvSource seam that core/namespv.ts consumes, plus a
 // per-base fetch mock for the multi-source union path. Extracted 2026-07-06 from namespv.test.mjs and the
 // name2/name4/name5 PoCs, which had each hand-rolled a near-identical copy of this exact scaffolding.
@@ -6,10 +6,10 @@
 // Per-caller knobs stay EXPLICIT so no test loses its distinct case: proposeTx takes an optional
 // prevScriptPubkey (H3 scriptSig-substitution) and expiresEpoch; source() takes optional tamperMerkle /
 // verifiedTip / nodeTip (merkle-tamper and tip-deflation scenarios). The prevout-ownership registry is
-// module-scoped — each tsx test file is its own process, so the registry is naturally isolated per file.
-import { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.js";
+// module-scoped; each tsx test file is its own process, so the registry is naturally isolated per file.
+import { TREASURY_ADDR } from "../src/core/cairnx.js";
 import { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.js";
-import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, resolve, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
+import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
 
 // Re-export the building blocks so a test imports its whole rig surface from here (one import line).
 export { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.js";
@@ -17,7 +17,7 @@ export { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.js"
 export { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, resolve } from "../src/vendor/cairnx-spv.js";
 
 export const CAIRNX_DOMAIN = "cairnx:v1";
-export const REG_FEE = 1000_000_000; // 10 CSD — generously above any nameRegFee (overpay is accepted)
+export const REG_FEE = 1000_000_000; // 10 CSD; generously above any nameRegFee (overpay is accepted)
 
 export interface Hint { txid: string; height: number; pos: number; kind?: string }
 export interface Placement { height: number; tx: RpcTxJson }
@@ -32,7 +32,7 @@ export const prevoutFor = (t: unknown): string | null => PREVOUTS.get(String(t).
 export const pick = (b: Built): Built => ({ uri: b.uri, payloadHash: b.payloadHash });
 export const feeOut = (v: number = REG_FEE): Output[] => [{ to: TREASURY_ADDR, value: v }];
 
-// Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape — exactly what SpvSource.blockAt returns. Each
+// Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape; exactly what SpvSource.blockAt returns. Each
 // tx references a UNIQUE prevout whose scriptPubkey is registered here; by default the signer spends their
 // OWN coin (the honest case), and `prevScriptPubkey` overrides it to simulate a swapped scriptSig.
 export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: number; priv: string; outputs?: Output[]; prevScriptPubkey?: string; domain?: string }): RpcTxJson {
@@ -55,7 +55,7 @@ export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: 
   } as unknown as RpcTxJson;
 }
 
-// Build a SIGNED Attest tx in node-JSON (RpcTxJson) shape — for the fill / legacy-claim scan scenarios.
+// Build a SIGNED Attest tx in node-JSON (RpcTxJson) shape; for the fill / legacy-claim scan scenarios.
 // Registers its prevout like proposeTx so prevoutFor()/source() resolve the spent-coin owner (H3 bind); by
 // default the signer spends their OWN coin, and `prevScriptPubkey` overrides it to simulate a swapped scriptSig.
 export function attestTx(p: { proposalId: string; score: number; confidence?: number; priv: string; outputs?: Output[]; prevScriptPubkey?: string }): RpcTxJson {

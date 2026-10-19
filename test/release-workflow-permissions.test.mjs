@@ -2,7 +2,7 @@
 // vendor rebuild, the anchors check) can only read; the one job that holds `id-token: write`, `attestations: write`
 // and `contents: write` checks nothing out, installs nothing, and its scripts run only `sha256sum` and `gh`.
 // ci.yml grants no job any write permission, and neither workflow gates the csd-sdk rebuild on a secret or skips
-// a step (csd-sdk is public).
+// a step (csd-sdk is public). ci.yml's secrets job scans the full history with the checksum-verified gitleaks.
 //
 // The scanner reads the two workflows' shape (job names, per-job permissions as a map or a scalar, needs, steps'
 // uses/run/if), not YAML in general; a job it cannot find fails the test rather than passing vacuously. RED-FIRST:
@@ -16,11 +16,11 @@ let n = 0;
 const test = (name, fn) => { fn(); n++; console.log("  ok " + name); };
 const wf = (f) => readFileSync(new URL(`../.github/workflows/${f}`, import.meta.url), "utf8");
 
-/** jobs: { name: { permissions: {key: value} | "{}" | "read-all" | "write-all" | null, needs: [names], if?, steps: [{ uses?, run?, if? }] } } */
+/** jobs: { name: { permissions: {key: value} | "{}" | "read-all" | "write-all" | null, needs: [names], if?, steps: [{ uses?, run?, if?, with? }] } } */
 export function scanWorkflow(text) {
   const lines = text.split("\n");
   const jobs = {};
-  let inJobs = false, job = null, inPerms = false, step = null, runBlock = null;
+  let inJobs = false, job = null, inPerms = false, step = null, runBlock = null, inWith = false;
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, "");
     if (/^\S/.test(line) && line !== "") { inJobs = line === "jobs:"; job = null; continue; }
@@ -45,10 +45,17 @@ export function scanWorkflow(text) {
       if (kv) job.permissions[kv[1]] = kv[2];
       continue;
     }
+    if (indent === 10 && inWith) {
+      const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim());
+      if (kv) step.with[kv[1]] = kv[2];
+      continue;
+    }
+    inWith = false;
     if (indent === 6 && line.trim().startsWith("- ")) { step = {}; job.steps.push(step); }
     if (step && (indent === 6 || indent === 8)) {
       const kv = /^(?:- )?([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim());
       if (!kv) continue;
+      if (kv[1] === "with" && kv[2] === "") { step.with = {}; inWith = true; }
       if (kv[1] === "uses") step.uses = kv[2];
       if (kv[1] === "if") step.if = kv[2];
       if (kv[1] === "run") { if (kv[2] === "|") { step.run = ""; runBlock = { step, indent: indent + 2 }; } else step.run = kv[2]; }
@@ -126,6 +133,27 @@ export function checkCi(jobs) {
   for (const [name, j] of Object.entries(jobs)) for (const s of j.steps) assert.equal(s.if, undefined, `${name}: no step-level skip (${s.if})`);
 }
 
+// The secrets job: the pinned gitleaks release, checked against its published sha256, over every commit of every
+// ref with merge diffs, using the repo's config. A shallow checkout would scan one commit and pass.
+const GITLEAKS_URL = "https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz";
+const GITLEAKS_SHA256 = "ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d";
+export function checkSecrets(jobs) {
+  const j = jobs.secrets;
+  assert.ok(j, "ci.yml has a secrets job");
+  assert.equal(j.if, undefined, "the secrets job runs on every event");
+  const checkout = j.steps.find((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+  assert.ok(checkout, "the secrets job checks out the repository");
+  assert.equal(checkout.with?.["fetch-depth"], "0", "the checkout fetches the full history");
+  assert.equal(checkout.with?.["persist-credentials"], "false", "the checkout keeps no token");
+  const run = j.steps.map((s) => s.run ?? "").join("\n");
+  assert.ok(run.includes(GITLEAKS_URL), "the job downloads the gitleaks 8.18.4 release");
+  assert.ok(run.includes(`echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -`), "the download is checked against its sha256 before it runs");
+  const scan = run.split("\n").find((l) => l.includes(" detect "));
+  assert.ok(scan, "the job runs gitleaks detect");
+  assert.ok(scan.includes("-c .gitleaks.toml"), "the scan uses the repo's .gitleaks.toml");
+  assert.ok(scan.includes('--log-opts="--full-history --all --diff-merges=first-parent"'), "the scan covers every ref's full history with merge diffs");
+}
+
 console.log("release.yml permission split:");
 const release = scanWorkflow(wf("release.yml"));
 test("the release workflow keeps the split", () => checkRelease(release));
@@ -149,6 +177,7 @@ test("the scanner sees the steps it judges: the release job's scripts and the sh
 
 console.log("ci.yml:");
 test("ci.yml grants no job a write permission and runs the rebuild gate unconditionally with no step skipped", () => checkCi(scanWorkflow(wf("ci.yml"))));
+test("ci.yml runs the full-history gitleaks scan", () => checkSecrets(scanWorkflow(wf("ci.yml"))));
 
 console.log("red-first, on copies:");
 const BUILD_HEAD = "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n";
@@ -184,6 +213,16 @@ test("a top-level permissions: write-all fails the check", () => {
 test("a ci.yml step with an if: skip fails the check", () => {
   const mutated = mutate("ci.yml", "      - run: npm -C cairn-wallet ci --ignore-scripts\n", "      - if: ${{ env.HAS_TOKEN == 'true' }}\n        run: npm -C cairn-wallet ci --ignore-scripts\n");
   assert.throws(() => checkCi(scanWorkflow(mutated)), /no step-level skip/);
+});
+
+test("a shallow secrets checkout, a scan without merge diffs, or an unchecked download fails the check", () => {
+  const cases = [
+    ["          fetch-depth: 0\n", "", /fetches the full history/],
+    [" --diff-merges=first-parent\"", "\"", /full history with merge diffs/],
+    ["\" | sha256sum -c -\n", "\"\n", /checked against its sha256/],
+    ["-c .gitleaks.toml ", "", /repo's .gitleaks.toml/],
+  ];
+  for (const [from, to, re] of cases) assert.throws(() => checkSecrets(scanWorkflow(mutate("ci.yml", from, to))), re, from);
 });
 
 console.log(`release-workflow-permissions: ${n} passed, 0 failed`);

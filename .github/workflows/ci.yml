@@ -1,7 +1,8 @@
 name: ci
 
-# Push/PR gate: runs the typecheck, the full suite, a build, and the vendor-freshness gate on every push
-# and PR, so a regression or a stale vendored SPV bundle cannot land on master uncaught.
+# Push/PR gate: runs the typecheck, the full suite, a build, the vendor-freshness gate and a full-history secret
+# scan on every push and PR, so a regression, a stale vendored SPV bundle or a committed secret cannot land on
+# master uncaught.
 on:
   push:
     branches: ["master", "main"]
@@ -29,6 +30,11 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts   # no dependency lifecycle scripts (supply-chain hardening)
       - run: npm run typecheck
+      # biome.json: unused imports, focused tests and @ts-ignore fail the step; empty blocks are warnings for now.
+      - run: npm run lint
+      # No em dash in a tracked .md outside docs/archive/; no tracked code reading a sibling checkout outside the
+      # exceptions listed in the script.
+      - run: npm run check:dashes-paths
       - run: npm test
       - run: npm run build
       # Vendor-freshness gate (cheap path): verifies the committed SPV bundle's sha256 == PROVENANCE.json and
@@ -79,3 +85,23 @@ jobs:
         env:
           CSD_SDK_DIR: ${{ github.workspace }}/csd-sdk
         run: npm -C cairn-wallet run verify:vendor
+
+  # Full-history secret scan with the repo's .gitleaks.toml; the pre-commit hook does not run on a commit made
+  # without it or with --no-verify. The release binary is checked against gitleaks_8.18.4_checksums.txt.
+  secrets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # --diff-merges=first-parent: the default log shows no diff for a merge, so a secret added in a conflict
+      # resolution would be missed.
+      - name: gitleaks 8.18.4 (full history, blocking)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          echo "ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" detect --no-banner --redact -c .gitleaks.toml --log-opts="--full-history --all --diff-merges=first-parent"

@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { requiredFillOutputs, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
@@ -122,7 +122,7 @@ console.log("\nPAIRED HAPPY-PATH (honest fills still submit):");
   check(`a fill with score:100 still submits (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
 }
 {
-  // (c) an honest token fill (outputs:[]) submits (sums.size === 0, no token-outputs refusal) — the exact
+  // (c) an honest token fill (outputs:[]) submits (sums.size === 0, no token-outputs refusal); the exact
   // attest->fillOffer reroute shape (outputs:[]) the site uses at actions.js:397.
   const { w, s } = await freshWallet("pw-tokhonest-123");
   const r = await w.fillOffer({ proposalId: TOID, outputs: [] , tokenQuote: TOK_Q });
