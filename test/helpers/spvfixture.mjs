@@ -165,6 +165,7 @@ export function serveOffer(net) {
 export function splitSource(live, synthetic, top = 32767) {
   return {
     bodySource: live.bodySource,
+    headerSource: live.headerSource,
     prepare: (h) => synthetic.prepare(h),
     blockAt: (h) => (h <= top ? live.blockAt(h) : synthetic.blockAt(h)),
     prevoutScriptPubkey: async (t, v) => (String(t).toLowerCase() === OFFER.prevout.txid ? live.prevoutScriptPubkey(t, v) : synthetic.prevoutScriptPubkey(t, v)),

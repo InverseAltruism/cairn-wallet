@@ -144,19 +144,22 @@ console.log("the wallet's fclaim-lane preflight (fillOffer) on the same sources:
 
 // Wallet.fillOffer on my fclaim for the real offer. The light client is the split source over a live store source
 // whose RPC is `rpcBase`; the resolver, the coin and the submit route are stubbed. Returns the result and the submits.
-async function walletFill(rpcBase, { unserved, block } = {}) {
+async function walletFill(rpcBase, { unserved, block, switchApiTo } = {}) {
   reset();
   if (unserved) net.unserved = unserved;
   if (block) net.blocks.set(OFFER.height, block);
   const w = new Wallet(memoryStore());
   assert.equal((await w.importKey(meKey, "pw-fillspv-store-1")).addr.toLowerCase(), ME);
+  await w.setApi(API);   // the header source the refusal names is the one the light client reads
   w.nameSpvForTest = splitSource(await liveSpvSource(opts(memStore(), rpcBase)), window);
   const coin = mkCoin(200_000_000);
   const served = { id: OFFER.offerId, seller: OFFER.seller, give: { ticker: "CAIRN", amount: "500000000" }, want: { value: "100000000", payto: OFFER.seller }, status: "open", height: OFFER.height, feeBps: feeBpsAt(OFFER.height), paid: "0", delivered: "0", fclaimId: FCLAIM, fclaimHeight: TIP - 10, fclaimExpiresEpoch: epochOf(TIP - 10) + 2 };
   const submits = [];
   const inner = globalThis.fetch;
+  let switched = false;
   globalThis.fetch = async (url, init) => {
     const u = String(url);
+    if (switchApiTo && !switched && u.endsWith(`/block/height/${OFFER.height}`)) { switched = true; await w.setApi(switchApiTo); }
     if (u.includes("/tx/submit")) { submits.push(u); return Response.json({ ok: true, txid: "0x" + "aa".repeat(32) }); }
     if (/\/cairnx\/offer\//.test(u)) return u.includes("clarvis") || !u.endsWith(FCLAIM) ? new Response("{}", { status: 404 }) : Response.json(served);
     if (/\/utxos\//.test(u)) return Response.json({ confirmed_balance: coin.coin.value, utxos: [coin.coin] });
@@ -167,16 +170,27 @@ async function walletFill(rpcBase, { unserved, block } = {}) {
   };
   try {
     const outputs = [{ to: OFFER.seller, value: 100_000_000 }, { to: "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016", value: 1_000_000 }];
-    return { r: await w.fillOffer({ proposalId: FCLAIM, outputs }), submits };
+    return { r: await w.fillOffer({ proposalId: FCLAIM, outputs }), submits, switched };
   } finally { globalThis.fetch = inner; }
 }
 
-await test("a Local node on another chain: fillOffer refuses RPC_BLOCK_MISMATCH naming the RPC, nothing submitted", async () => {
+await test("a Local node on another chain: fillOffer refuses RPC_BLOCK_MISMATCH naming the RPC and the header source, nothing submitted", async () => {
   const other = { ...JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json", import.meta.url), "utf8")).block, height: OFFER.height };
   const { r, submits } = await walletFill(LOCAL, { block: other });
   assert.equal(r.ok, false);
   assert.equal(r.code, "RPC_BLOCK_MISMATCH", `${r.code}: ${r.error}`);
-  assert.equal(r.error, `refusing to sign: block ${OFFER.height} from ${LOCAL} does not match the block header the wallet verified. If that is your own node, check that it follows the main chain; otherwise try again in a moment.`);
+  assert.equal(r.error, `refusing to sign: block ${OFFER.height} from ${LOCAL} does not match the block header the wallet verified from ${API}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`);
+  assert.equal(submits.length, 0);
+});
+
+await test("the API setting changed while the fill reads the block: the refusal names the header source the fill used", async () => {
+  const other = { ...JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json", import.meta.url), "utf8")).block, height: OFFER.height };
+  const API2 = "https://api2.cairn-substrate.test";
+  const { r, submits, switched } = await walletFill(LOCAL, { block: other, switchApiTo: API2 });
+  assert.ok(switched, "setup: the setting changed during the block read");
+  assert.equal(r.code, "RPC_BLOCK_MISMATCH", `${r.code}: ${r.error}`);
+  assert.ok(r.error.includes(`the block header the wallet verified from ${API}.`), r.error);
+  assert.ok(!r.error.includes(API2), r.error);
   assert.equal(submits.length, 0);
 });
 
@@ -190,6 +204,97 @@ await test("honest path: the canonical body gets past the SPV io to the grant re
   const { r } = await walletFill(LOCAL);
   assert.ok(r.code !== "RPC_BLOCK_MISMATCH" && r.code !== "VERIFY_UNAVAILABLE", `${r.code}: ${r.error}`);
   console.log(`    (the replay refuses on the offer itself: ${r.code}: ${String(r.error).slice(0, 90)})`);
+});
+
+console.log("the wallet's SPV source follows the RPC and API settings in the same session:");
+
+// The Wallet's own spvSource() and spvOpts(), with only the header store and the anchor table replaced (no IndexedDB
+// in this process; the fixture holds the FIX_ANCHORS chunks). Every request URL is logged.
+const OTHER_BODY = () => ({ ...JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json", import.meta.url), "utf8")).block, height: OFFER.height });
+async function settingsWallet() {
+  const w = new Wallet(memoryStore());
+  await w.init();
+  const prodOpts = Object.getPrototypeOf(w).spvOpts;
+  w.spvOpts = function () { return { ...prodOpts.call(this), store: async () => memStore(), anchors: FIX_ANCHORS }; };
+  return w;
+}
+const logged = async (fn, gate = () => null) => {
+  const urls = [], inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { urls.push(String(url)); const g = gate(String(url)); if (g) return g; return inner(url, init); };
+  try { return { out: await fn(), urls }; } finally { globalThis.fetch = inner; }
+};
+// makeFillSpvIo's call shape: the wallet's spvOpts and its shared source (split with the synthetic fclaim window).
+const walletFillIo = async (w) => liveFillSpvSource({
+  ...w.spvOpts(), spvSource: splitSource(await w.spvSource(), window),
+  hints: { offerId: OFFER.offerId, fclaimTxid: FCLAIM, me: ME, offerHeight: OFFER.height },
+});
+
+await test("setRpc to a Local node: the next fill reads the offer block from it and a refusal names it, not the old RPC", async () => {
+  reset();
+  const w = await settingsWallet();
+  const old = (await w.status()).rpc;
+  assert.equal((await w.spvSource()).bodySource, old, "setup: the source reads bodies from the saved RPC");
+  await w.setRpc(LOCAL);
+  net.blocks.set(OFFER.height, OTHER_BODY());
+  const { out: err, urls } = await logged(() => rejects(walletFillIo(w)));
+  assert.equal((await w.spvSource()).bodySource, LOCAL);
+  assert.ok(err?.includes(`block ${OFFER.height} from ${LOCAL} does not match`), err ?? "no refusal");
+  assert.ok(urls.includes(`${LOCAL}/block/height/${OFFER.height}`), "the offer block is read from the Local node");
+  assert.ok(!urls.some((u) => u.startsWith(old)), "nothing is read from the old RPC");
+});
+
+await test("honest path: after setRpc the Local node serving the canonical body proves the offer", async () => {
+  reset();
+  const w = await settingsWallet();
+  await w.spvSource();
+  await w.setRpc(LOCAL);
+  const io = await walletFillIo(w);
+  assert.equal(io.provenTerms.height, OFFER.height);
+  assert.equal(io.provenTerms.value, "100000000");
+});
+
+await test("setApi: headers for a chunk not yet held come from the new API", async () => {
+  reset();
+  const w = await settingsWallet();
+  const oldApi = (await w.status()).api;
+  await w.spvSource();
+  const API2 = "https://api2.cairn-substrate.test";
+  await w.setApi(API2);
+  const { out: hash, urls } = await logged(async () => (await w.spvSource()).hashAt(OFFER.height));
+  assert.equal(hash, OFFER.block.hash);
+  const headerReads = urls.filter((u) => u.includes("/api/headers/"));
+  assert.ok(headerReads.length > 0 && headerReads.every((u) => u.startsWith(`${API2}/api/headers/`)), headerReads.join(" "));
+  assert.ok(!urls.some((u) => u.startsWith(`${oldApi}/api/headers/`)));
+});
+
+await test("an unchanged setting keeps the built source: no rebuild and no request", async () => {
+  reset();
+  const w = await settingsWallet();
+  const before = await w.spvSource();
+  const st = await w.status();
+  const { urls } = await logged(async () => { await w.setRpc(st.rpc); await w.setApi(st.api); });
+  assert.equal(await w.spvSource(), before);
+  assert.deepEqual(urls, []);
+});
+
+await test("a build on the old endpoints that fails after the switch does not drop the source built on the new ones", async () => {
+  reset();
+  const w = await settingsWallet();
+  const { api: oldApi } = await w.status();
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const { out } = await logged(async () => {
+    const oldBuild = w.spvSource().then(() => "built", (e) => String(e?.message ?? e));
+    await w.setRpc(LOCAL);
+    await w.setApi("https://api2.cairn-substrate.test");
+    const freshP = w.spvSource();                    // started on the new endpoints before the old build fails
+    release();
+    const old = await oldBuild, fresh = await freshP;
+    return { old, fresh, after: await w.spvSource() };
+  }, (u) => (u.startsWith(`${oldApi}/api/headers/`) ? held.then(() => new Response("{}", { status: 503 })) : null));
+  assert.notEqual(out.old, "built", "setup: the old build failed");
+  assert.equal(out.fresh.bodySource, LOCAL);
+  assert.equal(out.after, out.fresh, "the failed old build left the new source in place");
 });
 
 console.log(`fillspv-store: ${n} passed, 0 failed`);

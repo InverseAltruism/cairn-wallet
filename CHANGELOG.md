@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Changing the node RPC or the Cairn API in settings now moves name verification and reservation-fill checks
+  started after the change to the new endpoint. Before, they kept reading block bodies and headers from the old
+  one until the extension's background worker restarted, and a block-mismatch refusal named the old RPC (since
+  0.2.74). A check already running when the setting changes finishes on the endpoints it started with, and its
+  name result is not kept for the quick re-check at confirm time; the change also empties that cache.
+- `OFFER_SOURCE_CONFLICT` and `RESERVATION_DENIED` call clarvis "the second source (clarvis)" instead of "the
+  independent second resolver": clarvis has the same operator as the default resolver, as SECURITY.md says. The
+  codes are unchanged.
+- `RPC_BLOCK_MISMATCH` names the RPC and the header source and no longer points only at your own node: a header
+  source that serves a false header with valid proof of work gives the same mismatch. The message reads "refusing
+  to sign: block N from <RPC> does not match the block header the wallet verified from <API>. One of them is
+  wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is
+  your own node and it follows the main chain, the header source may be at fault; otherwise try again in a
+  moment." The code is unchanged.
+- Tests: the approval window sends the "Sign anyway" acknowledgement only from the warning screen, also when the
+  "unknown" result arrives while an older screen of the same request is still shown; the header store migration
+  keeps the old snapshot when the stored head does not read back as written.
+
 ## 0.2.99 (2026-10-18)
 
 - The bundled csd-sdk code is rebuilt from csd-sdk `e25c020` (cairnx-core 0.2.0, csd-codec 0.1.18, csd-light
@@ -29,7 +49,11 @@
   blocks' worth of work and succeeds on every attempt once the front door is controlled (the earlier text said it
   had to run to the chain's real height, about 160 blocks' worth). They describe the reservation verdict above, its
   residual (clarvis down or slow during the attack, or both hosts compromised), and why the header-hash comparison
-  first proposed was not built (it misses every fill at claim depth 3 to 6).
+  first proposed was not built (it misses every fill at claim depth 3 to 6). Correction made on 2026-10-19, after the
+  v0.2.99 tag (the release is unchanged): SECURITY.md and the design note as released list one more residual, a
+  front door that withholds or delays the buyer's reservation (it relays the buyer's submits) while clarvis has not
+  yet replayed it, and say that against a header-source attacker the "no record of your reservation" warning is
+  advisory, because that attacker serves the headers that prove the reservation's height.
 - The two `RATE_LIMITED` messages for a full approval queue use a semicolon instead of a dash: "too many pending
   requests from this site; approve or reject the queued ones first" and "too many pending wallet requests; approve
   or reject the queued ones first". The code is unchanged.
@@ -65,7 +89,10 @@
   yet included" until it is seen in a block; after 10 blocks it reads "still not included after 10 blocks; check
   the explorer before sending again", and a send whose coins another mined transaction spent reads "not included:
   its coins were spent by another transaction; check the explorer before sending again". The wallet does not
-  resend on its own. A merge reads "merge sent (txid); confirming" instead of claiming it completed, and a merge
+  resend on its own. Correction made on 2026-10-19, after the v0.2.99 tag (the release is unchanged): the "spent by
+  another transaction" marker is not always available. It needs the RPC to report the transaction definitely not
+  mined and not pending; the Cairn proxy (`/api/rpc/tx/:id/status`) reports that only when both of its node
+  backends answered their mempool reads in full, so with a backend down the row keeps the 10-block notice instead. A merge reads "merge sent (txid); confirming" instead of claiming it completed, and a merge
   still pending after 10 blocks says so.
 - Approval window: after an idle auto-lock and unlock, a token quote or balance read started before the lock no
   longer lands on the repainted screen. Approve now waits for the repaint's own quote, and the balance line and

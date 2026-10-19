@@ -202,6 +202,11 @@ export class Wallet {
   private nameHints = new Map<string, HintSetEntry>();
   /** Test seam: inject a synthetic SpvSource (hashAt / confirm skip). */
   nameSpvForTest?: SpvSource;
+  /** Test seam: replaces liveSpvSource as the singleton's builder (the singleton and the setters stay real). */
+  spvBuildForTest?: (opts: LiveSpvOpts) => Promise<SpvSource>;
+  // Bumped on every endpoint change. A name verification or confirm that started under an older value is
+  // superseded: it may finish, but it never writes or reads the hint-set cache.
+  private spvGen = 0;
   /** Test seam: inspect / seed the hint-set cache. */
   nameHintCacheForTest(): Map<string, HintSetEntry> { return this.nameHints; }
   // `session` is chrome.storage.session (in-RAM) when running as an extension, else null. It lets the
@@ -245,8 +250,11 @@ export class Wallet {
     this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
-  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); this.rpc = u; await this.store.set("rpc", u); }
-  async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); this.api = u; await this.store.set("api", u); }
+  // The SPV source reads block bodies from `rpc` and headers from `api`, so a changed endpoint drops it, and the
+  // hint-set cache, whose header hashes came from it.
+  async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this.endpointChanged(); this.rpc = u; await this.store.set("rpc", u); }
+  async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); if (u !== this.api) this.endpointChanged(); this.api = u; await this.store.set("api", u); }
+  private endpointChanged(): void { this._spvSrc = null; this.spvGen++; this.nameHints.clear(); }
   async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
@@ -966,11 +974,12 @@ export class Wallet {
     try {
       io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
     } catch (e) {
-      // A body that contradicts its verified header comes from the configured RPC (for example a local node on
-      // another chain); a retry does not help that case, so it is named. Every other failure here is a read that
-      // could not complete (no tip, a missing chunk, a timeout) and is retryable.
+      // A body that contradicts its verified header means the configured RPC (for example a local node on another
+      // chain) or the header source (a false header with valid PoW) is wrong; the refusal names both and blames
+      // neither. Every other failure here is a read that could not complete (no tip, a missing chunk, a timeout)
+      // and is retryable.
       if (e instanceof BodyMismatchError && e.bodySource)
-        return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified. If that is your own node, check that it follows the main chain; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
+        return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified${e.headerSource ? ` from ${e.headerSource}` : ""}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
       return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     }
     // myLiveHoldsAtGrant is COMPUTED by the SPV source: a CONSERVATIVE OVER-count of my OTHER-offer fclaim holds
@@ -1030,11 +1039,11 @@ export class Wallet {
     const fcEv = await io.provenEvent(fclaimTxid).catch(() => null);
     const ownHoldEnd = fcEv && fcEv.kind === "propose" ? fclaimHoldEnd(fcEv.expiresEpoch) : undefined;
     const conflict = secondSourceOfferConflict(offer, okBody(second.offer.answer()), { offerId, fclaimTxid, ownHoldEnd }); // MUTATE_OFFER_XCHECK
-    if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the independent second resolver reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
+    if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the second source (clarvis) reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
     // A header source that hides a competing hold placed just before our fclaim makes the scan grant it while the
     // chain denies it. The second resolver's replay of the real chain shows the denial.
     const rv = reservationRecordVerdict(second.record.answer(), { fclaimTxid, provenHeight: fcEv?.height });
-    if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the independent second resolver reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
+    if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
     // "unknown" goes back to the approval window as a confirm step; the user's acknowledgement for this fclaim signs.
     if (rv?.kind === "unknown" && typeof fcEv?.height === "number" && String(reservationAck ?? "").toLowerCase() !== fclaimTxid.toLowerCase()) // MUTATE_RESERVATION_CONFIRM
       return { ...refuse("RESERVATION_UNCONFIRMED", `the second source has read the chain to block ${rv.tipHeight} and has no record of your reservation (block ${fcEv.height}); confirm in the approval window to sign anyway`), unconfirmed: { fclaimTxid: fclaimTxid.toLowerCase(), fclaimHeight: fcEv.height, tipHeight: rv.tipHeight } };
@@ -1459,8 +1468,10 @@ export class Wallet {
       // Cross-check the user's configured primary resolver against the independent clarvis second source
       // (NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion fetches name-history from each, unions the
       // SPV-verified events, and resolves to the chain-proven winner — defeating a withholding resolver.
-      const res = await verifyNameUnion(nm, this.nameSources(), await this.spvSource());
-      try { await this.rememberHintSet(nm, res); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
+      const gen = this.spvGen;
+      const src = await this.spvSource();
+      const res = await verifyNameUnion(nm, this.nameSources(), src);
+      try { await this.rememberHintSet(nm, res, src, gen); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
       return { ...res, name: nm };
     } catch (e) {
       return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm };
@@ -1484,12 +1495,13 @@ export class Wallet {
     return [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
   }
 
-  private async rememberHintSet(nm: string, res: NameVerification): Promise<void> {
+  // `src` and `gen` are the ones `res` was verified with: the cached hashes come from that source, and a
+  // verification superseded by an endpoint change caches nothing.
+  private async rememberHintSet(nm: string, res: NameVerification, src: SpvSource, gen: number): Promise<void> {
     // Advisor 2.4: cache ONLY a clean union success. Never M12 recovered / soleSource / viaFill / lapse.
     if (!res.verified || !res.addr || res.recovered || res.soleSource || res.viaFill || res.lapsed === true) return;
     const pairs = res.hintPairs && res.hintPairs.length ? sortHintPairs(res.hintPairs) : null;
     if (!pairs || !pairs.length) return;
-    const src = await this.spvSource();
     if (!src.hashAt) return;
     const hashes: Record<number, string> = {};
     for (const p of pairs) {
@@ -1498,7 +1510,7 @@ export class Wallet {
       hashes[p.height] = h.toLowerCase();
     }
     const tip = await this.tip();
-    if (tip == null || !Number.isFinite(tip)) return;
+    if (tip == null || !Number.isFinite(tip) || gen !== this.spvGen) return;
     this.nameHints.set(nm, {
       name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
       ts: Date.now(), epoch: Math.floor(tip / EPOCH_LEN),
@@ -1506,6 +1518,7 @@ export class Wallet {
   }
 
   private async tryConfirmHintSet(nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
+    const gen = this.spvGen;
     const cache = this.nameHints.get(nm);
     if (!cache) return null;
     const bundle = await fetchNameUnion(nm, this.nameSources());
@@ -1523,7 +1536,7 @@ export class Wallet {
       epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
       hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,
     });
-    if (!verdict.skip) return null;
+    if (!verdict.skip || gen !== this.spvGen) return null;
     return {
       ok: true, name: nm, addr: cache.addr, via: cache.via, owner: cache.owner, lapsed: false,
       verified: true, depth: cache.depth, sources: verdict.sources, disagree: verdict.disagree,
@@ -1546,12 +1559,14 @@ export class Wallet {
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
     };
   }
-  // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure.
+  // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after
+  // setRpc/setApi change an endpoint; a failed build clears only itself, never a newer one.
   private _spvSrc: Promise<SpvSource> | null = null;
   private spvSource(): Promise<SpvSource> {
     if (this.nameSpvForTest) return Promise.resolve(this.nameSpvForTest);
     if (!this._spvSrc) {
-      this._spvSrc = liveSpvSource(this.spvOpts()).catch((e) => { this._spvSrc = null; throw e; });
+      const built: Promise<SpvSource> = (this.spvBuildForTest ?? liveSpvSource)(this.spvOpts()).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
+      this._spvSrc = built;
     }
     return this._spvSrc;
   }

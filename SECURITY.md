@@ -37,13 +37,19 @@ rejected transaction or a misleading display, not a key or fund compromise). If 
 for your threat model, point the wallet at your own node (`http://127.0.0.1:8789`) instead of
 the public proxy. Block headers still come from the Cairn API (`/api/headers`) and block bodies
 from the node, so a node that follows another chain fails the merkle check and nothing is signed
-on its blocks: a reservation fill refuses with `RPC_BLOCK_MISMATCH`, naming the block and the RPC;
-an offer-id fill refuses as `VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified.
+on its blocks: a reservation fill refuses with `RPC_BLOCK_MISMATCH`, naming the block, the RPC and
+the header source (a header source that serves a false header with valid proof of work gives the
+same mismatch, so the message does not blame the node); an offer-id fill refuses as
+`VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified.
 
 The Activity markers for a transaction not yet seen as included come from that same RPC (its tip,
 whether it reports the transaction mined, and its mined coin set), so a lying RPC can show a transaction
 that was mined as "not included: its coins were spent by another transaction". The wallet signs and sends
-nothing because of a marker, and the marker says to check the explorer before sending again.
+nothing because of a marker, and the marker says to check the explorer before sending again. That marker needs
+the RPC to report the transaction definitely not mined and not pending: the Cairn proxy
+(`/api/rpc/tx/:id/status`) reports that only when both of its node backends answered their mempool reads in
+full, so with a backend down a row keeps the 10-block notice instead; a node on this computer reports it when its
+own transaction scan was complete (it has no mempool view to add).
 
 ### Sending to a `.csd` name
 

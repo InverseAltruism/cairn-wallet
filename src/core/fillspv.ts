@@ -88,7 +88,7 @@ async function bindBlock(spv: SpvSource, height: number): Promise<{ ids: string[
   if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length)
     throw new Error(`block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)`);
   if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase())
-    throw new BodyMismatchError(height, spv.bodySource);
+    throw new BodyMismatchError(height, spv.bodySource, spv.headerSource);
   return { ids, rebuilt };
 }
 
