@@ -30,8 +30,9 @@ through:** a missing tool never blocks your workflow.
 
 ## CI
 
-Run a full-history scan in CI with the same config:
+The `secrets` job in `.github/workflows/ci.yml` runs the same config over the full history of every ref on each
+push and pull request (gitleaks 8.18.4, the release tarball checked against its sha256). The same scan locally:
 
 ```bash
-gitleaks detect --source . -c .gitleaks.toml --redact
+gitleaks detect --no-banner --redact -c .gitleaks.toml --log-opts="--full-history --all --diff-merges=first-parent"
 ```
