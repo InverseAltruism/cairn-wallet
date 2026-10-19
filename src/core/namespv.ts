@@ -36,6 +36,7 @@ import { parseSpvJson } from "./node.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
+import { readPin, walkToPin, type PinSlot, type SpvPin } from "./spvpin.js";
 
 
 export interface NameVerification {
@@ -477,6 +478,8 @@ export interface LiveSpvOpts {
   // name-resolve path — off the send hot path; a write failure is swallowed (the floor just degrades to
   // within-session, the prior behaviour).
   floor?: { get(): Promise<number | null>; set(v: number): Promise<void> };
+  /** The session pin (chrome.storage.session); without it a restore runs every consensus check. */
+  pin?: PinSlot;
 }
 
 // M9 (B5a): the lapse-floor advance rule, ONE pure function so the clamp and its use-site cannot drift.
@@ -577,8 +580,8 @@ export function reseedAdopts(current: { chainwork: bigint }, fresh: { chainwork:
   return fresh.chainwork > current.chainwork;
 }
 
-/** The record at `h` of a verified chunk, its hash (the next record's prev, or the chunk's baked top hash) and merkle root. */
-function chunkHeader(records: Uint8Array, spec: ChunkSpec, h: number): { hash: string; merkle: string } {
+/** The record at `h` of verified records, its hash (the next record's prev, or `lastHash` for the last) and merkle root. */
+function chunkHeader(records: Uint8Array, spec: Pick<ChunkSpec, "firstHeight" | "lastHash">, h: number): { hash: string; merkle: string } {
   const i = h - spec.firstHeight;
   const n = records.length / HB;
   const merkle = deserializeHeader(records.subarray(i * HB, (i + 1) * HB)).merkle;
@@ -759,10 +762,30 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     try { fromLegacy = legacy.records(storedTip + 1, legacy.top); }
     catch (e) { console.warn("[namespv] legacy header snapshot suffix unreadable; the sync refetches it:", e); }
   }
-  const restored = await LightClient.fromRecords(
-    concatBytes([anchor.subarray(anchor.length - SEED * HB), storedSuffix, fromLegacy]),
-    { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts);
+  // A worker restart in a browser session that already verified the stored suffix walks it to the session pin and
+  // seeds the light client at the pin; anything stored above the pin is ingested with every check.
+  const pin = opts.pin && !fromLegacy.length ? await readPin(opts.pin) : null;
+  const pinned = !!pin && pin.tip - newest >= SEED && pin.tip <= storedTip && await walkToPin(storedSuffix, newest, pin, SPV_CHECKPOINTS, yieldTask);
+  const pinBase = pin && pinned ? pin.tip - SEED + 1 : newest - SEED + 1;
+  const restored = pin && pinned
+    ? await LightClient.fromRecords(storedSuffix.subarray((pinBase - newest - 1) * HB), { firstHeight: pinBase, anchorHeight: pin.tip },
+      { ...lcOpts, checkpoints: { ...SPV_CHECKPOINTS, [pin.tip]: pin.hash } })
+    : await LightClient.fromRecords(
+      concatBytes([anchor.subarray(anchor.length - SEED * HB), storedSuffix, fromLegacy]),
+      { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts);
   let LC = restored.client;
+  // The walked records below a pin-seeded client (heights newest + 1 to LC.baseHeight - 1), and the work they and
+  // the anchor seed carry, so heldWork() compares with a client seeded from the anchor. Both empty otherwise.
+  let walked: Uint8Array = pin && pinned ? storedSuffix.subarray(0, (pinBase - newest - 1) * HB) : new Uint8Array(0);
+  let workBase = pin && pinned ? BigInt(pin.work) - LC.chain[pin.tip - LC.baseHeight]!.chainwork : 0n;
+  const heldWork = () => ({ chainwork: LC.chainwork + workBase });
+  // The pin may run ahead of a detached store write; a store that does not walk to it gets the full restore.
+  const writePin = (tip: number) => {
+    const vh = LC.chain[tip - LC.baseHeight];
+    if (!opts.pin || !vh || tip - newest < SEED || (pin && pin.tip === tip && pin.hash === String(vh.hash).toLowerCase())) return;
+    const next: SpvPin = { v: 1, newest, tip, hash: String(vh.hash).toLowerCase(), work: (vh.chainwork + workBase).toString() };
+    opts.pin.set(next).catch((e) => console.warn("[namespv] session pin not saved:", e));
+  };
   // The highest height whose stored record equals the light client's. A record that failed for any reason
   // but the clock is rewritten or deleted by the next persist; a clock fault leaves the store as it is.
   let persistedTip = Math.min(storedTip, tipOf(LC));
@@ -778,13 +801,15 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     const tip = tipOf(LC);
     if (!store || tip <= persistedTip) return null;
     const lo = Math.max(chunkOf(persistedTip + 1) * SPV_CHUNK, newest + 1);
-    const recs = LC.toRecords(lo);
+    const own = LC.toRecords(Math.max(lo, LC.baseHeight));
+    const recs = lo >= LC.baseHeight ? own : concatBytes([walked.subarray((lo - newest - 1) * HB), own]);
     const put: { k: number; records: Uint8Array }[] = [];
     for (let k = chunkOf(lo); k <= chunkOf(tip); k++) {
       const a = Math.max(k * SPV_CHUNK, lo), b = Math.min(k * SPV_CHUNK + SPV_CHUNK - 1, tip);
       put.push({ k, records: recs.subarray((a - lo) * HB, (b - lo + 1) * HB) });
     }
     persistedTip = tip;
+    writePin(tip);
     return { put, deleteAbove: chunkOf(tip), head: { v: 2, tip, tipHash: String(LC.chain[LC.chain.length - 1]!.hash).toLowerCase() } };
   };
   const persist = () => { const w = suffixWrite(); if (w) detachStoreWrite(store!, w); };
@@ -813,6 +838,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     }
   }
 
+  if (!legacy) writePin(persistedTip);
+
   // Seeds a fresh client from the anchor chunk held in memory: no request, every pin enforced by seedTrusted.
   const seedFromAnchor = async () => (await LightClient.fromRecords(anchor.subarray(anchor.length - SEED * HB), { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts)).client;
 
@@ -820,6 +847,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const headerAt = async (h: number): Promise<{ hash: string; merkle: string } | null> => {
     if (!Number.isSafeInteger(h) || h < SPV_FLOOR.height) return null;
     if (h > newest) {
+      if (h < LC.baseHeight) return chunkHeader(walked, { firstHeight: newest + 1, lastHash: String(LC.chain[0]!.header.prev) }, h);
       const vh = LC.chain[h - LC.baseHeight];
       return vh ? { hash: String(vh.hash).toLowerCase(), merkle: String(vh.header.merkle) } : null;
     }
@@ -871,7 +899,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
             // `want` can sit far below the node tip (a name's record height plus the cushion), where an honest
             // winning branch may still hold less work than the held branch has at its tip; the comparison is
             // made at the node tip in that case, so the refusal below is never an artefact of a low `want`.
-            if (!reseedAdopts(LC, fresh) && tipKnown && nodeTip > tipOf(fresh)) await syncAligned(fresh, nodeTip); // MUTATE_RESEED_TO_TIP
+            if (!reseedAdopts(heldWork(), fresh) && tipKnown && nodeTip > tipOf(fresh)) await syncAligned(fresh, nodeTip); // MUTATE_RESEED_TO_TIP
           } catch (e2) {
             const m2 = String((e2 as Error)?.message || e2);
             if (CLOCK_FAULT.test(m2)) throw clockRefusal(m2);
@@ -885,8 +913,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           }
           // A valid chain with no more work than the one held (a fork decayed to low difficulty with spread
           // timestamps) is not adopted; the held chain and its stored suffix stay.
-          if (!reseedAdopts(LC, fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC)); // MUTATE_RESEED_WORK
+          if (!reseedAdopts(heldWork(), fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC)); // MUTATE_RESEED_WORK
           LC = fresh;
+          walked = new Uint8Array(0);
+          workBase = 0n;
           persistedTip = newest;
         }
         persist();

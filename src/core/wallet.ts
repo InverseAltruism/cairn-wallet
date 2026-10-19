@@ -13,6 +13,7 @@ import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNE
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
 import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, BodyMismatchError, type LiveSpvOpts, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -1545,8 +1546,10 @@ export class Wallet {
   }
 
   // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates
-  // and then deletes, and (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts.
+  // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, and the
+  // session pin in chrome.storage.session that lets a worker restart walk the stored suffix instead of re-verifying it.
   private spvOpts(): LiveSpvOpts {
+    const session = this.session;
     return {
       rpcBase: this.rpc, headersBase: this.api,
       store: () => openHeaderStore(),
@@ -1557,6 +1560,7 @@ export class Wallet {
         attempts: { get: async () => Number(await this.store.get("spvMigrateAttempts")) || 0, set: (n) => (n ? this.store.set("spvMigrateAttempts", n) : this.store.del("spvMigrateAttempts")) },
       },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
+      ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => session.set("spvPin", p) } } : {}),
     };
   }
   // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after

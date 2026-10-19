@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { checker } from "./helpers/check.mjs";
-import { serveFixture, records, hashOf, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
+import { serveFixture, records, hashOf, headerOf, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 import { findChromium } from "../scripts/playwright-core.mjs";
 
 const chromium = await findChromium();
@@ -40,16 +40,20 @@ const ORIGIN = "https://spv.test";
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 
 // Wallet.spvOpts() inside the page: the real openHeaderStore(), the chrome.storage keys as in-page doubles.
-async function session({ maxEventHeight, anchors }) {
+async function session({ maxEventHeight, anchors, pinned, clockMs }) {
+  // A clock behind the suffix fails a full restore on the drift bound; the walk to the pin does not re-check it.
+  if (clockMs) Date.now = () => clockMs;
   const legacy = { get: async () => null, del: async () => {}, bytes: async () => null, attempts: { get: async () => 0, set: async () => {} } };
   const floor = { get: async () => 0, set: async () => {} };
-  const src = await NS.liveSpvSource({ rpcBase: location.origin + "/api/rpc", headersBase: location.origin, anchors, store: () => NS.openHeaderStore(), legacy, floor });
+  // The session pin over the tab's sessionStorage, which a reload keeps (chrome.storage.session in the extension).
+  const pin = pinned ? { get: async () => JSON.parse(sessionStorage.getItem("spvPin") ?? "null"), set: async (p) => sessionStorage.setItem("spvPin", JSON.stringify(p)) } : undefined;
+  const src = await NS.liveSpvSource({ rpcBase: location.origin + "/api/rpc", headersBase: location.origin, anchors, store: () => NS.openHeaderStore(), legacy, floor, ...(pin ? { pin } : {}) });
   const p = await src.prepare(maxEventHeight);
   await NS.flushSpvStoreWrites();
   const s = await NS.openHeaderStore();
   const hex = async (u8) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", u8))].map((x) => x.toString(16).padStart(2, "0")).join("");
   const c27 = await s.getChunk(27), c28 = await s.getChunk(28);
-  const out = { tip: p.verifiedTip, keys: await s.listChunks(), head: await s.getHead(), h27: c27 && await hex(c27), h28: c28 && await hex(c28), hash: await src.hashAt(115000) };
+  const out = { tip: p.verifiedTip, keys: await s.listChunks(), head: await s.getHead(), h27: c27 && await hex(c27), h28: c28 && await hex(c28), hash: await src.hashAt(115000), pin: pinned ? JSON.parse(sessionStorage.getItem("spvPin") ?? "null") : null };
   s.close();
   return out;
 }
@@ -79,6 +83,18 @@ try {
   const second = await run({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS] });
   t.check(`after a reload a new build restores from IndexedDB with zero /api/headers requests (${net.log.length}) and the same tip (${second.tip})`, net.log.length === 0 && second.tip === FIX_TOP && second.hash === hashOf(115000));
   t.check("  and the store is unchanged", second.keys.join() === "27,28" && second.head?.tip === FIX_TOP && second.h27 === first.h27 && second.h28 === first.h28);
+  // The session pin: a build with a pin slot writes it, and the build after a reload restores by the walk to it.
+  await page.reload();
+  const pinFirst = await run({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS], pinned: true });
+  t.check(`a build with a pin slot writes the session pin at the verified tip (${pinFirst.pin?.tip})`, pinFirst.pin?.tip === FIX_TOP && pinFirst.pin.hash === hashOf(FIX_TOP) && pinFirst.pin.newest === NEWEST);
+  net.log.length = 0;
+  await page.reload();
+  const clockMs = (Number(headerOf(NEWEST + 1).time) - 3 * 3600) * 1000;
+  const pinned = await run({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS], pinned: true, clockMs });
+  t.check(`  after a reload, with the clock behind the suffix, the build walks the IndexedDB records to the pin: zero requests (${net.log.length}), tip ${pinned.tip}, the real hash at 115,000`, net.log.length === 0 && pinned.tip === FIX_TOP && pinned.hash === hashOf(115000) && pinned.h28 === first.h28);
+  await page.reload();
+  const unpinned = await run({ maxEventHeight: FIX_TOP - 12, anchors: [...FIX_ANCHORS], clockMs }).then(() => null, (e) => String(e?.message ?? e));
+  t.check(`  control: the same clock without the pin runs the full restore and refuses (${String(unpinned).slice(0, 60)})`, /dated more than 2 hours ahead/.test(unpinned ?? ""));
 } catch (e) {
   t.check(`the Chrome session ran (${String(e?.message ?? e).split("\n")[0]})`, false);
 } finally {

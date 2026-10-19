@@ -148,7 +148,7 @@ await test("honest path: with no extra work on the held branch the reseed adopts
 await test("use-site: prepare's reseed adopts the fresh client only through reseedAdopts, before `LC = fresh`", async () => {
   const src = readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8");
   const prep = src.slice(src.indexOf("async prepare(maxEventHeight"), src.indexOf("async blockAt(", src.indexOf("async prepare(maxEventHeight")));
-  const guard = prep.indexOf("if (!reseedAdopts(LC, fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC));");
+  const guard = prep.indexOf("if (!reseedAdopts(heldWork(), fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC));");
   const adopt = prep.indexOf("LC = fresh;");
   const freshSync = prep.indexOf("await syncAligned(fresh, want);");
   assert.ok(guard > 0, "the reseed compares work through reseedAdopts");

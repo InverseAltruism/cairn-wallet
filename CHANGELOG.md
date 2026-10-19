@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A background-worker restart (Chrome stops an idle worker after about 30 seconds) no longer re-runs every
+  consensus check on the stored block headers when the same browser session already checked them: the wallet
+  keeps the hash of the newest checked header in session storage (memory only, cleared when the browser closes)
+  and confirms that the stored headers hash-chain from the release's newest built-in hash to it. With a release
+  table about 90 days old (64,359 stored headers), the first name verification after a restart took 2.4 to 2.9 s
+  instead of 8.7 to 11.6 s at a 4x CPU slowdown. The first start after the browser opens still runs every check,
+  and a stored header that was changed fails the hash chain and gets the full checks.
 - Changing the node RPC or the Cairn API in settings now moves name verification and reservation-fill checks
   started after the change to the new endpoint. Before, they kept reading block bodies and headers from the old
   one until the extension's background worker restarted, and a block-mismatch refusal named the old RPC (since
