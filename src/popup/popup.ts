@@ -1,7 +1,6 @@
 // Popup UI controller. In the extension it messages the background service worker
 // (which owns the keys); standalone (dev/E2E, no chrome.*) it drives a local Wallet
 // against localStorage so the exact UI flows can be tested in a real browser.
-import type { Wallet } from "../core/wallet.js";
 import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
 import { INCLUSION_NOTICE_BLOCKS, inclusionMark } from "../core/inclusion.js";
 import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";

@@ -7,9 +7,9 @@
 // prevScriptPubkey (H3 scriptSig-substitution) and expiresEpoch; source() takes optional tamperMerkle /
 // verifiedTip / nodeTip (merkle-tamper and tip-deflation scenarios). The prevout-ownership registry is
 // module-scoped — each tsx test file is its own process, so the registry is naturally isolated per file.
-import { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { TREASURY_ADDR } from "../src/core/cairnx.js";
 import { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.js";
-import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, resolve, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
+import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
 
 // Re-export the building blocks so a test imports its whole rig surface from here (one import line).
 export { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.js";

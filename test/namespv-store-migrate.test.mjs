@@ -15,7 +15,7 @@
 // Run: npx tsx test/namespv-store-migrate.test.mjs   (offline)
 import { liveSpvSource, flushSpvStoreWrites, LEGACY_MAX_BYTES } from "../src/core/namespv.ts";
 import { checker } from "./helpers/check.mjs";
-import { records, hashOf, headerOf, v1Snapshot, serveFixture, memStore, legacyOf, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
+import { records, hashOf, v1Snapshot, serveFixture, memStore, legacyOf, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 
 const t = checker("namespv-store-migrate");
 const HB = 84;
