@@ -32,6 +32,9 @@ jobs:
       - run: npm run typecheck
       # biome.json: unused imports, focused tests and @ts-ignore fail the step; empty blocks are warnings for now.
       - run: npm run lint
+      # No em dash in a tracked .md outside docs/archive/; no tracked code reading a sibling checkout outside the
+      # exceptions listed in the script.
+      - run: npm run check:dashes-paths
       - run: npm test
       - run: npm run build
       # Vendor-freshness gate (cheap path): verifies the committed SPV bundle's sha256 == PROVENANCE.json and
