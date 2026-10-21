@@ -19,6 +19,7 @@ import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from
 import { refuse } from "./refuse.js";
 import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
+import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, CLARVIS_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
 import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
@@ -70,20 +71,6 @@ interface VaultDoc { v: 1 | 2; mnemonic?: string; nextIndex?: number; accounts: 
 // The in-memory unlocked state a vault doc is built from.
 interface VaultState { mnemonic: string | null; nextIndex: number; accts: Acct[] | null; active: number }
 
-const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
-const DEFAULT_API = "https://cairn-substrate.com";
-// Public CairnX read API (resolved token/name state). READ-ONLY convenience: balances and
-// names shown in the popup come from here, but every record the wallet SIGNS is built
-// locally (core/cairnx.ts); a hostile API can at worst show wrong numbers, never change
-// what a signature commits to.
-const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
-// SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
-// node→indexer→cairnx (0 non-local sockets), so unioning its name-history with the primary's defeats a
-// withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the SAME event). It has the
-// default primary's operator, so it is not independent of it: that operator, or whoever controls both hosts,
-// can make both withhold (SECURITY.md). Fail-soft: if clarvis is unreachable the verify falls back to
-// single-source (with caution).
-const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 // Abort bound for the fclaim-lane second-source reads (offer and reservation record). The fill does not wait on
 // them: an answer is used only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in
 // test/fill-offer-crosscheck and test/fill-reservation-verdict).
@@ -106,32 +93,6 @@ export type TokenFillQuote = {
   // 0.2.71, display only (never bound): decimals and deploy ids for human units and the ticker warning
   wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string;
 };
-
-// L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
-// loopback http for local dev) with NO embedded credentials; otherwise `setRpc("https://user:pass@evil")`
-// or a plain-http remote could exfiltrate via the userinfo or be trivially MITM'd. The wallet still treats
-// any custom RPC as UNTRUSTED (TXB-1 verifies values; namespv SPV-verifies names); this just blocks the
-// obviously-unsafe URL shapes before they're stored/used.
-function validRpcUrl(u: string): boolean {
-  let x: URL;
-  try { x = new URL(String(u)); } catch { return false; }
-  if (x.username || x.password) return false;                 // reject https://user:pass@host credential leak
-  if (x.protocol === "https:") return true;
-  if (x.protocol === "http:" && (x.hostname === "127.0.0.1" || x.hostname === "localhost")) return true; // loopback dev only
-  return false;
-}
-const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for dev), with no embedded credentials";
-// The node RPC is the Cairn proxy or a node on this computer: the manifest grants host access to nothing
-// else, so a remote RPC could not be reached (remote RPCs are a future option). Ports are free.
-export function rpcAllowed(u: string): boolean {
-  if (u === DEFAULT_RPC) return true;
-  let x: URL;
-  try { x = new URL(String(u)); } catch { return false; }
-  if (x.username || x.password) return false;
-  if (x.protocol === "http:") return x.hostname === "127.0.0.1" || x.hostname === "localhost";
-  return x.protocol === "https:" && x.hostname === "localhost";
-}
-const RPC_LOCAL_ERR = "RPC must be the Cairn proxy or a node on this computer (http://127.0.0.1:<port> or http://localhost:<port>)";
 
 // Per-account storage namespaces; keep each account's activity + secrets separate.
 const histKey = (addr: string) => "txHistory:" + addr;
