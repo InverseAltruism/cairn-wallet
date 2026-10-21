@@ -16,13 +16,11 @@
 // (outputs:[]) submits (that last one is also covered by fill-token-content.test.mjs).
 //
 // Run: node --import tsx test/fill-score-guard.test.mjs   (offline)
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import path from "node:path";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { mkCoin, txReply } from "./_coin.js";
+import { withWalletMutant } from "./helpers/mutant.mjs";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -138,17 +136,7 @@ console.log("\nPAIRED HAPPY-PATH (honest fills still submit):");
 
 // ── RED-FIRST: source-line removal of each guard's marker makes the matching attack SUBMIT. ──
 console.log("\nMUTATION (each guard is the sole rejecter):");
-const here = path.dirname(fileURLToPath(import.meta.url));
-const WSRC = path.join(here, "..", "src", "core", "wallet.ts");
-async function withGuardRemoved(marker, run) {
-  const lines = readFileSync(WSRC, "utf8").split("\n");
-  const kept = lines.filter((l) => !l.includes(marker));
-  if (kept.length !== lines.length - 1) throw new Error(`marker ${marker} must match exactly one line (matched ${lines.length - kept.length})`);
-  const tmp = path.join(here, "..", "src", "core", `__mutant_scoreguard_${Date.now()}.ts`);
-  writeFileSync(tmp, kept.join("\n"));
-  try { return await run(await import(pathToFileURL(tmp).href)); }
-  finally { unlinkSync(tmp); }
-}
+const withGuardRemoved = withWalletMutant;
 {
   const mut = await withGuardRemoved("MUTATE_SCORE_GUARD", async (mod) => {
     const { w, addr, s } = await freshWallet("pw-scoremut-123", mod.Wallet);

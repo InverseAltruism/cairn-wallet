@@ -15,9 +15,6 @@
 // comparison covered is refused by the merkle-proven bind; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
 // ACCEPTED, adding a 3rd FLIPS to REFUSED, never hardcoded 0). The denied-fclaim guard is MUTATION-VERIFIED
 // (removed from the wallet source, the same forgery then SUBMITS, proving the guard is the sole rejecter).
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import path from "node:path";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
@@ -28,6 +25,7 @@ import {
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
+import { withWalletMutant } from "./helpers/mutant.mjs";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -719,18 +717,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 }
 
 // 7. MUTATION VERIFICATION: remove the wallet's denied-fclaim guard from the SOURCE; the same forgery then SUBMITS.
-const here = path.dirname(fileURLToPath(import.meta.url));
-const WSRC = path.join(here, "..", "src", "core", "wallet.ts");
-async function withGuardRemoved(marker, run) {
-  const src = readFileSync(WSRC, "utf8");
-  const lines = src.split("\n");
-  const kept = lines.filter((l) => !l.includes(marker));
-  if (kept.length !== lines.length - 1) throw new Error(`mutation marker ${marker} must match exactly one line (matched ${lines.length - kept.length})`);
-  const tmp = path.join(here, "..", "src", "core", `__mutant_wallet_${Date.now()}.ts`);
-  writeFileSync(tmp, kept.join("\n"));
-  try { return await run(await import(pathToFileURL(tmp).href)); }
-  finally { unlinkSync(tmp); }
-}
+const withGuardRemoved = withWalletMutant;
 
 const mut = await withGuardRemoved("MUTATE_FCLAIM_GUARD", async (mod) => {
   const wm = new mod.Wallet(memoryStore());
