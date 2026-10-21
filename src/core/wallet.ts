@@ -57,7 +57,7 @@ import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 export interface PubAcct { addr: string; label: string; imported?: boolean }
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean; rpcMovedFrom: string | null }
 
-// An in-memory account: its key + label, plus how it was created — `index` is its
+// An in-memory account: its key + label, plus how it was created; `index` is its
 // BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
 // NOT recoverable from the seed phrase.
 type Acct = Account & { label: string; index?: number; imported?: boolean };
@@ -74,7 +74,7 @@ const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
 const DEFAULT_API = "https://cairn-substrate.com";
 // Public CairnX read API (resolved token/name state). READ-ONLY convenience: balances and
 // names shown in the popup come from here, but every record the wallet SIGNS is built
-// locally (core/cairnx.ts) — a hostile API can at worst show wrong numbers, never change
+// locally (core/cairnx.ts); a hostile API can at worst show wrong numbers, never change
 // what a signature commits to.
 const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
 // SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
@@ -108,9 +108,9 @@ export type TokenFillQuote = {
 };
 
 // L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
-// loopback http for local dev) with NO embedded credentials — otherwise `setRpc("https://user:pass@evil")`
+// loopback http for local dev) with NO embedded credentials; otherwise `setRpc("https://user:pass@evil")`
 // or a plain-http remote could exfiltrate via the userinfo or be trivially MITM'd. The wallet still treats
-// any custom RPC as UNTRUSTED (TXB-1 verifies values; namespv SPV-verifies names) — this just blocks the
+// any custom RPC as UNTRUSTED (TXB-1 verifies values; namespv SPV-verifies names); this just blocks the
 // obviously-unsafe URL shapes before they're stored/used.
 function validRpcUrl(u: string): boolean {
   let x: URL;
@@ -133,7 +133,7 @@ export function rpcAllowed(u: string): boolean {
 }
 const RPC_LOCAL_ERR = "RPC must be the Cairn proxy or a node on this computer (http://127.0.0.1:<port> or http://localhost:<port>)";
 
-// Per-account storage namespaces — keep each account's activity + secrets separate.
+// Per-account storage namespaces; keep each account's activity + secrets separate.
 const histKey = (addr: string) => "txHistory:" + addr;
 // A merge whose output is not yet seen and that is not known to be gone.
 const isMergeCandidate = (x: any): boolean => x?.type === "consolidate" && !x.confirmed && !x.gone;
@@ -157,7 +157,7 @@ function capSeals(list: any[]): any[] {
 }
 
 // The frozen signing context captured before a flow's first await (A1, Plans/68): the account
-// slot, its address, its key, and the history key entries must file under. Immutable snapshot —
+// slot, its address, its key, and the history key entries must file under. Immutable snapshot:
 // a later switchAccount cannot retro-change what was captured.
 interface SignerCtx { active: number; addr: string; priv: string; histKey: string }
 // Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
@@ -172,11 +172,11 @@ const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refus
 
 // Record-expiry windows, in epochs of the vendored EPOCH_LEN blocks. Each +N offset below sets a Propose's
 // expiresEpoch = currentEpoch + window.
-const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim — ample window to mine
+const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim; ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
-const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
+const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset; a long-lived identity record
 // Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
-// B9: single-sourced into core/cairnx.ts defaultFeeFor("attest") — the same table the clear-sign
+// B9: single-sourced into core/cairnx.ts defaultFeeFor("attest"); the same table the clear-sign
 // display reads, so the screen and the signer can never disagree again (the local literal was the twin).
 // The app-layer confidence SENTINEL for a token-priced fill. NOT consensus math - it is the value the trade
 // UI stamps so a fill against a token-want offer is distinguishable from a board-support attest (70/80). W4
@@ -200,7 +200,7 @@ export class Wallet {
   rpc = DEFAULT_RPC;
   api = DEFAULT_API;
   tradeApi = DEFAULT_TRADE_API;
-  explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base) — navigation-only
+  explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base); navigation-only
   // Idle window for auto-lock and session-rehydrate expiry.
   idleMs = AUTO_LOCK_MS;
   // 0.2.70: in-memory hint-set cache for confirm-time skip (background Wallet, never the popup).
@@ -234,7 +234,7 @@ export class Wallet {
       if (o.origin === apiO.origin) return true; // exact first-party match (the configured api's origin)
       // Dev convenience: treat localhost as first-party ONLY when the wallet's OWN api is itself localhost
       // (audit NSPV-DAPP-LOCALHOST). In production api=cairn-substrate.com, so ANY localhost app is NOT
-      // first-party — it must use the audience-bound signInWithCsd(), closing the broad confused-deputy
+      // first-party; it must use the audience-bound signInWithCsd(), closing the broad confused-deputy
       // surface where any local app on any port could invoke the session-minting legacy signIn().
       const isLocal = (h: string) => h === "localhost" || h === "127.0.0.1" || h === "[::1]";
       return isLocal(o.hostname) && isLocal(apiO.hostname);
@@ -272,7 +272,7 @@ export class Wallet {
   async setExplorer(v: string): Promise<void> {
     if (v === "cairn" || v === "official") { this.explorer = v; await this.store.set("explorer", v); return; }
     if (!validRpcUrl(v)) throw new Error("explorer must be a preset or an https:// URL (or http://localhost)");
-    const norm = new URL(v).href; // canonicalize — encodes any href-breakout chars before it is ever rendered (defense-in-depth vs EXP-XSS)
+    const norm = new URL(v).href; // canonicalize; encodes any href-breakout chars before it is ever rendered (defense-in-depth vs EXP-XSS)
     this.explorer = norm; await this.store.set("explorer", norm);
   }
   async explorerList(): Promise<string[]> { return (await this.store.get("customExplorers")) || []; }
@@ -301,7 +301,7 @@ export class Wallet {
 
   // SERIALIZED (persistVault-race, fund-safety fresh-eyes): account-mgmt ops mutate this.accts
   // SYNCHRONOUSLY, then await persistVault. Without serialization two overlapping calls could each
-  // seal a doc built at a different instant and let the STALE write land last — permanently dropping a
+  // seal a doc built at a different instant and let the STALE write land last; permanently dropping a
   // just-added IMPORTED (non-seed-recoverable) key. Chaining every persist behind one promise makes the
   // last write reflect the final account set (each queued persist re-reads this.accts, which by then
   // holds every prior synchronous mutation). The cleartext mirror is captured from the SAME pre-await
@@ -440,7 +440,7 @@ export class Wallet {
   // "no wallet" message). `raw` is the decrypted plaintext; `parsed` is the v2 multi-account doc (null for a
   // legacy single-key vault whose plaintext IS a raw privkey); `legacyPriv` is that plaintext 0x-normalized
   // (exportKey's legacy repair, kept here so every opener sees the same normalized legacy form). openWith
-  // throws "bad password" on a GCM-tag mismatch — INSIDE the guard, so a wrong password is counted.
+  // throws "bad password" on a GCM-tag mismatch; INSIDE the guard, so a wrong password is counted.
   private async openVaultDoc(v: Vault, password: string): Promise<{ key: CryptoKey; raw: string; parsed: VaultDoc | null; legacyPriv: string }> {
     const { key, raw } = await this.withAuthGuard(async () => {
       const key = await deriveVaultKey(password, v.salt, v.iter);
@@ -591,17 +591,17 @@ export class Wallet {
     let i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
     if (i < 0) throw new Error("no such account");
     // A2 (Plans/68 F4): an IMPORTED raw key is NOT derivable from the recovery phrase, so removing it
-    // without a backup is PERMANENT fund loss — and it was one click. Imported removal now requires a
+    // without a backup is PERMANENT fund loss; and it was one click. Imported removal now requires a
     // password re-auth through the same brute-guarded gate as export (openVaultDoc; the decrypted doc
     // is discarded, nothing is revealed). HD accounts stay one-click: they re-derive from the phrase.
-    // REMOVE_IMPORTED_REAUTH is a popup-handled sentinel (FEE_CHANGED precedent), not a dApp code —
+    // REMOVE_IMPORTED_REAUTH is a popup-handled sentinel (FEE_CHANGED precedent), not a dApp code:
     // removeAccount is popup-only (never in DAPP_METHODS).
     if (accts[i].imported) {
       if (!password) throw new Error("REMOVE_IMPORTED_REAUTH");
       const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
       await this.openVaultDoc(v, password); // throws "bad password" (and increments the guard) on failure
       // TOCTOU (fresh-eyes 0.2.57 finding 1): the KDF await above is the ONLY await between findIndex
-      // and splice, and a concurrent removal can mutate accts while this call is parked — splicing the
+      // and splice, and a concurrent removal can mutate accts while this call is parked; splicing the
       // pre-await index then removed the WRONG account (the next imported key, silently, history wiped).
       // Re-derive the index after the await; a target already removed by the racing call is done
       // (idempotent), and the last-account floor is re-asserted against the CURRENT list.
@@ -626,7 +626,7 @@ export class Wallet {
   private addr(): string { return this.must().addr; }
 
   // ── signing-context integrity (A1, Plans/68 FILL-RACE-1) ─────────────────────────────────────
-  // Every signing method captures its key SYNCHRONOUSLY at entry — except fillOffer, whose
+  // Every signing method captures its key SYNCHRONOUSLY at entry; except fillOffer, whose
   // preflight awaits (offer fetch + tip) sit between validation and the key read, so a
   // switchAccount parked in those awaits made the preflight validate account A while account B
   // signed and paid (pay-without-delivery on a taker-bound offer; whole-payment loss on the
@@ -648,16 +648,16 @@ export class Wallet {
     return null;
   }
   // Throwing variant for the name/token methods that surface refusals as thrown errors (FEE_CHANGED
-  // precedent) rather than a structured SubmitResult — same guard, single source for the copy.
+  // precedent) rather than a structured SubmitResult; same guard, single source for the copy.
   private throwOnSignerChange(expectSigner: string | undefined): void {
     if (expectSigner && expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error(ACCOUNT_CHANGED_REFUSAL().error);
   }
 
-  // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx — every caller
+  // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx; every caller
   // discriminates status / parses / catches itself, so each keeps its own fail-soft (display reads) vs
   // fail-closed (fillOffer/resolveName money paths) posture exactly. A network error / timeout abort throws
   // out of fetch → the caller's own try/catch handles it. The 12s default sits ABOVE the /trade/api
-  // proxy's 10s upstream wait (CAIRN_PROXY_TIMEOUT_MS) — the old 6s default aborted while the proxy
+  // proxy's 10s upstream wait (CAIRN_PROXY_TIMEOUT_MS); the old 6s default aborted while the proxy
   // was still legitimately waiting on a slow-but-working resolver, turning a survivable stall into a
   // spurious fail-closed refusal on the fill/resolve money paths (timeout-inversion class, Plans/66 B1).
   private tradeGet(path: string, timeoutMs = 12000): Promise<Response> {
@@ -671,7 +671,7 @@ export class Wallet {
   }
 
   balance() { return node.balance(this.rpc, this.addr()); }
-  // Current epoch (= floor(tip/30), matching this wallet's own propose math) — lets the approval
+  // Current epoch (= floor(tip/30), matching this wallet's own propose math); lets the approval
   // window show a dApp-supplied expiresEpoch as a real "expires in N days from now". Best-effort:
   // returns null offline so the clear-signer just shows the raw epoch.
   async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / EPOCH_LEN); } catch { return null; } }
@@ -679,12 +679,12 @@ export class Wallet {
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
   // M9/M11/W5 (B5b): the persisted PoW-backed tip floor (advanced only by namespv floorAdvance after a
-  // successful sync — see B5a). Guards clamp the raw served tip UP with it so a deflating RPC cannot roll
-  // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE — stated
+  // successful sync; see B5a). Guards clamp the raw served tip UP with it so a deflating RPC cannot roll
+  // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE; stated
   // coverage limit, not assumed away). Popup-only read; never a dApp method.
   async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee?: number; outputs?: { to: string; value: number }[] }) {
-    // B9: an omitted fee signs defaultFeeFor("propose") — the node-enforced MIN_FEE_PROPOSE floor the
+    // B9: an omitted fee signs defaultFeeFor("propose"); the node-enforced MIN_FEE_PROPOSE floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER the user approved a screen that
     // showed a 0.01 CSD the node would have rejected anyway). An explicit sub-floor fee still refuses.
     const fee = p.fee ?? defaultFeeFor("propose");
@@ -707,17 +707,17 @@ export class Wallet {
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
     if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
-    // B9: an omitted fee signs defaultFeeFor("attest") — the node-enforced MIN_FEE_ATTEST floor the
+    // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
     // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
     const fee = p.fee ?? defaultFeeFor("attest");
     const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
   }
-  // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
+  // Atomic fill (Attest + payment in ONE tx; CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
   // Ordering is load-bearing: capture the signer BEFORE the preflight await (so the account the preflight
   // validates IS the account that signs), re-assert it AFTER the last await and immediately before the
-  // sign, and sign/record with the CAPTURED key/histKey — a switchAccount parked in the preflight's offer
+  // sign, and sign/record with the CAPTURED key/histKey; a switchAccount parked in the preflight's offer
   // or tip await now refuses (ACCOUNT_CHANGED) instead of paying from the wrong account.
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string; tokenQuote?: TokenFillQuote; reservationAck?: string }) {
     const ctx = this.captureSigner();
@@ -756,7 +756,7 @@ export class Wallet {
   //   • a parsed open offer runs the shared cairnx-core preflight (fillIsSafe + the requiredFillOutputs
   //     need-map) and proceeds only if every leg holds. Honest cost: one retry on a brand-new offer
   //     inside the resolver's ~15s scan window. A coherently-lying resolver is the B3 fill-SPV item.
-  // `me` is the CAPTURED signer address from fillOffer's SignerCtx (A1) — never read live here, so the
+  // `me` is the CAPTURED signer address from fillOffer's SignerCtx (A1); never read live here, so the
   // account this preflight validates is by construction the account whose key signs.
   // RT-W2: `reviewedQuote` is the token debit quote the approve window DISPLAYED (threaded from
   // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
@@ -807,16 +807,16 @@ export class Wallet {
       // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
       // a live tip. this.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
       // as 0. But the disarm is NOT just tip==0: fillIsSafe only runs the claim check when
-      // isOpenClaimLane(offer, tip) is true, which requires tip >= V13_HEIGHT — so ANY reported tip in
+      // isOpenClaimLane(offer, tip) is true, which requires tip >= V13_HEIGHT; so ANY reported tip in
       // (0, V13_HEIGHT) (a grossly-stale or hostile RPC) silently SKIPS the claim gate and would let a
       // non-claimant's open-CSD fill through, while the real chain (tip ~47k) no-ops it and the whole
       // payment is lost (C2/C4). So: for this lane, if the claim gate is NOT active at the reported tip
-      // (isOpenClaimLane false — which, given taker===undefined && CSD want, can only be a too-low tip),
+      // (isOpenClaimLane false; which, given taker===undefined && CSD want, can only be a too-low tip),
       // fail CLOSED with the retryable posture. Red-team 2026-07-06 hardened the guard from `!(tip > 0)`
       // to cover the full (0, V13) band. Taker-bound / token lanes never consult the tip (unaffected).
       const tip = (await this.tip()) ?? 0;
       // Correction 1 (RT3) mirror: reaching here means `proposalId === offer.id` (the fclaim lane already
-      // returned above). An offer-id fill DURING a live fclaim hold burns — the V28 resolver routes fills to the
+      // returned above). An offer-id fill DURING a live fclaim hold burns; the V28 resolver routes fills to the
       // fclaim, so an offer-id attest mines with NO delivery, and fillIsSafe/hasLiveClaim PASS for the holder.
       // `claimTxid` is set only at V28, so this is V28-scoped WITHOUT a deflatable tip gate; a deflated tip only
       // makes hasLiveClaim MORE likely true (fires -> refuse), so it fails safe. A pre-V28 hold honored in the
@@ -830,10 +830,10 @@ export class Wallet {
       // (window + fill grace) ends at V28 + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS - 1 = 60,044,
       // so AT or ABOVE 60,045 every offer-id fill of an open CSD offer is rejected on-chain AFTER the
       // payment moved (pay-without-delivery). The W5 attack forges/omits the SERVED claim fields to steer a
-      // genuine fclaim holder into this lane — so the refuse keys on NOTHING served: pure gate arithmetic
+      // genuine fclaim holder into this lane; so the refuse keys on NOTHING served: pure gate arithmetic
       // over the tip, clamped UP with the PoW-backed floor (M9/B5a) so a deflating RPC cannot disarm it
       // once the wallet has PoW-seen the band. Below 60,045 the honored pre-V28 sunset (resolve.ts:182-183)
-      // still admits legacy fills — a flat V28 cut was DECLINED as over-refusal (strategy decline 1); the
+      // still admits legacy fills; a flat V28 cut was DECLINED as over-refusal (strategy decline 1); the
       // headline test pins ACCEPTS at 60,010. Taker-bound and token lanes are exempt (neither routes through
       // the open-lane claim machinery): the CSD lane's taker IS bound (provenTermsMismatch below), and the
       // token lane now binds its give/want CONTENT (B7e-FIX, the else branch below), so the token exemption
@@ -847,9 +847,9 @@ export class Wallet {
       // The resolver's value gate is a per-address SUM need-map (whole fill: payto ≥ want, TREASURY ≥
       // fee, seller ≥ rebate, SUMMED when recipients coincide; partial: clamped pay + fee). A fill that
       // underpays any leg is rejected on-chain AFTER the payment moved (the pay-without-delivery burn
-      // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35) — the same
+      // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35); the same
       // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
-      // this block hand-mirrored it. Pure local math over data already in hand — no added I/O.
+      // this block hand-mirrored it. Pure local math over data already in hand; no added I/O.
       if (isCsdWant) {
         // F2-legacy: this SPV-less LEGACY / dApp lane (window.cairn.fillOffer, no swapguard in the loop) sizes the
         // payment against the resolver-served want.payto and the rebate against the served seller, so a lying read-
@@ -946,15 +946,15 @@ export class Wallet {
         }
       }
     } else if (fetchFailed) {
-      // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
+      // GENUINE unreachability (5xx / timeout; NOT a 404). We cannot tell the lane without the offer, and
       // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
       return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     } else {
       // B1 (Plans/68 M-MKT-5 + N-1; the Plan 63 B2 flip, operator-approved): fail CLOSED unless the
       // resolver POSITIVELY answered with a parseable CairnX offer. A clean 404 (a valid, unexpired L1
-      // proposal that is NOT an open CairnX offer — a board post, or a record resolve() rejected) and a
+      // proposal that is NOT an open CairnX offer; a board post, or a record resolve() rejected) and a
       // 200 whose body lacks a parseable status (MITM / garbling proxy) both used to PROCEED here; the
-      // wallet signed Attest+payment, L1 moved the CSD, and resolve() ignored the attest — the whole
+      // wallet signed Attest+payment, L1 moved the CSD, and resolve() ignored the attest; the whole
       // payment burned to attacker-directed outputs. Honest cost: a brand-new offer inside the
       // resolver's ~15s scan poll refuses ONCE with retryable copy. This closes the honest-resolver and
       // MITM hole; a coherently LYING resolver is the B3 proof-bound fill-SPV item, not this guard.
@@ -967,7 +967,7 @@ export class Wallet {
   // ── V28 open-lane (fclaim) fill fund boundary ───────────────────────────────────────────────────────
   // A resolver-DENIED fclaim is an L0-valid but delivery-less attest target, so a fill built on it BURNS the
   // whole payment. This is a faithful resolve() mirror the STRONG way: it re-derives the ENTIRE grant + hold
-  // from PoW-buried, merkle-proven events (the vendored verifyFillSpv) and fails CLOSED on anything unproven —
+  // from PoW-buried, merkle-proven events (the vendored verifyFillSpv) and fails CLOSED on anything unproven:
   // it only ever REJECTS MORE than resolve(), never accepts something resolve() would reject.
   // `second` holds the clarvis reads of the offer and of this fclaim's record, started by the caller before the
   // scan so they run alongside it.
@@ -994,7 +994,7 @@ export class Wallet {
     // the cap defense: the lane-scoped replay cannot see other-offer holds, so an under-count would fail-OPEN the
     // cross-offer MAX_ACTIVE_CLAIMS cap and BURN (a resolver that D2-aliases a cap-denied fclaim as "granted"
     // would pass). Over-count only false-refuses (retryable). There is NO wallet create-side cap guard, and 0 is
-    // NEVER assumed — if the source could not compute the count, fail CLOSED here. The DEADLINE guard likewise
+    // NEVER assumed; if the source could not compute the count, fail CLOSED here. The DEADLINE guard likewise
     // rides INSIDE verifyFillSpv from the fclaim's OWN confirmed expiry epoch (fclaimHoldEnd), never epochOf(tip+45).
     if (!Number.isInteger(io.myLiveHoldsAtGrant))
       return { ok: false, error: "couldn't count your other open reservations to verify this one against the claim cap — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
@@ -1098,12 +1098,12 @@ export class Wallet {
 
   signIn() { return node.signIn(this.api, this.must().privkey); }
 
-  // Audience-bound "Sign in with CSD" (SIWC) for THIRD-PARTY sites — the secure replacement for the
+  // Audience-bound "Sign in with CSD" (SIWC) for THIRD-PARTY sites; the secure replacement for the
   // legacy first-party-only signIn(). The wallet builds a CAIP-122-style message binding the
   // requesting site's domain (derived from the UNFORGEABLE sender.origin, NEVER a dApp-asserted
   // string), the RP's single-use nonce, the chain id, and an issued-at/expiration window; signs the
   // domain-separated SIWC digest; and returns ONLY the signed artifact. It NEVER talks to cairn's
-  // /auth and NEVER mints a session — the dApp's own server verifies (verifySiwc) and issues its own
+  // /auth and NEVER mints a session; the dApp's own server verifies (verifySiwc) and issues its own
   // session. `origin` is supplied by the background from sender.origin (browser-set, unforgeable).
   async signInWithCsd(
     params: { nonce?: unknown; statement?: unknown; uri?: unknown; domain?: unknown; expirationSecs?: unknown; notBeforeSecs?: unknown; requestId?: unknown; resources?: unknown },
@@ -1113,7 +1113,7 @@ export class Wallet {
     const domain = originToDomain(origin);
     if (!domain) throw new Error("sign-in: unknown requesting origin");
     const p = params || {};
-    // The page MAY pass its domain, but it is only cross-checked against the real origin — never trusted.
+    // The page MAY pass its domain, but it is only cross-checked against the real origin; never trusted.
     if (p.domain !== undefined && String(p.domain) !== domain) throw new Error("sign-in: declared domain does not match the requesting site");
     // uri defaults to the origin root; if supplied it MUST be on the requesting site.
     let uri: string;
@@ -1145,7 +1145,7 @@ export class Wallet {
     const fields: SiwcFields = {
       domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
       nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
-      // Only emit notBefore for a POSITIVE offset — a 0/negative value is a no-op "valid from now-or-past"
+      // Only emit notBefore for a POSITIVE offset; a 0/negative value is a no-op "valid from now-or-past"
       // constraint that the clear-sign window (clearsign.ts) does NOT display, so signing it would mean
       // committing a field the user never saw (audit SDS-1). Matching the conditions keeps WYSIWYS exact.
       notBefore: p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
@@ -1168,8 +1168,8 @@ export class Wallet {
     return r;
   }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
-  // Popup-only — deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
-  // Ambiguous outcomes (SUBMIT_MAYBE_INFLIGHT) are ALSO recorded, flagged maybe:true — the popup's
+  // Popup-only; deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
+  // Ambiguous outcomes (SUBMIT_MAYBE_INFLIGHT) are ALSO recorded, flagged maybe:true; the popup's
   // pending-merge indicator derives from this history entry, and it must not be blind exactly when
   // the merge was ingested but the answer was lost (that is when the balance dips with no
   // explanation). The txid is the locally computed consensus txid (Plans/66 B4).
@@ -1203,7 +1203,7 @@ export class Wallet {
     let set = utxos;
     if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return quiet; } }
     // filter hostile/degenerate elements (0.2.57, reviewer nit): a null utxo entry from a hostile RPC
-    // used to throw here and land in the caller's ambiguous catch — a misleading "pending unknown".
+    // used to throw here and land in the caller's ambiguous catch; a misleading "pending unknown".
     const present = new Set((set || []).filter((u) => u && u.txid != null).map((u) => String(u.txid).toLowerCase()));
     const open = peek.filter((x) => isOpenRow(x) && !present.has(String(x.txid).toLowerCase()));
     const reads = open.length ? await this.inclusionReads(open, addr) : { tip: null, states: new Map<string, TxInclusion>(), mined: null };
@@ -1282,7 +1282,7 @@ export class Wallet {
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
     // Queue the off-chain content on the ambiguous path too (0.2.56, review F13): a maybe-inflight
-    // propose that MINES would otherwise lose its body forever — the user paid, the content never
+    // propose that MINES would otherwise lose its body forever; the user paid, the content never
     // lands, no error. flushPending already handles a never-mined txid safely (polls getProposal,
     // registers only once mined, 7-day expiry bounds the queue), so queueing is harmless when the
     // tx truly died.
@@ -1296,12 +1296,12 @@ export class Wallet {
     await this.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
     return r;
   }
-  // D8 (register §3, 2026-09-12): cairnSupport DELETED — dead (no dApp/popup/inpage caller; not in
+  // D8 (register §3, 2026-09-12): cairnSupport DELETED; dead (no dApp/popup/inpage caller; not in
   // DAPP_METHODS) and worse, a guard-free twin of attest() (it bypassed the CONF_TOKEN_FILL WYSIWYS
   // routing guard). Board support goes through attest().
 
   // ── CairnX tokens + .csd names ──────────────────────────────────────────────
-  // READS go to the public CairnX resolver API and NEVER throw — the popup must keep
+  // READS go to the public CairnX resolver API and NEVER throw; the popup must keep
   // showing the CSD balance even when the token API is down ({ ok:false } → quiet retry).
   async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[]; nameDetails?: any[]; primaryName?: string | null; tipHeight?: number }> {
     try {
@@ -1325,13 +1325,13 @@ export class Wallet {
   async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
     const nm = normName(name);
     // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
-    // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
+    // interpolating it into the resolver URL; a name with `/`, `..`, `%`, or query chars must never
     // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
     if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
     try {
       // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
       // EVERY name send with "name lookup failed" even though clarvis, the second source, could
-      // answer — and the SPV verifyName below is the trust anchor either way (the base answer is
+      // answer; and the SPV verifyName below is the trust anchor either way (the base answer is
       // UNTRUSTED no matter which source served it, so falling back is no weaker). Only a definitive
       // 404 from the source that answered short-circuits; network/5xx tries the second source.
       let r: Response | null = null;
@@ -1343,20 +1343,20 @@ export class Wallet {
           const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(12000) });
           // Only accept a POSITIVE answer from the fallback; a 404 from a degraded/withholding second
           // source is NOT trustworthy enough to definitively claim "not registered" (fail-closed to the
-          // retryable "name lookup failed" below instead — the primary being down is transient).
+          // retryable "name lookup failed" below instead; the primary being down is transient).
           if (c.ok) r = c;
-        } catch { /* both sources down — fall through to the honest failure */ }
+        } catch { /* both sources down; fall through to the honest failure */ }
       }
       if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
       const j = await r.json();
       if (j?.lapsed) {
-        // N19 (B5b): do NOT hard-refuse on a single source's SERVED `lapsed` flag — that short-circuit
+        // N19 (B5b): do NOT hard-refuse on a single source's SERVED `lapsed` flag; that short-circuit
         // fired BEFORE the SPV union, so the two-source lapse corroboration (WALLET-LAPSE-TIP-1) could
         // never see the claim it exists to corroborate, and one hostile/buggy primary could permanently
         // block sends to a healthy name. Consult the union: chain proves the lease CURRENT -> serve the
         // PROVEN answer (the served flag was false); union corroborates the lapse -> refuse with
         // confidence; union unavailable -> keep today's fail-closed refusal, with honest uncorroborated
-        // copy. A real lapse still refuses exactly as before — this only removes the FALSE refusal.
+        // copy. A real lapse still refuses exactly as before; this only removes the FALSE refusal.
         const lv = await this.verifyName(nm).catch(() => null);
         if (lv?.verified && lv.addr)
           return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
@@ -1367,10 +1367,10 @@ export class Wallet {
       if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
       const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
       // XREPO-1 cure: independently SPV-verify the name → address against the chain. The resolver's
-      // answer above is UNTRUSTED — the union serves the chain-PROVEN winner (never the served claim),
+      // answer above is UNTRUSTED; the union serves the chain-PROVEN winner (never the served claim),
       // flagging any source disagreement on the result; an unavailable verifier returns the served
       // address with a caution flag (never silently "verified"). (D2: the old single-source
-      // "does NOT match / hostile resolver" refusal branch is deleted — the union replaced that
+      // "does NOT match / hostile resolver" refusal branch is deleted; the union replaced that
       // refusal with serve-the-proven-winner + disagree, so no emitted reason ever matched it.)
       const v = await this.verifyName(nm).catch(() => null);
       if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, disagree: v.disagree, soleSource: v.soleSource };
@@ -1381,7 +1381,7 @@ export class Wallet {
       // fall-through caution below (the WALLET-LAPSE-TIP-1 availability valve: never hard-block on an
       // uncorroborated lapse that could be a MITM-inflated tip on a fresh install).
       if (v?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd has lapsed, so we did not send. Send to the owner's 0x address directly, or ask them to renew the name before sending again.` }; // MUTATE_NS2_PROVEN_LAPSE
-      // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill — not name-scope
+      // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill; not name-scope
       // provable" caution rather than the generic "couldn't verify" one. Still verified:false (fail-closed).
       return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable", viaFill: v?.viaFill === true };
     } catch { return { ok: false, error: "name lookup failed" }; }
@@ -1391,7 +1391,7 @@ export class Wallet {
   // ===1e6) so the clear-sign window shows what the user pays instead of "not visible here". Fetches the
   // offer from the resolver and, IF it is an OPEN token-want offer, computes debit = ask + protocol fee
   // (BigInt-exact, same cairnxTradeFee the convention uses). Returns ok:false on any unreachable/mismatch so
-  // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
+  // the UI keeps its loud caution; never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
   // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
   async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string }> {
     try {
@@ -1411,7 +1411,7 @@ export class Wallet {
       const fee = cairnxTradeFee(amount, bps);
       const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
       const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
-      // Served amount:null must stay absent — String(null) is "null", and the vendor give-leg
+      // Served amount:null must stay absent; String(null) is "null", and the vendor give-leg
       // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
       const giveAmount = g?.amount != null ? String(g.amount) : undefined;
       const giveName = typeof g?.name === "string" ? g.name : undefined;
@@ -1477,7 +1477,7 @@ export class Wallet {
     try {
       // Cross-check the user's configured primary resolver against the clarvis second source (same operator as
       // the default primary, so not independent of it; NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion
-      // fetches name-history from each, unions the SPV-verified events, and resolves to the chain-proven winner —
+      // fetches name-history from each, unions the SPV-verified events, and resolves to the chain-proven winner:
       // defeating a withholding resolver.
       const gen = this.spvGen;
       const src = await this.spvSource();
@@ -1591,10 +1591,10 @@ export class Wallet {
   prewarmSpv(): void {
     void this.spvSource().catch(() => { /* best-effort; the real call retries and spvSource() self-resets on a build failure */ });
   }
-  // v1.8: the height-gated renewal fee priced at the CURRENT tip — for the popup's pre-spend estimate, so
+  // v1.8: the height-gated renewal fee priced at the CURRENT tip; for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.
   async cairnxNameRenewFee(name: string): Promise<number> {
-    // M11 (B5b): price from the floor-CLAMPED tip (feePricingTip) — a deflated RPC tip must not price an
+    // M11 (B5b): price from the floor-CLAMPED tip (feePricingTip); a deflated RPC tip must not price an
     // obsolete cheaper tier the resolver rejects (fee burns). Same clamp at BOTH build sites + the
     // clearsign review warning, through the ONE shared helper, so build and review can never disagree.
     // W5 (Q-02): feePricingTip returns null when NEITHER the served tip nor the persisted floor is a
@@ -1607,14 +1607,14 @@ export class Wallet {
     const fee = nameRegFee(name, buildFeeHeight(tip));
     return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
   }
-  // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
+  // Renew a .csd lease (+1 year); built on-device, pays the registration fee to the treasury.
   async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
     this.throwOnSignerChange(expectSigner);
     const built = buildNameRenew({ name });
-    // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee — the ONE shared helper (see there).
+    // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee; the ONE shared helper (see there).
     const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
     // W5 (Q-02): the null refusal at the BUILD site is the one that matters. Without it a degenerate tip
     // read prices the cheapest tier and this method signs a treasury output the resolver rejects: the fee
@@ -1624,7 +1624,7 @@ export class Wallet {
     if (liveFee > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("renewal fee too large for the UI");
     // WL-FEE-FREEZE-1 (WYSIWYS): sign EXACTLY the fee the user reviewed. If the chain tip crossed a fee-gate
     // boundary (V18/V24…) between Review and Confirm so the live fee no longer matches what was shown, REFUSE
-    // rather than silently sign a different (higher) amount — the popup re-opens the review at the new price.
+    // rather than silently sign a different (higher) amount; the popup re-opens the review at the new price.
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
@@ -1671,12 +1671,12 @@ export class Wallet {
     return r;
   }
 
-  // ── sealed claims (commit-reveal) — isolated per active account ─────────────
-  // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt — a force-revealable front-running lever if it
+  // ── sealed claims (commit-reveal); isolated per active account ─────────────
+  // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt; a force-revealable front-running lever if it
   // is readable at rest. The vault key already lives only in memory (chrome.storage.session, not cold-disk-
   // readable), so encrypt ONLY these two fields under it (fresh IV per seal) before persisting; txid/domain/
   // committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
-  // primitives (keystore sealWith/openWith) — no new crypto. history/labels stay the documented local-disk
+  // primitives (keystore sealWith/openWith); no new crypto. history/labels stay the documented local-disk
   // residual (we do NOT encrypt all of chrome.storage.local; §5 constraint).
   private async sealPreimage(claim: string, nonce: string): Promise<Vault> {
     if (!this.vaultKey) throw new Error("locked");
@@ -1809,10 +1809,10 @@ export class Wallet {
     return out;
   }
 
-  // ── transaction history — isolated per active account ──────────────────────
+  // ── transaction history; isolated per active account ──────────────────────
   // Pre-await key capture (0.2.56, review F5): every recording path must file under the account
   // that SIGNED. Flows capture this in the same synchronous tick as their privkey read, BEFORE
-  // the awaited submit — the user can switch accounts while the network call is in flight, and a
+  // the awaited submit; the user can switch accounts while the network call is in flight, and a
   // post-await histKey(this.addr()) would file the entry (and everything the pending-merge line
   // derives from it) under the switched-to account.
   private histKeyNow() { return histKey(this.addr()); }
@@ -1821,7 +1821,7 @@ export class Wallet {
     // Rows pendingMerge may settle keep a few input outpoints for its "gone" verdict.
     const inputs = Array.isArray(r?.inputs) && r.inputs.length ? { inputs: r.inputs.slice(0, INCLUSION_INPUTS_KEPT) } : {};
     if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
-    // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool — a timeout / gateway
+    // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool; a timeout / gateway
     // 5xx / unreadable answer AFTER signing. Record it maybe:true under the LOCALLY computed txid
     // so the failure copy's "check history before resending" is actionable: this entry is what
     // stands between an ingested-but-unanswered send and a blind resend double-pay (a resend picks
@@ -1829,12 +1829,12 @@ export class Wallet {
     // backstop it). Previously only consolidate() did this; every value flow gets it here at the
     // single chokepoint. Deliberate, accepted side-effect: the recipient joins paidRecipients
     // (clearsign.ts), muting the first-time-recipient warning for an address the user already
-    // clear-signed once — entries only originate from the user's own reviewed sends, no poisoning
+    // clear-signed once; entries only originate from the user's own reviewed sends, no poisoning
     // vector.
     else if (r && !r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
       await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
     }
-    // A duplicate answer RESOLVES an earlier ambiguity — a tx spending these coins IS pending, and
+    // A duplicate answer RESOLVES an earlier ambiguity; a tx spending these coins IS pending, and
     // a deterministic retry of an ingested submit is byte-identical, so this is the common way a
     // maybe:true entry turns out to have landed. Clear the flag in place; never INSERT on a dup
     // (on the current node's conflated error a dup can also mean a DIFFERENT tx spends the coins,
@@ -1843,7 +1843,7 @@ export class Wallet {
       await this.clearMaybe(k, r.txid);
     }
     // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
-    // this spend just consumed (Plans/66 review finding — the final combining pass spends earlier
+    // this spend just consumed (Plans/66 review finding; the final combining pass spends earlier
     // rounds' outputs with no balance refresh in between, which otherwise left those entries
     // deriving a false "merging" line until a balance refresh saw them).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
@@ -1868,7 +1868,7 @@ export class Wallet {
         const set = new Set(spent.map((t) => String(t).toLowerCase()));
         let dirty = false;
         for (const e of h) {
-          // spending the output proves the tx landed — that also RESOLVES a maybe flag (an entry can
+          // spending the output proves the tx landed; that also RESOLVES a maybe flag (an entry can
           // otherwise sit {maybe:true, confirmed:true} showing a stale "may be in flight" marker)
           if (e?.type === "consolidate" && !e.confirmed && set.has(String(e.txid).toLowerCase())) { e.confirmed = true; delete e.maybe; dirty = true; }
         }
@@ -1880,8 +1880,8 @@ export class Wallet {
     const h: any[] = (await this.store.get(k)) || [];
     const e = h.find((x) => x?.txid === entry.txid);
     if (e) {
-      // Idempotent by txid — but a DEFINITIVE record for a txid first recorded maybe:true resolves
-      // the ambiguity: clear the flag IN PLACE. Never re-insert or reorder — ts, position and the
+      // Idempotent by txid; but a DEFINITIVE record for a txid first recorded maybe:true resolves
+      // the ambiguity: clear the flag IN PLACE. Never re-insert or reorder; ts, position and the
       // consolidate confirmed-latch must survive (a replace would resurrect the pending-forever
       // bug the latch exists to prevent).
       if (e.maybe && !entry.maybe) { delete e.maybe; await this.store.set(k, h); }
@@ -1958,7 +1958,7 @@ export class Wallet {
   }
   // F-QUEUE-2 (Plans/68 A3): flushPending is a read-modify-write over pendingContent with awaits in
   // between, and it fires from THREE triggers (startup, the 1-minute alarm, cairnPost's un-awaited
-  // kick) — two overlapping flushes, or a flush racing addPending, could clobber a just-queued entry
+  // kick); two overlapping flushes, or a flush racing addPending, could clobber a just-queued entry
   // with a stale list. The in-flight latch collapses overlaps; the final RE-READ + union-by-txid
   // merge keeps any entry added while this flush was running.
   private flushInFlight = false;
@@ -1973,14 +1973,14 @@ export class Wallet {
       for (const x of list) {
         processed.add(String(x.txid).toLowerCase());
         // 7 days, not 24h: content registration follows a PAID Propose/name tx, and the old 24h
-        // window silently dropped the content of anyone offline a day — user paid, body never
+        // window silently dropped the content of anyone offline a day; user paid, body never
         // landed, no error (Plans/66 B8). Content is self-certifying and re-POSTable, so a long
         // retry window costs nothing; expiry still bounds the queue.
         if (Date.now() - (x.ts || 0) > 7 * 86400000) continue;
         try {
           const p = await node.getProposal(this.rpc, x.txid);
           if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later
-          // F-QUEUE-1 (Plans/68 A3): registerContent NEVER throws — it resolves {ok:false} on any
+          // F-QUEUE-1 (Plans/68 A3): registerContent NEVER throws; it resolves {ok:false} on any
           // refusal/outage (node.ts). Dropping the entry on that path silently lost the body of a
           // tx the user PAID to anchor. Registration is idempotent and self-certifying, so a
           // failed register keeps the entry for the next alarm tick instead.
@@ -1996,7 +1996,7 @@ export class Wallet {
   }
   hasPending(): Promise<boolean> { return this.store.get("pendingContent").then((l: any[]) => !!(l && l.length)); }
 
-  // Reveal the ACTIVE account's private key — requires re-entering the password.
+  // Reveal the ACTIVE account's private key; requires re-entering the password.
   async exportKey(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
     const { parsed, legacyPriv } = await this.openVaultDoc(v, password);
@@ -2005,7 +2005,7 @@ export class Wallet {
     return parsed.accounts[Math.min(i, parsed.accounts.length - 1)].priv;
   }
 
-  // Reveal the wallet's recovery phrase (the master backup) — password-gated. Throws
+  // Reveal the wallet's recovery phrase (the master backup); password-gated. Throws
   // for legacy/import-only wallets that have no seed phrase.
   async exportMnemonic(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
@@ -2014,8 +2014,8 @@ export class Wallet {
     return parsed.mnemonic;
   }
 
-  // Wipe ALL wallet state — every account's vault, history, and sealed-claim
-  // preimages — so a freshly-created wallet can't surface a prior owner's data.
+  // Wipe ALL wallet state; every account's vault, history, and sealed-claim
+  // preimages; so a freshly-created wallet can't surface a prior owner's data.
   // RESET-RESURRECT (fund-safety red-team + P75-6): the wipe must not race ANY parked write. It is
   // serialized behind ALL THREE write chains (vault, history, seals); lock() above nulled
   // this.accts, and every chained WRITE callback bails on !this.accts, so nothing queued after this

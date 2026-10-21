@@ -1,4 +1,4 @@
-// B6 (Plans/69 V28 fclaim) — the wallet fclaim-lane fill preflight wires the vendored fail-closed fund
+// B6 (Plans/69 V28 fclaim); the wallet fclaim-lane fill preflight wires the vendored fail-closed fund
 // boundary (verifyFillSpv) and refuses a DENIED fclaim on the SHIPPED wallet artifact.
 //
 // Under V28 the open-lane claim is a short-expiry `fclaim` PROPOSE and the fill ATTESTS the fclaim txid.
@@ -108,7 +108,7 @@ function mkStub({ offerReply, tip = 50_000 }) {
 
 async function freshWallet(pw) { const w = new Wallet(memoryStore()); const { addr } = await w.create(pw); return { w, addr }; }
 
-console.log("B6 — fclaim-lane fill preflight (verifyFillSpv fund boundary):");
+console.log("B6: fclaim-lane fill preflight (verifyFillSpv fund boundary):");
 
 // 0. the cap over-count is a PURE function of the scanned events (not hardcoded).
 {
@@ -367,7 +367,7 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
 
 // OBS 3 → D1 (2026-09-12): the legacy SCORE_CLAIM scan+count is DELETED (the V28-transition gate at
 // tip 60,134 is unreachable at any tip a fillable fclaim can exist at). A legacy claim now NEVER counts
-// toward the cap — inside the old transition window AND past it — and the scan never fetches a prevout
+// toward the cap; inside the old transition window AND past it; and the scan never fetches a prevout
 // for a legacy txid (the deletion removed the only attacker-plantable prevout-fetch trigger in this
 // scan). RED-FIRST: the count assertion was === 1 pre-deletion.
 {
@@ -391,7 +391,7 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
   // offer/fill/lane txs), so the never-legacy assertion above is not vacuously true
   check("D1: the prevout seam DID fire for the real lane events (the instrumentation is wired)", prevoutCalls.length > 0);
 
-  // …and past the old gate (tip 60,134) the same holds — one fixture, both tips.
+  // …and past the old gate (tip 60,134) the same holds; one fixture, both tips.
   const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;
   const POST_GATE = H0 + LEGACY_HOLD + MAX_HOLD_SPAN;   // == the old 60,134 crossing
   const io2 = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, POST_GATE), hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
@@ -483,7 +483,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 
 {
   // wallet-level end-to-end: a source THROW (the DEFECT-3 suppression path) surfaces as retryable
-  // VERIFY_UNAVAILABLE, NEVER a signed fill — the fail-closed default holds through the whole preflight.
+  // VERIFY_UNAVAILABLE, NEVER a signed fill; the fail-closed default holds through the whole preflight.
   const { w } = await freshWallet("pw-throw01");
   w.fillSpvIoForTest = () => { throw new Error("fill-SPV: a lane event could not be authorship-bound (possible scriptSig suppression) - refusing"); };
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
