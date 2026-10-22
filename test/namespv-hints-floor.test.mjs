@@ -99,7 +99,7 @@ await test("honest path: the proxy serving the canonical block verifies", async 
   assert.equal(v.verified, true, v.reason);
 });
 
-console.log("the confirm-time hint-set skip over the store (plan 3.5, wallet.ts rememberHintSet / tryConfirmHintSet):");
+console.log("the confirm-time hint-set skip over the store (plan 3.5, names.ts rememberHintSet / tryConfirmHintSet):");
 
 // The wallet with its production name sources and RPC; the light client is the live store source over the fixture.
 async function walletOn(store) {

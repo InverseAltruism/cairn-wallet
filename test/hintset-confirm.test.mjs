@@ -131,7 +131,7 @@ console.log("Wallet.confirmName skip (no merkle on the cheap path):");
 }
 
 console.log("write-site pins (never cache M12 / soleSource):");
-const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
+const walletSrc = readFileSync(new URL("../src/core/names.ts", import.meta.url), "utf8");
 ok("rememberHintSet refuses recovered (M12)", /res\.recovered/.test(walletSrc) && /rememberHintSet/.test(walletSrc));
 ok("rememberHintSet refuses soleSource", /res\.soleSource/.test(walletSrc));
 ok("verifyName fail-softs rememberHintSet (own try/catch; cache throw cannot downgrade a green verify)",
