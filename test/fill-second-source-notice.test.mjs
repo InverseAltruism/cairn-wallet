@@ -3,7 +3,7 @@
 // `secondSource: "pending" | "failed"` for the approval window. No new refusal and no wait: the fill signs the same
 // bytes as the honest one. Through the real Wallet.fillOffer (test/helpers/fillworld.mjs).
 //
-// RED-FIRST: delete the MUTATE_SECOND_SOURCE_NOTE line in wallet.ts and section 2 fails; make
+// RED-FIRST: delete the MUTATE_SECOND_SOURCE_NOTE line in fillpreflight.ts and section 2 fails; make
 // secondSourceUnanswered return "failed" for every reply and section 1 fails (section 4 asserts the same on the
 // honest call: no notice).
 // The worker channel and the window: test/fill-reservation-confirm.test.mjs (11), test/approve-second-source-dom.test.mjs.

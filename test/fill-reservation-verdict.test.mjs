@@ -10,7 +10,7 @@
 //      returns RESERVATION_UNCONFIRMED for the approval window's confirm step.
 //   3. Latency: a slow record read does not lengthen the fill past the scan.
 //
-// RED-FIRST: replace `rv?.kind === "denied"` in wallet.ts fclaimLanePreflight (MUTATE_RESERVATION_VERDICT) with
+// RED-FIRST: replace `rv?.kind === "denied"` in fillpreflight.ts fclaimLanePreflight (MUTATE_RESERVATION_VERDICT) with
 // `false` and section 2's refusal assertion fails (the fill submits).
 // Run: npx tsx test/fill-reservation-verdict.test.mjs   (offline)
 import assert from "node:assert/strict";

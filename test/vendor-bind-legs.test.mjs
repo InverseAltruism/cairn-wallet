@@ -1,6 +1,6 @@
 // The vendored bindOfferTerms contract (cairnx-core 0.2.0, csd-sdk packages/cairnx/CHANGELOG.md "Migration"): the
 // give and wantType legs are on by default, `{ give: false, wantType: false }` returns the pre-0.2.0 verdict, and
-// the wallet's own call (both legs passed explicitly, wallet.ts provenTermsMismatch) gives the same verdict as the
+// the wallet's own call (both legs passed explicitly, fillpreflight.ts provenTermsMismatch) gives the same verdict as the
 // default. Real on-chain offer records from the proven-terms corpus, terms minted by the vendored provenOfferTerms.
 // Red first: against the 0.1.44 bundle the two-argument call accepts the inflated give and the want-type flip.
 // Run: npx tsx test/vendor-bind-legs.test.mjs

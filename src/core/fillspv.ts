@@ -27,7 +27,7 @@ import { BodyMismatchError, liveSpvSource, type LiveSpvOpts, type SpvSource } fr
 // both (a fifth `feeBpsAt` duplication and one of four hand-built ProvenOfferTerms producers), the
 // exact drift class W2 exists to kill. Corpus-equivalence over every real on-chain offer (55) plus
 // synthetic envelope variants proved the old copies byte-identical to canonical before the swap
-// (test/proven-terms-corpus.test.mjs pins it forever). Re-exported so tests and wallet.ts keep one
+// (test/proven-terms-corpus.test.mjs pins it forever). Re-exported so tests and fillpreflight.ts keep one
 // import site; the re-export is a POINTER, never a re-declaration.
 export { feeBpsAt, type ProvenOfferTerms, type MintedProvenOfferTerms } from "../vendor/cairnx-spv.js";
 
@@ -158,7 +158,7 @@ export function countMyOtherLiveHolds(
  * hold / cancel / consuming fill vanish from the replay.
  *
  * PRE-WINDOW WITHHOLDING: this scan cannot see a cancel or consuming fill OLDER than the tip-anchored window,
- * and a full anchor-to-tip scan is too slow for the hot path (an offer can be weeks old). wallet.ts
+ * and a full anchor-to-tip scan is too slow for the hot path (an offer can be weeks old). fillpreflight.ts
  * fclaimLanePreflight therefore reads the OFFER by id from the second resolver (clarvis) beside this scan and
  * refuses when it reports the offer closed, further filled, or held by another reservation through our hold
  * (offerxcheck.ts, test/fill-offer-crosscheck.test.mjs). The gap is closed when clarvis answers before the scan
@@ -171,7 +171,7 @@ export function countMyOtherLiveHolds(
  *
  * WHAT THIS BOUNDARY STOPS (stated exactly, no overstatement): once the wallet ROUTES to it (STRUCTURALLY, on
  * `proposalId !== offer.id`, so a hostile PRIMARY can no longer WITHHOLD/alter the D2 `fclaimId` to steer the
- * fill away from the boundary -- see wallet.ts fillOfferPreflight), it stops a denied / superseded / forged-holder
+ * fill away from the boundary -- see fillpreflight.ts fillOfferPreflight), it stops a denied / superseded / forged-holder
  * / below-depth fclaim and an in-window scriptSig-suppressed hold/cancel/fill. It does NOT stop: (1) a PRE-window
  * withheld cancel/consuming-fill (above; the second-source read covers it only when clarvis answers); (2) resolver-trusted give-backing (above); (3) a fill the wallet routes
  * to the LEGACY lane (`proposalId === offer.id` with no live fclaim hold -- a taker-bound fill or a pre-V28
@@ -462,7 +462,7 @@ export async function provenOfferPayto(
     const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
     // B7e-FIX (REBIND W1 token-lane close): surface the merkle-proven token WANT (the ticker + amount the
     // buyer PAYS). bindOfferTerms binds the want TYPE only, and provenOfferTerms drops the token ticker/amount,
-    // so the token-lane content bind (wallet.ts fillOfferPreflight) needs these directly to mirror the site
+    // so the token-lane content bind (fillpreflight.ts fillOfferPreflight) needs these directly to mirror the site
     // swapguard verifyOfferContent want.ticker/want.amount bind. Undefined on a CSD-priced offer (no want.ticker).
     const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined; // MUTATE_PROVEN_WANT_TICKER
     const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined; // MUTATE_PROVEN_WANT_AMOUNT

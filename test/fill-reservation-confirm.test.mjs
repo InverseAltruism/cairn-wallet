@@ -8,7 +8,7 @@
 //   - pass the dApp's own params through instead of setting reservationAck from the popup's resolve call
 //     (background.ts MUTATE_ACK_CHANNEL: `reservationAck: p.params?.reservationAck ?? reservationAckFor(id, ack)`):
 //     section 3 fails (the page's acknowledgement signs).
-//   - drop the "unknown" return in wallet.ts (MUTATE_RESERVATION_CONFIRM: `if (false && ...)`): section 1 fails.
+//   - drop the "unknown" return in fillpreflight.ts (MUTATE_RESERVATION_CONFIRM: `if (false && ...)`): section 1 fails.
 // PAIRED HONEST PATH: section 7, a granted reservation signs on the first approval, with no added latency.
 // Section 11: the "second source not consulted" notice reaches the window's outcome and not the page.
 //
@@ -222,7 +222,7 @@ await test("10. queue caps: a confirm-step request re-queued after five newer on
   for (const p of await call("pending")) await call("resolve", p.id, false);
 });
 
-// "Second source not consulted" (wallet.ts FillNotes): the window's outcome carries it and the page's result does not.
+// "Second source not consulted" (fillpreflight.ts FillNotes): the window's outcome carries it and the page's result does not.
 //   RED-FIRST: drop `delete out.secondSource` in background.ts pageResult and the page check fails; drop the
 //   second argument of the success `finish(...)` and the window check fails.
 await test("11. a fill signed while the record read is pending: the window is told, the page is not", async () => {

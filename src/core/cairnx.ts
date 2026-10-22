@@ -24,15 +24,15 @@ import {
   parseAmount as parseAmountCanonical,
   // Tier 1 pre-flight value-safety surface (deep-review 2026-07-03), re-exported under the wallet surface.
   // WHO CALLS WHAT (honestly): fillIsSafe + requiredFillOutputs → the wallet's fillOffer preflight
-  // (wallet.ts fillOfferPreflight); finalizeWinnerCheck → the approve-path nfinalize gate
+  // (fillpreflight.ts fillOfferPreflight); finalizeWinnerCheck → the approve-path nfinalize gate
   // (popup/clearsign.ts nfinalizeApproveGate, since the deferred-finalize gate); previewFill /
   // isOpenClaimLane / hasLiveClaim → test oracles + the CQ-1 identity-compare (test/cairnx.ts) that pins
   // them to the bundle (isOpenClaimLane/hasLiveClaim are also internal to the vendored fillIsSafe).
   previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs,
   // v2.8 open-lane (fclaim) fill fund boundary: the shared fail-closed grant-replay SPV surface the
-  // fclaim-lane fillOffer preflight MUST clear before signing (wallet.ts fclaimLanePreflight).
+  // fclaim-lane fillOffer preflight MUST clear before signing (fillpreflight.ts fclaimLanePreflight).
   verifyFillSpv,
-  // Plan 70 R2 Option B: the SINGLE fill-boundary term-mismatch verdict (wallet.ts provenTermsMismatch
+  // Plan 70 R2 Option B: the SINGLE fill-boundary term-mismatch verdict (fillpreflight.ts provenTermsMismatch
   // delegates to it), single-sourced in cairnx-core to retire the R1 hand-copy.
   bindOfferTerms,
 } from "../vendor/cairnx-spv.js";
