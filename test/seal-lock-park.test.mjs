@@ -83,11 +83,11 @@ const sent = await w.send(RCPT, 5_00000000, 1_000_000);
 check(`(1) the send broadcast (its fee is spent, so its history row must survive) (${sent?.error ?? "ok"})`, sent?.ok === true);
 const sealed = await w.sealClaim({ claim: "the sealed text whose nonce is the only reveal key" });
 check(`(1) the seal commit broadcast (its 0.25 CSD anchor is spent) (${sealed?.error ?? "ok"})`, sealed?.ok === true);
-check("(1) the history write FAILED and parked", w.pendingHist.length > 0);
+check("(1) the history write FAILED and parked", w.hist.pendingHist.length > 0);
 check("(1) the seal write FAILED and parked", w.pendingSeals.length === 1);
 check("(1) nothing reached the store under the history key", st.raw.get(histKey(addr)) === undefined);
 check("(1) nothing reached the store under the seal key", st.raw.get(sealKey(addr)) === undefined);
-const parkedHistTxids = w.pendingHist.map((p) => p.entry.txid);
+const parkedHistTxids = w.hist.pendingHist.map((p) => p.entry.txid);
 const parkedSealTxid = w.pendingSeals[0].rec.txid;
 check("(1) the parked records are visible through the public reads (history merge)",
   (await w.history()).filter((e) => parkedHistTxids.includes(e.txid)).length === parkedHistTxids.length);
@@ -99,7 +99,7 @@ await w.unlock(PW);
 check("(2) W4: the parked SEAL record survived lock/unlock (the paid commit is still revealable)",
   w.pendingSeals.length === 1 && w.pendingSeals[0].rec.txid === parkedSealTxid);
 check("(2) W4: the parked HISTORY rows survived lock/unlock (the double-pay backstop still sees them)",
-  w.pendingHist.length === parkedHistTxids.length);
+  w.hist.pendingHist.length === parkedHistTxids.length);
 check("(2) W4: sealedClaims() still lists the paid commit after the unlock",
   (await w.sealedClaims()).some((s) => s.txid === parkedSealTxid));
 check("(2) W4: revealClaim can still find the parked seal (the reveal nonce is not lost)",
@@ -119,7 +119,7 @@ check("(2b) every parked history row drained to the store on the next history wr
   parkedHistTxids.every((t) => storedHist.some((e) => e.txid === t)));
 check("(2b) the parked seal drained to the store on the next seal write",
   storedSeals.some((s) => s.txid === parkedSealTxid));
-check("(2b) nothing is still parked", w.pendingHist.length === 0 && w.pendingSeals.length === 0);
+check("(2b) nothing is still parked", w.hist.pendingHist.length === 0 && w.pendingSeals.length === 0);
 
 // ── 3. PAIRED HAPPY-PATH: doReset() still clears both (reset discipline unchanged) ─────────────────────
 console.log("\nPAIRED HAPPY-PATH (reset discipline and clean writes are unchanged):");
@@ -132,10 +132,10 @@ console.log("\nPAIRED HAPPY-PATH (reset discipline and clean writes are unchange
   await w2.send(RCPT, 3_00000000, 1_000_000);
   await w2.sealClaim({ claim: "parked before a reset" });
   check("(3) NON-VACUITY: both arrays are non-empty before the reset",
-    w2.pendingHist.length > 0 && w2.pendingSeals.length > 0);
+    w2.hist.pendingHist.length > 0 && w2.pendingSeals.length > 0);
   st2.fail([]);
   await w2.reset();
-  check("(3) doReset() still clears pendingHist", w2.pendingHist.length === 0);
+  check("(3) doReset() still clears pendingHist", w2.hist.pendingHist.length === 0);
   check("(3) doReset() still clears pendingSeals", w2.pendingSeals.length === 0);
   check("(3) ...and the stored keys are gone", st2.raw.get(histKey(a2)) === undefined && st2.raw.get(sealKey(a2)) === undefined);
 }
@@ -150,7 +150,7 @@ console.log("\nPAIRED HAPPY-PATH (reset discipline and clean writes are unchange
   const sc = await w3.sealClaim({ claim: "a clean seal" });
   check(`(4) a normal send against working storage succeeds (${r?.error ?? "ok"})`, r?.ok === true);
   check(`(4) a normal seal against working storage succeeds (${sc?.error ?? "ok"})`, sc?.ok === true);
-  check("(4) NOTHING was parked", w3.pendingHist.length === 0 && w3.pendingSeals.length === 0);
+  check("(4) NOTHING was parked", w3.hist.pendingHist.length === 0 && w3.pendingSeals.length === 0);
   check("(4) both rows are in the store directly", (st3.raw.get(histKey(a3)) || []).length === 2 && (st3.raw.get(sealKey(a3)) || []).length === 1);
   check("(4) and a lock/unlock in the middle of a clean session changes nothing", s3.length === 2);
   await w3.lock(); await w3.unlock("pw-clean-park-1234");
