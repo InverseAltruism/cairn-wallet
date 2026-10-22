@@ -1021,8 +1021,8 @@ export class Wallet {
           // refusal/outage (node.ts). Dropping the entry on that path silently lost the body of a
           // tx the user PAID to anchor. Registration is idempotent and self-certifying, so a
           // failed register keeps the entry for the next alarm tick instead.
-          const rr = await node.registerContent(this.api, x.content, x.txid);
-          if (!(rr && (rr as any).ok)) keep.push(x);
+          const rr: { ok?: unknown } | null = await node.registerContent(this.api, x.content, x.txid);
+          if (!(rr && rr.ok)) keep.push(x);
         } catch { keep.push(x); }                                  // transient/network error → retry later
       }
       // re-read + merge (union by txid): entries queued DURING this flush survive the write-back.

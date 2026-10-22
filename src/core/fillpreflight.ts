@@ -96,7 +96,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
   let fetchFailed = false;
   try {
     const r0 = await wallet.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): recipient path fails clean
-    if (r0.ok) offer = (await r0.json().catch(() => null)) as any;
+    if (r0.ok) offer = (await r0.json().catch(() => null)) as CxOfferState | null;   // shape checked next: a string status
     else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
   } catch { fetchFailed = true; }
   if (offer && typeof offer.status === "string") {
@@ -112,9 +112,9 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
       sums.set(k, (sums.get(k) ?? 0n) + BigInt(o.value));
     }
     // the seller payment is the output sum going to want.payto (what previewFill/fillIsSafe price against)
-    const payto = String((offer.want as any)?.payto || "").toLowerCase();
+    const payto = String(offer.want?.payto || "").toLowerCase();
     const pay = sums.get(payto) ?? 0n;
-    const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
+    const isCsdWant = !("ticker" in (offer.want ?? {}));
     // ── V28 open-lane (fclaim) STRUCTURAL routing to the grant-replay SPV boundary ─────────────────────
     // The fill ATTESTS the fclaim txid, NEVER the offer id, so `proposalId !== offer.id` STRUCTURALLY IS a
     // fclaim-lane fill and MUST clear the SPV boundary (verifyFillSpv). Crucially this does NOT trust the
