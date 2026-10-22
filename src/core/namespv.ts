@@ -1,4 +1,4 @@
-// namespv.ts — trustless .csd name → address verification (XREPO-1 cure, Phase 5).
+// namespv.ts; trustless .csd name → address verification (XREPO-1 cure, Phase 5).
 //
 // THE THREAT: the wallet's resolveName() takes the resolver's `addr` verbatim. A hostile/MITM'd
 // resolver can answer "alice.csd → 0xATTACKER" and the wallet would send funds there.
@@ -6,20 +6,20 @@
 // THE CURE (reuses audited code, never re-types it): the wallet fetches the resolver's name-history
 // HINTS (untrusted txids), then INDEPENDENTLY proves them against a PoW header chain it verified
 // itself (the vendored LightClient), and re-runs the AUDITED CairnX resolver over the merkle-verified
-// events. The recomputed (owner, addr) must equal what the resolver claimed — a server cannot fabricate
+// events. The recomputed (owner, addr) must equal what the resolver claimed; a server cannot fabricate
 // a mapping it has no signed, mined events for.
 //
 //   per block touched: fetch it, rebuild EVERY tx, require merkleRoot(txids) == the PoW-verified
 //                      header's merkle root (so a lying node can't omit/alter/add a committed tx body),
 //                      then authenticate each relevant tx's SIGNER by its signature (the merkle root
 //                      does NOT commit the scriptSig) and reconstruct the resolver ChainEvent.
-//   then: resolve(events, verifiedTip).names[name] — the audited resolver, byte-for-byte.
+//   then: resolve(events, verifiedTip).names[name]; the audited resolver, byte-for-byte.
 //
 // HONEST SCOPE (must NOT be overstated in the UI): this proves the mapping is backed by SPV-verified,
 // correctly-signed, mined events AS SHOWN by the resolver's hint list. It defeats FABRICATION (the
-// dominant hostile-resolver redirect — the attacker has no signed/mined events for 0xATTACKER). It does
+// dominant hostile-resolver redirect; the attacker has no signed/mined events for 0xATTACKER). It does
 // NOT by itself prove COMPLETENESS: the resolver chooses WHICH txids to show, and the wallet cannot prove
-// it was shown ALL of a name's events. So a hostile resolver can WITHHOLD events to mislead the replay —
+// it was shown ALL of a name's events. So a hostile resolver can WITHHOLD events to mislead the replay:
 // two cases, both real:
 //   (a) stale: hide a later nxfer/nset so an old (real) mapping looks current → routes to a prior owner.
 //   (b) **competing-claim**: hide the legitimate owner's WINNING claim (lower effectiveHeight) and show
@@ -30,7 +30,7 @@
 // So "verified" means "chain-backed AS SHOWN", never "provably the current/winning mapping". The send UX
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
-// error returns verified:false with a reason — never a false pass against FABRICATION.
+// error returns verified:false with a reason; never a false pass against FABRICATION.
 import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, paidToFromOutputs, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
 import { parseSpvJson } from "./node.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
@@ -52,19 +52,19 @@ export interface NameVerification {
   // so a name-scoped SPV replay cannot soundly prove it. Surfaced so the UI never shows it as plain "verified".
   viaFill?: boolean;
   // Multi-source cross-check (NSPV-COMPLETE-1 cure, doc 36 Part B): how many resolvers (name sources) were
-  // unioned, and whether any disagreed (a source whose stated claim ≠ the SPV-proven union winner — caught
+  // unioned, and whether any disagreed (a source whose stated claim ≠ the SPV-proven union winner; caught
   // + flagged; the send still goes to the proven winner). (D3: the `agreed` count and the `scope` label
-  // were deleted — nothing in production read them; the badge reads sources/disagree/soleSource/viaFill.)
+  // were deleted; nothing in production read them; the badge reads sources/disagree/soleSource/viaFill.)
   sources?: number;
   disagree?: boolean;
-  // WALLET-LAPSE-TIP-1: a lease-LAPSED verdict is only CONFIDENT (`lapsed:true`) when corroborated — a second
+  // WALLET-LAPSE-TIP-1: a lease-LAPSED verdict is only CONFIDENT (`lapsed:true`) when corroborated; a second
   // name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
   // past expiry. An UNCORROBORATED single-source lapse degrades to CAUTION: `verified:false` + `lapsed` falsy
   // + a "may have lapsed" reason, so a fresh-install + MITM inflating the node tip cannot assert a false
   // confident lapse that hard-blocks a legit send. Fail-soft (availability valve), never a false green.
   lapsed?: boolean;
-  // NS-1 (HIGH, RESIDUAL — not a closed defense): true when the union failed and only ONE source solo-
-  // recovered the winner, so a lone (possibly hostile) source alone decided the send target — NOT
+  // NS-1 (HIGH, RESIDUAL; not a closed defense): true when the union failed and only ONE source solo-
+  // recovered the winner, so a lone (possibly hostile) source alone decided the send target; NOT
   // corroborated by another source. Surfaced so the badge stops asserting multi-source "chain-verified"; the
   // send still goes to the PROVEN winner (vetoing would drop back to the resolver-served address = the B5e
   // single-source DoS/trust regression). Real closure remains a genuinely-independent second source.
@@ -81,7 +81,7 @@ export interface NameClaim { addr?: string; owner?: string; via?: string; lapsed
 export interface NameHint { txid: string; height: number; pos: number; kind?: string }
 // The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so a hinted
 // record whose authenticating input looks like one is rejected (no prevout owner to bind against).
-// Mirrors the vendored bundle's own `isCoinbaseInput`/`COINBASE_VOUT(=0xffffffff)` — kept local because
+// Mirrors the vendored bundle's own `isCoinbaseInput`/`COINBASE_VOUT(=0xffffffff)`; kept local because
 // those are not in the bundle's export surface (the .d.ts types only the members namespv.ts already used).
 const COINBASE_TXID = "0x" + "00".repeat(32);
 const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
@@ -133,19 +133,19 @@ export async function fetchNameUnion(name: string, sources: ResolverSource[], fe
 // The SPV data seam. Production wires the real LightClient (liveSpvSource); tests inject synthetic
 // PoW-verified blocks so the merkle-bind + replay + fail-closed logic is exercised without a chain.
 export interface SpvSource {
-  // Ensure verified headers cover up to `maxEventHeight` (the name's most recent record — no need to
+  // Ensure verified headers cover up to `maxEventHeight` (the name's most recent record; no need to
   // sync the whole chain to tip for an old, sparse name). Returns the PoW-VERIFIED tip actually reached
   // AND the (untrusted) node-reported chain tip used ONLY for the lease-lapse epoch (a deflated value is
   // the documented stale residual; an inflated one is fail-closed-safe, since a higher epoch ⇒ "lapsed").
   // `floorTip` (optional, WALLET-LAPSE-TIP-1): the persisted monotonic tip high-water as seeded from PRIOR
-  // sessions — a tip we already trusted BEFORE this (possibly-MITM'd) session, EXCLUDING the current read.
+  // sessions; a tip we already trusted BEFORE this (possibly-MITM'd) session, EXCLUDING the current read.
   // Used ONLY to CORROBORATE a lease-lapse verdict: a lapse that also holds at floorTip is confident; one
   // that holds only at the current nodeTip degrades to caution. Omitted ⇒ no corroboration available.
   // `tipKnown` false: the node tip could not be read this call, so nothing was synced past the verified tip.
   prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number; tipKnown?: boolean }>;
   // The PoW-VERIFIED merkle root for `height` + that block's node-JSON txs. THROWS if it cannot verify.
   blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
-  // NSPV-SIGSUB-1 (H3): resolve the scriptPubkey of a record's spent prevout, BOUND to its txid — the
+  // NSPV-SIGSUB-1 (H3): resolve the scriptPubkey of a record's spent prevout, BOUND to its txid; the
   // fetched source tx must recompute to `prevTxid` (the consensus txid commits its outputs incl. scriptPubkey),
   // reusing the TXB-1 fetch+recompute pattern. Lets replayName require that the recovered signer actually OWNS
   // the coin it spends (mirroring consensus / BIP-174), so a hostile node can't swap in a foreign valid
@@ -180,13 +180,13 @@ export class BodyMismatchError extends Error {
 }
 
 // Headers to sync past the last record so its inclusion proof has a confirmation cushion. The verifier
-// never needs the full chain tip for inclusion — only up to the records it must prove.
+// never needs the full chain tip for inclusion; only up to the records it must prove.
 const CONF_BUFFER = 12;
 
 const fail = (reason: string): NameVerification => ({ verified: false, reason });
 
 // outputs → addr→sum(value) map (the resolver's `paidTo`). The AGGREGATION is the vendored
-// paidToFromOutputs (the exact sink the cairnx scanner/resolver use — same skip-don't-throw
+// paidToFromOutputs (the exact sink the cairnx scanner/resolver use; same skip-don't-throw
 // semantics for malformed values; a dropped fee output can only make a fee look unpaid → reject,
 // never overpay). What stays local is SPV-specific: raw tx outputs carry a scriptPubkey, not an
 // addr, so extract + validate the 40-hex address and coerce codec number|bigint values to number
@@ -206,7 +206,7 @@ function outputsToPaidTo(outputs: Tx["outputs"]): Record<string, string> {
 // validate against sighash(tx): the merkle root commits the tx BODY but not the scriptSig, so without this
 // a lying node could re-attribute (or fabricate) a record's author. null on any malformation / bad sig.
 // Since csd-crypto 0.1.15 (Plan 57 B9) the STRICT parser+verifier is the vendored recoverSigner
-// (exact 198-byte frame + verifyDigest + lowercase addr — the same contract this file hand-rolled);
+// (exact 198-byte frame + verifyDigest + lowercase addr; the same contract this file hand-rolled);
 // this wrapper only supplies sighash(tx), kept INSIDE the try so a malformed hinted tx null-fails
 // instead of throwing (fail-closed, never fail-crashed).
 function recoverSigner(tx: Tx): string | null {
@@ -218,7 +218,7 @@ function recoverSigner(tx: Tx): string | null {
 
 // Reconstruct a resolver ChainEvent from a merkle-verified, signer-authenticated, prevout-bound tx. The
 // caller has already recovered + ownership-bound `signer` (see replayName); this only decodes the app
-// payload. Returns null for a non-cairnx tx (the caller fail-closes — a hinted tx we can't faithfully
+// payload. Returns null for a non-cairnx tx (the caller fail-closes; a hinted tx we can't faithfully
 // replay is a lying read).
 // ★ KEEP-IN-SYNC: the emitted field shapes mirror the cairnx scanner (cairnx repo src/scan.ts
 // tx()/propose/attest mapping) so resolve() produces identical state from either feed. The
@@ -250,7 +250,7 @@ const MAX_HINTS = 256;
 async function replayName(name: string, hints: NameHint[], src: SpvSource): Promise<Replay> {
   if (!Array.isArray(hints) || hints.length === 0) return { ok: false, reason: "no on-chain records were offered for this name" };
   if (hints.length > MAX_HINTS) return { ok: false, reason: `too many record hints for one name (>${MAX_HINTS}) — refusing` };
-  // group hinted txids by block height — verify each block ONCE against its PoW-committed merkle root
+  // group hinted txids by block height; verify each block ONCE against its PoW-committed merkle root
   const byHeight = new Map<number, NameHint[]>();
   let maxHeight = 0;
   for (const h of hints) {
@@ -284,9 +284,9 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
       const signer = recoverSigner(tx);
       if (!signer) return { ok: false, reason: `record ${hint.txid} couldn't be authenticated (not a signed cairnx record)` };
       // NSPV-SIGSUB-1 (H3): the merkle root + txid commit the tx BODY but NOT the scriptSig, and the public
-      // sighash is secret-free — so a hostile/MITM block-body provider could substitute a foreign VALID
+      // sighash is secret-free; so a hostile/MITM block-body provider could substitute a foreign VALID
       // signature over it to re-attribute this record's author (re-pointing a name's owner). Defeat it the
-      // way consensus / BIP-174 do: bind the recovered signer to the COIN it spends — the authenticating
+      // way consensus / BIP-174 do: bind the recovered signer to the COIN it spends; the authenticating
       // input's prevout scriptPubkey (a 20-byte hash160) must equal hash160(pub) == this signer's address.
       // SpvSource.prevoutScriptPubkey txid-binds the source body (reuses the TXB-1 cure). Fail CLOSED on any gap.
       const in0 = tx.inputs?.[0];
@@ -305,15 +305,15 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
   if (rec.expired) {
     // WALLET-LAPSE-TIP-1: corroborate the lapse against the persisted tip FLOOR (a tip already trusted BEFORE
-    // this — possibly MITM'd — session). Re-running the AUDITED resolver at floorTip re-derives "expired"
+    // this; possibly MITM'd; session). Re-running the AUDITED resolver at floorTip re-derives "expired"
     // without any consensus math here; if the lease is expired even at that trusted lower-bound tip, the lapse
     // is confident. If it is expired ONLY at the current (claimed) nodeTip, the caller degrades it to caution
-    // unless a second source corroborates — so an inflated fresh-install tip can't assert a false lapse.
+    // unless a second source corroborates; so an inflated fresh-install tip can't assert a false lapse.
     const floor = Number.isFinite(floorTip as number) ? Number(floorTip) : 0;
     const floorCorroborated = floor > 0 && resolve(events, floor).names[name]?.expired === true;
     return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
   }
-  // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized —
+  // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized:
   // it confers no address and is not an owned name yet. Fail CLOSED (never resolve it to the owner) so a name
   // that is only reserved, or whose promoting `nfinalize` is being withheld from the hint set, can never be a
   // send target. A finalized name is not pending (nfinalize clears the flag), so this only blocks true reserves.
@@ -322,9 +322,9 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
 }
 
 // D2 (register §3, 2026-09-12): the single-source verifyName twin is DELETED. It had zero production
-// callers (wallet.ts's method and every resolve path go through verifyNameUnion below), it had already
+// callers (names.ts verifyName and every resolve path go through verifyNameUnion below), it had already
 // drifted from the union's behavior, and its existence let the test suite certify a function production
-// never ran. The shared machinery (replayName, fail, toChainEvent) stays — the union uses it.
+// never ran. The shared machinery (replayName, fail, toChainEvent) stays; the union uses it.
 
 // Fetch one resolver's /cairnx/name-history. Fail-soft: any error → ok:false (the union tolerates a down source).
 async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: typeof fetch): Promise<SourceResult> {
@@ -336,7 +336,7 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
     if (!j?.ok) return { label: s.label, ok: false, hints: [], error: j?.error ?? "name-history unavailable" };
     // Capture the resolver's scopedReplaySufficient flag (cairnx `service.ts`): true = "a name-scoped replay
     // reproduces the same owner/addr as the full chain"; false = "ownership depends on out-of-name-scope state
-    // (V17 open-lane claim cap / name-for-token balance) — the wallet MUST fail closed". We HONOR a served
+    // (V17 open-lane claim cap / name-for-token balance); the wallet MUST fail closed". We HONOR a served
     // false but never TRUST a served true (the self-computed viaFill gate in verifyNameUnion is the real check).
     return { label: s.label, ok: true, hints: Array.isArray(j.events) ? j.events : [], claim: { addr: j.resolve?.addr, owner: j.resolve?.owner, via: j.resolve?.via, lapsed: j.resolve?.lapsed }, scopedReplaySufficient: typeof j.scopedReplaySufficient === "boolean" ? j.scopedReplaySufficient : undefined };
   } catch (e) { return { label: s.label, ok: false, hints: [], error: (e as Error)?.message ?? String(e) }; }
@@ -347,7 +347,7 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
  * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com, which share one operator). Each source's hints are fetched, UNIONed by
  * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and replayed by the
  * audited resolver to the true winner. Because every unioned event is SPV-authenticated, a source can only
- * ADD real events (filling another's omission) — never fabricate — so the union defeats a WITHHOLDING
+ * ADD real events (filling another's omission); never fabricate; so the union defeats a WITHHOLDING
  * resolver as long as ONE source is honest (an attacker must make BOTH hosts withhold the SAME event, which
  * their common operator, or whoever controls both, can). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
  * it is flagged. Fail-soft: 1 usable source → single-source (caution); ≥2 agree → strong; a disagreement is
@@ -360,21 +360,21 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, disagree: false };
       return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, disagree: false };
     }
-    // S-B6 (2026-09-09 — DELETES the H1 pre-replay short-circuit): a source's clean 404 used to VETO the
-    // union here, before any replay — and resolveName then fell through to serving the hint-serving
+    // S-B6 (2026-09-09; DELETES the H1 pre-replay short-circuit): a source's clean 404 used to VETO the
+    // union here, before any replay; and resolveName then fell through to serving the hint-serving
     // source's RAW (unproven) claim with a caution badge. That was strictly worse on both planes:
     // availability (a LAGGING second resolver 404s every brand-new name until it indexes, so routine
     // sends degraded to unverified) and trust (what got served was the raw claim, not the SPV-proven
     // winner). The replay itself is the existence check: fabricated events are not mined and fail SPV,
     // and a genuinely-unregistered name has no mined events to serve. The out-of-name-scope classes the
     // 404 veto was meant to catch (V17 claim cap / token-balance fills) stay fail-closed via the viaFill /
-    // scopedReplaySufficient gates below — those are computed from OUR verified events, not a served flag.
+    // scopedReplaySufficient gates below; those are computed from OUR verified events, not a served flag.
     // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
     // A throw here (one source's hint naming a block the SPV source cannot serve) is a failed replay like
     // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
     const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     if (!rep.ok) {
-      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated — ≥2 name sources served the
+      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated; ≥2 name sources served the
       // events establishing the lease, OR the persisted tip floor is also past expiry. A lone usable source
       // with an uncorroborated (current-tip-only) lapse degrades to CAUTION, never a false confident lapse
       // from a fresh-install + MITM-inflated tip. Fail-soft (availability valve), never a false green.
@@ -386,7 +386,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       }
       // M12 (B5e): the UNIONED replay failed. A single hostile source can poison the combined hint set
       // with ONE junk hint (a txid not in its claimed block, an unauthenticated record), aborting the whole
-      // replay — after which resolveName drops to the served address with only a caution badge, and that
+      // replay; after which resolveName drops to the served address with only a caution badge, and that
       // address can come from the very source that poisoned it. Retry EACH source's hints ALONE (this runs
       // ONLY on the already-failed path, so it slows nothing that was working): a poisoned source still
       // fails on its own junk and drops out, while an honest source's own complete history replays to the
@@ -417,8 +417,8 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       }
       return { ...fail(rep.reason), sources: usable.length, disagree: false };
     }
-    // NSPV-CLAIMCAP-1 (H1): never present a fill-acquired ("viaFill") name — or a name any usable source
-    // flagged scopedReplaySufficient:false — as plain verified. Its ownership can hinge on out-of-name-scope
+    // NSPV-CLAIMCAP-1 (H1): never present a fill-acquired ("viaFill") name; or a name any usable source
+    // flagged scopedReplaySufficient:false; as plain verified. Its ownership can hinge on out-of-name-scope
     // state (the V17 open-lane claim cap is global over ALL offers; a name-for-token fill depends on the
     // buyer's global token balance) that this name-scoped replay provably cannot reconstruct, and a second
     // honest source runs the IDENTICAL scoped selector, so the union cannot fill the gap. `viaFill` is
@@ -434,7 +434,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       return { ...fail(reason), sources: usable.length, disagree: false, viaFill: !!rep.viaFill };
     }
     // Cross-check: each usable source's STATED claim.addr against the SPV-proven union winner.
-    // (D3 follow-through: the agreed COUNTER is gone — only the disagreement set feeds the flag.)
+    // (D3 follow-through: the agreed COUNTER is gone; only the disagreement set feeds the flag.)
     const disagreeing: string[] = [];
     for (const r of usable) {
       const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null;
@@ -476,7 +476,7 @@ export interface LiveSpvOpts {
   // protects WITHIN a session; persisting it lets the floor survive MV3 service-worker restarts so a deflated
   // tip served on the first verify of a fresh session cannot roll lease-state back below a height we have
   // already trusted. A single integer, written (awaited) only when the observed tip ADVANCES, on the .csd
-  // name-resolve path — off the send hot path; a write failure is swallowed (the floor just degrades to
+  // name-resolve path; off the send hot path; a write failure is swallowed (the floor just degrades to
   // within-session, the prior behaviour).
   floor?: { get(): Promise<number | null>; set(v: number): Promise<void> };
   /** The session pin (chrome.storage.session); without it a restore runs every consensus check. */
@@ -490,9 +490,9 @@ export interface LiveSpvOpts {
 // every guard the wallet clamps with the floor. The candidate is therefore clamped to
 // verifiedTip + FLOOR_SLACK: the floor may never exceed PoW-verified evidence by more than the sync
 // cushion the client already targets. Callers advance the floor only AFTER a successful LC.sync (a
-// failed or lying sync advances nothing — a lying-high header chain throws in LC.sync, fail-closed).
+// failed or lying sync advances nothing; a lying-high header chain throws in LC.sync, fail-closed).
 // Coverage limit, stated not assumed away: the floor advances only inside prepare(), so a fresh install
-// has floor 0 and any guard clamped by it is disarmed until the first successful verify — fail-open in
+// has floor 0 and any guard clamped by it is disarmed until the first successful verify; fail-open in
 // the SAFE direction (no false refusal), same posture as WALLET-LAPSE-TIP-1.
 export const FLOOR_SLACK = CONF_BUFFER;
 export function floorAdvance(seenFloor: number, nodeTip: number, verifiedTip: number): number {
@@ -657,7 +657,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const { anchors, newestK, newest } = anchorTable(opts.anchors);
   const boundFetch = (...a: Parameters<typeof fetch>) => fetch(...a);
   // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
-  // default TIED the inner chain exactly — an abort could fire the instant the proxy's fallback
+  // default TIED the inner chain exactly; an abort could fire the instant the proxy's fallback
   // would have answered (timeout-inversion class, docs/Plans/66 B2).
   // M1: inject the source-preserving reviver so a Propose with an unbounded u64 expires_epoch
   // (>2^53) parses to an exact BigInt and the SPV merkle bind succeeds (the "SPV poison" becomes a
@@ -668,10 +668,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // The /api/headers endpoint is budget-limited (DOS-HDR-1) and deadline-bounded (it answers a clean
   // 502 at ~10s instead of grinding on a slow indexer). A legit cold sync paces itself:
   //  - 429 (budget) → sleep the server's own Retry-After hint (capped 15s; it says when the window
-  //    resets — the old fixed 1.2s×n ladder maxed ~25s and could NOT span a 60s budget window);
+  //    resets; the old fixed 1.2s×n ladder maxed ~25s and could NOT span a 60s budget window);
   //  - 502/503 (deadline/data-availability hiccup) → short ladder retry: our aborted request left
   //    stragglers warming the server's header cache, so the retry is cheap and usually instant.
-  // Every retried header is still fully re-verified (PoW/prev-link/LWMA) downstream — retrying
+  // Every retried header is still fully re-verified (PoW/prev-link/LWMA) downstream; retrying
   // transport carries zero trust. After bounded retries we still THROW → verify fails closed.
   // Client timeout 15s sits ABOVE the server's 10s deadline (the server answers first by design).
   const headersBatch = async (from: number, count: number) => {
@@ -932,7 +932,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       // M9 (B5a): advance + persist the floor ONLY after the sync above succeeded (a throw skips this),
       // and never above verifiedTip + FLOOR_SLACK (floorAdvance). The RETURNED nodeTip still carries the
       // raw served tip for THIS session's lapse epoch (pre-existing design: a lying-high tip only makes
-      // leases look expired sooner, over-caution; deflation is floored) — only what the wallet TRUSTS
+      // leases look expired sooner, over-caution; deflation is floored); only what the wallet TRUSTS
       // ACROSS SESSIONS is clamped to PoW evidence.
       const verifiedTip = tipOf(LC);
       const cand = floorAdvance(seenFloor, nodeTip, verifiedTip);
@@ -952,7 +952,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     async hashAt(height: number) { return (await headerOrNull(height))?.hash ?? null; },
     async merkleAt(height: number) { return (await headerOrNull(height))?.merkle ?? null; },
     // NSPV-SIGSUB-1 (H3): fetch a record's spent prevout and bind it to its txid exactly as verifyInputValues
-    // (TXB-1) does — fetch the source tx, recompute its consensus txid, and require it == prevTxid (the txid
+    // (TXB-1) does; fetch the source tx, recompute its consensus txid, and require it == prevTxid (the txid
     // commits every output incl. its 20-byte scriptPubkey). A hostile node cannot serve a fake body whose
     // recomputed txid still matches the outpoint. Returns the 0x scriptPubkey, or null (→ fail-closed) on any
     // missing / not-yet-mined / mismatched / malformed body. Same untrusted-node read path as blockAt.
