@@ -5,7 +5,7 @@
 // copy of a record whose on-chain fee is ALREADY PAID after a failed chrome.storage.local write:
 //   pendingSeals holds the sealClaim reveal preimage (vault ciphertext, encrypted at the park site), and
 //                without it a paid commit-reveal can never be revealed.
-//   pendingHist  holds the parked history row that the double-pay backstop reads (wallet.ts maybeRecord /
+//   pendingHist  holds the parked history row that the double-pay backstop reads (history.ts maybeRecord /
 //                pendingMerge), so losing it re-arms a retry of a spend that already went out.
 // An idle auto-lock is the ordinary case, not an exotic one: it fires on a timer while the user reads.
 //
