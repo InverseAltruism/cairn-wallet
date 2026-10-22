@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Exporting the private key from a damaged vault, one whose account list has no account at its active slot, now
+  refuses with "corrupt vault (no account at its active slot)" instead of an internal error about reading `priv`.
+- Internal: the wallet engine `src/core/wallet.ts` is split by responsibility: the fill checks before signing
+  (`fillpreflight.ts`, now one function per lane), name verification (`names.ts`), display-only CairnX reads
+  (`cairnxview.ts`), transaction history (`history.ts`), sealed claims (`claims.ts`) and the endpoint defaults
+  (`endpoints.ts`). TypeScript now checks every index read (`noUncheckedIndexedAccess`) and `src/core` has no
+  `as any`. Nothing the wallet signs changed: with seeded randomness, the 786 signatures the test suite produces
+  are byte-identical before and after every commit of the split.
 - A background-worker restart (Chrome stops an idle worker after about 30 seconds) no longer re-runs every consensus
   check on the stored block headers when the same browser session already checked them: the wallet keeps the hash of
   the newest checked header in session storage (memory only, cleared when the browser closes) and confirms that the
