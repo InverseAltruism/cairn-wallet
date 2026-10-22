@@ -184,6 +184,7 @@ The incidents behind these are in `CHANGELOG.md`.
 | `docs/DESIGN-namespv-scaling.md` | the SPV header store, the release anchor table and name verification on top of them, as built |
 | `docs/DESIGN-fill-lanes.md` | what each offer-fill lane proves before signing, and what stays resolver-trusted |
 | `docs/DESIGN-inclusion-reconcile.md` | how sent transactions are settled as included, gone or stuck |
+| `docs/DESIGN-viafill.md` | why a name bought through the market does not show as verified, and the options to fix it (open) |
 | `store/README.md` | index of the Chrome Web Store package |
 | `store/PUBLISH-RUNBOOK.md`, `store/STORE-LISTING.md`, `store/PRIVACY-POLICY.md` | release procedure, listing copy, privacy policy text |
 | `.githooks/README.md` | the secret-scan pre-commit hook |
