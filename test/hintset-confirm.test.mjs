@@ -135,7 +135,7 @@ const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url)
 ok("rememberHintSet refuses recovered (M12)", /res\.recovered/.test(walletSrc) && /rememberHintSet/.test(walletSrc));
 ok("rememberHintSet refuses soleSource", /res\.soleSource/.test(walletSrc));
 ok("verifyName fail-softs rememberHintSet (own try/catch; cache throw cannot downgrade a green verify)",
-  /try\s*\{\s*await this\.rememberHintSet\(nm, res, src, gen\);\s*\}\s*catch/.test(walletSrc));
+  /try\s*\{\s*await rememberHintSet\(wallet, nm, res, src, gen\);\s*\}\s*catch/.test(walletSrc));
 ok("verifyNameUnion marks M12 recovered:true", /recovered: true/.test(readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8")));
 ok("popup confirm path calls confirmName (not resolveName)", /call\("confirmName"/.test(readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8")));
 
