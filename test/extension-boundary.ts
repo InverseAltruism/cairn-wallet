@@ -1,9 +1,9 @@
-// BEHAVIORAL test of the extension trust boundary — the Freighter (CVE-2023-40580)
+// BEHAVIORAL test of the extension trust boundary; the Freighter (CVE-2023-40580)
 // and Frontier class, where a crafted page message reached a UI-privileged handler
 // and leaked the seed with zero user interaction. We load the REAL background service
 // worker with a mock `chrome`, capture its onMessage listener, and drive the actual
 // message path: a website can only reach the wallet via the content-script relay,
-// which stamps kind:"dapp" — so we fire dApp requests for privileged methods and
+// which stamps kind:"dapp"; so we fire dApp requests for privileged methods and
 // prove they are rejected (not executed), even after the user approves.
 import { sha256 } from "@noble/hashes/sha256"; // (force module init parity w/ background)
 import { readFileSync } from "node:fs";
@@ -16,7 +16,7 @@ const check = (n: string, c: boolean) => { c ? (pass++, console.log("  ✅ " + n
 const PW = "correct horse battery staple";
 void sha256;
 
-// Controllable clock — installed BEFORE importing background so the Wallet's lastActive (set at
+// Controllable clock; installed BEFORE importing background so the Wallet's lastActive (set at
 // construction + on touch()) reads it. Lets the WL-1/R19 test advance "idle time" deterministically.
 let NOW = 1_700_000_000_000;
 const realNow = Date.now;
@@ -67,7 +67,7 @@ let tipHeight = 34000; // ≥ V13/V17 (open-lane heights); lower it to simulate 
   const om = u.match(/\/cairnx\/offer\/(0x[0-9a-fA-F]{64})/);
   if (om && offerFixtures.has(om[1].toLowerCase())) return { ok: true, status: 200, json: async () => offerFixtures.get(om[1].toLowerCase()) };
   const tr = txReply(u, [MC]); if (tr) return tr;
-  // unique txid per submit — the wallet's history is (correctly) idempotent by txid,
+  // unique txid per submit; the wallet's history is (correctly) idempotent by txid,
   // so a fixed mock txid would silently drop later records and mask real behavior.
   if (u.includes("/tx/submit")) { lastSubmit = JSON.parse(init.body); const id = "0x" + (submitN++).toString(16).padStart(64, "5"); return { ok: true, json: async () => ({ ok: true, txid: id }) }; }
   return { ok: true, json: async () => ({ ok: true }) };
@@ -76,10 +76,10 @@ const spkHex = (a: any) => "0x" + (a as number[]).map((b) => b.toString(16).padS
 
 // popup-channel call (privileged, used only by the extension's own pages). The REAL popup/extension
 // pages share our runtime id and a chrome-extension://<our-id>/ sender.url. The approval window is
-// opened via chrome.windows.create({type:"popup"}) so it ALSO carries a sender.tab — the F12 gate must
+// opened via chrome.windows.create({type:"popup"}) so it ALSO carries a sender.tab; the F12 gate must
 // key on the extension ORIGIN, not on tab-absence (keying on tab broke the connect/approval flow).
 const popup = (method: string, ...args: any[]) => new Promise<any>((res) => listener({ kind: "popup", method, args }, { id: "cairnwallettestid", url: "chrome-extension://x/approve.html", tab: { id: 1 } }, res));
-// a forged popup message from a content script (web-page sender.url) or a wrong extension id — must be rejected
+// a forged popup message from a content script (web-page sender.url) or a wrong extension id; must be rejected
 const popupAs = (sender: any, method: string, ...args: any[]) => new Promise<any>((res) => { let r: any; listener({ kind: "popup", method, args }, sender, (v: any) => { r = v; res(v); }); return r; });
 // a website's request always arrives via the content-script relay as kind:"dapp"
 const dappAsync = (method: string, params: any, origin = "https://evil.test") => {
@@ -101,9 +101,9 @@ async function main() {
   check("popup channel can export the key with the password (UI-only)", /^[0-9a-f]{64}$/.test(priv));
 
   console.log("\n=== a website (dApp channel) CANNOT invoke key-exposing / privileged methods ===");
-  // These are not in the dApp allowlist, so queueDappRequest rejects them IMMEDIATELY —
+  // These are not in the dApp allowlist, so queueDappRequest rejects them IMMEDIATELY:
   // they never enter the pending queue, never open an approval window, and cannot be
-  // approved into execution. (`send` is intentionally NOT here — it is an approval-gated
+  // approved into execution. (`send` is intentionally NOT here; it is an approval-gated
   // dApp method now; positive-control + smuggle tests below.)
   for (const m of ["export", "exportMnemonic", "restore", "import", "reset", "setApi", "setRpc", "addAccount", "switchAccount", "removeAccount", "unlock", "lock", "create"]) {
     const winBefore = windowsOpened;
@@ -179,10 +179,10 @@ async function main() {
   console.log("\n=== dApp `send` is approval-gated, routed to wallet.send, and cannot smuggle ===");
   const RECIP = "0x" + "cc".repeat(20);
   const EVIL_CHANGE = "0x" + "de".repeat(20);
-  // a hostile page tries to ALSO pass its own inputs + a change address — both must be ignored
+  // a hostile page tries to ALSO pass its own inputs + a change address; both must be ignored
   const sreq = dappAsync("send", { to: RECIP, amount: 100_000_000, fee: 1_000_000, inputs: [{ txid: "0x" + "ff".repeat(32), vout: 9 }], change: EVIL_CHANGE });
   await tick();
-  check("dApp send is NOT auto-executed — it opens an approval window", sreq.done() === false);
+  check("dApp send is NOT auto-executed: it opens an approval window", sreq.done() === false);
   let sp = (await popup("pending")).result;
   await popup("resolve", sp[sp.length - 1].id, true); // user approves
   await tick(); await tick();
@@ -228,11 +228,11 @@ async function main() {
       ? ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: fillerAddr.toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } })
       : ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } });   // B7e: give matches the CSD fixtures (give TKN/1) so the flipped give leg passes on the honest need-map fill
   // B1 (0.2.57): the preflight now fails CLOSED unless the resolver positively parses to an open
-  // offer — the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
+  // offer; the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
   // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: CSD-priced
   // (want.value, XR-1/N26 requires a token offer to move NO CSD) + taker-bound to this wallet, so the
   // approved outputs are the honest whole-fill need-map (seller payment + treasury fee).
-  const SMOKE_TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR — the whole-fill fee leg
+  const SMOKE_TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR; the whole-fill fee leg
   offerFixtures.set(OFFER_ID.toLowerCase(), { id: OFFER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: fillerAddr, height: 34000, feeBps: 150 });
   const winBeforeFill = windowsOpened;
   // hostile extras (inputs/change) must be ignored exactly like send
@@ -287,9 +287,9 @@ async function main() {
 
   // ── review F1/F2/F4 follow-ups: tip-down fail-closed, fee/rebate need-map, integer-only money ──
   // an OPEN CSD offer where *I* hold the live claim (claimUntilHeight past tip 34000): the fill is mine
-  // to make — the remaining ways it can still burn are a missing fee/rebate output or an unknown tip.
+  // to make; the remaining ways it can still burn are a missing fee/rebate output or an unknown tip.
   const MY_CLAIM_ID = "0x" + "26".repeat(32);
-  const TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR (types.ts:79) — the fee sink
+  const TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR (types.ts:79); the fee sink
   const myAddr = (await popup("status")).result.addr as string;
   offerFixtures.set(MY_CLAIM_ID.toLowerCase(), { id: MY_CLAIM_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 34000, feeBps: 150, claimedBy: myAddr, claimUntilHeight: 34100 });
   // (d) F1: node-RPC /tip blip → tip reads 0 → the claim gate CANNOT be evaluated → fail CLOSED (retryable)
@@ -306,11 +306,11 @@ async function main() {
   for (const staleTip of [1, 30000, 31099]) {
     tipHeight = staleTip; lastSubmit = null;
     const rStale = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
-    check(`fillOffer REFUSES an open-CSD fill at a sub-V13 reported tip (${staleTip}) — claim gate disarm closed, no payment`,
+    check(`fillOffer REFUSES an open-CSD fill at a sub-V13 reported tip (${staleTip}): claim gate disarm closed, no payment`,
       rStale?.result?.ok === false && /chain tip/i.test(String(rStale?.result?.error)) && rStale?.result?.code === "VERIFY_UNAVAILABLE" && lastSubmit === null);
   }
   tipHeight = 34000; // restore a healthy open-lane tip
-  // (e) F2: resolver need-map — treasury fee output missing → on-chain "protocol fee unpaid" AFTER payment; refuse
+  // (e) F2: resolver need-map; treasury fee output missing → on-chain "protocol fee unpaid" AFTER payment; refuse
   lastSubmit = null;
   const rNoFee = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES a fill missing the protocol-fee output (F2, no payment signed)", rNoFee?.result?.ok === false && /protocol fee/i.test(String(rNoFee?.result?.error)) && lastSubmit === null);
@@ -326,10 +326,10 @@ async function main() {
   // (h) CONTROL: the correctly-built fill (price+rebate summed at payto==seller, fee to treasury) SIGNS
   lastSubmit = null;
   const rGood = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
-  check("fillOffer with the full need-map (price 40M + rebate 25.2M summed + fee 0.6) SIGNS — no false refusal", rGood?.result?.ok === true && !!rGood?.result?.txid && lastSubmit !== null);
+  check("fillOffer with the full need-map (price 40M + rebate 25.2M summed + fee 0.6) SIGNS: no false refusal", rGood?.result?.ok === true && !!rGood?.result?.txid && lastSubmit !== null);
   offerFixtures.clear();
 
-  console.log("\n=== dApp `propose` with fee outputs (CairnX deploy/name-reg) — approval-gated, anti-smuggle, capped ===");
+  console.log("\n=== dApp `propose` with fee outputs (CairnX deploy/name-reg): approval-gated, anti-smuggle, capped ===");
   lastSubmit = null;
   const FEE_TO = "0x" + "fa".repeat(20);
   const winBeforeProp2 = windowsOpened;
@@ -372,7 +372,7 @@ async function main() {
   check("approved dApp request while locked is refused (wallet locked)", lockedReq.get()?.ok === false);
 
   // "https://evil.test" was consented earlier (positive-control getAddress). Even so, a
-  // connect/getAddress while LOCKED must NOT silently fast-path — it has to queue + prompt
+  // connect/getAddress while LOCKED must NOT silently fast-path; it has to queue + prompt
   // (so a stolen/idle-locked session can't leak the address to a previously-connected site).
   const winBeforeLk = windowsOpened;
   const lockedConn = dappAsync("getAddress", {}, "https://evil.test");
@@ -392,10 +392,10 @@ async function main() {
   const noUrl = await popupAs({ id: "cairnwallettestid" }, "export", PW);
   check("popup message with no extension-origin sender.url is REJECTED", noUrl?.ok === false && !String(JSON.stringify(noUrl)).toLowerCase().includes(priv));
   // REGRESSION (the empty-popup bug): the REAL approval window is an extension page opened via
-  // chrome.windows.create — it has our origin AND a sender.tab. It MUST be allowed (the old `||sender.tab`
+  // chrome.windows.create; it has our origin AND a sender.tab. It MUST be allowed (the old `||sender.tab`
   // check rejected it with "forbidden", blanking the connect popup).
   const realApprovalWin = await popupAs({ id: "cairnwallettestid", url: "chrome-extension://x/approve.html", tab: { id: 3 } }, "status");
-  check("the real approval window (extension origin, WITH a tab) works — F12 no longer breaks connect", realApprovalWin?.ok === true && realApprovalWin.result?.unlocked === true);
+  check("the real approval window (extension origin, WITH a tab) works: F12 no longer breaks connect", realApprovalWin?.ok === true && realApprovalWin.result?.unlocked === true);
 
   console.log("\n=== F12 build/CI tripwire: externally_connectable / onMessageExternal / onConnectExternal must NEVER appear ===");
   // If a future edit re-introduces an external message surface, the popup-isolation argument collapses.
@@ -424,11 +424,11 @@ async function main() {
     const handled = new RegExp(`(?:p|msg)\\.method === "${m}"`).test(bgSrc);
     check(`CQ-4: dApp method '${m}' has a handler (no allowlist↔dispatch drift)`, handled);
   }
-  // CQ-4 (2.9): the dApp surface is ALSO advertised to pages via inpage.ts getCapabilities().methods — the
+  // CQ-4 (2.9): the dApp surface is ALSO advertised to pages via inpage.ts getCapabilities().methods; the
   // one hand-synced list no test covered. Parse it as text and assert it matches DAPP_METHODS as a SET,
   // case-insensitively: getCapabilities uses the camelCase JS method names (signIn/signInWithCsd) the dApp
   // dev calls, while the wire allowlist uses the lowercase wire strings (signin/signinwithcsd). A method
-  // advertised-but-not-allowlisted (or vice-versa) is a real drift bug — a page told it can call something
+  // advertised-but-not-allowlisted (or vice-versa) is a real drift bug; a page told it can call something
   // the background rejects, or an allowlisted method the page can't discover.
   const inpageSrc = readFileSync(new URL("../src/inpage.ts", import.meta.url), "utf8");
   const capMatch = inpageSrc.match(/getCapabilities[\s\S]*?methods:\s*\[([^\]]*)\]/);
@@ -441,7 +441,7 @@ async function main() {
 
   console.log("\n=== WL-1/R19: the approval-poll (status/pending) must NOT defeat the idle auto-lock ===");
   // Simulate a connected site that keeps a request queued and lets the approval window poll forever.
-  // touch() must fire ONLY on genuine user activity — never on status/pending — so autoLock still fires.
+  // touch() must fire ONLY on genuine user activity; never on status/pending; so autoLock still fires.
   await popup("unlock", PW); // unlock IS a user action → touches (lastActive = NOW)
   // hammer the poll methods (what approve.ts does every ~1.2s). NOTE: we do NOT advance the clock here,
   // so any touch() would set lastActive = NOW and defeat the lock. They must NOT touch.
@@ -451,7 +451,7 @@ async function main() {
   check("idle auto-lock FIRES even while status/pending are polled (reads don't touch)", (await popup("status")).result.unlocked === false);
   // control: a GENUINE user action DOES touch() → it resets the idle timer and the lock does NOT fire.
   await popup("unlock", PW);            // touch @ NOW
-  for (let i = 0; i < 50; i++) await popup("status"); // reads — no touch
+  for (let i = 0; i < 50; i++) await popup("status"); // reads; no touch
   NOW += 14 * 60 * 1000;                // 14 min idle (under the 15-min window)
   await popup("resolve", "nonexistent", false); // a real action (not read-only) → touch @ NOW, resets timer
   await fireAutolock(60 * 1000);        // +1 min: only 1 min since the resolve touch → must stay unlocked
@@ -481,14 +481,14 @@ async function main() {
   await tick();
 
   console.log("\n=== L2: an opaque origin ('null') never gets stored consent, a silent path, or an event port ===");
-  // A top-level opaque-origin page (sandboxed iframe / data: / some file:) sends sender.origin === "null" — a
+  // A top-level opaque-origin page (sandboxed iframe / data: / some file:) sends sender.origin === "null"; a
   // SHARED, non-identifying string. It must NEVER be recorded as a connected site (no stable identity) and
-  // must NEVER hit the silent fast-path — otherwise one opaque page's consent would leak the address to ANY
+  // must NEVER hit the silent fast-path; otherwise one opaque page's consent would leak the address to ANY
   // opaque-origin page. (The wallet is unlocked here.)
   const winBeforeNull = windowsOpened;
   const nullReq = dappAsync("getAddress", {}, "null");
   await tick();
-  check("L2: getAddress from an opaque origin ('null') does NOT fast-path — it queues + opens a window", nullReq.done() === false && windowsOpened > winBeforeNull);
+  check("L2: getAddress from an opaque origin ('null') does NOT fast-path: it queues + opens a window", nullReq.done() === false && windowsOpened > winBeforeNull);
   // approve it → recordConsent MUST refuse to store anything under the 'null' key
   await popup("resolve", (await popup("pending")).result.slice(-1)[0].id, true);
   await tick();

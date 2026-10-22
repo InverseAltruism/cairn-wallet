@@ -34,7 +34,7 @@ async function main() {
   const of = (globalThis as any).fetch;
   (globalThis as any).fetch = stub();
   try {
-    console.log("— account management —");
+    console.log("== account management ==");
     const w = new Wallet(memoryStore());
     const a1 = (await w.create(PW)).addr;
     let st = await w.status();
@@ -60,7 +60,7 @@ async function main() {
     await w.renameAccount(a1, "Treasury");
     check("renameAccount persists the label", (await w.status()).accounts[0].label === "Treasury");
 
-    console.log("\n— one password unlocks all accounts —");
+    console.log("\n== one password unlocks all accounts ==");
     w.lock();
     check("lock clears unlocked state", (await w.status()).unlocked === false);
     check("locked status still lists accounts (public) + active", (await w.status()).accounts.length === 3);
@@ -71,7 +71,7 @@ async function main() {
     check("one password unlocks ALL 3 accounts", st.unlocked && st.accounts.length === 3);
     check("active index survives lock/unlock", st.active === 1 && st.addr!.toLowerCase() === a2.toLowerCase());
 
-    console.log("\n— per-account isolation (history + sealed claims) —");
+    console.log("\n== per-account isolation (history + sealed claims) ==");
     await w.switchAccount(a1);
     await w.send(RCPT, 1e8);
     await w.sealClaim({ claim: "a1-only secret" });
@@ -82,13 +82,13 @@ async function main() {
     await w.switchAccount(a1);
     check("switching back to a1 → its data is intact", (await w.history()).length >= 1 && (await w.sealedClaims()).length === 1);
 
-    console.log("\n— signing uses the ACTIVE account's key (oracle) —");
+    console.log("\n== signing uses the ACTIVE account's key (oracle) ==");
     await w.switchAccount(a2);
     await w.send(RCPT, 1e8);
     const change = lastSubmit.outputs[lastSubmit.outputs.length - 1];
     check("submitted tx's change returns to the ACTIVE account (a2 signed, not a1)", spkToAddr(change.script_pubkey).toLowerCase() === a2.toLowerCase());
 
-    console.log("\n— remove account (isolation + safety) —");
+    console.log("\n== remove account (isolation + safety) ==");
     const rmStore = memoryStore();
     const w2 = new Wallet(rmStore); const b1 = (await w2.create(PW)).addr;
     const b2 = (await w2.addAccount()).addr;
@@ -101,7 +101,7 @@ async function main() {
     let lastRefused = false; try { await w2.removeAccount(b1); } catch { lastRefused = true; }
     check("removeAccount refuses to remove the LAST account", lastRefused);
 
-    console.log("\n— legacy single-key vault migrates seamlessly —");
+    console.log("\n== legacy single-key vault migrates seamlessly ==");
     const ls = memoryStore();
     const legacyPriv = "0x" + "22".repeat(32);
     const legacyAddr = fromPriv(legacyPriv).addr;
@@ -119,7 +119,7 @@ async function main() {
     check("legacy cleartext addr key deleted", (await ls.get("addr")) == null);
     check("exportKey returns the legacy key (password-gated)", (await wl.exportKey(PW)).toLowerCase() === legacyPriv.toLowerCase());
 
-    console.log("\n— vault crypto (adversarial) —");
+    console.log("\n== vault crypto (adversarial) ==");
     const v = await seal("hello-secret", PW);
     const tampered = { ...v, ct: v.ct.slice(0, -2) + (v.ct.endsWith("00") ? "01" : "00") };
     let tamperRejected = false; try { await open(tampered as any, PW); } catch { tamperRejected = true; }
@@ -130,7 +130,7 @@ async function main() {
     const sn = await sealNew("doc", PW);
     check("sealNew records 600k PBKDF2 iters", sn.vault.iter === 600_000);
 
-    console.log("\n— re-seal rolls the IV on every change —");
+    console.log("\n== re-seal rolls the IV on every change ==");
     const rs2 = memoryStore();
     const w3 = new Wallet(rs2); await w3.create(PW);
     const iv1 = (await rs2.get("vault")).iv;
@@ -138,7 +138,7 @@ async function main() {
     const iv2 = (await rs2.get("vault")).iv;
     check("adding an account re-seals with a FRESH IV (same key, new nonce)", iv1 !== iv2);
 
-    console.log("\n— dApp boundary: privileged methods are NOT reachable from a site —");
+    console.log("\n== dApp boundary: privileged methods are NOT reachable from a site ==");
     const bg = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
     const dappBranch = bg.slice(bg.indexOf("async function resolvePending"), bg.indexOf("queueDappRequest"));
     // send IS an approval-gated dApp method now (so wallet.send/sendMany may appear), but

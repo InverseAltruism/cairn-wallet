@@ -1,4 +1,4 @@
-// CairnX token/name support — byte-exactness of the locally-built transfer record,
+// CairnX token/name support; byte-exactness of the locally-built transfer record,
 // decimals-aware formatting, clear-sign decode of every cairnx:v1 record type, and
 // graceful degradation when the read API is unreachable.
 //
@@ -131,7 +131,7 @@ for (const [t, uri, ph, wants] of RECORDS) {
   const clearHtml = cairnxDescribe(cleared.uri, cleared.payloadHash);
   check("clear-sign: an empty profile renders as 'clears' + cosmetic-only", clearHtml !== null && /clears/i.test(clearHtml!) && clearHtml!.includes("cosmetic only"));
   // decode is semantics-AGNOSTIC (mirrors the resolver): a hand-crafted record with an `addr` KEY still
-  // decodes (the resolver would store it) — but the clear-sign WARNS it is cosmetic, not a send address.
+  // decodes (the resolver would store it); but the clear-sign WARNS it is cosmetic, not a send address.
   const addrUri = `{"name":"satoshi","p":{"addr":"0x1234"},"t":"nprofile","v":1}`;
   const addrPh = "0xc674115ac7a31003312ecb4bf50bdabb4e0bed5a0839db44d22e0bc9dbab73f6";
   check("decode: a profile with an `addr` KEY still decodes (resolver-agnostic lockstep)", decodeCairnxRecord(addrUri, addrPh) !== null);
@@ -159,7 +159,7 @@ for (const [t, uri, ph, wants] of RECORDS) {
     cairnxDescribe("not json") === null && cairnxDescribe("[1,2]") === null && cairnxDescribe(`{"t":"mint","ticker":"TKN","v":1,"x":"${"a".repeat(600)}"}`) === null);
   // resolver lockstep (cairnx-core v0.1.6 exact-key allowlist + ts SafeInteger; audit M1/FORK-1): a
   // value-bearing record with a decoy extra key, or a ts outside the safe-integer range, canonicalizes
-  // differently across languages and the resolver no-ops it — so the wallet must NOT decode it either.
+  // differently across languages and the resolver no-ops it; so the wallet must NOT decode it either.
   { const xk = { v: 1, t: "transfer", ticker: "TKN", amount: "1", to: ADDR_AB, ZZ: "decoy" };
     check("extra-key transfer → raw fallback (resolver exact-key lockstep)", cairnxDescribe(canonicalJson(xk), cairnxPayloadHash(xk)) === null); }
   { const bigts = { v: 1, t: "transfer", ticker: "TKN", amount: "1", to: ADDR_AB, ts: 9007199254740993 };
@@ -265,7 +265,7 @@ async function main() {
     const cyrUri = canonicalJson(cyr);
     check("unicode-lookalike ticker → RAW", decodeCairnxRecord(cyrUri, cairnxPayloadHash(cyr)) === null);
     // the 512-byte consensus cap: per-field caps (memo ≤ 64 etc.) mean NO schema-valid record
-    // can reach 512 bytes — the byte gate is defense-in-depth. Assert both halves of that:
+    // can reach 512 bytes; the byte gate is defense-in-depth. Assert both halves of that:
     const maxMemo = { give: { ticker: "CAIRN", amount: "1" }, memo: "x".repeat(64), t: "offer", v: 1, want: { value: "1" } };
     const mm = canonicalJson(maxMemo);
     check("maximal legal record decodes (well under 512B: " + new TextEncoder().encode(mm).length + ")",
@@ -288,20 +288,20 @@ async function main() {
     check("taker:null → RAW (null is not absent)", decodeCairnxRecord(canonicalJson(nullTaker), cairnxPayloadHash(nullTaker)) === null);
 
     // F2 mirror (well-formedness): a lone/unpaired UTF-16 surrogate has NO valid UTF-8 form, so its
-    // canonical encoding is undefinable across languages — the resolver no-ops it. The trap: it PASSES
+    // canonical encoding is undefinable across languages; the resolver no-ops it. The trap: it PASSES
     // the canonical+hash gate (the uri is pure-ASCII `\uXXXX`), so without a dedicated check the wallet
     // would render a structured action the resolver will silently ignore. Must show RAW.
     {
       const LS = "\uD800"; // lone high surrogate
-      // a) lone surrogate in a VALUE (transfer memo) — otherwise schema-valid
+      // a) lone surrogate in a VALUE (transfer memo); otherwise schema-valid
       const surMemo = { amount: "1", memo: "x" + LS, t: "transfer", ticker: "CAIRN", to: "0x" + "ab".repeat(20), v: 1 };
       const surMemoUri = canonicalJson(surMemo);
       check("lone surrogate survives the canonical gate (the trap)", surMemoUri.includes("\\ud800"));
-      check("lone-surrogate memo → RAW (F2 mirror — resolver would no-op it)", decodeCairnxRecord(surMemoUri, cairnxPayloadHash(surMemo)) === null);
+      check("lone-surrogate memo → RAW (F2 mirror: resolver would no-op it)", decodeCairnxRecord(surMemoUri, cairnxPayloadHash(surMemo)) === null);
       // b) lone surrogate in a NESTED value (deploy name)
       const surName = { decimals: 0, mint: "issuer", name: "Bad" + LS, supply: "100", t: "deploy", ticker: "BAD", v: 1 };
       check("lone-surrogate token name → RAW", decodeCairnxRecord(canonicalJson(surName), cairnxPayloadHash(surName)) === null);
-      // c) a well-formed non-BMP char (paired surrogates, e.g. an emoji) is FINE — not over-rejected
+      // c) a well-formed non-BMP char (paired surrogates, e.g. an emoji) is FINE; not over-rejected
       const okEmoji = { amount: "1", memo: "gift 🪙", t: "transfer", ticker: "CAIRN", to: "0x" + "ab".repeat(20), v: 1 };
       check("paired surrogate (emoji memo) still decodes (no over-rejection)", decodeCairnxRecord(canonicalJson(okEmoji), cairnxPayloadHash(okEmoji)) !== null);
     }
@@ -325,7 +325,7 @@ async function main() {
 
   {
     // ── audit XREPO-1: .csd name resolution is server-trusted (the wallet has no light client) ──
-    // The proportionate mitigation: (1) an unmissable "verify the full address — a malicious server
+    // The proportionate mitigation: (1) an unmissable "verify the full address; a malicious server
     // could substitute it" caution on every named send, and (2) a confirm-time re-resolve that REFUSES
     // if the address changed between review and confirm. (Trustless resolution = the light client / SPV
     // name-verify path. This guard stops a server that RE-POINTS the name mid-flow, the realistic case.)
@@ -344,13 +344,13 @@ async function main() {
       !evilName.includes("<img") && evilName.includes("&lt;img"));
 
     // H1 (NSPV-CLAIMCAP-1): a viaFill (purchased) name renders the SPECIFIC "acquired by fill, not name-scope
-    // provable" caution — never the green verified badge and never the generic "couldn't verify" message.
+    // provable" caution; never the green verified badge and never the generic "couldn't verify" message.
     const viaFillCaution = nameCautionHtml(NAME, false, { viaFill: true });
     check("H1: viaFill name shows the purchase/fill-specific caution (not the generic one)",
       /acquired by an on-chain purchase|offer fill/i.test(viaFillCaution) && !/malicious or intercepted server/i.test(viaFillCaution));
     check("H1: viaFill caution is never a green ✓ verified badge", !viaFillCaution.includes("✓"));
 
-    // (2) confirm-time guard — the core defense. THE EXPLOIT: server re-points the name to the attacker
+    // (2) confirm-time guard; the core defense. THE EXPLOIT: server re-points the name to the attacker
     // between review and confirm → guard must REFUSE (this is the PoC's "redirect funds" turned blocked).
     check("XREPO-1 EXPLOIT BLOCKED: re-resolve to a DIFFERENT addr is refused (the redirect is caught)",
       reresolveUnchanged(REVIEWED, { ok: true, addr: ATTACKER }) === false);
@@ -369,19 +369,19 @@ async function main() {
     check("XREPO-1 FAIL-CLOSED: re-resolve null (network drop / thrown call) is refused",
       reresolveUnchanged(REVIEWED, null) === false);
 
-    // L7 (CONFIRMGUARD): a verification-status REGRESSION at confirm — same address, but a name that WAS
-    // chain-verified at review can no longer be verified — must be refused (a source went hostile/stale).
+    // L7 (CONFIRMGUARD): a verification-status REGRESSION at confirm; same address, but a name that WAS
+    // chain-verified at review can no longer be verified; must be refused (a source went hostile/stale).
     check("L7: verified→unverified regression at confirm (same addr) is REFUSED",
       reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED, verified: false }, true) === false);
     check("L7: still-verified at confirm (same addr) PASSES",
       reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED, verified: true }, true) === true);
     check("L7: a name reviewed as UNverified (caution) is not held to a regression check (no false refusal)",
       reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED, verified: false }, false) === true);
-    check("L7: back-compat — omitting reviewedVerified keeps the addr-only behavior",
+    check("L7: back-compat: omitting reviewedVerified keeps the addr-only behavior",
       reresolveUnchanged(REVIEWED, { ok: true, addr: REVIEWED }) === true);
 
     // (3) behavioral: drive the REAL wallet.resolveName against a hostile server that re-points the
-    // name on its SECOND read — exactly the mid-flow redirect the confirm-time guard must catch.
+    // name on its SECOND read; exactly the mid-flow redirect the confirm-time guard must catch.
     const origFetch = (globalThis as any).fetch;
     try {
       let hits = 0;
@@ -420,7 +420,7 @@ async function main() {
       check("STALE-OFFER: a cancelled offer is REFUSED before signing (no-op fill blocked)",
         r1.ok === false && /cancelled|no-op fill/i.test(r1.error ?? ""));
       // (2) offer unknown to the wallet's resolver (404) → proceed past the recheck (fails later for an
-      // unrelated reason, NOT a false stale-offer refusal — no over-blocking of recent/cross-resolver offers)
+      // unrelated reason, NOT a false stale-offer refusal; no over-blocking of recent/cross-resolver offers)
       (globalThis as any).fetch = async (url: any) => {
         const u = String(url);
         if (u.includes("/cairnx/offer/")) return { ok: false, status: 404, json: async () => ({}) };
@@ -501,7 +501,7 @@ async function main() {
   }
 
   // CQ-1 (post shared-core de-dup, cairn docs/Plans/46): cairnx.ts no longer HAND-DECLARES the consensus
-  // constants — it IMPORTS them from the vendored cairnx-core bundle, so there is nothing left to drift.
+  // constants; it IMPORTS them from the vendored cairnx-core bundle, so there is nothing left to drift.
   // This guard now keeps the mirror COLLAPSED: (a) the bundle import is present and no consensus constant is
   // re-declared in cairnx.ts (a re-introduced hand-decl would re-open the drift gap), and (b) the live
   // re-exported VALUES still equal the bundle's (the import actually wires through).
