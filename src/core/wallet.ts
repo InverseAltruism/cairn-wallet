@@ -21,7 +21,7 @@ import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNo
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, CLARVIS_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
-import { TxHistory, histKey } from "./history.js";
+import { TxHistory, histKey, type RecordHost } from "./history.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
@@ -128,8 +128,13 @@ export class Wallet {
   // unlocked key survive an MV3 service-worker idle-kill so genuine activity within idleMs doesn't
   // keep re-prompting for the password. null ⇒ in-memory-only (the old behaviour).
   private hist: TxHistory;
+  private claims: SealedClaims;
   constructor(private store: Store, private session: Store | null = null) {
     this.hist = new TxHistory(store, { unlocked: () => !!this.accts, wiped: () => this.wiped, addr: () => this.addr(), rpc: () => this.rpc });
+    this.claims = new SealedClaims(store, {
+      unlocked: () => !!this.accts, wiped: () => this.wiped, addr: () => this.addr(), rpc: () => this.rpc,
+      api: () => this.api, vaultKey: () => this.vaultKey, salt: () => this.salt, iter: () => this.iter,
+    });
   }
 
   // Is `origin` the wallet's OWN first-party site (or a localhost dev origin)? Used to gate the
@@ -241,15 +246,6 @@ export class Wallet {
     await this.store.set("active", active);
   }
 
-  // The sealed-claims write chain; the discipline is TxHistory.histChain's.
-  private sealChain: Promise<void> = Promise.resolve();
-  private inSealChain<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.sealChain.then(work, work);
-    this.sealChain = run.then(() => {}, () => {});
-    return run;
-  }
-  // Parked sealed-claim records; the discipline is TxHistory.pendingHist's.
-  private pendingSeals: { k: string; rec: any }[] = [];
   // Set by reset(), cleared when a new vault is sealed. `!this.accts` alone cannot tell an ordinary lock
   // (the signed tx's history must survive it) from a reset (nothing of the old wallet may land again).
   private wiped = false;
@@ -354,7 +350,7 @@ export class Wallet {
     await this.persistSession(); // remember the unlocked key in chrome.storage.session (in-RAM)
     // Rows parked while locked are written now rather than waiting for the next write of their kind.
     if (this.hist.pendingHist.length) await this.hist.inHistChain(() => this.hist.drainPendingHist());
-    if (this.pendingSeals.length) await this.persistSeal();
+    if (this.claims.pendingSeals.length) await this.claims.persistSeal();
     return { addr: this.accts![this.active].addr };
   }
 
@@ -510,7 +506,7 @@ export class Wallet {
     // and resurrect a removed account's history or sealed preimages; purge its parked retries too.
     const hk2 = histKey(gone), sk2 = sealKey(gone);
     await this.hist.inHistChain(async () => { this.hist.pendingHist = this.hist.pendingHist.filter((p) => p.k !== hk2); await this.store.del(hk2); });
-    await this.inSealChain(async () => { this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk2); await this.store.del(sk2); });
+    await this.claims.inSealChain(async () => { this.claims.pendingSeals = this.claims.pendingSeals.filter((p) => p.k !== sk2); await this.store.del(sk2); });
     await this.persistVault();
   }
 
@@ -1188,38 +1184,6 @@ export class Wallet {
   }
 
   // ── sealed claims (commit-reveal); isolated per active account ─────────────
-  // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt; a force-revealable front-running lever if it
-  // is readable at rest. The vault key already lives only in memory (chrome.storage.session, not cold-disk-
-  // readable), so encrypt ONLY these two fields under it (fresh IV per seal) before persisting; txid/domain/
-  // committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
-  // primitives (keystore sealWith/openWith); no new crypto. history/labels stay the documented local-disk
-  // residual (we do NOT encrypt all of chrome.storage.local; §5 constraint).
-  private async sealPreimage(claim: string, nonce: string): Promise<Vault> {
-    if (!this.vaultKey) throw new Error("locked");
-    return sealWith(JSON.stringify({ claim, nonce }), this.vaultKey, this.salt, this.iter);
-  }
-  // Recover a record's preimage: a v-L5 record carries an encrypted `enc` blob; a LEGACY plaintext record
-  // (pre-L5) still carries claim/nonce inline and keeps working (lazy migration re-encrypts it on next write).
-  private async openPreimage(rec: { enc?: Vault; claim?: string; nonce?: string }): Promise<{ claim: string; nonce: string }> {
-    if (rec?.enc) {
-      if (!this.vaultKey) throw new Error("locked");
-      const p = JSON.parse(await openWith(rec.enc, this.vaultKey));
-      return { claim: String(p.claim ?? ""), nonce: String(p.nonce ?? "") };
-    }
-    return { claim: String(rec?.claim ?? ""), nonce: String(rec?.nonce ?? "") };
-  }
-  // Lazy migration (L5): re-encrypt any legacy plaintext records in a list on the next write of that list, so
-  // an existing sealed claim keeps revealing but stops sitting in cleartext. No-op when locked or already
-  // encrypted. Mutates in place.
-  private async reencryptLegacyPreimages(list: { enc?: Vault; claim?: string; nonce?: string }[]): Promise<void> {
-    if (!this.vaultKey) return;
-    for (const rec of list) {
-      if (rec && !rec.enc && (rec.claim !== undefined || rec.nonce !== undefined)) {
-        rec.enc = await this.sealPreimage(String(rec.claim ?? ""), String(rec.nonce ?? ""));
-        delete rec.claim; delete rec.nonce;
-      }
-    }
-  }
   async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
     // CSDTX-SIWC-01: a non-string claim would be hashed as-is into the on-chain commitment but
     // String()-normalized on reveal, so the paid commit could never be revealed. dApp-reachable,
@@ -1231,7 +1195,7 @@ export class Wallet {
     const nonce = bytesToHex(randomBytes(32));
     // The reveal preimage is encrypted BEFORE the commit is broadcast (no await since must() above, so the
     // vault key is still loaded): after the broadcast nothing needs the key, and a lock there cannot lose it.
-    const enc = await this.sealPreimage(p.claim, nonce);
+    const enc = await this.claims.sealPreimage(p.claim, nonce);
     const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
     const ph = cairnPayloadHash(content);
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
@@ -1246,84 +1210,13 @@ export class Wallet {
       // L5: the {claim, nonce} preimage is stored ENCRYPTED at rest (`enc`, fresh IV), so a parked
       // record is a pure store write needing no key.
       const rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) };
-      await this.persistSeal({ k: sk, rec });
+      await this.claims.persistSeal({ k: sk, rec });
     }
     await this.hist.maybeRecord(hk, r, { type: "seal", domain, fee });
     return r;
   }
-  // Every sealed-claim record passes through pendingSeals: parked first, removed once its list write
-  // succeeds. A record parked while locked (or after a failed write: the commit fee is paid and this is
-  // the only copy of the nonce) is merged into sealedClaims(), is revealable, and is written on unlock or
-  // with the next seal write. After reset() a new record is dropped. Never throws.
-  private persistSeal(add?: { k: string; rec: any }): Promise<void> {
-    return this.inSealChain(async () => {
-      if (add && !this.pendingSeals.some((p) => p.k === add.k && p.rec.txid === add.rec.txid)) {
-        if (this.wiped) return;
-        this.pendingSeals.push(add);
-      }
-      if (!this.accts) return;
-      for (const sk of new Set(this.pendingSeals.map((p) => p.k))) {
-        try {
-          const list: any[] = (await this.store.get(sk)) || [];
-          for (const p of this.pendingSeals) if (p.k === sk && !list.find((x) => x.txid === p.rec.txid)) list.unshift(p.rec);
-          await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
-          await this.store.set(sk, capSeals(list));
-          this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk);
-        } catch { /* SEAL-WRITE-02: stays parked and visible; the next seal write or unlock retries */ }
-      }
-    });
-  }
-  async revealClaim(txid: string) {
-    const k = sealKey(this.addr());
-    const list: any[] = (await this.store.get(k)) || [];
-    const rec = list.find((x) => x.txid === txid)
-      ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec; // a parked seal is revealable too
-    if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
-    // The preimage goes public only once the commit is mined (flushPending's getProposal rule): a reveal
-    // against a commit still in the mempool, or one that never lands, would publish the claim uncommitted.
-    const commit = await node.getProposal(this.rpc, txid);
-    if (!(commit && commit.payload_hash))
-      return refuse("SEAL_NOT_MINED", "this seal is not mined yet, or the node could not confirm it; nothing was revealed. Try again once it is mined");
-    // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
-    const { claim, nonce } = await this.openPreimage(rec);
-    const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);
-    if (r && r.ok) {
-      // Chained write-back on a FRESH read (the list above is stale across the registerContent
-      // network await; writing it back would erase a seal recorded meanwhile). A storage failure
-      // is swallowed: the reveal itself succeeded and registration is idempotent.
-      await this.inSealChain(async () => {
-        if (!this.accts) return;
-        try {
-          for (const p of this.pendingSeals) if (p.k === k && p.rec.txid === txid) p.rec.revealed = true;
-          const fresh: any[] = (await this.store.get(k)) || [];
-          const fr = fresh.find((x) => x.txid === txid);
-          if (fr) {
-            fr.revealed = true;
-            await this.reencryptLegacyPreimages(fresh); // lazy-migrate any legacy plaintext record on this write
-            await this.store.set(k, fresh);
-          }
-        } catch { /* revealed flag is display state; a later reveal or seal write retries it */ }
-      });
-    }
-    return r;
-  }
-  // Display view for the popup: decrypt the claim TEXT for the sealed-claims preview (unlocked, trusted UI)
-  // while the on-disk record stays encrypted; the nonce (reveal salt) is never surfaced to the list. A
-  // decrypt failure degrades to "no preview" rather than throwing (the list never breaks).
-  async sealedClaims(): Promise<any[]> {
-    if (!this.accts) return [];
-    const kk = sealKey(this.addr());
-    const stored: any[] = (await this.store.get(kk)) || [];
-    // merge parked (write-failed) seals so a paid-but-unpersisted commit still shows in the list
-    const parked = this.pendingSeals.filter((p) => p.k === kk && !stored.some((x) => x?.txid === p.rec.txid)).map((p) => p.rec);
-    const list = parked.length ? [...parked, ...stored] : stored;
-    const out: any[] = [];
-    for (const rec of list) {
-      if (rec?.enc) { try { const { claim } = await this.openPreimage(rec); out.push({ ...rec, claim }); } catch { out.push({ ...rec }); } }
-      else out.push(rec);
-    }
-    return out;
-  }
+  revealClaim(txid: string) { return this.claims.revealClaim(txid); }
+  sealedClaims(): Promise<any[]> { return this.claims.sealedClaims(); }
 
   // ── transaction history; isolated per active account ──────────────────────
   // Pre-await key capture (0.2.56, review F5): every recording path must file under the account
@@ -1429,14 +1322,139 @@ export class Wallet {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
     const wipe = () => this.doReset(wallets);
-    const run = Promise.allSettled([this.persistChain, this.hist.histChain, this.sealChain]).then(wipe);
+    const run = Promise.allSettled([this.persistChain, this.hist.histChain, this.claims.sealChain]).then(wipe);
     const settled = run.then(() => {}, () => {});
-    this.persistChain = settled; this.hist.histChain = settled; this.sealChain = settled;
+    this.persistChain = settled; this.hist.histChain = settled; this.claims.sealChain = settled;
     return run;
   }
   private async doReset(wallets: PubAcct[]): Promise<void> {
-    this.hist.pendingHist = []; this.pendingSeals = []; // belt: a park that raced lock
+    this.hist.pendingHist = []; this.claims.pendingSeals = []; // belt: a park that raced lock
     for (const w of wallets) { await this.store.del(histKey(w.addr)); await this.store.del(sealKey(w.addr)); }
     for (const k of ["vault", "wallets", "active", "addr", "txHistory", "sealedClaims", "pendingContent"]) await this.store.del(k);
+  }
+}
+
+// The record store also reads the vault key, which seals each reveal preimage at rest; null while locked.
+export interface ClaimsHost extends RecordHost { api(): string; vaultKey(): CryptoKey | null; salt(): string; iter(): number }
+
+// Per-account sealed claims in the store under sealKey(addr): the reveal preimages, encrypted under the vault
+// key, the write chain, records parked in RAM when a write fails or the wallet is locked, reveal and the list.
+export class SealedClaims {
+  constructor(private store: Store, private w: ClaimsHost) {}
+  // Write chain and parked records: the same discipline as TxHistory.histChain and TxHistory.pendingHist.
+  sealChain: Promise<void> = Promise.resolve();
+  inSealChain<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.sealChain.then(work, work);
+    this.sealChain = run.then(() => {}, () => {});
+    return run;
+  }
+  pendingSeals: { k: string; rec: any }[] = [];
+
+  // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt; a force-revealable front-running lever if it
+  // is readable at rest. The vault key already lives only in memory (chrome.storage.session, not cold-disk-
+  // readable), so encrypt ONLY these two fields under it (fresh IV per seal) before persisting; txid/domain/
+  // committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
+  // primitives (keystore sealWith/openWith); no new crypto. history/labels stay the documented local-disk
+  // residual (we do NOT encrypt all of chrome.storage.local; §5 constraint).
+  async sealPreimage(claim: string, nonce: string): Promise<Vault> {
+    const key = this.w.vaultKey();
+    if (!key) throw new Error("locked");
+    return sealWith(JSON.stringify({ claim, nonce }), key, this.w.salt(), this.w.iter());
+  }
+  // Recover a record's preimage: a v-L5 record carries an encrypted `enc` blob; a LEGACY plaintext record
+  // (pre-L5) still carries claim/nonce inline and keeps working (lazy migration re-encrypts it on next write).
+  private async openPreimage(rec: { enc?: Vault; claim?: string; nonce?: string }): Promise<{ claim: string; nonce: string }> {
+    if (rec?.enc) {
+      const key = this.w.vaultKey();
+      if (!key) throw new Error("locked");
+      const p = JSON.parse(await openWith(rec.enc, key));
+      return { claim: String(p.claim ?? ""), nonce: String(p.nonce ?? "") };
+    }
+    return { claim: String(rec?.claim ?? ""), nonce: String(rec?.nonce ?? "") };
+  }
+  // Lazy migration (L5): re-encrypt any legacy plaintext records in a list on the next write of that list, so
+  // an existing sealed claim keeps revealing but stops sitting in cleartext. No-op when locked or already
+  // encrypted. Mutates in place.
+  private async reencryptLegacyPreimages(list: { enc?: Vault; claim?: string; nonce?: string }[]): Promise<void> {
+    if (!this.w.vaultKey()) return;
+    for (const rec of list) {
+      if (rec && !rec.enc && (rec.claim !== undefined || rec.nonce !== undefined)) {
+        rec.enc = await this.sealPreimage(String(rec.claim ?? ""), String(rec.nonce ?? ""));
+        delete rec.claim; delete rec.nonce;
+      }
+    }
+  }
+  // Every sealed-claim record passes through pendingSeals: parked first, removed once its list write
+  // succeeds. A record parked while locked (or after a failed write: the commit fee is paid and this is
+  // the only copy of the nonce) is merged into sealedClaims(), is revealable, and is written on unlock or
+  // with the next seal write. After reset() a new record is dropped. Never throws.
+  persistSeal(add?: { k: string; rec: any }): Promise<void> {
+    return this.inSealChain(async () => {
+      if (add && !this.pendingSeals.some((p) => p.k === add.k && p.rec.txid === add.rec.txid)) {
+        if (this.w.wiped()) return;
+        this.pendingSeals.push(add);
+      }
+      if (!this.w.unlocked()) return;
+      for (const sk of new Set(this.pendingSeals.map((p) => p.k))) {
+        try {
+          const list: any[] = (await this.store.get(sk)) || [];
+          for (const p of this.pendingSeals) if (p.k === sk && !list.find((x) => x.txid === p.rec.txid)) list.unshift(p.rec);
+          await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
+          await this.store.set(sk, capSeals(list));
+          this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk);
+        } catch { /* SEAL-WRITE-02: stays parked and visible; the next seal write or unlock retries */ }
+      }
+    });
+  }
+  async revealClaim(txid: string) {
+    const k = sealKey(this.w.addr());
+    const list: any[] = (await this.store.get(k)) || [];
+    const rec = list.find((x) => x.txid === txid)
+      ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec; // a parked seal is revealable too
+    if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
+    // The preimage goes public only once the commit is mined (flushPending's getProposal rule): a reveal
+    // against a commit still in the mempool, or one that never lands, would publish the claim uncommitted.
+    const commit = await node.getProposal(this.w.rpc(), txid);
+    if (!(commit && commit.payload_hash))
+      return refuse("SEAL_NOT_MINED", "this seal is not mined yet, or the node could not confirm it; nothing was revealed. Try again once it is mined");
+    // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
+    const { claim, nonce } = await this.openPreimage(rec);
+    const r = await node.registerContent(this.w.api(), { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);
+    if (r && r.ok) {
+      // Chained write-back on a FRESH read (the list above is stale across the registerContent
+      // network await; writing it back would erase a seal recorded meanwhile). A storage failure
+      // is swallowed: the reveal itself succeeded and registration is idempotent.
+      await this.inSealChain(async () => {
+        if (!this.w.unlocked()) return;
+        try {
+          for (const p of this.pendingSeals) if (p.k === k && p.rec.txid === txid) p.rec.revealed = true;
+          const fresh: any[] = (await this.store.get(k)) || [];
+          const fr = fresh.find((x) => x.txid === txid);
+          if (fr) {
+            fr.revealed = true;
+            await this.reencryptLegacyPreimages(fresh); // lazy-migrate any legacy plaintext record on this write
+            await this.store.set(k, fresh);
+          }
+        } catch { /* revealed flag is display state; a later reveal or seal write retries it */ }
+      });
+    }
+    return r;
+  }
+  // Display view for the popup: decrypt the claim TEXT for the sealed-claims preview (unlocked, trusted UI)
+  // while the on-disk record stays encrypted; the nonce (reveal salt) is never surfaced to the list. A
+  // decrypt failure degrades to "no preview" rather than throwing (the list never breaks).
+  async sealedClaims(): Promise<any[]> {
+    if (!this.w.unlocked()) return [];
+    const kk = sealKey(this.w.addr());
+    const stored: any[] = (await this.store.get(kk)) || [];
+    // merge parked (write-failed) seals so a paid-but-unpersisted commit still shows in the list
+    const parked = this.pendingSeals.filter((p) => p.k === kk && !stored.some((x) => x?.txid === p.rec.txid)).map((p) => p.rec);
+    const list = parked.length ? [...parked, ...stored] : stored;
+    const out: any[] = [];
+    for (const rec of list) {
+      if (rec?.enc) { try { const { claim } = await this.openPreimage(rec); out.push({ ...rec, claim }); } catch { out.push({ ...rec }); } }
+      else out.push(rec);
+    }
+    return out;
   }
 }
