@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A name whose record was set by a market sale or by a re-claim after its lease lapsed now gives the reason
+  "NAME.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't
+  confirm the new owner from the name's own records: confirm the address out-of-band before sending". The old
+  text named only open-lane and token sales, which was wrong for a sale bound to one buyer and for a re-claim.
+
 - Internal: the SPV checks that name verification (`namespv.ts`) and the reservation-fill boundary (`fillspv.ts`)
   each carried a copy of (the full-block merkle bind with the duplicate-txid refusal, signer recovery, the coinbase
   test and the event mapping) now live once in `src/core/spvbind.ts`. Every refusal keeps its text, and the

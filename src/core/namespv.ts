@@ -346,7 +346,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       // Distinct, accurate reasons for the two triggers (QA-3): a self-computed viaFill winner vs a source
       // that explicitly reported its answer is not name-scope-provable. Both are fail-closed to caution.
       const reason = rep.viaFill
-        ? `${name}.csd ownership was decided by an on-chain offer fill that a name-scoped replay cannot prove (open-lane / token sale) — confirm the address out-of-band before sending`
+        ? `${name}.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't confirm the new owner from the name's own records: confirm the address out-of-band before sending`
         : `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain) — confirm the address out-of-band before sending`;
       return { ...fail(reason), sources: usable.length, disagree: false, viaFill: !!rep.viaFill };
     }
