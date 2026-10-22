@@ -3,15 +3,15 @@
 // merkleRoot self-pairs an odd final row, so merkleRoot([a,b,c]) == merkleRoot([a,b,c,c]). An honest
 // 3-tx block commits root R; a hostile read path can serve the 4-tx body [a,b,c,c], which hashes to the
 // SAME R and so passes a naive root compare while smuggling a duplicated tx into the verified set. A real
-// block can never contain a duplicate txid. Both wallet merkle binds - fillspv.ts bindBlock (M7) and
-// namespv.ts replayName's inline bind (F11, the second site) - now reject `new Set(ids).size !== ids.length`
-// BEFORE the root compare.
+// block can never contain a duplicate txid. The one wallet merkle bind, spvbind.ts bindBlock, rejects
+// `new Set(ids).size !== ids.length` BEFORE the root compare; both callers go through it, the fill boundary
+// (fillspv.ts, M7) and name verification (namespv.ts replayName, F11), and each is driven below.
 //
 // This test proves (1) the CVE precondition is real (the malleated 4-tx root == the honest 3-tx root),
 // and (2) the dedup is the SOLE rejecter (an honest control passes; removing the guard makes the malleated
 // body pass the root compare).
 //
-// MUTATION CONTRACT: deleting either `new Set(ids)...` line makes its malleated case pass (no throw / ok).
+// MUTATION CONTRACT: deleting the `new Set(ids)...` line in spvbind.ts makes both malleated cases pass.
 //
 // Run: node --import tsx test/merkle-dup-txid.test.mjs   (offline)
 import { provenOfferPayto } from "../src/core/fillspv.ts";

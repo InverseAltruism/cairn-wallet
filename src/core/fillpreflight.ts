@@ -4,7 +4,7 @@
 import type * as node from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import { fclaimHoldEnd, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
-import { BodyMismatchError } from "./namespv.js";
+import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
 import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";

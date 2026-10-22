@@ -31,12 +31,13 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason; never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, resolve, paidToFromOutputs, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
+import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type RpcTxJson } from "../vendor/cairnx-spv.js";
 import { parseSpvJson } from "./node.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
 import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "./spvpin.js";
+import { bindBlock, isCoinbaseInput, recoverSigner, toChainEvent, type ChainEvent } from "./spvbind.js";
 
 
 export interface NameVerification {
@@ -79,13 +80,6 @@ export interface NameVerification {
 
 export interface NameClaim { addr?: string; owner?: string; via?: string; lapsed?: boolean }
 export interface NameHint { txid: string; height: number; pos: number; kind?: string }
-// The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so a hinted
-// record whose authenticating input looks like one is rejected (no prevout owner to bind against).
-// Mirrors the vendored bundle's own `isCoinbaseInput`/`COINBASE_VOUT(=0xffffffff)`; kept local because
-// those are not in the bundle's export surface (the .d.ts types only the members namespv.ts already used).
-const COINBASE_TXID = "0x" + "00".repeat(32);
-const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
-  String(i.prevTxid).toLowerCase() === COINBASE_TXID && Number(i.vout) === 0xffffffff;
 // A name-history source (resolver) to cross-check against. `base` ends at the trade-API root, e.g.
 // "https://cairn-substrate.com/trade/api" or "https://clarvis.cairn-substrate.com/trade/api"; those two defaults
 // have one operator, so they are not independent of each other (SECURITY.md).
@@ -163,78 +157,11 @@ export interface SpvSource {
   headerSource?: string;
 }
 
-/** The refusal for a block body whose transactions do not hash to the verified header's merkle root. */
-export function bodyMismatchReason(height: number, bodySource: string | undefined): string {
-  return bodySource
-    ? `block ${height} from ${bodySource} does not match its verified merkle root: that RPC may be on another chain, or the read was altered`
-    : `block ${height} does not match its verified merkle root (tampered read path)`;
-}
-
-/** Thrown for a block body that does not match its verified header; `bodySource` is the RPC that served it and
- *  `headerSource` the API the header came from, both as the source was built (not the current settings). */
-export class BodyMismatchError extends Error {
-  constructor(readonly height: number, readonly bodySource: string | undefined, readonly headerSource?: string) {
-    super(bodyMismatchReason(height, bodySource));
-    this.name = "BodyMismatchError";
-  }
-}
-
 // Headers to sync past the last record so its inclusion proof has a confirmation cushion. The verifier
 // never needs the full chain tip for inclusion; only up to the records it must prove.
 const CONF_BUFFER = 12;
 
 const fail = (reason: string): NameVerification => ({ verified: false, reason });
-
-// outputs → addr→sum(value) map (the resolver's `paidTo`). The AGGREGATION is the vendored
-// paidToFromOutputs (the exact sink the cairnx scanner/resolver use; same skip-don't-throw
-// semantics for malformed values; a dropped fee output can only make a fee look unpaid → reject,
-// never overpay). What stays local is SPV-specific: raw tx outputs carry a scriptPubkey, not an
-// addr, so extract + validate the 40-hex address and coerce codec number|bigint values to number
-// (a value past 2^53 coerces non-safe and is skipped by the sink, matching the old local copy).
-// A hand-rolled twin of the aggregation lived here until 2026-07-06.
-function outputsToPaidTo(outputs: Tx["outputs"]): Record<string, string> {
-  const decoded: { addr: string; value: number }[] = [];
-  for (const o of outputs) {
-    const a = String(o.scriptPubkey ?? "").toLowerCase().replace(/^0x/, "");
-    if (!/^[0-9a-f]{40}$/.test(a)) continue;
-    decoded.push({ addr: "0x" + a, value: Number(o.value) });
-  }
-  return paidToFromOutputs(decoded);
-}
-
-// Recover + AUTHENTICATE a tx's signer. scriptSig = 0x40‖sig64‖0x21‖pub33 (99 bytes). The signature MUST
-// validate against sighash(tx): the merkle root commits the tx BODY but not the scriptSig, so without this
-// a lying node could re-attribute (or fabricate) a record's author. null on any malformation / bad sig.
-// Since csd-crypto 0.1.15 (Plan 57 B9) the STRICT parser+verifier is the vendored recoverSigner
-// (exact 198-byte frame + verifyDigest + lowercase addr; the same contract this file hand-rolled);
-// this wrapper only supplies sighash(tx), kept INSIDE the try so a malformed hinted tx null-fails
-// instead of throwing (fail-closed, never fail-crashed).
-function recoverSigner(tx: Tx): string | null {
-  const ss = tx.inputs?.[0]?.scriptSig;
-  if (typeof ss !== "string") return null;
-  try { return recoverSignerFromScriptSig(ss, sighash(tx)); }
-  catch { return null; }
-}
-
-// Reconstruct a resolver ChainEvent from a merkle-verified, signer-authenticated, prevout-bound tx. The
-// caller has already recovered + ownership-bound `signer` (see replayName); this only decodes the app
-// payload. Returns null for a non-cairnx tx (the caller fail-closes; a hinted tx we can't faithfully
-// replay is a lying read).
-// ★ KEEP-IN-SYNC: the emitted field shapes mirror the cairnx scanner (cairnx repo src/scan.ts
-// tx()/propose/attest mapping) so resolve() produces identical state from either feed. The
-// aggregation half already IS the shared sink (paidToFromOutputs, above); this event shaping stays
-// a marked mirror because the two sides read different wire formats (SPV raw tx vs indexer JSON).
-// Any field-shape change lands in BOTH files; test/namespv.test.mjs replays against the audited
-// resolver and fails on shape drift.
-function toChainEvent(tx: Tx, id: string, height: number, pos: number, signer: string): Record<string, unknown> | null {
-  if (!tx.app || tx.app.type === "None") return null;
-  const paidTo = outputsToPaidTo(tx.outputs);
-  if (tx.app.type === "Propose") {
-    return { kind: "propose", id: id.toLowerCase(), proposer: signer, uri: tx.app.uri, payloadHash: String(tx.app.payloadHash).toLowerCase(), expiresEpoch: Number(tx.app.expiresEpoch), height, pos, paidTo };
-  }
-  const conf = Number(tx.app.confidence);
-  return { kind: "attest", txid: id.toLowerCase(), proposalId: String(tx.app.proposalId).toLowerCase(), attester: signer, score: Number(tx.app.score), confidence: Number.isSafeInteger(conf) && conf >= 0 ? conf : 0, height, pos, paidTo };
-}
 
 // Core SPV replay (no claim gate): SPV-verify `hints` against the chain and recompute the name's (owner,addr)
 // via the AUDITED resolver. Shared by the single-source verifyName and the multi-source verifyNameUnion.
@@ -263,20 +190,12 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   if (maxHeight > verifiedTip) return { ok: false, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
   const lapseTip = Math.max(verifiedTip, Number.isFinite(nodeTip) ? nodeTip : 0);
 
-  const events: Record<string, unknown>[] = [];
+  const events: ChainEvent[] = [];
   for (const [height, hs] of byHeight) {
-    const { merkle, txs } = await src.blockAt(height);            // THROWS if the header can't be PoW-verified
-    // A plain/coinbase tx may carry no `app`; default it to {None} BEFORE decode so a hostile node can't omit
-    // `app` on one filler tx to make rpcTxToTx throw and DoS the whole verify. A None tx still has a real txid.
-    const rebuilt = txs.map((t) => rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }));
-    const ids = rebuilt.map(ctxid);
-    // M7/F11 (B5e, CVE-2012-2459): reject a duplicated txid BEFORE the root compare - merkleRoot self-pairs
-    // an odd final row, so a body whose last tx is duplicated shares the honest root. A real block can never
-    // hold a duplicate txid. Same one-line defense as fillspv.ts bindBlock (F11: this is the second site).
-    if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length) return { ok: false, reason: `block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)` };
-    // FULL-block bind: the entire tx-set must hash to the verified header's merkle root, so the node cannot
-    // have omitted/altered/added any committed body within this block (completeness-in-block).
-    if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase()) return { ok: false, reason: bodyMismatchReason(height, src.bodySource) };
+    // FULL-block bind (throws if the header can't be PoW-verified); a body that fails it fails this replay.
+    const bound = await bindBlock(src, height);
+    if (!bound.ok) return { ok: false, reason: bound.reason };
+    const { ids, rebuilt } = bound;
     for (const hint of hs) {
       const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());
       if (pos < 0) return { ok: false, reason: `record ${hint.txid} is not in verified block ${height}` };

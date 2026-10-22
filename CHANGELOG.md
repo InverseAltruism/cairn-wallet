@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Internal: the SPV checks that name verification (`namespv.ts`) and the reservation-fill boundary (`fillspv.ts`)
+  each carried a copy of (the full-block merkle bind with the duplicate-txid refusal, signer recovery, the coinbase
+  test and the event mapping) now live once in `src/core/spvbind.ts`. Every refusal keeps its text, and the
+  signatures the test suite produces are byte-identical before and after.
 - Exporting the private key from a damaged vault, one whose account list has no account at its active slot, now
   refuses with "corrupt vault (no account at its active slot)" instead of an internal error about reading `priv`.
 - Internal: the wallet engine `src/core/wallet.ts` is split by responsibility: the fill checks before signing
