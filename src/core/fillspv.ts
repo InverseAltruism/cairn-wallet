@@ -21,7 +21,7 @@ import {
   type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
-import { BodyMismatchError, bindBlock, isCoinbaseInput, recoverSigner, toChainEvent } from "./spvbind.js";
+import { BodyMismatchError, bindBlock, bindSigner, recoverSigner, toChainEvent } from "./spvbind.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
 // (`provenOfferTerms` + `feeBpsAt`, verifyfill.ts) - this file used to carry its own hand copies of
@@ -184,15 +184,10 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       // bids is rebuilt.map(ctxid), so a found id has its body; a gap throws, keeping the scan fail-closed.
       const tx = rebuilt[pos], bid = bids[pos];
       if (!tx || bid === undefined) throw new Error(`block ${height}: no rebuilt body for ${k}`);
-      const signer = recoverSigner(tx);
-      const in0 = tx.inputs?.[0];
-      // NSPV-SIGSUB-1: bind the recovered signer to the COIN it spends (the merkle root does not commit the
-      // scriptSig), so a hostile node cannot swap in a foreign valid signature to re-attribute a record's author.
-      if (signer && in0 && !isCoinbaseInput(in0)) {
-        const spk = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-        const base = spk && spk.toLowerCase() === signer ? toChainEvent(tx, bid, height, pos, signer) : null;
-        if (base) ev = { ...base, depth: verifiedTip - height + 1 };   // verifyFillSpv reads the PoW burial depth
-      }
+      // NSPV-SIGSUB-1: the signer must own the coin the record spends; an unbindable record proves no event.
+      const author = await bindSigner(tx, spv);
+      const base = author.ok ? toChainEvent(tx, bid, height, pos, author.signer) : null;
+      if (base) ev = { ...base, depth: verifiedTip - height + 1 };   // verifyFillSpv reads the PoW burial depth
     }
     proven.set(k, ev);
     return ev;
@@ -401,12 +396,9 @@ export async function provenOfferPayto(
     if (!app || app.type !== "Propose") return null;
     const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string; ticker?: string; amount?: string }; taker?: string; bid?: string; min?: string } | null;
     if (!rec || rec.t !== "offer") return null;
-    const signer = recoverSigner(tx);
-    const in0 = tx.inputs?.[0];
-    if (!signer || !in0 || isCoinbaseInput(in0)) return null;
-    const owner = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-    if (!owner || owner.toLowerCase() !== signer) return null;     // authorship not prevout-bound (tampered) MUTATE_FILLSPV_PREVOUT_BIND
-    const seller = signer;
+    const author = await bindSigner(tx, spv);
+    if (!author.ok) return null;                                   // authorship not prevout-bound (tampered)
+    const seller = author.signer;
     const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase())) ? String(rec.want.payto).toLowerCase() : seller; // MUTATE_PROVEN_PAYTO_DERIVE
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.

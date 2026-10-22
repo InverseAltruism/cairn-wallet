@@ -8,7 +8,7 @@ import { rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recover
 // authenticating input looks like one has no prevout owner to bind against. Kept local because the vendored
 // bundle does not export its own `isCoinbaseInput`.
 const COINBASE_TXID = "0x" + "00".repeat(32);
-export const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
+const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
   String(i.prevTxid).toLowerCase() === COINBASE_TXID && Number(i.vout) === 0xffffffff;
 
 // outputs to the resolver's `paidTo` (addr to summed value). The aggregation is the vendored paidToFromOutputs,
@@ -32,6 +32,29 @@ export function recoverSigner(tx: Tx): string | null {
   if (typeof ss !== "string") return null;
   try { return recoverSignerFromScriptSig(ss, sighash(tx)); }
   catch { return null; }
+}
+
+/** Reads the scriptPubkey of a spent output, bound to its txid; null when it cannot be proven. */
+export interface PrevoutReader {
+  prevoutScriptPubkey(prevTxid: string, vout: number): Promise<string | null>;
+}
+
+export type SignerBind = { ok: true; signer: string } | { ok: false; kind: "unsigned" | "no-input" | "not-owner" };
+
+/**
+ * The tx's authenticated signer, bound to the coin its first input spends. The merkle root commits the body but
+ * not the scriptSig and the sighash is public, so a block-body provider could splice in a foreign valid signature
+ * to re-attribute a record; requiring the signer to own the spent coin (its prevout scriptPubkey) stops that
+ * (test/namespv-fillspv-parity.test.mjs). Each caller maps the refusal to its own contract.
+ */
+export async function bindSigner(tx: Tx, src: PrevoutReader): Promise<SignerBind> {
+  const signer = recoverSigner(tx);
+  if (!signer) return { ok: false, kind: "unsigned" };
+  const in0 = tx.inputs?.[0];
+  if (!in0 || isCoinbaseInput(in0)) return { ok: false, kind: "no-input" };
+  const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
+  if (!spk || spk.toLowerCase() !== signer) return { ok: false, kind: "not-owner" }; // MUTATE_SPV_PREVOUT_BIND
+  return { ok: true, signer };
 }
 
 export type ChainEvent = Omit<ProvenPropose, "depth"> | Omit<ProvenAttest, "depth">;

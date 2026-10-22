@@ -37,7 +37,7 @@ import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
 import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "./spvpin.js";
-import { bindBlock, isCoinbaseInput, recoverSigner, toChainEvent, type ChainEvent } from "./spvbind.js";
+import { bindBlock, bindSigner, toChainEvent, type ChainEvent } from "./spvbind.js";
 
 
 export interface NameVerification {
@@ -201,19 +201,15 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
       if (pos < 0) return { ok: false, reason: `record ${hint.txid} is not in verified block ${height}` };
       const tx = rebuilt[pos], id = ids[pos];   // ids is rebuilt.map(ctxid): a found id has its body
       if (!tx || id === undefined) throw new Error(`block ${height}: no rebuilt body for ${hint.txid}`);
-      const signer = recoverSigner(tx);
-      if (!signer) return { ok: false, reason: `record ${hint.txid} couldn't be authenticated (not a signed cairnx record)` };
-      // NSPV-SIGSUB-1 (H3): the merkle root + txid commit the tx BODY but NOT the scriptSig, and the public
-      // sighash is secret-free; so a hostile/MITM block-body provider could substitute a foreign VALID
-      // signature over it to re-attribute this record's author (re-pointing a name's owner). Defeat it the
-      // way consensus / BIP-174 do: bind the recovered signer to the COIN it spends; the authenticating
-      // input's prevout scriptPubkey (a 20-byte hash160) must equal hash160(pub) == this signer's address.
-      // SpvSource.prevoutScriptPubkey txid-binds the source body (reuses the TXB-1 cure). Fail CLOSED on any gap.
-      const in0 = tx.inputs?.[0];
-      if (!in0 || isCoinbaseInput(in0)) return { ok: false, reason: `record ${hint.txid} has no spendable authenticating input` };
-      const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-      if (!spk || spk.toLowerCase() !== signer) return { ok: false, reason: `record ${hint.txid} signer does not own the coin it spends (rejected possible scriptSig substitution)` }; // MUTATE_NSPV_PREVOUT_BIND
-      const ev = toChainEvent(tx, id, height, pos, signer);
+      // NSPV-SIGSUB-1 (H3): the signer must own the coin the record spends; each refusal keeps its own reason.
+      const author = await bindSigner(tx, src);
+      if (!author.ok) {
+        const why = author.kind === "unsigned" ? "couldn't be authenticated (not a signed cairnx record)"
+          : author.kind === "no-input" ? "has no spendable authenticating input"
+          : "signer does not own the coin it spends (rejected possible scriptSig substitution)";
+        return { ok: false, reason: `record ${hint.txid} ${why}` };
+      }
+      const ev = toChainEvent(tx, id, height, pos, author.signer);
       if (!ev) return { ok: false, reason: `record ${hint.txid} is not a cairnx app record` };
       events.push(ev);
     }
