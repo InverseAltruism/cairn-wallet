@@ -27,6 +27,9 @@ Prefer to load it yourself? Every [GitHub release](https://github.com/InverseAlt
 1. Download and unzip `cairn-wallet.zip` from the latest release (you get a `cairn-wallet` folder).
 2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select the folder.
 
+[cairn-substrate.com](https://cairn-substrate.com) links users to the Chrome Web Store for install and to this
+repo for source. It does not host the extension binary.
+
 ### Verify a release
 
 Cairn Wallet is open source and reproducibly built, so you never have to trust the binary:
@@ -84,25 +87,7 @@ The signing core is verified against external ground truth, not only its own ass
 
 ## Release flow
 
-> For maintainers.
-
-1. **Bump the version** in `package.json` (`npm version X.Y.Z --no-git-tag-version`). It is the only place the
-   version is written: `build.mjs` stamps it into `dist/manifest.json` and the `window.cairn` provider. Then
-   `npm test && npm run package` must pass locally.
-2. **Tag and push**: `git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z` triggers
-   `.github/workflows/release.yml`: the `vendor-fresh-full` rebuild byte-diff job, then `npm ci` →
-   `npm run typecheck` → `npm test` (full gate) → `npm run verify:vendor` → `npm run package` (deterministic
-   `cairn-wallet.zip` *load-unpacked* variant **and** `cairn-wallet-store.zip` *Web-Store* variant with
-   `manifest.json` at the zip root, each with a `.sha256`) → **SLSA build-provenance attestation** → publish the
-   GitHub Release with those four files.
-3. **Chrome Web Store**: upload the locally reproduced `cairn-wallet-store-X.Y.Z.zip` (byte-identical to the
-   release's `cairn-wallet-store.zip`; the sha256 must match its `.sha256`) to the
-   [Developer Dashboard](https://chrome.google.com/webstore/devconsole), then check the published CRX, both per
-   `store/PUBLISH-RUNBOOK.md`. This is the primary distribution channel; `store/` holds the listing copy,
-   privacy policy, and the runbook.
-
-[cairn-substrate.com](https://cairn-substrate.com) links users to the Chrome Web Store for install and to this
-repo for source. It does not host the extension binary.
+Maintainers: the release procedure is in [AGENTS.md](AGENTS.md#release-and-deploy).
 
 ## dApp error contract
 
