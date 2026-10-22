@@ -311,6 +311,26 @@ Residual:
 A possible later closure for the withholding case, not built: a second broadcast path for the fclaim through the
 second host, if its relay accepts submits, so the front door alone cannot hold the reservation back.
 
+## Name verification on top of the store
+
+Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", has the user-facing account.
+
+- After the header checks: a full-block merkle bind, signer auth and the prevout-ownership bind, then the two-source
+  union (`verifyNameUnion`: primary and clarvis, union by txid, every event SPV-proven, the audited resolver replayed
+  over the proven union).
+- A green badge needs a successful replay. A disagreeing source is a warning, not a refusal: the send goes to the
+  proven winner with `disagree` or `soleSource` set. When nothing can be proven, `resolveName` returns the served
+  address with `verified: false` and the popup lets the user send after a caution.
+- A lapse refuses when it is corroborated (a second source or the persisted tip floor is also past expiry), and when
+  a resolver reports the lease lapsed and the chain cannot show it current (`src/core/names.ts`). A lapse seen only
+  against one source's tip is a caution (`verified: false`, "may have lapsed"), so an inflated node tip cannot
+  block a send (test/resolve-lapse-corroborate.test.mjs). A name decided by an offer fill (`viaFill`) is never shown green.
+- A long sync persists its verified progress every `SYNC_PERSIST_WINDOW` (8,192) headers, so an interrupted sync
+  resumes (`syncWithPartialPersist`). The persisted tip floor advances only after the whole sync succeeded
+  (`floorAdvance`); test/namespv-partial-persist.test.mjs pins both.
+- The one-time migration of the `spvHeaderChain` snapshot ("What runs when") runs when an install or update fires
+  `onInstalled` (`src/background.ts`), or at the popup's prewarm if that comes first.
+
 ## Callers and their tests
 
 | Caller | Test |

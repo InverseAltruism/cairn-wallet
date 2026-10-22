@@ -222,6 +222,39 @@ These describe their own dates or versions, not the current tree.
 - State on 2026-10-11 (the "State snapshot" section): `package.json` read 0.2.73, tagged `v0.2.73` at 6275446;
   0.2.73 was uploaded to the Chrome Web Store that day with the store review pending; the vendored bundle pinned
   csd-sdk 0.1.42.
+- Input verification history: 0.2.53 introduced the per-coin fail-closed classification (a ghost coin is skipped,
+  `GHOST_INPUTS_SKIPPED`, with an honest balance warning) after the ghost-UTXO incident (h47114), where a node
+  reorg-undo bug left phantom coins and the old any-null-kills-all fold let one ghost block every spend. The
+  "horizon" verdict consumes the node's 503 with body code `SCAN_HORIZON` (introduced in node v0.1.6). 0.2.66 added
+  the "unrepresentable" verdict, so one dust coin from a stranger can no longer block `consolidate()`.
+- Fill lanes: 0.2.60 and 0.2.61 made the fclaim lane and the offer-id lane merkle-prove the offer and bind the
+  payment, rebate, fee and `min` legs to the on-chain author. 0.2.71 added a clarvis comparison of the fill's value
+  fields keyed by the fclaim txid; 0.2.72 removed it, because every field it compared is merkle-bound and it could
+  not see withholding.
+- The on-device name registration builders (commit, reveal, finalize) were removed on 2026-07-06; the /names site
+  drives registration through dApp propose.
+- 0.2.55 fixed a timeout-inversion class: every outer timeout now sits above its server-side worst case.
+- Large-send incident (2026-07): a 10,540 CSD send (about 211 coinbase inputs) failed with the misleading "may
+  already be in flight" copy, and nothing was broadcast. The first diagnosis (the verify fan-out tripping the front
+  door's rate limit) was wrong. The cause was the front-door proxy's global 64 KB JSON body limit, which answered 400
+  to /tx/submit at about 127 inputs or more (about 530 bytes per input) before the tx reached the node. 0.2.55
+  shipped the wallet-side fixes: structured errors through `sendRefused` with the "may be in flight" copy kept for
+  genuine `SUBMIT_MAYBE_INFLIGHT` and catch paths, `SUBMIT_MAYBE_INFLIGHT` distinguished from `SUBMIT_REJECTED`,
+  bounded verify concurrency, the timeouts, `TOO_MANY_INPUTS` distinguished from `INSUFFICIENT`, a CSD fee pre-check
+  for token sends, and consolidate with its preview. The front door got a larger body cap on that route and a raised
+  rate limit. The fee guard was a red herring (the send fee is a fixed 0.01 CSD).
+- MV3 service-worker idle kills looked like premature locking; the cure was keeping the key in
+  `chrome.storage.session`. The approval window runs in a tab, so the sender gate keys on the extension-origin
+  `sender.url`, not on a missing tab (a regression in v0.2.17).
+- Version drift shipped once (v0.2.21); since then the version is written only in `package.json` and stamped at
+  build time. A stale vendored bundle shipped once; since then the PROVENANCE and byte-diff gates run. clarvis was
+  unreachable on arrival once because its host was missing from the CSP; since then the source-host tripwire runs.
+- The /api/headers 429 spiral (2026-06-22) blocked buys; the cure was bounded backoff. The rule that fail-closed
+  without an availability valve is a UX regression comes from it.
+- `fillOffer` once trusted a caller-supplied verified flag and could underpay a maker on a partial fill; the exact
+  `bigint` need-map preflight and the fail-closed registered-versus-unregistered handling in the union path closed it.
+- Google Safe Browsing once flagged the sites for serving the zip themselves; wallet distribution is the Chrome Web
+  Store and GitHub releases only.
 
 ## Earlier release notes (moved from AGENTS.md on 2026-10-11)
 
