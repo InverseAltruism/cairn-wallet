@@ -353,7 +353,7 @@ async function main() {
     const priv = await w.exportKey("pw-secret-x");
     const mirror = JSON.stringify(await store.get("wallets"));
     const vault = JSON.stringify(await store.get("vault"));
-    check("cleartext 'wallets' mirror contains NO mnemonic", !mirror.includes(mnemonic.split(" ")[0]) || !mirror.includes(mnemonic));
+    check("cleartext 'wallets' mirror contains NO mnemonic", !mirror.includes(mnemonic.split(" ")[0] ?? mnemonic) || !mirror.includes(mnemonic));
     check("cleartext 'wallets' mirror contains NO private key", !mirror.includes(priv.replace(/^0x/, "")));
     check("vault is sealed (no plaintext mnemonic/priv in stored vault)", !vault.includes(mnemonic) && !vault.includes(priv.replace(/^0x/, "")));
 

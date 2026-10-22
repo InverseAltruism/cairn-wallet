@@ -234,14 +234,16 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
     const { ids: bids, rebuilt } = await bindBlockMemo(height);
     const pos = bids.findIndex((x) => x.toLowerCase() === k);
     if (pos >= 0) {
-      const tx = rebuilt[pos];
+      // bids is rebuilt.map(ctxid), so a found id has its body; a gap throws, keeping the scan fail-closed.
+      const tx = rebuilt[pos], bid = bids[pos];
+      if (!tx || bid === undefined) throw new Error(`block ${height}: no rebuilt body for ${k}`);
       const signer = recoverSigner(tx);
       const in0 = tx.inputs?.[0];
       // NSPV-SIGSUB-1: bind the recovered signer to the COIN it spends (the merkle root does not commit the
       // scriptSig), so a hostile node cannot swap in a foreign valid signature to re-attribute a record's author.
       if (signer && in0 && !isCoinbaseInput(in0)) {
         const spk = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-        if (spk && spk.toLowerCase() === signer) ev = toProvenEvent(tx, bids[pos], height, pos, signer, verifiedTip - height + 1);
+        if (spk && spk.toLowerCase() === signer) ev = toProvenEvent(tx, bid, height, pos, signer, verifiedTip - height + 1);
       }
     }
     proven.set(k, ev);
@@ -262,11 +264,12 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   await bindBlockPool(heights, SCAN_POOL, bindBlockMemo);
   for (const h of heights) {
     const { ids: bids, rebuilt } = blockMemo.get(h)!;   // populated by the pool above; present or the pool threw
-    for (let pos = 0; pos < rebuilt.length; pos++) {
-      const tx = rebuilt[pos];
+    for (const [pos, tx] of rebuilt.entries()) {
       const app = tx.app;
       if (!app || app.type === "None") continue;
-      const id = bids[pos].toLowerCase();
+      const bid = bids[pos];
+      if (bid === undefined) throw new Error(`block ${h}: no txid for body ${pos}`);   // bids is rebuilt.map(ctxid)
+      const id = bid.toLowerCase();
       if (app.type === "Propose") {
         if (id === offerId) { markScanned(id, h); continue; }   // the offer, if it anchored in-window
         // F8 (wallet-vs-site parity): only cairnx-domain Proposes bind the resolver's replay, mirroring the site
@@ -444,8 +447,8 @@ export async function provenOfferPayto(
     if (!Number.isFinite(verifiedTip) || verifiedTip < offerHeight) return null;   // couldn't reach it -> retry
     const { ids: bids, rebuilt } = await bindBlock(spv, offerHeight);   // merkle-COMPLETE bodies; throws on tamper
     const pos = bids.findIndex((x) => x.toLowerCase() === offerId);
-    if (pos < 0) return null;                                      // the offer is not in its claimed block (tampered)
     const tx = rebuilt[pos];
+    if (pos < 0 || !tx) return null;                               // the offer is not in its claimed block (tampered)
     const app = tx.app;
     if (!app || app.type !== "Propose") return null;
     const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string; ticker?: string; amount?: string }; taker?: string; bid?: string; min?: string } | null;

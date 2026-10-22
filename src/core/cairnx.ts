@@ -259,7 +259,7 @@ export function fmtBalance(raw: unknown): string {
 export function parseUnits(human: string, decimals: number): string | null {
   if (typeof human !== "string") return null;
   const m = /^(\d+)(?:\.(\d+))?$/.exec(human.trim());
-  if (!m) return null;
+  if (!m || m[1] === undefined) return null;   // group 1 is required by the pattern
   const d = Number.isInteger(decimals) && decimals >= 0 && decimals <= 8 ? decimals : 0;
   const frac = m[2] ?? "";
   if (frac.length > d) return null; // more precision than the token has

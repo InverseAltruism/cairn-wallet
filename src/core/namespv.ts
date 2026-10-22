@@ -280,7 +280,8 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     for (const hint of hs) {
       const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());
       if (pos < 0) return { ok: false, reason: `record ${hint.txid} is not in verified block ${height}` };
-      const tx = rebuilt[pos];
+      const tx = rebuilt[pos], id = ids[pos];   // ids is rebuilt.map(ctxid): a found id has its body
+      if (!tx || id === undefined) throw new Error(`block ${height}: no rebuilt body for ${hint.txid}`);
       const signer = recoverSigner(tx);
       if (!signer) return { ok: false, reason: `record ${hint.txid} couldn't be authenticated (not a signed cairnx record)` };
       // NSPV-SIGSUB-1 (H3): the merkle root + txid commit the tx BODY but NOT the scriptSig, and the public
@@ -293,7 +294,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
       if (!in0 || isCoinbaseInput(in0)) return { ok: false, reason: `record ${hint.txid} has no spendable authenticating input` };
       const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
       if (!spk || spk.toLowerCase() !== signer) return { ok: false, reason: `record ${hint.txid} signer does not own the coin it spends (rejected possible scriptSig substitution)` }; // MUTATE_NSPV_PREVOUT_BIND
-      const ev = toChainEvent(tx, ids[pos], height, pos, signer);
+      const ev = toChainEvent(tx, id, height, pos, signer);
       if (!ev) return { ok: false, reason: `record ${hint.txid} is not a cairnx app record` };
       events.push(ev);
     }
@@ -402,8 +403,9 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           if (solo.ok && !solo.viaFill && r.scopedReplaySufficient !== false) recovered.push({ label: r.label, rep: solo, claim: r.claim });
         }
         const addrs = new Set(recovered.map((p) => p.rep.addr));
-        if (recovered.length >= 1 && addrs.size === 1) {
-          const win = recovered[0].rep;
+        const first = recovered[0];
+        if (first && addrs.size === 1) {
+          const win = first.rep;
           let agreed = 0; for (const r of usable) { const c = r.claim?.addr ? String(r.claim.addr).toLowerCase() : null; if (c === win.addr) agreed++; }
           // NS-1: keep verified:true + the PROVEN winner addr (vetoing would drop resolveName back to the
           // RESOLVER-SERVED address = the B5e single-source DoS/trust regression, D2 K.5#3). But when only ONE
@@ -703,7 +705,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     for (let p = spec.firstHeight - (spec.firstHeight % PAGE); p <= spec.lastHeight; p += PAGE) {
       const rows = await headersBatch(p, PAGE);
       for (let i = Math.max(0, spec.firstHeight - p); i < PAGE; i++) {
-        try { out.set(serializeHeader(rows[i].header as BlockHeader), (p + i - spec.firstHeight) * HB); }
+        try { out.set(serializeHeader(rows[i]?.header as BlockHeader), (p + i - spec.firstHeight) * HB); }   // a short batch lands in the catch
         catch (e) { throw new Error(`chunk ${spec.k} (heights ${spec.firstHeight} to ${spec.lastHeight}) failed verification: the header served at ${p + i} is malformed (${(e as Error)?.message ?? e})`); }
       }
     }

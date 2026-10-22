@@ -39,17 +39,18 @@ export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: 
   const { uri, payloadHash, expiresEpoch = 9_999_999, priv, outputs = [], prevScriptPubkey, domain = CAIRNX_DOMAIN } = p;
   const prevTxid = "0x" + (++_utxoSeq).toString(16).padStart(64, "0"); // a unique, real-looking prevout per tx
   PREVOUTS.set(prevTxid.toLowerCase(), String(prevScriptPubkey ?? addrFromPriv(priv)).toLowerCase());
+  const in0 = { prevTxid, vout: 0, scriptSig: "0x" };
   const tx = {
     version: 1, locktime: 0,
-    inputs: [{ prevTxid, vout: 0, scriptSig: "0x" }],
+    inputs: [in0],
     outputs: outputs.map((o) => ({ value: o.value, scriptPubkey: o.to })),
     app: { type: "Propose" as const, domain, payloadHash, uri, expiresEpoch },
   };
   const { sig64, pub33 } = signSighash(vSighash(tx as any), priv); // sign the VENDORED sighash → verifyDigest accepts
-  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
+  in0.scriptSig = buildScriptSig(sig64, pub33);
   return {
     version: 1, locktime: 0,
-    inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: tx.inputs[0].scriptSig }],
+    inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: in0.scriptSig }],
     outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
     app: { type: "Propose", domain, payload_hash: payloadHash, uri, expires_epoch: expiresEpoch },
   } as unknown as RpcTxJson;
@@ -62,17 +63,18 @@ export function attestTx(p: { proposalId: string; score: number; confidence?: nu
   const { proposalId, score, confidence = 0, priv, outputs = [], prevScriptPubkey } = p;
   const prevTxid = "0x" + (++_utxoSeq).toString(16).padStart(64, "0");
   PREVOUTS.set(prevTxid.toLowerCase(), String(prevScriptPubkey ?? addrFromPriv(priv)).toLowerCase());
+  const in0 = { prevTxid, vout: 0, scriptSig: "0x" };
   const tx = {
     version: 1, locktime: 0,
-    inputs: [{ prevTxid, vout: 0, scriptSig: "0x" }],
+    inputs: [in0],
     outputs: outputs.map((o) => ({ value: o.value, scriptPubkey: o.to })),
     app: { type: "Attest" as const, proposalId, score, confidence },
   };
   const { sig64, pub33 } = signSighash(vSighash(tx as any), priv);
-  tx.inputs[0].scriptSig = buildScriptSig(sig64, pub33);
+  in0.scriptSig = buildScriptSig(sig64, pub33);
   return {
     version: 1, locktime: 0,
-    inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: tx.inputs[0].scriptSig }],
+    inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: in0.scriptSig }],
     outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
     app: { type: "Attest", proposal_id: proposalId, score, confidence },
   } as unknown as RpcTxJson;

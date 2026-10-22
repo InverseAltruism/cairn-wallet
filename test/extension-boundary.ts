@@ -65,7 +65,8 @@ let tipHeight = 34000; // ≥ V13/V17 (open-lane heights); lower it to simulate 
   if (u.includes("/utxos/")) return { ok: true, json: async () => ({ ok: true, confirmed_balance: MOCK_UTXO.value, utxos: [MOCK_UTXO] }) };
   if (u.endsWith("/tip")) return tipDown ? { ok: false, status: 503, json: async () => ({}) } : { ok: true, json: async () => ({ ok: true, height: tipHeight }) };  // ≥ V13/V17 (open-lane heights)
   const om = u.match(/\/cairnx\/offer\/(0x[0-9a-fA-F]{64})/);
-  if (om && offerFixtures.has(om[1].toLowerCase())) return { ok: true, status: 200, json: async () => offerFixtures.get(om[1].toLowerCase()) };
+  const oid = om?.[1]?.toLowerCase();
+  if (oid && offerFixtures.has(oid)) return { ok: true, status: 200, json: async () => offerFixtures.get(oid) };
   const tr = txReply(u, [MC]); if (tr) return tr;
   // unique txid per submit; the wallet's history is (correctly) idempotent by txid,
   // so a fixed mock txid would silently drop later records and mask real behavior.
@@ -417,7 +418,7 @@ async function main() {
   // (or vice-versa) is a real drift bug. Assert every DAPP_METHOD is handled somewhere in background.ts.
   const bgSrc = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
   const dappSet = bgSrc.match(/DAPP_METHODS\s*=\s*new Set\(\[([^\]]*)\]/);
-  const dappMethods = dappSet ? [...dappSet[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+  const dappMethods = dappSet ? [...(dappSet[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "") : [];
   check("CQ-4: DAPP_METHODS allowlist parses + is non-trivial", dappMethods.length >= 10);
   for (const m of dappMethods) {
     // handled in resolvePending (`p.method === "m"`) OR the dapp message branch (`msg.method === "m"`)
@@ -432,7 +433,7 @@ async function main() {
   // the background rejects, or an allowlisted method the page can't discover.
   const inpageSrc = readFileSync(new URL("../src/inpage.ts", import.meta.url), "utf8");
   const capMatch = inpageSrc.match(/getCapabilities[\s\S]*?methods:\s*\[([^\]]*)\]/);
-  const capMethods = capMatch ? [...capMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+  const capMethods = capMatch ? [...(capMatch[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "") : [];
   check("CQ-4: inpage getCapabilities().methods parses + is non-trivial", capMethods.length >= 10);
   const normSet = (xs: string[]) => [...new Set(xs.map((s) => s.toLowerCase()))].sort();
   const capNorm = normSet(capMethods), dappNorm = normSet(dappMethods);

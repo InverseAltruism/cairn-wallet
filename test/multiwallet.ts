@@ -38,7 +38,7 @@ async function main() {
     const w = new Wallet(memoryStore());
     const a1 = (await w.create(PW)).addr;
     let st = await w.status();
-    check("create → 1 account, active 0, default label", st.accounts.length === 1 && st.active === 0 && st.accounts[0].label === "Account 1");
+    check("create → 1 account, active 0, default label", st.accounts.length === 1 && st.active === 0 && st.accounts[0]?.label === "Account 1");
 
     const add = await w.addAccount();
     const a2 = add.addr;
@@ -48,7 +48,7 @@ async function main() {
 
     const known = fromPriv("0x" + "11".repeat(32));
     const a3 = (await w.importAccount(known.privkey, "Imported")).addr;
-    check("importAccount adds the imported key + label", a3.toLowerCase() === known.addr.toLowerCase() && (await w.status()).accounts[2].label === "Imported");
+    check("importAccount adds the imported key + label", a3.toLowerCase() === known.addr.toLowerCase() && (await w.status()).accounts[2]?.label === "Imported");
     let dupRejected = false; try { await w.importAccount(known.privkey); } catch { dupRejected = true; }
     check("importAccount refuses a duplicate address", dupRejected);
 
@@ -58,7 +58,7 @@ async function main() {
     check("switchAccount(addr) sets active", (await w.status()).addr!.toLowerCase() === a2.toLowerCase());
 
     await w.renameAccount(a1, "Treasury");
-    check("renameAccount persists the label", (await w.status()).accounts[0].label === "Treasury");
+    check("renameAccount persists the label", (await w.status()).accounts[0]?.label === "Treasury");
 
     console.log("\n== one password unlocks all accounts ==");
     w.lock();
@@ -118,6 +118,16 @@ async function main() {
     check("legacy global sealedClaims migrated + key deleted", (await wl.sealedClaims()).length === 1 && (await ls.get("sealedClaims")) == null);
     check("legacy cleartext addr key deleted", (await ls.get("addr")) == null);
     check("exportKey returns the legacy key (password-gated)", (await wl.exportKey(PW)).toLowerCase() === legacyPriv.toLowerCase());
+
+    // exportKey opens the vault while locked, so a corrupt or forged v2 doc with no accounts reaches it (unlock
+    // refuses that doc). It refuses by name; the same doc shape with one account exports that account's key.
+    const cs = memoryStore();
+    await cs.set("vault", await seal(JSON.stringify({ v: 2, accounts: [], active: 0 }), PW));
+    let exportErr = ""; try { await new Wallet(cs).exportKey(PW); } catch (e) { exportErr = String((e as Error)?.message ?? e); }
+    check(`exportKey refuses a vault with no account at its active slot (${exportErr})`, exportErr === "corrupt vault (no account at its active slot)");
+    const onePriv = "0x" + "33".repeat(32);
+    await cs.set("vault", await seal(JSON.stringify({ v: 2, accounts: [{ priv: onePriv, label: "A" }], active: 0 }), PW));
+    check("exportKey returns the one account's key from the same doc shape", (await new Wallet(cs).exportKey(PW)) === onePriv);
 
     console.log("\n== vault crypto (adversarial) ==");
     const v = await seal("hello-secret", PW);

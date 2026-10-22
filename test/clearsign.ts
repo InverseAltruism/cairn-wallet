@@ -363,12 +363,12 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   // (b) a genuinely-new EXTERNAL recipient still warns (the defense is preserved for real strangers).
   {
     const w = sendWarnings([STRANGER], [], [MY]);
-    ok("NS own-account: a genuinely-new external recipient STILL gets a first-time warning", w.length === 1 && /First time sending/.test(w[0]));
+    ok("NS own-account: a genuinely-new external recipient STILL gets a first-time warning", w.length === 1 && /First time sending/.test(w[0] ?? ""));
   }
   // (c) a LOOK-ALIKE of one of your own addresses STILL fires the poisoning warning (the delicate half).
   {
     const w = sendWarnings([MY_LOOKALIKE], [], [MY]);
-    ok("NS own-account: a look-alike of your OWN address still fires the address-poisoning warning", w.length === 1 && /address-poisoning/.test(w[0]));
+    ok("NS own-account: a look-alike of your OWN address still fires the address-poisoning warning", w.length === 1 && /address-poisoning/.test(w[0] ?? ""));
   }
   // (d) a PRIOR paid recipient is not re-warned.
   ok("NS own-account: a prior paid recipient is not re-warned", sendWarnings([PAID], [PAID], [MY]).length === 0);

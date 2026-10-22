@@ -334,7 +334,7 @@ export class Wallet {
     // Rows parked while locked are written now rather than waiting for the next write of their kind.
     if (this.hist.pendingHist.length) await this.hist.inHistChain(() => this.hist.drainPendingHist());
     if (this.claims.pendingSeals.length) await this.claims.persistSeal();
-    return { addr: this.accts![this.active].addr };
+    return { addr: this.must().addr };
   }
 
   // Populate the in-memory unlocked state from a decrypted vault doc (multi-account v2 or a legacy
@@ -448,7 +448,9 @@ export class Wallet {
     const i = typeof sel === "number" ? sel : accts.findIndex((a) => a.addr.toLowerCase() === String(sel).toLowerCase());
     if (i < 0 || i >= accts.length) throw new Error("no such account");
     this.active = i; await this.persistVault();
-    return { addr: accts[i].addr };
+    const a = accts[i];
+    if (!a) throw new Error("no such account");   // removed by a concurrent removeAccount while the vault was written
+    return { addr: a.addr };
   }
   async renameAccount(addr: string, label: string): Promise<void> {
     const accts = this.mustUnlocked();
@@ -460,14 +462,15 @@ export class Wallet {
     const accts = this.mustUnlocked();
     if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
     let i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
-    if (i < 0) throw new Error("no such account");
+    const target = accts[i];
+    if (!target) throw new Error("no such account");
     // A2 (Plans/68 F4): an IMPORTED raw key is NOT derivable from the recovery phrase, so removing it
     // without a backup is PERMANENT fund loss; and it was one click. Imported removal now requires a
     // password re-auth through the same brute-guarded gate as export (openVaultDoc; the decrypted doc
     // is discarded, nothing is revealed). HD accounts stay one-click: they re-derive from the phrase.
     // REMOVE_IMPORTED_REAUTH is a popup-handled sentinel (FEE_CHANGED precedent), not a dApp code:
     // removeAccount is popup-only (never in DAPP_METHODS).
-    if (accts[i].imported) {
+    if (target.imported) {
       if (!password) throw new Error("REMOVE_IMPORTED_REAUTH");
       const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
       await this.openVaultDoc(v, password); // throws "bad password" (and increments the guard) on failure
@@ -480,7 +483,8 @@ export class Wallet {
       if (i < 0) return;
       if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
     }
-    const gone = accts[i].addr;
+    const gone = accts[i]?.addr;
+    if (gone === undefined) throw new Error("no such account");   // i is the target's current index: found with no await since
     accts.splice(i, 1);
     if (this.active >= accts.length) this.active = accts.length - 1;
     else if (this.active > i) this.active -= 1;
@@ -493,7 +497,14 @@ export class Wallet {
     await this.persistVault();
   }
 
-  private must(): Acct { if (!this.accts) throw new Error("locked"); return this.accts[this.active]; }
+  // `active` indexes `accts` while unlocked (applyDoc clamps it; add, switch and remove keep it in range); an
+  // out-of-range slot is refused as an internal error, not reported as a lock.
+  private must(): Acct {
+    if (!this.accts) throw new Error("locked");
+    const a = this.accts[this.active];
+    if (!a) throw new Error("no active account");
+    return a;
+  }
   private addr(): string { return this.must().addr; }
 
   // ── signing-context integrity (A1, Plans/68 FILL-RACE-1) ─────────────────────────────────────
@@ -1039,7 +1050,9 @@ export class Wallet {
     const { parsed, legacyPriv } = await this.openVaultDoc(v, password);
     if (!parsed) return legacyPriv; // legacy single-key vault (plaintext IS the raw privkey, 0x-normalized)
     const i = this.accts ? this.active : (parsed.active ?? 0);
-    return parsed.accounts[Math.min(i, parsed.accounts.length - 1)].priv;
+    const acct = parsed.accounts[Math.min(i, parsed.accounts.length - 1)];
+    if (!acct) throw new Error("corrupt vault (no account at its active slot)");   // an empty or forged account list
+    return acct.priv;
   }
 
   // Reveal the wallet's recovery phrase (the master backup); password-gated. Throws

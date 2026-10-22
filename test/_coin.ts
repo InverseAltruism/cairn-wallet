@@ -22,7 +22,7 @@ export function mkCoin(value: number, vout = 0, extra: Record<string, unknown> =
 // ({ok,tx}), else null so the caller's mock can fall through.
 export function txReply(url: string, coins: MockCoin[]): any | null {
   const m = String(url).match(/\/tx\/(0x[0-9a-fA-F]{64})\b/);
-  if (!m) return null;
+  if (!m || m[1] === undefined) return null;
   const id = m[1].toLowerCase();
   const hit = coins.find((c) => String(c.coin.txid).toLowerCase() === id);
   return { ok: true, status: 200, json: async () => (hit ? { ok: true, tx: hit.body } : { ok: false, err: "not found" }) };

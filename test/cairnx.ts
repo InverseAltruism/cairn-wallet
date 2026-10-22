@@ -150,6 +150,7 @@ for (const [t, uri, ph, wants] of RECORDS) {
 // hardening: anything that would be a resolver NO-OP must show RAW, never structured
 {
   const t = RECORDS[2]; // transfer
+  if (!t) throw new Error("RECORDS[2] is the transfer fixture");
   check("unknown record type → raw fallback (null)", cairnxDescribe(`{"t":"futurething","v":1}`, cairnxPayloadHash({ t: "futurething", v: 1 })) === null);
   check("NON-canonical uri (whitespace) → raw fallback", cairnxDescribe(`{ "amount":"1","t":"mint","ticker":"TKN","v":1 }`) === null);
   check("NON-canonical uri (key order) → raw fallback", cairnxDescribe(`{"t":"mint","amount":"1","ticker":"TKN","v":1}`) === null);
@@ -203,9 +204,9 @@ async function main() {
     };
     const assets = await w.cairnxAssets();
     check("cairnxAssets returns balances {available,locked} + names", assets.ok === true
-      && assets.balances!.CAIRN.available === "150000000" && assets.balances!.CAIRN.locked === "50000000" && assets.names![0] === "satoshi");
+      && assets.balances?.CAIRN?.available === "150000000" && assets.balances?.CAIRN?.locked === "50000000" && assets.names?.[0] === "satoshi");
     const toks = await w.cairnxTokens();
-    check("cairnxTokens returns the token list (decimals for display)", toks.ok === true && toks.tokens![0].ticker === "CAIRN" && toks.tokens![0].decimals === 8);
+    check("cairnxTokens returns the token list (decimals for display)", toks.ok === true && toks.tokens?.[0]?.ticker === "CAIRN" && toks.tokens?.[0]?.decimals === 8);
 
     // (c) cairnxTransfer anchors the EXACT canonical record through the propose pipeline
     let submitted: any = null;
