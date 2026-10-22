@@ -45,17 +45,11 @@ async function bindBlockOrThrow(spv: SpvSource, height: number): Promise<{ ids: 
   throw b.kind === "body-mismatch" ? new BodyMismatchError(height, spv.bodySource, spv.headerSource) : new Error(b.reason);
 }
 
-// Bounded-concurrency block fetch preserving fail-closed semantics (BP4/N11): mirrors node.ts mapLimit -- a
-// tiny shared-index worker pool so the window is fetched with at most `limit` in flight (bounding the burst
-// against the per-IP proxy budget) while any thrown tamper rejects the whole pool. Order of COMPLETION does
-// not matter: `fn` only populates the per-height memo; the caller reads it back in strict height order.
+// Bounded-concurrency fan-out preserving fail-closed semantics (BP4/N11), for the block-window fetch and the
+// per-id proveEventAt reads: a tiny shared-index worker pool with at most `limit` in flight (bounding the burst
+// against the per-IP proxy budget) while any throw (a tamper) rejects the whole pool. Order of completion does
+// not matter to the callers: the window fetch only fills the per-height memo, read back in height order.
 const SCAN_POOL = 12;
-async function bindBlockPool(heights: readonly number[], limit: number, fn: (h: number) => Promise<unknown>): Promise<void> {
-  let i = 0;
-  const worker = async () => { while (i < heights.length) { const idx = i++; await fn(heights[idx]!); } };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, heights.length || 1)) }, worker));
-}
-/** Bounded worker pool (same semantics as bindBlockPool) for per-id proveEventAt fan-out. */
 export async function mapPool<T>(items: readonly T[], limit: number, fn: (item: T, i: number) => Promise<void>): Promise<void> {
   let i = 0;
   const worker = async () => { while (i < items.length) { const idx = i++; await fn(items[idx]!, idx); } };
@@ -215,7 +209,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // to its PoW-verified merkle root inside bindBlock, and the RESULTS are then processed STRICTLY in ascending
   // height order below, so the first-set semantics (heightOf/markScanned) and every buffer are byte-identical to
   // the old sequential walk. A tamper throws inside a worker and rejects the pool -> the preflight fails closed.
-  await bindBlockPool(heights, SCAN_POOL, bindBlockMemo);
+  await mapPool(heights, SCAN_POOL, async (h) => { await bindBlockMemo(h); });
   for (const h of heights) {
     const { ids: bids, rebuilt } = blockMemo.get(h)!;   // populated by the pool above; present or the pool threw
     for (const [pos, tx] of rebuilt.entries()) {
