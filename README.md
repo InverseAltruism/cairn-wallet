@@ -121,7 +121,7 @@ semantics, and the code-less legacy strings consumers must still know live in
 * `account.ts`: BIP-39 phrase generation, BIP-32/BIP-44 HD derivation (`m/44'/7779'/0'/0/i`), and raw single-key import.
 * `keystore.ts`: the AES-256-GCM and PBKDF2 vault.
 * `node.ts`: coin selection and the build, sign, and submit flow.
-* `wallet.ts`: orchestration (create, restore, import, lock and unlock, multi-account, send, post, support, reveal, history, auto-lock).
+* `wallet.ts`: orchestration (create, restore, import, lock and unlock, multi-account, send, post, support, seal, auto-lock). Beside it: `fillpreflight.ts` (the checks before an offer fill is signed), `names.ts` (`.csd` name verification), `history.ts` (transaction history) and `claims.ts` (sealed claims and reveal).
 
 The extension layer:
 
