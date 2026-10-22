@@ -215,6 +215,14 @@
 
 Earlier releases are described in their tag messages.
 
+## Notes moved from AGENTS.md (2026-10-22)
+
+These describe their own dates or versions, not the current tree.
+
+- State on 2026-10-11 (the "State snapshot" section): `package.json` read 0.2.73, tagged `v0.2.73` at 6275446;
+  0.2.73 was uploaded to the Chrome Web Store that day with the store review pending; the vendored bundle pinned
+  csd-sdk 0.1.42.
+
 ## Earlier release notes (moved from AGENTS.md on 2026-10-11)
 
 These were dated status snapshots in AGENTS.md. They are kept as written; they describe their own date, not the current tree.
