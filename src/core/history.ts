@@ -138,7 +138,7 @@ export class TxHistory {
         await this.doRecordTx(k, entry);
       } catch { this.pendingHist.push({ k, entry }); }
     });
-    if (this.pendingHist.length) void this.inHistChain(() => this.drainPendingHist()).catch(() => {});
+    if (this.pendingHist.length) void this.inHistChain(() => this.drainPendingHist()).catch(() => { /* drainPendingHist re-parks each row it fails to write; this keeps a rejection off the unhandled path */ });
     return own;
   }
   async drainPendingHist(): Promise<void> {

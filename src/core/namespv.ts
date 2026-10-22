@@ -1028,7 +1028,7 @@ export function makeSerializer(): <T>(op: () => Promise<T>) => Promise<T> {
   let tail: Promise<unknown> = Promise.resolve();
   return <T>(op: () => Promise<T>): Promise<T> => {
     const run = tail.then(op, op);   // run AFTER the prior settles, regardless of its outcome
-    tail = run.catch(() => {});      // the chain never rejects, so a failed op cannot block later ops
+    tail = run.catch(() => { /* the chain settles either way, so a failed op does not block the ops queued after it */ });
     return run;                      // the caller sees THIS op's own result/error
   };
 }

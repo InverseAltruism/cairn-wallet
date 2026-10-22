@@ -291,11 +291,11 @@ export class Wallet {
   }
   private async authGuardRecord(ok: boolean): Promise<void> {
     if (!this.session) return;
-    if (ok) { await this.session.del("authGuard").catch(() => {}); return; }
+    if (ok) { await this.session.del("authGuard").catch(() => { /* a count left behind only brings a later lockout sooner */ }); return; }
     const g: any = (await this.session.get("authGuard").catch(() => null)) || { failed: 0, until: 0 };
     g.failed = (g.failed || 0) + 1;
     if (g.failed >= 5) g.until = Date.now() + Math.min(5 * 60_000, 5_000 * 2 ** (g.failed - 5)); // 5s,10s,20s,… cap 5min
-    await this.session.set("authGuard", g).catch(() => {});
+    await this.session.set("authGuard", g).catch(() => { /* this failure goes uncounted and the KDF cost is the only throttle; a storage error must not block the password check */ });
   }
   // Run a password check under the brute-force guard: fast-reject if locked out, else count the attempt
   // (success resets, failure increments). One helper used by unlock/exportKey/exportMnemonic so the
@@ -987,7 +987,7 @@ export class Wallet {
     this.lastActive = Date.now();
     // mirror the activity stamp into chrome.storage.session so the idle window is tracked across
     // SW restarts (genuine activity extends the unlocked session; pure reads never call touch()).
-    if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => {});
+    if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => { /* a missed stamp only makes a restarted worker's session expire sooner */ });
   }
   async autoLock(maxIdleMs: number) {
     // CLK-1: a backward wall-clock jump (NTP/manual) leaves lastActive in the future, making

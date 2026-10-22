@@ -471,10 +471,10 @@ function armButtons() {
   const armedId = current?.id;
   const armedGen = paintGen;   // a same-id repaint re-arms with its own floor and its own quote
   const minWait = new Promise((r) => setTimeout(r, 700));
-  const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => {})]);
+  const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => { /* the send warnings are advisory: a failed paint must not leave both buttons disabled */ })]);
   // Reject never waits for the token preview: a hanging quote must not lock the user out of rejecting.
   base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
-  Promise.all([base, Promise.resolve(tokenPainted).catch(() => {})]).then(() => {
+  Promise.all([base, Promise.resolve(tokenPainted).catch(() => { /* a failed preview is not "ready", so tokenNotReady keeps Approve disabled; Reject re-enables */ })]).then(() => {
     if (current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the current paint arms itself
     approveArmedGen = armedGen;
     ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;
