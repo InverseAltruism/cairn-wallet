@@ -58,7 +58,7 @@ async function render() {
   reqView.hidden = !st.unlocked;
   if (!st.unlocked) { renderedId = null; return; }
   // Rebuild only on a NEW request (or first unlock). Re-rendering every ~1.2s tick would
-  // wipe the async-filled balance-after AND the security warning — so we don't.
+  // wipe the async-filled balance-after AND the security warning; so we don't.
   if (renderedId === current.id) return;
   renderedId = current.id;
   paintGen++;
@@ -75,7 +75,7 @@ async function render() {
   const metaP = tickers.length ? bounded(call("tokenDisplayMeta", tickers)) : null;
   // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
   // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
-  // before building the request HTML (not per ~1.2s tick — this block runs once per new request).
+  // before building the request HTML (not per ~1.2s tick; this block runs once per new request).
   // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
   if (current.method === "propose" && (current.params || {}).expiresEpoch !== undefined) {
     // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
@@ -101,7 +101,7 @@ async function render() {
   const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
   const queued = pend.length > 1 ? `<div class="req dim">request 1 of ${pend.length} — review each separately</div>` : "";
   // For a connection request, tell the user exactly what approving grants: address
-  // visibility until they disconnect the site — NOT permission to move funds (every
+  // visibility until they disconnect the site; NOT permission to move funds (every
   // send/propose/attest still asks separately).
   const connectNote = (current.method === "connect" || current.method === "getAddress")
     ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings → Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
@@ -153,7 +153,7 @@ function paintUnconfirmed(id: string) {
 
 // ── nfinalize finalize-window gate (Plan 63 carry-over, shipped with 0.2.54) ──────────────────
 // Before an nfinalize can be APPROVED, re-check on the name service that the reservation is still
-// the signer's live pending one and inside its finalize window — an expired/displaced finalize burns
+// the signer's live pending one and inside its finalize window; an expired/displaced finalize burns
 // the fee (the C1 class; the pure verdict is clearsign.nfinalizeApproveGate). A clean 404 is a
 // definitive "no reservation" → refuse; 5xx/timeout fails OPEN (warn card, Approve stays live) so
 // approval never gains a hard network dependency. resolve() AWAITS the (bounded) verdict, so a click
@@ -290,7 +290,7 @@ function armNfinalizeGate(r: any, st: any) {
   if (r.method !== "propose" || String(p.domain) !== CAIRNX_DOMAIN) return;
   const rec = decodeCairnxRecord(p.uri, p.payloadHash);
   if (!rec || typeof rec.name !== "string") return;
-  // Plans/68 B2: the gate now also covers nrenew and nset (set-primary / re-point) — both ride a fee
+  // Plans/68 B2: the gate now also covers nrenew and nset (set-primary / re-point); both ride a fee
   // that burns on a resolver no-op. nfinalize keeps the full winner+window verdict; nrenew/nset get
   // the lighter existence/ownership verdict (nameActApproveGate). Same fail-open transport posture.
   if (rec.t !== "nfinalize" && rec.t !== "nrenew" && rec.t !== "nset") return;
@@ -306,7 +306,7 @@ function armNfinalizeGate(r: any, st: any) {
 }
 
 // M3 (token-fill simulation): for a TOKEN-priced fill (confidence===1e6 on fillOffer/attest), show the token
-// DEBIT the offer service quotes (ask + the FEE_BPS_V16 protocol fee), fetched from the resolver — closing
+// DEBIT the offer service quotes (ask + the FEE_BPS_V16 protocol fee), fetched from the resolver; closing
 // the "not visible here" gap in the clear-sign. The number is resolver-served and unverifiable here, so the
 // copy ATTRIBUTES it to the offer service (clearsign.tokenQuoteHtml) instead of asserting a first-person
 // debit (B5g re-framing; a second price source was DECLINED, Plan 71 section 8 decline 6). Fail-CLOSED: if
@@ -354,7 +354,7 @@ async function fillTokenSim(r: any) {
 }
 
 // M14 (B5h): a revealClaim approval must show WHICH secret goes public. The claim text + domain live in
-// the wallet's own sealedClaims store (READ_ONLY_METHODS; vault-decrypted locally — no network read).
+// the wallet's own sealedClaims store (READ_ONLY_METHODS; vault-decrypted locally; no network read).
 // Pure rendering in clearsign.revealPreviewHtml; a missing or undecryptable record shows a LOUD caution
 // instead of silently narrowing the review to a txid. Once per request (render doesn't rebuild each tick).
 let revealForId: string | null = null;
@@ -368,9 +368,9 @@ async function fillRevealPreview(r: any) {
     const txid = String(r.params || "");
     html = revealPreviewHtml((Array.isArray(list) ? list : []).find((x: any) => x && String(x.txid) === txid) ?? null);
   } catch {
-    html = revealPreviewHtml({ failed: true }); // lookup failed ≠ "no such claim" — distinct honest caution
+    html = revealPreviewHtml({ failed: true }); // lookup failed ≠ "no such claim"; distinct honest caution
   }
-  if (renderedId !== r.id) return; // superseded — never paint over a different request
+  if (renderedId !== r.id) return; // superseded; never paint over a different request
   el.innerHTML = html;
   (el as HTMLElement).hidden = false;
 }
@@ -394,7 +394,7 @@ async function fillBalance(r: any) {
       ($("btn-approve") as HTMLButtonElement).disabled = true;
       $("req").insertAdjacentHTML("beforeend", `<div class="req"><b class="err">${escapeHtml(balanceShortNote("Reject this"))}</b></div>`);
     }
-  } catch { /* offline — leave the static cost line */ }
+  } catch { /* offline; leave the static cost line */ }
 }
 let fillViewForId: string | null = null;
 async function fillFillView(r: any) {
@@ -408,14 +408,14 @@ async function fillFillView(r: any) {
   (el as HTMLElement).hidden = false;
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning
-// lookalike — checked against this account's send history + own addresses. The recipient
+// lookalike; checked against this account's send history + own addresses. The recipient
 // is dApp-supplied, so this defense MUST live in the approval window (not just the manual
 // send form). Runs once per request; the warning persists (render doesn't rebuild).
 let warnForId: string | null = null;
 async function fillSendWarning(r: any) {
   // send / fillOffer / propose-with-outputs all move funds to dApp-chosen recipients → same
   // first-time / look-alike (address-poisoning) defenses. (propose outputs could be a disguised
-  // payout, so they get the warning too — they're shown neutrally as "transfers OUT" in clearsign.)
+  // payout, so they get the warning too; they're shown neutrally as "transfers OUT" in clearsign.)
   if ((r.method !== "send" && r.method !== "fillOffer" && r.method !== "propose") || warnForId === r.id) return; warnForId = r.id;
   const p = r.params || {};
   const outs: { to: string; kind: RecipientKind }[] = (Array.isArray(p.outputs) ? p.outputs : (p.to ? [{ to: p.to }] : [])).map((o: any) => ({ to: String(o?.to || ""), kind: "payment" as const }));
@@ -426,13 +426,13 @@ async function fillSendWarning(r: any) {
     const rec = decodeCairnxRecord(p.uri, p.payloadHash);
     if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "token" });
     // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
-    // nxfer hands the name to a new owner — both carry an attacker-influenceable address that deserves the
+    // nxfer hands the name to a new owner; both carry an attacker-influenceable address that deserves the
     // same first-time / address-poisoning (look-alike) check as a transfer recipient.
-    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr, kind: "name-point" });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient — skip the poisoning check (0x0 sends are hard-blocked anyway)
+    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr, kind: "name-point" });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient; skip the poisoning check (0x0 sends are hard-blocked anyway)
     if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "name-transfer" });
     // M1 (deep-review 2026-07-03): an `offer` routes its SALE PROCEEDS to want.payto when it fills. A
     // bad-faith dApp can set payto to a look-alike of the user's OWN address, silently redirecting the
-    // proceeds. The field is shown at clear-sign but had no automated look-alike flag — add it here so it
+    // proceeds. The field is shown at clear-sign but had no automated look-alike flag; add it here so it
     // gets the same first-time / address-poisoning check as every other dApp-supplied recipient.
     if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto, kind: "proceeds" });
   }
@@ -471,10 +471,10 @@ function armButtons() {
   const armedId = current?.id;
   const armedGen = paintGen;   // a same-id repaint re-arms with its own floor and its own quote
   const minWait = new Promise((r) => setTimeout(r, 700));
-  const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => {})]);
+  const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => { /* the send warnings are advisory: a failed paint must not leave both buttons disabled */ })]);
   // Reject never waits for the token preview: a hanging quote must not lock the user out of rejecting.
   base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
-  Promise.all([base, Promise.resolve(tokenPainted).catch(() => {})]).then(() => {
+  Promise.all([base, Promise.resolve(tokenPainted).catch(() => { /* a failed preview is not "ready", so tokenNotReady keeps Approve disabled; Reject re-enables */ })]).then(() => {
     if (current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the current paint arms itself
     approveArmedGen = armedGen;
     ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;

@@ -10,54 +10,29 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
-import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
-import { verifyNameUnion, liveSpvSource, fetchNameUnion, BodyMismatchError, type LiveSpvOpts, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CONF_TOKEN_FILL, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
+import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
+import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
-import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
+import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
-import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
+import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
-import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
-import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
+import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
+import type { HintSetEntry } from "./namecache.js";
+import { TxHistory, histKey } from "./history.js";
+import { SealedClaims, sealKey } from "./claims.js";
+import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
+import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, type CairnxViewIo } from "./cairnxview.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
-// F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
-// requiredFillOutputs sizes the treasury fee from feeBps (= feeBpsAt(creation height)), the maker rebate from
-// height/taker/bid, and the payment from want.value; a lying resolver deflating any of them makes the wallet
-// build an under-sized fill that resolve() (using the proven values) rejects AFTER the payment leg moved =
-// pay-without-delivery burn (theft if the attacker is the seller). Bind the served fields to the proven ones.
-// Plan 70 R2 Option B: delegate to the SINGLE vendored bindOfferTerms verdict (cairnx-core), retiring this
-// repo's hand-copy. It binds height/feeBps/value/taker/bid AND the R1.1 `min` presence+value leg exactly as
-// before (byte-identical behaviour, differential-locked by the WA-PARITY corpus across all three seams).
-// B7e (REBIND W7 + W1 wallet half): the give legs (give.ticker/amount/name, explicit-presence + verbatim
-// string equality, closing the W7 give-inflation shortchange) AND the symmetric want-type refusal are ON,
-// passed explicitly so the verdict does not depend on the bundle's default (on since cairnx-core 0.2.0;
-// test/vendor-bind-legs.test.mjs pins both). `t` MUST be a MintedProvenOfferTerms (produced only by the
-// vendored provenOfferTerms via fillspv.ts), so a hand-built terms object is a compile error exactly where it
-// would false-refuse every honest fill (the W2 trap the brand exists to make unrepresentable).
-// The vendored verifyFillSpv reasons whose verdict is evaluated at the tip (hold liveness, grant routing,
-// the deadline margin, burial depth). Matched on the bundle's wording; test/fillspv-tip-floor.test.mjs runs
-// the real verifier for both sides, so a reword in the bundle turns that file red.
-export function tipDependentFillReason(reason: string): boolean {
-  return /^(no live claim by you|this fclaim is not the live granted hold|too close to the hold deadline)|not buried deep enough yet/.test(String(reason));
-}
-
-// B7e-FIX (W1 token-lane close): this predicate now runs on the TOKEN-priced lane too (the else branch in
-// fillOfferPreflight), not only the CSD lane. On the token lane the give leg is the load-bearing content bind
-// and the want-type leg is a real rejecter (on the CSD lane the pre-existing value leg shadows it). The
-// want-type leg binds only the want TYPE (token vs CSD), so the token lane binds want.ticker/want.amount
-// separately: bindOfferTerms carries no token-want ticker/amount leg (see the else branch below).
-function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean {
-  return bindOfferTerms(offer, t, { give: true, wantType: true });
-}
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean; rpcMovedFrom: string | null }
 
-// An in-memory account: its key + label, plus how it was created — `index` is its
+// An in-memory account: its key + label, plus how it was created; `index` is its
 // BIP-44 derivation index (HD accounts), `imported` marks a raw-key account that is
 // NOT recoverable from the seed phrase.
 type Acct = Account & { label: string; index?: number; imported?: boolean };
@@ -70,94 +45,13 @@ interface VaultDoc { v: 1 | 2; mnemonic?: string; nextIndex?: number; accounts: 
 // The in-memory unlocked state a vault doc is built from.
 interface VaultState { mnemonic: string | null; nextIndex: number; accts: Acct[] | null; active: number }
 
-const DEFAULT_RPC = "https://cairn-substrate.com/api/rpc";
-const DEFAULT_API = "https://cairn-substrate.com";
-// Public CairnX read API (resolved token/name state). READ-ONLY convenience: balances and
-// names shown in the popup come from here, but every record the wallet SIGNS is built
-// locally (core/cairnx.ts) — a hostile API can at worst show wrong numbers, never change
-// what a signature commits to.
-const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
-// SECOND-SOURCE resolver for the NSPV-COMPLETE-1 cross-check (doc 36): clarvis runs its own
-// node→indexer→cairnx (0 non-local sockets), so unioning its name-history with the primary's defeats a
-// withholding/MITM resolver (an attacker would have to make BOTH hosts withhold the SAME event). It has the
-// default primary's operator, so it is not independent of it: that operator, or whoever controls both hosts,
-// can make both withhold (SECURITY.md). Fail-soft: if clarvis is unreachable the verify falls back to
-// single-source (with caution).
-const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
-// Abort bound for the fclaim-lane second-source reads (offer and reservation record). The fill does not wait on
-// them: an answer is used only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in
-// test/fill-offer-crosscheck and test/fill-reservation-verdict).
-const SECOND_SOURCE_TIMEOUT_MS = 12000;
-
 // The idle window shared by the wallet's auto-lock AND its session-rehydrate expiry, and by the
 // background alarm that ENFORCES the lock. Exported so the decoy default here and background's
 // AUTO_LOCK_MS can never drift out of one another (they were two independent 15-min literals).
 export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
 
-// A fill refusal; RESERVATION_UNCONFIRMED also carries the facts the approval window shows.
-type FillRefusal = node.SubmitResult & { unconfirmed?: ReservationUnconfirmed };
-// Set by a passing fclaim-lane preflight when clarvis's record read had not answered (or failed) at its verdict; a
-// signed fill carries it to the approval window as `secondSource` (background.ts keeps it off the page's result).
-type FillNotes = { secondSource?: "pending" | "failed" };
-
-export type TokenFillQuote = {
-  ticker?: string; amount?: string; fee?: string; total?: string;
-  giveTicker?: string; giveAmount?: string; giveName?: string;
-  // 0.2.71, display only (never bound): decimals and deploy ids for human units and the ticker warning
-  wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string;
-};
-
-// L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
-// loopback http for local dev) with NO embedded credentials — otherwise `setRpc("https://user:pass@evil")`
-// or a plain-http remote could exfiltrate via the userinfo or be trivially MITM'd. The wallet still treats
-// any custom RPC as UNTRUSTED (TXB-1 verifies values; namespv SPV-verifies names) — this just blocks the
-// obviously-unsafe URL shapes before they're stored/used.
-function validRpcUrl(u: string): boolean {
-  let x: URL;
-  try { x = new URL(String(u)); } catch { return false; }
-  if (x.username || x.password) return false;                 // reject https://user:pass@host credential leak
-  if (x.protocol === "https:") return true;
-  if (x.protocol === "http:" && (x.hostname === "127.0.0.1" || x.hostname === "localhost")) return true; // loopback dev only
-  return false;
-}
-const RPC_URL_ERR = "endpoint must be an https:// URL (or http://localhost for dev), with no embedded credentials";
-// The node RPC is the Cairn proxy or a node on this computer: the manifest grants host access to nothing
-// else, so a remote RPC could not be reached (remote RPCs are a future option). Ports are free.
-export function rpcAllowed(u: string): boolean {
-  if (u === DEFAULT_RPC) return true;
-  let x: URL;
-  try { x = new URL(String(u)); } catch { return false; }
-  if (x.username || x.password) return false;
-  if (x.protocol === "http:") return x.hostname === "127.0.0.1" || x.hostname === "localhost";
-  return x.protocol === "https:" && x.hostname === "localhost";
-}
-const RPC_LOCAL_ERR = "RPC must be the Cairn proxy or a node on this computer (http://127.0.0.1:<port> or http://localhost:<port>)";
-
-// Per-account storage namespaces — keep each account's activity + secrets separate.
-const histKey = (addr: string) => "txHistory:" + addr;
-// A merge whose output is not yet seen and that is not known to be gone.
-const isMergeCandidate = (x: any): boolean => x?.type === "consolidate" && !x.confirmed && !x.gone;
-// A row pendingMerge still evaluates; `gone` stays here so a later reading can undo it.
-const isOpenRow = (x: any): boolean => !!x && (x.maybe || isMergeCandidate(x) || x.gone || x.goneTip !== undefined);
-const sealKey = (addr: string) => "sealedClaims:" + addr;
-
-// SEAL-EVICT-01 (P75-6 F2): the sealed-claims cap must never evict an UNREVEALED preimage; it is the only
-// copy of the reveal nonce for a PAID commit (unrecoverable from phrase or chain). Evict oldest REVEALED
-// entries first; an all-unrevealed list is kept whole (bounded in practice by the 0.25 CSD per-commit fee).
-const SEAL_CAP = 500;
-function capSeals(list: any[]): any[] {
-  if (list.length <= SEAL_CAP) return list;
-  let over = list.length - SEAL_CAP;
-  const out: any[] = [];
-  for (let i = list.length - 1; i >= 0; i--) {  // walk oldest to newest (list is newest-first)
-    if (over > 0 && list[i]?.revealed) { over--; continue; }
-    out.unshift(list[i]);
-  }
-  return out;
-}
-
 // The frozen signing context captured before a flow's first await (A1, Plans/68): the account
-// slot, its address, its key, and the history key entries must file under. Immutable snapshot —
+// slot, its address, its key, and the history key entries must file under. Immutable snapshot:
 // a later switchAccount cannot retro-change what was captured.
 interface SignerCtx { active: number; addr: string; priv: string; histKey: string }
 // Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
@@ -172,18 +66,16 @@ const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refus
 
 // Record-expiry windows, in epochs of the vendored EPOCH_LEN blocks. Each +N offset below sets a Propose's
 // expiresEpoch = currentEpoch + window.
-const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim — ample window to mine
+const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim; ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
-const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset — a long-lived identity record
+const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset; a long-lived identity record
 // Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
-// B9: single-sourced into core/cairnx.ts defaultFeeFor("attest") — the same table the clear-sign
+// B9: single-sourced into core/cairnx.ts defaultFeeFor("attest"); the same table the clear-sign
 // display reads, so the screen and the signer can never disagree again (the local literal was the twin).
 // The app-layer confidence SENTINEL for a token-priced fill. NOT consensus math - it is the value the trade
 // UI stamps so a fill against a token-want offer is distinguishable from a board-support attest (70/80). W4
 // (B5d) routes on it. B7e: SINGLE-SOURCED from the vendored cairnx-core (imported above) instead of a local
 // literal, so the wallet, the clearsign/approve popup formatters and the resolver all read the same value.
-// Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
-const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
 
 export class Wallet {
   // Unlocked state (memory only): the decrypted accounts, the active index, and the
@@ -200,7 +92,7 @@ export class Wallet {
   rpc = DEFAULT_RPC;
   api = DEFAULT_API;
   tradeApi = DEFAULT_TRADE_API;
-  explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base) — navigation-only
+  explorer = DEFAULT_EXPLORER; // selected block explorer (preset id or custom https base); navigation-only
   // Idle window for auto-lock and session-rehydrate expiry.
   idleMs = AUTO_LOCK_MS;
   // 0.2.70: in-memory hint-set cache for confirm-time skip (background Wallet, never the popup).
@@ -218,7 +110,15 @@ export class Wallet {
   // `session` is chrome.storage.session (in-RAM) when running as an extension, else null. It lets the
   // unlocked key survive an MV3 service-worker idle-kill so genuine activity within idleMs doesn't
   // keep re-prompting for the password. null ⇒ in-memory-only (the old behaviour).
-  constructor(private store: Store, private session: Store | null = null) {}
+  private hist: TxHistory;
+  private claims: SealedClaims;
+  constructor(private store: Store, private session: Store | null = null) {
+    this.hist = new TxHistory(store, { unlocked: () => !!this.accts, wiped: () => this.wiped, addr: () => this.addr(), rpc: () => this.rpc });
+    this.claims = new SealedClaims(store, {
+      unlocked: () => !!this.accts, wiped: () => this.wiped, addr: () => this.addr(), rpc: () => this.rpc,
+      api: () => this.api, vaultKey: () => this.vaultKey, salt: () => this.salt, iter: () => this.iter,
+    });
+  }
 
   // Is `origin` the wallet's OWN first-party site (or a localhost dev origin)? Used to gate the
   // legacy no-arg signIn(), which authenticates against the wallet's CONFIGURED api (`this.api`,
@@ -234,7 +134,7 @@ export class Wallet {
       if (o.origin === apiO.origin) return true; // exact first-party match (the configured api's origin)
       // Dev convenience: treat localhost as first-party ONLY when the wallet's OWN api is itself localhost
       // (audit NSPV-DAPP-LOCALHOST). In production api=cairn-substrate.com, so ANY localhost app is NOT
-      // first-party — it must use the audience-bound signInWithCsd(), closing the broad confused-deputy
+      // first-party; it must use the audience-bound signInWithCsd(), closing the broad confused-deputy
       // surface where any local app on any port could invoke the session-minting legacy signIn().
       const isLocal = (h: string) => h === "localhost" || h === "127.0.0.1" || h === "[::1]";
       return isLocal(o.hostname) && isLocal(apiO.hostname);
@@ -272,7 +172,7 @@ export class Wallet {
   async setExplorer(v: string): Promise<void> {
     if (v === "cairn" || v === "official") { this.explorer = v; await this.store.set("explorer", v); return; }
     if (!validRpcUrl(v)) throw new Error("explorer must be a preset or an https:// URL (or http://localhost)");
-    const norm = new URL(v).href; // canonicalize — encodes any href-breakout chars before it is ever rendered (defense-in-depth vs EXP-XSS)
+    const norm = new URL(v).href; // canonicalize; encodes any href-breakout chars before it is ever rendered (defense-in-depth vs EXP-XSS)
     this.explorer = norm; await this.store.set("explorer", norm);
   }
   async explorerList(): Promise<string[]> { return (await this.store.get("customExplorers")) || []; }
@@ -301,7 +201,7 @@ export class Wallet {
 
   // SERIALIZED (persistVault-race, fund-safety fresh-eyes): account-mgmt ops mutate this.accts
   // SYNCHRONOUSLY, then await persistVault. Without serialization two overlapping calls could each
-  // seal a doc built at a different instant and let the STALE write land last — permanently dropping a
+  // seal a doc built at a different instant and let the STALE write land last; permanently dropping a
   // just-added IMPORTED (non-seed-recoverable) key. Chaining every persist behind one promise makes the
   // last write reflect the final account set (each queued persist re-reads this.accts, which by then
   // holds every prior synchronous mutation). The cleartext mirror is captured from the SAME pre-await
@@ -329,35 +229,6 @@ export class Wallet {
     await this.store.set("active", active);
   }
 
-  // Class A durability (P75-6): two more write chains on the persistChain idiom above.
-  // EVERY read-modify-write of a per-account history / sealed-claims list rides its chain, so two
-  // writers can never interleave a get..set and clobber each other. The idiom's discipline is
-  // load-bearing: both settle paths run the next work item, the chain field is reassigned to an
-  // ALWAYS-RESOLVED promise (a rejection can never poison the queue), and the rejecting `run` is
-  // returned so each caller still observes its own outcome.
-  // Boundary rule: a chain callback contains STORAGE ops only, never a network await (send()
-  // awaits maybeRecord, so anything inside histChain sits on the send hot path). WRITE callbacks
-  // do not write while !this.accts (recordTx parks its row in RAM instead, except after reset());
-  // DELETE callbacks do not bail (deletes are teardown and safe while locked).
-  private histChain: Promise<void> = Promise.resolve();
-  private inHistChain<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.histChain.then(work, work);
-    this.histChain = run.then(() => {}, () => {});
-    return run;
-  }
-  private sealChain: Promise<void> = Promise.resolve();
-  private inSealChain<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.sealChain.then(work, work);
-    this.sealChain = run.then(() => {}, () => {});
-    return run;
-  }
-  // Parked writes (PCD-2 / SEAL-WRITE-02): when a post-broadcast history/seal write fails, the
-  // entry is parked here (RAM only), merged into history()/sealedClaims() reads so the user still
-  // sees it, and retried on the next write to the same list. NOT durable across a service-worker
-  // teardown; that residual is stated at the write sites. Cleared in lock()/doReset()/
-  // removeAccount: the reset discipline is exactly "clear the array".
-  private pendingHist: { k: string; entry: Record<string, unknown> }[] = [];
-  private pendingSeals: { k: string; rec: any }[] = [];
   // Set by reset(), cleared when a new vault is sealed. `!this.accts` alone cannot tell an ordinary lock
   // (the signed tx's history must survive it) from a reset (nothing of the old wallet may land again).
   private wiped = false;
@@ -420,11 +291,11 @@ export class Wallet {
   }
   private async authGuardRecord(ok: boolean): Promise<void> {
     if (!this.session) return;
-    if (ok) { await this.session.del("authGuard").catch(() => {}); return; }
+    if (ok) { await this.session.del("authGuard").catch(() => { /* a count left behind only brings a later lockout sooner */ }); return; }
     const g: any = (await this.session.get("authGuard").catch(() => null)) || { failed: 0, until: 0 };
     g.failed = (g.failed || 0) + 1;
     if (g.failed >= 5) g.until = Date.now() + Math.min(5 * 60_000, 5_000 * 2 ** (g.failed - 5)); // 5s,10s,20s,… cap 5min
-    await this.session.set("authGuard", g).catch(() => {});
+    await this.session.set("authGuard", g).catch(() => { /* this failure goes uncounted and the KDF cost is the only throttle; a storage error must not block the password check */ });
   }
   // Run a password check under the brute-force guard: fast-reject if locked out, else count the attempt
   // (success resets, failure increments). One helper used by unlock/exportKey/exportMnemonic so the
@@ -440,7 +311,7 @@ export class Wallet {
   // "no wallet" message). `raw` is the decrypted plaintext; `parsed` is the v2 multi-account doc (null for a
   // legacy single-key vault whose plaintext IS a raw privkey); `legacyPriv` is that plaintext 0x-normalized
   // (exportKey's legacy repair, kept here so every opener sees the same normalized legacy form). openWith
-  // throws "bad password" on a GCM-tag mismatch — INSIDE the guard, so a wrong password is counted.
+  // throws "bad password" on a GCM-tag mismatch; INSIDE the guard, so a wrong password is counted.
   private async openVaultDoc(v: Vault, password: string): Promise<{ key: CryptoKey; raw: string; parsed: VaultDoc | null; legacyPriv: string }> {
     const { key, raw } = await this.withAuthGuard(async () => {
       const key = await deriveVaultKey(password, v.salt, v.iter);
@@ -461,9 +332,9 @@ export class Wallet {
     this.touch();
     await this.persistSession(); // remember the unlocked key in chrome.storage.session (in-RAM)
     // Rows parked while locked are written now rather than waiting for the next write of their kind.
-    if (this.pendingHist.length) await this.inHistChain(() => this.drainPendingHist());
-    if (this.pendingSeals.length) await this.persistSeal();
-    return { addr: this.accts![this.active].addr };
+    if (this.hist.pendingHist.length) await this.hist.inHistChain(() => this.hist.drainPendingHist());
+    if (this.claims.pendingSeals.length) await this.claims.persistSeal();
+    return { addr: this.must().addr };
   }
 
   // Populate the in-memory unlocked state from a decrypted vault doc (multi-account v2 or a legacy
@@ -577,7 +448,9 @@ export class Wallet {
     const i = typeof sel === "number" ? sel : accts.findIndex((a) => a.addr.toLowerCase() === String(sel).toLowerCase());
     if (i < 0 || i >= accts.length) throw new Error("no such account");
     this.active = i; await this.persistVault();
-    return { addr: accts[i].addr };
+    const a = accts[i];
+    if (!a) throw new Error("no such account");   // removed by a concurrent removeAccount while the vault was written
+    return { addr: a.addr };
   }
   async renameAccount(addr: string, label: string): Promise<void> {
     const accts = this.mustUnlocked();
@@ -589,19 +462,20 @@ export class Wallet {
     const accts = this.mustUnlocked();
     if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
     let i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
-    if (i < 0) throw new Error("no such account");
+    const target = accts[i];
+    if (!target) throw new Error("no such account");
     // A2 (Plans/68 F4): an IMPORTED raw key is NOT derivable from the recovery phrase, so removing it
-    // without a backup is PERMANENT fund loss — and it was one click. Imported removal now requires a
+    // without a backup is PERMANENT fund loss; and it was one click. Imported removal now requires a
     // password re-auth through the same brute-guarded gate as export (openVaultDoc; the decrypted doc
     // is discarded, nothing is revealed). HD accounts stay one-click: they re-derive from the phrase.
-    // REMOVE_IMPORTED_REAUTH is a popup-handled sentinel (FEE_CHANGED precedent), not a dApp code —
+    // REMOVE_IMPORTED_REAUTH is a popup-handled sentinel (FEE_CHANGED precedent), not a dApp code:
     // removeAccount is popup-only (never in DAPP_METHODS).
-    if (accts[i].imported) {
+    if (target.imported) {
       if (!password) throw new Error("REMOVE_IMPORTED_REAUTH");
       const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
       await this.openVaultDoc(v, password); // throws "bad password" (and increments the guard) on failure
       // TOCTOU (fresh-eyes 0.2.57 finding 1): the KDF await above is the ONLY await between findIndex
-      // and splice, and a concurrent removal can mutate accts while this call is parked — splicing the
+      // and splice, and a concurrent removal can mutate accts while this call is parked; splicing the
       // pre-await index then removed the WRONG account (the next imported key, silently, history wiped).
       // Re-derive the index after the await; a target already removed by the racing call is done
       // (idempotent), and the last-account floor is re-asserted against the CURRENT list.
@@ -609,7 +483,8 @@ export class Wallet {
       if (i < 0) return;
       if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
     }
-    const gone = accts[i].addr;
+    const gone = accts[i]?.addr;
+    if (gone === undefined) throw new Error("no such account");   // i is the target's current index: found with no await since
     accts.splice(i, 1);
     if (this.active >= accts.length) this.active = accts.length - 1;
     else if (this.active > i) this.active -= 1;
@@ -617,16 +492,23 @@ export class Wallet {
     // P75-6: ride the chains so a parked write for this account cannot land AFTER these deletes
     // and resurrect a removed account's history or sealed preimages; purge its parked retries too.
     const hk2 = histKey(gone), sk2 = sealKey(gone);
-    await this.inHistChain(async () => { this.pendingHist = this.pendingHist.filter((p) => p.k !== hk2); await this.store.del(hk2); });
-    await this.inSealChain(async () => { this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk2); await this.store.del(sk2); });
+    await this.hist.inHistChain(async () => { this.hist.pendingHist = this.hist.pendingHist.filter((p) => p.k !== hk2); await this.store.del(hk2); });
+    await this.claims.inSealChain(async () => { this.claims.pendingSeals = this.claims.pendingSeals.filter((p) => p.k !== sk2); await this.store.del(sk2); });
     await this.persistVault();
   }
 
-  private must(): Acct { if (!this.accts) throw new Error("locked"); return this.accts[this.active]; }
+  // `active` indexes `accts` while unlocked (applyDoc clamps it; add, switch and remove keep it in range); an
+  // out-of-range slot is refused as an internal error, not reported as a lock.
+  private must(): Acct {
+    if (!this.accts) throw new Error("locked");
+    const a = this.accts[this.active];
+    if (!a) throw new Error("no active account");
+    return a;
+  }
   private addr(): string { return this.must().addr; }
 
   // ── signing-context integrity (A1, Plans/68 FILL-RACE-1) ─────────────────────────────────────
-  // Every signing method captures its key SYNCHRONOUSLY at entry — except fillOffer, whose
+  // Every signing method captures its key SYNCHRONOUSLY at entry; except fillOffer, whose
   // preflight awaits (offer fetch + tip) sit between validation and the key read, so a
   // switchAccount parked in those awaits made the preflight validate account A while account B
   // signed and paid (pay-without-delivery on a taker-bound offer; whole-payment loss on the
@@ -648,16 +530,16 @@ export class Wallet {
     return null;
   }
   // Throwing variant for the name/token methods that surface refusals as thrown errors (FEE_CHANGED
-  // precedent) rather than a structured SubmitResult — same guard, single source for the copy.
+  // precedent) rather than a structured SubmitResult; same guard, single source for the copy.
   private throwOnSignerChange(expectSigner: string | undefined): void {
     if (expectSigner && expectSigner.toLowerCase() !== this.addr().toLowerCase()) throw new Error(ACCOUNT_CHANGED_REFUSAL().error);
   }
 
-  // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx — every caller
+  // Timed GET against the CairnX read API. RETURNS the Response and NEVER throws on a non-2xx; every caller
   // discriminates status / parses / catches itself, so each keeps its own fail-soft (display reads) vs
   // fail-closed (fillOffer/resolveName money paths) posture exactly. A network error / timeout abort throws
   // out of fetch → the caller's own try/catch handles it. The 12s default sits ABOVE the /trade/api
-  // proxy's 10s upstream wait (CAIRN_PROXY_TIMEOUT_MS) — the old 6s default aborted while the proxy
+  // proxy's 10s upstream wait (CAIRN_PROXY_TIMEOUT_MS); the old 6s default aborted while the proxy
   // was still legitimately waiting on a slow-but-working resolver, turning a survivable stall into a
   // spurious fail-closed refusal on the fill/resolve money paths (timeout-inversion class, Plans/66 B1).
   private tradeGet(path: string, timeoutMs = 12000): Promise<Response> {
@@ -671,7 +553,7 @@ export class Wallet {
   }
 
   balance() { return node.balance(this.rpc, this.addr()); }
-  // Current epoch (= floor(tip/30), matching this wallet's own propose math) — lets the approval
+  // Current epoch (= floor(tip/30), matching this wallet's own propose math); lets the approval
   // window show a dApp-supplied expiresEpoch as a real "expires in N days from now". Best-effort:
   // returns null offline so the clear-signer just shows the raw epoch.
   async epoch(): Promise<number | null> { try { return Math.floor((await node.tip(this.rpc)) / EPOCH_LEN); } catch { return null; } }
@@ -679,16 +561,16 @@ export class Wallet {
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
   // M9/M11/W5 (B5b): the persisted PoW-backed tip floor (advanced only by namespv floorAdvance after a
-  // successful sync — see B5a). Guards clamp the raw served tip UP with it so a deflating RPC cannot roll
-  // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE — stated
+  // successful sync; see B5a). Guards clamp the raw served tip UP with it so a deflating RPC cannot roll
+  // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE; stated
   // coverage limit, not assumed away). Popup-only read; never a dApp method.
   async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee?: number; outputs?: { to: string; value: number }[] }) {
-    // B9: an omitted fee signs defaultFeeFor("propose") — the node-enforced MIN_FEE_PROPOSE floor the
+    // B9: an omitted fee signs defaultFeeFor("propose"); the node-enforced MIN_FEE_PROPOSE floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER the user approved a screen that
     // showed a 0.01 CSD the node would have rejected anyway). An explicit sub-floor fee still refuses.
     const fee = p.fee ?? defaultFeeFor("propose");
-    const hk = this.histKeyNow(); const r = await node.propose(this.rpc, { ...p, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee }); return r;
+    const hk = this.histKeyNow(); const r = await node.propose(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee }); return r;
   }
   async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string; tokenQuote?: TokenFillQuote }) {
     // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
@@ -707,17 +589,17 @@ export class Wallet {
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
     if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
-    // B9: an omitted fee signs defaultFeeFor("attest") — the node-enforced MIN_FEE_ATTEST floor the
+    // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
     // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
     const fee = p.fee ?? defaultFeeFor("attest");
-    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
+    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
   }
-  // Atomic fill (Attest + payment in ONE tx — CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
+  // Atomic fill (Attest + payment in ONE tx; CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
   // Ordering is load-bearing: capture the signer BEFORE the preflight await (so the account the preflight
   // validates IS the account that signs), re-assert it AFTER the last await and immediately before the
-  // sign, and sign/record with the CAPTURED key/histKey — a switchAccount parked in the preflight's offer
+  // sign, and sign/record with the CAPTURED key/histKey; a switchAccount parked in the preflight's offer
   // or tip await now refuses (ACCOUNT_CHANGED) instead of paying from the wrong account.
   async fillOffer(p: { proposalId: string; score?: number; confidence?: number; outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string; tokenQuote?: TokenFillQuote; reservationAck?: string }) {
     const ctx = this.captureSigner();
@@ -740,331 +622,28 @@ export class Wallet {
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
     const r = await node.fillOffer(this.rpc, q, ctx.priv);
     const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
-    await this.maybeRecord(ctx.histKey, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
+    await this.hist.maybeRecord(ctx.histKey, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
     return r.ok && notes.secondSource ? { ...r, secondSource: notes.secondSource } : r;
   }
 
-  // ── fund-safety pre-flight (deep-review 2026-07-03 C2/C3/C4): the wallet's own fillOffer must NEVER sign a
-  // payment tx the resolver will reject AFTER the CSD moves (no escrow → the payment is lost). Re-fetch the
-  // CURRENT offer record and run the shared cairnx-core pre-flight over it. The check is computed from the
-  // offer's OWN give/want/min/claim fields (not a resolver boolean), so even a hostile resolver cannot induce
-  // a loss by lying about status. Returns a refusal SubmitResult, or null to PROCEED. Posture (since B1,
-  // Plans/68): fail CLOSED unless the resolver POSITIVELY answers with a parseable open offer.
-  //   • a clean 404 OR a status-less/garbled 200 → OFFER_UNKNOWN (retryable): filling a proposal the
-  //     resolver will not settle burns the whole payment, so "no data" is never treated as "safe".
-  //   • a 5xx / timeout → VERIFY_UNAVAILABLE (retryable).
-  //   • a parsed open offer runs the shared cairnx-core preflight (fillIsSafe + the requiredFillOutputs
-  //     need-map) and proceeds only if every leg holds. Honest cost: one retry on a brand-new offer
-  //     inside the resolver's ~15s scan window. A coherently-lying resolver is the B3 fill-SPV item.
-  // `me` is the CAPTURED signer address from fillOffer's SignerCtx (A1) — never read live here, so the
-  // account this preflight validates is by construction the account whose key signs.
-  // RT-W2: `reviewedQuote` is the token debit quote the approve window DISPLAYED (threaded from
-  // approve.ts via background.ts). On the token lane it is bound against the chain-proven want.
-  // `reservationAck` is the fclaim txid the user confirmed in the approval window after an "unknown" reservation
-  // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
-  private async fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
-    let offer: CxOfferState | null = null;
-    let fetchFailed = false;
-    try {
-      const r0 = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): recipient path fails clean
-      if (r0.ok) offer = (await r0.json().catch(() => null)) as any;
-      else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
-    } catch { fetchFailed = true; }
-    if (offer && typeof offer.status === "string") {
-      if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false, code: "FILL_UNSAFE" };
-      // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
-      // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
-      // instead of letting BigInt() throw raw out of the preflight.
-      const sums = new Map<string, bigint>();
-      for (const o of outputs ?? []) {
-        if (typeof o.value !== "number" || !Number.isSafeInteger(o.value) || o.value <= 0)
-          return { ok: false, error: "each output value must be a positive integer amount in base units — refusing to sign", sighashMatch: false, code: "BAD_OUTPUTS" };
-        const k = String(o.to).toLowerCase();
-        sums.set(k, (sums.get(k) ?? 0n) + BigInt(o.value));
-      }
-      // the seller payment is the output sum going to want.payto (what previewFill/fillIsSafe price against)
-      const payto = String((offer.want as any)?.payto || "").toLowerCase();
-      const pay = sums.get(payto) ?? 0n;
-      const isCsdWant = !("ticker" in ((offer.want as any) ?? {}));
-      // ── V28 open-lane (fclaim) STRUCTURAL routing to the grant-replay SPV boundary ─────────────────────
-      // The fill ATTESTS the fclaim txid, NEVER the offer id, so `proposalId !== offer.id` STRUCTURALLY IS a
-      // fclaim-lane fill and MUST clear the SPV boundary (verifyFillSpv). Crucially this does NOT trust the
-      // resolver-echoed `fclaimId`: a hostile primary that WITHHOLDS or alters fclaimId (while still echoing the
-      // linked offer id) would otherwise steer the fill into the resolver-trusted LEGACY lane and burn a denied
-      // fclaim. It is also tip-INDEPENDENT so a deflated node tip cannot steer the lane: below V28 every legit
-      // fill targets `offer.id` (this never mis-fires on an honest fill), and a below-V28 fill mis-served with
-      // `proposalId !== offer.id` fails CLOSED in verifyFillSpv (no fclaim exists below the gate).
-      // fclaimLanePreflight already fails closed on any unprovable/fabricated fclaim (it must be merkle-proven in
-      // the scan AND reference this offer). This makes the mandatory grant replay actually mandatory at V28.
-      if (String(proposalId).toLowerCase() !== String(offer.id ?? "").toLowerCase()) {
-        const second = {
-          offer: startSecondSourceRead(CLARVIS_TRADE_API, "offer", String(offer.id ?? ""), SECOND_SOURCE_TIMEOUT_MS),
-          record: startSecondSourceRead(CLARVIS_TRADE_API, "record", proposalId, SECOND_SOURCE_TIMEOUT_MS),
-        };
-        try { return await this.fclaimLanePreflight(offer, proposalId, me, sums, payto, pay, second, reservationAck, notes); } finally { second.offer.stop(); second.record.stop(); }
-      }
-      // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
-      // a live tip. this.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
-      // as 0. But the disarm is NOT just tip==0: fillIsSafe only runs the claim check when
-      // isOpenClaimLane(offer, tip) is true, which requires tip >= V13_HEIGHT — so ANY reported tip in
-      // (0, V13_HEIGHT) (a grossly-stale or hostile RPC) silently SKIPS the claim gate and would let a
-      // non-claimant's open-CSD fill through, while the real chain (tip ~47k) no-ops it and the whole
-      // payment is lost (C2/C4). So: for this lane, if the claim gate is NOT active at the reported tip
-      // (isOpenClaimLane false — which, given taker===undefined && CSD want, can only be a too-low tip),
-      // fail CLOSED with the retryable posture. Red-team 2026-07-06 hardened the guard from `!(tip > 0)`
-      // to cover the full (0, V13) band. Taker-bound / token lanes never consult the tip (unaffected).
-      const tip = (await this.tip()) ?? 0;
-      // Correction 1 (RT3) mirror: reaching here means `proposalId === offer.id` (the fclaim lane already
-      // returned above). An offer-id fill DURING a live fclaim hold burns — the V28 resolver routes fills to the
-      // fclaim, so an offer-id attest mines with NO delivery, and fillIsSafe/hasLiveClaim PASS for the holder.
-      // `claimTxid` is set only at V28, so this is V28-scoped WITHOUT a deflatable tip gate; a deflated tip only
-      // makes hasLiveClaim MORE likely true (fires -> refuse), so it fails safe. A pre-V28 hold honored in the
-      // sunset has claimTxid undefined -> legacy path (correct, no false-refuse).
-      if (offer.claimTxid !== undefined && hasLiveClaim(offer, me, tip))
-        return { ok: false, error: "this offer has a live reservation — fill its reservation (fclaim) target, not the offer id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_WRONG_TARGET" };
-      // W5 (B5b): LEGACY-SUNSET arithmetic refuse. Placed AFTER the Correction-1 mirror deliberately: a
-      // served live-hold offer gets the more SPECIFIC actionable refusal (FILL_WRONG_TARGET) first, and the
-      // W5 forgery (claimTxid OMITTED) never fires the mirror, so this guard still closes it.
-      // The last possible legacy grant is at V28-1 and its hold
-      // (window + fill grace) ends at V28 + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS - 1 = 60,044,
-      // so AT or ABOVE 60,045 every offer-id fill of an open CSD offer is rejected on-chain AFTER the
-      // payment moved (pay-without-delivery). The W5 attack forges/omits the SERVED claim fields to steer a
-      // genuine fclaim holder into this lane — so the refuse keys on NOTHING served: pure gate arithmetic
-      // over the tip, clamped UP with the PoW-backed floor (M9/B5a) so a deflating RPC cannot disarm it
-      // once the wallet has PoW-seen the band. Below 60,045 the honored pre-V28 sunset (resolve.ts:182-183)
-      // still admits legacy fills — a flat V28 cut was DECLINED as over-refusal (strategy decline 1); the
-      // headline test pins ACCEPTS at 60,010. Taker-bound and token lanes are exempt (neither routes through
-      // the open-lane claim machinery): the CSD lane's taker IS bound (provenTermsMismatch below), and the
-      // token lane now binds its give/want CONTENT (B7e-FIX, the else branch below), so the token exemption
-      // is not claiming an unbound residual - a token-priced offer simply is not an open-CSD claim-lane fill.
-      if (offer.taker === undefined && isCsdWant && Math.max(tip, await this.tipFloor()) >= V28_HEIGHT + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS)
-        return { ok: false, error: "past the V28 sunset an open offer can only be filled through its reservation (fclaim) target — ask the marketplace for the reservation id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_LEGACY_SUNSET" };
-      if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))
-        return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-      const verdict = fillIsSafe(offer, me, pay, tip);
-      if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
-      // The resolver's value gate is a per-address SUM need-map (whole fill: payto ≥ want, TREASURY ≥
-      // fee, seller ≥ rebate, SUMMED when recipients coincide; partial: clamped pay + fee). A fill that
-      // underpays any leg is rejected on-chain AFTER the payment moved (the pay-without-delivery burn
-      // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35) — the same
-      // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
-      // this block hand-mirrored it. Pure local math over data already in hand — no added I/O.
-      if (isCsdWant) {
-        // F2-legacy: this SPV-less LEGACY / dApp lane (window.cairn.fillOffer, no swapguard in the loop) sizes the
-        // payment against the resolver-served want.payto and the rebate against the served seller, so a lying read-
-        // path redirects the payment (theft) or mis-sizes the rebate so resolve() rejects the fill (burn). Bind both
-        // to the MERKLE-PROVEN offer author (prevout-owner, txid-committed). Fail CLOSED-RETRYABLE on an unprovable /
-        // transient read (never a hard decline on an honest fill), FILL_UNSAFE on a proven mismatch. Honest offers
-        // default payto/seller to the author, so no honest fill declines.
-        const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
-        if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
-          return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-        // WANT-TYPE bind (mirrors the fclaim lane's isTokenWant rejection in verifyFillSpv): the MERKLE-PROVEN
-        // offer must actually be CSD-priced to take this CSD-fill branch. A token-priced offer carries no
-        // want.value, so provenOfferPayto leaves terms.value undefined and bindOfferTerms skips the value leg;
-        // without this a lying resolver could serve a token-priced offer as CSD-priced (drop want.ticker, add a
-        // fake want.value) and the wallet would sign a CSD payment that resolve() rejects (no delivery) =
-        // pay-without-delivery burn/theft. A genuine CSD offer always carries want.value, so no honest fill declines.
-        if (proven.terms.value === undefined)
-          return { ok: false, error: "refusing to sign: the on-chain offer is not CSD-priced (a lying resolver may be presenting a token-priced offer as a CSD sale)", sighashMatch: false, code: "FILL_UNSAFE" };
-        if (payto !== proven.payto || String((offer as { seller?: string }).seller ?? "").toLowerCase() !== proven.seller) return { ok: false, error: "refusing to sign: the seller payment recipient does not match the offer's on-chain author (a lying resolver may be redirecting your payment)", sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_LEGACY_PAYTO_GUARD
-        // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer (same as the fclaim lane).
-        if (provenTermsMismatch(offer, proven.terms))
-          return { ok: false, error: "refusing to sign: the offer's fee/rebate terms do not match its on-chain record (a lying resolver could under-size the fee, and the chain would reject the fill after your payment moved)", sighashMatch: false, code: "FILL_UNSAFE" };
-        const need = requiredFillOutputs(offer, pay);
-        if (need === null)
-          return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
-        for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
-          const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
-          return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
-        }
-      } else {
-        // XR-1 (N26): a token-priced fill routes NO CSD - its on-chain tx is the Attest with outputs:[].
-        // The attest->fillOffer reroute hardcodes outputs:[] (in attest()), but a DIRECT dApp fillOffer
-        // on a token-priced served offer can still carry CSD outputs, which this lane never checks. `sums`
-        // holds only positive, validated outputs (BAD_OUTPUTS ran above), so a non-empty map is real CSD.
-        if (sums.size > 0) return { ok: false, error: "refusing to sign: a token purchase is paid in tokens, not CSD, so it must move no CSD. This fill tried to send CSD (a lying resolver or dApp may be trying to move CSD through a token fill). Retry the purchase from the site's Buy button.", sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_TOKEN_OUTPUTS_GUARD
-        // B7e-FIX (REBIND W1 token-lane close): a TOKEN-want fill (attest CONF_TOKEN_FILL -> fillOffer,
-        // outputs:[]) never routes to the fclaim SPV boundary (verifyFillSpv rejects a token want as "CSD-priced
-        // offers only"), and until now this lane skipped every content bind, so a hostile resolver could serve a
-        // bait-and-switch give/want the user clear-signs and the wallet would proceed (both proof seams never
-        // consulted). Merkle-prove the offer RECORD and bind its give/want CONTENT before signing, mirroring the
-        // site swapguard verifyOfferContent (which binds want.ticker/want.amount + give from the proven record for
-        // a token want). Fail CLOSED-RETRYABLE on an unprovable/transient read (same posture as the CSD lane,
-        // never a hard decline on an honest fill); FILL_UNSAFE on a proven content mismatch. An honest token
-        // offer's served give/want equal the proven ones (resolve() materializes both from the same on-chain
-        // record), so no honest token fill declines. No CSD payto/need-map bind here: a token fill routes no CSD
-        // (outputs:[], N26), so the payment legs do not apply.
-        const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
-        if (!proven)
-          return { ok: false, error: "couldn't prove this token offer's on-chain terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-        // give legs (give.ticker/amount/name) + the symmetric want-TYPE refusal, via the SAME vendored predicate
-        // the CSD lane uses. The want-type leg also refuses a proven CSD offer served as a token offer, so once
-        // this passes the proven offer is genuinely token-priced (proven.wantTicker is defined).
-        if (provenTermsMismatch(offer, proven.terms))
-          return { ok: false, error: "refusing to sign: the offer's asset (give) or want-type does not match its on-chain record (a lying resolver may be misrepresenting what you receive)", sighashMatch: false, code: "FILL_UNSAFE" };
-        // The token ticker/amount you PAY is bound explicitly: bindOfferTerms binds the want TYPE but carries no
-        // token want ticker/amount leg. A deflated want.amount or a swapped want.ticker would otherwise let the
-        // resolver understate your cost for what you receive. Mirrors swapguard verifyOfferContent's want leg.
-        const w = (offer.want as { ticker?: string; amount?: string }) ?? {};
-        if (String(w.ticker) !== String(proven.wantTicker ?? "") || String(w.amount) !== String(proven.wantAmount ?? ""))
-          return { ok: false, error: "refusing to sign: the token or amount you would pay does not match the offer's on-chain record (a lying resolver may be understating your cost)", sighashMatch: false, code: "FILL_UNSAFE" };
-        // RT-W2: bind the number the user SAW at review to the chain-proven want. The review card's
-        // quote was a live resolver read; a resolver answering low on that read and honest at click
-        // used to debit the larger proven amount behind the low card. The displayed quote must equal
-        // the proven want or the fill refuses. (Absent quote → the review already showed the loud
-        // do-NOT-approve caution; the served↔proven binds above still hold.)
-        // 0.2.71 (CX-15): a token-debiting fill signs only what the user reviewed. No reviewed quote
-        // (the preview failed, was slow, or a caller skipped the approval window) is REVIEW_REQUIRED,
-        // retryable; the review must also carry the fee and total, which are bound below.
-        if (!reviewedQuote || reviewedQuote.ticker === undefined || reviewedQuote.fee === undefined || reviewedQuote.total === undefined)
-          return refuse("REVIEW_REQUIRED", "the wallet could not show you the exact token amount this fill debits, so it will not sign it. Reopen the purchase and approve once the amount is shown.");
-        if (reviewedQuote && reviewedQuote.ticker !== undefined) {
-          const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
-          if (qT !== String(proven.wantTicker ?? "") || qA !== String(proven.wantAmount ?? ""))
-            return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.wantAmount ?? "?"} ${proven.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
-        }
-        // 0.2.71 (CX-15): bind the reviewed fee and total. The fee follows from the proven amount and the
-        // offer's proven inclusion height (1.5% from V16, 1% before), not from the served feeBps, so a
-        // quote that understated the fee (e.g. a served feeBps of 0) cannot sign a larger debit.
-        {
-          let provenAmt: bigint;
-          try { provenAmt = BigInt(String(proven.wantAmount ?? "")); } catch { return refuse("FILL_UNSAFE", "refusing to sign: the offer's on-chain amount could not be read"); }
-          const provenBps = Number((proven.terms as { feeBps?: unknown }).feeBps);
-          const bps = Number.isFinite(provenBps) ? provenBps : (Number(offer.height) >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS);
-          const fee = cairnxTradeFee(provenAmt, bps);
-          if (String(reviewedQuote.fee) !== fee.toString() || String(reviewedQuote.total) !== (provenAmt + fee).toString())
-            return refuse("FILL_UNSAFE", `refusing to sign: the card showed a fee of ${reviewedQuote.fee} and a total of ${reviewedQuote.total}, but this offer's on-chain terms debit ${fee.toString()} + ${provenAmt.toString()} = ${(provenAmt + fee).toString()}. Retry from the site's Buy button.`);
-        }
-        // 0.2.70: bind the resolver-served give the card showed to the merkle-proven give.
-        if (reviewedQuote && (reviewedQuote.giveTicker !== undefined || reviewedQuote.giveAmount !== undefined || reviewedQuote.giveName !== undefined)) {
-          if (String(reviewedQuote.giveTicker ?? "") !== String(proven.terms.giveTicker ?? "")
-            || String(reviewedQuote.giveAmount ?? "") !== String(proven.terms.giveAmount ?? "")
-            || String(reviewedQuote.giveName ?? "") !== String(proven.terms.giveName ?? ""))
-            return refuse("FILL_UNSAFE", "refusing to sign: the asset you would receive changed between review and signing — the card showed a different give than the offer's on-chain record. Retry from the site's Buy button.");
-        }
-      }
-    } else if (fetchFailed) {
-      // GENUINE unreachability (5xx / timeout — NOT a 404). We cannot tell the lane without the offer, and
-      // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
-      return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-    } else {
-      // B1 (Plans/68 M-MKT-5 + N-1; the Plan 63 B2 flip, operator-approved): fail CLOSED unless the
-      // resolver POSITIVELY answered with a parseable CairnX offer. A clean 404 (a valid, unexpired L1
-      // proposal that is NOT an open CairnX offer — a board post, or a record resolve() rejected) and a
-      // 200 whose body lacks a parseable status (MITM / garbling proxy) both used to PROCEED here; the
-      // wallet signed Attest+payment, L1 moved the CSD, and resolve() ignored the attest — the whole
-      // payment burned to attacker-directed outputs. Honest cost: a brand-new offer inside the
-      // resolver's ~15s scan poll refuses ONCE with retryable copy. This closes the honest-resolver and
-      // MITM hole; a coherently LYING resolver is the B3 proof-bound fill-SPV item, not this guard.
-      return { ok: false, error: "this offer is not known to your resolver yet. A new offer appears once it is mined and the resolver has read that block; try again then", sighashMatch: false, code: "OFFER_UNKNOWN" };
-    }
-    // a positively-parsed OPEN offer that cleared every check above → proceed to sign
-    return null;
-  }
-
-  // ── V28 open-lane (fclaim) fill fund boundary ───────────────────────────────────────────────────────
-  // A resolver-DENIED fclaim is an L0-valid but delivery-less attest target, so a fill built on it BURNS the
-  // whole payment. This is a faithful resolve() mirror the STRONG way: it re-derives the ENTIRE grant + hold
-  // from PoW-buried, merkle-proven events (the vendored verifyFillSpv) and fails CLOSED on anything unproven —
-  // it only ever REJECTS MORE than resolve(), never accepts something resolve() would reject.
-  // `second` holds the clarvis reads of the offer and of this fclaim's record, started by the caller before the
-  // scan so they run alongside it.
-  private async fclaimLanePreflight(offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint, second: { offer: SecondSourceRead; record: SecondSourceRead }, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
-    const offerId = String(offer?.id ?? "").toLowerCase();
-    if (!/^0x[0-9a-f]{64}$/.test(offerId))
-      return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
-    // Build the fail-closed SPV seam (PoW-verified tip + merkle-proven offer/fclaim/hold events + the computed
-    // cross-offer hold count). Any unverifiable read throws → refuse retryably (never proceed on an unproven grant).
-    let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms };
-    try {
-      io = await this.makeFillSpvIo(offerId, fclaimTxid, me, Number(offer?.height));
-    } catch (e) {
-      // A body that contradicts its verified header means the configured RPC (for example a local node on another
-      // chain) or the header source (a false header with valid PoW) is wrong; the refusal names both and blames
-      // neither. Every other failure here is a read that could not complete (no tip, a missing chunk, a timeout)
-      // and is retryable.
-      if (e instanceof BodyMismatchError && e.bodySource)
-        return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified${e.headerSource ? ` from ${e.headerSource}` : ""}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
-      return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-    }
-    // myLiveHoldsAtGrant is COMPUTED by the SPV source: a CONSERVATIVE OVER-count of my OTHER-offer fclaim holds
-    // live at this fclaim's grant height, from the same PoW-verified [fclaimHeight - MAX_SCAN, tip] scan. It is
-    // the cap defense: the lane-scoped replay cannot see other-offer holds, so an under-count would fail-OPEN the
-    // cross-offer MAX_ACTIVE_CLAIMS cap and BURN (a resolver that D2-aliases a cap-denied fclaim as "granted"
-    // would pass). Over-count only false-refuses (retryable). There is NO wallet create-side cap guard, and 0 is
-    // NEVER assumed — if the source could not compute the count, fail CLOSED here. The DEADLINE guard likewise
-    // rides INSIDE verifyFillSpv from the fclaim's OWN confirmed expiry epoch (fclaimHoldEnd), never epochOf(tip+45).
-    if (!Number.isInteger(io.myLiveHoldsAtGrant))
-      return { ok: false, error: "couldn't count your other open reservations to verify this one against the claim cap — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-    // W3 (B7e): the OPT-IN payment bind. verifyFillSpv re-runs requiredFillOutputs over the merkle-proven,
-    // REPLAYED offer (the chain's OWN paid/delivered, never a served lie) and requires our PLANNED per-address
-    // CSD sums to match it EXACTLY, closing the whole->partial overpay (a resolver serving paid:"0" for a
-    // 90%-filled partial made us size the FULL want; the surplus past the real remainder is unrecoverable). We
-    // pass the SAME per-address `sums` map the outputs were summed into (payto + treasury fee + maker rebate,
-    // MERGED per address); previewFill CLAMPS p.pay to want for a whole fill, so payto === seller (pay carrying
-    // the merged rebate) matches the proven need-map exactly and never false-refuses that real honest shape.
-    let verdict: FillVerdict;
-    try {
-      verdict = await verifyFillSpv(offerId, fclaimTxid, me, io, {
-        myLiveHoldsAtGrant: io.myLiveHoldsAtGrant as number, pay,
-        // The per-address sums bind: planned payment legs must equal the proven offer's need-map exactly, so a
-        // served payto, fee or remainder that differs from the chain refuses here (FILL_UNSAFE below), and so does a
-        // served seller when the offer has a rebate leg; an offer with `min` has none (previewFill), so a served
-        // seller swap on it changes no leg and signs the honest outputs (payto and the treasury fee).
-        sums: Object.fromEntries(sums), // MUTATE_FCLAIM_SUMS_BIND
-      });
-    } catch {
-      return { ok: false, error: "couldn't verify this reservation against the chain yet — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-    }
-    // FILLSPV-01: when the reported tip had to be floor-clamped UP (a deep reorg OR an active served-tip
-    // deflation), the wallet genuinely could not confirm burial-to-true-tip this call, so the vendor's
-    // factually-wrong "would strand"/lapsed-shaped reason is replaced with honest, retryable copy. Both
-    // branches REFUSE (fail-closed either way); this only fixes which reason the user sees. `tipFloored` is
-    // undefined/falsy under the fillSpvIoForTest synthetic io, so every existing denial keeps FILL_UNSAFE.
-    // Only a reason the tip decides is remapped; a permanent denial keeps FILL_UNSAFE under a floored tip.
-    if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored && tipDependentFillReason(verdict.reason) ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
-    // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer so a deflated feeBps/height/
-    // value/taker cannot under-size a leg (which resolve() would reject AFTER payment = pay-without-delivery burn).
-    const terms = (io as { provenTerms?: MintedProvenOfferTerms }).provenTerms;
-    if (!terms)
-      return { ok: false, error: "couldn't prove this offer's on-chain fee terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
-    if (provenTermsMismatch(offer, terms))
-      return { ok: false, error: "refusing to sign: the offer's fee/rebate terms do not match its on-chain record (a lying resolver could under-size the fee, and the chain would reject the fill after your payment moved)", sighashMatch: false, code: "FILL_UNSAFE" };
-    // verifyFillSpv proves delivery >= 1 on the offer terms; the wallet ALSO pins its OWN outputs to the exact
-    // resolver need-map (payto >= want, treasury >= fee, seller >= rebate), identical to the legacy lane.
-    const need = requiredFillOutputs(offer, pay);
-    if (need === null)
-      return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
-    for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
-      const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
-      return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
-    }
-    // Pre-window withholding: the scan cannot see a cancel or fill older than its window, so ask the second
-    // source about the offer. Its answer counts only if it has already arrived; pending or unusable proceeds.
-    const fcEv = await io.provenEvent(fclaimTxid).catch(() => null);
-    const ownHoldEnd = fcEv && fcEv.kind === "propose" ? fclaimHoldEnd(fcEv.expiresEpoch) : undefined;
-    const conflict = secondSourceOfferConflict(offer, okBody(second.offer.answer()), { offerId, fclaimTxid, ownHoldEnd }); // MUTATE_OFFER_XCHECK
-    if (conflict) return refuse("OFFER_SOURCE_CONFLICT", `refusing to sign: the second source (clarvis) reports that ${conflict}, while your resolver shows it open. Paying now would likely be lost. Reload the offer and check it on the explorer before trying again.`);
-    // A header source that hides a competing hold placed just before our fclaim makes the scan grant it while the
-    // chain denies it. The second resolver's replay of the real chain shows the denial.
-    const recordReply = second.record.answer();
-    const rv = reservationRecordVerdict(recordReply, { fclaimTxid, provenHeight: fcEv?.height });
-    if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
-    // "unknown" goes back to the approval window as a confirm step; the user's acknowledgement for this fclaim signs.
-    if (rv?.kind === "unknown" && typeof fcEv?.height === "number" && String(reservationAck ?? "").toLowerCase() !== fclaimTxid.toLowerCase()) // MUTATE_RESERVATION_CONFIRM
-      return { ...refuse("RESERVATION_UNCONFIRMED", `the second source has read the chain to block ${rv.tipHeight} and has no record of your reservation (block ${fcEv.height}); confirm in the approval window to sign anyway`), unconfirmed: { fclaimTxid: fclaimTxid.toLowerCase(), fclaimHeight: fcEv.height, tipHeight: rv.tipHeight } };
-    const unanswered = secondSourceUnanswered(recordReply);
-    if (unanswered && notes) notes.secondSource = unanswered; // MUTATE_SECOND_SOURCE_NOTE
-    return null;
+  // The reads the fill preflight makes through this wallet. Each one calls the wallet method when it runs, so the
+  // endpoints in force and the test seams (fillSpvIoForTest, provenPaytoForTest) apply.
+  private fillIo: FillPreflightIo = {
+    tradeGet: (path) => this.tradeGet(path),
+    tip: () => this.tip(),
+    tipFloor: () => this.tipFloor(),
+    makeProvenOfferPayto: (offerId, offerHeight) => this.makeProvenOfferPayto(offerId, offerHeight),
+    makeFillSpvIo: (offerId, fclaimTxid, me, offerHeight) => this.makeFillSpvIo(offerId, fclaimTxid, me, offerHeight),
+  };
+  private fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
+    return fillOfferPreflight(this.fillIo, proposalId, outputs, me, reviewedQuote, reservationAck, notes);
   }
 
   // Test seam (fill-SPV fund boundary): production leaves this undefined and builds the LIVE PoW-verified
   // FillSpvIo; tests inject a synthetic (PoW/merkle pre-satisfied) io so the vendored verifyFillSpv boundary
   // is exercised through the real preflight without a chain. The io carries the computed cap over-count.
-  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => (FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }) | Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }>;
-  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean }> {
+  fillSpvIoForTest?: (offerId: string, fclaimTxid: string, me: string) => FillSpvIoExt | Promise<FillSpvIoExt>;
+  private async makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIoExt> {
     if (this.fillSpvIoForTest) return await this.fillSpvIoForTest(offerId, fclaimTxid, me);
     // BP4/N11: reuse the wallet's ONE PoW light client (its restored + synced header chain) instead of building
     // a fresh one per fill attempt (each fresh build re-pays the O(chain) snapshot restore). Same rpc/api/cache/
@@ -1086,8 +665,8 @@ export class Wallet {
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
-  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null) | Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null>;
-  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null> {
+  provenPaytoForTest?: (offerId: string, offerHeight: number) => (ProvenOfferPayto | null) | Promise<ProvenOfferPayto | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | null> {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({
@@ -1098,12 +677,12 @@ export class Wallet {
 
   signIn() { return node.signIn(this.api, this.must().privkey); }
 
-  // Audience-bound "Sign in with CSD" (SIWC) for THIRD-PARTY sites — the secure replacement for the
+  // Audience-bound "Sign in with CSD" (SIWC) for THIRD-PARTY sites; the secure replacement for the
   // legacy first-party-only signIn(). The wallet builds a CAIP-122-style message binding the
   // requesting site's domain (derived from the UNFORGEABLE sender.origin, NEVER a dApp-asserted
   // string), the RP's single-use nonce, the chain id, and an issued-at/expiration window; signs the
   // domain-separated SIWC digest; and returns ONLY the signed artifact. It NEVER talks to cairn's
-  // /auth and NEVER mints a session — the dApp's own server verifies (verifySiwc) and issues its own
+  // /auth and NEVER mints a session; the dApp's own server verifies (verifySiwc) and issues its own
   // session. `origin` is supplied by the background from sender.origin (browser-set, unforgeable).
   async signInWithCsd(
     params: { nonce?: unknown; statement?: unknown; uri?: unknown; domain?: unknown; expirationSecs?: unknown; notBeforeSecs?: unknown; requestId?: unknown; resources?: unknown },
@@ -1113,7 +692,7 @@ export class Wallet {
     const domain = originToDomain(origin);
     if (!domain) throw new Error("sign-in: unknown requesting origin");
     const p = params || {};
-    // The page MAY pass its domain, but it is only cross-checked against the real origin — never trusted.
+    // The page MAY pass its domain, but it is only cross-checked against the real origin; never trusted.
     if (p.domain !== undefined && String(p.domain) !== domain) throw new Error("sign-in: declared domain does not match the requesting site");
     // uri defaults to the origin root; if supplied it MUST be on the requesting site.
     let uri: string;
@@ -1145,7 +724,7 @@ export class Wallet {
     const fields: SiwcFields = {
       domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
       nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
-      // Only emit notBefore for a POSITIVE offset — a 0/negative value is a no-op "valid from now-or-past"
+      // Only emit notBefore for a POSITIVE offset; a 0/negative value is a no-op "valid from now-or-past"
       // constraint that the clear-sign window (clearsign.ts) does NOT display, so signing it would mean
       // committing a field the user never saw (audit SDS-1). Matching the conditions keeps WYSIWYS exact.
       notBefore: p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
@@ -1164,12 +743,12 @@ export class Wallet {
     const early = this.expectSignerRefusal(expectSigner, ctx.addr);
     if (early) return early;
     const r = await node.send(this.rpc, { to, amount, fee: f }, ctx.priv);
-    await this.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee: f });
+    await this.hist.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee: f });
     return r;
   }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
-  // Popup-only — deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
-  // Ambiguous outcomes (SUBMIT_MAYBE_INFLIGHT) are ALSO recorded, flagged maybe:true — the popup's
+  // Popup-only; deliberately NOT reachable from the dApp channel (not in DAPP_METHODS).
+  // Ambiguous outcomes (SUBMIT_MAYBE_INFLIGHT) are ALSO recorded, flagged maybe:true; the popup's
   // pending-merge indicator derives from this history entry, and it must not be blind exactly when
   // the merge was ingested but the answer was lost (that is when the balance dips with no
   // explanation). The txid is the locally computed consensus txid (Plans/66 B4).
@@ -1178,85 +757,12 @@ export class Wallet {
     const r = await node.consolidate(this.rpc, { fee }, this.must().privkey);
     // maybeRecord is the single chokepoint for ok / maybe-inflight / duplicate recording (0.2.56);
     // the explicit maybe:true block that used to live here moved into it.
-    await this.maybeRecord(hk, r, { type: "consolidate", merged: r.merged, amount: r.total, fee });
+    await this.hist.maybeRecord(hk, r, { type: "consolidate", merged: r.merged, amount: r.total, fee });
     return r;
   }
   consolidatePreview(fee = 1_000_000) { return node.consolidatePreview(this.rpc, this.addr(), fee); }
 
-  // Pending-merge line and inclusion reconcile (popup-only; test/inclusion-chain.test.mjs). Each open row is
-  // settled from chain reads, not the clock: included once its txid is in a utxo set or reported mined;
-  // `gone` (a different mined tx spent one of its inputs) only after two tips agree, cleared by any later
-  // reading that disagrees (a read that could not look changes nothing), and read once per
-  // INCLUSION_GONE_READ_INTERVAL blocks while gone; `stuck` INCLUSION_NOTICE_BLOCKS past `subTip`.
-  // A merge latches `confirmed` because the next step spends its output. Cost per refresh: one tip read, at
-  // most INCLUSION_READS_MAX status reads (each 2 to 4 node reads behind the proxy's caches), one per row per
-  // block (`chkTip`), and one mined-utxo read when a status came back unknown. Reads stay OUTSIDE histChain
-  // (a read inside it would park send()'s own history write behind a hung RPC); the chained step re-reads.
-  async pendingMerge(utxos?: { txid: string; vout?: number }[]): Promise<{ pending: boolean; amount: number; maybe: boolean; stuck: boolean }> {
-    const quiet = { pending: false, amount: 0, maybe: false, stuck: false };
-    const addr = this.addr(), k = histKey(addr); // captured once (F5): history, latch and balance stay on ONE account
-    // pre-read ONLY for the early return, the fetch decision and the read list; the chained work RE-READS fresh.
-    const peek: any[] = (await this.store.get(k)) || [];
-    const hasCandidates = peek.some(isMergeCandidate);
-    // Nothing to derive AND nothing reconcilable against a caller-supplied utxo set: no network at all.
-    if (!hasCandidates && !(utxos && peek.some(isOpenRow))) return quiet;
-    let set = utxos;
-    if (!set) { try { ({ utxos: set } = await node.balance(this.rpc, addr)); } catch { return quiet; } }
-    // filter hostile/degenerate elements (0.2.57, reviewer nit): a null utxo entry from a hostile RPC
-    // used to throw here and land in the caller's ambiguous catch — a misleading "pending unknown".
-    const present = new Set((set || []).filter((u) => u && u.txid != null).map((u) => String(u.txid).toLowerCase()));
-    const open = peek.filter((x) => isOpenRow(x) && !present.has(String(x.txid).toLowerCase()));
-    const reads = open.length ? await this.inclusionReads(open, addr) : { tip: null, states: new Map<string, TxInclusion>(), mined: null };
-    return this.inHistChain(async () => {
-      if (!this.accts) return quiet;
-      // RE-READ inside the chain: the pre-network read above is stale across the reads, and writing it
-      // back clobbered anything recorded during them (P75-6 correction 1).
-      const h: any[] = (await this.store.get(k)) || [];
-      let dirty = false;
-      for (const e of h) {
-        if (!isOpenRow(e)) continue;
-        const id = String(e.txid).toLowerCase();
-        const st = reads.states.get(id) ?? null;
-        const verdict = present.has(id) || reads.mined?.txids.has(id) ? "included" : inclusionVerdict(st, e.inputs, reads.mined?.ops ?? null);
-        if (verdict === "included") {
-          delete e.maybe; delete e.stuck; delete e.gone; delete e.goneTip;
-          if (e.type === "consolidate") e.confirmed = true;
-          dirty = true;
-          continue;
-        }
-        if (reads.tip == null) continue;
-        if (verdict !== "noreading" && goneStep(e, verdict, reads.tip)) dirty = true;
-        if (!(Number(e.subTip) > 0)) { e.subTip = reads.tip; dirty = true; }
-        if (st && e.chkTip !== reads.tip) { e.chkTip = reads.tip; dirty = true; }
-        if (!e.stuck && reads.tip - Number(e.subTip) >= INCLUSION_NOTICE_BLOCKS) { e.stuck = true; dirty = true; }
-      }
-      let amount = 0, maybe = false, pending = false, stuck = false;
-      for (const e of h) {
-        if (!isMergeCandidate(e)) continue;
-        // amount = what actually comes back once mined: the merge OUTPUT (inputs minus fee); the
-        // recorded e.amount is the input total, which would overstate by the fee.
-        pending = true; amount += Math.max(0, (Number(e.amount) || 0) - (Number(e.fee) || 0));
-        maybe = maybe || !!e.maybe; stuck = stuck || !!e.stuck;
-      }
-      if (dirty) await this.store.set(k, h);
-      return { pending, amount, maybe, stuck };
-    }).catch(() => quiet);
-  }
-  // The tip once, a status read for each open row not yet read at this tip (newest first, capped), and the
-  // mined utxo set once if any status came back unknown. No tip: no chain-derived step this pass.
-  private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string> } | null }> {
-    const states = new Map<string, TxInclusion>();
-    const t = await node.tip(this.rpc).catch(() => 0);
-    if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
-    const due = open.filter((x) => !(Number(x.chkTip) >= t) && !(x.gone && t - Number(x.chkTip) < INCLUSION_GONE_READ_INTERVAL)).slice(0, INCLUSION_READS_MAX);
-    const got = await Promise.all(due.map((x) => node.txInclusion(this.rpc, String(x.txid))));
-    due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
-    if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
-    const list = await node.confirmedUtxos(this.rpc, addr);
-    const live = (list || []).filter((u) => u && u.txid != null);
-    const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())) } : null;
-    return { tip: t, states, mined };
-  }
+  pendingMerge(utxos?: { txid: string; vout?: number }[]): Promise<{ pending: boolean; amount: number; maybe: boolean; stuck: boolean }> { return this.hist.pendingMerge(utxos); }
 
   // Multi-output transfer (1→many). fee default 0.01 CSD. Inputs are chosen internally
   // by node.sendMany; callers never supply UTXOs. History records the total + primary
@@ -1268,7 +774,7 @@ export class Wallet {
     if (early) return early;
     const r = await node.sendMany(this.rpc, { outputs: p.outputs, fee }, ctx.priv);
     const { total, to } = this.summarizeOutputs(p.outputs);
-    await this.maybeRecord(ctx.histKey, r, { type: "send", to, amount: total, fee });
+    await this.hist.maybeRecord(ctx.histKey, r, { type: "send", to, amount: total, fee });
     return r;
   }
 
@@ -1282,7 +788,7 @@ export class Wallet {
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: p.domain, payloadHash: ph, uri: "cairn:v1:" + ph.slice(2, 14), expiresEpoch, fee: p.fee }, priv);
     // Queue the off-chain content on the ambiguous path too (0.2.56, review F13): a maybe-inflight
-    // propose that MINES would otherwise lose its body forever — the user paid, the content never
+    // propose that MINES would otherwise lose its body forever; the user paid, the content never
     // lands, no error. flushPending already handles a never-mined txid safely (polls getProposal,
     // registers only once mined, 7-day expiry bounds the queue), so queueing is harmless when the
     // tx truly died.
@@ -1293,267 +799,34 @@ export class Wallet {
       try { await this.addPending(content, r.txid); } catch { /* content queue write failed; propose is broadcast + recorded below */ }
       this.flushPending();
     } // durable, alarm-driven
-    await this.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
+    await this.hist.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
     return r;
   }
-  // D8 (register §3, 2026-09-12): cairnSupport DELETED — dead (no dApp/popup/inpage caller; not in
+  // D8 (register §3, 2026-09-12): cairnSupport DELETED; dead (no dApp/popup/inpage caller; not in
   // DAPP_METHODS) and worse, a guard-free twin of attest() (it bypassed the CONF_TOKEN_FILL WYSIWYS
   // routing guard). Board support goes through attest().
 
   // ── CairnX tokens + .csd names ──────────────────────────────────────────────
-  // READS go to the public CairnX resolver API and NEVER throw — the popup must keep
-  // showing the CSD balance even when the token API is down ({ ok:false } → quiet retry).
-  async cairnxAssets(): Promise<{ ok: boolean; balances?: Record<string, { available: string; locked: string }>; names?: string[]; nameDetails?: any[]; primaryName?: string | null; tipHeight?: number }> {
-    try {
-      const r = await this.tradeGet(`/cairnx/address/${this.addr()}`, 12000); // display read: 12s bounded (was untimed)
-      if (!r.ok) return { ok: false };
-      const j = await r.json();
-      const balances = (j && typeof j.balances === "object" && j.balances) || {};
-      const names = Array.isArray(j?.names) ? j.names.filter((n: unknown) => typeof n === "string") : [];
-      // nameDetails (lease/expiry/addr per name) + the server-computed primary name (reverse record).
-      // Older services omit these → empty/null, and the popup falls back to plain name chips.
-      const nameDetails = Array.isArray(j?.nameDetails) ? j.nameDetails : [];
-      const primaryName = typeof j?.primaryName === "string" ? j.primaryName : null;
-      // tip rides along so the popup can turn a pending reservation's finalizeBy into a live countdown
-      const tipHeight = Number(j?.tipHeight) || 0;
-      return { ok: true, balances, names, nameDetails, primaryName, tipHeight };
-    } catch { return { ok: false }; }
-  }
-  // Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
-  // popup never routes funds to a name's stale address. Returns the nset addr if set, else the
-  // owner (so a name works as a recipient even before its holder sets a resolver record).
-  async resolveName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
-    const nm = normName(name);
-    // XREPO-1 hardening (audit nit D): validate the name against the convention's NAME_RE BEFORE
-    // interpolating it into the resolver URL — a name with `/`, `..`, `%`, or query chars must never
-    // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
-    if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
-    try {
-      // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
-      // EVERY name send with "name lookup failed" even though clarvis, the second source, could
-      // answer — and the SPV verifyName below is the trust anchor either way (the base answer is
-      // UNTRUSTED no matter which source served it, so falling back is no weaker). Only a definitive
-      // 404 from the source that answered short-circuits; network/5xx tries the second source.
-      let r: Response | null = null;
-      try { r = await this.tradeGet(`/cairnx/resolve/${encodeURIComponent(nm)}`); } catch { r = null; } // 12s (> the proxy's 10s upstream): recipient path fails clean
-      if (r && r.status === 404) return { ok: false, error: `${nm}.csd is not registered` };
-      if (!r || !r.ok) {
-        try {
-          // 12s like the primary: clarvis fronts the same cairn proxy shape (10s upstream wait).
-          const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(12000) });
-          // Only accept a POSITIVE answer from the fallback; a 404 from a degraded/withholding second
-          // source is NOT trustworthy enough to definitively claim "not registered" (fail-closed to the
-          // retryable "name lookup failed" below instead — the primary being down is transient).
-          if (c.ok) r = c;
-        } catch { /* both sources down — fall through to the honest failure */ }
-      }
-      if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
-      const j = await r.json();
-      if (j?.lapsed) {
-        // N19 (B5b): do NOT hard-refuse on a single source's SERVED `lapsed` flag — that short-circuit
-        // fired BEFORE the SPV union, so the two-source lapse corroboration (WALLET-LAPSE-TIP-1) could
-        // never see the claim it exists to corroborate, and one hostile/buggy primary could permanently
-        // block sends to a healthy name. Consult the union: chain proves the lease CURRENT -> serve the
-        // PROVEN answer (the served flag was false); union corroborates the lapse -> refuse with
-        // confidence; union unavailable -> keep today's fail-closed refusal, with honest uncorroborated
-        // copy. A real lapse still refuses exactly as before — this only removes the FALSE refusal.
-        const lv = await this.verifyName(nm).catch(() => null);
-        if (lv?.verified && lv.addr)
-          return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
-        return lv?.lapsed === true
-          ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed — can't send to it` }
-          : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain — refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
-      }
-      if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
-      const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
-      // XREPO-1 cure: independently SPV-verify the name → address against the chain. The resolver's
-      // answer above is UNTRUSTED — the union serves the chain-PROVEN winner (never the served claim),
-      // flagging any source disagreement on the result; an unavailable verifier returns the served
-      // address with a caution flag (never silently "verified"). (D2: the old single-source
-      // "does NOT match / hostile resolver" refusal branch is deleted — the union replaced that
-      // refusal with serve-the-proven-winner + disagree, so no emitted reason ever matched it.)
-      const v = await this.verifyName(nm).catch(() => null);
-      if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, disagree: v.disagree, soleSource: v.soleSource };
-      // NS-2: gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but serves an
-      // address for a genuinely-lapsed name reaches here; verifyName's union already computed the lapse
-      // (resolve(events, lapseTip).expired, corroborated by the persisted floor at namespv.ts). Refuse a
-      // CONFIDENT lapse exactly as the served-flag branch does. An UNCORROBORATED lapse is left to the
-      // fall-through caution below (the WALLET-LAPSE-TIP-1 availability valve: never hard-block on an
-      // uncorroborated lapse that could be a MITM-inflated tip on a fresh install).
-      if (v?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd has lapsed, so we did not send. Send to the owner's 0x address directly, or ask them to renew the name before sending again.` }; // MUTATE_NS2_PROVEN_LAPSE
-      // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill — not name-scope
-      // provable" caution rather than the generic "couldn't verify" one. Still verified:false (fail-closed).
-      return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable", viaFill: v?.viaFill === true };
-    } catch { return { ok: false, error: "name lookup failed" }; }
-  }
+  // The CairnX display reads (cairnxview.ts) read through this wallet.
+  private viewIo: CairnxViewIo = { tradeGet: (path, timeoutMs) => this.tradeGet(path, timeoutMs), addr: () => this.addr() };
+  cairnxAssets() { return cairnxAssets(this.viewIo); }
+  // Name resolution reads through this wallet (names.ts); each read calls the wallet when it runs.
+  private nameIo: NameIo = {
+    tradeGet: (path) => this.tradeGet(path),
+    tip: () => this.tip(),
+    spvSource: () => this.spvSource(),
+    verifyName: (name) => this.verifyName(name),
+    tradeApi: () => this.tradeApi,
+    spvGen: () => this.spvGen,
+    nameHints: () => this.nameHints,
+  };
+  resolveName(name: string): Promise<NameResolution> { return resolveName(this.nameIo, name); }
+  verifyName(name: string): Promise<NameVerification & { name: string }> { return verifyName(this.nameIo, name); }
+  confirmName(name: string): Promise<NameResolution> { return confirmName(this.nameIo, name); }
 
-  // M3 (offline token-fill simulation): quote the actual token DEBIT for a token-priced fill (confidence
-  // ===1e6) so the clear-sign window shows what the user pays instead of "not visible here". Fetches the
-  // offer from the resolver and, IF it is an OPEN token-want offer, computes debit = ask + protocol fee
-  // (BigInt-exact, same cairnxTradeFee the convention uses). Returns ok:false on any unreachable/mismatch so
-  // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
-  // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
-  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string }> {
-    try {
-      const so = await this.servedOpenOffer(proposalId);
-      if (!so.ok) return so;
-      const o = so.offer;
-      const w = o.want;
-      if (!w || typeof w.ticker !== "string" || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
-      let amount: bigint;
-      try { amount = BigInt(String(w.amount)); } catch { return { ok: false, error: "bad amount" }; }
-      if (amount < 0n) return { ok: false, error: "bad amount" };
-      // QA-4: if the resolver omits feeBps, default to the HIGHER current rate (V16, 150 bps) so the quote
-      // never UNDER-states what will be debited (over-stating by ≤0.5% is the fail-safe direction) and mark
-      // it estimated so the UI can say so. A supplied feeBps is used exactly.
-      const hasBps = Number.isFinite(Number(o.feeBps));
-      const bps = hasBps ? Number(o.feeBps) : FEE_BPS_V16;
-      const fee = cairnxTradeFee(amount, bps);
-      const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
-      const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
-      // Served amount:null must stay absent — String(null) is "null", and the vendor give-leg
-      // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
-      const giveAmount = g?.amount != null ? String(g.amount) : undefined;
-      const giveName = typeof g?.name === "string" ? g.name : undefined;
-      const meta = await this.tokenDisplayMeta([w.ticker, giveTicker]);
-      return {
-        ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName,
-        wantDecimals: meta[w.ticker]?.decimals, wantDeployId: meta[w.ticker]?.deployId,
-        giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined,
-      };
-    } catch { return { ok: false, error: "offer unavailable" }; }
-  }
-
-  // The resolver's OPEN offer behind a fill target (an offer id, or a reservation txid the resolver links to
-  // its offer). Display reads only; the fill preflight does its own read and binds what it signs.
-  private async servedOpenOffer(proposalId: string): Promise<{ ok: true; offer: any } | { ok: false; error: string }> {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "bad offer id" };
-    const r = await this.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default)
-    if (!r.ok) return { ok: false, error: "offer not found" };
-    const o: any = await r.json().catch(() => null);
-    if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
-    return { ok: true, offer: o };
-  }
-
-  // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
-  // attested id on the reservation lane) and the asset the offer service lists as received. Display only.
-  async fillOfferView(proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number }> {
-    try {
-      const so = await this.servedOpenOffer(proposalId);
-      if (!so.ok) return so;
-      const o = so.offer;
-      const offerId = String(o.id ?? "").toLowerCase();
-      if (!/^0x[0-9a-f]{64}$/.test(offerId)) return { ok: false, error: "offer unavailable" };
-      const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
-      const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
-      const giveAmount = g?.amount != null ? String(g.amount) : undefined;
-      const giveName = typeof g?.name === "string" ? g.name : undefined;
-      const meta = giveTicker ? await this.tokenDisplayMeta([giveTicker]) : {};
-      return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined };
-    } catch { return { ok: false, error: "offer unavailable" }; }
-  }
-
-  // Decimals + deploy id per ticker for the approval cards (human units, look-alike warning). Fail-soft: a
-  // failed read leaves that ticker absent and the card shows base units only. Display only.
-  async tokenDisplayMeta(tickers: unknown): Promise<TokenDisplayMeta> {
-    const list = [...new Set((Array.isArray(tickers) ? tickers : []).filter(isTicker))].slice(0, 4);
-    const meta: TokenDisplayMeta = {};
-    await Promise.all(list.map(async (tk) => {
-      try {
-        const tr = await this.tradeGet(`/cairnx/token/${encodeURIComponent(tk)}`, 8000);
-        const t: any = tr.ok ? await tr.json().catch(() => null) : null;
-        if (t && t.ticker === tk) meta[tk] = { decimals: Number.isInteger(t.decimals) ? t.decimals : undefined, deployId: typeof t.deployId === "string" ? t.deployId : undefined };
-      } catch { /* display only: the card falls back to base units */ }
-    }));
-    return meta;
-  }
-
-  // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies
-  // itself, replaying the AUDITED resolver over merkle-verified records (see core/namespv.ts). Returns the
-  // fail-closed tri-state. Called by resolveName; not exposed on the popup or dApp channel.
-  async verifyName(name: string): Promise<NameVerification & { name: string }> {
-    const nm = normName(name);
-    if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
-    try {
-      // Cross-check the user's configured primary resolver against the clarvis second source (same operator as
-      // the default primary, so not independent of it; NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion
-      // fetches name-history from each, unions the SPV-verified events, and resolves to the chain-proven winner —
-      // defeating a withholding resolver.
-      const gen = this.spvGen;
-      const src = await this.spvSource();
-      const res = await verifyNameUnion(nm, this.nameSources(), src);
-      try { await this.rememberHintSet(nm, res, src, gen); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
-      return { ...res, name: nm };
-    } catch (e) {
-      return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm };
-    }
-  }
-
-  // Confirm-time cheap path (0.2.70): skip merkle/prevout only when a clean (non-M12) review
-  // cache exists AND the freshly fetched hint pairs + header hashes + TTL/epoch still match.
-  // Else fall through to resolveName (full SPV). Re-point still refuses via reresolveUnchanged.
-  async confirmName(name: string): Promise<{ ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
-    const nm = normName(name);
-    if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
-    try {
-      const skipped = await this.tryConfirmHintSet(nm);
-      if (skipped) return skipped;
-    } catch { /* fall through to full resolve */ }
-    return this.resolveName(nm);
-  }
-
-  private nameSources(): ResolverSource[] {
-    return [{ label: "primary", base: this.tradeApi }, { label: "clarvis", base: CLARVIS_TRADE_API }];
-  }
-
-  // `src` and `gen` are the ones `res` was verified with: the cached hashes come from that source, and a
-  // verification superseded by an endpoint change caches nothing.
-  private async rememberHintSet(nm: string, res: NameVerification, src: SpvSource, gen: number): Promise<void> {
-    // Advisor 2.4: cache ONLY a clean union success. Never M12 recovered / soleSource / viaFill / lapse.
-    if (!res.verified || !res.addr || res.recovered || res.soleSource || res.viaFill || res.lapsed === true) return;
-    const pairs = res.hintPairs && res.hintPairs.length ? sortHintPairs(res.hintPairs) : null;
-    if (!pairs || !pairs.length) return;
-    if (!src.hashAt) return;
-    const hashes: Record<number, string> = {};
-    for (const p of pairs) {
-      const h = await src.hashAt(p.height);
-      if (!h) return;
-      hashes[p.height] = h.toLowerCase();
-    }
-    const tip = await this.tip();
-    if (tip == null || !Number.isFinite(tip) || gen !== this.spvGen) return;
-    this.nameHints.set(nm, {
-      name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
-      ts: Date.now(), epoch: Math.floor(tip / EPOCH_LEN),
-    });
-  }
-
-  private async tryConfirmHintSet(nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
-    const gen = this.spvGen;
-    const cache = this.nameHints.get(nm);
-    if (!cache) return null;
-    const bundle = await fetchNameUnion(nm, this.nameSources());
-    if (!bundle.usable.length) return null;
-    const src = await this.spvSource();
-    const tip = await this.tip();
-    const verdict = await evaluateHintSetSkip({
-      cache,
-      pairs: bundle.pairs,
-      claims: bundle.usable.map((r) => r.claim ?? {}),
-      conflict: bundle.conflict,
-      existenceDisagree: bundle.existenceDisagree,
-      belowFloor: bundle.belowFloor,
-      now: Date.now(),
-      epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
-      hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,
-    });
-    if (!verdict.skip || gen !== this.spvGen) return null;
-    return {
-      ok: true, name: nm, addr: cache.addr, via: cache.via, owner: cache.owner, lapsed: false,
-      verified: true, depth: cache.depth, sources: verdict.sources, disagree: verdict.disagree,
-      soleSource: false, viaFill: false,
-    };
-  }
+  tokenFillQuote(proposalId: string) { return tokenFillQuote(this.viewIo, proposalId); }
+  fillOfferView(proposalId: string) { return fillOfferView(this.viewIo, proposalId); }
+  tokenDisplayMeta(tickers: unknown) { return tokenDisplayMeta(this.viewIo, tickers); }
 
   // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates
   // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, and the
@@ -1591,10 +864,10 @@ export class Wallet {
   prewarmSpv(): void {
     void this.spvSource().catch(() => { /* best-effort; the real call retries and spvSource() self-resets on a build failure */ });
   }
-  // v1.8: the height-gated renewal fee priced at the CURRENT tip — for the popup's pre-spend estimate, so
+  // v1.8: the height-gated renewal fee priced at the CURRENT tip; for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.
   async cairnxNameRenewFee(name: string): Promise<number> {
-    // M11 (B5b): price from the floor-CLAMPED tip (feePricingTip) — a deflated RPC tip must not price an
+    // M11 (B5b): price from the floor-CLAMPED tip (feePricingTip); a deflated RPC tip must not price an
     // obsolete cheaper tier the resolver rejects (fee burns). Same clamp at BOTH build sites + the
     // clearsign review warning, through the ONE shared helper, so build and review can never disagree.
     // W5 (Q-02): feePricingTip returns null when NEITHER the served tip nor the persisted floor is a
@@ -1607,14 +880,14 @@ export class Wallet {
     const fee = nameRegFee(name, buildFeeHeight(tip));
     return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
   }
-  // Renew a .csd lease (+1 year) — built on-device, pays the registration fee to the treasury.
+  // Renew a .csd lease (+1 year); built on-device, pays the registration fee to the treasury.
   async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
     this.throwOnSignerChange(expectSigner);
     const built = buildNameRenew({ name });
-    // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee — the ONE shared helper (see there).
+    // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee; the ONE shared helper (see there).
     const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
     // W5 (Q-02): the null refusal at the BUILD site is the one that matters. Without it a degenerate tip
     // read prices the cheapest tier and this method signs a treasury output the resolver rejects: the fee
@@ -1624,13 +897,13 @@ export class Wallet {
     if (liveFee > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("renewal fee too large for the UI");
     // WL-FEE-FREEZE-1 (WYSIWYS): sign EXACTLY the fee the user reviewed. If the chain tip crossed a fee-gate
     // boundary (V18/V24…) between Review and Confirm so the live fee no longer matches what was shown, REFUSE
-    // rather than silently sign a different (higher) amount — the popup re-opens the review at the new price.
+    // rather than silently sign a different (higher) amount; the popup re-opens the review at the new price.
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
     const expiresEpoch = Math.floor(tip / EPOCH_LEN) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
-    await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
+    await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
     return r;
   }
   // Set a name you own as your PRIMARY identity = point it at your own address (nset → self).
@@ -1641,17 +914,10 @@ export class Wallet {
     const built = buildNameSet({ name, addr: this.addr() });
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + SET_PRIMARY_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
-    await this.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
+    await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;
   }
-  async cairnxTokens(): Promise<{ ok: boolean; tokens?: { ticker: string; decimals: number; name?: string }[] }> {
-    try {
-      const r = await this.tradeGet(`/cairnx/tokens`, 12000); // display read: 12s bounded (was untimed)
-      if (!r.ok) return { ok: false };
-      const j = await r.json();
-      return { ok: true, tokens: Array.isArray(j) ? j : [] };
-    } catch { return { ok: false }; }
-  }
+  cairnxTokens() { return cairnxTokens(this.viewIo); }
   // Token transfer = a cairnx:v1 Propose whose uri is the canonical transfer record,
   // payload_hash = sha256(uri), fee 0.25 CSD, NO value outputs. The record is built
   // LOCALLY (core/cairnx.ts) and validated before signing; `amount` is base units.
@@ -1664,46 +930,14 @@ export class Wallet {
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
     if (fee < CAIRNX_PROPOSE_FEE) throw new Error("cairnx anchor fee must be ≥ 0.25 CSD");
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
-    await this.maybeRecord(hk, r, {
+    await this.hist.maybeRecord(hk, r, {
       type: "tokenSend", ticker: p.ticker, to: String(p.to).toLowerCase(), amount: p.amount,
       human: typeof p.decimals === "number" ? formatUnits(p.amount, p.decimals) : p.amount, fee,
     });
     return r;
   }
 
-  // ── sealed claims (commit-reveal) — isolated per active account ─────────────
-  // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt — a force-revealable front-running lever if it
-  // is readable at rest. The vault key already lives only in memory (chrome.storage.session, not cold-disk-
-  // readable), so encrypt ONLY these two fields under it (fresh IV per seal) before persisting; txid/domain/
-  // committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
-  // primitives (keystore sealWith/openWith) — no new crypto. history/labels stay the documented local-disk
-  // residual (we do NOT encrypt all of chrome.storage.local; §5 constraint).
-  private async sealPreimage(claim: string, nonce: string): Promise<Vault> {
-    if (!this.vaultKey) throw new Error("locked");
-    return sealWith(JSON.stringify({ claim, nonce }), this.vaultKey, this.salt, this.iter);
-  }
-  // Recover a record's preimage: a v-L5 record carries an encrypted `enc` blob; a LEGACY plaintext record
-  // (pre-L5) still carries claim/nonce inline and keeps working (lazy migration re-encrypts it on next write).
-  private async openPreimage(rec: { enc?: Vault; claim?: string; nonce?: string }): Promise<{ claim: string; nonce: string }> {
-    if (rec?.enc) {
-      if (!this.vaultKey) throw new Error("locked");
-      const p = JSON.parse(await openWith(rec.enc, this.vaultKey));
-      return { claim: String(p.claim ?? ""), nonce: String(p.nonce ?? "") };
-    }
-    return { claim: String(rec?.claim ?? ""), nonce: String(rec?.nonce ?? "") };
-  }
-  // Lazy migration (L5): re-encrypt any legacy plaintext records in a list on the next write of that list, so
-  // an existing sealed claim keeps revealing but stops sitting in cleartext. No-op when locked or already
-  // encrypted. Mutates in place.
-  private async reencryptLegacyPreimages(list: { enc?: Vault; claim?: string; nonce?: string }[]): Promise<void> {
-    if (!this.vaultKey) return;
-    for (const rec of list) {
-      if (rec && !rec.enc && (rec.claim !== undefined || rec.nonce !== undefined)) {
-        rec.enc = await this.sealPreimage(String(rec.claim ?? ""), String(rec.nonce ?? ""));
-        delete rec.claim; delete rec.nonce;
-      }
-    }
-  }
+  // ── sealed claims (commit-reveal); isolated per active account ─────────────
   async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
     // CSDTX-SIWC-01: a non-string claim would be hashed as-is into the on-chain commitment but
     // String()-normalized on reveal, so the paid commit could never be revealed. dApp-reachable,
@@ -1715,7 +949,7 @@ export class Wallet {
     const nonce = bytesToHex(randomBytes(32));
     // The reveal preimage is encrypted BEFORE the commit is broadcast (no await since must() above, so the
     // vault key is still loaded): after the broadcast nothing needs the key, and a lock there cannot lose it.
-    const enc = await this.sealPreimage(p.claim, nonce);
+    const enc = await this.claims.sealPreimage(p.claim, nonce);
     const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
     const ph = cairnPayloadHash(content);
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
@@ -1730,208 +964,22 @@ export class Wallet {
       // L5: the {claim, nonce} preimage is stored ENCRYPTED at rest (`enc`, fresh IV), so a parked
       // record is a pure store write needing no key.
       const rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) };
-      await this.persistSeal({ k: sk, rec });
+      await this.claims.persistSeal({ k: sk, rec });
     }
-    await this.maybeRecord(hk, r, { type: "seal", domain, fee });
+    await this.hist.maybeRecord(hk, r, { type: "seal", domain, fee });
     return r;
   }
-  // Every sealed-claim record passes through pendingSeals: parked first, removed once its list write
-  // succeeds. A record parked while locked (or after a failed write: the commit fee is paid and this is
-  // the only copy of the nonce) is merged into sealedClaims(), is revealable, and is written on unlock or
-  // with the next seal write. After reset() a new record is dropped. Never throws.
-  private persistSeal(add?: { k: string; rec: any }): Promise<void> {
-    return this.inSealChain(async () => {
-      if (add && !this.pendingSeals.some((p) => p.k === add.k && p.rec.txid === add.rec.txid)) {
-        if (this.wiped) return;
-        this.pendingSeals.push(add);
-      }
-      if (!this.accts) return;
-      for (const sk of new Set(this.pendingSeals.map((p) => p.k))) {
-        try {
-          const list: any[] = (await this.store.get(sk)) || [];
-          for (const p of this.pendingSeals) if (p.k === sk && !list.find((x) => x.txid === p.rec.txid)) list.unshift(p.rec);
-          await this.reencryptLegacyPreimages(list); // migrate any pre-L5 plaintext record on this write
-          await this.store.set(sk, capSeals(list));
-          this.pendingSeals = this.pendingSeals.filter((p) => p.k !== sk);
-        } catch { /* SEAL-WRITE-02: stays parked and visible; the next seal write or unlock retries */ }
-      }
-    });
-  }
-  async revealClaim(txid: string) {
-    const k = sealKey(this.addr());
-    const list: any[] = (await this.store.get(k)) || [];
-    const rec = list.find((x) => x.txid === txid)
-      ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec; // a parked seal is revealable too
-    if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
-    // The preimage goes public only once the commit is mined (flushPending's getProposal rule): a reveal
-    // against a commit still in the mempool, or one that never lands, would publish the claim uncommitted.
-    const commit = await node.getProposal(this.rpc, txid);
-    if (!(commit && commit.payload_hash))
-      return refuse("SEAL_NOT_MINED", "this seal is not mined yet, or the node could not confirm it; nothing was revealed. Try again once it is mined");
-    // L5: decrypt the preimage with the unlocked vault key (a legacy plaintext record still reveals).
-    const { claim, nonce } = await this.openPreimage(rec);
-    const r = await node.registerContent(this.api, { v: 1, sealed: 1, domain: rec.domain, claim, nonce }, txid);
-    if (r && r.ok) {
-      // Chained write-back on a FRESH read (the list above is stale across the registerContent
-      // network await; writing it back would erase a seal recorded meanwhile). A storage failure
-      // is swallowed: the reveal itself succeeded and registration is idempotent.
-      await this.inSealChain(async () => {
-        if (!this.accts) return;
-        try {
-          for (const p of this.pendingSeals) if (p.k === k && p.rec.txid === txid) p.rec.revealed = true;
-          const fresh: any[] = (await this.store.get(k)) || [];
-          const fr = fresh.find((x) => x.txid === txid);
-          if (fr) {
-            fr.revealed = true;
-            await this.reencryptLegacyPreimages(fresh); // lazy-migrate any legacy plaintext record on this write
-            await this.store.set(k, fresh);
-          }
-        } catch { /* revealed flag is display state; a later reveal or seal write retries it */ }
-      });
-    }
-    return r;
-  }
-  // Display view for the popup: decrypt the claim TEXT for the sealed-claims preview (unlocked, trusted UI)
-  // while the on-disk record stays encrypted; the nonce (reveal salt) is never surfaced to the list. A
-  // decrypt failure degrades to "no preview" rather than throwing (the list never breaks).
-  async sealedClaims(): Promise<any[]> {
-    if (!this.accts) return [];
-    const kk = sealKey(this.addr());
-    const stored: any[] = (await this.store.get(kk)) || [];
-    // merge parked (write-failed) seals so a paid-but-unpersisted commit still shows in the list
-    const parked = this.pendingSeals.filter((p) => p.k === kk && !stored.some((x) => x?.txid === p.rec.txid)).map((p) => p.rec);
-    const list = parked.length ? [...parked, ...stored] : stored;
-    const out: any[] = [];
-    for (const rec of list) {
-      if (rec?.enc) { try { const { claim } = await this.openPreimage(rec); out.push({ ...rec, claim }); } catch { out.push({ ...rec }); } }
-      else out.push(rec);
-    }
-    return out;
-  }
+  revealClaim(txid: string) { return this.claims.revealClaim(txid); }
+  sealedClaims(): Promise<any[]> { return this.claims.sealedClaims(); }
 
-  // ── transaction history — isolated per active account ──────────────────────
+  // ── transaction history; isolated per active account ──────────────────────
   // Pre-await key capture (0.2.56, review F5): every recording path must file under the account
   // that SIGNED. Flows capture this in the same synchronous tick as their privkey read, BEFORE
-  // the awaited submit — the user can switch accounts while the network call is in flight, and a
+  // the awaited submit; the user can switch accounts while the network call is in flight, and a
   // post-await histKey(this.addr()) would file the entry (and everything the pending-merge line
   // derives from it) under the switched-to account.
   private histKeyNow() { return histKey(this.addr()); }
-  private async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[] }, meta: Record<string, unknown>) {
-    // PCD-2: every branch below is non-rejecting (chained + guarded), so an awaiting flow can never report a succeeded broadcast as a failure.
-    // Rows pendingMerge may settle keep a few input outpoints for its "gone" verdict.
-    const inputs = Array.isArray(r?.inputs) && r.inputs.length ? { inputs: r.inputs.slice(0, INCLUSION_INPUTS_KEPT) } : {};
-    if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
-    // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool — a timeout / gateway
-    // 5xx / unreadable answer AFTER signing. Record it maybe:true under the LOCALLY computed txid
-    // so the failure copy's "check history before resending" is actionable: this entry is what
-    // stands between an ingested-but-unanswered send and a blind resend double-pay (a resend picks
-    // DIFFERENT coins once the mempool-spent filter updates, so byte-identical dedupe does NOT
-    // backstop it). Previously only consolidate() did this; every value flow gets it here at the
-    // single chokepoint. Deliberate, accepted side-effect: the recipient joins paidRecipients
-    // (clearsign.ts), muting the first-time-recipient warning for an address the user already
-    // clear-signed once — entries only originate from the user's own reviewed sends, no poisoning
-    // vector.
-    else if (r && !r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
-      await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
-    }
-    // A duplicate answer RESOLVES an earlier ambiguity — a tx spending these coins IS pending, and
-    // a deterministic retry of an ingested submit is byte-identical, so this is the common way a
-    // maybe:true entry turns out to have landed. Clear the flag in place; never INSERT on a dup
-    // (on the current node's conflated error a dup can also mean a DIFFERENT tx spends the coins,
-    // and a fresh entry under the local txid would then claim a send that never landed).
-    else if (r && !r.ok && r.code === "SUBMIT_DUPLICATE" && r.txid) {
-      await this.clearMaybe(k, r.txid);
-    }
-    // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
-    // this spend just consumed (Plans/66 review finding — the final combining pass spends earlier
-    // rounds' outputs with no balance refresh in between, which otherwise left those entries
-    // deriving a false "merging" line until a balance refresh saw them).
-    if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
-  }
-  private clearMaybe(k: string, txid: string): Promise<void> {
-    // a definitive record can also supersede a parked maybe twin for the same txid
-    for (const p of this.pendingHist) if (p.k === k && p.entry.txid === txid) delete p.entry.maybe;
-    return this.inHistChain(async () => {
-      if (!this.accts) return;
-      try {
-        const h: any[] = (await this.store.get(k)) || [];
-        const e = h.find((x) => x?.txid === txid && x.maybe);
-        if (e) { delete e.maybe; await this.store.set(k, h); }
-      } catch { /* flag hygiene only: a stale maybe marker self-heals via the pendingMerge reconcile and the spend latch */ }
-    });
-  }
-  private latchSpentMerges(k: string, spent: string[]): Promise<void> {
-    return this.inHistChain(async () => {
-      if (!this.accts) return;
-      try {
-        const h: any[] = (await this.store.get(k)) || [];
-        const set = new Set(spent.map((t) => String(t).toLowerCase()));
-        let dirty = false;
-        for (const e of h) {
-          // spending the output proves the tx landed — that also RESOLVES a maybe flag (an entry can
-          // otherwise sit {maybe:true, confirmed:true} showing a stale "may be in flight" marker)
-          if (e?.type === "consolidate" && !e.confirmed && set.has(String(e.txid).toLowerCase())) { e.confirmed = true; delete e.maybe; dirty = true; }
-        }
-        if (dirty) await this.store.set(k, h);
-      } catch { /* flag hygiene only: a stale maybe marker self-heals via the pendingMerge reconcile and the spend latch */ }
-    });
-  }
-  private async doRecordTx(k: string, entry: Record<string, unknown>) {
-    const h: any[] = (await this.store.get(k)) || [];
-    const e = h.find((x) => x?.txid === entry.txid);
-    if (e) {
-      // Idempotent by txid — but a DEFINITIVE record for a txid first recorded maybe:true resolves
-      // the ambiguity: clear the flag IN PLACE. Never re-insert or reorder — ts, position and the
-      // consolidate confirmed-latch must survive (a replace would resurrect the pending-forever
-      // bug the latch exists to prevent).
-      if (e.maybe && !entry.maybe) { delete e.maybe; await this.store.set(k, h); }
-      return;
-    }
-    h.unshift(entry);
-    await this.store.set(k, h.slice(0, 200));
-  }
-  // PCD-2: recordTx NEVER rejects. send() awaits maybeRecord before returning, so a storage throw
-  // AFTER a successful broadcast used to make send() throw and tell the user their send FAILED
-  // when it succeeded, driving a real double-pay on retry. The RMW rides histChain (no interleaved
-  // clobber); a failed write PARKS the entry for retry on the next recordTx and stays visible via
-  // the history() merge. The drain rides BEHIND the caller's own write and is never awaited by it,
-  // so a recovered store cannot make one legitimate send pay off the whole backlog.
-  private recordTx(k: string, entry: Record<string, unknown>): Promise<void> {
-    const own = this.inHistChain(async () => {
-      if (!this.accts) {
-        // Locked mid-flight: the tx is already broadcast, so park the row (it is the double-pay backstop);
-        // it is merged into history() and drains on the next history write after unlock. Reset drops it.
-        if (!this.wiped) this.pendingHist.push({ k, entry });
-        return;
-      }
-      try {
-        // a definitive record supersedes a parked maybe twin for the same txid
-        this.pendingHist = this.pendingHist.filter(
-          (p) => !(p.k === k && p.entry.txid === entry.txid && p.entry.maybe && !entry.maybe));
-        await this.doRecordTx(k, entry);
-      } catch { this.pendingHist.push({ k, entry }); }
-    });
-    if (this.pendingHist.length) void this.inHistChain(() => this.drainPendingHist()).catch(() => {});
-    return own;
-  }
-  private async drainPendingHist(): Promise<void> {
-    if (!this.accts) return;
-    const parked = this.pendingHist; this.pendingHist = [];
-    for (const p of parked) {
-      try { await this.doRecordTx(p.k, p.entry); } catch { this.pendingHist.push(p); }
-    }
-  }
-  history(): Promise<any[]> {
-    if (!this.accts) return Promise.resolve([]);
-    const k = histKey(this.addr());
-    return this.store.get(k).then((h: any[]) => {
-      const stored = h || [];
-      const parked = this.pendingHist
-        .filter((p) => p.k === k && !stored.some((x: any) => x?.txid === p.entry.txid))
-        .map((p) => p.entry);
-      return parked.length ? [...parked, ...stored] : stored;
-    });
-  }
+  history(): Promise<any[]> { return this.hist.history(); }
 
   // ── idle auto-lock ───────────────────────────────────────────────────────
   private lastActive = Date.now();
@@ -1939,7 +987,7 @@ export class Wallet {
     this.lastActive = Date.now();
     // mirror the activity stamp into chrome.storage.session so the idle window is tracked across
     // SW restarts (genuine activity extends the unlocked session; pure reads never call touch()).
-    if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => {});
+    if (this.session) this.session.set("sessionTs", this.lastActive).catch(() => { /* a missed stamp only makes a restarted worker's session expire sooner */ });
   }
   async autoLock(maxIdleMs: number) {
     // CLK-1: a backward wall-clock jump (NTP/manual) leaves lastActive in the future, making
@@ -1958,7 +1006,7 @@ export class Wallet {
   }
   // F-QUEUE-2 (Plans/68 A3): flushPending is a read-modify-write over pendingContent with awaits in
   // between, and it fires from THREE triggers (startup, the 1-minute alarm, cairnPost's un-awaited
-  // kick) — two overlapping flushes, or a flush racing addPending, could clobber a just-queued entry
+  // kick); two overlapping flushes, or a flush racing addPending, could clobber a just-queued entry
   // with a stale list. The in-flight latch collapses overlaps; the final RE-READ + union-by-txid
   // merge keeps any entry added while this flush was running.
   private flushInFlight = false;
@@ -1973,19 +1021,19 @@ export class Wallet {
       for (const x of list) {
         processed.add(String(x.txid).toLowerCase());
         // 7 days, not 24h: content registration follows a PAID Propose/name tx, and the old 24h
-        // window silently dropped the content of anyone offline a day — user paid, body never
+        // window silently dropped the content of anyone offline a day; user paid, body never
         // landed, no error (Plans/66 B8). Content is self-certifying and re-POSTable, so a long
         // retry window costs nothing; expiry still bounds the queue.
         if (Date.now() - (x.ts || 0) > 7 * 86400000) continue;
         try {
           const p = await node.getProposal(this.rpc, x.txid);
           if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later
-          // F-QUEUE-1 (Plans/68 A3): registerContent NEVER throws — it resolves {ok:false} on any
+          // F-QUEUE-1 (Plans/68 A3): registerContent NEVER throws; it resolves {ok:false} on any
           // refusal/outage (node.ts). Dropping the entry on that path silently lost the body of a
           // tx the user PAID to anchor. Registration is idempotent and self-certifying, so a
           // failed register keeps the entry for the next alarm tick instead.
-          const rr = await node.registerContent(this.api, x.content, x.txid);
-          if (!(rr && (rr as any).ok)) keep.push(x);
+          const rr: { ok?: unknown } | null = await node.registerContent(this.api, x.content, x.txid);
+          if (!(rr && rr.ok)) keep.push(x);
         } catch { keep.push(x); }                                  // transient/network error → retry later
       }
       // re-read + merge (union by txid): entries queued DURING this flush survive the write-back.
@@ -1996,16 +1044,18 @@ export class Wallet {
   }
   hasPending(): Promise<boolean> { return this.store.get("pendingContent").then((l: any[]) => !!(l && l.length)); }
 
-  // Reveal the ACTIVE account's private key — requires re-entering the password.
+  // Reveal the ACTIVE account's private key; requires re-entering the password.
   async exportKey(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
     const { parsed, legacyPriv } = await this.openVaultDoc(v, password);
     if (!parsed) return legacyPriv; // legacy single-key vault (plaintext IS the raw privkey, 0x-normalized)
     const i = this.accts ? this.active : (parsed.active ?? 0);
-    return parsed.accounts[Math.min(i, parsed.accounts.length - 1)].priv;
+    const acct = parsed.accounts[Math.min(i, parsed.accounts.length - 1)];
+    if (!acct) throw new Error("corrupt vault (no account at its active slot)");   // an empty or forged account list
+    return acct.priv;
   }
 
-  // Reveal the wallet's recovery phrase (the master backup) — password-gated. Throws
+  // Reveal the wallet's recovery phrase (the master backup); password-gated. Throws
   // for legacy/import-only wallets that have no seed phrase.
   async exportMnemonic(password: string): Promise<string> {
     const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
@@ -2014,8 +1064,8 @@ export class Wallet {
     return parsed.mnemonic;
   }
 
-  // Wipe ALL wallet state — every account's vault, history, and sealed-claim
-  // preimages — so a freshly-created wallet can't surface a prior owner's data.
+  // Wipe ALL wallet state; every account's vault, history, and sealed-claim
+  // preimages; so a freshly-created wallet can't surface a prior owner's data.
   // RESET-RESURRECT (fund-safety red-team + P75-6): the wipe must not race ANY parked write. It is
   // serialized behind ALL THREE write chains (vault, history, seals); lock() above nulled
   // this.accts, and every chained WRITE callback bails on !this.accts, so nothing queued after this
@@ -2028,13 +1078,13 @@ export class Wallet {
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
     const wipe = () => this.doReset(wallets);
-    const run = Promise.allSettled([this.persistChain, this.histChain, this.sealChain]).then(wipe);
+    const run = Promise.allSettled([this.persistChain, this.hist.histChain, this.claims.sealChain]).then(wipe);
     const settled = run.then(() => {}, () => {});
-    this.persistChain = settled; this.histChain = settled; this.sealChain = settled;
+    this.persistChain = settled; this.hist.histChain = settled; this.claims.sealChain = settled;
     return run;
   }
   private async doReset(wallets: PubAcct[]): Promise<void> {
-    this.pendingHist = []; this.pendingSeals = []; // belt: a park that raced lock
+    this.hist.pendingHist = []; this.claims.pendingSeals = []; // belt: a park that raced lock
     for (const w of wallets) { await this.store.del(histKey(w.addr)); await this.store.del(sealKey(w.addr)); }
     for (const k of ["vault", "wallets", "active", "addr", "txHistory", "sealedClaims", "pendingContent"]) await this.store.del(k);
   }

@@ -1190,7 +1190,7 @@ $("btn-explorer").addEventListener("click", () => { const m = $("explorer-menu")
 // click-away: close each header dropdown when the click is outside BOTH its button and its menu
 document.addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
-  for (const [btnId, menuId] of [["btn-rpc", "rpc-menu"], ["btn-explorer", "explorer-menu"], ["acct-select", "acct-menu"]]) {
+  for (const [btnId, menuId] of [["btn-rpc", "rpc-menu"], ["btn-explorer", "explorer-menu"], ["acct-select", "acct-menu"]] as const) {
     const m = document.getElementById(menuId), b = document.getElementById(btnId);
     if (m && !m.hidden && b && !m.contains(t) && !b.contains(t)) m.hidden = true;
   }
@@ -1230,7 +1230,7 @@ async function populateDomains() {
     } catch { /* offline → fallback vocabulary */ }
   }
   sel.innerHTML = domains.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("") + `<option value="__custom__">+ new category…</option>`;
-  sel.value = domains.includes("csd:apps") ? "csd:apps" : domains[0];
+  sel.value = domains.includes("csd:apps") ? "csd:apps" : (domains[0] ?? "");   // an empty list selects no option either way
   sel.onchange = () => { const isCustom = sel.value === "__custom__"; custom.hidden = !isCustom; if (isCustom) custom.focus(); };
 }
 $("btn-activity-t").addEventListener("click", () => { if (openPanel("activity")) renderHistory(); });

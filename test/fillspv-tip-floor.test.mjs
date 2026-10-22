@@ -20,7 +20,7 @@ import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { liveFillSpvSource } from "../src/core/fillspv.js";
 import { offer, fclaim, verifyFillSpv, V28_HEIGHT, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS } from "../src/vendor/cairnx-spv.js";
-import { tipDependentFillReason } from "../src/core/wallet.js";
+import { tipDependentFillReason } from "../src/core/fillpreflight.js";
 import { proposeTx, addrFromPriv, ctxid, rpcTxToTx, merkleRoot, prevoutFor, pick } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 
@@ -142,7 +142,7 @@ async function freshWallet(pw) { const w = new Wallet(memoryStore()); await w.cr
 {
   // AW-TIPFLOOR-COPY-1 (Plan 85 7.3a): under the SAME floored tip, a denial the tip does not decide (the
   // claim-cap denial) keeps FILL_UNSAFE; only tip-decided reasons may read "wait a moment and try again".
-  // RED-FIRST: drop `&& tipDependentFillReason(verdict.reason)` in wallet.ts and this case reads VERIFY_UNAVAILABLE.
+  // RED-FIRST: drop `&& tipDependentFillReason(verdict.reason)` in fillpreflight.ts and this case reads VERIFY_UNAVAILABLE.
   const floored = await runLive({ verifiedTip: HOLD_END - 20, nodeTip: HOLD_END - 20, floorTip: HOLD_END + 10 });
   const io = Object.assign(Object.create(Object.getPrototypeOf(floored)), floored, { myLiveHoldsAtGrant: MAX_ACTIVE_CLAIMS });
   check("cap-denied io keeps tipFloored", io.tipFloored === true);

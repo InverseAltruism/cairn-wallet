@@ -508,9 +508,10 @@ await runCase("F5", async () => {
 
 // ── Source pins (pinned by M1/M2): both chains settle BOTH paths, so a rejection can never poison the queue. ──
 await runCase("source-pins", async () => {
-  const src = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
-  check("SRC: histChain settles both paths (this.histChain = run.then(() => {}, () => {}))", src.includes("this.histChain = run.then(() => {}, () => {});"));
-  check("SRC: sealChain settles both paths (this.sealChain = run.then(() => {}, () => {}))", src.includes("this.sealChain = run.then(() => {}, () => {});"));
+  const hsrc = readFileSync(new URL("../src/core/history.ts", import.meta.url), "utf8");
+  const csrc = readFileSync(new URL("../src/core/claims.ts", import.meta.url), "utf8");
+  check("SRC: histChain settles both paths (this.histChain = run.then(() => {}, () => {}))", hsrc.includes("this.histChain = run.then(() => {}, () => {});"));
+  check("SRC: sealChain settles both paths (this.sealChain = run.then(() => {}, () => {}))", csrc.includes("this.sealChain = run.then(() => {}, () => {});"));
 });
 
 done("storage-durability");

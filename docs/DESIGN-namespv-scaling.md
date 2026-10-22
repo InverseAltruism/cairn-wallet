@@ -273,7 +273,7 @@ has no record there. The 12 blocks cover a shallow reorg that re-mines the fclai
 between the resolver's indexer and the node it reads from.
 
 Rule A, the confirm step: clarvis's 404 and `tipHeight` now decide whether a fill needs a second click
-(`offerxcheck.ts` `reservationRecordVerdict`, `wallet.ts` `fclaimLanePreflight`); whether it signs after that click is
+(`offerxcheck.ts` `reservationRecordVerdict`, `fillpreflight.ts` `fclaimLanePreflight`); whether it signs after that click is
 decided by the user's acknowledgement, bound to the request and the fclaim by the worker (`background.ts`
 `reservationAckFor`), and every other check runs again unchanged. Rule B, the confirm step: the warning can be
 triggered by a hostile or broken clarvis (a false 404 with a high `tipHeight`), against any buyer on the fclaim lane;

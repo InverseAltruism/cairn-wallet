@@ -27,7 +27,7 @@ import { BodyMismatchError, liveSpvSource, type LiveSpvOpts, type SpvSource } fr
 // both (a fifth `feeBpsAt` duplication and one of four hand-built ProvenOfferTerms producers), the
 // exact drift class W2 exists to kill. Corpus-equivalence over every real on-chain offer (55) plus
 // synthetic envelope variants proved the old copies byte-identical to canonical before the swap
-// (test/proven-terms-corpus.test.mjs pins it forever). Re-exported so tests and wallet.ts keep one
+// (test/proven-terms-corpus.test.mjs pins it forever). Re-exported so tests and fillpreflight.ts keep one
 // import site; the re-export is a POINTER, never a re-declaration.
 export { feeBpsAt, type ProvenOfferTerms, type MintedProvenOfferTerms } from "../vendor/cairnx-spv.js";
 
@@ -158,7 +158,7 @@ export function countMyOtherLiveHolds(
  * hold / cancel / consuming fill vanish from the replay.
  *
  * PRE-WINDOW WITHHOLDING: this scan cannot see a cancel or consuming fill OLDER than the tip-anchored window,
- * and a full anchor-to-tip scan is too slow for the hot path (an offer can be weeks old). wallet.ts
+ * and a full anchor-to-tip scan is too slow for the hot path (an offer can be weeks old). fillpreflight.ts
  * fclaimLanePreflight therefore reads the OFFER by id from the second resolver (clarvis) beside this scan and
  * refuses when it reports the offer closed, further filled, or held by another reservation through our hold
  * (offerxcheck.ts, test/fill-offer-crosscheck.test.mjs). The gap is closed when clarvis answers before the scan
@@ -171,7 +171,7 @@ export function countMyOtherLiveHolds(
  *
  * WHAT THIS BOUNDARY STOPS (stated exactly, no overstatement): once the wallet ROUTES to it (STRUCTURALLY, on
  * `proposalId !== offer.id`, so a hostile PRIMARY can no longer WITHHOLD/alter the D2 `fclaimId` to steer the
- * fill away from the boundary -- see wallet.ts fillOfferPreflight), it stops a denied / superseded / forged-holder
+ * fill away from the boundary -- see fillpreflight.ts fillOfferPreflight), it stops a denied / superseded / forged-holder
  * / below-depth fclaim and an in-window scriptSig-suppressed hold/cancel/fill. It does NOT stop: (1) a PRE-window
  * withheld cancel/consuming-fill (above; the second-source read covers it only when clarvis answers); (2) resolver-trusted give-backing (above); (3) a fill the wallet routes
  * to the LEGACY lane (`proposalId === offer.id` with no live fclaim hold -- a taker-bound fill or a pre-V28
@@ -234,14 +234,16 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
     const { ids: bids, rebuilt } = await bindBlockMemo(height);
     const pos = bids.findIndex((x) => x.toLowerCase() === k);
     if (pos >= 0) {
-      const tx = rebuilt[pos];
+      // bids is rebuilt.map(ctxid), so a found id has its body; a gap throws, keeping the scan fail-closed.
+      const tx = rebuilt[pos], bid = bids[pos];
+      if (!tx || bid === undefined) throw new Error(`block ${height}: no rebuilt body for ${k}`);
       const signer = recoverSigner(tx);
       const in0 = tx.inputs?.[0];
       // NSPV-SIGSUB-1: bind the recovered signer to the COIN it spends (the merkle root does not commit the
       // scriptSig), so a hostile node cannot swap in a foreign valid signature to re-attribute a record's author.
       if (signer && in0 && !isCoinbaseInput(in0)) {
         const spk = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-        if (spk && spk.toLowerCase() === signer) ev = toProvenEvent(tx, bids[pos], height, pos, signer, verifiedTip - height + 1);
+        if (spk && spk.toLowerCase() === signer) ev = toProvenEvent(tx, bid, height, pos, signer, verifiedTip - height + 1);
       }
     }
     proven.set(k, ev);
@@ -262,11 +264,12 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   await bindBlockPool(heights, SCAN_POOL, bindBlockMemo);
   for (const h of heights) {
     const { ids: bids, rebuilt } = blockMemo.get(h)!;   // populated by the pool above; present or the pool threw
-    for (let pos = 0; pos < rebuilt.length; pos++) {
-      const tx = rebuilt[pos];
+    for (const [pos, tx] of rebuilt.entries()) {
       const app = tx.app;
       if (!app || app.type === "None") continue;
-      const id = bids[pos].toLowerCase();
+      const bid = bids[pos];
+      if (bid === undefined) throw new Error(`block ${h}: no txid for body ${pos}`);   // bids is rebuilt.map(ctxid)
+      const id = bid.toLowerCase();
       if (app.type === "Propose") {
         if (id === offerId) { markScanned(id, h); continue; }   // the offer, if it anchored in-window
         // F8 (wallet-vs-site parity): only cairnx-domain Proposes bind the resolver's replay, mirroring the site
@@ -444,8 +447,8 @@ export async function provenOfferPayto(
     if (!Number.isFinite(verifiedTip) || verifiedTip < offerHeight) return null;   // couldn't reach it -> retry
     const { ids: bids, rebuilt } = await bindBlock(spv, offerHeight);   // merkle-COMPLETE bodies; throws on tamper
     const pos = bids.findIndex((x) => x.toLowerCase() === offerId);
-    if (pos < 0) return null;                                      // the offer is not in its claimed block (tampered)
     const tx = rebuilt[pos];
+    if (pos < 0 || !tx) return null;                               // the offer is not in its claimed block (tampered)
     const app = tx.app;
     if (!app || app.type !== "Propose") return null;
     const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string; ticker?: string; amount?: string }; taker?: string; bid?: string; min?: string } | null;
@@ -462,7 +465,7 @@ export async function provenOfferPayto(
     const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
     // B7e-FIX (REBIND W1 token-lane close): surface the merkle-proven token WANT (the ticker + amount the
     // buyer PAYS). bindOfferTerms binds the want TYPE only, and provenOfferTerms drops the token ticker/amount,
-    // so the token-lane content bind (wallet.ts fillOfferPreflight) needs these directly to mirror the site
+    // so the token-lane content bind (fillpreflight.ts fillOfferPreflight) needs these directly to mirror the site
     // swapguard verifyOfferContent want.ticker/want.amount bind. Undefined on a CSD-priced offer (no want.ticker).
     const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined; // MUTATE_PROVEN_WANT_TICKER
     const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined; // MUTATE_PROVEN_WANT_AMOUNT

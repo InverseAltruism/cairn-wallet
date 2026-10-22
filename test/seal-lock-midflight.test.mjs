@@ -56,7 +56,7 @@ console.log("(1) an idle lock between the commit broadcast and the seal write ke
   const stored = await st.get(sealKey(addr));
   assert.equal(stored?.length, 1, "(1) unlock wrote the parked record to storage");
   assert.ok(stored[0].enc && stored[0].claim === undefined && stored[0].nonce === undefined, "(1) stored encrypted, no plaintext");
-  assert.equal(w.pendingSeals.length, 0, "(1) nothing left parked");
+  assert.equal(w.claims.pendingSeals.length, 0, "(1) nothing left parked");
   const rv = await w.revealClaim(r.txid);
   assert.equal(rv.ok, true, "(1) the paid commit can be revealed");
   assert.equal(registered.at(-1)?.claim, CLAIM, "(1) the reveal publishes the original claim");
@@ -92,7 +92,7 @@ console.log("(3) paired: an unlocked commit seals and persists as before");
   assert.equal(stored[0].txid, r.txid);
   assert.equal(stored[0].domain, "csd:sealed");
   assert.equal(stored[0].revealed, false);
-  assert.equal(w.pendingSeals.length, 0, "(3) nothing parked");
+  assert.equal(w.claims.pendingSeals.length, 0, "(3) nothing parked");
   assert.equal((await w.revealClaim(r.txid)).ok, true);
   assert.equal(registered.at(-1)?.claim, "honest claim");
   assert.equal((await st.get(sealKey(addr)))[0].revealed, true, "(3) the reveal marks it revealed");
@@ -110,7 +110,7 @@ console.log("(4) a reset in the same window drops the record");
   assert.equal(r.ok, true);
   await resetP;
   await settle();
-  assert.equal(w.pendingSeals.length, 0, "(4) nothing parked after a reset");
+  assert.equal(w.claims.pendingSeals.length, 0, "(4) nothing parked after a reset");
   assert.equal(await st.get(sealKey(addr)), null, "(4) nothing written under the old account");
   console.log("  ok");
 }

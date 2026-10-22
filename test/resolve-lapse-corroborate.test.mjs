@@ -15,9 +15,7 @@
 // Run: node --import tsx test/resolve-lapse-corroborate.test.mjs   (offline)
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import path from "node:path";
+import { withWalletMutant } from "./helpers/mutant.mjs";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -115,22 +113,14 @@ console.log("\nNS-2 - proven-lapse gate on the OMITTED served flag:");
 // 8. RED-FIRST: removing MUTATE_NS2_PROVEN_LAPSE makes the omitted-flag proven-lapse input route to the STALE
 //    served address (ok:true) -- the exact attacker-recapturable burn the gate prevents.
 {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const WSRC = path.join(here, "..", "src", "core", "wallet.ts");
-  const lines = readFileSync(WSRC, "utf8").split("\n");
-  const kept = lines.filter((l) => !l.includes("MUTATE_NS2_PROVEN_LAPSE"));
-  if (kept.length !== lines.length - 1) throw new Error(`MUTATE_NS2_PROVEN_LAPSE must match exactly one line (matched ${lines.length - kept.length})`);
-  const tmp = path.join(here, "..", "src", "core", `__mutant_ns2_${Date.now()}.ts`);
-  writeFileSync(tmp, kept.join("\n"));
-  try {
-    const mod = await import(pathToFileURL(tmp).href);
+  await withWalletMutant("MUTATE_NS2_PROVEN_LAPSE", async (mod) => {
     omittedLapseStub();
     const w = new mod.Wallet(memoryStore());
     await w.create("pw-ns2-mut-123");
     w.verifyName = async () => ({ verified: false, lapsed: true, reason: "lease lapsed", scope: "full" });
     const r = await w.resolveName("alice");
     check("MUTATION[MUTATE_NS2_PROVEN_LAPSE removed]: the omitted-flag proven lapse now routes to the STALE address (ok:true) -- the burn the gate prevents", r.ok === true && r.addr === ADDR);
-  } finally { unlinkSync(tmp); }
+  });
 }
 
 globalThis.fetch = origFetch;

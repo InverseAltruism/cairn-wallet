@@ -97,7 +97,7 @@ console.log("(3) paired: a send with no lock writes its row to the store and par
   const stored = await st.get("txHistory:" + addr);
   assert.equal(stored?.length, 1, "(3) the row is in the store");
   assert.equal(stored[0].txid, r.txid);
-  assert.equal(w.pendingHist.length, 0, "(3) nothing parked");
+  assert.equal(w.hist.pendingHist.length, 0, "(3) nothing parked");
   console.log("  ok");
 }
 
@@ -112,7 +112,7 @@ console.log("(4) a reset in the same window still drops the row");
   assert.equal(r.ok, true);
   await resetP;
   await settle();
-  assert.equal(w.pendingHist.length, 0, "(4) nothing parked after a reset");
+  assert.equal(w.hist.pendingHist.length, 0, "(4) nothing parked after a reset");
   assert.equal(await st.get("txHistory:" + addr), null, "(4) nothing written under the old account");
   await w.importKey("0x" + "42".repeat(32), PW);
   assert.deepEqual(await w.history(), [], "(4) a wallet created after the reset starts with an empty history");

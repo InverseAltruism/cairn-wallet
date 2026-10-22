@@ -175,16 +175,16 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("PIN M3: approve.ts renders the quote via the attributed tokenQuoteHtml", approveSrc.includes("show(tokenQuoteHtml(q))"));
   ok("PIN M3: no first-person 'You will pay' debit assertion remains in approve.ts", !approveSrc.includes("You will pay"));
   ok("PIN 0.2.70: armButtons fail-softs a rejected fillSendWarning (Approve/Reject cannot stay disabled)",
-    /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approveSrc) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{\}\)\]\)/.test(approveSrc));
+    /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc));
   ok("PIN M14: approve.ts wires fillRevealPreview into render()", approveSrc.includes("fillRevealPreview(current)"));
   ok("PIN M14: the preview reads the LOCAL sealedClaims store (no network)", approveSrc.includes('call("sealedClaims")'));
   ok("PIN B5h: a score-50 attest threads only the LOCAL tipFloor (no tip/network fetch added)", /method === "attest"[\s\S]{0,900}?call\("tipFloor"\)/.test(approveSrc) && !/method === "attest"[\s\S]{0,900}?call\("tip"\)[^F]/.test(approveSrc));
 }
 
-// ── B9 (M8 batch): ONE default-fee table — screen rows can never disagree again ─────────────
+// ── B9 (M8 batch): ONE default-fee table; screen rows can never disagree again ─────────────
 // RED-FIRST (authored against the pre-fix tree): a fee-less bare attest rendered "fee: 0 CSD" in
 // describe() beside "cost: 0.05 CSD" in costLine() with debitOf() counting 0; a fee-less propose
-// rendered 0.01 CSD — an amount the NODE refuses (utxo.rs validate_app_sanity enforces
+// rendered 0.01 CSD; an amount the NODE refuses (utxo.rs validate_app_sanity enforces
 // MIN_FEE_PROPOSE / MIN_FEE_ATTEST on every app tx). The engine meanwhile ERRORED (BAD_FEE) on the
 // omitted fee, so no on-screen number was ever what got signed.
 {
@@ -201,7 +201,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("B9 table: unknown method → 0 (no assumption)", defaultFeeFor("someFutureMethod") === 0);
 
   // Cross-row consistency: with NO dApp-supplied fee, the fee row in describe(), the cost row, and
-  // the balance-after debit must ALL be the table value — the number the engine will sign.
+  // the balance-after debit must ALL be the table value; the number the engine will sign.
   const feeTxt = (base) => `fee: ${base / 1e8} CSD`;
   const bareAttest = { method: "attest", params: { proposalId: ID, score: 80, confidence: 70 } };
   ok("B9: bare attest fee row shows the floor the engine signs", describe(bareAttest).includes(feeTxt(MIN_FEE_ATTEST)));

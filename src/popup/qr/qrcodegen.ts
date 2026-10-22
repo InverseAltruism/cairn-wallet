@@ -2,14 +2,18 @@
 // Upstream: github.com/nayuki/QR-Code-generator @ tag v1.8.0, file typescript-javascript/qrcodegen.ts
 // Pristine sha256: c4749095a91bf9696e3a303998b9905e467094f53041e64393e65e6d887737fd
 //   (fetched 2026-07-03 via raw.githubusercontent.com AND the GitHub contents API; both hashes matched)
-// License: MIT — full upstream notice retained below.
+// License: MIT; full upstream notice retained below.
 // Local modifications, exhaustive:
 //   1. the URL inside the upstream license header is written scheme-less (build.mjs aborts on any
-//      https:// host literal in src/ that is not a manifest fetch host — comments included)
+//      https:// host literal in src/ that is not a manifest fetch host, comments included)
 //   2. `export default qrcodegen;` appended at the end (ES-module consumption; upstream is a script)
-// NO other changes — the encoder logic is byte-identical to upstream. To verify: remove this banner,
+//   3. the `@ts-nocheck` line closing this banner: the repo's noUncheckedIndexedAccess reports 43 errors on index
+//      reads in the upstream code, and changing them would end the byte-identity below; test/qr.test.ts checks the
+//      encoder's output against the ISO/IEC 18004 formulas instead.
+// NO other changes; the encoder logic is byte-identical to upstream. To verify: remove this banner,
 // restore the scheme on the header URL, drop the final export line, sha256 == pristine hash above.
 // Used ONLY by the Receive panel renderer (qr/draw.ts). Never touches keys, signing, or the network.
+// @ts-nocheck
 
 /* 
  * QR Code generator library (TypeScript)

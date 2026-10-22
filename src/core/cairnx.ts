@@ -1,12 +1,12 @@
-// CairnX v1 convention — the wallet's build/decode/display surface.
+// CairnX v1 convention; the wallet's build/decode/display surface.
 //
 // ★ CONSENSUS RULES ARE IMPORTED, NOT RE-TYPED (shared-core de-dup, cairn docs/Plans/46). The constants,
 // fee/name math, canonical-JSON, the §4 regexes and the parse/validate gate now come from the vendored
-// cairnx-core bundle (src/vendor/cairnx-spv.js — the SAME deterministic, audited, integrity-pinned esbuild
+// cairnx-core bundle (src/vendor/cairnx-spv.js; the SAME deterministic, audited, integrity-pinned esbuild
 // of @inversealtruism/cairnx-core that namespv.ts already uses for `resolve`). This file no longer keeps a
-// second hand-typed copy of any consensus value — that was the riskiest UNGUARDED mirror (its V16/V18/fee
+// second hand-typed copy of any consensus value; that was the riskiest UNGUARDED mirror (its V16/V18/fee
 // constants sat outside param-drift and could drift silently). What stays here is the WALLET's app-layer:
-// the on-device record BUILDERS (so record-building is never fetched from the network — a compromised API
+// the on-device record BUILDERS (so record-building is never fetched from the network; a compromised API
 // can't change what we sign), the clear-sign decode WRAPPER over the canonical parseRecord, the
 // decimals-aware display (formatUnits/parseUnits), and the §9.4 write-path profile guard. Fixture-tested
 // byte-for-byte against cairnx-core in test/cairnx.ts. (csdtx.ts remains the DELIBERATE MV3 tx-codec twin;
@@ -24,27 +24,27 @@ import {
   parseAmount as parseAmountCanonical,
   // Tier 1 pre-flight value-safety surface (deep-review 2026-07-03), re-exported under the wallet surface.
   // WHO CALLS WHAT (honestly): fillIsSafe + requiredFillOutputs → the wallet's fillOffer preflight
-  // (wallet.ts fillOfferPreflight); finalizeWinnerCheck → the approve-path nfinalize gate
+  // (fillpreflight.ts fillOfferPreflight); finalizeWinnerCheck → the approve-path nfinalize gate
   // (popup/clearsign.ts nfinalizeApproveGate, since the deferred-finalize gate); previewFill /
   // isOpenClaimLane / hasLiveClaim → test oracles + the CQ-1 identity-compare (test/cairnx.ts) that pins
   // them to the bundle (isOpenClaimLane/hasLiveClaim are also internal to the vendored fillIsSafe).
   previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs,
   // v2.8 open-lane (fclaim) fill fund boundary: the shared fail-closed grant-replay SPV surface the
-  // fclaim-lane fillOffer preflight MUST clear before signing (wallet.ts fclaimLanePreflight).
+  // fclaim-lane fillOffer preflight MUST clear before signing (fillpreflight.ts fclaimLanePreflight).
   verifyFillSpv,
-  // Plan 70 R2 Option B: the SINGLE fill-boundary term-mismatch verdict (wallet.ts provenTermsMismatch
+  // Plan 70 R2 Option B: the SINGLE fill-boundary term-mismatch verdict (fillpreflight.ts provenTermsMismatch
   // delegates to it), single-sourced in cairnx-core to retire the R1 hand-copy.
   bindOfferTerms,
 } from "../vendor/cairnx-spv.js";
 
 // ── app constants (re-exported under the wallet's historical names) ───────────
 export const CAIRNX_DOMAIN = DOMAIN;                 // "cairnx:v1"
-export const CAIRNX_PROPOSE_FEE = MIN_FEE_PROPOSE;   // 0.25 CSD — the convention's anchor fee floor
+export const CAIRNX_PROPOSE_FEE = MIN_FEE_PROPOSE;   // 0.25 CSD; the convention's anchor fee floor
 
-// B9 (M8 batch): THE per-method default-fee table — the single source both sides read: the engine
+// B9 (M8 batch): THE per-method default-fee table; the single source both sides read: the engine
 // (wallet.ts applies it when a dApp omits `fee`) and the clear-sign display (clearsign.ts feeLine /
 // costLine / debitOf). Before this table the three formatters disagreed (a bare attest clear-signed
-// "fee: 0 CSD" beside a "cost: 0.05 CSD" row, and a fee-less propose showed 0.01 CSD — an amount the
+// "fee: 0 CSD" beside a "cost: 0.05 CSD" row, and a fee-less propose showed 0.01 CSD; an amount the
 // node REFUSES, since validate_app_sanity enforces MIN_FEE_PROPOSE / MIN_FEE_ATTEST on every app tx).
 // The app-tx defaults ARE those node-enforced floors: a smaller default would sign a transaction the
 // mempool rejects. A plain send carries no app floor (only the dust-level relay feerate); 0.01 CSD is
@@ -53,34 +53,34 @@ export function defaultFeeFor(method: string): number {
   switch (method) {
     case "send": return 1_000_000;              // 0.01 CSD
     case "propose":
-    case "sealClaim": return MIN_FEE_PROPOSE;   // 0.25 CSD — a seal anchors AS a Propose
+    case "sealClaim": return MIN_FEE_PROPOSE;   // 0.25 CSD; a seal anchors AS a Propose
     case "attest":
-    case "fillOffer": return MIN_FEE_ATTEST;    // 0.05 CSD — a fill IS an Attest (+ payment outputs)
+    case "fillOffer": return MIN_FEE_ATTEST;    // 0.05 CSD; a fill IS an Attest (+ payment outputs)
     default: return 0;
   }
 }
 export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL, NAME_RE, canonicalJson };
 // v1.6 fee: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; this just
 // computes the trade fee for clear-sign display. Byte-identical to cairnx-core (callers pass bigint). (The
-// cairnxMakerRebate re-export was removed 2026-07-06 — it had zero callers anywhere; the rebate is computed
+// cairnxMakerRebate re-export was removed 2026-07-06; it had zero callers anywhere; the rebate is computed
 // inside the vendored requiredFillOutputs/previewFill, which is what the fillOffer preflight actually uses.)
 export const cairnxTradeFee = tradeFee;
 // Tier 1 pre-flight helpers, re-exported under the wallet surface (callers named in the import block above).
 export { previewFill, fillIsSafe, finalizeWinnerCheck, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms };
 export const cairnxPayloadHash = (record: unknown): string => payloadHash(record);
 export { nameRegFee };
-// buildFeeHeight (the approach-the-gate name-fee build heuristic) is VENDORED since cairnx-core 0.1.35 —
+// buildFeeHeight (the approach-the-gate name-fee build heuristic) is VENDORED since cairnx-core 0.1.35:
 // the core owns the gate list, so a future fee tier (V28+) arrives by re-vendoring instead of a hand edit
 // here + in the trade UI. A local copy of the gates + margin lived here until 2026-07-06.
 export { buildFeeHeight } from "../vendor/cairnx-spv.js";
 // M11 (B5b): ONE tip clamp for name-fee pricing, used at BUILD time (wallet.ts renew/renewFee) AND at
-// REVIEW time (clearsign.ts fee warning) so the two sides can never disagree — a clamp applied at build
+// REVIEW time (clearsign.ts fee warning) so the two sides can never disagree; a clamp applied at build
 // but not review (or the reverse) manufactures spurious FEE_CHANGED refusals / false fee warnings at a
 // fee-gate boundary. The raw tip is an unauthenticated RPC read a hostile proxy can DEFLATE so the wallet
 // prices an obsolete cheaper tier: the resolver then rejects the record and the fee BURNS, while the
 // deflated tip simultaneously silences the CLEARSIGN-FEE-1 underpayment warning. Clamp UP with the
 // PoW-backed persisted floor (M9/B5a bounds its inflation to verifiedTip + slack); an over-tier fee only
-// ever overpays (accepted on-chain), never burns. NOT consensus math — a policy compose over the vendored
+// ever overpays (accepted on-chain), never burns. NOT consensus math; a policy compose over the vendored
 // buildFeeHeight/nameRegFee, which stay the only fee authorities.
 // W5 (Q-02): each input is normalized with Number.isSafeInteger, not Number.isFinite, and the helper
 // returns null when NEITHER input is usable. A served tip of 65100.5 or 1e16 is finite but is not a
@@ -105,13 +105,13 @@ export function feePricingTip(rawTip: number | null | undefined, floor: number |
 }
 
 // Single source of truth for the .csd name syntax. `isPlainName` is the syntax-only check used before a name
-// reaches a URL (NO reserved-name check — that is the registrar's, not the parser's).
+// reaches a URL (NO reserved-name check; that is the registrar's, not the parser's).
 export const isPlainName = (n: unknown): n is string => typeof n === "string" && NAME_RE.test(n);
 // PROFILE_RESERVED_KEYS is the WALLET app-layer guard (decision §9.4): a profile is cosmetic and must NEVER
 // carry a send target, so the BUILDER refuses these keys. (The resolver/decode stay semantics-agnostic.)
 const PROFILE_RESERVED_KEYS = new Set(["addr", "address", "coin"]);
 
-// ── thin §4 validators (wrappers over the IMPORTED regexes/limits — used by the on-device builders) ──
+// ── thin §4 validators (wrappers over the IMPORTED regexes/limits; used by the on-device builders) ──
 // parseAmount is the vendored canonical one since B9 (semantics verified identical: AMOUNT_RE +
 // MAX_AMOUNT + allowZero); only the option-object signature is adapted at this one seam.
 const parseAmount = (s: unknown, allowZero = false): bigint | null => parseAmountCanonical(s, { allowZero });
@@ -163,7 +163,7 @@ function buildNameRecord(record: Record<string, unknown>): BuiltCairnxRecord {
   if (parseRecord(uri, ph) === null) throw new Error("record fails the resolver's consensus validation (it would anchor the fee and then be ignored): check for unusual characters in values");
   return { record, uri, payloadHash: ph };
 }
-// NOTE (2026-07-06): buildNameCommit / nameCommitHash / buildNameReveal / buildNameFinalize were removed —
+// NOTE (2026-07-06): buildNameCommit / nameCommitHash / buildNameReveal / buildNameFinalize were removed:
 // they had ZERO callers anywhere in src/ or test/. The wallet's live name flows are renew/set/transfer/
 // profile (below) + the on-website registration path; the on-device commit→reveal→finalize builders were
 // never wired. Reintroduce them from cairnx-core (nameCommit + t:"ncommit"/"nfinalize" records) if the
@@ -189,7 +189,7 @@ export function buildNameXfer(p: { name: string; to: string }): BuiltCairnxRecor
   if (!isAddr(to)) throw new Error("recipient must be a 0x… 20-byte address");
   return buildNameRecord({ v: 1, t: "nxfer", name: p.name, to });
 }
-// v1.9 ENS-class identity profile (doc 36). INERT cosmetic metadata — NEVER a send target. The builder
+// v1.9 ENS-class identity profile (doc 36). INERT cosmetic metadata; NEVER a send target. The builder
 // (the WRITE path) enforces the app-layer invariant (decision §9.4): reject addr/address/coin keys. Charset +
 // caps mirror the resolver (imported PKEY / PROFILE_MAX_*); an empty map clears the profile.
 export function buildNameProfile(p: { name: string; profile: Record<string, string> }): BuiltCairnxRecord {
@@ -208,7 +208,7 @@ export function buildNameProfile(p: { name: string; profile: Record<string, stri
   return buildNameRecord({ v: 1, t: "nprofile", name: p.name, p: map });
 }
 
-// ── decimals-aware display/entry (app-layer; BigInt throughout — never floats) ─
+// ── decimals-aware display/entry (app-layer; BigInt throughout; never floats) ─
 // Served per-ticker display data (resolver token record). Display only; not an input to signing.
 export type TokenDisplayMeta = Record<string, { decimals?: number; deployId?: string }>;
 // Tokens the wallet pins by deploy id. A ticker names one token (first anchor wins) and its decimals are fixed
@@ -259,7 +259,7 @@ export function fmtBalance(raw: unknown): string {
 export function parseUnits(human: string, decimals: number): string | null {
   if (typeof human !== "string") return null;
   const m = /^(\d+)(?:\.(\d+))?$/.exec(human.trim());
-  if (!m) return null;
+  if (!m || m[1] === undefined) return null;   // group 1 is required by the pattern
   const d = Number.isInteger(decimals) && decimals >= 0 && decimals <= 8 ? decimals : 0;
   const frac = m[2] ?? "";
   if (frac.length > d) return null; // more precision than the token has
@@ -269,7 +269,7 @@ export function parseUnits(human: string, decimals: number): string | null {
 }
 
 // ── generic record decode (clear-signing) ────────────────────────────────────
-// THE canonical parse/validate gate (cairnx-core parseRecord) — returns the parsed record ONLY when it
+// THE canonical parse/validate gate (cairnx-core parseRecord); returns the parsed record ONLY when it
 // would actually take effect on-chain (canonical JSON, payload-hash commitment, §4 schema, the
 // lone-surrogate/decoy-key determinism gates), else null → the approval window falls back to the raw uri.
 // "Invalid is a no-op" must hold for display too, or a dApp could show a structured record the resolver

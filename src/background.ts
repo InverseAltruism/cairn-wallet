@@ -27,7 +27,7 @@ let reqSeq = 0;
 
 // Per-origin "connected sites" (MetaMask model): once the user approves a `connect`
 // for an origin, that origin may READ the address (connect/getAddress) without a fresh
-// prompt. This grants ADDRESS VISIBILITY ONLY — every signing / fund-moving method
+// prompt. This grants ADDRESS VISIBILITY ONLY; every signing / fund-moving method
 // (signin/send/propose/attest/sealClaim/revealClaim) ALWAYS goes through the
 // clear-signing approval window, every time, regardless of connection state. Consent
 // is wiped on `reset` and revocable from the popup. Stored separately from the vault.
@@ -44,12 +44,12 @@ function inConsentChain<T>(work: () => Promise<T>): Promise<T> {
   return run;
 }
 function recordConsent(origin: string, addr: string): Promise<void> {
-  // L2: an opaque origin (a sandboxed / data: / some file: page) sends sender.origin === "null" — a SHARED,
+  // L2: an opaque origin (a sandboxed / data: / some file: page) sends sender.origin === "null"; a SHARED,
   // non-identifying string, not a site. Never store consent under it: every opaque page would collide on the
   // one "null" bucket, so the silent fast-path (and getPermissions) would return the consented address to ANY
-  // opaque-origin page — a silent cross-site disclosure. Reject it alongside "unknown"; the fast-path + get-
+  // opaque-origin page; a silent cross-site disclosure. Reject it alongside "unknown"; the fast-path + get-
   // Permissions then fall through to a fresh prompt for every opaque page (an opaque origin has no identity to
-  // remember). Deliberately NOT a per-frame ephemeral bucket — more machinery for no legitimate use.
+  // remember). Deliberately NOT a per-frame ephemeral bucket; more machinery for no legitimate use.
   if (!origin || origin === "unknown" || origin === "null") return Promise.resolve();
   return inConsentChain(async () => {
     const c = await getConsents();
@@ -74,13 +74,13 @@ async function listConsents(): Promise<{ origin: string; addr: string; ts: numbe
 // --- Provider events (doc 28 Phase 2): push accountsChanged/disconnect to connected dApp pages. ---
 // The CONTENT SCRIPT opens a long-lived port (it initiates, so no extra permission is needed); we track
 // ports by their browser-set, UNFORGEABLE sender origin. We push events ONLY to the relevant origins.
-// F11-safe: we NEVER push a new address — the sole account signal is `[]` ("you lost access / reconnect")
+// F11-safe: we NEVER push a new address; the sole account signal is `[]` ("you lost access / reconnect")
 // emitted on lock, account-switch, or consent-revoke. A page must call connect() again to (re)share.
 const eventRegistry = new PortRegistry();
 chrome.runtime?.onConnect?.addListener((port: any) => {
   if (port?.name !== "cairn-events") return;
   const origin = port.sender?.origin || port.sender?.url || "unknown";
-  // L2: never register an event port for an opaque ("null") or unknown origin — it has no stable identity, so
+  // L2: never register an event port for an opaque ("null") or unknown origin; it has no stable identity, so
   // bucketing them together would let one opaque page receive another opaque page's lock/account-switch events
   // (cross-frame timing). A page with a real origin re-establishes its port on the next connect().
   if (origin === "null" || origin === "unknown") return;
@@ -88,7 +88,7 @@ chrome.runtime?.onConnect?.addListener((port: any) => {
   port.onDisconnect?.addListener(() => eventRegistry.remove(origin, port));
 });
 function emitToOrigin(origin: string, event: string, data: unknown): void { eventRegistry.emitToOrigin(origin, event, data); }
-// Emit ONLY to origins the user has connected (consented), never to every visited page — a random site
+// Emit ONLY to origins the user has connected (consented), never to every visited page; a random site
 // the user happens to have open must not learn the wallet's lock/account-switch timing.
 async function emitConnected(event: string, data: unknown): Promise<void> {
   const c = await getConsents();
@@ -118,10 +118,10 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "tip": return wallet.tip();
     case "tipFloor": return wallet.tipFloor(); // M11/B5b: PoW-backed floor for review-side fee clamping (popup-only; READ_ONLY so it never extends the idle lock)
     case "send": return wallet.send(args[0], args[1], args[2], args[3]); // args[3] = expectSigner (A1 popup snapshot)
-    // popup-only coin maintenance (deliberately NOT in DAPP_METHODS — a dApp must not restructure the user's coins)
+    // popup-only coin maintenance (deliberately NOT in DAPP_METHODS; a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
     case "consolidatePreview": return wallet.consolidatePreview(args[0]);
-    case "pendingMerge": return wallet.pendingMerge(args[0]); // merge-in-flight probe (feeds the popup pending line); writes only its own bookkeeping latches — in READ_ONLY_METHODS because it must never extend the idle lock
+    case "pendingMerge": return wallet.pendingMerge(args[0]); // merge-in-flight probe (feeds the popup pending line); writes only its own bookkeeping latches; in READ_ONLY_METHODS because it must never extend the idle lock
     case "cairnPost": return wallet.cairnPost(args[0]);
     case "cairnxAssets": return wallet.cairnxAssets();
     case "cairnxTokens": return wallet.cairnxTokens();
@@ -168,7 +168,7 @@ const thrownCode = (e: unknown): string => ((e as { message?: unknown })?.messag
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
 // spentTxids and inputs are the wallet's history bookkeeping (node.ts SubmitResult), and secondSource is the approval
-// window's notice for a fill (wallet.ts FillNotes): kept off what a page receives.
+// window's notice for a fill (fillpreflight.ts FillNotes): kept off what a page receives.
 function pageResult(r: any): any {
   if (!r || typeof r !== "object" || Array.isArray(r)) return r;
   const out = { ...r };
@@ -226,7 +226,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // unlocked implies a loaded key/address; the explicit addr check makes the invariant
     // visible to the type system (st.addr is string|null before unlock)
     if (!st.unlocked || !st.addr) return finish({ ok: false, code: "WALLET_LOCKED", error: "wallet locked" });
-    // M5 (account-switch mid-approval — WYSIWYS on the SIGNER): the approval window passes the account it
+    // M5 (account-switch mid-approval; WYSIWYS on the SIGNER): the approval window passes the account it
     // DISPLAYED ("signing as …"). If the active account changed between review and approve (e.g. the user
     // switched accounts in the toolbar popup after the window rendered), refuse rather than silently sign/
     // disclose with the now-active account the user did NOT review. Fail-closed → reopen + re-review.
@@ -261,7 +261,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "revealClaim") result = await wallet.revealClaim(p.params);
     // Plain transfer. Reachable from a dApp ONLY through this approval path (the user
     // saw the recipient/amount/fee in the approve window). We read ONLY to/amount/fee
-    // or outputs[] — never any caller-supplied inputs/UTXOs/change address; node.send*
+    // or outputs[]; never any caller-supplied inputs/UTXOs/change address; node.send*
     // selects inputs itself and returns change to the wallet's own address. Privileged
     // methods (export/restore/import/reset/settings/account mgmt) stay out of this list
     // and fall through to the throw below, so a dApp can never reach them.
@@ -275,7 +275,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
         ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee, expectSigner: exp })
         : await wallet.send(x.to, x.amount, x.fee, exp);
     }
-    // Atomic fill (Attest + payment in one tx — CairnX DvP). Same posture as send:
+    // Atomic fill (Attest + payment in one tx; CairnX DvP). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
     // and change only ever returns to the wallet's own address.
     else if (p.method === "fillOffer") {
@@ -295,14 +295,14 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
 
 // The ONLY methods a website may invoke (must match the allowlist in resolvePending).
 // Anything else is rejected before it can enter the pending queue or reach the popup UI
-// — so an arbitrary attacker-chosen `method` string can never be rendered or queued.
+//; so an arbitrary attacker-chosen `method` string can never be rendered or queued.
 const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "sealClaim", "revealClaim", "send", "fillOffer"]);
 
 // Pure READ / poll methods that must NOT reset the idle auto-lock. The approval window
 // polls status+pending every ~1.2s (approve.ts), so if these refreshed lastActive a
 // connected site could keep ≥1 request queued and hold the wallet unlocked forever,
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
-// still touch(). The DENY-list is intentionally conservative — anything NOT listed here
+// still touch(). The DENY-list is intentionally conservative; anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
 const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
@@ -310,13 +310,13 @@ const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "e
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
 
 // Open (or focus) the dedicated clear-signing approval window. Used both when a request
-// first arrives and when the user clicks "Review" in the toolbar popup — so EVERY approval
+// first arrives and when the user clicks "Review" in the toolbar popup; so EVERY approval
 // goes through the full recipient/amount/fee/warnings disclosure, never a blind approve.
 let openingApproval: Promise<{ opened: boolean }> | null = null;
 function openApprovalWindow(): Promise<{ opened: boolean }> {
   if (!pending.size) return Promise.resolve({ opened: false });
   if (openingApproval) return openingApproval; // 0.2.70: same-turn arrivals share one create/focus
-  // Coalesce on a microtask, then drop the latch — do NOT wait for chrome's create callback.
+  // Coalesce on a microtask, then drop the latch; do NOT wait for chrome's create callback.
   // Waiting wedged every later open when the callback was delayed or (in tests) never invoked.
   openingApproval = Promise.resolve().then(() => {
     try {
@@ -346,7 +346,7 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
 // Bound the approval queue (audit NSPV-DAPP-QUEUE): a malicious page could otherwise flood the SW with
 // approval requests, growing `pending` without limit, burying the user's real request and DoS-ing the
 // approval UI. A legitimate dApp never has many outstanding prompts at once, so cap per-origin and global
-// and reject the excess with a clear {ok:false} (never queue it) — the page is told to clear its backlog.
+// and reject the excess with a clear {ok:false} (never queue it); the page is told to clear its backlog.
 const MAX_PENDING_GLOBAL = 32;
 const MAX_PENDING_PER_ORIGIN = 5;
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
@@ -360,7 +360,7 @@ function queueDappRequest(origin: string, method: string, params: any): Promise<
     showQueueBadge();
     // Raise the clear-signing window. If it can't open (rare), the request still sits in the
     // queue + badge; the user opens the toolbar popup and clicks "Review", which calls
-    // openApprovalWindow again — approval ALWAYS routes through the disclosure window, never
+    // openApprovalWindow again; approval ALWAYS routes through the disclosure window, never
     // a blind toolbar approve.
     openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
   });
@@ -372,7 +372,7 @@ try { chrome.windows?.onRemoved?.addListener((wid: number) => {
   approveWinId = null;
   // POPUP-DISMISS-REJECT: the user closed the approval window with requests still queued. Settle those dApp
   // promises as REJECTED (MetaMask parity) instead of leaving them hanging until the 24h GC (which stranded the
-  // page on an optimistic "waiting…" state — e.g. the phantom "commitment placed" card). An APPROVED request is
+  // page on an optimistic "waiting…" state; e.g. the phantom "commitment placed" card). An APPROVED request is
   // already removed from `pending` by resolvePending before the window closes, and approve.ts only auto-closes
   // the window once the queue is EMPTY, so this rejects exactly the genuinely un-actioned requests.
   if (pending.size) {
@@ -388,7 +388,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
       try { await ready; }
       catch (e: any) { sendResponse({ ok: false, code: "WALLET_UNAVAILABLE", error: e?.message ?? "wallet failed to initialize" }); return; }
       // Reset the idle auto-lock ONLY on genuine user activity (the extension's own popup
-      // UI). dApp/page-relayed messages must NOT extend the unlock — otherwise a malicious
+      // UI). dApp/page-relayed messages must NOT extend the unlock; otherwise a malicious
       // allowed-origin page could ping every minute (even with a rejected method) to keep
       // the wallet unlocked forever, defeating the 15-min auto-lock.
       if (msg?.kind === "popup") {
@@ -398,16 +398,16 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         // positively too: only the extension's OWN popup/extension pages may send `popup` messages.
         // The correct discriminator vs a content-script forgery is the sender's ORIGIN, NOT the
         // presence of a tab: the approval window is opened with chrome.windows.create({type:"popup"}),
-        // which runs the extension page INSIDE A TAB — so sender.tab IS populated for the legit popup
+        // which runs the extension page INSIDE A TAB; so sender.tab IS populated for the legit popup
         // too. The old `|| sender?.tab` check therefore rejected the real connect/approval flow with
         // "forbidden" (empty popup). A content script's sender.url is the host web page; an extension
-        // page's sender.url is chrome-extension://<our-id>/… — require exactly that. (A page cannot
+        // page's sender.url is chrome-extension://<our-id>/…; require exactly that. (A page cannot
         // forge sender.url; it is set by the browser.) A build/CI tripwire (test/extension-boundary.ts)
         // keeps the no-external-message-surface invariant from regressing.
         const fromExtensionPage = sender?.id === chrome.runtime.id &&
           typeof sender?.url === "string" && sender.url.startsWith(chrome.runtime.getURL(""));
         if (!fromExtensionPage) { sendResponse({ ok: false, code: "FORBIDDEN", error: "forbidden" }); return; }
-        // Reset the idle auto-lock ONLY on genuine USER ACTIVITY — never on a pure read/poll. The
+        // Reset the idle auto-lock ONLY on genuine USER ACTIVITY; never on a pure read/poll. The
         // approval window status/pending-polls every ~1.2s; if those kept the wallet alive, a site
         // that always keeps ≥1 request queued would never let the 15-min idle lock fire (WL-1/R19).
         if (!READ_ONLY_METHODS.has(msg.method)) wallet.touch();
@@ -416,7 +416,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
       if (msg?.kind === "dapp") {
         const origin = sender?.origin || sender?.url || "unknown";
         // AUTH-LEGACY-1 gate: the legacy no-arg signIn() authenticates against the wallet's OWN
-        // configured api (this.api) and returns that server's SESSION TOKEN — safe only for the
+        // configured api (this.api) and returns that server's SESSION TOKEN; safe only for the
         // first-party site. Reject it from any third-party origin BEFORE it can prompt, pointing
         // devs to the audience-bound signInWithCsd() (which never mints a first-party session).
         if (msg.method === "signin" && !wallet.isFirstPartyOrigin(origin)) {
@@ -425,13 +425,13 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
         }
         // Per-origin permission queries (EIP-2255-style), origin-scoped + silent: getPermissions reads
         // THIS origin's own grant; revokePermissions drops THIS origin's own consent. Both are keyed on
-        // the unforgeable sender origin, so a page can neither see nor revoke another origin's grant — no
+        // the unforgeable sender origin, so a page can neither see nor revoke another origin's grant; no
         // prompt needed (a read of / a self-revoke of one's own access). requestPermissions DOES prompt
         // (it grants address visibility) → it falls through to the approval queue below.
         if (msg.method === "getPermissions") {
           // F-PERM-LOCKED (Plans/68 A3): the silent getAddress path requires UNLOCKED before it
           // discloses the address; this read disclosed the consented addr even while LOCKED. Same
-          // posture now: a locked wallet answers "no permissions" (not an error — a page polling
+          // posture now: a locked wallet answers "no permissions" (not an error; a page polling
           // permissions must not learn the address, or that one exists, from a locked wallet).
           const stp = await wallet.status();
           if (!stp.unlocked) { sendResponse({ ok: true, result: [] }); return; }
@@ -447,11 +447,11 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
           return;
         }
         // Fast-path for ALREADY-CONNECTED origins: connect/getAddress may resolve the
-        // address WITHOUT a fresh prompt — but ONLY when (a) the method is exactly
+        // address WITHOUT a fresh prompt; but ONLY when (a) the method is exactly
         // connect/getAddress (address visibility), (b) the wallet is UNLOCKED, (c) the
         // origin was previously consented, AND (d) the currently-active address is the
         // SAME one the user consented to share. If the user has since switched accounts
-        // (F11), the active addr differs from the stored consent addr — so we fall through
+        // (F11), the active addr differs from the stored consent addr; so we fall through
         // to a fresh approval prompt rather than silently leak the NEW (unconsented) address.
         // This is the sole "silent" path; every signing method always queues + prompts.
         if (msg.method === "connect" || msg.method === "getAddress") {
@@ -474,7 +474,7 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
 // Durable content registration: drain the pending queue at startup and on a
 // periodic alarm. Alarms wake the service worker even after MV3 has idle-killed
 // it, so a post made right before the popup closed still gets its content
-// registered once the tx mines (~30-60s) — no more hash-only placeholders.
+// registered once the tx mines (~30-60s); no more hash-only placeholders.
 // A wallet whose init rejected answers every message WALLET_UNAVAILABLE (the gate above); the startup drain and
 // the install hook have nothing to add to that, so their chains end in a logged catch, never an unhandled rejection.
 const initFailed = (what: string) => (e: unknown) => console.warn(`[background] ${what} skipped: the wallet did not initialize:`, e);
@@ -496,4 +496,4 @@ try {
       if (wasUnlocked && !(await wallet.status()).unlocked) { await emitConnected("accountsChanged", []); await emitConnected("disconnect", { reason: "idle-lock" }); } // idle-lock → tell pages
     }, initFailed("auto-lock alarm")).catch((e) => console.error("[background] auto-lock failed:", e));
   });
-} catch { /* alarms permission unavailable — startup flush still runs */ }
+} catch { /* alarms permission unavailable; startup flush still runs */ }

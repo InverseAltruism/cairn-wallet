@@ -1,4 +1,4 @@
-// Clear-signing formatter coverage — the previously-untested "what am I signing?" layer (the user's
+// Clear-signing formatter coverage; the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
 import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
@@ -9,7 +9,7 @@ import { checker } from "./helpers/check.mjs";
 const { check: ok, done } = checker();
 const ADDR = "0x" + "ab".repeat(20);
 
-// C-WL5 — a malicious/garbage amount must NEVER render "NaN CSD"
+// C-WL5; a malicious/garbage amount must NEVER render "NaN CSD"
 ok("fmtCsd(valid) → CSD", fmtCsd(150000000) === "1.5 CSD");
 ok("fmtCsd('abc') → 'invalid amount' (not NaN)", fmtCsd("abc") === "invalid amount");
 ok("fmtCsd(NaN) → 'invalid amount'", fmtCsd(NaN) === "invalid amount");
@@ -40,7 +40,7 @@ const xss = describe({ method: "propose", params: { domain: '"><img src=x onerro
 ok("describe escapes a malicious domain (no raw <img>)", !xss.includes("<img") && xss.includes("&lt;img"));
 ok("escapeHtml neutralizes <script>", escapeHtml("<script>") === "&lt;script&gt;");
 
-// EXP-XSS-1/2 regression — any URL flowing into an href (explorer link, trade-name link) is escapeHtml'd at the
+// EXP-XSS-1/2 regression; any URL flowing into an href (explorer link, trade-name link) is escapeHtml'd at the
 // render layer so a malicious custom-explorer/API base cannot break out of the href attribute and inject markup.
 {
   const evilBase = 'https://evil.example/"><img src=x onerror=alert(1)>';
@@ -49,7 +49,7 @@ ok("escapeHtml neutralizes <script>", escapeHtml("<script>") === "&lt;script&gt;
   ok("EXP-XSS: the injected <img is neutralized to inert &lt;img text (not a live tag)", !rendered.includes("<img") && rendered.includes("&lt;img"));
 }
 
-// fillOffer (Attest + payment in one tx) — clear-signs like send, plus the offer id
+// fillOffer (Attest + payment in one tx); clear-signs like send, plus the offer id
 const fo = { method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), score: 100, confidence: 100, outputs: [{ to: ADDR, value: 200_000_000 }], fee: 5_000_000 } };
 const foHtml = describe(fo);
 ok("describe(fillOffer) names the action + the offer id", foHtml.includes("Fill offer") && foHtml.includes("aa".repeat(32)));
@@ -64,7 +64,7 @@ ok("debitOf(fillOffer, garbage) is finite", Number.isFinite(debitOf({ method: "f
 const foXss = describe({ method: "fillOffer", params: { proposalId: '"><img src=x onerror=alert(1)>', outputs: [{ to: "<script>", value: 1 }], fee: 1 } });
 ok("describe(fillOffer) escapes hostile offer id + recipient", !foXss.includes("<img") && !foXss.includes("<script>"));
 
-// propose with value outputs (CairnX fee) — shown NEUTRALLY as funds leaving + address-poisoning slot.
+// propose with value outputs (CairnX fee); shown NEUTRALLY as funds leaving + address-poisoning slot.
 // A malicious dApp must NOT be able to disguise a payout to itself as a benign "fee".
 const propFee = { method: "propose", params: { domain: "cairnx:v1", payloadHash: "0x" + "11".repeat(32), uri: '{"t":"name"}', expiresEpoch: 1, fee: 25000000, outputs: [{ to: ADDR, value: 100000000 }] } };
 const pfHtml = describe(propFee);
@@ -88,7 +88,7 @@ ok("costLine(normal CSD fill) does NOT mention token debits", !/tokens debited/i
 ok("describe(confidence 999999 ≠ marker) does NOT show the token warning",
   !/SPENDS TOKENS/.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "cc".repeat(32), confidence: 999_999, outputs: [], fee: 1 } })));
 
-// v1.7 claim-to-fill — a score-50 / confidence-0 attest is a PAYMENT-FREE reservation of an open CSD
+// v1.7 claim-to-fill; a score-50 / confidence-0 attest is a PAYMENT-FREE reservation of an open CSD
 // offer; the wallet must label it "Reserve an open offer" and say it moves no money, so the user can
 // tell it apart from the fill that pays. (The attest method never carries value outputs.)
 const claim = describe({ method: "attest", params: { proposalId: "0x" + "dd".repeat(32), score: 50, confidence: 0, fee: 5_000_000 } });
@@ -100,12 +100,12 @@ ok("describe(ordinary attest score80) stays 'Support / review' (claim label is s
 const atok = describe({ method: "attest", params: { proposalId: "0x" + "ff".repeat(32), score: 100, confidence: 1_000_000, fee: 5_000_000 } });
 ok("describe(token-fill attest conf1e6) STILL warns SPENDS TOKENS (claim branch didn't swallow it)", /SPENDS TOKENS/.test(atok));
 
-// F6 — the dApp-supplied expiresEpoch is part of the SIGNED bytes (csdtx.ts u64) and must be shown
+// F6; the dApp-supplied expiresEpoch is part of the SIGNED bytes (csdtx.ts u64) and must be shown
 // in the approval window so a site can't commit a record claimable for years past what the user expects.
 {
   const EXP = 500000;
   const raw = describe({ method: "propose", params: { domain: "csd:test", payloadHash: "0x" + "11".repeat(32), uri: "x", fee: 1000000, expiresEpoch: EXP } });
-  ok("describe(propose) RENDERS the signed expiresEpoch (F6 — was silently dropped)", raw.includes("expires") && raw.includes(String(EXP)));
+  ok("describe(propose) RENDERS the signed expiresEpoch (F6: was silently dropped)", raw.includes("expires") && raw.includes(String(EXP)));
   const cx = describe({ method: "propose", params: { domain: "cairnx:v1", payloadHash: "0x" + "11".repeat(32), uri: '{"t":"name"}', fee: 25000000, expiresEpoch: EXP } });
   ok("describe(propose, cairnx branch) ALSO renders the expiry", cx.includes("expires") && cx.includes(String(EXP)));
   ok("describe(propose, no expiresEpoch) omits the expiry line cleanly", !describe({ method: "propose", params: { domain: "d", fee: 1 } }).includes("expires"));
@@ -133,7 +133,7 @@ ok("lookalikeOf flags a head/tail twin", lookalikeOf(twin, [real]) === real);
 ok("lookalikeOf does NOT flag an unrelated address", lookalikeOf(other, [real]) === null);
 ok("lookalikeOf does NOT flag an identical address", lookalikeOf(real, [real]) === null);
 
-// WYSIWYS-TRUNC-1 — a multi-output send with MORE recipients than the display cap must LOUDLY disclose the
+// WYSIWYS-TRUNC-1; a multi-output send with MORE recipients than the display cap must LOUDLY disclose the
 // hidden recipients + their TOTAL (not a quiet "…and N more"), so a dApp can't hide where funds go.
 {
   const manyOuts = Array.from({ length: 15 }, (_, i) => ({ to: "0x" + (i + 1).toString(16).padStart(40, "0"), value: 1e8 }));
@@ -166,7 +166,7 @@ ok("lookalikeOf does NOT flag an identical address", lookalikeOf(real, [real]) =
     /\[truncated: showing the first 128 of 129 characters\]/.test(describe({ method: "sealClaim", params: { domain: "d".repeat(129), fee: 1 } })));
 }
 
-// WYSIWYS-BIDI-1 — escapeHtml neutralizes Unicode bidi-override / zero-width controls to a VISIBLE \uXXXX
+// WYSIWYS-BIDI-1; escapeHtml neutralizes Unicode bidi-override / zero-width controls to a VISIBLE \uXXXX
 // token, so a dApp can't reorder or hide characters in a displayed name/address/memo vs the signed bytes.
 ok("BIDI-1: a bidi-override (U+202E) is neutralized to a visible token (not passed through)",
   escapeHtml("abc\u202Edef") === "abc\\u202Edef" && !escapeHtml("abc\u202Edef").includes("\u202E"));
@@ -174,7 +174,7 @@ ok("BIDI-1: a zero-width char (U+200B) is neutralized", escapeHtml("a\u200Bb") =
 ok("BIDI-1: an RLI isolate (U+2067) is neutralized", escapeHtml("x\u2067y") === "x\\u2067y");
 ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alice.csd") === "alice.csd" && escapeHtml("0x" + "ab".repeat(20)) === "0x" + "ab".repeat(20));
 
-// CLEARSIGN-FEE-1 — a dApp-built .csd renewal that UNDERPAYS the length-graded fee must warn (fund-loss with
+// CLEARSIGN-FEE-1; a dApp-built .csd renewal that UNDERPAYS the length-graded fee must warn (fund-loss with
 // no benefit: the fee leaves the wallet but the resolver no-ops the underpaid record). "audit" (5 chars) costs
 // 5 CSD at V24 (tip ≥ V24_HEIGHT=49200) but only the 3 CSD V18 price below it.
 {
@@ -196,12 +196,12 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   ok("RT-W1: nprofile value longer than 120 chars is shown in full", html.includes(`bio: <code>${long}</code>`));
 }
 
-// NFIN-WINDOW-1 (Plan 63 carry-over, 0.2.54) — the approve-path nfinalize gate: a displaced or
+// NFIN-WINDOW-1 (Plan 63 carry-over, 0.2.54); the approve-path nfinalize gate: a displaced or
 // out-of-window finalize burns the fee, so the gate must refuse those, pass a live in-window
-// reservation, and WARN (never block) when the name service / tip is unreachable (fail-open —
+// reservation, and WARN (never block) when the name service / tip is unreachable (fail-open:
 // approval must not gain a hard network dependency; same posture as the FEE-1 offline skip).
 //
-// TRUST SCOPE (Plan 70 R2 / L3, honest by design — see NFIN-DISPLACE-NOOP below): the gate's LIVE
+// TRUST SCOPE (Plan 70 R2 / L3, honest by design; see NFIN-DISPLACE-NOOP below): the gate's LIVE
 // checks are owner mismatch, already-registered, no-reservation, and the freeze/expiry window. The
 // effectiveHeight-DISPLACEMENT branch inside finalizeWinnerCheck is INERT in the wired path: the wallet
 // has no independent commit height and no SPV on this record, so nfinalizeApproveGate passes the
@@ -233,17 +233,17 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   // ── NFIN-DISPLACE-NOOP (Plan 70 R2 / L3): the effectiveHeight-DISPLACEMENT branch is a NO-OP in the wired path.
   //    Do NOT mistake this gate for live protection against a resolver that LIES about effectiveHeight to widen the
   //    window: nfinalizeApproveGate passes resv.effectiveHeight AS the commitHeight, so finalizeWinnerCheck's
-  //    `effectiveHeight !== commitHeight` branch is X !== X — inert. This documents the true current behavior (the
+  //    `effectiveHeight !== commitHeight` branch is X !== X; inert. This documents the true current behavior (the
   //    replaced dead-green assertion had asserted a displacement refusal the wired path does NOT actually produce).
-  ok("NFIN-DISPLACE-NOOP: the wired gate does NOT fire on a lied effectiveHeight (commitHeight := effectiveHeight, X!==X) — an in-window reservation PASSES; a Byzantine effectiveHeight lie is NOT caught here (documented residual, pending registration-SPV)", (() => {
+  ok("NFIN-DISPLACE-NOOP: the wired gate does NOT fire on a lied effectiveHeight (commitHeight := effectiveHeight, X!==X): an in-window reservation PASSES; a Byzantine effectiveHeight lie is NOT caught here (documented residual, pending registration-SPV)", (() => {
     const g = nfinalizeApproveGate({ record: mine }, ME, winEnd - 2);
-    return g.block === false && g.note === null;   // passes DESPITE the displacement branch — because it can never fire in this wiring
+    return g.block === false && g.note === null;   // passes DESPITE the displacement branch; because it can never fire in this wiring
   })());
   // Mutation-sensitive proof the branch is REAL but UNWIRED: fed an INDEPENDENT commit height (what a registration-
   // SPV baseline would supply, and exactly what the wired path can never produce today), finalizeWinnerCheck DOES
-  // fire the displacement branch. If cairnx-core ever drops that branch, this flips to safe — so the assertion cannot
+  // fire the displacement branch. If cairnx-core ever drops that branch, this flips to safe; so the assertion cannot
   // dead-green. It is the reason the wired gate above is inert: the two heights are forced equal there, never here.
-  ok("NFIN-DISPLACE-NOOP: finalizeWinnerCheck WOULD block on a genuine (independent) commit-height mismatch — the guard is real, just unwired", (() => {
+  ok("NFIN-DISPLACE-NOOP: finalizeWinnerCheck WOULD block on a genuine (independent) commit-height mismatch: the guard is real, just unwired", (() => {
     const w = finalizeWinnerCheck({ ...mine }, ME, EFF + 1, winEnd - 2);   // commitHeight EFF+1 != effectiveHeight EFF
     return w.safe === false && /effective height changed|displaced/.test(w.reason || "");
   })());
@@ -273,7 +273,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   })());
 
   // ── N-2 freeze half (Plans/68 B2; cairnx-core 0.1.36): a finalize raised BEFORE the displacement
-  //    contest froze is rejected by the resolver AFTER the fee moved — the gate must now refuse it.
+  //    contest froze is rejected by the resolver AFTER the fee moved; the gate must now refuse it.
   //    MUTATION CONTRACT: the too-early case FAILS on 0.2.56 (the old gate had no freeze check).
   const freezeGate = EFF + REG_COMMIT_MAX_BLOCKS + 2; // + FINALIZE_TIP_MARGIN; pass STRICTLY ABOVE
   ok("NFIN-N2: a too-early finalize (contest not frozen) refuses", (() => {
@@ -286,7 +286,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   })());
 }
 
-// ── NACT (Plans/68 B2): the nrenew/nset approve gate — fee-bearing records that BURN on a resolver
+// ── NACT (Plans/68 B2): the nrenew/nset approve gate; fee-bearing records that BURN on a resolver
 //    no-op. Block only on definitive no-ops (404; nset owner mismatch); warn on transport failure
 //    (fail-open, the F-FINALIZE non-goal) and on a lapsed renew (in-grace renewal is legal).
 {
@@ -316,13 +316,13 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, expired: true } }, ME);
     return g.block === false && /LAPSED/.test(g.note || "");
   })());
-  // NRENEW-REJECT-AFTER-FEE (Plan 70 R2): fee-burning nrenew shapes WARN (never hard-block — resolver state
+  // NRENEW-REJECT-AFTER-FEE (Plan 70 R2): fee-burning nrenew shapes WARN (never hard-block; resolver state
   // may be stale). Mutation-sensitive: dropping either warn returns note:null and fails these.
-  ok("NRENEW-AFTER-FEE: nrenew of a PENDING reservation WARNS (renewal ignored on-chain, fee burned) — not blocked", (() => {
+  ok("NRENEW-AFTER-FEE: nrenew of a PENDING reservation WARNS (renewal ignored on-chain, fee burned): not blocked", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, pending: true } }, ME);
     return g.block === false && /pending reservation/.test(g.note || "");
   })());
-  ok("NRENEW-AFTER-FEE: nrenew of a GRACE-period (lapsed) name owned by someone else WARNS (in-grace renewal is owner-only) — not blocked", (() => {
+  ok("NRENEW-AFTER-FEE: nrenew of a GRACE-period (lapsed) name owned by someone else WARNS (in-grace renewal is owner-only): not blocked", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: OTHER, expired: true } }, ME);
     return g.block === false && /different address/.test(g.note || "");
   })());
@@ -363,17 +363,17 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   // (b) a genuinely-new EXTERNAL recipient still warns (the defense is preserved for real strangers).
   {
     const w = sendWarnings([STRANGER], [], [MY]);
-    ok("NS own-account: a genuinely-new external recipient STILL gets a first-time warning", w.length === 1 && /First time sending/.test(w[0]));
+    ok("NS own-account: a genuinely-new external recipient STILL gets a first-time warning", w.length === 1 && /First time sending/.test(w[0] ?? ""));
   }
   // (c) a LOOK-ALIKE of one of your own addresses STILL fires the poisoning warning (the delicate half).
   {
     const w = sendWarnings([MY_LOOKALIKE], [], [MY]);
-    ok("NS own-account: a look-alike of your OWN address still fires the address-poisoning warning", w.length === 1 && /address-poisoning/.test(w[0]));
+    ok("NS own-account: a look-alike of your OWN address still fires the address-poisoning warning", w.length === 1 && /address-poisoning/.test(w[0] ?? ""));
   }
   // (d) a PRIOR paid recipient is not re-warned.
   ok("NS own-account: a prior paid recipient is not re-warned", sendWarnings([PAID], [PAID], [MY]).length === 0);
   // MUT control (non-vacuity): keying the first-time check on paidRecipients ALONE (own addr NOT in the set)
-  // WOULD warn on the own address — the pre-fix behavior this suppression fixes.
+  // WOULD warn on the own address; the pre-fix behavior this suppression fixes.
   ok("NS own-account MUT control: keying on sends-only (own addr absent) WOULD warn (proves the fix is load-bearing)", sendWarnings([MY], [], []).length === 1);
 }
 

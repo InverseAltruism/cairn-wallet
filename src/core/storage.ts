@@ -22,14 +22,24 @@ export const localStore = (): Store => ({
   async del(k) { localStorage.removeItem("cairn:" + k); },
 });
 
-// chrome.storage.local adapter (extension). `chrome` is provided by the runtime.
+// The part of the extension's chrome.storage API the two adapters call. `chrome` is provided by the runtime.
+interface ChromeArea {
+  get(k: string): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+  remove(k: string): Promise<void>;
+  getBytesInUse(k: string): Promise<number>;
+}
+type ChromeGlobal = { chrome?: { storage?: { local?: ChromeArea; session?: ChromeArea } } };
+
+// chrome.storage.local adapter (extension). The area is read on each call; outside an extension a call rejects.
 export const chromeStore = (): Store => {
-  const c: any = (globalThis as any).chrome;
+  const c = (globalThis as ChromeGlobal).chrome;
+  const local = (): ChromeArea => { const a = c?.storage?.local; if (!a) throw new Error("chrome.storage.local is unavailable"); return a; };
   return {
-    async get(k) { return (await c.storage.local.get(k))[k] ?? null; },
-    async set(k, v) { await c.storage.local.set({ [k]: v }); },
-    async del(k) { await c.storage.local.remove(k); },
-    async bytesInUse(k) { return Number(await c.storage.local.getBytesInUse(k)) || 0; },
+    async get(k) { return (await local().get(k))[k] ?? null; },
+    async set(k, v) { await local().set({ [k]: v }); },
+    async del(k) { await local().remove(k); },
+    async bytesInUse(k) { return Number(await local().getBytesInUse(k)) || 0; },
   };
 };
 
@@ -39,11 +49,12 @@ export const chromeStore = (): Store => {
 // password. Returns null where session storage is unavailable (older runtime / non-extension host),
 // so the wallet transparently falls back to in-memory-only behaviour.
 export const chromeSessionStore = (): Store | null => {
-  const c: any = (globalThis as any).chrome;
+  const c = (globalThis as ChromeGlobal).chrome;
   if (!c?.storage?.session) return null;
+  const session = (): ChromeArea => { const a = c?.storage?.session; if (!a) throw new Error("chrome.storage.session is unavailable"); return a; };
   return {
-    async get(k) { return (await c.storage.session.get(k))[k] ?? null; },
-    async set(k, v) { await c.storage.session.set({ [k]: v }); },
-    async del(k) { await c.storage.session.remove(k); },
+    async get(k) { return (await session().get(k))[k] ?? null; },
+    async set(k, v) { await session().set({ [k]: v }); },
+    async del(k) { await session().remove(k); },
   };
 };

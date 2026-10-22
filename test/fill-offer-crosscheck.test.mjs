@@ -13,7 +13,7 @@
 //      and the honest fill submits the same bytes as the 0.2.72 tree.
 //   4. Latency: a slow clarvis does not lengthen the honest fill (the read runs beside the scan, never awaited).
 //
-// RED-FIRST: replace the secondSourceOfferConflict call in wallet.ts fclaimLanePreflight with `null` and the
+// RED-FIRST: replace the secondSourceOfferConflict call in fillpreflight.ts fclaimLanePreflight with `null` and the
 // refusal rows of sections 2 and 3 go red.
 // Run: node --import tsx test/fill-offer-crosscheck.test.mjs   (offline)
 import { secondSourceOfferConflict } from "../src/core/offerxcheck.js";
