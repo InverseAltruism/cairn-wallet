@@ -61,11 +61,16 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
 - Offer expiry (both offer-id lanes), strand avoidance: the node refuses an attest after its proposal's expiry
   epoch, in mempool admission and in block apply, so a fill that is not mined by the offer's last live block (the
   vendored `offerExpiryHeightOf` minus one) sits unconfirmed and is dropped; no payment moves. For offers anchored at
-  or above V22 resolve() expires them at the same boundary. The resolver serves an offer open until its own tip
-  reaches the last live block. The wallet takes the expiry epoch and anchor height from the merkle-proven record and
-  refuses with `FILL_UNSAFE` when the last live block is below the tip plus the vendored `FILL_TIP_MARGIN` (4, the
-  fclaim lane's margin for the same strand), with the tip clamped up by the PoW-backed floor; with no readable tip
-  and no floor it refuses as `VERIFY_UNAVAILABLE` (test/fill-failclosed.test.mjs, test/fill-token-content.test.mjs).
+  or above V22 resolve() expires them at the same boundary. Below V22 the v2.1 cap could expire an offer in
+  resolve() before its L0 expiry, so a fill in between would be mined and rejected; such an offer expires within 168
+  epochs of an anchor below 41,300, and on 2026-10-23 the live resolver listed none open (237 offers, 2 open,
+  neither anchored below 41,300; the orchestrator's read of `/cairnx/offers`). The resolver serves an offer open
+  until its own tip reaches the last live block. The wallet takes the expiry epoch and anchor height from the
+  merkle-proven record and refuses with `FILL_UNSAFE` when the last live block is below the tip plus the vendored
+  `FILL_TIP_MARGIN` (4, the fclaim lane's margin for the same strand), with the tip clamped up by the PoW-backed
+  floor. With no readable tip and no floor the check is skipped and the fill proceeds: the worst outcome is a strand,
+  and a decline there would be a new refusal with no money at risk (test/fill-failclosed.test.mjs,
+  test/fill-token-content.test.mjs).
   The fill cards show the listed offer's expiry block and the blocks left after the floor-clamped tip, from the
   offer service's listing (display only), and name a refusal only when `offerFillTooLate` says the preflight will
   make it (test/approve-card-honesty.test.mjs).

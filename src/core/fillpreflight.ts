@@ -49,11 +49,11 @@ export function offerFillTooLate(expiresAt: number, tip: number): boolean {
 }
 
 // The offer-id lanes' expiry check, on the merkle-proven expiry and anchor height. The tip is clamped up by the
-// PoW-backed floor, as the sunset check is, so a deflating RPC cannot hide that the offer is about to expire.
+// PoW-backed floor, as the sunset check is, so a deflating RPC cannot hide that the offer is about to expire. With
+// no tip and no floor the check is skipped: the worst outcome is a strand, and no payment moves.
 async function offerExpiryRefusal(wallet: FillPreflightIo, proven: ProvenOfferPayto, tip: number): Promise<FillRefusal | null> {
   const at = Math.max(tip, await wallet.tipFloor());
-  if (!(at > 0) || !Number.isFinite(proven.expiresEpoch) || !Number.isInteger(proven.height))
-    return { ok: false, error: "couldn't check this offer's expiry against the chain tip yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+  if (!(at > 0) || !Number.isFinite(proven.expiresEpoch) || !Number.isInteger(proven.height)) return null;
   const expiresAt = offerExpiryHeightOf(proven.expiresEpoch, proven.height);
   if (offerFillTooLate(expiresAt, at))
     return { ok: false, error: `refusing to sign: this offer expires at block ${expiresAt.toLocaleString("en-US")} and the chain is at ${at.toLocaleString("en-US")}, so the fill cannot be mined in time; it would sit unconfirmed and be dropped. Ask the seller to relist.`, sighashMatch: false, code: "FILL_UNSAFE" };

@@ -112,8 +112,9 @@ console.log("\nOffer expiry on the offer-id CSD lane:");
   check(`tip 120,025, last live block 120,029 at tip + 4: signs and submits (${ok25.r?.code ?? "ok"})`, ok25.r?.ok === true && ok25.submits === 1);
   const deflated = await run(119_000, 120_027);
   check(`a deflated tip (119,000) with the PoW floor at 120,027: refused (${deflated.r?.code})`, deflated.r?.ok === false && deflated.r?.code === "FILL_UNSAFE" && deflated.submits === 0);
+  // With no readable tip and no floor the check is skipped: the worst outcome is a strand, and no payment moves.
   const noTip = await run(null);
-  check(`no readable tip and no floor: refused as retryable (${noTip.r?.code})`, noTip.r?.ok === false && noTip.r?.code === "VERIFY_UNAVAILABLE" && noTip.submits === 0);
+  check(`no readable tip and no floor: the expiry check is skipped and the fill signs (${noTip.r?.code ?? "ok"})`, noTip.r?.ok === true && noTip.submits === 1);
 }
 
 globalThis.fetch = origFetch;

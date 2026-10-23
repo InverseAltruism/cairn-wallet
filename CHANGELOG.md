@@ -7,9 +7,8 @@
   past the chain tip, the margin the reservation lane already uses): "refusing to sign: this offer expires at block
   N and the chain is at M, so the fill cannot be mined in time; it would sit unconfirmed and be dropped. Ask the
   seller to relist." (`FILL_UNSAFE`). The node refuses a fill after its offer's expiry, so no payment moves; before
-  this the wallet signed such a fill and it sat as a pending row until dropped. With no readable chain tip the fill
-  refuses as `VERIFY_UNAVAILABLE`: "couldn't check this offer's expiry against the chain tip yet; try again in a
-  moment".
+  this the wallet signed such a fill and it sat as a pending row until dropped. With no readable chain tip the
+  check is skipped and the fill proceeds, since the worst outcome is a strand.
   The fill approval card (CSD and token) now shows when the listed offer expires, counted from the chain tip: "offer
   expires at block N, K blocks after the current tip (~X)"; "(too close to be mined in time: the wallet will refuse
   this fill)" when the wallet will refuse it; "offer expired at block N (the wallet will refuse this fill)" once
