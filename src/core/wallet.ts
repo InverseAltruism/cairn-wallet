@@ -90,6 +90,12 @@ const SECOND_SOURCE_TIMEOUT_MS = 12000;
 // (2026-10-10) was p50 4.0 min and p95 23.7 min, about 12 blocks at 2 minutes a block; 15 blocks (30 min) keeps
 // a margin above p95. A refusal costs the taker a relist; a fill that lands after expiry costs the payment.
 const FILL_EXPIRY_MARGIN = 15;
+// The block at which the served offer expires, for the fill cards. Display only: the fill preflight checks the
+// merkle-proven record's expiry before it signs.
+function servedExpiryHeight(o: { expiresEpoch?: unknown; height?: unknown }): number | undefined {
+  const e = Number(o?.expiresEpoch), h = Number(o?.height);
+  return Number.isSafeInteger(e) && e >= 0 && Number.isSafeInteger(h) && h >= 0 ? offerExpiryHeightOf(e, h) : undefined;
+}
 
 // The idle window shared by the wallet's auto-lock AND its session-rehydrate expiry, and by the
 // background alarm that ENFORCES the lock. Exported so the decoy default here and background's
@@ -1394,7 +1400,7 @@ export class Wallet {
   // (BigInt-exact, same cairnxTradeFee the convention uses). Returns ok:false on any unreachable/mismatch so
   // the UI keeps its loud caution — never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
   // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
-  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string }> {
+  async tokenFillQuote(proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string; expiresAt?: number }> {
     try {
       const so = await this.servedOpenOffer(proposalId);
       if (!so.ok) return so;
@@ -1421,6 +1427,7 @@ export class Wallet {
         ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName,
         wantDecimals: meta[w.ticker]?.decimals, wantDeployId: meta[w.ticker]?.deployId,
         giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined,
+        expiresAt: servedExpiryHeight(o),
       };
     } catch { return { ok: false, error: "offer unavailable" }; }
   }
@@ -1438,7 +1445,7 @@ export class Wallet {
 
   // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
   // attested id on the reservation lane) and the asset the offer service lists as received. Display only.
-  async fillOfferView(proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number }> {
+  async fillOfferView(proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number }> {
     try {
       const so = await this.servedOpenOffer(proposalId);
       if (!so.ok) return so;
@@ -1450,7 +1457,7 @@ export class Wallet {
       const giveAmount = g?.amount != null ? String(g.amount) : undefined;
       const giveName = typeof g?.name === "string" ? g.name : undefined;
       const meta = giveTicker ? await this.tokenDisplayMeta([giveTicker]) : {};
-      return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined };
+      return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, expiresAt: servedExpiryHeight(o) };
     } catch { return { ok: false, error: "offer unavailable" }; }
   }
 

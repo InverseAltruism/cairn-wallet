@@ -332,6 +332,7 @@ async function fillTokenSim(r: any) {
   const live = () => gen === paintGen && renderedId === r.id;
   const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };
   try {
+    const epochRead = bounded(call("epoch"));   // display only: the offer's remaining window on the card
     let q: any = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       q = await call("tokenFillQuote", (r.params || {}).proposalId).catch(() => null);
@@ -346,7 +347,9 @@ async function fillTokenSim(r: any) {
     const shown = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total, giveTicker: q.giveTicker, giveAmount: q.giveAmount, giveName: q.giveName } : undefined;
     rs(r.id).tokenQuoteDisplayed = shown;
     rs(r.id).tokenPreview = shown ? "ready" : "error";
-    show(tokenQuoteHtml(q));
+    const epoch = await epochRead;
+    if (!live()) return;
+    show(tokenQuoteHtml(q, epoch));
   } catch {
     rs(r.id).tokenPreview = "error";
     show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
@@ -402,9 +405,9 @@ async function fillFillView(r: any) {
   const el = document.getElementById("fill-view");
   if (!el) return;   // token-priced fills carry #token-sim instead
   const id = String((r.params || {}).proposalId || "");
-  const view = await bounded(call("fillOfferView", id));
+  const [view, epoch] = await Promise.all([bounded(call("fillOfferView", id)), bounded(call("epoch"))]);
   if (renderedId !== r.id) return;
-  el.innerHTML = fillViewHtml(view as any, id);
+  el.innerHTML = fillViewHtml(view as any, id, epoch);
   (el as HTMLElement).hidden = false;
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning
