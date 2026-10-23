@@ -11,8 +11,9 @@
   check is skipped and the fill proceeds, since the worst outcome is a strand.
   The fill approval card (CSD and token) now shows when the listed offer expires, counted from the chain tip: "offer
   expires at block N, K blocks after the current tip (~X)"; "(too close to be mined in time: the wallet will refuse
-  this fill)" when the wallet will refuse it; "offer expired at block N (the wallet will refuse this fill)" once
-  it has.
+  this fill)" when the wallet will refuse it; "offer expires at block N, the next block (the wallet will refuse this
+  fill)" one block before; "offer expired at block N (the wallet will refuse this fill)" once the tip has reached
+  it. The time is in minutes under an hour (2 minutes a block).
 
 - A name whose record was set by a market sale or by a re-claim after its lease lapsed now gives the reason
   "NAME.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't

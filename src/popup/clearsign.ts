@@ -157,12 +157,16 @@ export function feeLine(raw: number, fallback = 0): string {
 // (mirrors the FEE_WARN pattern); otherwise we show the raw epoch alone (the exact signed value).
 const EXPIRY_WARN_EPOCHS = 100000; // epochs past current ≈ >11 years — unusually long for a propose
 const BLOCK_SECS = 120; // target block time; not exported by the vendored bundle
-function humanEpochs(epochs: number): string {
-  const days = epochs * EPOCH_LEN * BLOCK_SECS / 86400;
-  if (days < 1) return `~${Math.max(1, Math.round(days * 24))} h`;
+// Time for a number of blocks at the target block time: minutes under an hour, then hours, days, years.
+function humanBlocks(blocks: number): string {
+  const secs = blocks * BLOCK_SECS;
+  if (secs < 3600) return `~${Math.max(1, Math.round(secs / 60))} min`;
+  const days = secs / 86400;
+  if (days < 1) return `~${Math.round(days * 24)} h`;
   if (days < 365) return `~${Math.round(days)} day(s)`;
   return `~${(days / 365).toFixed(1)} year(s)`;
 }
+const humanEpochs = (epochs: number): string => humanBlocks(epochs * EPOCH_LEN);
 export function expiryLine(expiresEpoch: unknown, currentEpoch?: unknown): string {
   if (expiresEpoch === undefined || expiresEpoch === null) return "";
   const e = Number(expiresEpoch);
@@ -479,10 +483,11 @@ export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
   const block = h.toLocaleString("en-US");
   if (!Number.isSafeInteger(at) || at <= 0) return `offer expires at block ${block}`;
   const left = h - 1 - at;   // blocks after the tip that can still mine the fill
-  if (left <= 0) return `offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>`;
+  if (at >= h) return `offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>`;
+  if (left <= 0) return `offer expires at block ${block}, the next block <span class="err">(the wallet will refuse this fill)</span>`;
   const where = `offer expires at block ${block}, ${left} block${left === 1 ? "" : "s"} after the current tip`;
   if (offerFillTooLate(h, at)) return `${where} <span class="err">(too close to be mined in time: the wallet will refuse this fill)</span>`;
-  return `${where} (${humanEpochs(left / EPOCH_LEN)})`;
+  return `${where} (${humanBlocks(left)})`;
 }
 
 // #fill-view for a CSD-paid fill: the asset the offer service lists as received, and the listing id when the

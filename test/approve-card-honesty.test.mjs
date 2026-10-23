@@ -56,9 +56,11 @@ t("1f the card says the wallet will refuse a fill only when it will", () => {
   // An offer anchored at 120,000 with expiresEpoch 4,000 expires at 120,030; its last live block is 120,029 and the
   // chain accepts a fill through it. At tip 120,000 (inside epoch 4,000) the fill still has 29 blocks.
   const at = (tip) => fillViewHtml({ ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "1", expiresAt: 120_030 }, LIST, tip);
-  assert.match(at(120_000), /offer expires at block 120,030, 29 blocks after the current tip \(~1 h\)/); assert.doesNotMatch(at(120_000), /refuse/);
+  assert.match(at(120_000), /offer expires at block 120,030, 29 blocks after the current tip \(~58 min\)/); assert.doesNotMatch(at(120_000), /refuse/);
+  assert.match(at(120_020), /9 blocks after the current tip \(~18 min\)/);
   assert.match(at(120_025), /4 blocks after the current tip/); assert.doesNotMatch(at(120_025), /refuse/);
   assert.match(at(120_026), /offer expires at block 120,030, 3 blocks after the current tip <span class="err">\(too close to be mined in time: the wallet will refuse this fill\)<\/span>/);
+  assert.match(at(120_029), /offer expires at block 120,030, the next block <span class="err">\(the wallet will refuse this fill\)<\/span>/);
   assert.match(at(120_030), /offer expired at block 120,030 <span class="err">\(the wallet will refuse this fill\)<\/span>/);
 });
 
