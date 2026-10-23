@@ -3,7 +3,7 @@
 //
 // Pre-0.2.57, a clean 404 (a valid L1 proposal that is NOT an open CairnX offer) and a 200 whose body
 // lacks a parseable status (MITM / garbling proxy) both PROCEEDED to sign: the wallet paid, L1 moved
-// the CSD, and resolve() ignored the attest — the whole payment burned. Now both refuse with the
+// the CSD, and resolve() ignored the attest; the whole payment burned. Now both refuse with the
 // retryable OFFER_UNKNOWN. The 5xx/unreachable posture (VERIFY_UNAVAILABLE) and the happy path are
 // pinned unchanged.
 //
@@ -22,17 +22,17 @@ const { addr: A } = await w.create("super-secret-pw");
 // F2-legacy: the legacy CSD lane now binds the payment recipient to the merkle-proven offer author. The success
 // case's offer is honest (payto 0xce, seller 0xcd); inject the proven author so it is not falsely refused. The
 // fail-closed cases (404/garbled/status-less/5xx) refuse BEFORE this bind, so they are unaffected.
-w.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: "5000000", taker: String(A).toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "csd" } });   // B7e: proven give matches the served offer (give leg passes)
+w.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: "5000000", taker: String(A).toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "csd" } });   // B7e: proven give matches the served offer (give leg passes)
 const coin = mkCoin(100_000_002);
 const served = [coin];
 
-function mkStub(offerReply) {
+function mkStub(offerReply, tip = 50_000) {
   const stats = { submits: [] };
   globalThis.fetch = async (url, init) => {
     const u = String(url);
     if (u.includes("/tx/submit")) { stats.submits.push(1); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
     if (u.match(/\/utxos\//)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
-    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: 50_000 }) };
+    if (u.endsWith("/tip")) return tip === null ? { ok: false, status: 503, json: async () => ({}) } : { ok: true, status: 200, json: async () => ({ height: tip }) };
     if (u.includes("/cairnx/offer/")) return offerReply();
     const t = txReply(u, served);
     if (t) return t;
@@ -49,7 +49,7 @@ const offer = {
 };
 const outputs = requiredFillOutputs(offer, 5_000_000n).map(({ to, value }) => ({ to, value: Number(value) }));
 
-console.log("B1 — fail-closed fill preflight:");
+console.log("B1: fail-closed fill preflight:");
 {
   const s = mkStub(() => ({ ok: false, status: 404, json: async () => ({ error: "not found" }) }));
   const r = await w.fillOffer({ proposalId: id, outputs });
@@ -78,6 +78,43 @@ console.log("B1 — fail-closed fill preflight:");
   const s = mkStub(() => ({ ok: true, status: 200, json: async () => offer }));
   const r = await w.fillOffer({ proposalId: id, outputs });
   check("a positively-parsed open offer still proceeds and submits (no over-refusal)", r?.ok === true && s.submits.length === 1);
+}
+
+// Offer expiry on the offer-id lane. A taker-bound offer anchored at 120,000 with expiresEpoch 4,000 expires at
+// block 120,030 (the first block of epoch 4,001): the node refuses the fill's attest from there, so a fill not mined
+// by 120,029 strands. The resolver serves the offer open until its own tip reaches 120,029, so the wallet checks
+// the merkle-proven expiry itself against the floor-clamped tip, refusing when the last live block is below
+// tip + FILL_TIP_MARGIN (4), the bundle's margin for the same strand on the fclaim lane.
+console.log("\nOffer expiry on the offer-id CSD lane:");
+{
+  const H0 = 120_000, E = 4_000;
+  const expOffer = { ...offer, id: "0x" + "7e".repeat(32), expiresEpoch: E, height: H0 };
+  const expOuts = requiredFillOutputs(expOffer, 5_000_000n).map(({ to, value }) => ({ to, value: Number(value) }));
+  const fresh = async (floor = 0) => {
+    const st = memoryStore();
+    const wx = new Wallet(st);
+    const { addr } = await wx.create("expiry-pw-12345");
+    if (floor > 0) await st.set("spvNodeTipFloor", floor);
+    wx.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), expiresEpoch: E, height: H0, terms: { height: H0, feeBps: 150, value: "5000000", taker: String(addr).toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "csd" } });
+    return { wx, served: { ...expOffer, taker: addr } };
+  };
+  const run = async (tip, floor = 0) => {
+    const { wx, served } = await fresh(floor);
+    const s = mkStub(() => ({ ok: true, status: 200, json: async () => served }), tip);
+    const r = await wx.fillOffer({ proposalId: expOffer.id, outputs: expOuts });
+    return { r, submits: s.submits.length };
+  };
+  const past = await run(120_030);
+  check(`tip in the epoch after expiry, offer still served open: refused (${past.r?.code})`, past.r?.ok === false && past.r?.code === "FILL_UNSAFE" && past.submits === 0);
+  const edge = await run(120_026);
+  check(`tip 120,026, last live block 120,029 below tip + 4: refused (${edge.r?.code})`, edge.r?.ok === false && edge.r?.code === "FILL_UNSAFE" && edge.submits === 0);
+  const ok25 = await run(120_025);
+  check(`tip 120,025, last live block 120,029 at tip + 4: signs and submits (${ok25.r?.code ?? "ok"})`, ok25.r?.ok === true && ok25.submits === 1);
+  const deflated = await run(119_000, 120_027);
+  check(`a deflated tip (119,000) with the PoW floor at 120,027: refused (${deflated.r?.code})`, deflated.r?.ok === false && deflated.r?.code === "FILL_UNSAFE" && deflated.submits === 0);
+  // With no readable tip and no floor the check is skipped: the worst outcome is a strand, and no payment moves.
+  const noTip = await run(null);
+  check(`no readable tip and no floor: the expiry check is skipped and the fill signs (${noTip.r?.code ?? "ok"})`, noTip.r?.ok === true && noTip.submits === 1);
 }
 
 globalThis.fetch = origFetch;

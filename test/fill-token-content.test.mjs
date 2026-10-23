@@ -29,7 +29,7 @@ const SELLER = "0x" + "cd".repeat(20);
 // The TRUE, merkle-proven terms resolve() would materialize from the on-chain offer record: give 10 AAA for
 // 7 PAY. provenPaytoForTest injects these (the live SPV path is unavailable under the stubbed fetch); the
 // SERVED offer is what a hostile resolver returns, and the bind refuses whenever the two diverge.
-const TRUE_PROVEN = () => ({ payto: SELLER, seller: SELLER, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
+const TRUE_PROVEN = () => ({ payto: SELLER, seller: SELLER, expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
 // The HONEST served offer (matches TRUE_PROVEN exactly).
 const honestOffer = { id: OID, seller: SELLER, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 };
 
@@ -107,7 +107,7 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
 //    serves it as a token offer. The symmetric want-type leg refuses (understating a CSD payment as a token
 //    swap). Proven terms carry value + wantType csd; served pretends token.
 {
-  const csdProven = () => ({ payto: SELLER, seller: SELLER, terms: { height: 47_000, feeBps: 150, value: "5000000", taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "csd" }, wantTicker: undefined, wantAmount: undefined });
+  const csdProven = () => ({ payto: SELLER, seller: SELLER, expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: "5000000", taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "csd" }, wantTicker: undefined, wantAmount: undefined });
   const { r, s } = await fillServed("pw-wanttype-12345", honestOffer, csdProven);
   check(`proven-CSD offer served as token is REFUSED (want-type leg) (${r?.code})`, r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
 }
@@ -119,7 +119,7 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
   check(`unprovable token offer fails closed-retryable VERIFY_UNAVAILABLE (${r?.code})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && s.submits.length === 0);
 }
 
-// 8. RT-W2 — the REVIEWED-quote bind. The review card's debit quote was a live resolver read,
+// 8. RT-W2: the REVIEWED-quote bind. The review card's debit quote was a live resolver read,
 //    unbound; a resolver answering LOW at review and honest at click debited the larger proven
 //    amount behind the low card. The displayed quote is now threaded to the preflight and must
 //    equal the proven want. RED-FIRST: case 8a submits on pre-fix code (the quote was not bound).
@@ -209,5 +209,13 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
 }
 
 globalThis.fetch = origFetch;
+// The token lane runs the same offer-expiry check as the CSD lane: an offer whose proven expiry (epoch 1,665,
+// expired at block 49,980) the resolver still serves open is refused at tip 50,000 before anything is signed.
+{
+  const expired = () => ({ ...TRUE_PROVEN(), expiresEpoch: 1_665 });
+  const { r, s } = await fillServed("pw-expiry-12345", { ...honestOffer, expiresEpoch: 1_665 }, expired);
+  check(`a token offer past its expiry is refused (${r?.code})`, r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
+}
+
 console.log(`\nfill-token-content: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

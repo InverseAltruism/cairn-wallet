@@ -336,7 +336,7 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 | Caller | Test |
 |---|---|
 | `replayName` (`blockAt` per hinted height) | `test/namespv-store-restore.test.mjs` (a real name in chunk 7, write volume), `test/namespv-hints-floor.test.mjs` (hint floor, case 19) |
-| the fclaim lane's offer block (`fillspv.ts` `bindBlock`) | `test/fillspv-store.test.mjs` |
+| the fclaim lane's offer block (`fillspv.ts` `bindBlockOrThrow`) | `test/fillspv-store.test.mjs` |
 | the V29 other offer (`provenClosed`) | `test/fill-holds-v29.test.mjs` (the real offer at 30,332 below the anchor) |
 | `provenOfferPayto` | `test/fillspv-store.test.mjs` |
 | the confirm-time skip (`hashAt`) | `test/namespv-hints-floor.test.mjs` |

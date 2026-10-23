@@ -332,6 +332,7 @@ async function fillTokenSim(r: any) {
   const live = () => gen === paintGen && renderedId === r.id;
   const show = (html: string) => { el.innerHTML = html; (el as HTMLElement).hidden = false; };
   try {
+    const tipRead = cardTip();   // display only: the offer's remaining blocks on the card
     let q: any = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       q = await call("tokenFillQuote", (r.params || {}).proposalId).catch(() => null);
@@ -346,7 +347,9 @@ async function fillTokenSim(r: any) {
     const shown = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total, giveTicker: q.giveTicker, giveAmount: q.giveAmount, giveName: q.giveName } : undefined;
     rs(r.id).tokenQuoteDisplayed = shown;
     rs(r.id).tokenPreview = shown ? "ready" : "error";
-    show(tokenQuoteHtml(q));
+    const tip = await tipRead;
+    if (!live()) return;
+    show(tokenQuoteHtml(q, tip));
   } catch {
     rs(r.id).tokenPreview = "error";
     show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
@@ -396,15 +399,22 @@ async function fillBalance(r: any) {
     }
   } catch { /* offline; leave the static cost line */ }
 }
+// The tip a fill card measures the offer's expiry against: the node tip clamped up by the PoW-backed floor, as the
+// preflight clamps it; undefined when neither read answers (the card then shows the expiry block alone).
+async function cardTip(): Promise<number | undefined> {
+  const [t, f] = await Promise.all([bounded(call("tip")), bounded(call("tipFloor"))]);
+  const at = Math.max(Number(t) || 0, Number(f) || 0);
+  return at > 0 ? at : undefined;
+}
 let fillViewForId: string | null = null;
 async function fillFillView(r: any) {
   if (r.method !== "fillOffer" || fillViewForId === r.id) return; fillViewForId = r.id;
   const el = document.getElementById("fill-view");
   if (!el) return;   // token-priced fills carry #token-sim instead
   const id = String((r.params || {}).proposalId || "");
-  const view = await bounded(call("fillOfferView", id));
+  const [view, tip] = await Promise.all([bounded(call("fillOfferView", id)), cardTip()]);
   if (renderedId !== r.id) return;
-  el.innerHTML = fillViewHtml(view as any, id);
+  el.innerHTML = fillViewHtml(view as any, id, tip);
   (el as HTMLElement).hidden = false;
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning

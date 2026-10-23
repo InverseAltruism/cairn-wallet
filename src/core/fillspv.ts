@@ -14,13 +14,14 @@
 // window (never a resolver-supplied height, which a hostile source could inflate to shift the window past a
 // prior hold), NOT a resolver hint list. Any gap/mismatch/error THROWS → the preflight fails CLOSED.
 import {
-  rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSig, paidToFromOutputs, parseRecord,
+  parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
   provenOfferTerms, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer,
-  type RpcTxJson, type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms,
+  type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms,
 } from "../vendor/cairnx-spv.js";
-import { BodyMismatchError, liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
+import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
+import { BodyMismatchError, bindBlock, bindSigner, recoverSigner, toChainEvent } from "./spvbind.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
 // (`provenOfferTerms` + `feeBpsAt`, verifyfill.ts) - this file used to carry its own hand copies of
@@ -36,73 +37,19 @@ export { feeBpsAt, type ProvenOfferTerms, type MintedProvenOfferTerms } from "..
 // so its grant height is at most MAX_HOLD_SPAN below the tip.
 const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;   // 89
 
-// The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so an event
-// whose authenticating input looks like one has no prevout owner to bind against. Mirrors namespv.ts.
-const COINBASE_TXID = "0x" + "00".repeat(32);
-const isCoinbaseInput = (i: { prevTxid: string; vout: number }) =>
-  String(i.prevTxid).toLowerCase() === COINBASE_TXID && Number(i.vout) === 0xffffffff;
-
-// outputs → addr→sum(value) map via the vendored sink (the exact aggregation the resolver/scanner use).
-// SPV-specific glue only: raw outputs carry a scriptPubkey, not an addr. Mirrors namespv.ts outputsToPaidTo.
-function outputsToPaidTo(outputs: Tx["outputs"]): Record<string, string> {
-  const decoded: { addr: string; value: number }[] = [];
-  for (const o of outputs) {
-    const a = String(o.scriptPubkey ?? "").toLowerCase().replace(/^0x/, "");
-    if (!/^[0-9a-f]{40}$/.test(a)) continue;
-    decoded.push({ addr: "0x" + a, value: Number(o.value) });
-  }
-  return paidToFromOutputs(decoded);
+// The fill boundary's bind contract: a body that fails the shared bind throws, so every read here fails closed;
+// a merkle mismatch throws BodyMismatchError so fillpreflight.ts can name the RPC and the header source.
+async function bindBlockOrThrow(spv: SpvSource, height: number): Promise<{ ids: string[]; rebuilt: Tx[] }> {
+  const b = await bindBlock(spv, height);
+  if (b.ok) return { ids: b.ids, rebuilt: b.rebuilt };
+  throw b.kind === "body-mismatch" ? new BodyMismatchError(height, spv.bodySource, spv.headerSource) : new Error(b.reason);
 }
 
-// Recover + AUTHENTICATE a tx's signer (the merkle root commits the body but NOT the scriptSig). null on any
-// malformation / bad signature. Same strict vendored recoverSigner + sighash(tx) as namespv.ts.
-function recoverSigner(tx: Tx): string | null {
-  const ss = tx.inputs?.[0]?.scriptSig;
-  if (typeof ss !== "string") return null;
-  try { return recoverSig(ss, sighash(tx)); } catch { return null; }
-}
-
-// ★ KEEP-IN-SYNC with namespv.ts toChainEvent + the cairnx scanner: the emitted field shapes must match so
-// resolve()/verifyFillSpv produce identical state from either feed. Adds the PoW-verified burial `depth`.
-function toProvenEvent(tx: Tx, id: string, height: number, pos: number, signer: string, depth: number): ProvenEvent | null {
-  if (!tx.app || tx.app.type === "None") return null;
-  const paidTo = outputsToPaidTo(tx.outputs);
-  if (tx.app.type === "Propose") {
-    return { kind: "propose", id: id.toLowerCase(), proposer: signer, uri: tx.app.uri, payloadHash: String(tx.app.payloadHash).toLowerCase(), expiresEpoch: Number(tx.app.expiresEpoch), height, pos, paidTo, depth };
-  }
-  const conf = Number(tx.app.confidence);
-  return { kind: "attest", txid: id.toLowerCase(), proposalId: String(tx.app.proposalId).toLowerCase(), attester: signer, score: Number(tx.app.score), confidence: Number.isSafeInteger(conf) && conf >= 0 ? conf : 0, height, pos, paidTo, depth };
-}
-
-// Fetch a block, rebuild EVERY tx, and require merkleRoot(txids) == the PoW-verified header's merkle root, so
-// a lying node cannot omit/alter/add any committed body. THROWS (fail-closed) on any mismatch. A plain/coinbase
-// tx may carry no `app` → default {None} before decode so it can't DoS the whole verify by making rpcTxToTx throw.
-async function bindBlock(spv: SpvSource, height: number): Promise<{ ids: string[]; rebuilt: Tx[] }> {
-  const { merkle, txs } = await spv.blockAt(height);
-  const rebuilt = txs.map((t) => rpcTxToTx(t.app ? (t as RpcTxJson) : ({ ...t, app: { type: "None" } } as RpcTxJson)));
-  const ids = rebuilt.map(ctxid);
-  // M7 (B5e, CVE-2012-2459): merkleRoot self-pairs an odd final row, so a served body whose LAST tx is
-  // duplicated hashes to the SAME root as the honest body. A real block can never contain a duplicate
-  // txid (double-spend of the coinbase output within one block), so reject it BEFORE the root compare -
-  // otherwise a hostile read path could smuggle a duplicated filler tx past the merkle bind.
-  if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length)
-    throw new Error(`block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)`);
-  if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase())
-    throw new BodyMismatchError(height, spv.bodySource, spv.headerSource);
-  return { ids, rebuilt };
-}
-
-// Bounded-concurrency block fetch preserving fail-closed semantics (BP4/N11): mirrors node.ts mapLimit -- a
-// tiny shared-index worker pool so the window is fetched with at most `limit` in flight (bounding the burst
-// against the per-IP proxy budget) while any thrown tamper rejects the whole pool. Order of COMPLETION does
-// not matter: `fn` only populates the per-height memo; the caller reads it back in strict height order.
+// Bounded-concurrency fan-out preserving fail-closed semantics (BP4/N11), for the block-window fetch and the
+// per-id proveEventAt reads: a tiny shared-index worker pool with at most `limit` in flight (bounding the burst
+// against the per-IP proxy budget) while any throw (a tamper) rejects the whole pool. Order of completion does
+// not matter to the callers: the window fetch only fills the per-height memo, read back in height order.
 const SCAN_POOL = 12;
-async function bindBlockPool(heights: readonly number[], limit: number, fn: (h: number) => Promise<unknown>): Promise<void> {
-  let i = 0;
-  const worker = async () => { while (i < heights.length) { const idx = i++; await fn(heights[idx]!); } };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, heights.length || 1)) }, worker));
-}
-/** Bounded worker pool (same semantics as bindBlockPool) for per-id proveEventAt fan-out. */
 export async function mapPool<T>(items: readonly T[], limit: number, fn: (item: T, i: number) => Promise<void>): Promise<void> {
   let i = 0;
   const worker = async () => { while (i < items.length) { const idx = i++; await fn(items[idx]!, idx); } };
@@ -221,7 +168,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   async function bindBlockMemo(height: number): Promise<{ ids: string[]; rebuilt: Tx[] }> {
     const hit = blockMemo.get(height);
     if (hit) return hit;
-    const b = await bindBlock(spv, height);
+    const b = await bindBlockOrThrow(spv, height);
     blockMemo.set(height, b);
     return b;
   }
@@ -237,14 +184,10 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       // bids is rebuilt.map(ctxid), so a found id has its body; a gap throws, keeping the scan fail-closed.
       const tx = rebuilt[pos], bid = bids[pos];
       if (!tx || bid === undefined) throw new Error(`block ${height}: no rebuilt body for ${k}`);
-      const signer = recoverSigner(tx);
-      const in0 = tx.inputs?.[0];
-      // NSPV-SIGSUB-1: bind the recovered signer to the COIN it spends (the merkle root does not commit the
-      // scriptSig), so a hostile node cannot swap in a foreign valid signature to re-attribute a record's author.
-      if (signer && in0 && !isCoinbaseInput(in0)) {
-        const spk = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-        if (spk && spk.toLowerCase() === signer) ev = toProvenEvent(tx, bid, height, pos, signer, verifiedTip - height + 1);
-      }
+      // NSPV-SIGSUB-1: the signer must own the coin the record spends; an unbindable record proves no event.
+      const author = await bindSigner(tx, spv);
+      const base = author.ok ? toChainEvent(tx, bid, height, pos, author.signer) : null;
+      if (base) ev = { ...base, depth: verifiedTip - height + 1 };   // verifyFillSpv reads the PoW burial depth
     }
     proven.set(k, ev);
     return ev;
@@ -261,7 +204,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // to its PoW-verified merkle root inside bindBlock, and the RESULTS are then processed STRICTLY in ascending
   // height order below, so the first-set semantics (heightOf/markScanned) and every buffer are byte-identical to
   // the old sequential walk. A tamper throws inside a worker and rejects the pool -> the preflight fails closed.
-  await bindBlockPool(heights, SCAN_POOL, bindBlockMemo);
+  await mapPool(heights, SCAN_POOL, async (h) => { await bindBlockMemo(h); });
   for (const h of heights) {
     const { ids: bids, rebuilt } = blockMemo.get(h)!;   // populated by the pool above; present or the pool threw
     for (const [pos, tx] of rebuilt.entries()) {
@@ -437,7 +380,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 // an honest fill). Reuses the same audited light-client primitives (liveSpvSource, bindBlock, prevoutScriptPubkey).
 export async function provenOfferPayto(
   opts: LiveSpvOpts & { offerId: string; offerHeight: number; spvSource?: SpvSource },
-): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null> {
+): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null> {
   const offerId = String(opts.offerId).toLowerCase();
   const offerHeight = Math.floor(Number(opts.offerHeight));
   if (!/^0x[0-9a-f]{64}$/.test(offerId) || !Number.isFinite(offerHeight) || offerHeight < 0) return null;
@@ -445,7 +388,7 @@ export async function provenOfferPayto(
     const spv = opts.spvSource ?? await liveSpvSource(opts);
     const { verifiedTip } = await spv.prepare(offerHeight);        // PoW-verify headers through the offer height
     if (!Number.isFinite(verifiedTip) || verifiedTip < offerHeight) return null;   // couldn't reach it -> retry
-    const { ids: bids, rebuilt } = await bindBlock(spv, offerHeight);   // merkle-COMPLETE bodies; throws on tamper
+    const { ids: bids, rebuilt } = await bindBlockOrThrow(spv, offerHeight);   // merkle-COMPLETE bodies; throws on tamper
     const pos = bids.findIndex((x) => x.toLowerCase() === offerId);
     const tx = rebuilt[pos];
     if (pos < 0 || !tx) return null;                               // the offer is not in its claimed block (tampered)
@@ -453,12 +396,9 @@ export async function provenOfferPayto(
     if (!app || app.type !== "Propose") return null;
     const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; want?: { payto?: string; value?: string; ticker?: string; amount?: string }; taker?: string; bid?: string; min?: string } | null;
     if (!rec || rec.t !== "offer") return null;
-    const signer = recoverSigner(tx);
-    const in0 = tx.inputs?.[0];
-    if (!signer || !in0 || isCoinbaseInput(in0)) return null;
-    const owner = await spv.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-    if (!owner || owner.toLowerCase() !== signer) return null;     // authorship not prevout-bound (tampered) MUTATE_FILLSPV_PREVOUT_BIND
-    const seller = signer;
+    const author = await bindSigner(tx, spv);
+    if (!author.ok) return null;                                   // authorship not prevout-bound (tampered)
+    const seller = author.signer;
     const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase())) ? String(rec.want.payto).toLowerCase() : seller; // MUTATE_PROVEN_PAYTO_DERIVE
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.
@@ -469,6 +409,7 @@ export async function provenOfferPayto(
     // swapguard verifyOfferContent want.ticker/want.amount bind. Undefined on a CSD-priced offer (no want.ticker).
     const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined; // MUTATE_PROVEN_WANT_TICKER
     const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined; // MUTATE_PROVEN_WANT_AMOUNT
-    return { payto, seller, terms, wantTicker, wantAmount };
+    // The proven expiry and anchor height (never served values) for the offer-id lanes' expiry check.
+    return { payto, seller, terms, expiresEpoch: Number(app.expiresEpoch), height: offerHeight, wantTicker, wantAmount };
   } catch { return null; }
 }

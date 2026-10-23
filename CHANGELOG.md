@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- A fill of an offer by its offer id (a taker-bound CSD offer or a token-priced offer) now refuses when the offer, by
+  its own on-chain record, expires too soon for the fill to be mined (its last live block is less than 4 blocks
+  past the chain tip, the margin the reservation lane already uses): "refusing to sign: this offer expires at block
+  N and the chain is at M, so the fill cannot be mined in time; it would sit unconfirmed and be dropped. Ask the
+  seller to relist." (`FILL_UNSAFE`). The node refuses a fill after its offer's expiry, so no payment moves; before
+  this the wallet signed such a fill and it sat as a pending row until dropped. With no readable chain tip the
+  check is skipped and the fill proceeds, since the worst outcome is a strand.
+  The fill approval card (CSD and token) now shows when the listed offer expires, counted from the chain tip: "offer
+  expires at block N, K blocks after the current tip (~X)"; "(too close to be mined in time: the wallet will refuse
+  this fill)" when the wallet will refuse it; "offer expires at block N, the next block (the wallet will refuse this
+  fill)" one block before; "offer expired at block N (the wallet will refuse this fill)" once the tip has reached
+  it. The time is in minutes under an hour (2 minutes a block).
+
+- A name whose record was set by a market sale or by a re-claim after its lease lapsed now gives the reason
+  "NAME.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't
+  confirm the new owner from the name's own records: confirm the address out-of-band before sending". The old
+  text named only open-lane and token sales, which was wrong for a sale bound to one buyer and for a re-claim.
+
+- Internal: the SPV checks that name verification (`namespv.ts`) and the reservation-fill boundary (`fillspv.ts`)
+  each carried a copy of (the full-block merkle bind with the duplicate-txid refusal, signer recovery, the coinbase
+  test and the event mapping) now live once in `src/core/spvbind.ts`. Every refusal keeps its text, and the
+  signatures the test suite produces are byte-identical before and after.
 - Exporting the private key from a damaged vault, one whose account list has no account at its active slot, now
   refuses with "corrupt vault (no account at its active slot)" instead of an internal error about reading `priv`.
 - Internal: the wallet engine `src/core/wallet.ts` is split by responsibility: the fill checks before signing

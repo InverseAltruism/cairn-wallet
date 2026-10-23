@@ -49,7 +49,7 @@ const tokenOffer = { id: OID, seller: SELLER, give: { ticker: "AAA", amount: "10
 // The B7e-FIX token-lane content bind merkle-proves the offer record; inject the proven give/want that
 // resolve() would materialize from the same on-chain record so an HONEST token fill proceeds (the live SPV
 // path is unavailable under the stubbed fetch, so an honest fill without this would fail closed-retryable).
-const honestTokenProven = () => ({ payto: SELLER, seller: SELLER, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
+const honestTokenProven = () => ({ payto: SELLER, seller: SELLER, expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
 
 console.log("W4 (B5d) - token-fill-confidence attest routes through the gated fill path:");
 

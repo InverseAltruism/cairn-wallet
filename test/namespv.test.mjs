@@ -9,9 +9,9 @@ import { checker } from "./_check.ts";
 import {
   buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR,
   addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, resolve,
-  REG_FEE, proposeTx, world, source, feeOut, pick, prevoutFor, mkFetch as mkFetchByBase,
+  REG_FEE, proposeTx, attestTx, world, source, feeOut, pick, prevoutFor, mkFetch as mkFetchByBase,
 } from "./_spvrig.ts";
-import { nameCommit, nameCommitRecord, nameFinalize, V25_HEIGHT, REG_COMMIT_MAX_BLOCKS } from "../src/vendor/cairnx-spv.js";
+import { nameCommit, nameCommitRecord, nameFinalize, V25_HEIGHT, V28_HEIGHT, REG_COMMIT_MAX_BLOCKS, offer, fclaim, deploy, mint, tradeFee, makerRebate, epochOf, SCORE_FILL, CONF_TOKEN_FILL, DEPLOY_FEE } from "../src/vendor/cairnx-spv.js";
 
 const { check: ok, done } = checker();
 
@@ -225,6 +225,47 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   ok("H1: scopedReplaySufficient:true (honest registration) stays verified: no over-degradation", rTrue.verified === true && rTrue.addr === TARGET);
   const rNone = await verifyNameUnion(NM, SRC, src, mk(undefined));
   ok("H1: a non-viaFill name with no flag stays verified (back-compat with older servers)", rNone.verified === true && rNone.addr === TARGET);
+}
+
+// 16b. The viaFill gate is what keeps a name-scoped replay from turning a fill the chain rejected into a
+//      verified address. B already holds MAX_ACTIVE_CLAIMS (3) live fclaims on other offers, then fclaims A's
+//      open name offer for "cove" and fills it. On the full chain that fclaim is denied by the cap, the fill does
+//      nothing and A keeps the name. A replay of only cove's own records cannot see the other holds, grants the
+//      fclaim and delivers cove to B with viaFill set. No source sends a scopedReplaySufficient flag here (an
+//      older or hostile server), so only the wallet's own gate stands between the scoped result and "verified".
+//      The token sale pins the event mapping's confidence: resolve() applies a token fill only with the
+//      CONF_TOKEN_FILL marker, so a mapping that dropped it would replay that name to the seller as verified.
+{
+  const id = (t) => ctxid(rpcTxToTx(t)).toLowerCase();
+  const H = V28_HEIGHT + 10, V = 50_000_000n, E = epochOf(H + 10) + 2;
+  const names = ["cove", "pier1", "pier2", "pier3"];
+  const reg = names.map((n) => proposeTx({ ...pick(buildNameClaim({ name: n })), priv: keyA, outputs: feeOut() }));
+  const offs = names.map((n) => proposeTx({ ...pick(offer({ give: { name: n }, want: { value: String(V), payto: A } })), priv: keyA, expiresEpoch: epochOf(H) + 50 }));
+  const fcs = offs.map((o) => proposeTx({ ...pick(fclaim({ offer: id(o) })), priv: keyB, expiresEpoch: E }));
+  const fill = attestTx({ proposalId: id(fcs[0]), score: SCORE_FILL, confidence: 100, priv: keyB, outputs: [{ to: A, value: Number(V + makerRebate(V)) }, { to: TREASURY_ADDR, value: Number(tradeFee(V, 150)) }] });
+  const full = world([
+    ...reg.map((tx) => ({ height: 33700, tx })), ...offs.map((tx) => ({ height: H, tx })),
+    ...fcs.slice(1).map((tx) => ({ height: H + 10, tx })), { height: H + 15, tx: fcs[0] }, { height: H + 20, tx: fill },
+  ]);
+  const own = new Set([reg[0], offs[0], fcs[0], fill].map(id));
+  const scoped = full.hints.filter((h) => own.has(h.txid.toLowerCase()));
+  const src = source(full.blocks, H + 30);
+  const rFull = await unionOne("cove", { addr: A, owner: A, via: "owner" }, full.hints, src);
+  ok(`viaFill gate: with every record the cap denies B's fclaim and cove stays with the seller (${rFull.reason ?? "verified"})`, rFull.verified === true && rFull.owner === A && rFull.addr === A);
+  const rScoped = await unionOne("cove", { addr: B, owner: B, via: "owner" }, scoped, src);
+  ok(`viaFill gate: cove's own records alone deliver it to B, and the wallet does NOT call that verified (${rScoped.reason ?? "verified"})`, rScoped.verified === false && rScoped.viaFill === true);
+
+  const tok = world([
+    { height: 33700, tx: proposeTx({ ...pick(buildNameClaim({ name: "quay" })), priv: keyA, outputs: feeOut() }) },
+    { height: 33710, tx: proposeTx({ ...pick(deploy({ ticker: "TKN", decimals: 0, supply: "1000000", mint: "issuer" })), priv: keyB, outputs: [{ to: TREASURY_ADDR, value: Number(DEPLOY_FEE) }] }) },
+    { height: 33720, tx: proposeTx({ ...pick(mint({ ticker: "TKN", amount: "1000000" })), priv: keyB }) },
+  ]);
+  const tOff = proposeTx({ ...pick(offer({ give: { name: "quay" }, want: { ticker: "TKN", amount: "500" }, taker: B })), priv: keyA, expiresEpoch: 2000 });
+  const tFill = attestTx({ proposalId: id(tOff), score: SCORE_FILL, confidence: CONF_TOKEN_FILL, priv: keyB });
+  const t2 = world([{ height: 35000, tx: tOff }, { height: 35010, tx: tFill }]);
+  for (const [h, txs] of t2.blocks) tok.blocks.set(h, txs);
+  const rt = await unionOne("quay", { addr: B, owner: B, via: "owner" }, [...tok.hints, ...t2.hints], source(tok.blocks, 35100));
+  ok(`viaFill gate: a name bought for a token replays to the buyer and is NOT verified (${rt.reason ?? "verified"})`, rt.verified === false && rt.viaFill === true);
 }
 
 // 17. S-B6 (2026-09-09; REPLACES the H1 union backstop): a REGISTERED-vs-UNREGISTERED source split no

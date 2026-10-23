@@ -158,6 +158,8 @@ export const CLAIM_WINDOW_BLOCKS_V20: number; // legacy claim window (V20 era)
 export const CLAIM_FILL_GRACE_BLOCKS: number; // legacy claim fill grace
 /** holdEnd (last L0-minable height for the fill) from an fclaim's confirmed expires_epoch. */
 export function fclaimHoldEnd(expiresEpoch: number): number;
+/** The first height at which resolve() sweeps an offer anchored at `anchorHeight` with raw `expiresEpoch` to expired. */
+export function offerExpiryHeightOf(expiresEpoch: number, anchorHeight: number): number;
 // A PoW-verified, MERKLE-PROVEN chain event (resolver ChainEvent + the verified burial `depth`).
 export interface ProvenPropose { kind: "propose"; id: string; proposer: string; uri: string; payloadHash: string; expiresEpoch: number; height: number; pos: number; paidTo: Record<string, string>; depth: number }
 export interface ProvenAttest { kind: "attest"; txid: string; proposalId: string; attester: string; score: number; confidence: number; height: number; pos: number; paidTo: Record<string, string>; depth: number }

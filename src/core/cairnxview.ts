@@ -2,6 +2,14 @@
 // a token fill's quoted debit, a fill's listed asset, token decimals. Resolver-served and never bound to a
 // signature; the fill preflight makes its own reads and binds what it signs (fillpreflight.ts).
 import { cairnxTradeFee, FEE_BPS_V16, isTicker, type TokenDisplayMeta } from "./cairnx.js";
+import { offerExpiryHeightOf } from "../vendor/cairnx-spv.js";
+
+// The block at which the served offer expires, for the fill cards. Display only: the fill preflight checks the
+// merkle-proven record's expiry before it signs.
+function servedExpiryHeight(o: { expiresEpoch?: unknown; height?: unknown }): number | undefined {
+  const e = Number(o?.expiresEpoch), h = Number(o?.height);
+  return Number.isSafeInteger(e) && e >= 0 && Number.isSafeInteger(h) && h >= 0 ? offerExpiryHeightOf(e, h) : undefined;
+}
 
 // What the CairnX display reads use of the wallet: its read API and the active address.
 export interface CairnxViewIo { tradeGet(path: string, timeoutMs?: number): Promise<Response>; addr(): string }
@@ -31,7 +39,7 @@ export async function cairnxAssets(wallet: CairnxViewIo): Promise<{ ok: boolean;
 // (BigInt-exact, same cairnxTradeFee the convention uses). Returns ok:false on any unreachable/mismatch so
 // the UI keeps its loud caution; never silently "free". This is RESOLVER-TRUSTED DISPLAY ONLY: it changes
 // nothing the wallet signs (the attest bytes are unaffected); it only makes the debit visible for review.
-export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string }> {
+export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; ticker?: string; amount?: string; fee?: string; total?: string; estimated?: boolean; error?: string; giveTicker?: string; giveAmount?: string; giveName?: string; wantDecimals?: number; giveDecimals?: number; wantDeployId?: string; giveDeployId?: string; expiresAt?: number }> {
   try {
     const so = await servedOpenOffer(wallet, proposalId);
     if (!so.ok) return so;
@@ -58,6 +66,7 @@ export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): 
       ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName,
       wantDecimals: meta[w.ticker]?.decimals, wantDeployId: meta[w.ticker]?.deployId,
       giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined,
+      expiresAt: servedExpiryHeight(o),
     };
   } catch { return { ok: false, error: "offer unavailable" }; }
 }
@@ -75,7 +84,7 @@ async function servedOpenOffer(wallet: CairnxViewIo, proposalId: string): Promis
 
 // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
 // attested id on the reservation lane) and the asset the offer service lists as received. Display only.
-export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number }> {
+export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number }> {
   try {
     const so = await servedOpenOffer(wallet, proposalId);
     if (!so.ok) return so;
@@ -87,7 +96,7 @@ export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): P
     const giveAmount = g?.amount != null ? String(g.amount) : undefined;
     const giveName = typeof g?.name === "string" ? g.name : undefined;
     const meta = giveTicker ? await tokenDisplayMeta(wallet, [giveTicker]) : {};
-    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined };
+    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, expiresAt: servedExpiryHeight(o) };
   } catch { return { ok: false, error: "offer unavailable" }; }
 }
 

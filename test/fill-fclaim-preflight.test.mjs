@@ -505,7 +505,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 {
   const { w, addr: W } = await freshWallet("pw-belowv28");
   const taker = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
-  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker) });   // F2-legacy: honest proven author + terms
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: termsFor(taker) });   // F2-legacy: honest proven author + terms
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => taker }), tip: 50_000 });
   const r = await w.fillOffer({ proposalId: OID, outputs });
   check(`FIXA: a below-V28 offer-txid fill is UNAFFECTED (no FILL_WRONG_TARGET false-refuse) (${r?.error ?? "ok"})`, r?.code !== "FILL_WRONG_TARGET" && r?.ok === true && s.submits.length === 1);
@@ -519,7 +519,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   const { w, addr: W } = await freshWallet("pw-wanttype");
   const servedCsd = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };   // SERVED as CSD-priced + taker-bound (legacy lane)
   const provenTokenTerms = termsFor({ height: 47_000, want: { ticker: "BAR", amount: "1" }, taker: W });   // PROVEN offer is TOKEN-priced -> terms.value undefined (the hidden lie)
-  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: provenTokenTerms });
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: provenTokenTerms });
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedCsd }), tip: 50_000 });
   const r = await w.fillOffer({ proposalId: OID, outputs });
   check(`WANT-TYPE: a token-priced offer served as CSD-priced is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /not CSD-priced/i.test(String(r?.error)));
@@ -530,7 +530,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   // defined) is NOT refused by the want-type guard (proves it keys on the proven want-type, not the served one).
   const { w, addr: W } = await freshWallet("pw-wanttype-ok");
   const servedCsd = { id: OID, seller: S, give: { ticker: "TKN", amount: "5" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
-  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(servedCsd) });   // honest CSD-priced proven (terms.value defined)
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: termsFor(servedCsd) });   // honest CSD-priced proven (terms.value defined)
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedCsd }), tip: 50_000 });
   const r = await w.fillOffer({ proposalId: OID, outputs });
   check(`WANT-TYPE control: an honest CSD-priced offer is NOT want-type-refused (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
@@ -559,7 +559,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 {
   const { w, addr: W } = await freshWallet("pw-legacy01");
   const taker = { id: OID, seller: S, give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: S }, status: "open", height: 47_000, feeBps: 150, taker: W };
-  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker) });   // F2-legacy: honest proven author + terms
+  w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: termsFor(taker) });   // F2-legacy: honest proven author + terms
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => taker }), tip: 100_100 });
   const r = await w.fillOffer({ proposalId: OID, outputs });   // proposalId === offer.id, no claimTxid -> legacy path
   check(`RT-STEER: a legacy taker-bound fill (proposalId===offer.id, no claimTxid) proceeds via legacy at V28 (no false-refuse) (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
@@ -575,7 +575,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   {
     const served = taker({ want: { value: String(V), payto: ATT } });
     const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
-    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker()) });
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: termsFor(taker()) });
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
     const r = await w.fillOffer({ proposalId: OID, outputs: outs });
     check(`F2-legacy: a swapped served want.payto on the legacy lane is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /payment recipient/.test(r?.error ?? ""));
@@ -585,7 +585,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   {
     const served = taker({ min: "1" });   // SPURIOUS min (proven offer has none)
     const outs = requiredFillOutputs(taker(), BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
-    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(taker()) });   // proven: NO min
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: termsFor(taker()) });   // proven: NO min
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
     const r = await w.fillOffer({ proposalId: OID, outputs: outs });
     check(`F2-legacy: a SPURIOUS served min on the legacy lane is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? ""));
@@ -595,7 +595,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   {
     const served = taker({ min: "50000000" });
     const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
-    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(served) });   // proven min == served min
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: Number(served.height), terms: termsFor(served) });   // proven min == served min
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
     const r = await w.fillOffer({ proposalId: OID, outputs: outs });
     check(`F2-legacy: an honest partial offer (min matches on-chain) is NOT refused for a terms mismatch (${r?.code ?? "ok"})`, !(r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? "")));
@@ -761,7 +761,7 @@ check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves th
     const me = addr.toLowerCase();
     const served = takerFor(me, { want: { value: String(V), payto: ATT_L } });   // REDIRECTED served want.payto (attacker)
     const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));   // built from the redirected need-map
-    wm.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), terms: termsFor(takerFor(me)) });   // the REAL merkle-proven author is S
+    wm.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: termsFor(takerFor(me)) });   // the REAL merkle-proven author is S
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
     const r = await wm.fillOffer({ proposalId: OID, outputs: outs });   // outs pay the attacker ATT_L (the redirected need-map)
     return { r, submits: s.submits.length };
