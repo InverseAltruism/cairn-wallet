@@ -5,6 +5,8 @@
 //       RED-FIRST: make sendWarnings ignore `kind` (always the payment tail) and 1b, 1c fail.
 //   (2) A CSD-paid fill card shows the asset the listing gives, and on the reservation (claim) lane it names
 //       the listing behind the attested id. RED-FIRST: drop fillFillView(current) in approve.ts and 2a, 2b fail.
+//       The card also shows when the listed offer expires (2d, 1f). RED-FIRST: drop the expiry line from
+//       fillViewHtml and 1f, 2d fail; drop the epoch read in fillFillView and 2d fails.
 //   (3) A request whose debit exceeds the spendable balance (a pending spend still holds coins) keeps
 //       Approve disabled with the reason, and a forced click is refused.
 //       RED-FIRST: drop the balShort block in fillBalance and 3a, 3b fail.
@@ -15,7 +17,8 @@
 //
 // Run: node --import tsx test/approve-card-honesty.test.mjs   (offline)
 import assert from "node:assert/strict";
-import { sendWarnings, fillViewHtml } from "../src/popup/clearsign.ts";
+import { sendWarnings, fillViewHtml, tokenQuoteHtml } from "../src/popup/clearsign.ts";
+import { fillOfferView, tokenFillQuote } from "../src/core/cairnxview.ts";
 import { buildNameSet, CAIRNX_DOMAIN } from "../src/core/cairnx.ts";
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 
@@ -48,6 +51,22 @@ t("1e fillViewHtml names the listing on the reservation lane and the asset with 
   assert.match(html, new RegExp(`listing: <code>${LIST}</code>`)); assert.match(html, /184\.01371902 CAIRN = 18401371902 base units/);
 });
 
+t("1f a fill card for an offer already past its expiry says the wallet will refuse the fill", () => {
+  const html = fillViewHtml({ ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "1", expiresAt: 117_000 }, LIST, 3_900);
+  assert.match(html, /offer expires: epoch 3899 <span class="err">\(already expired: the wallet will refuse this fill\)<\/span>/);
+});
+
+{
+  // Both fill reads carry the listed offer's expiry block: epoch 3,910 anchored at 117,000 expires at 117,330.
+  const listed = { id: LIST, status: "open", seller: SELLER, give: { ticker: "CAIRN", amount: "1" }, want: { ticker: "USDX", amount: "100" }, feeBps: 150, expiresEpoch: 3_910, height: 117_000 };
+  const io = { addr: () => ME, tradeGet: async (path) => path.startsWith("/cairnx/offer/") ? { ok: true, status: 200, json: async () => listed } : { ok: false, status: 404, json: async () => ({}) } };
+  const view = await fillOfferView(io, LIST), quote = await tokenFillQuote(io, LIST);
+  t("1g the fill view and the token quote carry the listed offer's expiry block", () => {
+    assert.equal(view.expiresAt, 117_330); assert.equal(quote.expiresAt, 117_330);
+    assert.match(tokenQuoteHtml(quote, 3_900), /offer expires: epoch 3910 \(in ~10 h, current epoch 3900\)/);
+  });
+}
+
 // ── the real approval window ──────────────────────────────────────────────────────────────────────────
 const { byId, registry, El } = installFakeDom();
 for (const id of ["view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw"]) registry.set(id, new El(id));
@@ -59,7 +78,7 @@ const h = {
   history: () => [],
   sealedClaims: () => [],
   tip: () => 117_000, epoch: () => 3_900, tipFloor: () => 0,
-  fillOfferView: (id) => { state.views++; return { ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "18401371902", giveDecimals: 8, _id: id }; },
+  fillOfferView: (id) => { state.views++; return { ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "18401371902", giveDecimals: 8, expiresAt: 117_330, _id: id }; },
   resolve: () => { state.resolves++; return { ok: true, txid: "0x" + "ee".repeat(32) }; },
 };
 installBridge(h);
@@ -81,6 +100,9 @@ t("2a the card shows the asset the listing gives", () => {
 });
 t("2b on the reservation lane the card names the listing", () => {
   assert.match(byId("fill-view").innerHTML, new RegExp(`listing: <code>${LIST}</code>`));
+});
+t("2d the card shows when the listed offer expires, from the current epoch", () => {
+  assert.match(byId("fill-view").innerHTML, /offer expires: epoch 3910 \(in ~10 h, current epoch 3900\)/);
 });
 t("3c honest: a covered request arms Approve after the click-through delay", () => {
   assert.equal(byId("btn-approve").disabled, false);

@@ -9,6 +9,8 @@
   offer open until the block before it expires, so before this a connected site could have the wallet sign a fill
   the chain then rejected with the payment already sent. With no readable chain tip the fill refuses as
   `VERIFY_UNAVAILABLE`: "couldn't check this offer's expiry against the chain tip yet; try again in a moment".
+  The fill approval card (CSD and token) now shows when the listed offer expires, "offer expires: epoch N (in ~X,
+  current epoch C)", or "(already expired: the wallet will refuse this fill)" once it has.
 
 - A name whose record was set by a market sale or by a re-claim after its lease lapsed now gives the reason
   "NAME.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't

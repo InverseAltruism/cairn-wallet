@@ -172,7 +172,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("PIN M10: the affirmative 'likely never landed' claim is gone from popup.ts", !popupSrc.includes("likely never landed"));
   // The >1h tombstone this pinned is gone: an open row's marker now comes from chain state, and
   // test/popup-inclusion-dom.test.mjs (1)-(3) asserts no marker calls a possibly-landed send lost.
-  ok("PIN M3: approve.ts renders the quote via the attributed tokenQuoteHtml", approveSrc.includes("show(tokenQuoteHtml(q))"));
+  ok("PIN M3: approve.ts renders the quote via the attributed tokenQuoteHtml", approveSrc.includes("show(tokenQuoteHtml(q, epoch))"));
   ok("PIN M3: no first-person 'You will pay' debit assertion remains in approve.ts", !approveSrc.includes("You will pay"));
   ok("PIN 0.2.70: armButtons fail-softs a rejected fillSendWarning (Approve/Reject cannot stay disabled)",
     /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc));
