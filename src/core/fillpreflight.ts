@@ -54,7 +54,7 @@ export type FillNotes = { secondSource?: "pending" | "failed" };
 // What the SPV seams return to the fill preflight: the fclaim lane's proof source with the computed cap
 // over-count, the proven terms and whether the tip was floor-clamped; the legacy lane's proven offer author.
 export type FillSpvIoExt = FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean };
-export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string };
+export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string };
 // The reads the fill preflight makes through the wallet: the CairnX read API, the node tip and its PoW-backed
 // floor, and the two merkle-proving SPV seams.
 export interface FillPreflightIo {
