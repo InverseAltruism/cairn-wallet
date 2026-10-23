@@ -126,6 +126,9 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
   const base = await drive();
   check(`MPB-1 baseline: provenOfferPayto over the known token offer pins its fields (payto ${base?.payto === PAYTO}, feeBps ${base?.terms?.feeBps})`,
     base !== null && base.payto === PAYTO && base.seller === A && base.terms.feeBps === 150 && base.wantTicker === "USDX" && base.wantAmount === "7");
+  // The offer-id lanes' expiry check reads these: the record's own expiresEpoch and the block it was proven in.
+  check(`MPB-1 baseline: provenOfferPayto returns the proven expiry epoch and anchor height (${base?.expiresEpoch}, ${base?.height})`,
+    base !== null && base.expiresEpoch === 9e9 && base.height === H);
   const cases = [
     ["MUTATE_PROVEN_PAYTO_DERIVE", "payto", PAYTO, (r) => r?.payto],
     ["MUTATE_PROVEN_TERMS_HEIGHT", "terms.feeBps", 150, (r) => r?.terms?.feeBps],

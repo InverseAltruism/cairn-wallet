@@ -1067,8 +1067,8 @@ export class Wallet {
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
-  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null) | Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null>;
-  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; wantTicker?: string; wantAmount?: string } | null> {
+  provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null) | Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null> {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({
