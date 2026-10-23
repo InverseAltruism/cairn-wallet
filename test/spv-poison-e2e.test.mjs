@@ -1,17 +1,19 @@
 // M1 e2e (Fable M1 QC): the "SPV poison" claim, end to end. A Propose carrying an UNBOUNDED u64
 // expires_epoch (2^53+1) is consensus-valid bytes. Pre-M1, a plain JSON.parse of the block body
 // rounded the value, the codec's u64() threw on the non-safe-integer, and the whole block's
-// txid/merkle bind bricked every scan lane that crossed it. Post-M1 the wallet's SPV reads parse
-// through parseSpvJson (the source-preserving reviver), the txid recompute is EXACT, the bind
-// holds, and the poison record reaches resolve() as a consensus no-op.
+// txid/merkle bind bricked every scan lane that crossed it. The wallet's SPV client parses node bodies
+// with csd-client's default, parseJsonExact, so the txid recompute is EXACT, the bind holds, and the
+// poison record reaches resolve() as a consensus no-op.
 //
-// Legs: (3) the reviver path binds exactly; (4) RED-FIRST control — the plain-parse path throws;
+// Legs: (3) the exact parse binds; (3b) the production read path (liveSpvSource's prevout read over the
+// fixture network) proves the poison tx's output; (4) RED-FIRST control: the plain-parse path throws;
 // (5) resolve() denies the record (no state created). Hermetic: real signed tx, synthetic wire text.
 //
 // Run: node --import tsx test/spv-poison-e2e.test.mjs   (offline)
 import { addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, rpcTxToTx, resolve, TREASURY_ADDR, REG_FEE } from "./_spvrig.ts";
-import { offer, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
-import { parseSpvJson } from "../src/core/node.ts";
+import { offer, parseJsonExact, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
+import { liveSpvSource } from "../src/core/namespv.ts";
+import { serveFixture, memStore, legacyOf, FIX_ANCHORS } from "./helpers/spvfixture.mjs";
 import { checker } from "./_check.ts";
 
 const { check, done } = checker("spv-poison-e2e");
@@ -45,10 +47,25 @@ const nodeJsonTx = {
 };
 const wire = JSON.stringify({ txs: [nodeJsonTx] }, (k, v) => typeof v === "bigint" ? `@@BIG:${v}` : v).replace(/"@@BIG:(-?\d+)"/g, "$1");
 
-// 3. THE FIX: the reviver path preserves the exact value → txid recompute matches on-chain → bind holds.
-const parsed = parseSpvJson(wire);
-check("the reviver preserves the poison expiry as an exact BigInt", parsed.txs[0].app.expires_epoch === POISON);
+// 3. The exact parse preserves the value → txid recompute matches on-chain → bind holds.
+const parsed = parseJsonExact(wire);
+check("the exact parse keeps the poison expiry as an exact BigInt", parsed.txs[0].app.expires_epoch === POISON);
 check("the poison tx's txid recomputes EXACTLY (the block's merkle bind holds)", ctxid(rpcTxToTx(parsed.txs[0])) === onChainTxid);
+
+// 3b. The production read path: liveSpvSource's prevout read fetches the poison tx as the source of a spent coin
+// and must prove its output (the txid recompute needs the exact u64). A lossy parse there returns null, and
+// every record spending that coin would fail its author bind.
+{
+  const net = {};
+  net.rawTxs = new Map([[onChainTxid.toLowerCase(), JSON.stringify({ ok: true, tx: "@@TX" }).replace('"@@TX"', wire.slice('{"txs":['.length, -2))]]);
+  const restore = serveFixture(net);
+  try {
+    const kv = new Map();
+    const src = await liveSpvSource({ rpcBase: "https://fixture.test/api/rpc", headersBase: "https://fixture.test", anchors: FIX_ANCHORS, store: async () => memStore(), legacy: legacyOf(kv) });
+    const spk = await src.prevoutScriptPubkey(onChainTxid, 0);
+    check(`the live prevout read proves the poison tx's output 0 (${spk})`, spk === TREASURY_ADDR.toLowerCase());
+  } finally { restore(); }
+}
 
 // 4. RED-FIRST control: a plain JSON.parse rounds the value → the codec u64 throws → the bind bricks.
 let bricked = false;

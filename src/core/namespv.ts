@@ -32,7 +32,6 @@
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason; never a false pass against FABRICATION.
 import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type RpcTxJson } from "../vendor/cairnx-spv.js";
-import { parseSpvJson } from "./node.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
@@ -576,11 +575,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
   // default TIED the inner chain exactly; an abort could fire the instant the proxy's fallback
   // would have answered (timeout-inversion class, docs/Plans/66 B2).
-  // M1: inject the source-preserving reviver so a Propose with an unbounded u64 expires_epoch
-  // (>2^53) parses to an exact BigInt and the SPV merkle bind succeeds (the "SPV poison" becomes a
-  // consensus no-op instead of bricking the fill/name lanes). Requires the rebuilt vendored bundle
-  // carrying csd-client's parseJson hook + the cairn proxy's raw pass-through (deployed first).
-  const client = new CsdClient({ baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000, parseJson: parseSpvJson });
+  // No parseJson: the client's default, parseJsonExact, keeps a Propose's u64 expires_epoch above 2^53 exact, so the
+  // txid recompute of a block body or a prevout source tx carrying one still matches (test/spv-poison-e2e.test.mjs).
+  const client = new CsdClient({ baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000 });
   const headersBase = opts.headersBase.replace(/\/$/, "");
   // The /api/headers endpoint is budget-limited (DOS-HDR-1) and deadline-bounded (it answers a clean
   // 502 at ~10s instead of grinding on a slow indexer). A legit cold sync paces itself:

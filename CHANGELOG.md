@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Internal: the wallet's own JSON reviver for node bodies (`spvJsonReviver` in `src/core/node.ts`) is deleted; the
+  SPV client now uses csd-client's default `parseJsonExact` (the same rule: an integer literal outside the safe JS
+  range becomes an exact bigint, a float literal stays a number). A block body or prevout source tx carrying a
+  Propose expiry above 2^53 still proves (test/spv-poison-e2e.test.mjs drives the prevout read).
+
 - Internal: the vendored SPV bundle is built from the published csd-sdk packages, pinned exactly as dev dependencies
   (cairnx-core 0.2.2, csd-light 0.1.25, csd-client 0.1.19, csd-crypto 0.1.20, csd-codec 0.1.18, npm window 4 of
   2026-10-23), instead of a local csd-sdk checkout, and `src/vendor/cairnx-spv.d.ts` is generated from the same
