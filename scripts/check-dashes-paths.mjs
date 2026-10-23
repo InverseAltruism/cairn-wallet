@@ -11,8 +11,6 @@ import { fileURLToPath } from "node:url";
 
 // Code allowed to read a sibling checkout, each with its reason.
 export const PATH_EXCEPTIONS = {
-  "scripts/build-spv-vendor.sh": "rebuilds the vendored bundle from a csd-sdk checkout; CSD_SDK_DIR overrides the sibling default (AGENTS.md, vendor-fresh-full)",
-  "scripts/check-vendor-fresh.mjs": "the vendor-freshness gate re-runs build-spv-vendor.sh against the same CSD_SDK_DIR default",
   "test/check-dashes-paths.test.mjs": "fixtures for this check",
 };
 

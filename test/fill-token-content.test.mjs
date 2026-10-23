@@ -29,7 +29,7 @@ const SELLER = "0x" + "cd".repeat(20);
 // The TRUE, merkle-proven terms resolve() would materialize from the on-chain offer record: give 10 AAA for
 // 7 PAY. provenPaytoForTest injects these (the live SPV path is unavailable under the stubbed fetch); the
 // SERVED offer is what a hostile resolver returns, and the bind refuses whenever the two diverge.
-const TRUE_PROVEN = () => ({ payto: SELLER, seller: SELLER, expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
+const TRUE_PROVEN = () => ({ payto: SELLER, seller: SELLER, expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token", wantTicker: "PAY", wantAmount: "7" }, wantTicker: "PAY", wantAmount: "7" });
 // The HONEST served offer (matches TRUE_PROVEN exactly).
 const honestOffer = { id: OID, seller: SELLER, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 };
 

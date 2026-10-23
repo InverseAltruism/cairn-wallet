@@ -603,7 +603,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       if (!r.ok) throw new Error(`/api/headers ${r.status}`);
       const rows = (await r.json())?.headers;
       if (!Array.isArray(rows) || rows.length !== count) throw new Error("/api/headers: non-dense range");
-      return rows.map((row: { header: unknown; hash: string }) => ({ header: row.header, hash: row.hash }));
+      // Served JSON: the light client checks every header (links, PoW, LWMA) before it is used.
+      return rows.map((row: { header: BlockHeader; hash: string }) => ({ header: row.header, hash: row.hash }));
     }
   };
   // A request that ends on a page top fetches the whole page: every row of it is at or below the sync target,

@@ -30,12 +30,20 @@ const ok = (n, c) => {
 const corpus = JSON.parse(readFileSync(join(ROOT, "test/fixtures/proven-terms-corpus.json"), "utf8"));
 ok(`corpus loaded with the full population (68 entries: 55 real + 13 synthetic)`,
   corpus.length === 68 && corpus.filter((e) => e.source === "real").length === 55);
-let mismatches = 0;
+// cairnx-core 0.2.2 also mints a token want's price (wantTicker, wantAmount) for bindOfferTerms's want leg; the
+// frozen fields are compared as they were, and the two new ones against the record's own want.
+let mismatches = 0, priceMismatches = 0;
 for (const e of corpus) {
-  const got = provenOfferTerms(e.rec, e.height);
+  const { wantTicker, wantAmount, ...got } = provenOfferTerms(e.rec, e.height);
   if (JSON.stringify(got) !== JSON.stringify(e.terms)) { mismatches++; console.log(`    MISMATCH ${e.id}: got ${JSON.stringify(got)} want ${JSON.stringify(e.terms)}`); }
+  const w = e.rec?.want ?? {};
+  const token = typeof w.ticker === "string";
+  if (token ? wantTicker !== String(w.ticker) || wantAmount !== String(w.amount) : wantTicker !== undefined || wantAmount !== undefined) {
+    priceMismatches++; console.log(`    PRICE MISMATCH ${e.id}: got ${wantTicker}:${wantAmount} for want ${JSON.stringify(w)}`);
+  }
 }
 ok("canonical provenOfferTerms matches the frozen historical semantics for EVERY corpus entry", mismatches === 0);
+ok(`a token want's price is minted verbatim from the record and a CSD want carries none (${corpus.filter((e) => typeof e.rec?.want?.ticker === "string").length} token wants)`, priceMismatches === 0);
 
 // ── 2. source pins on src/core/fillspv.ts ──
 const src = readFileSync(join(ROOT, "src/core/fillspv.ts"), "utf8");

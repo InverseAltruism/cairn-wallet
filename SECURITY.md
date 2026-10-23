@@ -187,18 +187,20 @@ user approves the dialog
 
 The wallet has a small, pinned dependency set (`@noble/curves`, `@noble/hashes`,
 `@scure/bip32`, `@scure/bip39`), installed with `npm ci --ignore-scripts` (no install-time
-lifecycle scripts run). The trust-sensitive SPV code is a **vendored bundle** of csd-sdk's audited
-dists (`src/vendor/cairnx-spv.js`); `PROVENANCE.json` pins its sha256, the exact `@noble` versions,
-and the csd-sdk **version and source commit**. The gate is `scripts/check-vendor-fresh.mjs`:
+lifecycle scripts run). The trust-sensitive SPV code is a **vendored bundle** built from the published
+csd-sdk packages (`@inversealtruism/csd-light`, `csd-client`, `csd-codec`, `csd-crypto`, `cairnx-core`),
+pinned to exact versions as dev dependencies, with each tarball's registry integrity in `package-lock.json`.
+The bundle (`src/vendor/cairnx-spv.js`) and its types (`cairnx-spv.d.ts`, generated from the same export
+list) are committed; `PROVENANCE.json` pins both files' sha256, each package's version and integrity, and the
+exact `@noble` versions. The gate is `scripts/check-vendor-fresh.mjs` (`npm run verify:vendor`), run by the
+`test` job in `ci.yml` and the `build` job in `release.yml`, which the release job depends on:
 
-* **Load-bearing:** the rebuild byte-diff. CI checks out csd-sdk at the pinned commit, rebuilds the bundle
-  and requires it to be byte-identical to the committed one (the `vendor-fresh-full` job in `ci.yml`, and
-  in `release.yml`, where the release job depends on it). csd-sdk is public, so CI checks it out without a
-  token and the job runs on every push, pull request and tag; locally it needs a csd-sdk checkout.
-* **Always on, cheap:** the committed bundle's sha256 equals `PROVENANCE.json` and the `@noble` pins agree,
-  so a bundle edited without a matching `PROVENANCE.json` change fails even without csd-sdk present.
-* **Advisory only:** the check that the csd-sdk checkout's HEAD equals `csdSdkCommit` prints a warning and
-  does not fail the gate. In CI it compares the pinned commit with itself, since that is the commit checked out.
+* **Rebuild byte-diff:** both files are rebuilt from the installed packages into a temporary directory and
+  must be byte-identical to the committed ones. No csd-sdk checkout is involved, so it runs wherever
+  `npm ci` ran.
+* **Pins:** the committed files' sha256, the package versions and integrity, and the `@noble` versions must
+  equal `PROVENANCE.json`, and the wallet's `@noble` pins must equal the versions csd-crypto declares, so the
+  bundle's crypto and the signing path use the same `@noble`.
 
 Releases are built in CI from tagged source with `npm ci` and a deterministic zip writer, so they are
 **byte-for-byte reproducible**: rebuild from the same source and the SHA-256 matches the published

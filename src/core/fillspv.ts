@@ -18,7 +18,7 @@ import {
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
   provenOfferTerms, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer,
-  type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms,
+  type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms, type OfferRecord,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 import { BodyMismatchError, bindBlock, bindSigner, recoverSigner, toChainEvent } from "./spvbind.js";
@@ -327,14 +327,15 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // seller who never owned it) is the same N1 residual the pre-V28 wallet already carries, no worse.
   const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
   if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
-  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string }; want?: { payto?: string; value?: string }; taker?: string; bid?: string; min?: string } | null;
+  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as OfferRecord | null;
   // The payment recipients are bound by verifyFillSpv's sums option (the caller's planned per-address legs must
   // equal the need-map of the replayed proven offer), so this source carries no separate payto or seller field.
   // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer, via the ONE vendored
   // producer (B4a; the proven CREATION height is the input, never a served height - a lying resolver
   // deflating feeBps/height/value/taker cannot under-size a leg, which resolve() would reject AFTER the
   // payment moved = pay-without-delivery burn).
-  const provenTerms: MintedProvenOfferTerms = provenOfferTerms(offerRec, offerEv.height); // MUTATE_LIVE_PROVEN_TERMS
+  // A null or non-offer record throws or mints terms the replay then refuses; either way nothing is signed.
+  const provenTerms: MintedProvenOfferTerms = provenOfferTerms(offerRec as OfferRecord, offerEv.height); // MUTATE_LIVE_PROVEN_TERMS
   const synthetic = new Map<string, ProvenEvent>();
   const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
     const sid = String(built.payloadHash).toLowerCase();   // the record's own payload_hash: a stable, unique id
@@ -346,8 +347,8 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       // no-lease default paidThrough (V15_EPOCH + NAME_TERM) covers any realistic near-tip offer window. (A name
       // offer with an unusually far-future expiresEpoch beyond that default fail-safe REFUSES, never burns; the
       // deferred lifecycle scan is the full fix.) Fee generously overpaid so the registration always clears.
-      synth(nameClaim({ name: offerRec.give.name! }), V11_HEIGHT + 1, { [TREASURY_ADDR]: String(MAX_AMOUNT) });
-    } else if (offerRec.give.ticker) {
+      synth(nameClaim({ name: offerRec.give.name }), V11_HEIGHT + 1, { [TREASURY_ADDR]: String(MAX_AMOUNT) });
+    } else if ((offerRec.give as { ticker?: string }).ticker) {
       // deploy (just above ACTIVATION_HEIGHT, below v1.1 so no fee gate; resolve() ignores anything below the
       // activation floor) + an issuer mint of the max supply to the seller, so any give amount is available.
       // resolve() processes these before the offer (lower heights), materializing the give.
@@ -402,7 +403,7 @@ export async function provenOfferPayto(
     const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase())) ? String(rec.want.payto).toLowerCase() : seller; // MUTATE_PROVEN_PAYTO_DERIVE
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.
-    const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
+    const terms: MintedProvenOfferTerms = provenOfferTerms(rec as OfferRecord, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
     // B7e-FIX (REBIND W1 token-lane close): surface the merkle-proven token WANT (the ticker + amount the
     // buyer PAYS). bindOfferTerms binds the want TYPE only, and provenOfferTerms drops the token ticker/amount,
     // so the token-lane content bind (fillpreflight.ts fillOfferPreflight) needs these directly to mirror the site

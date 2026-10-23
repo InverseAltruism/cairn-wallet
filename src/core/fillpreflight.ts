@@ -3,7 +3,7 @@
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
-import { fclaimHoldEnd, offerExpiryHeightOf, FILL_TIP_MARGIN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, offerExpiryHeightOf, FILL_TIP_MARGIN, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -112,11 +112,11 @@ export type TokenFillQuote = {
 // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
 export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
-  let offer: CxOfferState | null = null;
+  let offer: OfferState | null = null;
   let fetchFailed = false;
   try {
     const r0 = await wallet.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): recipient path fails clean
-    if (r0.ok) offer = (await r0.json().catch(() => null)) as CxOfferState | null;   // shape checked next: a string status
+    if (r0.ok) offer = (await r0.json().catch(() => null)) as OfferState | null;   // shape checked next: a string status
     else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
   } catch { fetchFailed = true; }
   if (offer && typeof offer.status === "string") {
@@ -218,7 +218,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
 // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35); the same
 // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
 // this block hand-mirrored it. Pure local math over data already in hand; no added I/O.
-async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, payto: string, pay: bigint, tip: number): Promise<FillRefusal | null> {
+async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums: Map<string, bigint>, payto: string, pay: bigint, tip: number): Promise<FillRefusal | null> {
   // F2-legacy: this SPV-less LEGACY / dApp lane (window.cairn.fillOffer, no swapguard in the loop) sizes the
   // payment against the resolver-served want.payto and the rebate against the served seller, so a lying read-
   // path redirects the payment (theft) or mis-sizes the rebate so resolve() rejects the fill (burn). Bind both
@@ -255,7 +255,7 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, su
 
 // The offer-id token lane: the fill pays in tokens (an Attest with no CSD outputs). The give and want content are
 // bound to the merkle-proven offer and the reviewed quote to the proven want, fee and total.
-async function tokenLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, tip: number, reviewedQuote?: TokenFillQuote): Promise<FillRefusal | null> {
+async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums: Map<string, bigint>, tip: number, reviewedQuote?: TokenFillQuote): Promise<FillRefusal | null> {
   // XR-1 (N26): a token-priced fill routes NO CSD - its on-chain tx is the Attest with outputs:[].
   // The attest->fillOffer reroute hardcodes outputs:[] (in attest()), but a DIRECT dApp fillOffer
   // on a token-priced served offer can still carry CSD outputs, which this lane never checks. `sums`

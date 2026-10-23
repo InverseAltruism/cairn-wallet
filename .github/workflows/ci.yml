@@ -37,54 +37,10 @@ jobs:
       - run: npm run check:dashes-paths
       - run: npm test
       - run: npm run build
-      # Vendor-freshness gate (cheap path): verifies the committed SPV bundle's sha256 == PROVENANCE.json and
-      # that the @noble pins match (the second crypto mirror). The full rebuild-vs-source byte-diff runs in the
-      # vendor-fresh-full job below when the cross-repo token is configured; here it self-skips (cheap checks
-      # still gate), so this job needs no token.
+      # Vendor-freshness gate: rebuilds the SPV bundle and its .d.ts from the csd-sdk packages npm ci installed
+      # (pinned in package.json, integrity in package-lock.json) and requires byte identity with the committed
+      # files, plus the PROVENANCE.json hashes, package pins and @noble agreement.
       - run: npm run verify:vendor
-
-  # Full vendor-freshness gate: rebuild the SPV bundle from the PINNED csd-sdk source and require
-  # byte-identity with the committed bundle (+ source @noble == wallet pins). This is the load-bearing drift
-  # check. csd-sdk is a public repository, so the checkout needs no token and the job runs on every push and PR.
-  # Keep in lockstep with release.yml's vendor-fresh-full.
-  vendor-fresh-full:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          path: cairn-wallet
-          persist-credentials: false
-      # Pin the csd-sdk checkout to the EXACT commit the committed bundle records (PROVENANCE.csdSdkCommit),
-      # NOT the moving master. This makes the rebuild-vs-source byte-diff reproducible: the gate checks that the
-      # bundle matches the source commit it claims, and a csd-sdk advance does not false-fail it. Re-vendoring
-      # updates PROVENANCE.csdSdkCommit, which moves this pin in lockstep. Because of this pin, the script's
-      # csdSdkCommit-equals-HEAD arm compares the pin with itself here; it is advisory either way.
-      - id: prov
-        run: echo "commit=$(node -p "require('./cairn-wallet/src/vendor/PROVENANCE.json').csdSdkCommit")" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          repository: InverseAltruism/csd-sdk
-          ref: ${{ steps.prov.outputs.commit }}
-          path: csd-sdk
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with: { node-version: "22" }
-      # Install csd-sdk's OWN pinned pnpm directly (bypassing corepack). The runner's newer corepack ships a
-      # pnpm that REFUSES to switch to csd-sdk's pin (pnpm 11 vs the pinned 10.x → version-mismatch error),
-      # and `corepack prepare --activate` alone doesn't put pnpm on PATH. `npm i -g <pin>` is bulletproof.
-      - run: |
-          PM=$(node -p "require('./csd-sdk/package.json').packageManager")   # e.g. pnpm@10.32.1
-          echo "Installing csd-sdk's pinned package manager: $PM"
-          npm i -g "$PM"
-          pnpm -v
-          pnpm -C csd-sdk install --frozen-lockfile && pnpm -C csd-sdk -r build
-      - run: npm -C cairn-wallet ci --ignore-scripts
-      - name: rebuild-vs-source byte-diff + noble equality
-        env:
-          CSD_SDK_DIR: ${{ github.workspace }}/csd-sdk
-        run: npm -C cairn-wallet run verify:vendor
 
   # Full-history secret scan with the repo's .gitleaks.toml; the pre-commit hook does not run on a commit made
   # without it or with --no-verify. The release binary is checked against gitleaks_8.18.4_checksums.txt.

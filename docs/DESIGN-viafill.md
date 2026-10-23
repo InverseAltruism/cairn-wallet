@@ -47,7 +47,7 @@ catches it too.
 The open-lane case is an attack, not only a gap. The fclaim grant denies a buyer who already holds
 `MAX_ACTIVE_CLAIMS` live holds, counted over every offer in the replay (csd-sdk
 `packages/cairnx/src/resolve/market.ts:179`, `liveHoldCount` in `context.ts:155-158`; vendored at
-`src/vendor/cairnx-spv.js:4557-4559`). A replay of one name's
+`src/vendor/cairnx-spv.js:3965-3969` and `4784-4785`). A replay of one name's
 records holds only that name's offers, so it under-counts and can grant a hold the full chain denies. A buyer with
 three live holds elsewhere can fclaim a name's open offer and send the fill: on the chain the fill does nothing (the
 seller keeps the name and the payment), while the scoped replay delivers the name to the buyer. The viaFill gate is

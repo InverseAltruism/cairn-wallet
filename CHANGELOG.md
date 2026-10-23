@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Internal: the vendored SPV bundle is built from the published csd-sdk packages, pinned exactly as dev dependencies
+  (cairnx-core 0.2.2, csd-light 0.1.25, csd-client 0.1.19, csd-crypto 0.1.20, csd-codec 0.1.18, npm window 4 of
+  2026-10-23), instead of a local csd-sdk checkout, and `src/vendor/cairnx-spv.d.ts` is generated from the same
+  export list instead of kept by hand. `npm run verify:vendor` rebuilds both files from the installed packages and
+  requires byte identity on every run, so the separate CI job that checked out csd-sdk is gone. What the new
+  versions change for a fill: a token-priced offer's served want ticker and amount are bound to its on-chain
+  record by the shared term check, and the reservation-fill verifier refuses when an event it enumerated cannot be
+  proven.
+
 - A fill of an offer by its offer id (a taker-bound CSD offer or a token-priced offer) now refuses when the offer, by
   its own on-chain record, expires too soon for the fill to be mined (its last live block is less than 4 blocks
   past the chain tip, the margin the reservation lane already uses): "refusing to sign: this offer expires at block

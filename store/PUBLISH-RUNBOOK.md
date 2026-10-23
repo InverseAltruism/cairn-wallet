@@ -71,12 +71,11 @@ name makes a stale local file self-evident.
      deeper than 1,000 blocks, a wrong entry or a compromised source). Do not release and do not regenerate over
      it; compare the hash at that height on the node, the miner and clarvis, and investigate first.
    - `does not match the generator's output`: the file was edited by hand; regenerate it with the script.
-3. **Vendor freshness:** `npm run verify:vendor` must pass. The load-bearing arm is the rebuild byte-diff: with a
-   csd-sdk checkout at `PROVENANCE.json`'s `csdSdkCommit` (`CSD_SDK_DIR=<path>`), the script rebuilds the
-   bundle and requires byte-identity. Without a csd-sdk checkout it skips that arm and runs only the cheap
-   checks (bundle sha256 equals `PROVENANCE.json`, `@noble` pins agree). The line comparing csd-sdk's HEAD with
-   `csdSdkCommit` is advisory and does not fail the gate. In CI the byte-diff runs in the `vendor-fresh-full` job
-   of both workflows on every run; csd-sdk is public, so the checkout needs no token and the job never skips.
+3. **Vendor freshness:** after `npm ci`, `npm run verify:vendor` must pass. It rebuilds the SPV bundle and its
+   `.d.ts` from the installed csd-sdk packages (the exact versions package.json pins, the integrity
+   package-lock.json records) and requires both to be byte-identical to the committed files, and it checks the
+   sha256, package and `@noble` pins in `PROVENANCE.json`. No csd-sdk checkout is needed. CI runs the same gate in
+   the `test` job of `ci.yml` and the `build` job of `release.yml`.
 4. **Green gate:** `npm run typecheck && npm test` (full suite) must pass; CI must be green on the tag.
 5. **Reproducible build.** Run `npm ci && npm run package`. This writes the version-stamped upload file
    `cairn-wallet-store-X.Y.Z.zip` + its `.sha256`, the byte-identical `cairn-wallet-store.zip`, and

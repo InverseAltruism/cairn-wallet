@@ -3,7 +3,7 @@
 import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
-import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck } from "../src/vendor/cairnx-spv.js";
+import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck, type NameState } from "../src/vendor/cairnx-spv.js";
 import { checker } from "./helpers/check.mjs";
 
 const { check: ok, done } = checker();
@@ -244,7 +244,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   // fire the displacement branch. If cairnx-core ever drops that branch, this flips to safe; so the assertion cannot
   // dead-green. It is the reason the wired gate above is inert: the two heights are forced equal there, never here.
   ok("NFIN-DISPLACE-NOOP: finalizeWinnerCheck WOULD block on a genuine (independent) commit-height mismatch: the guard is real, just unwired", (() => {
-    const w = finalizeWinnerCheck({ ...mine }, ME, EFF + 1, winEnd - 2);   // commitHeight EFF+1 != effectiveHeight EFF
+    const w = finalizeWinnerCheck({ ...mine } as NameState, ME, EFF + 1, winEnd - 2);   // commitHeight EFF+1 != effectiveHeight EFF
     return w.safe === false && /effective height changed|displaced/.test(w.reason || "");
   })());
   ok("NFIN: no reservation at all (clean 404) refuses", (() => {
