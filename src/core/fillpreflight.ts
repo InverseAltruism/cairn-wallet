@@ -3,7 +3,7 @@
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
-import { fclaimHoldEnd, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, offerExpiryHeightOf, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -38,6 +38,24 @@ export function tipDependentFillReason(reason: string): boolean {
 // separately: bindOfferTerms carries no token-want ticker/amount leg (see tokenLanePreflight).
 function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean {
   return bindOfferTerms(offer, t, { give: true, wantType: true });
+}
+
+// Blocks an offer-id fill must have left before its offer expires. resolve() sweeps the offer to expired at
+// offerExpiryHeightOf and then rejects the fill after the CSD moved. Inclusion delay measured on this chain
+// (2026-10-10) was p50 4.0 min and p95 23.7 min, about 12 blocks at 2 minutes a block; 15 blocks (30 min) keeps
+// a margin above p95. A refusal costs the taker a relist; a fill that lands after expiry costs the payment.
+const FILL_EXPIRY_MARGIN = 15;
+
+// The offer-id lanes' expiry check, on the merkle-proven expiry and anchor height. The tip is clamped up by the
+// PoW-backed floor, as the sunset check is, so a deflating RPC cannot hide that the offer is about to expire.
+async function offerExpiryRefusal(wallet: FillPreflightIo, proven: ProvenOfferPayto, tip: number): Promise<FillRefusal | null> {
+  const at = Math.max(tip, await wallet.tipFloor());
+  if (!(at > 0) || !Number.isFinite(proven.expiresEpoch) || !Number.isInteger(proven.height))
+    return { ok: false, error: "couldn't check this offer's expiry against the chain tip yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+  const expiresAt = offerExpiryHeightOf(proven.expiresEpoch, proven.height);
+  if (expiresAt <= at + FILL_EXPIRY_MARGIN) // MUTATE_FILL_EXPIRY_GUARD
+    return { ok: false, error: `refusing to sign: this offer expires at block ${expiresAt.toLocaleString("en-US")} and the chain is at ${at.toLocaleString("en-US")}, too close for the fill to be mined in time. A fill mined after the offer expires is rejected on-chain after your payment moved. Ask the seller to relist.`, sighashMatch: false, code: "FILL_UNSAFE" };
+  return null;
 }
 
 // Abort bound for the fclaim-lane second-source reads (offer and reservation record). The fill does not wait on
@@ -172,7 +190,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
       return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     const verdict = fillIsSafe(offer, me, pay, tip);
     if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
-    return isCsdWant ? await csdLanePreflight(wallet, offer, sums, payto, pay) : await tokenLanePreflight(wallet, offer, sums, reviewedQuote);
+    return isCsdWant ? await csdLanePreflight(wallet, offer, sums, payto, pay, tip) : await tokenLanePreflight(wallet, offer, sums, tip, reviewedQuote);
   } else if (fetchFailed) {
     // GENUINE unreachability (5xx / timeout; NOT a 404). We cannot tell the lane without the offer, and
     // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
@@ -198,7 +216,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
 // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35); the same
 // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
 // this block hand-mirrored it. Pure local math over data already in hand; no added I/O.
-async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, payto: string, pay: bigint): Promise<FillRefusal | null> {
+async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, payto: string, pay: bigint, tip: number): Promise<FillRefusal | null> {
   // F2-legacy: this SPV-less LEGACY / dApp lane (window.cairn.fillOffer, no swapguard in the loop) sizes the
   // payment against the resolver-served want.payto and the rebate against the served seller, so a lying read-
   // path redirects the payment (theft) or mis-sizes the rebate so resolve() rejects the fill (burn). Bind both
@@ -208,6 +226,8 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, su
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
   if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
     return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+  const expiry = await offerExpiryRefusal(wallet, proven, tip);
+  if (expiry) return expiry;
   // WANT-TYPE bind (mirrors the fclaim lane's isTokenWant rejection in verifyFillSpv): the MERKLE-PROVEN
   // offer must actually be CSD-priced to take this CSD-fill lane. A token-priced offer carries no
   // want.value, so provenOfferPayto leaves terms.value undefined and bindOfferTerms skips the value leg;
@@ -233,7 +253,7 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, su
 
 // The offer-id token lane: the fill pays in tokens (an Attest with no CSD outputs). The give and want content are
 // bound to the merkle-proven offer and the reviewed quote to the proven want, fee and total.
-async function tokenLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, reviewedQuote?: TokenFillQuote): Promise<FillRefusal | null> {
+async function tokenLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, tip: number, reviewedQuote?: TokenFillQuote): Promise<FillRefusal | null> {
   // XR-1 (N26): a token-priced fill routes NO CSD - its on-chain tx is the Attest with outputs:[].
   // The attest->fillOffer reroute hardcodes outputs:[] (in attest()), but a DIRECT dApp fillOffer
   // on a token-priced served offer can still carry CSD outputs, which this lane never checks. `sums`
@@ -253,6 +273,8 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, 
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
   if (!proven)
     return { ok: false, error: "couldn't prove this token offer's on-chain terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+  const expiry = await offerExpiryRefusal(wallet, proven, tip);
+  if (expiry) return expiry;
   // give legs (give.ticker/amount/name) + the symmetric want-TYPE refusal, via the SAME vendored predicate
   // the CSD lane uses. The want-type leg also refuses a proven CSD offer served as a token offer, so once
   // this passes the proven offer is genuinely token-priced (proven.wantTicker is defined).

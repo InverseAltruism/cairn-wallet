@@ -58,6 +58,13 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   fields, and the proven offer must carry `want.value` (a token offer served as CSD-priced refuses).
 - The fee, rebate, value, taker, bid and `min` fields are bound with the same `bindOfferTerms` call as the fclaim lane.
 - Every leg of the vendored `requiredFillOutputs` need-map must be paid by the outputs, compared in `bigint`.
+- Offer expiry (both offer-id lanes): resolve() sweeps an offer to expired at the first block past its expiry epoch
+  (the vendored `offerExpiryHeightOf`) and then rejects a fill after its payment moved, while the resolver serves the
+  offer open until its own tip reaches the block before. The wallet takes the expiry epoch and anchor height from the
+  merkle-proven record and refuses with `FILL_UNSAFE` when that height is within `FILL_EXPIRY_MARGIN` (15 blocks) of
+  the tip clamped up by the PoW-backed floor; with no readable tip and no floor it refuses as `VERIFY_UNAVAILABLE`.
+  The margin sits above the p95 inclusion delay measured on 2026-10-10 (23.7 minutes, about 12 blocks)
+  (test/fill-failclosed.test.mjs, test/fill-token-content.test.mjs).
 
 ## The token lane
 
