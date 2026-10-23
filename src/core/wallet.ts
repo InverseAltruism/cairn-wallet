@@ -11,7 +11,7 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, CONF_TOKEN_FILL, SCORE_FILL, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, isPlainName, isTicker, type TokenDisplayMeta, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, defaultFeeFor } from "./cairnx.js";
-import { fclaimHoldEnd, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, offerExpiryHeightOf, EPOCH_LEN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, liveSpvSource, fetchNameUnion, BodyMismatchError, type LiveSpvOpts, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto, type MintedProvenOfferTerms } from "./fillspv.js";
@@ -85,6 +85,11 @@ const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
 // them: an answer is used only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in
 // test/fill-offer-crosscheck and test/fill-reservation-verdict).
 const SECOND_SOURCE_TIMEOUT_MS = 12000;
+// Blocks an offer-id fill must have left before its offer expires. resolve() sweeps the offer to expired at
+// offerExpiryHeightOf and then rejects the fill after the CSD moved. Inclusion delay measured on this chain
+// (2026-10-10) was p50 4.0 min and p95 23.7 min, about 12 blocks at 2 minutes a block; 15 blocks (30 min) keeps
+// a margin above p95. A refusal costs the taker a relist; a fill that lands after expiry costs the payment.
+const FILL_EXPIRY_MARGIN = 15;
 
 // The idle window shared by the wallet's auto-lock AND its session-rehydrate expiry, and by the
 // background alarm that ENFORCES the lock. Exported so the decoy default here and background's
@@ -845,6 +850,8 @@ export class Wallet {
         const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
         if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
           return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+        const expiry = await this.offerExpiryRefusal(proven, tip);
+        if (expiry) return expiry;
         // WANT-TYPE bind (mirrors the fclaim lane's isTokenWant rejection in verifyFillSpv): the MERKLE-PROVEN
         // offer must actually be CSD-priced to take this CSD-fill branch. A token-priced offer carries no
         // want.value, so provenOfferPayto leaves terms.value undefined and bindOfferTerms skips the value leg;
@@ -884,6 +891,8 @@ export class Wallet {
         const proven = await this.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
         if (!proven)
           return { ok: false, error: "couldn't prove this token offer's on-chain terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+        const expiry = await this.offerExpiryRefusal(proven, tip);
+        if (expiry) return expiry;
         // give legs (give.ticker/amount/name) + the symmetric want-TYPE refusal, via the SAME vendored predicate
         // the CSD lane uses. The want-type leg also refuses a proven CSD offer served as a token offer, so once
         // this passes the proven offer is genuinely token-priced (proven.wantTicker is defined).
@@ -1068,6 +1077,17 @@ export class Wallet {
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
   provenPaytoForTest?: (offerId: string, offerHeight: number) => ({ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null) | Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null>;
+  // The offer-id lanes' expiry check, on the merkle-proven expiry and anchor height. The tip is clamped up by the
+  // PoW-backed floor, as the sunset check is, so a deflating RPC cannot hide that the offer is about to expire.
+  private async offerExpiryRefusal(proven: { expiresEpoch: number; height: number }, tip: number): Promise<FillRefusal | null> {
+    const at = Math.max(tip, await this.tipFloor());
+    if (!(at > 0) || !Number.isFinite(proven.expiresEpoch) || !Number.isInteger(proven.height))
+      return { ok: false, error: "couldn't check this offer's expiry against the chain tip yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    const expiresAt = offerExpiryHeightOf(proven.expiresEpoch, proven.height);
+    if (expiresAt <= at + FILL_EXPIRY_MARGIN) // MUTATE_FILL_EXPIRY_GUARD
+      return { ok: false, error: `refusing to sign: this offer expires at block ${expiresAt.toLocaleString("en-US")} and the chain is at ${at.toLocaleString("en-US")}, too close for the fill to be mined in time. A fill mined after the offer expires is rejected on-chain after your payment moved. Ask the seller to relist.`, sighashMatch: false, code: "FILL_UNSAFE" };
+    return null;
+  }
   private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null> {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.

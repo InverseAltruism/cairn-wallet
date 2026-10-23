@@ -64,7 +64,7 @@ async function freshWallet(pw, floor = 0) {
   const w = new Wallet(st);
   const { addr } = await w.create(pw);
   if (floor > 0) await st.set("spvNodeTipFloor", floor);
-  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), terms: provenOpenTerms });
+  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), expiresEpoch: 9e15, height: 47_000, terms: provenOpenTerms });
   return { w, addr };
 }
 
@@ -122,7 +122,7 @@ console.log("W5 (B5b) - legacy-sunset arithmetic refuse:");
     id: OID, seller: "0x" + "cd".repeat(20), give: { ticker: "TKN", amount: "5" },
     want: { value: "5000000", payto: PAYTO }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150, taker: addr,
   };
-  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), terms: { ...provenOpenTerms, taker: String(addr).toLowerCase() } });
+  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), expiresEpoch: 9e15, height: 47_000, terms: { ...provenOpenTerms, taker: String(addr).toLowerCase() } });
   const outputs = requiredFillOutputs(offer, 5_000_000n).map(({ to, value }) => ({ to, value: Number(value) }));
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => offer }), tip: 60_050 });
   const r = await w.fillOffer({ proposalId: OID, outputs });
@@ -138,7 +138,7 @@ console.log("W5 (B5b) - legacy-sunset arithmetic refuse:");
     id: OID, seller: "0x" + "cd".repeat(20), give: { ticker: "TKN", amount: "5" },
     want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150,
   };
-  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
+  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: "0x" + "cd".repeat(20), expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => offer }), tip: 60_050 });
   const r = await w.fillOffer({ proposalId: OID, outputs: [], tokenQuote: { ticker: "PAY", amount: "7", fee: "1", total: "8", giveTicker: "TKN", giveAmount: "5" } });   // 0.2.71: the reviewed quote the popup sends
   check(`exempt: honest token-want past the sunset ACCEPTS, not sunset-refused (got ${r?.error ?? r?.code ?? "ok"})`, r?.ok === true && s.submits.length === 1 && r?.code !== "FILL_LEGACY_SUNSET");
