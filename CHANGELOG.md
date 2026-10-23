@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.100 (2026-10-23)
+
+0.2.99 plus one fill fix; nothing else from later development is included.
+
+- A fill of an offer by its offer id (a taker-bound CSD offer or a token-priced offer) now refuses when the offer, by
+  its own on-chain record, expires within 15 blocks of the chain tip: "refusing to sign: this offer expires at block
+  N and the chain is at M, too close for the fill to be mined in time. A fill mined after the offer expires is
+  rejected on-chain after your payment moved. Ask the seller to relist." (`FILL_UNSAFE`). The resolver serves an
+  offer open until the block before it expires, so before this a connected site could have the wallet sign a fill
+  the chain then rejected with the payment already sent. With no readable chain tip the fill refuses as
+  `VERIFY_UNAVAILABLE`: "couldn't check this offer's expiry against the chain tip yet; try again in a moment".
+  The tip is clamped up by the wallet's PoW-backed tip floor, as the open-offer sunset check is. 15 blocks is 30
+  minutes, above the 23.7-minute p95 inclusion delay measured on 2026-10-10.
+- The fill approval card (CSD and token) shows when the listed offer expires, "offer expires: epoch N (in ~X,
+  current epoch C)", or "(already expired: the wallet will refuse this fill)" once it has.
+- The SPV anchor table's newest entry is block 122,879.
+
 ## 0.2.99 (2026-10-18)
 
 - The bundled csd-sdk code is rebuilt from csd-sdk `e25c020` (cairnx-core 0.2.0, csd-codec 0.1.18, csd-light
