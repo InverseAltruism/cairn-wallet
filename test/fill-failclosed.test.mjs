@@ -80,10 +80,11 @@ console.log("B1: fail-closed fill preflight:");
   check("a positively-parsed open offer still proceeds and submits (no over-refusal)", r?.ok === true && s.submits.length === 1);
 }
 
-// Offer expiry on the offer-id lane. A taker-bound offer anchored at 120,000 with expiresEpoch 4,000 is swept to
-// expired at block 120,030 (the first block of epoch 4,001), and resolve() then rejects a fill after its CSD moved.
-// The resolver serves it open until its own tip reaches 120,029, so the wallet checks the merkle-proven expiry
-// itself against the floor-clamped tip, refusing when 15 blocks or fewer are left (FILL_EXPIRY_MARGIN).
+// Offer expiry on the offer-id lane. A taker-bound offer anchored at 120,000 with expiresEpoch 4,000 expires at
+// block 120,030 (the first block of epoch 4,001): the node refuses the fill's attest from there, so a fill not mined
+// by 120,029 strands. The resolver serves the offer open until its own tip reaches 120,029, so the wallet checks
+// the merkle-proven expiry itself against the floor-clamped tip, refusing when the last live block is below
+// tip + FILL_TIP_MARGIN (4), the bundle's margin for the same strand on the fclaim lane.
 console.log("\nOffer expiry on the offer-id CSD lane:");
 {
   const H0 = 120_000, E = 4_000;
@@ -105,12 +106,12 @@ console.log("\nOffer expiry on the offer-id CSD lane:");
   };
   const past = await run(120_030);
   check(`tip in the epoch after expiry, offer still served open: refused (${past.r?.code})`, past.r?.ok === false && past.r?.code === "FILL_UNSAFE" && past.submits === 0);
-  const edge = await run(120_015);
-  check(`15 blocks before expiry: refused (${edge.r?.code})`, edge.r?.ok === false && edge.r?.code === "FILL_UNSAFE" && edge.submits === 0);
-  const ok16 = await run(120_014);
-  check(`16 blocks before expiry: signs and submits (${ok16.r?.code ?? "ok"})`, ok16.r?.ok === true && ok16.submits === 1);
-  const deflated = await run(119_000, 120_020);
-  check(`a deflated tip (119,000) with the PoW floor at 120,020: refused (${deflated.r?.code})`, deflated.r?.ok === false && deflated.r?.code === "FILL_UNSAFE" && deflated.submits === 0);
+  const edge = await run(120_026);
+  check(`tip 120,026, last live block 120,029 below tip + 4: refused (${edge.r?.code})`, edge.r?.ok === false && edge.r?.code === "FILL_UNSAFE" && edge.submits === 0);
+  const ok25 = await run(120_025);
+  check(`tip 120,025, last live block 120,029 at tip + 4: signs and submits (${ok25.r?.code ?? "ok"})`, ok25.r?.ok === true && ok25.submits === 1);
+  const deflated = await run(119_000, 120_027);
+  check(`a deflated tip (119,000) with the PoW floor at 120,027: refused (${deflated.r?.code})`, deflated.r?.ok === false && deflated.r?.code === "FILL_UNSAFE" && deflated.submits === 0);
   const noTip = await run(null);
   check(`no readable tip and no floor: refused as retryable (${noTip.r?.code})`, noTip.r?.ok === false && noTip.r?.code === "VERIFY_UNAVAILABLE" && noTip.submits === 0);
 }

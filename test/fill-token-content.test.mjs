@@ -209,12 +209,12 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
 }
 
 globalThis.fetch = origFetch;
-// The token lane runs the same offer-expiry check as the CSD lane: an offer whose proven expiry (epoch 1,666,
-// swept at block 50,010) is within 15 blocks of the tip (50,000) is refused before anything is signed.
+// The token lane runs the same offer-expiry check as the CSD lane: an offer whose proven expiry (epoch 1,665,
+// expired at block 49,980) the resolver still serves open is refused at tip 50,000 before anything is signed.
 {
-  const nearExpiry = () => ({ ...TRUE_PROVEN(), expiresEpoch: 1_666 });
-  const { r, s } = await fillServed("pw-expiry-12345", { ...honestOffer, expiresEpoch: 1_666 }, nearExpiry);
-  check(`a token offer 10 blocks from expiry is refused (${r?.code})`, r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
+  const expired = () => ({ ...TRUE_PROVEN(), expiresEpoch: 1_665 });
+  const { r, s } = await fillServed("pw-expiry-12345", { ...honestOffer, expiresEpoch: 1_665 }, expired);
+  check(`a token offer past its expiry is refused (${r?.code})`, r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
 }
 
 console.log(`\nfill-token-content: ${pass} passed, ${fail} failed`);

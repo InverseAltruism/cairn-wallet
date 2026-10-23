@@ -3,7 +3,7 @@
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
-import { fclaimHoldEnd, offerExpiryHeightOf, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, offerExpiryHeightOf, FILL_TIP_MARGIN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -40,11 +40,13 @@ function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean
   return bindOfferTerms(offer, t, { give: true, wantType: true });
 }
 
-// Blocks an offer-id fill must have left before its offer expires. resolve() sweeps the offer to expired at
-// offerExpiryHeightOf and then rejects the fill after the CSD moved. Inclusion delay measured on this chain
-// (2026-10-10) was p50 4.0 min and p95 23.7 min, about 12 blocks at 2 minutes a block; 15 blocks (30 min) keeps
-// a margin above p95. A refusal costs the taker a relist; a fill that lands after expiry costs the payment.
-const FILL_EXPIRY_MARGIN = 15;
+// Whether a fill submitted at `tip` would strand: the node refuses an attest after its proposal's expiry, in
+// mempool admission and in block apply, so a fill that cannot be mined by the offer's last live block
+// (offerExpiryHeightOf - 1) sits unconfirmed and is dropped. FILL_TIP_MARGIN is the bundle's margin for the same
+// strand on the fclaim lane's hold deadline, applied the same way (holdEnd < tip + FILL_TIP_MARGIN).
+export function offerFillTooLate(expiresAt: number, tip: number): boolean {
+  return expiresAt - 1 < tip + FILL_TIP_MARGIN;
+}
 
 // The offer-id lanes' expiry check, on the merkle-proven expiry and anchor height. The tip is clamped up by the
 // PoW-backed floor, as the sunset check is, so a deflating RPC cannot hide that the offer is about to expire.
@@ -53,8 +55,8 @@ async function offerExpiryRefusal(wallet: FillPreflightIo, proven: ProvenOfferPa
   if (!(at > 0) || !Number.isFinite(proven.expiresEpoch) || !Number.isInteger(proven.height))
     return { ok: false, error: "couldn't check this offer's expiry against the chain tip yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   const expiresAt = offerExpiryHeightOf(proven.expiresEpoch, proven.height);
-  if (expiresAt <= at + FILL_EXPIRY_MARGIN) // MUTATE_FILL_EXPIRY_GUARD
-    return { ok: false, error: `refusing to sign: this offer expires at block ${expiresAt.toLocaleString("en-US")} and the chain is at ${at.toLocaleString("en-US")}, too close for the fill to be mined in time. A fill mined after the offer expires is rejected on-chain after your payment moved. Ask the seller to relist.`, sighashMatch: false, code: "FILL_UNSAFE" };
+  if (offerFillTooLate(expiresAt, at))
+    return { ok: false, error: `refusing to sign: this offer expires at block ${expiresAt.toLocaleString("en-US")} and the chain is at ${at.toLocaleString("en-US")}, so the fill cannot be mined in time; it would sit unconfirmed and be dropped. Ask the seller to relist.`, sighashMatch: false, code: "FILL_UNSAFE" };
   return null;
 }
 

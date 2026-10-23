@@ -3,12 +3,13 @@
 ## Unreleased
 
 - A fill of an offer by its offer id (a taker-bound CSD offer or a token-priced offer) now refuses when the offer, by
-  its own on-chain record, expires within 15 blocks of the chain tip: "refusing to sign: this offer expires at block
-  N and the chain is at M, too close for the fill to be mined in time. A fill mined after the offer expires is
-  rejected on-chain after your payment moved. Ask the seller to relist." (`FILL_UNSAFE`). The resolver serves an
-  offer open until the block before it expires, so before this a connected site could have the wallet sign a fill
-  the chain then rejected with the payment already sent. With no readable chain tip the fill refuses as
-  `VERIFY_UNAVAILABLE`: "couldn't check this offer's expiry against the chain tip yet; try again in a moment".
+  its own on-chain record, expires too soon for the fill to be mined (its last live block is less than 4 blocks
+  past the chain tip, the margin the reservation lane already uses): "refusing to sign: this offer expires at block
+  N and the chain is at M, so the fill cannot be mined in time; it would sit unconfirmed and be dropped. Ask the
+  seller to relist." (`FILL_UNSAFE`). The node refuses a fill after its offer's expiry, so no payment moves; before
+  this the wallet signed such a fill and it sat as a pending row until dropped. With no readable chain tip the fill
+  refuses as `VERIFY_UNAVAILABLE`: "couldn't check this offer's expiry against the chain tip yet; try again in a
+  moment".
   The fill approval card (CSD and token) now shows when the listed offer expires, "offer expires: epoch N (in ~X,
   current epoch C)", or "(already expired: the wallet will refuse this fill)" once it has.
 
