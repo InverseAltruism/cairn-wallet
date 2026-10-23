@@ -2,6 +2,7 @@
 // (the high-stakes "what am I signing?" layer). approve.ts imports these and only owns the DOM glue.
 import { decodeCairnxRecord, type TokenDisplayMeta, PINNED_TOKENS, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
+import { offerFillTooLate } from "../core/fillpreflight.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts — take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -78,7 +79,7 @@ export function tokenAmountBothScales(base: unknown, decimals: unknown, ticker: 
 // ATTRIBUTE the number to the offer service, never assert it as a first-person debit ("You will pay").
 // Re-framing only, by decision: a second price source for a display string was DECLINED as
 // disproportionate (Plan 71 section 8, decline 6); the real number is bound at the fund boundary.
-export function tokenQuoteHtml(q: any, currentEpoch?: unknown): string {
+export function tokenQuoteHtml(q: any, tip?: unknown): string {
   if (!(q && q.ok)) return `<b class="err">⚠ could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). The wallet will not sign this fill until the amount can be shown; try again in a moment or reject.</b>`;
   const amt = (base: unknown, served: unknown, tk: unknown, deployId: unknown) => {
     const b = String(base ?? "");
@@ -91,7 +92,7 @@ export function tokenQuoteHtml(q: any, currentEpoch?: unknown): string {
     ? ` You receive ${q.giveName ? `<b>${escapeHtml(String(q.giveName))}.csd</b>` : amt(q.giveAmount, q.giveDecimals, q.giveTicker, q.giveDeployId)}.`
     : "";
   const warn = [tickerWarning(q.ticker, q.wantDeployId), q.giveTicker ? tickerWarning(q.giveTicker, q.giveDeployId) : ""].filter(Boolean).join(" ");
-  const exp = offerExpiryLine(q.expiresAt, currentEpoch);
+  const exp = offerExpiryLine(q.expiresAt, tip);
   return `Filling this debits ${amt(q.total, q.wantDecimals, q.ticker, q.wantDeployId)} <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span>.${giveBit} Quoted by the offer service; the wallet refuses to sign if the offer's on-chain record differs from what is shown here.${warn ? ` <b class="err">${warn}</b>` : ""}${exp ? `<br>${exp}` : ""}`;
 }
 
@@ -162,7 +163,7 @@ function humanEpochs(epochs: number): string {
   if (days < 365) return `~${Math.round(days)} day(s)`;
   return `~${(days / 365).toFixed(1)} year(s)`;
 }
-export function expiryLine(expiresEpoch: unknown, currentEpoch?: unknown, pastNote = "already past — this record would be a no-op"): string {
+export function expiryLine(expiresEpoch: unknown, currentEpoch?: unknown): string {
   if (expiresEpoch === undefined || expiresEpoch === null) return "";
   const e = Number(expiresEpoch);
   if (!Number.isFinite(e) || !Number.isInteger(e) || e < 0) return `expires: <span class="err">invalid epoch</span>`;
@@ -170,7 +171,7 @@ export function expiryLine(expiresEpoch: unknown, currentEpoch?: unknown, pastNo
   if (Number.isFinite(cur) && Number.isInteger(cur) && cur >= 0) {
     const left = e - cur;
     const warn = left > EXPIRY_WARN_EPOCHS ? ` <span class="err">⚠ unusually long claim window</span>` : "";
-    if (left <= 0) return `expires: epoch ${e} <span class="err">(${pastNote})</span>`;
+    if (left <= 0) return `expires: epoch ${e} <span class="err">(already past — this record would be a no-op)</span>`;
     return `expires: epoch ${e} (in ${humanEpochs(left)}, current epoch ${cur})${warn}`;
   }
   return `expires: epoch ${e}`;
@@ -468,17 +469,25 @@ export function describe(r: any): string {
   return `<b>${escapeHtml(r.method)}</b>`;
 }
 
-// The listed offer's expiry on a fill card, from the block offerExpiryHeightOf gives (the first block past its last
-// live epoch). Served by the offer service, so display only; the preflight refuses on the proven record.
-export function offerExpiryLine(expiresAt: unknown, currentEpoch?: unknown): string {
+// The listed offer's expiry on a fill card, against the tip (the wallet's floor-clamped tip when approve.ts has it).
+// Served by the offer service, so display only; the preflight decides on the proven record with the same
+// offerFillTooLate, so the card names a refusal exactly when the wallet will make it.
+export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
   const h = Number(expiresAt);
-  if (!Number.isSafeInteger(h) || h < EPOCH_LEN) return "";
-  return `offer ${expiryLine(Math.floor(h / EPOCH_LEN) - 1, currentEpoch, "already expired: the wallet will refuse this fill")}`;
+  if (!Number.isSafeInteger(h) || h < 1) return "";
+  const at = Number(tip);
+  const block = h.toLocaleString("en-US");
+  if (!Number.isSafeInteger(at) || at <= 0) return `offer expires at block ${block}`;
+  const left = h - 1 - at;   // blocks after the tip that can still mine the fill
+  if (left <= 0) return `offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>`;
+  const where = `offer expires at block ${block}, ${left} block${left === 1 ? "" : "s"} after the current tip`;
+  if (offerFillTooLate(h, at)) return `${where} <span class="err">(too close to be mined in time: the wallet will refuse this fill)</span>`;
+  return `${where} (${humanEpochs(left / EPOCH_LEN)})`;
 }
 
 // #fill-view for a CSD-paid fill: the asset the offer service lists as received, and the listing id when the
 // attested id is a reservation of it (the claim lane). Resolver-served, so attributed; a failed read says so.
-export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number } | null | undefined, proposalId: string, currentEpoch?: unknown): string {
+export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number } | null | undefined, proposalId: string, tip?: unknown): string {
   if (!view || !view.ok) return `<span class="err">⚠ could not load this listing from the offer service, so what you receive is not shown here. Check the listing on the site before approving.</span>`;
   const lines: string[] = [];
   if (view.offerId && view.offerId.toLowerCase() !== String(proposalId).toLowerCase())
@@ -488,7 +497,7 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
       ? `<b>${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))}</b>`
       : "";
   lines.push(gets ? `you receive (as listed by the offer service): ${gets}` : `<span class="err">⚠ the offer service did not say what this listing gives. Check the listing on the site before approving.</span>`);
-  const exp = offerExpiryLine(view.expiresAt, currentEpoch);
+  const exp = offerExpiryLine(view.expiresAt, tip);
   if (exp) lines.push(exp);
   return lines.join("<br>");
 }

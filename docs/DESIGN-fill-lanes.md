@@ -66,7 +66,8 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   refuses with `FILL_UNSAFE` when the last live block is below the tip plus the vendored `FILL_TIP_MARGIN` (4, the
   fclaim lane's margin for the same strand), with the tip clamped up by the PoW-backed floor; with no readable tip
   and no floor it refuses as `VERIFY_UNAVAILABLE` (test/fill-failclosed.test.mjs, test/fill-token-content.test.mjs). The fill cards show the listed offer's expiry
-  epoch and the time left, from the offer service's listing (display only; test/approve-card-honesty.test.mjs).
+  block and the blocks left after the floor-clamped tip, from the offer service's listing (display only), and name a
+  refusal only when `offerFillTooLate` says the preflight will make it (test/approve-card-honesty.test.mjs).
 
 ## The token lane
 

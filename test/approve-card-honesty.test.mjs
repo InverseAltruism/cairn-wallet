@@ -5,8 +5,9 @@
 //       RED-FIRST: make sendWarnings ignore `kind` (always the payment tail) and 1b, 1c fail.
 //   (2) A CSD-paid fill card shows the asset the listing gives, and on the reservation (claim) lane it names
 //       the listing behind the attested id. RED-FIRST: drop fillFillView(current) in approve.ts and 2a, 2b fail.
-//       The card also shows when the listed offer expires (2d, 1f). RED-FIRST: drop the expiry line from
-//       fillViewHtml and 1f, 2d fail; drop the epoch read in fillFillView and 2d fails.
+//       The card also shows when the listed offer expires, in blocks after the tip, and says the wallet will refuse
+//       only when it will (1f, 2d). RED-FIRST: drop the expiry line from fillViewHtml and 1f, 2d fail; drop the tip
+//       read in fillFillView and 2d fails.
 //   (3) A request whose debit exceeds the spendable balance (a pending spend still holds coins) keeps
 //       Approve disabled with the reason, and a forced click is refused.
 //       RED-FIRST: drop the balShort block in fillBalance and 3a, 3b fail.
@@ -51,9 +52,14 @@ t("1e fillViewHtml names the listing on the reservation lane and the asset with 
   assert.match(html, new RegExp(`listing: <code>${LIST}</code>`)); assert.match(html, /184\.01371902 CAIRN = 18401371902 base units/);
 });
 
-t("1f a fill card for an offer already past its expiry says the wallet will refuse the fill", () => {
-  const html = fillViewHtml({ ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "1", expiresAt: 117_000 }, LIST, 3_900);
-  assert.match(html, /offer expires: epoch 3899 <span class="err">\(already expired: the wallet will refuse this fill\)<\/span>/);
+t("1f the card says the wallet will refuse a fill only when it will", () => {
+  // An offer anchored at 120,000 with expiresEpoch 4,000 expires at 120,030; its last live block is 120,029 and the
+  // chain accepts a fill through it. At tip 120,000 (inside epoch 4,000) the fill still has 29 blocks.
+  const at = (tip) => fillViewHtml({ ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "1", expiresAt: 120_030 }, LIST, tip);
+  assert.match(at(120_000), /offer expires at block 120,030, 29 blocks after the current tip \(~1 h\)/); assert.doesNotMatch(at(120_000), /refuse/);
+  assert.match(at(120_025), /4 blocks after the current tip/); assert.doesNotMatch(at(120_025), /refuse/);
+  assert.match(at(120_026), /offer expires at block 120,030, 3 blocks after the current tip <span class="err">\(too close to be mined in time: the wallet will refuse this fill\)<\/span>/);
+  assert.match(at(120_030), /offer expired at block 120,030 <span class="err">\(the wallet will refuse this fill\)<\/span>/);
 });
 
 {
@@ -63,7 +69,7 @@ t("1f a fill card for an offer already past its expiry says the wallet will refu
   const view = await fillOfferView(io, LIST), quote = await tokenFillQuote(io, LIST);
   t("1g the fill view and the token quote carry the listed offer's expiry block", () => {
     assert.equal(view.expiresAt, 117_330); assert.equal(quote.expiresAt, 117_330);
-    assert.match(tokenQuoteHtml(quote, 3_900), /offer expires: epoch 3910 \(in ~10 h, current epoch 3900\)/);
+    assert.match(tokenQuoteHtml(quote, 117_000), /offer expires at block 117,330, 329 blocks after the current tip \(~11 h\)/);
   });
 }
 
@@ -101,8 +107,8 @@ t("2a the card shows the asset the listing gives", () => {
 t("2b on the reservation lane the card names the listing", () => {
   assert.match(byId("fill-view").innerHTML, new RegExp(`listing: <code>${LIST}</code>`));
 });
-t("2d the card shows when the listed offer expires, from the current epoch", () => {
-  assert.match(byId("fill-view").innerHTML, /offer expires: epoch 3910 \(in ~10 h, current epoch 3900\)/);
+t("2d the card shows when the listed offer expires, from the tip", () => {
+  assert.match(byId("fill-view").innerHTML, /offer expires at block 117,330, 329 blocks after the current tip \(~11 h\)/);
 });
 t("3c honest: a covered request arms Approve after the click-through delay", () => {
   assert.equal(byId("btn-approve").disabled, false);
