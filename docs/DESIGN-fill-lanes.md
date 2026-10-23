@@ -65,9 +65,10 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   reaches the last live block. The wallet takes the expiry epoch and anchor height from the merkle-proven record and
   refuses with `FILL_UNSAFE` when the last live block is below the tip plus the vendored `FILL_TIP_MARGIN` (4, the
   fclaim lane's margin for the same strand), with the tip clamped up by the PoW-backed floor; with no readable tip
-  and no floor it refuses as `VERIFY_UNAVAILABLE` (test/fill-failclosed.test.mjs, test/fill-token-content.test.mjs). The fill cards show the listed offer's expiry
-  block and the blocks left after the floor-clamped tip, from the offer service's listing (display only), and name a
-  refusal only when `offerFillTooLate` says the preflight will make it (test/approve-card-honesty.test.mjs).
+  and no floor it refuses as `VERIFY_UNAVAILABLE` (test/fill-failclosed.test.mjs, test/fill-token-content.test.mjs).
+  The fill cards show the listed offer's expiry block and the blocks left after the floor-clamped tip, from the
+  offer service's listing (display only), and name a refusal only when `offerFillTooLate` says the preflight will
+  make it (test/approve-card-honesty.test.mjs).
 
 ## The token lane
 
@@ -88,4 +89,12 @@ The fill is an Attest with no CSD outputs (`attest` with `CONF_TOKEN_FILL` rerou
   and never affects the grant, denial, holder or cancel verdict.
 - On the offer-id lanes the running state of a partial offer (`paid`, `delivered`) is served by the resolver: the
   creation-block proof cannot bind it. A full fill-replay proof on those lanes is not built.
+- On the offer-id lanes the offer's open status is served by the resolver too: these lanes run no block scan and no
+  second-source read, and only the expiry is checked against the proven record. A stale "open" (an offer already
+  filled or cancelled) would sign a fill that L0 mines and resolve() rejects, so the payment moves without delivery.
+  What bounds it: from V28 consensus makes a taker-bound offer uncancellable (a cancel or an ocancel skips it), only
+  its taker can fill it, and a cancel mined in the same block as a fill loses to the fill (cancels apply at the end
+  of the block). An open token-want offer can still be filled or cancelled by others between the read and the
+  fill. On 2026-10-23 the live resolver listed no open taker-bound offer (the orchestrator's read of
+  `/cairnx/offers` on the resolver).
 - Name sends do not use these lanes; they stay on the SPV name verification in `src/core/namespv.ts`.
