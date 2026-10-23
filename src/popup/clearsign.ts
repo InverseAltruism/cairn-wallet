@@ -482,12 +482,12 @@ export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
   const at = Number(tip);
   const block = h.toLocaleString("en-US");
   if (!Number.isSafeInteger(at) || at <= 0) return `offer expires at block ${block}`;
-  const left = h - 1 - at;   // blocks after the tip that can still mine the fill
-  if (at >= h) return `offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>`;
-  if (left <= 0) return `offer expires at block ${block}, the next block <span class="err">(the wallet will refuse this fill)</span>`;
-  const where = `offer expires at block ${block}, ${left} block${left === 1 ? "" : "s"} after the current tip`;
+  const dist = h - at;   // blocks from the tip to the expiry block; the refusal itself is offerFillTooLate's
+  if (dist <= 0) return `offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>`;
+  if (dist === 1) return `offer expires at block ${block}, the next block <span class="err">(the wallet will refuse this fill)</span>`;
+  const where = `offer expires at block ${block}, ${dist} blocks after the current tip`;
   if (offerFillTooLate(h, at)) return `${where} <span class="err">(too close to be mined in time: the wallet will refuse this fill)</span>`;
-  return `${where} (${humanBlocks(left)})`;
+  return `${where} (${humanBlocks(dist)})`;
 }
 
 // #fill-view for a CSD-paid fill: the asset the offer service lists as received, and the listing id when the
