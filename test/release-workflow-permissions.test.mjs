@@ -1,8 +1,8 @@
 // The release workflow's permission split: every job that runs repository code (install, tests, packager, the
 // vendor rebuild, the anchors check) can only read; the one job that holds `id-token: write`, `attestations: write`
 // and `contents: write` checks nothing out, installs nothing, and its scripts run only `sha256sum` and `gh`.
-// ci.yml grants no job any write permission, and neither workflow gates the csd-sdk rebuild on a secret or skips
-// a step (csd-sdk is public). ci.yml's secrets job scans the full history with the checksum-verified gitleaks.
+// ci.yml grants no job any write permission, reads no secret and skips no step, and its test job runs the vendor
+// rebuild gate. ci.yml's secrets job scans the full history with the checksum-verified gitleaks.
 //
 // The scanner reads the two workflows' shape (job names, per-job permissions as a map or a scalar, needs, steps'
 // uses/run/if), not YAML in general; a job it cannot find fails the test rather than passing vacuously. RED-FIRST:
@@ -94,7 +94,7 @@ const checksOutOrInstalls = (j) => j.steps.some((s) => (s.uses ?? "").includes("
 
 /** The release workflow's rule; throws with the first violated clause. */
 export function checkRelease(jobs) {
-  for (const name of ["anchors", "vendor-fresh-full", "build", "release"]) assert.ok(jobs[name], `job ${name} found`);
+  for (const name of ["anchors", "build", "release"]) assert.ok(jobs[name], `job ${name} found`);
   assert.deepEqual(writers(jobs), ["release"], "exactly one job holds a write permission of any kind, the release job");
   assert.deepEqual(jobs.release.permissions, { contents: "write", "id-token": "write", attestations: "write" }, "the release job holds exactly the three grants it needs");
   assert.ok(!checksOutOrInstalls(jobs.release), "the release job checks nothing out and sets up no toolchain");
@@ -103,8 +103,8 @@ export function checkRelease(jobs) {
     assert.equal(bad, null, `the release job runs only sha256sum and gh (offending line: ${bad})`);
     assert.equal(s.if, undefined, `no release step is conditional, so the checksum before the attest cannot be skipped (${s.if})`);
   }
-  assert.deepEqual([...jobs.release.needs].sort(), ["anchors", "build", "vendor-fresh-full"]);
-  for (const name of ["anchors", "vendor-fresh-full", "build"]) assert.deepEqual(jobs[name].permissions, { contents: "read" }, `${name} can only read`);
+  assert.deepEqual([...jobs.release.needs].sort(), ["anchors", "build"]);
+  for (const name of ["anchors", "build"]) assert.deepEqual(jobs[name].permissions, { contents: "read" }, `${name} can only read`);
   const build = jobs.build.steps.map((s) => s.run ?? s.uses ?? "");
   for (const want of ["npm ci --ignore-scripts", "npm run typecheck", "npm test", "npm run verify:vendor", "npm run package"]) assert.ok(build.some((s) => s.startsWith(want)), `build runs ${want}`);
   assert.ok(jobs.build.steps.some((s) => (s.uses ?? "").startsWith("actions/upload-artifact@")), "build uploads the artifact");
@@ -124,12 +124,13 @@ export function topLevelPermissions(text) {
   return m ? m[1].trim() : null;
 }
 
-/** ci.yml's rule: no write grant anywhere, the rebuild gate runs on every event with no step skipped. */
+/** ci.yml's rule: no write grant anywhere, the vendor rebuild gate runs on every event with no step skipped. */
 export function checkCi(jobs) {
-  assert.ok(jobs.test && jobs["vendor-fresh-full"], "both jobs found");
+  assert.ok(jobs.test, "the test job found");
+  assert.ok(jobs.test.steps.some((s) => s.run === "npm run verify:vendor"), "the test job runs the vendor rebuild gate");
   assert.deepEqual(writers(jobs), []);
   for (const j of Object.values(jobs)) assert.deepEqual(j.permissions, { contents: "read" });
-  assert.equal(jobs["vendor-fresh-full"].if, undefined);
+  assert.equal(jobs.test.if, undefined);
   for (const [name, j] of Object.entries(jobs)) for (const s of j.steps) assert.equal(s.if, undefined, `${name}: no step-level skip (${s.if})`);
 }
 
@@ -158,10 +159,10 @@ console.log("release.yml permission split:");
 const release = scanWorkflow(wf("release.yml"));
 test("the release workflow keeps the split", () => checkRelease(release));
 test("the publish jobs run only on a tag push; anchors also runs on PRs", () => {
-  for (const name of ["vendor-fresh-full", "build", "release"]) assert.equal(release[name].if, "${{ github.event_name == 'push' }}", name);
+  for (const name of ["build", "release"]) assert.equal(release[name].if, "${{ github.event_name == 'push' }}", name);
   assert.equal(release.anchors.if, undefined);
 });
-test("no job gates the csd-sdk rebuild on a secret", () => {
+test("neither workflow reads a secret", () => {
   for (const f of ["release.yml", "ci.yml"]) assert.ok(!/secrets\.|HAS_TOKEN|ECOSYSTEM_RO_TOKEN/.test(wf(f)), `${f} reads no secret`);
 });
 test("both workflows start every job from permissions: {} at the top level", () => {
@@ -211,8 +212,12 @@ test("a top-level permissions: write-all fails the check", () => {
   for (const f of ["release.yml", "ci.yml"]) assert.equal(topLevelPermissions(mutate(f, "\npermissions: {}\n", "\npermissions: write-all\n")), "write-all", f);
 });
 test("a ci.yml step with an if: skip fails the check", () => {
-  const mutated = mutate("ci.yml", "      - run: npm -C cairn-wallet ci --ignore-scripts\n", "      - if: ${{ env.HAS_TOKEN == 'true' }}\n        run: npm -C cairn-wallet ci --ignore-scripts\n");
+  const mutated = mutate("ci.yml", "      - run: npm run verify:vendor\n", "      - if: ${{ env.HAS_TOKEN == 'true' }}\n        run: npm run verify:vendor\n");
   assert.throws(() => checkCi(scanWorkflow(mutated)), /no step-level skip/);
+});
+test("a ci.yml without the vendor gate step fails the check", () => {
+  const mutated = mutate("ci.yml", "      - run: npm run verify:vendor\n", "");
+  assert.throws(() => checkCi(scanWorkflow(mutated)), /runs the vendor rebuild gate/);
 });
 
 test("a shallow secrets checkout, a scan without merge diffs, or an unchecked download fails the check", () => {

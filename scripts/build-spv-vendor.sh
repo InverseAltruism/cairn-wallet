@@ -1,64 +1,57 @@
 #!/usr/bin/env bash
-# Build the wallet's SPV verification bundle — the audited light client + consensus codec/crypto
-# + the CairnX resolver, as ONE pinned, reviewable browser ESM (mirrors cairn/scripts/build-trade-vendor.sh).
+# Build the wallet's vendored SPV bundle (src/vendor/cairnx-spv.js) and its types (src/vendor/cairnx-spv.d.ts)
+# from the PUBLISHED csd-sdk packages pinned exactly in package.json devDependencies and installed by `npm ci`
+# (package-lock.json holds each tarball's registry integrity). Nothing reads a csd-sdk checkout.
 #
-# WHY a vendored bundle (not an npm dep): the wallet is a fund-custody extension with a deliberately
-# minimal, everything-inlined dependency surface. Shipping one reviewable artifact built from the
-# in-repo AUDITED dists — rather than resolving a live npm dep tree at install time — keeps that posture.
-# The output (src/vendor/cairnx-spv.js) is committed; esbuild (build.mjs) inlines it into dist/.
+# The wallet ships one reviewable artifact with every dependency inlined, rather than resolving a dependency tree
+# at runtime; esbuild (build.mjs) inlines the committed bundle into dist/. The .d.ts is the same export list as
+# the bundle entry, so the types are the published packages' own declarations, not a hand-kept copy.
 #
-# It exports exactly what core/namespv.ts (the XREPO-1 name verifier) needs:
-#   • LightClient + CsdClient  — PoW-verified header chain + node-RPC reads (block/tx)
-#   • verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW: the 84-byte header records of
-#                                  the header store and the hash-link walk that binds a chunk to the anchor table
-#   • rpcTxToTx                 — decode a node-JSON tx into the consensus codec Tx
-#   • txid / sighash / merkleRoot — recompute txids, bind a block's tx-set to the verified header root,
-#                                  and re-derive the signing digest to authenticate a tx's signer
-#   • addrFromPub / verifyDigest — recover + authenticate the proposer/attester (merkle root does NOT
-#                                  commit the scriptSig, so the signature MUST be checked)
-#   • resolve                   — THE audited CairnX resolver, reused (never re-typed) to replay the
-#                                  merkle-verified name events and recompute ownership
-#
-# Rebuild with: bash scripts/build-spv-vendor.sh   (rerun + recommit whenever the SDK verify surface changes)
-# VENDOR_OUT overrides the output path (scripts/check-vendor-fresh.mjs rebuilds into a temp file with it).
+# Usage: bash scripts/build-spv-vendor.sh, then `node scripts/check-vendor-fresh.mjs --write`, and commit the
+# bundle, the .d.ts and PROVENANCE.json together. VENDOR_OUT_DIR overrides the output directory
+# (scripts/check-vendor-fresh.mjs rebuilds into a temp dir with it).
 set -euo pipefail
 cd "$(dirname "$0")/.."                                   # -> cairn-wallet/
 WALLET="$PWD"
-# Locate the csd-sdk source. Defaults to the sibling checkout (../csd-sdk); CI / worktrees
-# can point it elsewhere via CSD_SDK_DIR (same env as scripts/check-vendor-fresh.mjs).
-SDK="$(cd "${CSD_SDK_DIR:-../csd-sdk}" && pwd -P)"
-LIGHT="$SDK/packages/light/dist/index.js"
-CLIENT="$SDK/packages/client/dist/index.js"
-CODEC="$SDK/packages/codec/dist/index.js"
-CRYPTO="$SDK/packages/crypto/dist/index.js"
-CAIRNX="$SDK/packages/cairnx/dist/index.js"
-OUT="${VENDOR_OUT:-$WALLET/src/vendor/cairnx-spv.js}"
+OUT_DIR="${VENDOR_OUT_DIR:-$WALLET/src/vendor}"
+OUT_JS="$OUT_DIR/cairnx-spv.js"
+OUT_DTS="$OUT_DIR/cairnx-spv.d.ts"
 
-for d in "$LIGHT" "$CLIENT" "$CODEC" "$CRYPTO" "$CAIRNX"; do
-  [ -f "$d" ] || { echo "missing $d — run (cd $SDK && pnpm -r build) first"; exit 1; }
-done
+ESBUILD="node_modules/.bin/esbuild"
+ESBUILD_PIN="$(node -p 'require("./package.json").devDependencies.esbuild')"
+[ -x "$ESBUILD" ] || { echo "esbuild not found at $ESBUILD; run \`npm ci\` first"; exit 1; }
+[ "$("$ESBUILD" --version)" = "$ESBUILD_PIN" ] || { echo "esbuild $("$ESBUILD" --version) is not the pinned $ESBUILD_PIN; run \`npm ci\`"; exit 1; }
+# The installed csd-sdk packages must be the exact versions package.json pins (a stale node_modules builds other bytes).
+node -e '
+const pkg = require("./package.json");
+for (const [name, want] of Object.entries(pkg.devDependencies)) {
+  if (!name.startsWith("@inversealtruism/")) continue;
+  let got; try { got = require(`./node_modules/${name}/package.json`).version; } catch { got = "missing"; }
+  if (got !== want) { console.error(`${name}: installed ${got}, package.json pins ${want}; run \`npm ci\``); process.exit(1); }
+}'
 
-mkdir -p "$(dirname "$OUT")"
-TMP_ENTRY="$(mktemp --suffix=.mjs)"
-trap 'rm -f "$TMP_ENTRY"' EXIT
+# The entry: what the wallet imports from the bundle. Value exports and type exports both come from here, so the
+# .d.ts cannot name a value the bundle lacks. `export *` from cairnx-core carries the whole CairnX convention
+# (constants, fee and name math, parseRecord, the record builders, resolve, the fill and hold checks).
+ENTRY='export { LightClient, CsdClient, verifyLinkedRecords, bindBlockBody } from "@inversealtruism/csd-light";
+export type { VerifiedHeader, BlockBind, BoundTx } from "@inversealtruism/csd-light";
+export { rpcTxToTx, parseJsonExact } from "@inversealtruism/csd-client";
+export type { RpcTxJson } from "@inversealtruism/csd-client";
+export { txid, sighash, merkleRoot, verifyMerkleProof, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW } from "@inversealtruism/csd-codec";
+export type { Tx, BlockHeader } from "@inversealtruism/csd-codec";
+export { addrFromPub, verifyDigest, recoverSigner, authorOf, addrFromScriptPubkey } from "@inversealtruism/csd-crypto";
+export * from "@inversealtruism/cairnx-core";
+'
+
+mkdir -p "$OUT_DIR"
+# The entry goes in on stdin and esbuild runs from the wallet root, so the packages resolve from its node_modules
+# and the bundle's source-path comments name node_modules/@inversealtruism/... whatever the checkout's path.
+printf '%s' "$ENTRY" | "$ESBUILD" --loader=ts --bundle --format=esm --platform=browser --target=es2022 \
+  --legal-comments=none --log-level=warning --outfile="$OUT_JS"
 {
-  printf 'export { LightClient, CsdClient, verifyLinkedRecords } from "%s";\n' "$LIGHT"
-  printf 'export { rpcTxToTx } from "%s";\n' "$CLIENT"
-  printf 'export { txid, sighash, merkleRoot, verifyMerkleProof, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW } from "%s";\n' "$CODEC"
-  printf 'export { addrFromPub, verifyDigest, recoverSigner } from "%s";\n' "$CRYPTO"
-  # cairnx-core: the WHOLE convention (constants, fee/name math, canonicalJson, parseRecord, the record
-  # builders, *_KEYS, the §4 regexes) — so core/cairnx.ts IMPORTS them instead of hand-typing a second copy
-  # (shared-core de-dup, cairn docs/Plans/46). esbuild already inlines all of cairnx-core to serve `resolve`
-  # (namespv.ts), so this only WIDENS the export surface of the SAME reviewed bytes — no new dep tree, no
-  # size change of note, MV3 posture unchanged (one inlined artifact).
-  printf 'export * from "%s";\n' "$CAIRNX"
-} > "$TMP_ENTRY"
+  printf '%s\n' "// Generated by scripts/build-spv-vendor.sh from the csd-sdk packages pinned in package.json; do not edit."
+  printf '%s' "$ENTRY"
+} > "$OUT_DTS"
 
-# esbuild runs from the csd-sdk root so the bundle's source-path comments are relative to csd-sdk and the
-# bytes do not depend on where the wallet and csd-sdk checkouts sit.
-(cd "$SDK" && "$WALLET/node_modules/.bin/esbuild" "$TMP_ENTRY" \
-  --bundle --format=esm --platform=browser --target=es2022 \
-  --legal-comments=none --log-level=warning --outfile="$OUT")
-
-echo "built $OUT ($(du -h "$OUT" | cut -f1))"
-node --input-type=module -e "import('$OUT').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','verifyLinkedRecords','serializeHeader','deserializeHeader','HEADER_BYTES','LWMA_WINDOW','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"
+echo "built $OUT_JS ($(du -h "$OUT_JS" | cut -f1)) and $OUT_DTS"
+node --input-type=module -e "import('$OUT_JS').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','verifyLinkedRecords','bindBlockBody','parseJsonExact','serializeHeader','deserializeHeader','HEADER_BYTES','LWMA_WINDOW','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','authorOf','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','provenOfferRefusal','countOtherHoldsAtGrant','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"

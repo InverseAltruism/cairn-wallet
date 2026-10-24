@@ -17,11 +17,12 @@ import {
   parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
-  provenOfferTerms, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer,
-  type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms,
+  provenOfferTerms, provenOfferRefusal, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer, countOtherHoldsAtGrant,
+  type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms, type OfferRecord, type HoldCandidate,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 import { BodyMismatchError, bindBlock, bindSigner, recoverSigner, toChainEvent } from "./spvbind.js";
+import { OfferNotAdmittedError } from "./fillpreflight.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
 // (`provenOfferTerms` + `feeBpsAt`, verifyfill.ts) - this file used to carry its own hand copies of
@@ -58,38 +59,12 @@ export async function mapPool<T>(items: readonly T[], limit: number, fn: (item: 
 
 export interface FillSpvHints { offerId: string; fclaimTxid: string; me: string; offerHeight: number; }
 
-// The cross-offer MAX_ACTIVE_CLAIMS count (`myLiveHoldsAtGrant` for verifyFillSpv): a CONSERVATIVE OVER-count
-// of the buyer's OTHER-offer fclaim holds that could be live at the grant height of the fclaim being filled.
-// verifyFillSpv's lane-scoped replay cannot see other-offer holds, and the cap is the ONE grant clause counted
-// across offers, so a wrong-LOW count fail-OPENS the cap and BURNS (a resolver that D2-aliases a cap-denied
-// fclaim as "granted" would pass); a wrong-HIGH count only false-refuses (retryable, at worst a wasted claim).
-// PURE so the live scan and the tests drive the identical predicate. The caller supplies AUTHENTICATED
-// proposers (production: prevout-ownership bound, with any UNBINDABLE hold attributed to `me` = over-count) and
-// the fclaim's PROVEN grant height (never a resolver-served height).
-// `closed` holds fclaim txids whose offer myProvenFillClosedOffer showed this wallet's own fill had closed.
-export function countMyOtherLiveHolds(
-  events: readonly { kind?: string; id?: string; proposer?: string; uri?: string; payloadHash?: string; expiresEpoch?: number }[],
-  offerId: string, me: string, grantHeight: number, closed: ReadonlySet<string> = new Set(),
-): number {
-  const oid = String(offerId).toLowerCase(), meL = String(me).toLowerCase();
-  let n = 0;
-  for (const e of events) {
-    if (e?.kind !== "propose" || String(e.proposer ?? "").toLowerCase() !== meL) continue;
-    if (e.id !== undefined && closed.has(String(e.id).toLowerCase())) continue;
-    const rec = parseRecord(String(e.uri ?? ""), String(e.payloadHash ?? "")) as { t?: string; offer?: string } | null;
-    if (!rec || rec.t !== "fclaim") continue;
-    if (String(rec.offer ?? "").toLowerCase() === oid) continue;      // this offer's own holds do NOT count
-    if (fclaimHoldEnd(Number(e.expiresEpoch)) < grantHeight) continue; // lapsed before our grant height
-    n++;
-  }
-  return n;
-}
-
 /**
  * Build the live FillSpvIo over the wallet's PoW light client. Fails CLOSED (throws or yields null) on any
  * unverifiable read, so a preflight that awaits it refuses rather than proceeds. `opts.spvSource` injects the
- * seam for tests; production builds the real one from the light client. The returned io carries the computed
- * `myLiveHoldsAtGrant` cross-offer cap over-count.
+ * seam for tests; production builds the real one from the light client. The returned io carries
+ * `myLiveHoldsAtGrant`, cairnx-core `countOtherHoldsAtGrant` over the buyer's other fclaims the scan proved: an
+ * upper bound of their holds live at the grant, in consensus order; a grant outside its domain throws.
  *
  * Fund-safety scan design (all hint-independent, so a hostile resolver cannot narrow the evidence):
  *  - The window is TIP-ANCHORED [tip - (MAX_SCAN + MAX_HOLD_SPAN), tip]; a fillable fclaim is within
@@ -157,7 +132,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const scannedIds = new Set<string>();                // ids merkle-proven DURING the scan (TRUE mined height)
   const laneProposals = new Set<string>([offerId]);    // the offer + every fclaim-for-this-offer
   const attestBuf: { id: string; height: number; proposalId: string }[] = [];
-  const otherFclaims: { id: string; height: number; offer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
+  const otherFclaims: { id: string; height: number; pos: number; offer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
   const add = (id: string, h: number) => { const k = id.toLowerCase(); if (!heightOf.has(k)) heightOf.set(k, h); ids.add(k); };
   const markScanned = (id: string, h: number) => { scannedIds.add(id.toLowerCase()); add(id, h); };
 
@@ -234,7 +209,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
         if (rec.t === "ocancel") { markScanned(id, h); continue; } // MUTATE_OCANCEL_SCAN
         if (rec.t !== "fclaim") continue;
         if (String(rec.offer).toLowerCase() === offerId) { laneProposals.add(id); markScanned(id, h); }
-        else otherFclaims.push({ id, height: h, offer: String(rec.offer).toLowerCase(), uri: app.uri, payloadHash: String(app.payloadHash), expiresEpoch: Number(app.expiresEpoch) });
+        else otherFclaims.push({ id, height: h, pos, offer: String(rec.offer).toLowerCase(), uri: app.uri, payloadHash: String(app.payloadHash), expiresEpoch: Number(app.expiresEpoch) });
       } else {
         const proposalId = String(app.proposalId).toLowerCase();
         attestBuf.push({ id, height: h, proposalId });
@@ -250,26 +225,36 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // fclaim being filled was not merkle-proven in-window (an inflated hint or a non-mined target).
   if (!scannedIds.has(fclaimTxid)) throw new Error("fill-SPV: the fclaim being filled was not merkle-proven in the scan window");
   const grantHeight = heightOf.get(fclaimTxid)!;
+  const grantPos = blockMemo.get(grantHeight)?.ids.findIndex((x) => x.toLowerCase() === fclaimTxid) ?? -1;
+  if (grantPos < 0) throw new Error("fill-SPV: the fclaim being filled has no position in its proven block");
 
   // DEFECT-2 fix: authenticate each in-window OTHER-offer fclaim's proposer with the prevout-ownership bind
   // (recoverSigner alone is spoofable). Fail toward OVER-count: a hold that is MINE **or that cannot be bound**
   // is counted (dropping a possibly-mine hold under-counts and burns); only a hold provably bound to ANOTHER
-  // address is excluded. Only holds still live at the grant height are considered.
-  const held: { kind: "propose"; id: string; proposer: string; uri: string; payloadHash: string; expiresEpoch: number }[] = [];
+  // address is excluded. Only holds still live at the grant height are proven (each costs a prevout read).
+  const held: HoldCandidate[] = [];
   // proveEventAt fan-out at SCAN_POOL (12). Order of completion does not matter: the predicate just counts.
   const liveOthers = otherFclaims.filter((c) => fclaimHoldEnd(c.expiresEpoch) >= grantHeight);
   const heldBuf: typeof held = new Array(liveOthers.length);
   await mapPool(liveOthers, SCAN_POOL, async (c, i) => {
     const ev = await proveEventAt(c.id, c.height);
     const proposer = ev && ev.kind === "propose" ? ev.proposer : me;   // unbindable -> attribute to me (over-count)
-    heldBuf[i] = { kind: "propose", id: c.id, proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch };
+    heldBuf[i] = { id: c.id, height: c.height, pos: c.pos, proposer, uri: c.uri, payloadHash: c.payloadHash, expiresEpoch: c.expiresEpoch };
   });
   for (const h of heldBuf) if (h) held.push(h);
+  // countOtherHoldsAtGrant refuses a grant below LEGACY_HOLD_SUNSET_HEIGHT, where a pre-V28 legacy hold it does not
+  // read could still count against the cap; the refusal fails this source closed.
+  const target = { id: fclaimTxid, height: grantHeight, pos: grantPos, offer: offerId };
+  const holdsAtGrant = (closedIds?: ReadonlySet<string>): number => {
+    const hc = countOtherHoldsAtGrant(held, target, me, closedIds);
+    if (!hc.ok) throw new Error(`fill-SPV: ${hc.reason}`);
+    return hc.count;
+  };
   // Past V29 the resolver skips holds on offers that are no longer open. Only when the plain count would refuse
   // (so no fill that passes today pays any extra read) look for this wallet's own proven fill of each counted
   // hold. Any lookup or proof failure leaves the hold counted.
   const closed = new Set<string>();
-  const rawCount = countMyOtherLiveHolds(held, offerId, me, grantHeight);
+  const rawCount = holdsAtGrant();
   if (rawCount >= MAX_ACTIVE_CLAIMS && opts.offerHeightOf) {
     const lookup = opts.offerHeightOf;
     // Recover each candidate fill's signer from its already-bound block before any network read, so attests
@@ -292,12 +277,9 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
     const counted = liveOthers.filter((c) => held.some((h) => h.id === c.id && h.proposer.toLowerCase() === me));
     await mapPool(counted, SCAN_POOL, async (c) => { if (await provenClosed(c).catch(() => false)) closed.add(c.id); });
   }
-  const myLiveHoldsAtGrant = closed.size === 0 ? rawCount : countMyOtherLiveHolds(held, offerId, me, grantHeight, closed);
-  // D1 (register §3, 2026-09-12): the OBS-3 legacy SCORE_CLAIM scan+count is DELETED. Its gate
-  // (verifiedTip < 60,134) is unreachable at any tip a fillable fclaim can exist at, and the deletion
-  // removes the only hostile-minable prevout fetch in this scan (an attacker-plantable SCORE_CLAIM
-  // used to force a proveEventAt read). resolve() rejects SCORE_CLAIM at/after V28 anyway, so a
-  // legacy hold could only ever OVER-count (over-refuse), never under-count; nothing is lost.
+  const myLiveHoldsAtGrant = closed.size === 0 ? rawCount : holdsAtGrant(closed);
+  // Legacy SCORE_CLAIM holds are not scanned: the grants one can still reach (below LEGACY_HOLD_SUNSET_HEIGHT)
+  // are refused by countOtherHoldsAtGrant above.
 
   // DEFECT-3 fix: EAGERLY authenticate every lane event the scan FOUND in a merkle-bound block, HERE (not in
   // provenEvent alone). verifyFillSpv silently SKIPS a null provenEvent AND its per-event try/catch swallows a
@@ -327,14 +309,23 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // seller who never owned it) is the same N1 residual the pre-V28 wallet already carries, no worse.
   const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
   if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
-  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as { t?: string; give?: { ticker?: string; name?: string }; want?: { payto?: string; value?: string }; taker?: string; bid?: string; min?: string } | null;
+  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as OfferRecord | null;
+  // The scan exempts the offer from its domain filter, so the admission check reads the domain from the offer's
+  // own bound tx (proveEventAt bound its block into blockMemo).
+  const offerApp = blockMemo.get(offerEv.height)?.rebuilt[offerEv.pos]?.app;
+  if (!offerApp || offerApp.type !== "Propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
+  const notAdmitted = offerRec && offerRec.t === "offer"
+    ? provenOfferRefusal(offerRec, { domain: offerApp.domain, height: offerEv.height, expiresEpoch: offerApp.expiresEpoch, seller: offerEv.proposer })
+    : null;
+  if (notAdmitted) throw new OfferNotAdmittedError(notAdmitted);
   // The payment recipients are bound by verifyFillSpv's sums option (the caller's planned per-address legs must
   // equal the need-map of the replayed proven offer), so this source carries no separate payto or seller field.
   // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer, via the ONE vendored
   // producer (B4a; the proven CREATION height is the input, never a served height - a lying resolver
   // deflating feeBps/height/value/taker cannot under-size a leg, which resolve() would reject AFTER the
   // payment moved = pay-without-delivery burn).
-  const provenTerms: MintedProvenOfferTerms = provenOfferTerms(offerRec, offerEv.height); // MUTATE_LIVE_PROVEN_TERMS
+  // A null or non-offer record throws or mints terms the replay then refuses; either way nothing is signed.
+  const provenTerms: MintedProvenOfferTerms = provenOfferTerms(offerRec as OfferRecord, offerEv.height); // MUTATE_LIVE_PROVEN_TERMS
   const synthetic = new Map<string, ProvenEvent>();
   const synth = (built: { uri: string; payloadHash: string }, height: number, paidTo: Record<string, string>) => {
     const sid = String(built.payloadHash).toLowerCase();   // the record's own payload_hash: a stable, unique id
@@ -346,8 +337,8 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       // no-lease default paidThrough (V15_EPOCH + NAME_TERM) covers any realistic near-tip offer window. (A name
       // offer with an unusually far-future expiresEpoch beyond that default fail-safe REFUSES, never burns; the
       // deferred lifecycle scan is the full fix.) Fee generously overpaid so the registration always clears.
-      synth(nameClaim({ name: offerRec.give.name! }), V11_HEIGHT + 1, { [TREASURY_ADDR]: String(MAX_AMOUNT) });
-    } else if (offerRec.give.ticker) {
+      synth(nameClaim({ name: offerRec.give.name }), V11_HEIGHT + 1, { [TREASURY_ADDR]: String(MAX_AMOUNT) });
+    } else if ((offerRec.give as { ticker?: string }).ticker) {
       // deploy (just above ACTIVATION_HEIGHT, below v1.1 so no fee gate; resolve() ignores anything below the
       // activation floor) + an issuer mint of the max supply to the seller, so any give amount is available.
       // resolve() processes these before the offer (lower heights), materializing the give.
@@ -377,10 +368,12 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 // by its owner's key, and the owner is txid-committed, NOT scriptSig-derived); payto = the record's explicit
 // want.payto (merkle-committed) or, absent, the seller. Returns { payto, seller } (lowercased 0x-addrs) or null
 // on ANY unprovable / tampered / unreachable read, so the caller fails CLOSED-RETRYABLE (never a hard decline on
-// an honest fill). Reuses the same audited light-client primitives (liveSpvSource, bindBlock, prevoutScriptPubkey).
+// an honest fill). A proven offer the resolver does not admit (cairnx-core provenOfferRefusal) returns
+// { refused: reason }, a definite refusal. Reuses the same light-client primitives (liveSpvSource, bindBlock,
+// prevoutScriptPubkey).
 export async function provenOfferPayto(
   opts: LiveSpvOpts & { offerId: string; offerHeight: number; spvSource?: SpvSource },
-): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null> {
+): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number } | { refused: string } | null> {
   const offerId = String(opts.offerId).toLowerCase();
   const offerHeight = Math.floor(Number(opts.offerHeight));
   if (!/^0x[0-9a-f]{64}$/.test(offerId) || !Number.isFinite(offerHeight) || offerHeight < 0) return null;
@@ -399,17 +392,13 @@ export async function provenOfferPayto(
     const author = await bindSigner(tx, spv);
     if (!author.ok) return null;                                   // authorship not prevout-bound (tampered)
     const seller = author.signer;
+    const refused = provenOfferRefusal(rec as OfferRecord, { domain: app.domain, height: offerHeight, expiresEpoch: app.expiresEpoch, seller });
+    if (refused) return { refused };                               // a proven offer the resolver does not admit
     const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase())) ? String(rec.want.payto).toLowerCase() : seller; // MUTATE_PROVEN_PAYTO_DERIVE
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.
-    const terms: MintedProvenOfferTerms = provenOfferTerms(rec, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
-    // B7e-FIX (REBIND W1 token-lane close): surface the merkle-proven token WANT (the ticker + amount the
-    // buyer PAYS). bindOfferTerms binds the want TYPE only, and provenOfferTerms drops the token ticker/amount,
-    // so the token-lane content bind (fillpreflight.ts fillOfferPreflight) needs these directly to mirror the site
-    // swapguard verifyOfferContent want.ticker/want.amount bind. Undefined on a CSD-priced offer (no want.ticker).
-    const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined; // MUTATE_PROVEN_WANT_TICKER
-    const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined; // MUTATE_PROVEN_WANT_AMOUNT
+    const terms: MintedProvenOfferTerms = provenOfferTerms(rec as OfferRecord, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
     // The proven expiry and anchor height (never served values) for the offer-id lanes' expiry check.
-    return { payto, seller, terms, expiresEpoch: Number(app.expiresEpoch), height: offerHeight, wantTicker, wantAmount };
+    return { payto, seller, terms, expiresEpoch: Number(app.expiresEpoch), height: offerHeight };
   } catch { return null; }
 }

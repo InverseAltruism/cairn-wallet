@@ -16,8 +16,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { verifyNameUnion } from "../src/core/namespv.js";
 import { provenOfferPayto, liveFillSpvSource, feeBpsAt } from "../src/core/fillspv.js";
-import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
-import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase } from "./_spvrig.ts";
+import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT, EPOCH_LEN } from "../src/vendor/cairnx-spv.js";
+import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase, nodeBlockBody } from "./_spvrig.ts";
 
 // D2 (2026-09-12): the single-source verifyName twin was deleted; the namespv leg now drives
 // verifyNameUnion with ONE source (the production shape) serving the case's claim + hints.
@@ -36,7 +36,8 @@ const keyB = "0x" + "b2".repeat(32);   // the attacker (foreign valid signature,
 const A = addrFromPriv(keyA).toLowerCase();
 const B = addrFromPriv(keyB).toLowerCase();
 const NM = "carol";
-const H = 33700, TIP = 33800;
+// At or above V17 (34,000): from V13 (31,100) to V17 the resolver admits a CSD-priced offer only when it is taker-bound.
+const H = 34100, TIP = 34200;
 
 // THE shared hostile transformation: re-sign a tx's scriptSig with a FOREIGN key over the same (secret-free)
 // sighash, keeping the record's prevout owner (A). ctxid is unchanged (scriptSig is stripped from the txid), so
@@ -129,11 +130,12 @@ async function withSpvbindMutant(caller, marker, run) {
 // had coverage only for the prevout bind (#1 MUTATE_SPV_PREVOUT_BIND, above). Output-pin, non-vacuous:
 // drive each producer over a KNOWN synthetic offer and pin the returned fields against baked ground truth;
 // removing any producer marker fails the producer closed (null / throw), reding that field's pin. Acceptance:
-// 8 producer mutations (1 above + 7 here) all observed RED, the un-mutated baseline pins all pass.
+// 6 producer mutations (1 above + 5 here) all observed RED, the un-mutated baseline pins all pass. The proven token
+// want (ticker, amount) is cairnx-core provenOfferTerms' (test/proven-terms-corpus.test.mjs pins it).
 console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpvSource):");
 
-// #2-#5 (provenOfferPayto): a TOKEN offer with an explicit want.payto (payto != author) so payto/seller are
-// distinct pinnable values, plus feeBps + wantTicker/wantAmount. Each marker's removal nulls the producer.
+// #2-#3 (provenOfferPayto): a TOKEN offer with an explicit want.payto (payto != author) so payto/seller are
+// distinct pinnable values, plus feeBps. Each marker's removal nulls the producer.
 {
   const PAYTO = "0x" + "d0".repeat(20);
   const tokOfferTx = proposeTx({ ...pick(offer({ give: { ticker: "AAA", amount: "10" }, want: { ticker: "USDX", amount: "7", payto: PAYTO } })), priv: keyA, expiresEpoch: 9e9 });
@@ -142,15 +144,13 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
   const drive = (mod) => (mod ?? { provenOfferPayto }).provenOfferPayto({ rpcBase: "http://x", headersBase: "http://x", spvSource: source(blocks, TIP), offerId: tokOid, offerHeight: H }).catch(() => null);
   const base = await drive();
   check(`MPB-1 baseline: provenOfferPayto over the known token offer pins its fields (payto ${base?.payto === PAYTO}, feeBps ${base?.terms?.feeBps})`,
-    base !== null && base.payto === PAYTO && base.seller === A && base.terms.feeBps === 150 && base.wantTicker === "USDX" && base.wantAmount === "7");
+    base !== null && base.payto === PAYTO && base.seller === A && base.terms.feeBps === 150 && base.terms.wantTicker === "USDX" && base.terms.wantAmount === "7");
   // The offer-id lanes' expiry check reads these: the record's own expiresEpoch and the block it was proven in.
   check(`MPB-1 baseline: provenOfferPayto returns the proven expiry epoch and anchor height (${base?.expiresEpoch}, ${base?.height})`,
     base !== null && base.expiresEpoch === 9e9 && base.height === H);
   const cases = [
     ["MUTATE_PROVEN_PAYTO_DERIVE", "payto", PAYTO, (r) => r?.payto],
     ["MUTATE_PROVEN_TERMS_HEIGHT", "terms.feeBps", 150, (r) => r?.terms?.feeBps],
-    ["MUTATE_PROVEN_WANT_TICKER", "wantTicker", "USDX", (r) => r?.wantTicker],
-    ["MUTATE_PROVEN_WANT_AMOUNT", "wantAmount", "7", (r) => r?.wantAmount],
   ];
   for (const [marker, field, expect, get] of cases) {
     const mutated = await withMutant("fillspv.ts", marker, (mod) => drive(mod));
@@ -161,7 +161,7 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
 // #6-#8 (liveFillSpvSource): the fclaim lane's proven producers, driven over a fill-style source (FILLER for
 // empty heights, since liveFillSpvSource scans the whole tip-anchored window). offer with want.payto != author.
 {
-  const H0 = V28_HEIGHT;
+  const H0 = V28_HEIGHT + 2 * EPOCH_LEN;   // epoch-aligned, past LEGACY_HOLD_SUNSET_HEIGHT (60,044), where the hold count applies
   const meKey = "0x" + "3f".repeat(32), MEL = addrFromPriv(meKey).toLowerCase();
   const sK = "0x" + "7a".repeat(32), SL = addrFromPriv(sK).toLowerCase();
   const PAYTO2 = "0x" + "e1".repeat(20);
@@ -176,7 +176,7 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
   const TIP2 = fclaimHoldEnd(E) - 5;
   const fillSource = (tip) => ({
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
-    async blockAt(height) { const txs = blocks.get(height) ?? [FILLER]; return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs }; },
+    async blockAt(height) { const txs = blocks.get(height) ?? [FILLER]; return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) }; },
     async prevoutScriptPubkey(p) { return prevoutFor(p); },
   });
   const drive = (mod) => (mod ?? { liveFillSpvSource }).liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(TIP2), hints: { offerId: loid, fclaimTxid: fid, me: MEL, offerHeight: H0 + 2 } });

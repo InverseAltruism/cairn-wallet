@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- Internal: the token-priced fill's check that the served want ticker and amount equal the offer's on-chain record
+  is the vendored `bindOfferTerms` want leg (cairnx-core 0.2.2), and the wallet's own copy is deleted; the reviewed
+  quote is bound to the proven terms' want. The two refusals merge into one text: "refusing to sign: what you would
+  receive or what you would pay does not match the offer's on-chain record (a lying resolver may be misrepresenting
+  the trade)" (was "the offer's asset (give) or want-type does not match its on-chain record (a lying resolver may
+  be misrepresenting what you receive)" and "the token or amount you would pay does not match the offer's on-chain
+  record (a lying resolver may be understating your cost)").
+
+- A fill now refuses an offer whose on-chain record is not one the marketplace accepts: an offer Propose in a
+  settlement domain other than `cairnx:v1`, an offer that pays the protocol treasury, or a record that breaks a rule
+  the resolver applies when it creates an offer (cairnx-core's `provenOfferRefusal`, run on the merkle-proven offer
+  in every fill lane). The resolver ignores a fill of such an offer, so the payment would be lost; before this, an
+  offer-id fill of one signed whenever the resolver served it as open. The refusal is `FILL_UNSAFE`: "refusing to
+  sign: this offer's on-chain record is not an offer the marketplace accepts (<reason>), so the chain would take
+  your payment and deliver nothing".
+
+- A reservation (fclaim) fill no longer counts the buyer's reservations mined after the one being filled against
+  the three-reservation cap. The wallet counted every other live reservation of the buyer, so a fourth reservation
+  made each earlier granted one unfillable for the rest of its hold (the fill refused with "you held the max active
+  claims when this fclaim was granted"), although the chain counts holds at the grant and would have accepted the
+  fill. The count is now cairnx-core's `countOtherHoldsAtGrant`: reservations before the one being filled, in block
+  and position order, one per offer. An earlier reservation the chain denied still counts, which can still refuse a
+  fill the chain would accept. Grants below block 60,044 are refused rather than counted (no such reservation is
+  fillable at today's height).
+
+- Internal: the block bind and the author bind come from the vendored csd-sdk packages. `bindBlock` in
+  `src/core/spvbind.ts` calls csd-light's `bindBlockBody` on the `/block` response text (the SPV source now reads
+  the body as text with the same client, timeout and size cap), and `bindSigner` calls csd-crypto's `authorOf`.
+  Verdicts are unchanged for every input class; the refusal texts that now come from csd-light are "block N
+  repeats a txid (a malleated body)" (was "block N has a duplicate txid (malleated read path, CVE-2012-2459)"),
+  "block N: tx P does not decode (...)", "block N: the body is not JSON (...)" and "block N: the node returned no
+  block" (each after "couldn't verify on-chain (fail-closed): " on a name check).
+
+- Internal: the wallet's own JSON reviver for node bodies (`spvJsonReviver` in `src/core/node.ts`) is deleted; the
+  SPV client now uses csd-client's default `parseJsonExact` (the same rule: an integer literal outside the safe JS
+  range becomes an exact bigint, a float literal stays a number). A block body or prevout source tx carrying a
+  Propose expiry above 2^53 still proves (test/spv-poison-e2e.test.mjs drives the prevout read).
+
+- Internal: the vendored SPV bundle is built from the published csd-sdk packages, pinned exactly as dev dependencies
+  (cairnx-core 0.2.2, csd-light 0.1.25, csd-client 0.1.19, csd-crypto 0.1.20, csd-codec 0.1.18, npm window 4 of
+  2026-10-23), instead of a local csd-sdk checkout, and `src/vendor/cairnx-spv.d.ts` is generated from the same
+  export list instead of kept by hand. `npm run verify:vendor` rebuilds both files from the installed packages and
+  requires byte identity on every run, so the separate CI job that checked out csd-sdk is gone. What the new
+  versions change for a fill: a token-priced offer's served want ticker and amount are bound to its on-chain
+  record by the shared term check, and the reservation-fill verifier refuses when an event it enumerated cannot be
+  proven.
+
 - A fill of an offer by its offer id (a taker-bound CSD offer or a token-priced offer) now refuses when the offer, by
   its own on-chain record, expires too soon for the fill to be mined (its last live block is less than 4 blocks
   past the chain tip, the margin the reservation lane already uses): "refusing to sign: this offer expires at block

@@ -33,13 +33,13 @@ import path from "node:path";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
-import { liveFillSpvSource, provenOfferPayto, countMyOtherLiveHolds, feeBpsAt } from "../src/core/fillspv.js";
+import { liveFillSpvSource, provenOfferPayto, feeBpsAt } from "../src/core/fillspv.js";
 import {
   offer, fclaim, offerCancelAll, deploy, mint, verifyFillSpv, payloadHash,
   V28_HEIGHT, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, CLAIM_COOLDOWN_BLOCKS, FILL_TIP_MARGIN,
   FEE_BPS_V16, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
@@ -78,7 +78,10 @@ const WA_CORPUS_SHA = "0x514874b3036a78e0b8429d44777da7a3d20793525c022b440868e4a
 // ── actor + id maps: each corpus actor label -> a deterministic REAL key (its address = addrFromPriv). ──
 const KEY = { A: "0x" + "a1".repeat(32), B: "0x" + "b2".repeat(32), C: "0x" + "c3".repeat(32) };
 const ADDR = { A: addrFromPriv(KEY.A).toLowerCase(), B: addrFromPriv(KEY.B).toLowerCase(), C: addrFromPriv(KEY.C).toLowerCase() };
-const H0 = V28_HEIGHT;
+// The corpus names heights as H0+n and epochs as epochOf(H0+n)+k, so any epoch-aligned H0 keeps every scenario. This
+// adapter drives the production hold count, which refuses grants below LEGACY_HOLD_SUNSET_HEIGHT (60,044); two
+// epochs past V28 is the first epoch boundary above it (the cairnx-core adapter passes no count and keeps V28).
+const H0 = V28_HEIGHT + 2 * EPOCH_LEN;
 const resolveHeight = (tok) => { const m = /^H0(?:\+(\d+))?$/.exec(String(tok)); if (!m) throw new Error(`bad height token ${tok}`); return H0 + (m[1] ? Number(m[1]) : 0); };
 const resolveEe = (ee) => { if (ee.kind === "epochOfPlus") return epochOf(resolveHeight(ee.of)) + ee.plus; throw new Error(`bad ee ${JSON.stringify(ee)}`); };
 
@@ -91,7 +94,7 @@ function fillSource(blocks, tip) {
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
     async blockAt(height) {
       const txs = blocks.get(height) ?? [FILLER];
-      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs };
+      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) };
     },
     async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); },
   };
@@ -212,7 +215,7 @@ function makeIo(events, tip, me, fillFclaimHeight) {
   let orec = {};
   try { orec = JSON.parse(offerEv.uri); } catch {}
   return {
-    myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
+    myLiveHoldsAtGrant: holdCountAt(events, OID, me, fillFclaimHeight),
     provenTerms: { height: Number(offerEv?.height), feeBps: feeBpsAt(Number(offerEv?.height)), value: orec?.want?.value !== undefined ? String(orec.want.value) : undefined, taker: orec?.taker !== undefined ? String(orec.taker).toLowerCase() : undefined, bid: orec?.bid !== undefined ? String(orec.bid).toLowerCase() : undefined, min: orec?.min !== undefined ? String(orec.min) : undefined, giveTicker: orec?.give?.ticker !== undefined ? String(orec.give.ticker) : undefined, giveAmount: orec?.give?.amount !== undefined ? String(orec.give.amount) : undefined, giveName: orec?.give?.name !== undefined ? String(orec.give.name) : undefined, wantType: typeof orec?.want?.ticker === "string" ? "token" : "csd" },   // B7e: full shape so the flipped give/wantType binds see the honest proven give
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },

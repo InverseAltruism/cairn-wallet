@@ -17,7 +17,7 @@ import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
-import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type TokenFillQuote } from "./fillpreflight.js";
+import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
@@ -665,8 +665,8 @@ export class Wallet {
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
-  provenPaytoForTest?: (offerId: string, offerHeight: number) => (ProvenOfferPayto | null) | Promise<ProvenOfferPayto | null>;
-  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | null> {
+  provenPaytoForTest?: (offerId: string, offerHeight: number) => (ProvenOfferPayto | ProvenOfferRefused | null) | Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | ProvenOfferRefused | null> {
     if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({
