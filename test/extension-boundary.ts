@@ -380,6 +380,21 @@ async function main() {
   await tick();
   check("consented origin while LOCKED does NOT fast-path (queues + opens window, no silent resolve)", lockedConn.done() === false && windowsOpened > winBeforeLk);
 
+  console.log("\n=== getPermissions (silent read): LOCKED reveals no grant; unlocked answers the caller origin's own ===");
+  // F-PERM-LOCKED: evil.test holds a grant (above). The read is silent, so a locked wallet must answer
+  // "no permissions" rather than confirm the grant or its address to a polling page.
+  const winBeforePerm = windowsOpened;
+  const lockedPerm = dappAsync("getPermissions", {}, "https://evil.test");
+  await tick();
+  check("getPermissions while LOCKED answers ok with no permissions and no address", lockedPerm.done() === true && lockedPerm.get()?.ok === true && JSON.stringify(lockedPerm.get().result) === "[]" && !JSON.stringify(lockedPerm.get()).toLowerCase().includes(addr.toLowerCase()));
+  await popup("unlock", PW);
+  const ownPerm = dappAsync("getPermissions", {}, "https://evil.test");
+  const otherPerm = dappAsync("getPermissions", {}, "https://never-connected.test");
+  await tick();
+  const perms = ownPerm.get()?.result;
+  check("getPermissions unlocked, connected origin: its own grant (invoker, account, grantedAt), silently", ownPerm.get()?.ok === true && Array.isArray(perms) && perms.length === 1 && perms[0].invoker === "https://evil.test" && perms[0].accounts.length === 1 && perms[0].accounts[0] === addr && typeof perms[0].grantedAt === "number" && windowsOpened === winBeforePerm);
+  check("getPermissions from an origin with no grant sees nothing, not another origin's grant", otherPerm.get()?.ok === true && JSON.stringify(otherPerm.get().result) === "[]");
+
   console.log("\n=== F12: popup-channel sender identity is asserted (defense-in-depth) ===");
   await popup("unlock", PW); // re-unlock (we locked it above) so the privileged call would otherwise succeed
   // A content script forging kind:"popup" runs in a web page → its sender.url is the host page (not our
