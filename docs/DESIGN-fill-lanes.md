@@ -28,8 +28,12 @@ Every lane returns a refusal or null and signs nothing. An unprovable or transie
   (test/fill-fclaim-preflight.test.mjs).
 - The served fee, rebate, value, taker, bid and `min` fields are bound to the proven offer terms through the vendored
   `bindOfferTerms`; binding `min` closes the whole-fill-to-partial rebate-drop burn.
-- The count of the buyer's other live holds is computed by the SPV source and over-counts; when it cannot be
-  computed the fill refuses.
+- The count of the buyer's other live holds is cairnx-core `countOtherHoldsAtGrant` over the fclaims the scan proved,
+  in consensus order: fclaims mined before the one being filled (by height, then position in the block) whose hold is
+  live at its grant, one per offer. A hold that cannot be bound to another buyer counts as the buyer's, and an earlier
+  fclaim the resolver denied still counts (an over-count, so a refusal). A grant below `LEGACY_HOLD_SUNSET_HEIGHT`
+  (60,044), where a legacy claim from before V28 could still count, and a count that cannot be computed both refuse
+  as `VERIFY_UNAVAILABLE`.
 - A block body that contradicts its verified header refuses as `RPC_BLOCK_MISMATCH`, naming the block, the RPC and
   the header source without blaming either.
 

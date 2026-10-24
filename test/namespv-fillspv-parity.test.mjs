@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { verifyNameUnion } from "../src/core/namespv.js";
 import { provenOfferPayto, liveFillSpvSource, feeBpsAt } from "../src/core/fillspv.js";
-import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
+import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT, EPOCH_LEN } from "../src/vendor/cairnx-spv.js";
 import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase, nodeBlockBody } from "./_spvrig.ts";
 
 // D2 (2026-09-12): the single-source verifyName twin was deleted; the namespv leg now drives
@@ -161,7 +161,7 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
 // #6-#8 (liveFillSpvSource): the fclaim lane's proven producers, driven over a fill-style source (FILLER for
 // empty heights, since liveFillSpvSource scans the whole tip-anchored window). offer with want.payto != author.
 {
-  const H0 = V28_HEIGHT;
+  const H0 = V28_HEIGHT + 2 * EPOCH_LEN;   // epoch-aligned, past LEGACY_HOLD_SUNSET_HEIGHT (60,044), where the hold count applies
   const meKey = "0x" + "3f".repeat(32), MEL = addrFromPriv(meKey).toLowerCase();
   const sK = "0x" + "7a".repeat(32), SL = addrFromPriv(sK).toLowerCase();
   const PAYTO2 = "0x" + "e1".repeat(20);

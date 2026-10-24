@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A reservation (fclaim) fill no longer counts the buyer's reservations mined after the one being filled against
+  the three-reservation cap. The wallet counted every other live reservation of the buyer, so a fourth reservation
+  made each earlier granted one unfillable for the rest of its hold (the fill refused with "you held the max active
+  claims when this fclaim was granted"), although the chain counts holds at the grant and would have accepted the
+  fill. The count is now cairnx-core's `countOtherHoldsAtGrant`: reservations before the one being filled, in block
+  and position order, one per offer. An earlier reservation the chain denied still counts, which can still refuse a
+  fill the chain would accept. Grants below block 60,044 are refused rather than counted (no such reservation is
+  fillable at today's height).
+
 - Internal: the block bind and the author bind come from the vendored csd-sdk packages. `bindBlock` in
   `src/core/spvbind.ts` calls csd-light's `bindBlockBody` on the `/block` response text (the SPV source now reads
   the body as text with the same client, timeout and size cap), and `bindSigner` calls csd-crypto's `authorOf`.

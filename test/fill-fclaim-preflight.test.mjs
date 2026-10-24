@@ -18,12 +18,13 @@
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
-import { countMyOtherLiveHolds, liveFillSpvSource, provenOfferPayto, feeBpsAt } from "../src/core/fillspv.js";
+import { liveFillSpvSource, provenOfferPayto, feeBpsAt } from "../src/core/fillspv.js";
 import {
   deploy, mint, offer, fclaim, offerCancelAll, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
   SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
+  countOtherHoldsAtGrant, LEGACY_HOLD_SUNSET_HEIGHT,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
+import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 import { withWalletMutant } from "./helpers/mutant.mjs";
 
@@ -35,7 +36,9 @@ const S = "0x" + "55".repeat(20);            // seller
 const OID = "0x" + "0f".repeat(32);
 const OID2 = "0x" + "e2".repeat(32), OID3 = "0x" + "e3".repeat(32), OID4 = "0x" + "e4".repeat(32);
 const id = (n) => "0x" + n.repeat(32);
-const H0 = V28_HEIGHT;                        // synthetic V28 height (never the real one)
+// Synthetic heights: two epochs past V28, the first epoch boundary at or above LEGACY_HOLD_SUNSET_HEIGHT (60,044),
+// where the hold count applies.
+const H0 = V28_HEIGHT + 2 * EPOCH_LEN;
 const V = 5_000_000;                          // want: 0.05 CSD (the mock coin covers it)
 const E = epochOf(H0 + 3) + 2;
 const HOLD_END = fclaimHoldEnd(E);
@@ -69,7 +72,7 @@ function makeIo(events, tip, me, fillFclaimHeight) {
   let orec = {};
   try { orec = JSON.parse(offerEv.uri); } catch {}
   return {
-    myLiveHoldsAtGrant: countMyOtherLiveHolds(events, OID, me, fillFclaimHeight),
+    myLiveHoldsAtGrant: holdCountAt(events, OID, me, fillFclaimHeight),
     provenTerms: termsFor({ ...orec, height: Number(offerEv?.height) }),   // B7e: full shape (give legs + wantType), single-sourced through termsFor so the flipped give/wantType binds see the honest proven give
     async tip() { return tip; },
     async offerEventIds() { return events.map(idOf); },
@@ -110,15 +113,16 @@ async function freshWallet(pw) { const w = new Wallet(memoryStore()); const { ad
 
 console.log("B6: fclaim-lane fill preflight (verifyFillSpv fund boundary):");
 
-// 0. the cap over-count is a PURE function of the scanned events (not hardcoded).
+// 0. the count the preflight uses is cairnx-core countOtherHoldsAtGrant over the scanned events: holds placed
+// before the fclaim being filled (one block earlier) count; this offer's own, another buyer's and lapsed ones do not.
 {
   const meX = "0x" + "77".repeat(20);
-  const withOthers = (oids) => [...baseFor(), fcFor(fcH, OID, H0 + 3, meX), ...oids.map((o, i) => fcFor(id("d" + (i + 2)), o, H0 + 3, meX))];
-  check("count: 2 in-window other-offer holds by me -> 2", countMyOtherLiveHolds(withOthers([OID2, OID3]), OID, meX, H0 + 3) === 2);
-  check("count: adding a 3rd -> 3 (crosses MAX_ACTIVE_CLAIMS)", countMyOtherLiveHolds(withOthers([OID2, OID3, OID4]), OID, meX, H0 + 3) === MAX_ACTIVE_CLAIMS);
-  check("count: this offer's OWN fclaim is NOT counted", countMyOtherLiveHolds([...baseFor(), fcFor(fcH, OID, H0 + 3, meX)], OID, meX, H0 + 3) === 0);
-  check("count: another buyer's other-offer hold is NOT mine", countMyOtherLiveHolds([fcFor(id("d2"), OID2, H0 + 3, C)], OID, meX, H0 + 3) === 0);
-  check("count: an other-offer hold lapsed before my grant is NOT counted", countMyOtherLiveHolds([PE(id("d9"), fclaim({ offer: OID2 }), H0 + 3, meX, epochOf(H0 - 200))], OID, meX, H0 + 3) === 0);
+  const withOthers = (oids) => [...baseFor(), fcFor(fcH, OID, H0 + 3, meX), ...oids.map((o, i) => fcFor(id("d" + (i + 2)), o, H0 + 2, meX))];
+  check("count: 2 earlier other-offer holds by me -> 2", holdCountAt(withOthers([OID2, OID3]), OID, meX, H0 + 3) === 2);
+  check("count: adding a 3rd -> 3 (crosses MAX_ACTIVE_CLAIMS)", holdCountAt(withOthers([OID2, OID3, OID4]), OID, meX, H0 + 3) === MAX_ACTIVE_CLAIMS);
+  check("count: this offer's OWN fclaim is NOT counted", holdCountAt([...baseFor(), fcFor(id("d2"), OID, H0 + 2, meX), fcFor(fcH, OID, H0 + 3, meX)], OID, meX, H0 + 3) === 0);
+  check("count: another buyer's other-offer hold is NOT mine", holdCountAt([...baseFor(), fcFor(id("d2"), OID2, H0 + 2, C), fcFor(fcH, OID, H0 + 3, meX)], OID, meX, H0 + 3) === 0);
+  check("count: an other-offer hold lapsed before my grant is NOT counted", holdCountAt([...baseFor(), PE(id("d9"), fclaim({ offer: OID2 }), H0 + 2, meX, epochOf(H0 - 200)), fcFor(fcH, OID, H0 + 3, meX)], OID, meX, H0 + 3) === 0);
 }
 
 // 1. HONEST granted + buried fclaim fill is ACCEPTED (no false refusal).
@@ -231,7 +235,7 @@ let honestBody = null, honestWallet = null;
 // 6. CROSS-OFFER cap: the count is COMPUTED from the scan. 2 other-offer holds ACCEPTS; adding a 3rd FLIPS to REFUSE.
 {
   const { w } = await freshWallet("pw-cap-01");
-  const eventsWith = (me, oids) => [...baseFor(), fcFor(fcH, OID, H0 + 3, me), ...oids.map((o, i) => fcFor(id("d" + (i + 2)), o, H0 + 3, me))];
+  const eventsWith = (me, oids) => [...baseFor(), fcFor(fcH, OID, H0 + 3, me), ...oids.map((o, i) => fcFor(id("d" + (i + 2)), o, H0 + 2, me))];
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3) }) });
   w.fillSpvIoForTest = (oid, fc, me) => makeIo(eventsWith(me, [OID2, OID3]), HOLD_END - 5, me, H0 + 3);
   const rUnder = await w.fillOffer({ proposalId: fcH, outputs });
@@ -339,15 +343,42 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
 }
 
 // DEFECT 1: the cap keys on the PROVEN mined grant height (from the scan), never a served/inflated one. 3
-// genuine me-holds live at the true grant height -> 3; keying on a height past their holdEnd would UNDER-count.
+// genuine me-holds mined before the fill's fclaim, live at its grant -> 3; keying on a height past their holdEnd
+// would UNDER-count.
 {
   const fill = fcTxFor();
   const holds = [fcTxFor(OID2), fcTxFor(OID3), fcTxFor(OID4)];
-  const blocks = withOffer([fill, ...holds].map((tx) => ({ height: Hfc, tx })));
+  const blocks = withOffer([...holds, fill].map((tx) => ({ height: Hfc, tx })));
   const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
   check(`DEFECT1: cap counts 3 genuine me-holds on the PROVEN grant height (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 3);
-  const evs = holds.map((t) => { const x = rpcTxToTx(t); return { kind: "propose", proposer: ME, uri: x.app.uri, payloadHash: String(x.app.payloadHash), expiresEpoch: E }; });
-  check("DEFECT1: keying on an INFLATED height (> holdEnd) would UNDER-count to 0 (the burn the fix prevents)", countMyOtherLiveHolds(evs, LOID, ME, HOLD_END + 1) === 0 && countMyOtherLiveHolds(evs, LOID, ME, Hfc) === 3);
+  const evs = holds.map((t, pos) => { const x = rpcTxToTx(t); return { id: ctxid(x), height: Hfc, pos, proposer: ME, uri: x.app.uri, payloadHash: String(x.app.payloadHash), expiresEpoch: E }; });
+  const at = (height) => countOtherHoldsAtGrant(evs, { id: ctxid(rpcTxToTx(fill)), height, pos: 0, offer: LOID }, ME);
+  check("DEFECT1: keying on an INFLATED height (> holdEnd) would UNDER-count to 0 (the burn the fix prevents)", at(HOLD_END + 1).count === 0 && at(Hfc + 1).count === 3);
+}
+
+// Consensus counts holds at the grant (register row 104): fclaims the buyer mines AFTER the one being filled, later
+// in its block or in a later block, do not count against it. A fourth reservation must not make an earlier granted
+// hold unfillable. RED-FIRST: the wallet's own counter counted all three (3 = MAX_ACTIVE_CLAIMS, refused).
+{
+  const fill = fcTxFor();
+  const blocks = withOffer([{ height: Hfc, tx: fill }, { height: Hfc, tx: fcTxFor(OID2) }, { height: Hfc + 1, tx: fcTxFor(OID3) }, { height: Hfc + 2, tx: fcTxFor(OID4) }]);
+  const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
+  check(`row 104: holds mined after the fill's fclaim do not count at its grant (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 0);
+  const v = await verifyFillSpv(LOID, ctxid(rpcTxToTx(fill)).toLowerCase(), ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant, pay: BigInt(V) });
+  check(`row 104: ...so the earlier granted hold verifies (${v.reason ?? "safe"})`, v.safe === true);
+}
+
+// Below LEGACY_HOLD_SUNSET_HEIGHT a pre-V28 legacy hold the scan does not read could count against the cap, so the
+// source refuses the grant instead of counting 0 (the preflight turns the throw into VERIFY_UNAVAILABLE).
+{
+  const H = V28_HEIGHT;
+  const ee = epochOf(H + 3) + 2;
+  const fill = proposeTx({ ...pick(fclaim({ offer: LOID })), priv: meKey, expiresEpoch: ee });
+  const blocks = worldOf([{ height: H + 2, tx: offTxD }, { height: H + 3, tx: fill }]);
+  let err = "";
+  try { await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, H + 10), hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H + 2 } }); }
+  catch (e) { err = String(e?.message ?? e); }
+  check(`a grant below ${LEGACY_HOLD_SUNSET_HEIGHT} fails the source closed (${err})`, new RegExp(`before block ${LEGACY_HOLD_SUNSET_HEIGHT}`).test(err));
 }
 
 // DEFECT 2: authenticate each counted hold with the prevout-ownership bind. A me-hold whose scriptSig was SWAPPED
@@ -360,7 +391,7 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
   const sig = signSighash(vSighash(rpcTxToTx(legit)), foreignKey);
   swapped.inputs[0].script_sig = buildScriptSig(sig.sig64, sig.pub33);   // re-attribute the author; txid unchanged
   const stranger = fcTxFor(OID3, foreignKey);                  // foreign coin, foreign sig
-  const blocks = withOffer([{ height: Hfc, tx: fill }, { height: Hfc, tx: swapped }, { height: Hfc, tx: stranger }]);
+  const blocks = withOffer([{ height: Hfc, tx: swapped }, { height: Hfc, tx: stranger }, { height: Hfc, tx: fill }]);
   const io = await runLive(blocks, ctxid(rpcTxToTx(fill)));
   check(`DEFECT2: a scriptSig-swapped ME-hold is still COUNTED (bind rejects re-attribution) and a bound stranger is NOT (got ${io.myLiveHoldsAtGrant})`, io.myLiveHoldsAtGrant === 1);
 }
@@ -393,7 +424,7 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
 
   // …and past the old gate (tip 60,134) the same holds; one fixture, both tips.
   const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;
-  const POST_GATE = H0 + LEGACY_HOLD + MAX_HOLD_SPAN;   // == the old 60,134 crossing
+  const POST_GATE = V28_HEIGHT + LEGACY_HOLD + MAX_HOLD_SPAN;   // == the old 60,134 crossing
   const io2 = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, POST_GATE), hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
   check("D1: same answer past the old gate (tip 60,134)", io2.myLiveHoldsAtGrant === 0);
 }
@@ -777,7 +808,7 @@ check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves th
   // count + concurrency-instrument the SpvSource the real liveFillSpvSource drives.
   const fill = fcTxFor();
   const holds = [fcTxFor(OID2), fcTxFor(OID3), fcTxFor(OID4)];
-  const blocks = withOffer([fill, ...holds].map((tx) => ({ height: Hfc, tx })));
+  const blocks = withOffer([...holds, fill].map((tx) => ({ height: Hfc, tx })));
   const base = fillSource(blocks, TIP);
   const fetched = [];
   let inFlight = 0, maxInFlight = 0;

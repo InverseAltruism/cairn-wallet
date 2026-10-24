@@ -9,7 +9,7 @@
 // module-scoped; each tsx test file is its own process, so the registry is naturally isolated per file.
 import { TREASURY_ADDR } from "../src/core/cairnx.js";
 import { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.js";
-import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
+import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, countOtherHoldsAtGrant, parseRecord, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
 
 // Re-export the building blocks so a test imports its whole rig surface from here (one import line).
 export { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.js";
@@ -20,6 +20,16 @@ export { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, resolve } fr
 // A bigint field is written as a bare integer literal, as the node writes a u64.
 export const nodeBlockBody = (txs: readonly unknown[]): string =>
   JSON.stringify({ ok: true, txs }, (_k, v) => (typeof v === "bigint" ? `@@BIG:${v}` : v)).replace(/"@@BIG:(-?\d+)"/g, "$1");
+
+// The count liveFillSpvSource computes, over chain events: cairnx-core countOtherHoldsAtGrant at the fclaim on
+// `offerId` mined at `height`; undefined (the fill preflight refuses) when it refuses or there is no such fclaim.
+interface ProposeLike { kind?: string; id: string; height: number; pos: number; proposer: string; uri: string; payloadHash: string; expiresEpoch: number }
+export function holdCountAt(events: readonly ProposeLike[], offerId: string, me: string, height: number): number | undefined {
+  const proposes = events.filter((e) => e.kind === "propose");
+  const fc = proposes.find((e) => e.height === height && (parseRecord(e.uri, e.payloadHash) as { offer?: string } | null)?.offer === offerId);
+  const hc = fc ? countOtherHoldsAtGrant(proposes, { id: fc.id, height: fc.height, pos: fc.pos, offer: offerId }, me) : null;
+  return hc?.ok ? hc.count : undefined;
+}
 
 export const CAIRNX_DOMAIN = "cairnx:v1";
 export const REG_FEE = 1000_000_000; // 10 CSD; generously above any nameRegFee (overpay is accepted)
