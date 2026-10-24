@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Internal: the token-priced fill's check that the served want ticker and amount equal the offer's on-chain record
+  is the vendored `bindOfferTerms` want leg (cairnx-core 0.2.2), and the wallet's own copy is deleted; the reviewed
+  quote is bound to the proven terms' want. The two refusals merge into one text: "refusing to sign: what you would
+  receive or what you would pay does not match the offer's on-chain record (a lying resolver may be misrepresenting
+  the trade)" (was "the offer's asset (give) or want-type does not match its on-chain record (a lying resolver may
+  be misrepresenting what you receive)" and "the token or amount you would pay does not match the offer's on-chain
+  record (a lying resolver may be understating your cost)").
+
 - A fill now refuses an offer whose on-chain record is not one the marketplace accepts: an offer Propose in a
   settlement domain other than `cairnx:v1`, an offer that pays the protocol treasury, or a record that breaks a rule
   the resolver applies when it creates an offer (cairnx-core's `provenOfferRefusal`, run on the merkle-proven offer

@@ -373,7 +373,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 // prevoutScriptPubkey).
 export async function provenOfferPayto(
   opts: LiveSpvOpts & { offerId: string; offerHeight: number; spvSource?: SpvSource },
-): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | { refused: string } | null> {
+): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number } | { refused: string } | null> {
   const offerId = String(opts.offerId).toLowerCase();
   const offerHeight = Math.floor(Number(opts.offerHeight));
   if (!/^0x[0-9a-f]{64}$/.test(offerId) || !Number.isFinite(offerHeight) || offerHeight < 0) return null;
@@ -398,13 +398,7 @@ export async function provenOfferPayto(
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.
     const terms: MintedProvenOfferTerms = provenOfferTerms(rec as OfferRecord, offerHeight); // MUTATE_PROVEN_TERMS_HEIGHT
-    // B7e-FIX (REBIND W1 token-lane close): surface the merkle-proven token WANT (the ticker + amount the
-    // buyer PAYS). bindOfferTerms binds the want TYPE only, and provenOfferTerms drops the token ticker/amount,
-    // so the token-lane content bind (fillpreflight.ts fillOfferPreflight) needs these directly to mirror the site
-    // swapguard verifyOfferContent want.ticker/want.amount bind. Undefined on a CSD-priced offer (no want.ticker).
-    const wantTicker = rec.want?.ticker !== undefined ? String(rec.want.ticker) : undefined; // MUTATE_PROVEN_WANT_TICKER
-    const wantAmount = rec.want?.amount !== undefined ? String(rec.want.amount) : undefined; // MUTATE_PROVEN_WANT_AMOUNT
     // The proven expiry and anchor height (never served values) for the offer-id lanes' expiry check.
-    return { payto, seller, terms, expiresEpoch: Number(app.expiresEpoch), height: offerHeight, wantTicker, wantAmount };
+    return { payto, seller, terms, expiresEpoch: Number(app.expiresEpoch), height: offerHeight };
   } catch { return null; }
 }

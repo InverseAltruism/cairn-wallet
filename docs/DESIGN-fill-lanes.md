@@ -92,9 +92,9 @@ The fill is an Attest with no CSD outputs (`attest` with `CONF_TOKEN_FILL` rerou
 
 - Any CSD output refuses (test/fill-token-content.test.mjs).
 - The proven offer passes the same admission check as the other lanes (`provenOfferRefusal`).
-- The offer record is merkle-proven and its give legs and want type are bound through `bindOfferTerms`; the token
-  `want.ticker` and `want.amount` the buyer pays are bound separately, since `bindOfferTerms` carries no token-want
-  leg. This mirrors the site's swapguard `verifyOfferContent`.
+- The offer record is merkle-proven and its give legs and want (its type, and the token `want.ticker` and
+  `want.amount` the buyer pays) are bound through `bindOfferTerms`. The reviewed quote is bound to the same proven
+  want (`terms.wantTicker`, `terms.wantAmount`).
 - The approval window's quote (`tokenFillQuote`) is a resolver read when shown. The fill signs only when the reviewed
   ticker, amount, fee and total equal the proven terms, with the fee computed from the proven amount and height; a
   quote that shows a give must show the proven give. No complete reviewed quote refuses with `REVIEW_REQUIRED`.

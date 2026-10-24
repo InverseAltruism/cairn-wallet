@@ -31,11 +31,9 @@ export function tipDependentFillReason(reason: string): boolean {
   return /^(no live claim by you|this fclaim is not the live granted hold|too close to the hold deadline)|not buried deep enough yet/.test(String(reason));
 }
 
-// B7e-FIX (W1 token-lane close): this predicate now runs on the TOKEN-priced lane too (tokenLanePreflight), not only
-// the CSD lane. On the token lane the give leg is the load-bearing content bind
-// and the want-type leg is a real rejecter (on the CSD lane the pre-existing value leg shadows it). The
-// want-type leg binds only the want TYPE (token vs CSD), so the token lane binds want.ticker/want.amount
-// separately: bindOfferTerms carries no token-want ticker/amount leg (see tokenLanePreflight).
+// Runs on the CSD lanes and the token lane (tokenLanePreflight). On the token lane the give leg and the want leg
+// are the content bind: the want leg refuses a proven CSD offer served as a token offer and, for a proven token
+// want, a served want.ticker or want.amount that differs from the record (on the CSD lane the value leg shadows it).
 function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean {
   return bindOfferTerms(offer, t, { give: true, wantType: true });
 }
@@ -89,7 +87,7 @@ export type FillNotes = { secondSource?: "pending" | "failed" };
 // What the SPV seams return to the fill preflight: the fclaim lane's proof source with the computed cap
 // over-count, the proven terms and whether the tip was floor-clamped; the legacy lane's proven offer author.
 export type FillSpvIoExt = FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean };
-export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string };
+export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number };
 // The proven offer Propose is not an offer the resolver admits; `refused` is cairnx-core provenOfferRefusal's reason.
 export type ProvenOfferRefused = { refused: string };
 // The reads the fill preflight makes through the wallet: the CairnX read API, the node tip and its PoW-backed
@@ -296,17 +294,10 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, su
     return { ok: false, error: "couldn't prove this token offer's on-chain terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   const expiry = await offerExpiryRefusal(wallet, proven, tip);
   if (expiry) return expiry;
-  // give legs (give.ticker/amount/name) + the symmetric want-TYPE refusal, via the SAME vendored predicate
-  // the CSD lane uses. The want-type leg also refuses a proven CSD offer served as a token offer, so once
-  // this passes the proven offer is genuinely token-priced (proven.wantTicker is defined).
+  // The give legs and the want leg (type, and for a token want its ticker and amount) through the vendored
+  // bindOfferTerms; once this passes the proven offer is token-priced and the served want is the proven one.
   if (provenTermsMismatch(offer, proven.terms))
-    return { ok: false, error: "refusing to sign: the offer's asset (give) or want-type does not match its on-chain record (a lying resolver may be misrepresenting what you receive)", sighashMatch: false, code: "FILL_UNSAFE" };
-  // The token ticker/amount you PAY is bound explicitly: bindOfferTerms binds the want TYPE but carries no
-  // token want ticker/amount leg. A deflated want.amount or a swapped want.ticker would otherwise let the
-  // resolver understate your cost for what you receive. Mirrors swapguard verifyOfferContent's want leg.
-  const w = (offer.want as { ticker?: string; amount?: string }) ?? {};
-  if (String(w.ticker) !== String(proven.wantTicker ?? "") || String(w.amount) !== String(proven.wantAmount ?? ""))
-    return { ok: false, error: "refusing to sign: the token or amount you would pay does not match the offer's on-chain record (a lying resolver may be understating your cost)", sighashMatch: false, code: "FILL_UNSAFE" };
+    return { ok: false, error: "refusing to sign: what you would receive or what you would pay does not match the offer's on-chain record (a lying resolver may be misrepresenting the trade)", sighashMatch: false, code: "FILL_UNSAFE" };
   // RT-W2: bind the number the user SAW at review to the chain-proven want. The review card's
   // quote was a live resolver read; a resolver answering low on that read and honest at click
   // used to debit the larger proven amount behind the low card. The displayed quote must equal
@@ -319,15 +310,15 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, su
     return refuse("REVIEW_REQUIRED", "the wallet could not show you the exact token amount this fill debits, so it will not sign it. Reopen the purchase and approve once the amount is shown.");
   if (reviewedQuote && reviewedQuote.ticker !== undefined) {
     const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
-    if (qT !== String(proven.wantTicker ?? "") || qA !== String(proven.wantAmount ?? ""))
-      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.wantAmount ?? "?"} ${proven.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
+    if (qT !== String(proven.terms.wantTicker ?? "") || qA !== String(proven.terms.wantAmount ?? ""))
+      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.terms.wantAmount ?? "?"} ${proven.terms.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
   }
   // 0.2.71 (CX-15): bind the reviewed fee and total. The fee follows from the proven amount and the
   // offer's proven inclusion height (1.5% from V16, 1% before), not from the served feeBps, so a
   // quote that understated the fee (e.g. a served feeBps of 0) cannot sign a larger debit.
   {
     let provenAmt: bigint;
-    try { provenAmt = BigInt(String(proven.wantAmount ?? "")); } catch { return refuse("FILL_UNSAFE", "refusing to sign: the offer's on-chain amount could not be read"); }
+    try { provenAmt = BigInt(String(proven.terms.wantAmount ?? "")); } catch { return refuse("FILL_UNSAFE", "refusing to sign: the offer's on-chain amount could not be read"); }
     const provenBps = Number((proven.terms as { feeBps?: unknown }).feeBps);
     const bps = Number.isFinite(provenBps) ? provenBps : (Number(offer.height) >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS);
     const fee = cairnxTradeFee(provenAmt, bps);
