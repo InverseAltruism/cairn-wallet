@@ -234,7 +234,7 @@ async function renderAccts() {
           ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}</span>`;
     }
     const removeWarn = editing && acctEdit!.mode === "remove" && a.imported
-      ? `<div class="tx-sub" style="color:var(--warn,#c90)">this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (Settings › export key), then enter your password to confirm.</div>`
+      ? `<div class="tx-sub" style="color:var(--warn,#c90)">this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm.</div>`
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
@@ -889,12 +889,22 @@ function openPanel(id: string): boolean {
   syncNav();
   return willOpen;
 }
-// Footer-nav active state: activity/settings when their panel is open, else home.
+// Which control shows as current: the Activity tab or the Settings button when their panel is open, else Assets.
 function syncNav() {
   const active = !($("activity") as HTMLElement).hidden ? "btn-activity-t"
     : !($("settings") as HTMLElement).hidden ? "btn-settings" : "nav-home";
   for (const id of ["nav-home", "btn-activity-t", "btn-settings"]) $(id).classList.toggle("active", id === active);
+  for (const id of ["nav-home", "btn-activity-t"]) $(id).setAttribute("aria-selected", String(id === active));
 }
+// Escape closes the open sheet through its own close button, the same exit as a click on it.
+function closeSheetOnEscape(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  const close = document.querySelector<HTMLElement>("#layer > .sheet:not([hidden]) .panel-head .panel-back");
+  if (!close) return;
+  e.preventDefault();
+  close.click();
+}
+document.addEventListener("keydown", closeSheetOnEscape);
 $("nav-home").addEventListener("click", () => { closeAllPanels(); syncNav(); msg(""); });
 // One delegated back-button for every panel head (no per-panel IDs): exits the panel with the
 // same full teardown as any panel switch (snapshots dropped, secrets wiped).
@@ -1136,7 +1146,7 @@ const noProto = (u: string) => u.replace(/^https?:\/\//, "");
 
 // A saved remote RPC was moved to the Cairn proxy at load (wallet.init); say so once, then clear the flag.
 function showRpcMoved(from: string) {
-  msgAction(`Your saved node RPC (${from.replace(/^https?:\/\//, "")}) is a remote server, which this wallet no longer supports. It now uses the Cairn proxy. A node on this computer can still be chosen from the RPC menu.`, "OK", () => {}, "info");
+  msgAction(`Your saved node RPC (${from.replace(/^https?:\/\//, "")}) is a remote server, which this wallet no longer supports. It now uses the Cairn proxy. A node on this computer can still be chosen in Settings › Network.`, "OK", () => {}, "info");
   void call("dismissRpcNotice").catch(() => { /* the notice shows again on the next open */ });
 }
 // ── RPC dropdown (header); preset + user-added nodes, switch with one click ──

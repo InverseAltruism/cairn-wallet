@@ -19,8 +19,8 @@
 // Loads dist/ as a real MV3 extension (persistent context) and screenshots
 // chrome-extension://<id>/popup.html and approve.html.
 //
-// Env: SHOTS_DIR (default /tmp/wallet-shots) · STRICT_CONFIRM=1 (assert the send-confirm button
-// is fully inside the 360x600 popup viewport) · PORT.
+// Env: SHOTS_DIR (default /tmp/wallet-shots) · STRICT_CONFIRM=1 (assert the send-confirm button sits after the
+// review's warning without overlapping it, and is fully inside the 360x600 popup once scrolled to) · PORT.
 
 import http from "node:http";
 import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
@@ -156,10 +156,20 @@ async function standalone() {
     await page.waitForSelector("#send-confirm:not([hidden])", { timeout: 20000 });
     const warnVisible = await page.evaluate(() => { const w = document.getElementById("c-warn"); return !!w && !w.hidden && w.offsetHeight > 0; });
     warnVisible ? pass("first-time-send warning visible in review") : fail("first-time-send warning NOT visible in review");
+    // Confirm follows the review rows in flow: it is never drawn over part of the warning, and a long review
+    // scrolls to it.
+    const after = await page.evaluate(() => {
+      const w = document.getElementById("c-warn").getBoundingClientRect();
+      const c = document.getElementById("btn-send-confirm").getBoundingClientRect();
+      return c.top >= w.bottom;
+    });
+    await page.locator("#btn-send-confirm").scrollIntoViewIfNeeded();
     const box = await page.locator("#btn-send-confirm").boundingBox();
     const inView = !!box && box.y >= 0 && box.y + box.height <= VIEWPORT.height;
-    if (STRICT_CONFIRM) inView ? pass(`confirm button inside ${VIEWPORT.width}x${VIEWPORT.height} viewport`) : fail(`confirm button outside viewport (y=${box?.y}, h=${box?.height})`);
-    else note(`confirm button ${inView ? "inside" : "OUTSIDE"} ${VIEWPORT.width}x${VIEWPORT.height} viewport (metric only; STRICT_CONFIRM=1 to enforce)`);
+    const ok = after && inView;
+    const what = `confirm button after the warning (${after}) and inside ${VIEWPORT.width}x${VIEWPORT.height} once scrolled to (${inView})`;
+    if (STRICT_CONFIRM) ok ? pass(what) : fail(what);
+    else note(`${what} (metric only; STRICT_CONFIRM=1 to enforce)`);
     await shoot(page, "04-send-review");
     await page.click("#btn-send-back");
 

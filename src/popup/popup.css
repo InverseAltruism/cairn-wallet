@@ -149,16 +149,17 @@
   /* callouts: a tint carries the severity, the text stays ink */
   .warn, .callout {
     padding: var(--ui-space-3); border-radius: var(--ui-radius-md);
-    background: var(--ui-down-tint); color: var(--ui-ink);
+    background: var(--ui-sunken); color: var(--ui-ink);
     font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); overflow-wrap: anywhere;
   }
-  .warn b, .warn strong { color: var(--ui-down); }
-  .callout.ok { background: var(--ui-up-tint); }
+  /* The review note carries good news and alarms alike, so the box is neutral and only marked content is coloured.
+     The address-poisoning warning is the one composeSendWarning writes with a bare <code> child: it stays red. */
+  .warn .err { color: var(--ui-down); }
+  .warn .ok { color: var(--ui-up); }
+  .warn:has(> code) { background: var(--ui-down-tint); }
+  .warn:has(> code) b { color: var(--ui-down); }
   .callout.caution { background: var(--ui-warn-tint); }
-  .callout.danger { background: var(--ui-down-tint); }
-  .callout.ok b { color: var(--ui-up); }
   .callout.caution b { color: var(--ui-warn); }
-  .callout.danger b { color: var(--ui-down); }
 
   /* menus: the account switcher, the RPC and explorer pickers, the More menu */
   .rpc-wrap { position: relative; }
@@ -218,7 +219,8 @@
   .history > .dim, .history > .row { font-size: var(--ui-text-xs); }
   .history > .row { justify-content: space-between; flex-wrap: nowrap; padding: var(--ui-space-2) 0; border-bottom: 1px solid var(--ui-line); }
   .history > .row:last-child { border-bottom: 0; }
-  .history > .row .addr { font-size: var(--ui-text-xs); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* a consent list: the origin is shown in full, so a look-alike's tail cannot hide */
+  .history > .row .addr { font-size: var(--ui-text-xs); min-width: 0; overflow-wrap: anywhere; }
 
   /* review rows (send, token send, merge, name action) */
   .confirm-box { display: flex; flex-direction: column; }
@@ -365,7 +367,7 @@
   .acct-chip:has(#primary-name:not([hidden])) .acct-addr { grid-column: 2; grid-row: 1; }
   .acct-menu { position: absolute; left: 0; top: calc(100% + var(--ui-space-1)); z-index: var(--ui-z-dropdown); width: 280px; }
 
-  .bal-hero { padding: var(--ui-space-5) var(--ui-space-5) 0; }
+  .bal-hero { position: relative; padding: var(--ui-space-5) var(--ui-space-5) 0; }
   .bal-top { display: flex; align-items: center; gap: var(--ui-space-1); min-height: 28px; }
   .bal-xl {
     margin-top: var(--ui-space-1); min-height: 40px;
@@ -416,8 +418,9 @@
   @supports (anchor-name: --a) {
     .more-menu { position-anchor: --more; top: anchor(bottom); right: anchor(right); margin-top: var(--ui-space-2); }
   }
+  /* without anchor positioning (Chrome before 125) the menu keeps the browser's default popover place, centred */
   @supports not (anchor-name: --a) {
-    .more-menu { top: 230px; right: var(--ui-space-4); }
+    .more-menu { inset: 0; margin: auto; height: fit-content; }
   }
   .more-menu::backdrop { background: transparent; }
 
@@ -547,12 +550,8 @@
   .panel-head .panel-back svg.i { width: 16px; height: 16px; }
   .sheet .act-head { padding-top: var(--ui-space-2); }
   .sheet .history { max-height: none; }
-  .sheet-actions {
-    position: sticky; bottom: calc(var(--ui-space-5) * -1); z-index: 1; flex-wrap: nowrap;
-    margin: var(--ui-space-3) calc(var(--ui-space-5) * -1) calc(var(--ui-space-5) * -1);
-    padding: var(--ui-space-3) var(--ui-space-5) var(--ui-space-5);
-    background: var(--ui-surface); border-top: 1px solid var(--ui-line);
-  }
+  /* in flow after the review rows: Confirm is never drawn over part of a warning; a long review scrolls to it */
+  .sheet-actions { flex-wrap: nowrap; margin-top: var(--ui-space-3); }
   .sheet-actions > button { flex: 1 1 0; }
   /* review mode: the inputs the snapshot was read from step aside; the frozen rows are what gets signed */
   #send-form:has(> #send-confirm:not([hidden])) > label,
@@ -560,12 +559,22 @@
   #tsend-form:has(> #tsend-confirm:not([hidden])) > label,
   #tsend-form:has(> #tsend-confirm:not([hidden])) > #ts-avail,
   #tsend-form:has(> #tsend-confirm:not([hidden])) > #btn-tsend { display: none; }
-  /* an open sheet leaves room above it for a waiting dApp request, which stays on top */
-  #view-main:has(#pending:not([hidden])):has(#layer > .sheet:not([hidden])) .sheet { max-height: calc(100% - 132px); }
+  /* A waiting dApp request stays on top of an open sheet as a band: the Review action first, then the first
+     request on at most two lines (the Review label carries the count; the full card is on home). --pending-band holds
+     the top gap, that card and the gap under it; test/popup-layout-chrome.test.mjs checks 1, 2 and 5 requests. */
+  .page-popup #app { --pending-band: 120px; }
+  #view-main:has(#pending:not([hidden])):has(#layer > .sheet:not([hidden])) .sheet { max-height: calc(100% - var(--pending-band)); }
   #view-main:has(#layer > .sheet:not([hidden])) #pending {
     position: fixed; top: var(--ui-space-2); left: var(--ui-space-3); right: var(--ui-space-3);
-    z-index: calc(var(--ui-z-modal) + 1); max-height: 116px; overflow-y: auto; margin: 0; box-shadow: var(--ui-shadow-2);
+    z-index: calc(var(--ui-z-modal) + 1); max-height: calc(var(--pending-band) - var(--ui-space-2) * 2); overflow: hidden;
+    display: flex; flex-direction: column; gap: var(--ui-space-2); margin: 0; box-shadow: var(--ui-shadow-2);
   }
+  #view-main:has(#layer > .sheet:not([hidden])) #pending .row { order: -1; flex-wrap: nowrap; }
+  #view-main:has(#layer > .sheet:not([hidden])) #pending [data-rj] { display: none; }
+  #view-main:has(#layer > .sheet:not([hidden])) #pending .req { margin: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  #view-main:has(#layer > .sheet:not([hidden])) #pending .req ~ .req { display: none; }
+  /* the status toast moves below that band, so it never covers the request */
+  .page-popup #view-main:has(#pending:not([hidden])):has(#layer > .sheet:not([hidden])) ~ #msg { top: var(--pending-band); }
 
   .receive-card { display: flex; justify-content: center; padding-top: var(--ui-space-2); }
   .receive-card canvas { border-radius: var(--ui-radius-md); }
@@ -624,10 +633,17 @@
     #home, #activity:not([hidden]) { animation: rise var(--ui-dur-3) var(--ui-ease) both; }
     #send-confirm:not([hidden]), #tsend-confirm:not([hidden]) { animation: rise var(--ui-dur-3) var(--ui-ease) both; }
     .bal-hero.sent .bal-xl { animation: settle var(--ui-dur-4) var(--ui-ease); }
+    /* the wallet-ready moment after the backup (popup.ts adds .born for a moment): one ring around the balance */
+    #view-main.born .bal-hero::after {
+      content: ""; position: absolute; inset: var(--ui-space-3) var(--ui-space-3) calc(var(--ui-space-2) * -1);
+      border-radius: var(--ui-radius-lg); box-shadow: 0 0 0 2px var(--ui-ink); pointer-events: none;
+      animation: born-ring calc(var(--ui-dur-4) * 3) var(--ui-ease) both;
+    }
     .page-popup #msg.sent::before { animation: pop var(--ui-dur-3) var(--ui-ease) both; }
   }
   @keyframes rise { from { opacity: 0; transform: translateY(var(--ui-space-2)); } }
   @keyframes settle { 40% { transform: translateY(calc(var(--ui-space-1) * -1)); } }
+  @keyframes born-ring { from { opacity: 0.6; transform: scale(0.97); } to { opacity: 0; transform: scale(1.02); } }
   @keyframes pop { from { transform: scale(0.4); opacity: 0; } 60% { transform: scale(1.25); } }
 }
 
@@ -636,45 +652,44 @@
   .page-approve #app { height: 100vh; display: flex; flex-direction: column; }
   .ap-head {
     display: flex; align-items: center; gap: var(--ui-space-2); flex: none;
-    padding: var(--ui-space-3) var(--ui-space-4); border-bottom: 1px solid var(--ui-line);
+    padding: var(--ui-space-2) var(--ui-space-4); border-bottom: 1px solid var(--ui-line);
   }
   .ap-brand { font-weight: 600; letter-spacing: var(--ui-track-snug); }
   .ap-sub { color: var(--ui-muted); font-size: var(--ui-text-xs); margin-left: var(--ui-space-1); }
   .page-approve #view-req { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  .page-approve #view-req > .lead { padding: var(--ui-space-4) var(--ui-space-4) 0; font-size: var(--ui-text-xs); color: var(--ui-muted); }
-  .page-approve #req { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--ui-space-4) var(--ui-space-3); }
-  .page-approve #req > .req {
-    padding: var(--ui-space-3) 0; border-bottom: 1px solid var(--ui-line);
-    font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); overflow-wrap: anywhere;
+  /* One dense scale for the request: everything 0.2.99 showed above the buttons still fits at 380 by 620
+     (test/approve-layout-chrome.test.mjs). */
+  .page-approve #req {
+    flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--ui-space-4) var(--ui-space-2);
+    font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug);
   }
+  .page-approve #req > .req { padding: var(--ui-space-2) 0; border-bottom: 1px solid var(--ui-line); overflow-wrap: anywhere; }
   .page-approve #req > .req:last-child { border-bottom: 0; }
   .page-approve #req > .req.dim b { color: var(--ui-ink); font-weight: 500; }
-  .page-approve #req > .req:not(.dim) { padding: var(--ui-space-4) 0; font-size: var(--ui-text-sm); color: var(--ui-ink); }
-  .page-approve #req > .req:not(.dim) > b:first-child {
-    display: block; margin-bottom: var(--ui-space-2);
-    font-size: var(--ui-text-lg); letter-spacing: var(--ui-track-snug); line-height: var(--ui-leading-snug);
-  }
-  .page-approve #req > .req:not(.dim) > b:first-child + br { display: none; }
-  .page-approve #req code { font-size: var(--ui-text-xs); overflow-wrap: anywhere; }
+  .page-approve #req > .req:not(.dim) { padding: var(--ui-space-3) 0; color: var(--ui-ink); }
+  /* the title stays inline: describe() puts text and <br> after it, and every break must show */
+  .page-approve #req > .req:not(.dim) > b:first-child { font-size: var(--ui-text-sm); letter-spacing: var(--ui-track-snug); }
+  .page-approve #req code { overflow-wrap: anywhere; }
   .page-approve #req .req .req {
-    margin-top: var(--ui-space-2); padding: var(--ui-space-3); border-radius: var(--ui-radius-md);
-    background: var(--ui-sunken); font-size: var(--ui-text-xs);
+    margin-top: var(--ui-space-2); padding: var(--ui-space-2) var(--ui-space-3); border-radius: var(--ui-radius-md);
+    background: var(--ui-sunken);
   }
   .page-approve #req > #cost { color: var(--ui-ink); font-variant-numeric: tabular-nums; }
   .page-approve #send-warn {
-    margin-top: var(--ui-space-3); padding: var(--ui-space-3); border-radius: var(--ui-radius-md);
-    background: var(--ui-down-tint); color: var(--ui-ink); font-size: var(--ui-text-xs);
+    padding: var(--ui-space-2) var(--ui-space-3); border-radius: var(--ui-radius-md);
+    background: var(--ui-down-tint); color: var(--ui-ink);
   }
   .page-approve #send-warn b, .page-approve #send-warn .err { color: var(--ui-down); }
 
-  /* Reject and Approve side by side, equal; the bar fills while both stay disarmed after a new request */
+  /* Reject and Approve side by side, equal; the bar along the top edge fills while both stay disarmed after a new
+     request, without taking height from the request */
   .page-approve .actions {
-    flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2);
-    padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-4);
+    position: relative; flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2);
+    padding: var(--ui-space-3) var(--ui-space-4);
     border-top: 1px solid var(--ui-line); background: var(--ui-bg);
   }
   .page-approve .actions::before {
-    content: ""; grid-column: 1 / -1; height: 2px; border-radius: var(--ui-radius-pill);
+    content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 2px;
     background: var(--ui-line) linear-gradient(var(--ui-ink), var(--ui-ink)) no-repeat 0 0 / 100% 100%;
     opacity: 0; transition: opacity var(--ui-dur-2) var(--ui-ease);
   }

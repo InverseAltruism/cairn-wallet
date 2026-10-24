@@ -119,12 +119,12 @@
            come into view even while a form is open. -->
       <div id="pending" class="pending" hidden></div>
 
-      <nav class="tabs" aria-label="Wallet lists">
-        <button id="nav-home" class="tab active">Assets</button>
-        <button id="btn-activity-t" class="tab">Activity</button>
+      <nav class="tabs" role="tablist" aria-label="Wallet lists">
+        <button id="nav-home" class="tab active" role="tab" aria-selected="true" aria-controls="home">Assets</button>
+        <button id="btn-activity-t" class="tab" role="tab" aria-selected="false" aria-controls="activity">Activity</button>
       </nav>
 
-      <div id="home" class="tabpanel">
+      <div id="home" class="tabpanel" role="tabpanel" aria-labelledby="nav-home">
         <div id="assets" class="assets" aria-busy="true">
           <div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>
         </div>
@@ -134,13 +134,13 @@
       <div id="layer">
       <button class="panel-back scrim" aria-label="Close" tabindex="-1"></button>
 
-      <div id="activity" class="settings tabpanel" hidden>
+      <div id="activity" class="settings tabpanel" role="tabpanel" aria-labelledby="btn-activity-t" hidden>
         <div class="act-head"><span class="label">Recent transactions</span><a id="addr-explorer" class="mini text" target="_blank" rel="noopener noreferrer">View address ↗</a></div>
         <div id="history-list" class="history"></div>
       </div>
 
-      <div id="accts-panel" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Accounts</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="accts-panel" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="accts-panel-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="accts-panel-title">Accounts</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <div id="accts-list" class="history"></div>
         <button id="btn-add-acct"><svg class="i" aria-hidden="true"><use href="icons.svg#i-plus"/></svg>New account</button>
         <div class="or">or import an existing key</div>
@@ -149,8 +149,8 @@
         <button id="btn-imp-acct">Import account</button>
       </div>
 
-      <div id="receive-panel" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Receive</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="receive-panel" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="receive-panel-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="receive-panel-title">Receive</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <div class="receive-card" hidden><canvas id="receive-qr" width="0" height="0"></canvas></div>
         <div id="receive-name" class="primary-name" hidden></div>
         <code id="receive-addr" class="addr addr-big"></code>
@@ -158,8 +158,8 @@
         <p class="note receive-note">Only send CSD or CairnX assets on Compute Substrate to this address.</p>
       </div>
 
-      <div id="seal-form" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Seal a claim</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="seal-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="seal-form-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="seal-form-title">Seal a claim</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Claim: kept secret until you reveal<textarea id="seal-claim" rows="2" placeholder="e.g. ETH &gt; $4000 by Friday"></textarea></label>
         <label>Topic (domain) <input id="seal-domain" value="csd:sealed" /></label>
         <button id="btn-seal" class="primary">Seal on-chain</button>
@@ -167,8 +167,8 @@
         <div id="seal-list" class="history"></div>
       </div>
 
-      <div id="send-form" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Send CSD</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="send-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="send-form-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="send-form-title">Send CSD</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Recipient <input id="s-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount (CSD) <input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" autocomplete="off" /></label>
         <button id="btn-send" class="primary">Review send</button>
@@ -189,8 +189,8 @@
         </div>
       </div>
 
-      <div id="tsend-form" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Send token</span><b id="ts-ticker" class="bal"></b><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="tsend-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="tsend-form-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="tsend-form-title">Send token</span><b id="ts-ticker" class="bal"></b><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Recipient <input id="ts-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount <input id="ts-amt" type="text" inputmode="decimal" placeholder="0.0" autocomplete="off" /></label>
         <div id="ts-avail" class="note"></div>
@@ -212,8 +212,8 @@
         </div>
       </div>
 
-      <div id="consolidate-form" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Merge coins</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="consolidate-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="consolidate-form-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="consolidate-form-title">Merge coins</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <div class="confirm-box">
           <div class="crow"><span class="label">Coins to merge</span><b id="cs-merge" class="bal"></b></div>
           <div class="crow"><span class="label">Their value</span><b id="cs-total" class="bal"></b></div>
@@ -227,8 +227,8 @@
         </div>
       </div>
 
-      <div id="name-action-form" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Confirm name action</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="name-action-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="name-action-form-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="name-action-form-title">Confirm name action</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <div class="confirm-box">
           <div class="crow"><span class="label">Action</span><b id="nc-action"></b></div>
           <div class="crow"><span class="label">Name</span><span id="nc-name" class="dim"></span></div>
@@ -244,8 +244,8 @@
         </div>
       </div>
 
-      <div id="post-form" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Post to Cairn</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="post-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="post-form-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="post-form-title">Post to Cairn</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Category
           <select id="p-domain"></select>
         </label>
@@ -256,8 +256,8 @@
         <button id="btn-post" class="primary">Post on-chain</button>
       </div>
 
-      <div id="reveal-panel" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Reveal private key</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="reveal-panel" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="reveal-panel-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="reveal-panel-title">Reveal private key</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Re-enter your password to reveal your private key<input id="reveal-pw" type="password" placeholder="Password" autocomplete="current-password" /></label>
         <button id="btn-reveal-go" class="primary">Reveal</button>
         <div id="reveal-out" class="secret" hidden></div>
@@ -269,8 +269,8 @@
         <div class="callout caution">Anyone with this key controls this account. Never share or paste it into a website. This key is portable: it restores this one account in the <code>csd</code> CLI or any CSD wallet. (Your recovery phrase backs up <b>all</b> accounts at once.)</div>
       </div>
 
-      <div id="phrase-panel" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Recovery phrase</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="phrase-panel" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="phrase-panel-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="phrase-panel-title">Recovery phrase</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Re-enter your password to reveal your recovery phrase<input id="phrase-pw" type="password" placeholder="Password" autocomplete="current-password" /></label>
         <button id="btn-phrase-go" class="primary">Reveal</button>
         <div id="phrase-out" class="seed-grid blur" hidden></div>
@@ -282,8 +282,8 @@
         <div class="callout caution">Anyone with this phrase controls <b>all</b> your accounts. It restores them in Cairn Wallet or any CSD wallet on the same path. Never share it or type it into a website.</div>
       </div>
 
-      <div id="settings" class="settings sheet" hidden>
-        <div class="panel-head"><span class="panel-title">Settings</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+      <div id="settings" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="settings-title">Settings</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <div class="group">
           <h2 class="group-title">Appearance</h2>
           <div class="seg" role="radiogroup" aria-label="Theme">
