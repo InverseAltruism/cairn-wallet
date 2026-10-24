@@ -36,7 +36,8 @@ const keyB = "0x" + "b2".repeat(32);   // the attacker (foreign valid signature,
 const A = addrFromPriv(keyA).toLowerCase();
 const B = addrFromPriv(keyB).toLowerCase();
 const NM = "carol";
-const H = 33700, TIP = 33800;
+// At or above V17 (34,000): from V13 (31,100) to V17 the resolver admits a CSD-priced offer only when it is taker-bound.
+const H = 34100, TIP = 34200;
 
 // THE shared hostile transformation: re-sign a tx's scriptSig with a FOREIGN key over the same (secret-free)
 // sighash, keeping the record's prevout owner (A). ctxid is unchanged (scriptSig is stripped from the txid), so

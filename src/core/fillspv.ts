@@ -17,11 +17,12 @@ import {
   parseRecord,
   fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
-  provenOfferTerms, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer, countOtherHoldsAtGrant,
+  provenOfferTerms, provenOfferRefusal, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer, countOtherHoldsAtGrant,
   type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms, type OfferRecord, type HoldCandidate,
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 import { BodyMismatchError, bindBlock, bindSigner, recoverSigner, toChainEvent } from "./spvbind.js";
+import { OfferNotAdmittedError } from "./fillpreflight.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
 // (`provenOfferTerms` + `feeBpsAt`, verifyfill.ts) - this file used to carry its own hand copies of
@@ -309,6 +310,14 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
   if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
   const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as OfferRecord | null;
+  // The scan exempts the offer from its domain filter, so the admission check reads the domain from the offer's
+  // own bound tx (proveEventAt bound its block into blockMemo).
+  const offerApp = blockMemo.get(offerEv.height)?.rebuilt[offerEv.pos]?.app;
+  if (!offerApp || offerApp.type !== "Propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
+  const notAdmitted = offerRec && offerRec.t === "offer"
+    ? provenOfferRefusal(offerRec, { domain: offerApp.domain, height: offerEv.height, expiresEpoch: offerApp.expiresEpoch, seller: offerEv.proposer })
+    : null;
+  if (notAdmitted) throw new OfferNotAdmittedError(notAdmitted);
   // The payment recipients are bound by verifyFillSpv's sums option (the caller's planned per-address legs must
   // equal the need-map of the replayed proven offer), so this source carries no separate payto or seller field.
   // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer, via the ONE vendored
@@ -359,10 +368,12 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 // by its owner's key, and the owner is txid-committed, NOT scriptSig-derived); payto = the record's explicit
 // want.payto (merkle-committed) or, absent, the seller. Returns { payto, seller } (lowercased 0x-addrs) or null
 // on ANY unprovable / tampered / unreachable read, so the caller fails CLOSED-RETRYABLE (never a hard decline on
-// an honest fill). Reuses the same audited light-client primitives (liveSpvSource, bindBlock, prevoutScriptPubkey).
+// an honest fill). A proven offer the resolver does not admit (cairnx-core provenOfferRefusal) returns
+// { refused: reason }, a definite refusal. Reuses the same light-client primitives (liveSpvSource, bindBlock,
+// prevoutScriptPubkey).
 export async function provenOfferPayto(
   opts: LiveSpvOpts & { offerId: string; offerHeight: number; spvSource?: SpvSource },
-): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | null> {
+): Promise<{ payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string } | { refused: string } | null> {
   const offerId = String(opts.offerId).toLowerCase();
   const offerHeight = Math.floor(Number(opts.offerHeight));
   if (!/^0x[0-9a-f]{64}$/.test(offerId) || !Number.isFinite(offerHeight) || offerHeight < 0) return null;
@@ -381,6 +392,8 @@ export async function provenOfferPayto(
     const author = await bindSigner(tx, spv);
     if (!author.ok) return null;                                   // authorship not prevout-bound (tampered)
     const seller = author.signer;
+    const refused = provenOfferRefusal(rec as OfferRecord, { domain: app.domain, height: offerHeight, expiresEpoch: app.expiresEpoch, seller });
+    if (refused) return { refused };                               // a proven offer the resolver does not admit
     const payto = (rec.want?.payto && /^0x[0-9a-f]{40}$/.test(String(rec.want.payto).toLowerCase())) ? String(rec.want.payto).toLowerCase() : seller; // MUTATE_PROVEN_PAYTO_DERIVE
     // B4a: same single-sourced producer as the fclaim lane; offerHeight is the merkle-proven block
     // the offer was found in (bindBlock verified it), never a served height.

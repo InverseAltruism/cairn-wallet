@@ -60,6 +60,21 @@ async function offerExpiryRefusal(wallet: FillPreflightIo, proven: ProvenOfferPa
   return null;
 }
 
+/** Thrown by the fclaim-lane source (fillspv.ts) when the merkle-proven offer Propose is not an offer the resolver admits (cairnx-core
+ *  provenOfferRefusal: its domain, payee and creation rules), so a fill would pay and deliver nothing. */
+export class OfferNotAdmittedError extends Error {
+  constructor(readonly reason: string) {
+    super(`fill-SPV: the proven offer is not an offer the resolver admits (${reason})`);
+    this.name = "OfferNotAdmittedError";
+  }
+}
+
+// A merkle-proven offer the resolver does not admit as an offer (provenOfferRefusal: a foreign settlement domain, the
+// treasury as payee, a record rule at its creation): the resolver ignores a fill of it, so the payment would be lost.
+function offerNotAdmitted(reason: string): FillRefusal {
+  return refuse("FILL_UNSAFE", `refusing to sign: this offer's on-chain record is not an offer the marketplace accepts (${reason}), so the chain would take your payment and deliver nothing`);
+}
+
 // Abort bound for the fclaim-lane second-source reads (offer and reservation record). The fill does not wait on
 // them: an answer is used only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in
 // test/fill-offer-crosscheck and test/fill-reservation-verdict).
@@ -75,13 +90,15 @@ export type FillNotes = { secondSource?: "pending" | "failed" };
 // over-count, the proven terms and whether the tip was floor-clamped; the legacy lane's proven offer author.
 export type FillSpvIoExt = FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean };
 export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string };
+// The proven offer Propose is not an offer the resolver admits; `refused` is cairnx-core provenOfferRefusal's reason.
+export type ProvenOfferRefused = { refused: string };
 // The reads the fill preflight makes through the wallet: the CairnX read API, the node tip and its PoW-backed
 // floor, and the two merkle-proving SPV seams.
 export interface FillPreflightIo {
   tradeGet(path: string): Promise<Response>;
   tip(): Promise<number | null>;
   tipFloor(): Promise<number>;
-  makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | null>;
+  makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
   makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIoExt>;
 }
 
@@ -226,6 +243,7 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
   // transient read (never a hard decline on an honest fill), FILL_UNSAFE on a proven mismatch. Honest offers
   // default payto/seller to the author, so no honest fill declines.
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
+  if (proven && "refused" in proven) return offerNotAdmitted(proven.refused);
   if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
     return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   const expiry = await offerExpiryRefusal(wallet, proven, tip);
@@ -273,6 +291,7 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, su
   // record), so no honest token fill declines. No CSD payto/need-map bind here: a token fill routes no CSD
   // (outputs:[], N26), so the payment legs do not apply.
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
+  if (proven && "refused" in proven) return offerNotAdmitted(proven.refused);
   if (!proven)
     return { ok: false, error: "couldn't prove this token offer's on-chain terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   const expiry = await offerExpiryRefusal(wallet, proven, tip);
@@ -347,6 +366,7 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
     // chain) or the header source (a false header with valid PoW) is wrong; the refusal names both and blames
     // neither. Every other failure here is a read that could not complete (no tip, a missing chunk, a timeout)
     // and is retryable.
+    if (e instanceof OfferNotAdmittedError) return offerNotAdmitted(e.reason);
     if (e instanceof BodyMismatchError && e.bodySource)
       return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified${e.headerSource ? ` from ${e.headerSource}` : ""}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
     return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A fill now refuses an offer whose on-chain record is not one the marketplace accepts: an offer Propose in a
+  settlement domain other than `cairnx:v1`, an offer that pays the protocol treasury, or a record that breaks a rule
+  the resolver applies when it creates an offer (cairnx-core's `provenOfferRefusal`, run on the merkle-proven offer
+  in every fill lane). The resolver ignores a fill of such an offer, so the payment would be lost; before this, an
+  offer-id fill of one signed whenever the resolver served it as open. The refusal is `FILL_UNSAFE`: "refusing to
+  sign: this offer's on-chain record is not an offer the marketplace accepts (<reason>), so the chain would take
+  your payment and deliver nothing".
+
 - A reservation (fclaim) fill no longer counts the buyer's reservations mined after the one being filled against
   the three-reservation cap. The wallet counted every other live reservation of the buyer, so a fourth reservation
   made each earlier granted one unfillable for the rest of its hold (the fill refused with "you held the max active

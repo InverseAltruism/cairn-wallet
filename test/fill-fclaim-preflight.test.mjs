@@ -19,6 +19,7 @@ import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { liveFillSpvSource, provenOfferPayto, feeBpsAt } from "../src/core/fillspv.js";
+import { OfferNotAdmittedError } from "../src/core/fillpreflight.js";
 import {
   deploy, mint, offer, fclaim, offerCancelAll, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
   SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
@@ -854,6 +855,48 @@ check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves th
   try { await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: tampering, hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } }); }
   catch (e) { threw = true; msg = String(e?.message || e); }
   check(`BP4: a tampered block in the POOLED window fails the whole preflight CLOSED (throws: ${msg.slice(0, 48)})`, threw === true && /merkle root|tampered/i.test(msg));
+}
+
+// The proven-offer admission (register row 107): a fill of a merkle-proven offer the resolver does not admit (a
+// foreign settlement domain, the treasury as payee) refuses before signing, on the offer-id lane through the
+// production provenOfferPayto and on the fclaim lane through the live source. RED-FIRST: without the check the two
+// offer-id forgeries signed and submitted, and the fclaim-lane source returned an io.
+{
+  const SD = addrFromPriv(sellerKeyD).toLowerCase();
+  const cases = [
+    ["a cairnx-domain offer paying the seller (honest)", {}, SD, null],
+    ["a foreign-domain offer", { domain: "cairn:v1" }, SD, /not a cairnx:v1 Propose/],
+    ["an offer paying the treasury", {}, TREASURY_ADDR.toLowerCase(), /payto cannot be the protocol treasury/],
+  ];
+  for (const [label, txOpts, payto, refusal] of cases) {
+    const { w, addr } = await freshWallet("pw-admission");
+    const taker = String(addr).toLowerCase();
+    const want = { value: String(V), payto };
+    const tx = proposeTx({ ...pick(offer({ give: { ticker: "AAA", amount: "10" }, want, taker })), priv: sellerKeyD, expiresEpoch: 9e9, ...txOpts });
+    const oid = ctxid(rpcTxToTx(tx)).toLowerCase();
+    w.nameSpvForTest = fillSource(worldOf([{ height: H0 + 2, tx }]), TIP);
+    const served = { id: oid, seller: SD, give: { ticker: "AAA", amount: "10" }, want, taker, status: "open", height: H0 + 2, feeBps: 150 };
+    const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }) });
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    const r = await w.fillOffer({ proposalId: oid, outputs: outs });
+    if (refusal === null) check(`admission, offer-id lane: ${label} signs and submits (${r?.ok ? "ok" : r?.error})`, r?.ok === true && s.submits.length === 1);
+    else check(`admission, offer-id lane: ${label} is REFUSED before signing (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && refusal.test(r?.error ?? "") && s.submits.length === 0);
+  }
+  globalThis.fetch = origFetch;
+}
+{
+  const foreignOffer = proposeTx({ ...pick(offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(V), payto: addrFromPriv(sellerKeyD) } })), priv: sellerKeyD, expiresEpoch: 9e9, domain: "cairn:v1" });
+  const foid = ctxid(rpcTxToTx(foreignOffer)).toLowerCase();
+  const fill = fcTxFor(foid);
+  let err = null;
+  try { await runLive(worldOf([{ height: H0 + 2, tx: foreignOffer }, { height: Hfc, tx: fill }]), ctxid(rpcTxToTx(fill)), foid); } catch (e) { err = e; }
+  check(`admission, fclaim lane: the live source refuses a foreign-domain offer (${err?.message})`, err instanceof OfferNotAdmittedError && /not a cairnx:v1 Propose/.test(err.reason));
+  const { w } = await freshWallet("pw-admission-fclaim");
+  w.fillSpvIoForTest = () => { throw err; };
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => ({ ...servedOffer(fcH, Hfc), id: foid }) }) });
+  const r = await w.fillOffer({ proposalId: fcH, outputs });
+  check(`admission, fclaim lane: the preflight refuses it as FILL_UNSAFE before signing (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /not an offer the marketplace accepts/.test(r?.error ?? "") && s.submits.length === 0);
+  globalThis.fetch = origFetch;
 }
 
 globalThis.fetch = origFetch;

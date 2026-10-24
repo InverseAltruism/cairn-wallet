@@ -34,6 +34,10 @@ Every lane returns a refusal or null and signs nothing. An unprovable or transie
   fclaim the resolver denied still counts (an over-count, so a refusal). A grant below `LEGACY_HOLD_SUNSET_HEIGHT`
   (60,044), where a legacy claim from before V28 could still count, and a count that cannot be computed both refuse
   as `VERIFY_UNAVAILABLE`.
+- The proven offer must be one the resolver admits: cairnx-core `provenOfferRefusal` over the offer's own bound tx
+  (the cairnx settlement domain, a payee that is not the treasury, and the record rules resolve() applies at the
+  offer's creation). The scan exempts the offer from its domain filter, so this is the check that reads its domain.
+  A refusal is `FILL_UNSAFE` (test/fill-fclaim-preflight.test.mjs, "admission").
 - A block body that contradicts its verified header refuses as `RPC_BLOCK_MISMATCH`, naming the block, the RPC and
   the header source without blaming either.
 
@@ -58,8 +62,10 @@ because every value field is merkle-bound and such a comparison cannot see withh
 
 An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one below the sunset height.
 
-- `provenOfferPayto` merkle-proves the offer record; the served `want.payto` and seller must equal the proven author
-  fields, and the proven offer must carry `want.value` (a token offer served as CSD-priced refuses).
+- `provenOfferPayto` merkle-proves the offer record and runs the same admission check as the fclaim lane
+  (`provenOfferRefusal`; a refusal is `FILL_UNSAFE` before any other bind); the served `want.payto` and seller must
+  equal the proven author fields, and the proven offer must carry `want.value` (a token offer served as CSD-priced
+  refuses).
 - The fee, rebate, value, taker, bid and `min` fields are bound with the same `bindOfferTerms` call as the fclaim lane.
 - Every leg of the vendored `requiredFillOutputs` need-map must be paid by the outputs, compared in `bigint`.
 - Offer expiry (both offer-id lanes), strand avoidance: the node refuses an attest after its proposal's expiry
@@ -85,6 +91,7 @@ The fill is an Attest with no CSD outputs (`attest` with `CONF_TOKEN_FILL` rerou
 `outputs: []`).
 
 - Any CSD output refuses (test/fill-token-content.test.mjs).
+- The proven offer passes the same admission check as the other lanes (`provenOfferRefusal`).
 - The offer record is merkle-proven and its give legs and want type are bound through `bindOfferTerms`; the token
   `want.ticker` and `want.amount` the buyer pays are bound separately, since `bindOfferTerms` carries no token-want
   leg. This mirrors the site's swapguard `verifyOfferContent`.
