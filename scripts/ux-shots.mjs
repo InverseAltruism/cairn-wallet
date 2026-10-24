@@ -20,20 +20,21 @@
 // chrome-extension://<id>/popup.html and approve.html.
 //
 // Env: SHOTS_DIR (default /tmp/wallet-shots) · STRICT_CONFIRM=1 (assert the send-confirm button
-// is fully inside the 340x600 popup viewport — enable once the overlay layout ships) · PORT.
+// is fully inside the 360x600 popup viewport) · PORT.
 
 import http from "node:http";
 import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join, extname, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadChromium } from "./playwright-core.mjs";
+import { idsFromSource } from "./popup-ids.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = join(ROOT, "dist");
 const SHOTS = process.env.SHOTS_DIR || "/tmp/wallet-shots";
 const MODE = process.env.MODE || "standalone";
 const STRICT_CONFIRM = process.env.STRICT_CONFIRM === "1";
-const VIEWPORT = { width: Number(process.env.SHOT_W || 340), height: Number(process.env.SHOT_H || 600) }; // Chrome caps action popups around 600px tall; 360x640 for store raw captures
+const VIEWPORT = { width: Number(process.env.SHOT_W || 360), height: Number(process.env.SHOT_H || 600) }; // the popup is 360x600 (Chrome caps an action popup at 800x600)
 
 function chromiumExe() {
   const base = process.env.HOME + "/.cache/ms-playwright";
@@ -44,26 +45,6 @@ function chromiumExe() {
     }
   }
   return undefined; // let playwright resolve its own
-}
-
-// ── ID inventory, derived from source so it tracks every phase automatically ──
-// IDs that exist only after runtime innerHTML rendering (never in the static HTML):
-const DYNAMIC_IDS = new Set([
-  "assets-retry", "rpc-add-input", "rpc-add-btn", "exp-add-input", "exp-add-btn", // popup menus/assets
-  "cost", "send-warn", "token-sim", "fill-view", "reveal-preview", // approve window, injected by clearsign describe()
-  "nfin-note", // approve window, the finalize-window verdict line approve.ts inserts while a finalize request is open
-]);
-function idsFromSource(file) {
-  const src = readFileSync(join(ROOT, "src", "popup", file), "utf8");
-  const ids = new Set();
-  for (const m of src.matchAll(/(?:\$\(|getElementById\()\s*"([\w-]+)"\s*\)/g)) ids.add(m[1]); // `)` required: skips concatenations like $("view-" + v)
-  // view switcher builds "view-" + name dynamically
-  if (/show\(view: string\)|"view-" \+/.test(src)) for (const v of ["setup", "backup", "locked", "main"]) ids.add("view-" + v);
-  // the PANELS accordion array
-  const pm = src.match(/const PANELS = \[([^\]]+)\]/);
-  if (pm) for (const s of pm[1].matchAll(/"([\w-]+)"/g)) ids.add(s[1]);
-  for (const d of DYNAMIC_IDS) ids.delete(d);
-  return [...ids].sort();
 }
 
 // ── tiny static server for dist/ ──
@@ -100,6 +81,23 @@ function watchPage(page, label, errs) {
     if (/Failed to load resource|net::ERR|status of \d{3}|blocked by CORS policy/.test(t)) return;
     errs.push(`[${label}] console.error: ${t}`);
   });
+}
+
+// Panels open as modal sheets over a scrim, and some triggers sit in the More menu (a popover): reach a trigger
+// the way a person does, by closing the open sheet or tab first and opening the menu that holds it.
+async function toHome(page) {
+  const close = await page.$("#layer > .sheet:not([hidden]) .panel-head .panel-back");
+  if (close) {
+    await close.click();
+    await page.waitForFunction(() => !document.querySelector("#layer > .sheet:not([hidden])"), null, { timeout: 5000 });
+  }
+  if (await page.evaluate(() => { const a = document.getElementById("activity"); return !!a && !a.hidden; })) await page.click("#nav-home");
+}
+async function trigger(page, id) {
+  await toHome(page);
+  const pop = await page.evaluate((i) => { const p = document.getElementById(i)?.closest("[popover]"); return p && !p.matches(":popover-open") ? p.id : null; }, id);
+  if (pop) await page.click(`[popovertarget="${pop}"]:not([popovertargetaction])`);
+  await page.click("#" + id);
 }
 
 async function shoot(page, name) {
@@ -150,7 +148,7 @@ async function standalone() {
     await shoot(page, "03-main");
 
     // 4. send review with first-time warning
-    await page.click("#btn-send-t");
+    await trigger(page, "btn-send-t");
     await page.waitForSelector("#send-form:not([hidden])", { timeout: 5000 });
     await page.fill("#s-to", "0x1111111111111111111111111111111111111111");
     await page.fill("#s-amt", "0.5");
@@ -160,8 +158,8 @@ async function standalone() {
     warnVisible ? pass("first-time-send warning visible in review") : fail("first-time-send warning NOT visible in review");
     const box = await page.locator("#btn-send-confirm").boundingBox();
     const inView = !!box && box.y >= 0 && box.y + box.height <= VIEWPORT.height;
-    if (STRICT_CONFIRM) inView ? pass("confirm button inside 340x600 viewport") : fail(`confirm button outside viewport (y=${box?.y}, h=${box?.height})`);
-    else note(`confirm button ${inView ? "inside" : "OUTSIDE"} 340x600 viewport (metric only; STRICT_CONFIRM=1 to enforce)`);
+    if (STRICT_CONFIRM) inView ? pass(`confirm button inside ${VIEWPORT.width}x${VIEWPORT.height} viewport`) : fail(`confirm button outside viewport (y=${box?.y}, h=${box?.height})`);
+    else note(`confirm button ${inView ? "inside" : "OUTSIDE"} ${VIEWPORT.width}x${VIEWPORT.height} viewport (metric only; STRICT_CONFIRM=1 to enforce)`);
     await shoot(page, "04-send-review");
     await page.click("#btn-send-back");
 
@@ -173,18 +171,18 @@ async function standalone() {
       await page.waitForSelector("#send-confirm:not([hidden])", { timeout: 20000 });
       await pb.click();
       await page.waitForFunction(() => document.getElementById("send-form").hidden, null, { timeout: 5000 });
-      await page.click("#btn-send-t");
+      await trigger(page, "btn-send-t");
       await page.waitForSelector("#send-form:not([hidden])", { timeout: 5000 });
       const editable = await page.evaluate(() => !document.getElementById("s-to").disabled && !document.getElementById("s-amt").disabled);
       editable ? pass("armed review exited via back leaves inputs editable") : fail("send inputs still DISABLED after panel-back exit");
-      await page.click("#nav-home");
+      await toHome(page);
     }
 
     // 5-7. activity, settings, receive (if present), lock
-    await page.click("#btn-activity-t");
+    await trigger(page, "btn-activity-t");
     await page.waitForSelector("#activity:not([hidden])", { timeout: 5000 });
     await shoot(page, "05-activity");
-    await page.click("#btn-settings");
+    await trigger(page, "btn-settings");
     await page.waitForSelector("#settings:not([hidden])", { timeout: 5000 });
     await shoot(page, "06-settings");
 
@@ -196,11 +194,12 @@ async function standalone() {
     for (const [btn, panel] of WALK) {
       const present = await page.evaluate((b) => { const el = document.getElementById(b); return !!el && !el.hidden; }, btn);
       if (!present) continue;
-      await page.click("#" + btn);
+      await trigger(page, btn);
       await page.waitForSelector(`#${panel}:not([hidden])`, { timeout: 5000 });
+      // a sheet closes with its own button; the activity tab has none, the Assets tab is the way back
       const back = await page.$(`#${panel} .panel-back`);
-      if (!back) { note(`panel ${panel}: no back button (pre-overlay build)`); await page.click("#" + btn); continue; }
-      await back.click();
+      if (back) await back.click();
+      else await page.click("#nav-home");
       await page.waitForFunction((p) => document.getElementById(p).hidden, panel, { timeout: 5000 });
       const homeVisible = await page.evaluate(() => { const h = document.getElementById("home"); return !!h && h.offsetParent !== null; });
       if (!homeVisible) { walkOk = false; fail(`panel ${panel}: home not restored after back`); }
@@ -209,21 +208,20 @@ async function standalone() {
     if (walkOk && walkBacks) pass(`panel walk: back restores home (${walkBacks} panels)`);
 
     // secret-wipe on panel SWITCH (not just lock): reveal key, switch away, must be gone
-    await page.click("#btn-export");
+    await trigger(page, "btn-export");
     await page.waitForSelector("#reveal-panel:not([hidden])", { timeout: 5000 });
     await page.fill("#reveal-pw", "harness-passphrase-1234");
     await page.click("#btn-reveal-go");
     await page.waitForFunction(() => { const o = document.getElementById("reveal-out"); return !!o && !o.hidden && (o.textContent || "").length > 60; }, null, { timeout: 20000 });
-    await page.click("#btn-settings");
+    // the scrim covers the Settings button for a pointer; a keyboard user still reaches it, so the switch path is real
+    await page.evaluate(() => document.getElementById("btn-settings").click());
     await page.waitForSelector("#settings:not([hidden])", { timeout: 5000 });
     const wipedOnSwitch = await page.evaluate(() => { const o = document.getElementById("reveal-out"); return o.textContent === "" && o.hidden; });
     wipedOnSwitch ? pass("revealed key wiped on panel switch") : fail("revealed key NOT wiped on panel switch");
-    // return to home (nav-home when the footnav exists, else toggle settings closed)
-    if (await page.evaluate(() => !!document.getElementById("nav-home"))) await page.click("#nav-home");
-    else await page.click("#btn-settings");
+    await toHome(page);
     await page.waitForFunction(() => document.getElementById("settings").hidden, null, { timeout: 5000 });
     if (await page.evaluate(() => !!document.getElementById("btn-receive") && !document.getElementById("btn-receive").hidden)) {
-      await page.click("#btn-receive");
+      await trigger(page, "btn-receive");
       await page.waitForSelector("#receive-panel:not([hidden])", { timeout: 5000 });
       await page.waitForTimeout(400);
       const qrState = await page.evaluate(() => {
@@ -240,7 +238,7 @@ async function standalone() {
       addrShown ? pass("receive shows full address") : fail("receive address missing/truncated");
       await shoot(page, "08-receive");
     } else note("no btn-receive yet (pre-W4 build) — receive shot skipped");
-    await page.click("#btn-lock");
+    await trigger(page, "btn-lock");
     await page.waitForSelector("#view-locked:not([hidden])", { timeout: 5000 });
     await shoot(page, "07-locked");
     // secret-wipe invariant probe: reveal panel state must be reset after lock
