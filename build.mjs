@@ -109,6 +109,7 @@ writeFileSync("dist/manifest.json", JSON.stringify({ ...JSON.parse(readFileSync(
 cpSync("src/popup/popup.html", "dist/popup.html");
 cpSync("src/popup/approve.html", "dist/approve.html");
 cpSync("src/popup/popup.css", "dist/popup.css");
+cpSync("src/popup/icons.svg", "dist/icons.svg");
 // cairn-ui (tokens, fonts, theme scripts): shipped only when every vendored byte matches its PROVENANCE.json.
 {
   const problems = verifyUiVendor();
@@ -120,9 +121,9 @@ cpSync("src/popup/popup.css", "dist/popup.css");
   console.log(`✓ cairn-ui: ${UI_SHIP.length} files match PROVENANCE.json, copied to dist/ui/`);
 }
 import { existsSync, mkdirSync as _mkdirSync } from "node:fs";
-// Ship ONLY the icons the extension actually references (the sized action icons + the popup
-// logo) — not the source master `icon.png` (62KB, unreferenced) that gen-icons.mjs derives from.
-const SHIP_ICONS = ["icon-16.png", "icon-32.png", "icon-48.png", "icon-128.png", "logo-white.png"];
+// Ship ONLY the icons the extension actually references (the sized action icons), not the source
+// master `icon.png` (62KB, unreferenced) that gen-icons.mjs derives from.
+const SHIP_ICONS = ["icon-16.png", "icon-32.png", "icon-48.png", "icon-128.png"];
 if (existsSync("public/icons")) {
   _mkdirSync("dist/icons", { recursive: true });
   for (const f of SHIP_ICONS) if (existsSync(`public/icons/${f}`)) cpSync(`public/icons/${f}`, `dist/icons/${f}`);

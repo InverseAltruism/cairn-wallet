@@ -7,6 +7,9 @@ import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals,
 import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
+import { tokenEase, tokenMs } from "./motion.js";
+import { mountThemeControl } from "./themectl.js";
+import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -105,13 +108,14 @@ async function copyText(btnId: string, text: string) {
     msg("could not copy to the clipboard. Select the text and copy it by hand.", "err");
   }
 }
-// Send-success moment: one-shot glow sweep across the balance hero (display-only; reduced-motion aware).
+// Send-success moment: the balance settles once (popup.css `.bal-hero.sent`); display only, reduced-motion aware.
 function celebrateSend() {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const hero = document.querySelector(".bal-hero") as HTMLElement | null;
-  if (!hero) return;
+  const dur = tokenMs("--ui-dur-4");
+  if (!hero || dur === null) return;
   hero.classList.remove("sent"); void hero.offsetWidth; hero.classList.add("sent");
-  setTimeout(() => hero.classList.remove("sent"), 900);
+  setTimeout(() => hero.classList.remove("sent"), dur * 2);
 }
 
 let currentRpc = "";
@@ -181,12 +185,12 @@ const short = (a: string) => a && a.length > 14 ? a.slice(0, 8) + "…" + a.slic
 function renderAcctSelect(accounts: { addr: string; label: string }[], active: number) {
   const a = accounts[active];
   $("acct-select").innerHTML = a
-    ? `<span class="acct-dot" style="background:${avatarGradient(identitySeed(null, a.addr))}"></span><span class="acct-cur">${escapeHtml(a.label)}</span><span class="acct-addr">${escapeHtml(short(a.addr))}</span><span class="acct-caret">▾</span>`
+    ? `<span class="acct-cur">${escapeHtml(a.label)}</span><span class="acct-addr">${escapeHtml(short(a.addr))}</span><svg class="i acct-caret" aria-hidden="true"><use href="icons.svg#i-chevron-down"/></svg>`
     : "";
   const menu = $("acct-menu");
   menu.innerHTML = accounts.map((x, i) => `
     <div class="rpc-row${i === active ? " active" : ""}">
-      <button class="rpc-pick" data-acct="${i}"><span class="acct-pick-line"><span class="acct-dot" style="background:${avatarGradient(identitySeed(null, x.addr))}"></span><span class="rpc-label">${i === active ? "● " : ""}${escapeHtml(x.label)}</span></span><span class="rpc-url">${escapeHtml(short(x.addr))}</span></button>
+      <button class="rpc-pick" data-acct="${i}"${i === active ? ' aria-current="true"' : ""}><span class="acct-pick-line"><span class="acct-dot" style="background:${avatarGradient(identitySeed(null, x.addr))}"></span><span class="rpc-label">${escapeHtml(x.label)}</span></span><span class="rpc-url">${escapeHtml(short(x.addr))}</span></button>
     </div>`).join("");
   menu.querySelectorAll<HTMLElement>("[data-acct]").forEach((b) => (b.onclick = () => switchAcct(Number(b.dataset.acct))));
 }
@@ -305,7 +309,8 @@ async function renderHistory() {
 let curAddr = "";
 let lastBal: number | null = null;
 let balSeq = 0;
-const fmtBal = (base: number) => fmtBalance(base) + " CSD";
+// The amount in Geist with the unit muted; fmtBalance output is digits, separators and a sign only.
+const balHtml = (base: number) => `${escapeHtml(fmtBalance(base))}<span class="bal-unit">CSD</span>`;
 // Identity avatar: a primary .csd name gets its CNS-parity gradient + monogram; a name-less
 // account gets the phosphor cairn mark (a bare gradient + hex nibble read as a placeholder).
 const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
@@ -358,19 +363,20 @@ async function refreshBalance() {
     const next = Number(b.confirmed);
     const from = lastBal;
     lastBal = next;
-    if (from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      el.textContent = fmtBal(next);
+    const dur = from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches ? null : tokenMs("--ui-dur-4");
+    const ease = dur === null ? null : tokenEase();
+    if (from === null || dur === null || ease === null) {
+      el.innerHTML = balHtml(next);
     } else {
-      const t0 = performance.now(), dur = 450;
+      const t0 = performance.now();
       const step = (t: number) => {
         if (seq !== balSeq) return;            // superseded mid-tween: let the newer write win
-        const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); // ease-out cubic
-        el.textContent = p < 1 ? fmtBal(Math.round(from + (next - from) * e)) : fmtBal(next);
+        const p = Math.min(1, (t - t0) / dur);
+        el.innerHTML = p < 1 ? balHtml(Math.round(from + (next - from) * ease(p))) : balHtml(next);
         if (p < 1) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
     }
-    el.classList.remove("flash"); void (el as HTMLElement).offsetWidth; el.classList.add("flash"); // retrigger green flash
   }
   catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "—"; lastBal = null; } }
 }
@@ -907,7 +913,9 @@ async function renderReceive() {
   try {
     const st = await call("status");
     if (($("receive-panel") as HTMLElement).hidden) return;   // closed while we fetched
-    $("receive-addr").textContent = st.addr || "";
+    // Groups of four for comparing by eye; the spans hold no spaces, so textContent (what Copy copies) is the address.
+    const addr = String(st.addr || "");
+    $("receive-addr").innerHTML = (addr.match(/^0x.{0,4}|.{1,4}/g) || []).map((g) => `<span>${escapeHtml(g)}</span>`).join("");
     const pn = $("primary-name"), rn = $("receive-name") as HTMLElement;
     if (!(pn as HTMLElement).hidden && pn.textContent) { rn.textContent = pn.textContent; rn.hidden = false; }
     else { rn.textContent = ""; rn.hidden = true; }
@@ -1111,8 +1119,8 @@ function buildMenu(menu: HTMLElement, cfg: {
 }) {
   const row = (e: MenuEntry) => `
     <div class="rpc-row${cfg.isActive(e.value) ? " active" : ""}">
-      <button class="rpc-pick" ${cfg.pickAttr}="${escapeHtml(e.value)}">${cfg.isActive(e.value) ? "● " : ""}<span class="rpc-label">${escapeHtml(e.label)}</span><span class="rpc-url">${escapeHtml(e.hint)}</span></button>
-      ${e.removable ? `<button class="rpc-del mini" ${cfg.delAttr}="${escapeHtml(e.value)}" title="remove">×</button>` : ""}
+      <button class="rpc-pick" ${cfg.pickAttr}="${escapeHtml(e.value)}"${cfg.isActive(e.value) ? ' aria-current="true"' : ""}><span class="rpc-label">${escapeHtml(e.label)}</span><span class="rpc-url">${escapeHtml(e.hint)}</span></button>
+      ${e.removable ? `<button class="rpc-del mini" ${cfg.delAttr}="${escapeHtml(e.value)}" title="remove" aria-label="remove"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button>` : ""}
     </div>`;
   menu.innerHTML = cfg.entries.map(row).join("")
     + `<div class="rpc-add"><input id="${cfg.addInputId}" placeholder="${cfg.placeholder}" /><button id="${cfg.addBtnId}" class="mini">add</button></div>`;
@@ -1359,5 +1367,6 @@ $("btn-post").addEventListener("click", async () => {
   } catch (e: any) { const o = thrownCopy(e, "post"); msg(o.text, o.cls); }
 });
 
+mountThemeControl(document, (globalThis as { CairnTheme?: CairnThemeApi }).CairnTheme);
 render();
 if (EXT) setInterval(renderPending, 1500);
