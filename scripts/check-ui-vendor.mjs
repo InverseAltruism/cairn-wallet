@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Byte gate for the vendored cairn-ui copy in src/vendor/cairn-ui/: every file must have the sha256 that
-// PROVENANCE.json records for the pinned cairn-ui commit, and the directory must hold exactly those files. The
-// wallet's CSS decides what an approval shows, so a hand edit to a vendored token or script must fail loudly.
+// Byte gate for the vendored cairn-ui copy in src/vendor/cairn-ui/: every file must have the sha256 recorded in
+// PROVENANCE.json, and the directory must hold exactly the recorded files. PROVENANCE.json also names the upstream
+// cairn-ui commit; this script does not compare against that commit (no network, no sibling checkout), so a file
+// changed together with a rewritten PROVENANCE.json passes here and is caught only in review of that diff.
 // build.mjs runs the same check before it copies the files into dist/ui/.
 //
 // Usage:

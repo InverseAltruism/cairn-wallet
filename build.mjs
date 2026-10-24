@@ -110,6 +110,7 @@ cpSync("src/popup/popup.html", "dist/popup.html");
 cpSync("src/popup/approve.html", "dist/approve.html");
 cpSync("src/popup/popup.css", "dist/popup.css");
 cpSync("src/popup/icons.svg", "dist/icons.svg");
+cpSync("src/popup/icons.LICENSE.txt", "dist/icons.LICENSE.txt");
 // cairn-ui (tokens, fonts, theme scripts): shipped only when every vendored byte matches its PROVENANCE.json.
 {
   const problems = verifyUiVendor();

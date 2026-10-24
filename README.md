@@ -138,7 +138,7 @@ service. Details are in [SECURITY.md](SECURITY.md).
 
 ## Configuration
 
-* **Node RPC.** Switch from the RPC menu at the top right. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`) or a node on your own computer: `http://127.0.0.1:8789`, or another `http://127.0.0.1` or `localhost` port added in the menu. A saved remote RPC from an older version is moved to the Cairn proxy, and the wallet says so once.
+* **Node RPC.** Switch in Settings › Network. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`) or a node on your own computer: `http://127.0.0.1:8789`, or another `http://127.0.0.1` or `localhost` port added in the menu. A saved remote RPC from an older version is moved to the Cairn proxy, and the wallet says so once.
 * Remote RPC servers are not supported; they may come in a later release.
 * **Cairn API.** Set in Settings. Defaults to `https://cairn-substrate.com`.
 * **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet shows no assets (with a retry) and the CSD balance and sends to a `0x` address are unaffected. Name lookups fall back to the second name source; offer fills need it.

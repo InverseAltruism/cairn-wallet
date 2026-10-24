@@ -2,7 +2,7 @@
 // that sets the body's font-family and font-size: 75% as unlayered author styles; those outrank every cascade layer
 // in popup.css, so the popup rendered in the platform font at 12 px while a plain http origin showed Geist at 14 px.
 // This loads the shipped popup page, its stylesheet and the vendored cairn-ui files as an unpacked MV3 extension with
-// the manifest's own CSP, and checks the body font and that Geist and Geist Mono load.
+// the manifest's own CSP, and checks the body font and that the page itself loads Geist and Geist Mono faces.
 // Needs playwright-core (PLAYWRIGHT_CORE, see scripts/playwright-core.mjs) and a Chromium (PLAYWRIGHT_CHROMIUM, or
 // playwright's own). Without playwright-core or a Chromium binary it prints SKIP; it runs where both are installed.
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -51,15 +51,21 @@ try {
   t.check(`the test extension loaded (id ${id})`, !!id);
   if (id) {
     await page.goto(`chrome-extension://${id}/popup.html`);
+    // Show text in both faces and let the page load what it uses; document.fonts.check() alone is true when no face
+    // matches at all, so the test reads the loaded faces themselves.
     const r = await page.evaluate(async () => {
-      document.getElementById("view-locked").hidden = false;
-      await Promise.all([document.fonts.load('14px "Geist"'), document.fonts.load('14px "Geist Mono"')]);
+      document.getElementById("view-main").hidden = false;
+      document.getElementById("addr").textContent = "0x7a3f9c217a3f9c217a3f9c217a3f9c217a3f9c21";
+      document.getElementById("balance").textContent = "1,284.735";
+      await new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok)));
+      await document.fonts.ready;
       const s = getComputedStyle(document.body);
-      return { family: s.fontFamily.split(",")[0].replace(/"/g, "").trim(), size: s.fontSize, geist: document.fonts.check('14px "Geist"'), mono: document.fonts.check('14px "Geist Mono"') };
+      const loaded = (family) => [...document.fonts].some((f) => f.family.replace(/"/g, "") === family && f.status === "loaded");
+      return { family: s.fontFamily.split(",")[0].replace(/"/g, "").trim(), size: s.fontSize, geist: loaded("Geist"), mono: loaded("Geist Mono") };
     });
     t.check(`body text is Geist, not the platform font Chrome sets for extension pages (got ${r.family})`, r.family === "Geist");
     t.check(`body text is 14 px (--ui-text-sm), not Chrome's 75% (got ${r.size})`, r.size === "14px");
-    t.check(`Geist and Geist Mono load under the manifest CSP (font-src 'self'): ${r.geist}, ${r.mono}`, r.geist && r.mono);
+    t.check(`the page loads a Geist face and a Geist Mono face under the manifest CSP (font-src 'self'): ${r.geist}, ${r.mono}`, r.geist && r.mono);
     t.check(`no CSP refusal on the page (${csp.join(" | ") || "none"})`, csp.length === 0);
   }
 } finally {
