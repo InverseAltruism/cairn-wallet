@@ -34,6 +34,8 @@ export function installFakeDom({ autoCreate = false } = {}) {
     insertAdjacentHTML(_pos, html) { this._html += String(html); this._adopt(html); }
     appendChild(c) { this._html += c?.textContent ?? ""; return c; }
     addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
+    setAttribute(name, value) { (this._attrs ||= {})[name] = String(value); }
+    getAttribute(name) { return this._attrs?.[name] ?? null; }
     focus() {}
     querySelector() { return null; }
     querySelectorAll(sel) {

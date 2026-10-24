@@ -1,0 +1,15 @@
+{
+  "source": {
+    "release": "https://github.com/vercel/geist-font/releases/download/v1.7.2/geist-font-v1.7.2.zip",
+    "zipSha256": "7fc800d2ac6b92844895196e5041aca55d814c15db70c44f79b3b83ab82b04e2",
+    "licence": "SIL Open Font License 1.1, Copyright 2024 The Geist Project Authors (fonts/OFL.txt)"
+  },
+  "tool": { "fonttools": "4.66.1", "brotli": "1.2.0" },
+  "unicodes": "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2190-2199,U+2212,U+2215,U+221E,U+2248,U+2260,U+2264-2265,U+25A0-25CF,U+FEFF,U+FFFD",
+  "layoutFeatures": "all",
+  "files": {
+    "Geist-Latin.woff2": { "from": "geist-font/Geist/webfonts/Geist[wght].woff2", "fromSha256": "a369fcf5628ea2aa4e1b9e2ec6a5b3624e365bda588e1f0f2f12b564f728fbb8", "sha256": "dc8bfd082e4b0557f8db3f026d7064925ef83326dcd87f4ec49f5a6408c22e6f", "bytes": 35204 },
+    "GeistMono-Latin.woff2": { "from": "geist-font/GeistMono/webfonts/GeistMono[wght].woff2", "fromSha256": "fba8f577f38a2bbcbe818efa6348dd58f36303a10b8737c42fefad275be563ab", "sha256": "b4a142a2daf17ad244023a2758462230627f9d5334a0e9d9d7bc63783e5553e5", "bytes": 36520 },
+    "OFL.txt": { "from": "geist-font/OFL.txt", "sha256": "c683bfbcc7e087f5d37a54ef628f10387c451a83ddc459b151403a164ac46c90" }
+  }
+}

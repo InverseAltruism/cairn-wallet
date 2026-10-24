@@ -1,0 +1,60 @@
+/* The theme switch (theme.js). While it runs no other transition plays (colours would fade inside the new view), except
+   the toggle's own icon. The root snapshots lose their default crossfade only during a theme switch, so a page's own
+   view transitions (a crossfade between pages) keep theirs. The reveal pins the new view's start here, before the
+   script animates it (Firefox shows the new theme for a frame otherwise). */
+.ui-theme-switching :not(.ui-theme-icon, .ui-theme-icon *),
+.ui-theme-switching :not(.ui-theme-icon, .ui-theme-icon *)::before,
+.ui-theme-switching :not(.ui-theme-icon, .ui-theme-icon *)::after {
+  transition: none !important;
+}
+.ui-theme-reveal::view-transition-old(root),
+.ui-theme-reveal::view-transition-new(root),
+.ui-theme-fade::view-transition-old(root),
+.ui-theme-fade::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+.ui-theme-reveal::view-transition-new(root) {
+  clip-path: circle(0 at var(--ui-reveal-x, 50%) var(--ui-reveal-y, 50%));
+}
+.ui-theme-fade::view-transition-new(root) {
+  opacity: 0;
+}
+
+/* The toggle's icon (CairnTheme.iconSvg): a sun in light mode, eclipsed into a moon in dark mode. It follows the root's
+   mode, as the toggle does, even inside a data-theme island. */
+.ui-theme-icon {
+  inline-size: 18px;
+  block-size: 18px;
+  overflow: visible;
+}
+.ui-theme-icon-sun,
+.ui-theme-icon-rays,
+.ui-theme-icon-bite {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+}
+.ui-theme-icon-bite {
+  transform: translate(8px, -8px);
+}
+:root[data-theme="dark"] .ui-theme-icon-sun {
+  transform: scale(1.75);
+}
+:root[data-theme="dark"] .ui-theme-icon-bite {
+  transform: none;
+}
+:root[data-theme="dark"] .ui-theme-icon-rays {
+  transform: rotate(-45deg) scale(0.4);
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ui-theme-icon-sun,
+  .ui-theme-icon-bite {
+    transition: transform var(--ui-dur-4, 460ms) var(--ui-ease, cubic-bezier(0.16, 1, 0.3, 1));
+  }
+  .ui-theme-icon-rays {
+    transition:
+      transform var(--ui-dur-4, 460ms) var(--ui-ease, cubic-bezier(0.16, 1, 0.3, 1)),
+      opacity 276ms var(--ui-ease, cubic-bezier(0.16, 1, 0.3, 1));
+  }
+}
