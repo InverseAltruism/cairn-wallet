@@ -2,16 +2,6 @@
 
 ## Unreleased
 
-- The popup and the approval window are redesigned on the shared Cairn design tokens: 360 by 600 (was 340 wide),
-  the Geist typefaces, light and dark following the system with a System, Light, Dark choice in Settings ›
-  Appearance. Home has the account, settings and lock at the top, one balance, Send, Receive, Trade and More, and
-  Assets and Activity as tabs; the bottom bar is gone. Panels open as sheets from the bottom; Escape or the close
-  button closes them. Moved: the node RPC and block explorer pickers are in Settings › Network (they were at the
-  top right, also before unlocking); accounts, post, seal, recovery phrase and reveal key are under More. The
-  approval and review buttons changed sides: Reject, Cancel and Back are on the left, Approve and Confirm on the
-  right, at equal width; a bar along the top of the approval buttons fills while they wait 700 ms after a new
-  request.
-
 - A fill of an offer by its offer id (a taker-bound CSD offer or a token-priced offer) now refuses when the offer, by
   its own on-chain record, expires too soon for the fill to be mined (its last live block is less than 4 blocks
   past the chain tip, the margin the reservation lane already uses): "refusing to sign: this offer expires at block
