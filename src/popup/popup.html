@@ -82,16 +82,15 @@
           <button id="acct-select" class="acct-btn" title="Switch account"></button>
           <div id="acct-menu" class="rpc-menu acct-menu" hidden></div>
         </div>
-        <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings"><svg class="i" aria-hidden="true"><use href="icons.svg#i-settings"/></svg></button>
+        <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings"><svg class="i" aria-hidden="true"><use href="icons.svg#i-settings-2"/></svg></button>
         <button id="btn-lock" class="icon-btn" title="Lock wallet" aria-label="Lock wallet"><svg class="i" aria-hidden="true"><use href="icons.svg#i-lock"/></svg></button>
       </div>
 
       <div class="bal-hero">
-        <div class="bal-top">
-          <span class="label">Balance</span>
+        <div class="bal-line">
+          <div id="balance" class="bal bal-xl"></div>
           <button id="btn-refresh" class="icon-btn sm" title="Refresh balance" aria-label="Refresh balance"><svg class="i" aria-hidden="true"><use href="icons.svg#i-refresh-cw"/></svg></button>
         </div>
-        <div id="balance" class="bal bal-xl"></div>
         <!-- The one persistent explainer for the post-merge balance dip: a submitted merge removes its input coins
              from the confirmed balance until the next block. -->
         <div id="merge-pending" class="merge-note" hidden></div>
@@ -119,20 +118,31 @@
            come into view even while a form is open. -->
       <div id="pending" class="pending" hidden></div>
 
-      <nav class="tabs" role="tablist" aria-label="Wallet lists">
+      <nav id="tabs" class="tabs" role="tablist" aria-label="Wallet lists">
         <button id="nav-home" class="tab active" role="tab" aria-selected="true" aria-controls="home">Assets</button>
+        <button id="nav-names" class="tab" role="tab" aria-selected="false" aria-controls="names-tab">Names</button>
         <button id="btn-activity-t" class="tab" role="tab" aria-selected="false" aria-controls="activity">Activity</button>
+        <span class="tab-ind" aria-hidden="true"></span>
       </nav>
 
-      <div id="home" class="tabpanel" role="tabpanel" aria-labelledby="nav-home">
+      <div id="home" class="tabpanel w-list" role="tabpanel" aria-labelledby="nav-home">
+        <button id="csd-row" class="w-row" type="button">
+          <span class="ti ink"><svg class="mark" aria-hidden="true"><use href="icons.svg#mark"/></svg></span>
+          <span class="nm"><b>CSD</b><small>Compute Substrate</small></span>
+          <span class="vl"><span id="csd-row-amt"></span></span>
+        </button>
         <div id="assets" class="assets" aria-busy="true">
-          <div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>
+          <div class="skeleton-row"></div><div class="skeleton-row"></div>
         </div>
-        <p class="empty assets-empty">No tokens or names yet. CairnX tokens and .csd names held by this account show here.</p>
+        <p class="empty assets-empty">No tokens yet. CairnX tokens held by this account show here.</p>
       </div>
 
       <div id="layer">
       <button class="panel-back scrim" aria-label="Close" tabindex="-1"></button>
+
+      <div id="names-tab" class="tabpanel w-list" role="tabpanel" aria-labelledby="nav-names" hidden>
+        <div id="names-list" class="assets"></div>
+      </div>
 
       <div id="activity" class="settings tabpanel" role="tabpanel" aria-labelledby="btn-activity-t" hidden>
         <div class="act-head"><span class="label">Recent transactions</span><a id="addr-explorer" class="mini text" target="_blank" rel="noopener noreferrer">View address ↗</a></div>
@@ -147,6 +157,12 @@
         <input id="imp-acct-key" type="password" placeholder="Private key (0x…64 hex)" />
         <input id="imp-acct-label" placeholder="Label (optional)" />
         <button id="btn-imp-acct">Import account</button>
+      </div>
+
+      <div id="name-detail" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="name-detail-title" hidden>
+        <div class="panel-head"><span class="panel-title" id="name-detail-title">Name</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+        <div id="nd-rows" class="confirm-box"></div>
+        <div id="nd-actions" class="nd-actions"></div>
       </div>
 
       <div id="receive-panel" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="receive-panel-title" hidden>
@@ -171,13 +187,16 @@
         <div class="panel-head"><span class="panel-title" id="send-form-title">Send CSD</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Recipient <input id="s-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount (CSD) <input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" autocomplete="off" /></label>
-        <button id="btn-send" class="primary">Review send</button>
+        <div class="row sheet-actions step-actions">
+          <button class="panel-back" type="button">Cancel</button>
+          <button id="btn-send" class="primary">Review send</button>
+        </div>
 
         <div id="send-confirm" hidden>
           <div class="confirm-box">
+            <div class="crow crow-amount"><span class="label">Amount</span><b id="c-amt" class="bal"></b></div>
             <div class="crow" id="c-name-row" hidden><span class="label">Name</span><span id="c-name" class="dim"></span></div>
             <div class="crow"><span class="label">To</span><code id="c-to" class="addr"></code></div>
-            <div class="crow crow-amount"><span class="label">Amount</span><b id="c-amt" class="bal"></b></div>
             <div class="crow"><span class="label">Fee</span><span id="c-fee"></span></div>
             <div class="crow"><span class="label">Balance after</span><span id="c-after" class="dim"></span></div>
             <div id="c-warn" class="warn" hidden></div>
@@ -194,14 +213,17 @@
         <label>Recipient <input id="ts-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount <input id="ts-amt" type="text" inputmode="decimal" placeholder="0.0" autocomplete="off" /></label>
         <div id="ts-avail" class="note"></div>
-        <button id="btn-tsend" class="primary">Review send</button>
+        <div class="row sheet-actions step-actions">
+          <button class="panel-back" type="button">Cancel</button>
+          <button id="btn-tsend" class="primary">Review send</button>
+        </div>
 
         <div id="tsend-confirm" hidden>
           <div class="confirm-box">
+            <div class="crow crow-amount"><span class="label">Amount</span><b id="tc-amt" class="bal"></b></div>
             <div class="crow"><span class="label">Token</span><b id="tc-ticker" class="bal"></b></div>
             <div class="crow" id="tc-name-row" hidden><span class="label">Name</span><span id="tc-name" class="dim"></span></div>
             <div class="crow"><span class="label">To</span><code id="tc-to" class="addr"></code></div>
-            <div class="crow crow-amount"><span class="label">Amount</span><b id="tc-amt" class="bal"></b></div>
             <div class="crow"><span class="label">Fee</span><span id="tc-fee"></span></div>
             <div id="tc-warn" class="warn" hidden></div>
           </div>
@@ -230,11 +252,11 @@
       <div id="name-action-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="name-action-form-title" hidden>
         <div class="panel-head"><span class="panel-title" id="name-action-form-title">Confirm name action</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <div class="confirm-box">
+          <div class="crow crow-amount"><span class="label">Total</span><b id="nc-total" class="bal"></b></div>
           <div class="crow"><span class="label">Action</span><b id="nc-action"></b></div>
           <div class="crow"><span class="label">Name</span><span id="nc-name" class="dim"></span></div>
           <div class="crow" id="nc-fee-row" hidden><span class="label">Renewal fee</span><span id="nc-fee"></span></div>
           <div class="crow"><span class="label">Anchor fee</span><span id="nc-anchor"></span></div>
-          <div class="crow crow-amount"><span class="label">Total</span><b id="nc-total" class="bal"></b></div>
           <div class="crow"><span class="label">Balance after</span><span id="nc-after" class="dim"></span></div>
           <div id="nc-note" class="note"></div>
         </div>

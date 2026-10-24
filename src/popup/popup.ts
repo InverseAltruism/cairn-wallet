@@ -7,7 +7,7 @@ import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals,
 import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
-import { tokenEase, tokenMs } from "./motion.js";
+import { enterOnce, flashChange, tokenEase, tokenMs } from "./motion.js";
 import { mountThemeControl } from "./themectl.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 
@@ -157,6 +157,7 @@ async function render() {
   // module memory so a secret never lingers on the locked screen (audit POPUP-2).
   if (!st.unlocked) { resetRevealPanel(); resetPhrasePanel(); clearSendDrafts(); return show("locked"); }
   show("main");
+  syncNav();
   // Only HD wallets have a recovery phrase; hide the reveal button for imported keys.
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
   renderAcctSelect(st.accounts || [], st.active || 0);
@@ -234,7 +235,7 @@ async function renderAccts() {
           ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}</span>`;
     }
     const removeWarn = editing && acctEdit!.mode === "remove" && a.imported
-      ? `<div class="tx-sub" style="color:var(--warn,#c90)">this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm.</div>`
+      ? checkRow({ tier: "caution", html: "this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
@@ -266,7 +267,10 @@ async function renderAccts() {
   if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
 }
 
-const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Filled offer", tokenSend: "Sent token", consolidate: "Merged coins" };
+// A label says what this wallet sent, not what the market or the resolver made of it: the history records no
+// verdict, so a fill the offer refused and a token transfer the balance did not cover still read as sent.
+const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Offer fill sent", tokenSend: "Token transfer sent", consolidate: "Merged coins" };
+const TX_ICON: Record<string, string> = { send: "i-arrow-up-right", tokenSend: "i-arrow-up-right", fillOffer: "i-arrow-left-right", consolidate: "i-refresh-cw", post: "i-message-square-text", propose: "i-stamp" };
 async function renderHistory() {
   const h: any[] = await call("history");
   const el = $("history-list");
@@ -295,12 +299,12 @@ async function renderHistory() {
       : mark === "stuck" ? ` <span class="dim">· still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer before sending again</span>`
       : mark === "gone" ? ` <span class="dim">· not included: its coins were spent by another transaction; check the explorer before sending again</span>`
       : "";
-    return `<div class="tx">
-      <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
-      <div class="tx-sub"><span class="dim">${detail}</span><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
-      <div class="tx-when dim">${when}${maybeMark}</div>
+    return `<div class="tx"><span class="ti"><svg class="i" aria-hidden="true"><use href="icons.svg#${TX_ICON[t.type] ?? "i-arrow-up-right"}"/></svg></span>
+      <span class="nm"><b class="tx-kind">${escapeHtml(kind)}</b><small><span class="dim">${detail}</span>${when ? ` · ${when}` : ""}${maybeMark}</small></span>
+      <span class="vl"><span class="tx-amt">${csd}</span><small><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></small></span>
     </div>`;
   }).join("");
+  enterOnce(el, curAddr);
 }
 // Balance count-up: a display-only tween between the previous fetched value and the new one
 // (ends on the exact canonical string; skipped on first paint, on reduced-motion, and on failure).
@@ -363,6 +367,8 @@ async function refreshBalance() {
     const next = Number(b.confirmed);
     const from = lastBal;
     lastBal = next;
+    $("csd-row-amt").textContent = fmtBalance(next);
+    if (from !== null && from !== next) flashChange(el, next > from ? "up" : "down");
     const dur = from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches ? null : tokenMs("--ui-dur-4");
     const ease = dur === null ? null : tokenEase();
     if (from === null || dur === null || ease === null) {
@@ -378,7 +384,7 @@ async function refreshBalance() {
       requestAnimationFrame(step);
     }
   }
-  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "—"; lastBal = null; } }
+  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "—"; $("csd-row-amt").textContent = "—"; lastBal = null; } }
 }
 // ── CairnX assets (token balances + .csd names); read-only, never blocks the CSD UI ──
 // Balances come from the public CairnX resolver API. When it's unreachable we show a
@@ -402,13 +408,15 @@ function setIdentity(name: string | null | undefined) {
 }
 // epochs ≈ hours → a short remaining-time label for a lease
 function leaseLabel(n: any): string {
-  if (n?.lapsed) return "lapsed";
+  if (n?.lapsed) return "Lapsed";
   if (!n?.leased) return "";
-  if (n.inGrace) return "in grace · renew now";
+  if (n.inGrace) return "In grace: renew now";
   const e = Number(n.epochsLeft ?? 0);   // epochs ≈ hours; 720 ≈ 1 month, 8760 ≈ 1 year
-  if (e <= 0) return "expiring";
-  return "expires " + (e < 48 ? `~${e}h` : e < 1440 ? `~${Math.round(e / 24)}d` : e < 8760 ? `~${Math.round(e / 720)}mo` : `~${(e / 8760).toFixed(1)}y`);
+  if (e <= 0) return "Lease ending";
+  return "Lease ends in about " + (e < 48 ? `${e} h` : e < 1440 ? `${Math.round(e / 24)} days` : e < 8760 ? `${Math.round(e / 720)} months` : `${(e / 8760).toFixed(1)} years`);
 }
+// A live lease this close to its end (epochs ≈ hours, so about a month) carries a Renew chip on its row.
+const RENEW_SOON_EPOCHS = 720;
 function tradeNameUrl(name: string): string {
   const base = (siteApi || "https://cairn-substrate.com").replace(/\/$/, "");
   return `${base}/trade?name=${encodeURIComponent(name)}`;
@@ -424,7 +432,10 @@ async function renderAssets() {
   setIdentity(a?.ok ? a.primaryName : null);
   if (!a?.ok) {
     el.hidden = false;
+    el.setAttribute("aria-busy", "false");
     el.innerHTML = `<div class="assets-retry dim">token balances unavailable · <a id="assets-retry">retry</a></div>`;
+    nameDetails = new Map();
+    $("names-list").innerHTML = `<div class="assets-retry dim">names unavailable · refresh the balance to try again</div>`;
     const rt = document.getElementById("assets-retry");
     if (rt) rt.onclick = () => { el.innerHTML = `<div class="assets-retry dim">retrying…</div>`; renderAssets(); };
     return;
@@ -434,22 +445,27 @@ async function renderAssets() {
   const details: any[] = Array.isArray(a.nameDetails) && a.nameDetails.length ? a.nameDetails : names.map((n) => ({ name: n }));
   const primary: string | null = a.primaryName ?? null;
   const tickers = Object.keys(balances).sort();
-  if (!tickers.length && !details.length) { el.hidden = true; el.innerHTML = ""; return; }
-  const meta = await tokenMeta();
+  const meta: Record<string, { decimals: number; name?: string }> = tickers.length ? await tokenMeta() : {};
   if (seq !== assetsSeq) return;
   // Decimals build the base units a token send signs, so a pinned token uses its pinned decimals, never served ones.
   const decOf = (t: string): number => { const d = displayDecimals(t, meta[t]?.decimals).decimals; return isTokenDecimals(d) ? d : 0; };
+  // A row opens the token's send sheet; the subtitle says what is locked and whether the wallet pins the token.
   const rows = tickers.map((t) => {
     const b = balances[t] || { available: "0", locked: "0" };
     const dec = decOf(t);
-    const locked = b.locked && b.locked !== "0" ? ` <span class="asset-locked">(+${escapeHtml(formatUnits(b.locked, dec))} locked)</span>` : "";
-    return `<div class="asset"><span class="asset-ticker">${escapeHtml(t)}</span>
-      <span class="asset-bal">${escapeHtml(formatUnits(b.available, dec))}${locked}</span>
-      <button class="mini" data-tsend="${escapeHtml(t)}">send</button></div>`;
+    const sub = [
+      b.locked && b.locked !== "0" ? `${formatUnits(b.locked, dec)} locked in offers` : "",
+      displayDecimals(t, meta[t]?.decimals).pinned ? String(meta[t]?.name ?? "") : "Unverified",
+    ].filter(Boolean).join(" · ");
+    return `<button class="w-row" type="button" data-tsend="${escapeHtml(t)}"><span class="ti">${escapeHtml(t.slice(0, 3))}</span>`
+      + `<span class="nm"><b>${escapeHtml(t)}</b>${sub ? `<small>${escapeHtml(sub)}</small>` : ""}</span>`
+      + `<span class="vl">${escapeHtml(formatUnits(b.available, dec))}</span></button>`;
   }).join("");
-  // .csd names: identity + lease state + inline renew / set-primary + manage on /trade
+  // .csd names: a row opens the name's detail (renew, set primary, the site); a lease near its end also gets a
+  // Renew chip on the row. Both lead to the same review sheet; nothing here signs.
   const tip = Number(a.tipHeight) || 0;
-  const nameRows = details.length ? `<div class="names-head"><span class="label">.csd names</span></div>` + details.map((n) => {
+  nameDetails = new Map();
+  const nameRows = details.map((n) => {
     const nm = String(n.name);
     const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized; no owner actions
     const isPrimary = !isPending && nm === primary;
@@ -457,31 +473,50 @@ async function renderAssets() {
     // services omit the field and the static label stays.
     const finBy = Number(n.finalizeBy) || 0;
     const pendingLabel = finBy && tip
-      ? (tip > finBy ? "reservation expired · register again on site" : `finalizing · ~${Math.max(1, (finBy - tip)) * 2} min left to complete`)
-      : "finalizing · complete on site";
+      ? (tip > finBy ? "Reservation expired: register again on the site" : `Finalizing, about ${Math.max(1, (finBy - tip)) * 2} min left to complete`)
+      : "Finalizing: complete it on the site";
     const lease = isPending ? pendingLabel : leaseLabel(n);
+    const sub = isPrimary ? (lease ? `Primary · ${lease}` : "Primary") : lease;
     const cls = isPending ? " pending" : n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
-    // A pending reservation MUST be non-actionable here: renew / set-primary on it broadcast a fee the
-    // resolver rejects on a pending record (nrenew/nset both reject `if (n.pending)`); an honest self-burn
-    // of the anchor + up to the reg fee. Surface only a link to finish the reveal on /trade.
-    const acts = isPending
-      ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">finalize ↗</a>`
-      : n.lapsed
-      ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">recapture ↗</a>`
-      : `<button class="mini" data-nrenew="${escapeHtml(nm)}">renew</button>${isPrimary ? "" : `<button class="mini" data-nprimary="${escapeHtml(nm)}">★ primary</button>`}<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">⋯</a>`;
-    return `<div class="name-asset${cls}">
-      <span class="na-name">${escapeHtml(nm)}<span class="dim">.csd</span>${isPrimary ? ` <span class="na-tag">★ primary</span>` : ""}</span>
-      <span class="na-lease dim">${escapeHtml(lease)}</span>
-      <span class="na-acts">${acts}</span></div>`;
-  }).join("") : "";
-  el.hidden = false;
-  el.innerHTML = `<span class="label">assets</span>${rows}${nameRows}`;
+    const soon = !isPending && !n.lapsed && n.leased && (n.inGrace || Number(n.epochsLeft ?? 0) <= RENEW_SOON_EPOCHS);
+    nameDetails.set(nm, { name: nm, isPending, isPrimary, lapsed: !!n.lapsed, status: sub });
+    return `<div class="w-row name-row${cls}"><button class="w-row-hit" type="button" data-name="${escapeHtml(nm)}"><span class="ti">.csd</span>`
+      + `<span class="nm"><b>${escapeHtml(nm)}<span class="dim">.csd</span></b>${sub ? `<small>${escapeHtml(sub)}</small>` : ""}</span></button>`
+      + (soon ? `<button class="chip-s" type="button" data-nrenew="${escapeHtml(nm)}">Renew</button>` : "") + `</div>`;
+  }).join("");
+  el.setAttribute("aria-busy", "false");
+  el.hidden = !tickers.length;
+  el.innerHTML = rows;
+  enterOnce(el, curAddr);
+  const nl = $("names-list");
+  nl.innerHTML = nameRows || `<p class="empty">No .csd names yet. Names held by this account show here; register one at cairn-substrate.com/names.</p>`;
+  if (!($("names-tab") as HTMLElement).hidden) enterOnce(nl, curAddr);
   el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = () => {
     const t = b.dataset.tsend!;
     openTokenSend(t, decOf(t), balances[t]?.available ?? "0");
   });
-  el.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
-  el.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
+  nl.querySelectorAll<HTMLElement>("[data-name]").forEach((b) => b.onclick = () => openNameDetail(b.dataset.name!));
+  nl.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
+}
+// The names the last assets read returned, for the detail sheet a row opens.
+let nameDetails = new Map<string, { name: string; isPending: boolean; isPrimary: boolean; lapsed: boolean; status: string }>();
+// A name's detail: its state and the owner actions. A pending reservation or a lapsed name gets only the link to the
+// site: renew and set-primary on them broadcast a fee the resolver rejects (nrenew and nset refuse a pending record).
+function openNameDetail(name: string) {
+  const d = nameDetails.get(name);
+  if (!d) return;
+  if (!openPanel("name-detail")) ($("name-detail") as HTMLElement).hidden = false;   // a second row keeps the sheet open
+  $("name-detail-title").textContent = `${d.name}.csd`;
+  $("nd-rows").innerHTML = `<div class="crow"><span class="label">Status</span><span>${escapeHtml(d.status || "Registered")}</span></div>`;
+  const site = (label: string) => `<a class="btn-link" href="${escapeHtml(tradeNameUrl(d.name))}" target="_blank" rel="noopener noreferrer">${label}<svg class="i" aria-hidden="true"><use href="icons.svg#i-external-link"/></svg></a>`;
+  const acts = $("nd-actions");
+  acts.innerHTML = d.isPending ? site("Finalize on the site")
+    : d.lapsed ? site("Recapture on the site")
+    : `<button class="primary" type="button" data-nrenew="${escapeHtml(d.name)}">Renew</button>`
+      + (d.isPrimary ? "" : `<button type="button" data-nprimary="${escapeHtml(d.name)}">Set as primary</button>`)
+      + site("Open on the site");
+  acts.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
+  acts.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
 }
 
 // One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
@@ -656,16 +691,35 @@ async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookal
     return recipientStatus(to, paidRecipients(h), (st.accounts || []).map((a: any) => String(a.addr)));
   } catch { return { firstTime: true, lookalike: null }; }
 }
+// A review check row: positive (the name is chain-backed by two sources), caution, or danger (a warning that
+// stands against sending: a look-alike, a first send, a balance that does not cover the send).
+type Tier = "ok" | "caution" | "danger";
+type Check = { tier: Tier; html: string };
+const TIER_ICON: Record<Tier, string> = { ok: "i-shield-check", caution: "i-triangle-alert", danger: "i-octagon-alert" };
+type NameInfo = { name?: string | null; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+// The name caution's tier follows nameCautionHtml's branches: only the "two sources agree" branch is positive
+// (test/popup-checks-dom.test.mjs walks every branch and pins tier ok exactly where the copy reads ✓).
+function nameCheck(rr: NameInfo): Check | null {
+  if (!rr.name) return null;
+  const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
+  const ok = rr.verified === true && !rr.viaFill && !rr.soleSource && !rr.disagree && (rr.sources ?? 1) >= 2;
+  return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) };
+}
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
 // otherwise the historical ones byte-for-byte. Empty return = nothing to warn about (box hidden).
-function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: string, noun: "transfers" | "payments"): string {
+function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments"): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
-  if (lookalike) return `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — ${noun} are irreversible.`;
-  if (firstTime) return `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. ${Noun} are irreversible.`;
-  return nameCaution;
+  const out: Check[] = nameCaution ? [nameCaution] : [];
+  if (lookalike) out.push({ tier: "danger", html: `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — ${noun} are irreversible.` });
+  else if (firstTime) out.push({ tier: "danger", html: `⚠ First time sending to this address — check every character. ${Noun} are irreversible.` });
+  return out;
 }
-function setWarn(el: HTMLElement, html: string) { if (html) { el.innerHTML = html; el.hidden = false; } else el.hidden = true; }
+const checkRow = (c: Check) => `<div class="check ${c.tier}"><svg class="i" aria-hidden="true"><use href="icons.svg#${TIER_ICON[c.tier]}"/></svg><div>${c.html}</div></div>`;
+function setWarn(el: HTMLElement, checks: Check[]) {
+  if (checks.length) { el.innerHTML = checks.map(checkRow).join(""); el.hidden = false; }
+  else { el.innerHTML = ""; el.hidden = true; }
+}
 // FOOT-3 double-send guard, shared by both flows' ok:false and thrown branches: do NOT leave Confirm
 // armed on the same frozen snapshot after a failure (one more click after an ambiguous submit selects a
 // DIFFERENT coin and double-pays). Tear the review down (draft preserved) so resending takes a
@@ -751,8 +805,7 @@ $("btn-tsend").addEventListener("click", async () => {
   $("tc-amt").textContent = tokenAmountBothScales(base, tsend.decimals, tsend.ticker);
   $("tc-fee").textContent = fmtCsd(CAIRNX_FEE);
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
-  setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, TOKEN_FLOW.noun));
+  setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCheck(rr), TOKEN_FLOW.noun));
   // SNAPSHOT what was reviewed; the confirm step signs EXACTLY this, never the live inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): the confirm's nameStillPointsTo await can park across an
   // account switch; expectSigner makes the background refuse at the sign tick instead of signing from
@@ -778,9 +831,15 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
   }
 });
 
+// The queue the card last showed: the 1.5 s poll rewrites the card only when it changed, so a poll does not replay
+// its entrance or take the focus off Review.
+let pendingShown: string | null = null;
 async function renderPending() {
   if (!EXT) return;
   const p = await call("pending"); const el = $("pending") as HTMLElement;
+  const key = JSON.stringify(p.map((r: any) => [r.id, r.method, r.origin]));
+  if (key === pendingShown) return;
+  pendingShown = key;
   if (!p.length) { el.hidden = true; el.innerHTML = ""; return; }
   el.hidden = false;
   // The toolbar popup NEVER approves a request inline; approving a fund-moving send/propose/
@@ -850,7 +909,7 @@ $("btn-copy").addEventListener("click", () => copyText("btn-copy", $("addr").tex
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
-const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "consolidate-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
+const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "consolidate-form", "name-action-form", "name-detail", "post-form", "seal-form", "activity", "names-tab", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
 // C-8 / PH-16 (2026-09-09): the "auto-clears" clipboard promise was FALSE (the clear needs a
 // clipboardRead permission the manifest lacks, and the beforeunload path never settles in the
@@ -889,12 +948,22 @@ function openPanel(id: string): boolean {
   syncNav();
   return willOpen;
 }
-// Which control shows as current: the Activity tab or the Settings button when their panel is open, else Assets.
+// Which control shows as current: the Names or Activity tab or the Settings button when their panel is open, else
+// Assets. A sheet over a list keeps that list's tab selected.
+const TABS = ["nav-home", "nav-names", "btn-activity-t"];
 function syncNav() {
   const active = !($("activity") as HTMLElement).hidden ? "btn-activity-t"
+    : !($("names-tab") as HTMLElement).hidden ? "nav-names"
     : !($("settings") as HTMLElement).hidden ? "btn-settings" : "nav-home";
-  for (const id of ["nav-home", "btn-activity-t", "btn-settings"]) $(id).classList.toggle("active", id === active);
-  for (const id of ["nav-home", "btn-activity-t"]) $(id).setAttribute("aria-selected", String(id === active));
+  for (const id of [...TABS, "btn-settings"]) $(id).classList.toggle("active", id === active);
+  for (const id of TABS) $(id).setAttribute("aria-selected", String(id === active));
+  // the one indicator slides under the selected tab (Settings leaves it under Assets)
+  const tab = $(TABS.includes(active) ? active : "nav-home") as HTMLElement;
+  const bar = $("tabs") as HTMLElement;
+  if (typeof tab.offsetLeft === "number" && bar.style?.setProperty) {
+    bar.style.setProperty("--ind-x", `${tab.offsetLeft}px`);
+    bar.style.setProperty("--ind-w", `${tab.offsetWidth}px`);
+  }
 }
 // Escape closes the open sheet through its own close button, the same exit as a click on it.
 function closeSheetOnEscape(e: KeyboardEvent) {
@@ -1252,6 +1321,8 @@ async function populateDomains() {
   sel.onchange = () => { const isCustom = sel.value === "__custom__"; custom.hidden = !isCustom; if (isCustom) custom.focus(); };
 }
 $("btn-activity-t").addEventListener("click", () => { if (openPanel("activity")) renderHistory(); });
+$("nav-names").addEventListener("click", () => { if (openPanel("names-tab")) enterOnce($("names-list"), curAddr); });
+$("csd-row").addEventListener("click", () => { openPanel("send-form"); });
 $("btn-seal-t").addEventListener("click", () => { if (openPanel("seal-form")) renderSealed(); });
 $("btn-seal").addEventListener("click", async () => {
   const claim = val("seal-claim").trim(); if (!claim) return msg("enter a claim to seal", "err");
@@ -1321,12 +1392,11 @@ $("btn-send").addEventListener("click", async () => {
   $("c-after").textContent = after || "—";
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status; verifying the resolved address is the whole defense the wallet can offer here.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
   // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's
   // INSUFFICIENT refusal stays the backstop). An unreadable balance does not block.
   const short = !!b && Number(b.confirmed) - amt - SEND_FEE < 0;
-  const warn = composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun);
-  setWarn($("c-warn") as HTMLElement, short ? `${escapeHtml(balanceShortNote("Go back"))}${warn ? "<br><br>" + warn : ""}` : warn);
+  const warn = composeSendWarning(lookalike, firstTime, nameCheck(rr), CSD_FLOW.noun);
+  setWarn($("c-warn") as HTMLElement, short ? [{ tier: "danger", html: escapeHtml(balanceShortNote("Go back")) }, ...warn] : warn);
   ($("btn-send-confirm") as HTMLButtonElement).disabled = short;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
@@ -1379,4 +1449,6 @@ $("btn-post").addEventListener("click", async () => {
 
 mountThemeControl(document, (globalThis as { CairnTheme?: CairnThemeApi }).CairnTheme);
 render();
+// the tab widths change once Geist has loaded
+void document.fonts?.ready.then(syncNav);
 if (EXT) setInterval(renderPending, 1500);
