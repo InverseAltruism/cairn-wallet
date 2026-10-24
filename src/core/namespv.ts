@@ -11,8 +11,9 @@
 //
 //   per block touched: fetch it, rebuild EVERY tx, require merkleRoot(txids) == the PoW-verified
 //                      header's merkle root (so a lying node can't omit/alter/add a committed tx body),
-//                      then authenticate each relevant tx's SIGNER by its signature (the merkle root
-//                      does NOT commit the scriptSig) and reconstruct the resolver ChainEvent.
+//                      then bind each relevant tx's author to the owner of the coin its first input
+//                      spends (authorOf: the merkle root does NOT commit the scriptSig, so a valid
+//                      signature alone names no author) and reconstruct the resolver ChainEvent.
 //   then: resolve(events, verifiedTip).names[name]; the audited resolver, byte-for-byte.
 //
 // HONEST SCOPE (must NOT be overstated in the UI): this proves the mapping is backed by SPV-verified,
@@ -31,7 +32,7 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason; never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type RpcTxJson } from "../vendor/cairnx-spv.js";
+import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader } from "../vendor/cairnx-spv.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
@@ -136,8 +137,8 @@ export interface SpvSource {
   // that holds only at the current nodeTip degrades to caution. Omitted ⇒ no corroboration available.
   // `tipKnown` false: the node tip could not be read this call, so nothing was synced past the verified tip.
   prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number; tipKnown?: boolean }>;
-  // The PoW-VERIFIED merkle root for `height` + that block's node-JSON txs. THROWS if it cannot verify.
-  blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
+  // The PoW-VERIFIED merkle root for `height` + that block's /block response body as text. THROWS if it cannot verify.
+  blockAt(height: number): Promise<{ merkle: string; body: string }>;
   // NSPV-SIGSUB-1 (H3): resolve the scriptPubkey of a record's spent prevout, BOUND to its txid; the
   // fetched source tx must recompute to `prevTxid` (the consensus txid commits its outputs incl. scriptPubkey),
   // reusing the TXB-1 fetch+recompute pattern. Lets replayName require that the recovered signer actually OWNS
@@ -576,8 +577,11 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // default TIED the inner chain exactly; an abort could fire the instant the proxy's fallback
   // would have answered (timeout-inversion class, docs/Plans/66 B2).
   // No parseJson: the client's default, parseJsonExact, keeps a Propose's u64 expires_epoch above 2^53 exact, so the
-  // txid recompute of a block body or a prevout source tx carrying one still matches (test/spv-poison-e2e.test.mjs).
-  const client = new CsdClient({ baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000 });
+  // txid recompute of a prevout source tx carrying one still matches (test/spv-poison-e2e.test.mjs). Block bodies
+  // are read as text through `bodyClient` (same transport, timeout and size cap): bindBlockBody parses them itself.
+  const rpcOpts = { baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000 };
+  const client = new CsdClient(rpcOpts);
+  const bodyClient = new CsdClient({ ...rpcOpts, parseJson: (text: string) => ({ text }) });
   const headersBase = opts.headersBase.replace(/\/$/, "");
   // The /api/headers endpoint is budget-limited (DOS-HDR-1) and deadline-bounded (it answers a clean
   // 502 at ~10s instead of grinding on a slow indexer). A legit cold sync paces itself:
@@ -859,8 +863,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     async blockAt(height: number) {
       const vh = await headerAt(height);
       if (!vh) throw new Error(`no PoW-verified header at ${height}`);
-      const b = await client.blockByHeight(height);
-      return { merkle: vh.merkle, txs: b.txs };
+      // bodyClient's parseJson returns the raw body as { text }; RpcBlock is the parsed type the client declares.
+      const raw = (await bodyClient.blockByHeight(height)) as unknown as { text: string };
+      return { merkle: vh.merkle, body: raw.text };
     },
     bodySource: opts.rpcBase.replace(/\/$/, ""),
     headerSource: headersBase,

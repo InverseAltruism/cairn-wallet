@@ -23,7 +23,7 @@ import {
   deploy, mint, offer, fclaim, offerCancelAll, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
   SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 import { withWalletMutant } from "./helpers/mutant.mjs";
 
@@ -312,7 +312,7 @@ function fillSource(blocks, tip) {
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
     async blockAt(height) {
       const txs = blocks.get(height) ?? [FILLER];
-      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs };
+      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) };
     },
     async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); },
   };
@@ -815,7 +815,7 @@ check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves th
     prevoutScriptPubkey: (p) => base.prevoutScriptPubkey(p),
     async blockAt(height) {
       const b = await base.blockAt(height);
-      if (height === tamperH) return { merkle: "0x" + "ee".repeat(32), txs: b.txs };   // real body, wrong root
+      if (height === tamperH) return { merkle: "0x" + "ee".repeat(32), body: b.body };   // real body, wrong root
       return b;
     },
   };

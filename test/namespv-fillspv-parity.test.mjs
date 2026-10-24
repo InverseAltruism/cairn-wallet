@@ -17,7 +17,7 @@ import path from "node:path";
 import { verifyNameUnion } from "../src/core/namespv.js";
 import { provenOfferPayto, liveFillSpvSource, feeBpsAt } from "../src/core/fillspv.js";
 import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
-import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase } from "./_spvrig.ts";
+import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase, nodeBlockBody } from "./_spvrig.ts";
 
 // D2 (2026-09-12): the single-source verifyName twin was deleted; the namespv leg now drives
 // verifyNameUnion with ONE source (the production shape) serving the case's claim + hints.
@@ -176,7 +176,7 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
   const TIP2 = fclaimHoldEnd(E) - 5;
   const fillSource = (tip) => ({
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
-    async blockAt(height) { const txs = blocks.get(height) ?? [FILLER]; return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs }; },
+    async blockAt(height) { const txs = blocks.get(height) ?? [FILLER]; return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) }; },
     async prevoutScriptPubkey(p) { return prevoutFor(p); },
   });
   const drive = (mod) => (mod ?? { liveFillSpvSource }).liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(TIP2), hints: { offerId: loid, fclaimTxid: fid, me: MEL, offerHeight: H0 + 2 } });

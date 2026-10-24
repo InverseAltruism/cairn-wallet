@@ -6,13 +6,15 @@
 // poison record reaches resolve() as a consensus no-op.
 //
 // Legs: (3) the exact parse binds; (3b) the production read path (liveSpvSource's prevout read over the
-// fixture network) proves the poison tx's output; (4) RED-FIRST control: the plain-parse path throws;
+// fixture network) proves the poison tx's output; (3c) the production block read binds the poison block;
+// (4) RED-FIRST control: the plain-parse path throws;
 // (5) resolve() denies the record (no state created). Hermetic: real signed tx, synthetic wire text.
 //
 // Run: node --import tsx test/spv-poison-e2e.test.mjs   (offline)
-import { addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, rpcTxToTx, resolve, TREASURY_ADDR, REG_FEE } from "./_spvrig.ts";
+import { addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, rpcTxToTx, merkleRoot, resolve, TREASURY_ADDR, REG_FEE } from "./_spvrig.ts";
 import { offer, parseJsonExact, V28_HEIGHT } from "../src/vendor/cairnx-spv.js";
 import { liveSpvSource } from "../src/core/namespv.ts";
+import { bindBlock } from "../src/core/spvbind.ts";
 import { serveFixture, memStore, legacyOf, FIX_ANCHORS } from "./helpers/spvfixture.mjs";
 import { checker } from "./_check.ts";
 
@@ -64,6 +66,22 @@ check("the poison tx's txid recomputes EXACTLY (the block's merkle bind holds)",
     const src = await liveSpvSource({ rpcBase: "https://fixture.test/api/rpc", headersBase: "https://fixture.test", anchors: FIX_ANCHORS, store: async () => memStore(), legacy: legacyOf(kv) });
     const spk = await src.prevoutScriptPubkey(onChainTxid, 0);
     check(`the live prevout read proves the poison tx's output 0 (${spk})`, spk === TREASURY_ADDR.toLowerCase());
+  } finally { restore(); }
+}
+
+// 3c. The production block read: liveSpvSource.blockAt hands the served /block text to the shared bind, which parses
+// it exactly. The fixture header at that height commits other txs, so the bind is checked against the poison
+// block's own root; a lossy transport (parse then re-serialize) rounds the expiry and the body no longer decodes.
+{
+  const H = 30332;
+  const net = { rawBlocks: new Map([[H, wire]]) };
+  const restore = serveFixture(net);
+  try {
+    const kv = new Map();
+    const src = await liveSpvSource({ rpcBase: "https://fixture.test/api/rpc", headersBase: "https://fixture.test", anchors: FIX_ANCHORS, store: async () => memStore(), legacy: legacyOf(kv) });
+    const { body } = await src.blockAt(H);
+    const bound = await bindBlock({ blockAt: async () => ({ merkle: merkleRoot([onChainTxid]), body }) }, H);
+    check("the live block read binds a served body carrying the poison expiry", bound.ok === true && bound.ids[0] === onChainTxid);
   } finally { restore(); }
 }
 

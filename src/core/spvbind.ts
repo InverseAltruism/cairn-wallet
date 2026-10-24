@@ -1,8 +1,9 @@
 // spvbind.ts; the SPV primitives the name verifier (namespv.ts) and the fill boundary (fillspv.ts) share: the
-// full-block merkle bind, signer recovery, the coinbase test and the mapping from a bound tx to a resolver event.
+// block bind (csd-light bindBlockBody), the author bind (csd-crypto authorOf), signer recovery, the coinbase test
+// and the mapping from a bound tx to a resolver event.
 // Each caller keeps its own failure contract (namespv returns a reason, fillspv throws), so the bind returns its
 // refusal and the caller turns it into that contract.
-import { rpcTxToTx, txid as ctxid, sighash, merkleRoot, recoverSigner as recoverSignerFromScriptSig, paidToFromOutputs, type ProvenAttest, type ProvenPropose, type RpcTxJson, type Tx } from "../vendor/cairnx-spv.js";
+import { sighash, recoverSigner as recoverSignerFromScriptSig, authorOf, bindBlockBody, paidToFromOutputs, type BlockHeader, type ProvenAttest, type ProvenPropose, type Tx } from "../vendor/cairnx-spv.js";
 
 // The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so a record whose
 // authenticating input looks like one has no prevout owner to bind against. Kept local because the vendored
@@ -42,18 +43,20 @@ export interface PrevoutReader {
 export type SignerBind = { ok: true; signer: string } | { ok: false; kind: "unsigned" | "no-input" | "not-owner" };
 
 /**
- * The tx's authenticated signer, bound to the coin its first input spends. The merkle root commits the body but
- * not the scriptSig and the sighash is public, so a block-body provider could splice in a foreign valid signature
- * to re-attribute a record; requiring the signer to own the spent coin (its prevout scriptPubkey) stops that
- * (test/namespv-fillspv-parity.test.mjs). Each caller maps the refusal to its own contract.
+ * The tx's author: csd-crypto `authorOf`, the owner of the coin input 0 spends when input 0's scriptSig is that
+ * owner's valid signature. The merkle root commits the body but not the scriptSig and the sighash is public, so a
+ * block-body provider could splice in a foreign valid signature to re-attribute a record; the coin owner cannot be
+ * spliced (test/namespv-fillspv-parity.test.mjs). An unsigned tx and a coinbase or missing input are refused before
+ * the prevout read. Each caller maps the refusal to its own contract.
  */
 export async function bindSigner(tx: Tx, src: PrevoutReader): Promise<SignerBind> {
-  const signer = recoverSigner(tx);
+  // A key that signed sighash(tx), not yet bound to the coin; authorOf replaces it with the coin's owner or null.
+  let signer = recoverSigner(tx);
   if (!signer) return { ok: false, kind: "unsigned" };
   const in0 = tx.inputs?.[0];
   if (!in0 || isCoinbaseInput(in0)) return { ok: false, kind: "no-input" };
-  const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
-  if (!spk || spk.toLowerCase() !== signer) return { ok: false, kind: "not-owner" }; // MUTATE_SPV_PREVOUT_BIND
+  signer = authorOf(tx, await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout))); // MUTATE_SPV_PREVOUT_BIND
+  if (!signer) return { ok: false, kind: "not-owner" };
   return { ok: true, signer };
 }
 
@@ -89,9 +92,10 @@ export class BodyMismatchError extends Error {
   }
 }
 
-/** The block read the bind needs: the PoW-verified merkle root for `height` and that block's node-JSON txs. */
+/** The block read the bind needs: the PoW-verified header's merkle root for `height` and the node's `/block`
+ *  response body as text (bindBlockBody parses it exactly). */
 export interface BlockReader {
-  blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
+  blockAt(height: number): Promise<{ merkle: string; body: string }>;
   bodySource?: string;
 }
 
@@ -100,22 +104,18 @@ export type BlockBind =
   | { ok: false; kind: "duplicate-txid" | "body-mismatch"; reason: string };
 
 /**
- * Fetch a block, rebuild every tx and require merkleRoot(txids) to equal the PoW-verified header's root, so a
- * lying node cannot omit, alter or add a committed body. A failed read or an undecodable tx throws, as blockAt
- * and rpcTxToTx do; a body that fails the bind is returned as a refusal.
+ * Fetch a block and bind it with csd-light `bindBlockBody`: every tx rebuilt from the exactly parsed body, a
+ * repeated txid refused before the merkle compare (test/merkle-dup-txid.test.mjs), and the txids required to hash
+ * to the verified root, so a lying node cannot omit, alter or add a committed body. A failed read or a body that
+ * does not decode throws; a body that fails the bind is returned as a refusal.
  */
 export async function bindBlock(src: BlockReader, height: number): Promise<BlockBind> {
-  const { merkle, txs } = await src.blockAt(height);
-  // A plain or coinbase tx may carry no `app`; default it to {None} before decode so a node cannot omit `app` on
-  // one filler tx to make rpcTxToTx throw. A None tx still has a real txid.
-  const rebuilt = txs.map((t) => rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }));
-  const ids = rebuilt.map(ctxid);
-  // CVE-2012-2459: merkleRoot self-pairs an odd final row, so a body whose last tx is duplicated hashes to the
-  // honest root. A real block holds no duplicate txid, so refuse one before the root compare
-  // (test/merkle-dup-txid.test.mjs).
-  if (new Set(ids.map((x) => x.toLowerCase())).size !== ids.length)
-    return { ok: false, kind: "duplicate-txid", reason: `block ${height} has a duplicate txid (malleated read path, CVE-2012-2459)` };
-  if (String(merkleRoot(ids)).toLowerCase() !== String(merkle).toLowerCase())
-    return { ok: false, kind: "body-mismatch", reason: bodyMismatchReason(height, src.bodySource) };
-  return { ok: true, ids, rebuilt };
+  const { merkle, body } = await src.blockAt(height);
+  // bindBlockBody reads `height` and `header.merkle` of the verified header (csd-light 0.1.25 bind.ts); the
+  // header store keeps no chainwork, so the other fields are placeholders.
+  const b = bindBlockBody(body, { height, hash: "", header: { merkle } as BlockHeader, chainwork: 0n });
+  if (b.ok) return { ok: true, ids: b.txs.map((t) => t.txid), rebuilt: b.txs.map((t) => t.tx) };
+  if (b.kind === "malformed") throw new Error(b.reason);
+  const reason = b.kind === "body-mismatch" ? bodyMismatchReason(height, src.bodySource) : b.reason;
+  return { ok: false, kind: b.kind, reason };
 }

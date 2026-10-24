@@ -21,7 +21,7 @@ import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { liveFillSpvSource } from "../src/core/fillspv.js";
 import { offer, fclaim, verifyFillSpv, V28_HEIGHT, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS } from "../src/vendor/cairnx-spv.js";
 import { tipDependentFillReason } from "../src/core/fillpreflight.js";
-import { proposeTx, addrFromPriv, ctxid, rpcTxToTx, merkleRoot, prevoutFor, pick } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, ctxid, rpcTxToTx, merkleRoot, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
@@ -51,7 +51,7 @@ const blocks = worldOf([{ height: H0 + 2, tx: offTx }, { height: grantH, tx: fcT
 function fillSource(tips) {
   return {
     async prepare() { return { verifiedTip: tips.verifiedTip, nodeTip: tips.nodeTip, ...(tips.floorTip !== undefined ? { floorTip: tips.floorTip } : {}) }; },
-    async blockAt(height) { const txs = blocks.get(height) ?? [FILLER]; return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs }; },
+    async blockAt(height) { const txs = blocks.get(height) ?? [FILLER]; return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) }; },
     async prevoutScriptPubkey(p) { return prevoutFor(p); },
   };
 }

@@ -15,7 +15,7 @@ import {
   deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs, myProvenFillClosedOffer,
   V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, feeBpsAt, tradeFee,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.ts";
 import { serveFixture, serveOffer, splitSource, memStore, legacyOf, OFFER, FIX_ANCHORS } from "./helpers/spvfixture.mjs";
 import { liveSpvSource } from "../src/core/namespv.ts";
@@ -36,7 +36,7 @@ function fillSource(blocks, tip) {
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
     async blockAt(height) {
       const txs = blocks.get(height) ?? [FILLER];
-      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs };
+      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) };
     },
     async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); },
   };

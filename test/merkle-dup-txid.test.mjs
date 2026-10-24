@@ -3,21 +3,22 @@
 // merkleRoot self-pairs an odd final row, so merkleRoot([a,b,c]) == merkleRoot([a,b,c,c]). An honest
 // 3-tx block commits root R; a hostile read path can serve the 4-tx body [a,b,c,c], which hashes to the
 // SAME R and so passes a naive root compare while smuggling a duplicated tx into the verified set. A real
-// block can never contain a duplicate txid. The one wallet merkle bind, spvbind.ts bindBlock, rejects
-// `new Set(ids).size !== ids.length` BEFORE the root compare; both callers go through it, the fill boundary
-// (fillspv.ts, M7) and name verification (namespv.ts replayName, F11), and each is driven below.
+// block holds each txid once. The wallet's one block bind, spvbind.ts bindBlock, calls the vendored csd-light
+// bindBlockBody, which refuses a repeated txid BEFORE the root compare; both callers go through it, the fill
+// boundary (fillspv.ts, M7) and name verification (namespv.ts replayName, F11), and each is driven below.
 //
 // This test proves (1) the CVE precondition is real (the malleated 4-tx root == the honest 3-tx root),
 // and (2) the dedup is the SOLE rejecter (an honest control passes; removing the guard makes the malleated
 // body pass the root compare).
 //
-// MUTATION CONTRACT: deleting the `new Set(ids)...` line in spvbind.ts makes both malleated cases pass.
+// MUTATION CONTRACT: deleting the repeated-txid refusal in src/vendor/cairnx-spv.js (bindBlockTxs) makes both
+// malleated cases pass.
 //
 // Run: node --import tsx test/merkle-dup-txid.test.mjs   (offline)
 import { provenOfferPayto } from "../src/core/fillspv.ts";
 import { verifyNameUnion } from "../src/core/namespv.ts";
 import { buildNameClaim, buildNameSet } from "../src/core/cairnx.ts";
-import { proposeTx, addrFromPriv, world, source, pick, merkleRoot, ctxid, rpcTxToTx, feeOut, prevoutFor, mkFetch as mkFetchByBase } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, world, source, pick, merkleRoot, ctxid, rpcTxToTx, feeOut, prevoutFor, mkFetch as mkFetchByBase, nodeBlockBody } from "./_spvrig.ts";
 import { offer } from "../src/vendor/cairnx-spv.js";
 
 // D2 (2026-09-12): the single-source verifyName twin was deleted; the namespv leg drives
@@ -40,8 +41,9 @@ function malleateLastTx(src, target) {
       const b = await src.blockAt(height);
       if (height !== target) return b;
       const honestMerkle = b.merkle;                       // root over the honest (un-duplicated) tx list
-      const txs = [...b.txs, b.txs[b.txs.length - 1]];      // duplicate the last tx
-      return { merkle: honestMerkle, txs };
+      const served = JSON.parse(b.body).txs;
+      const txs = [...served, served[served.length - 1]];  // duplicate the last tx
+      return { merkle: honestMerkle, body: nodeBlockBody(txs) };
     },
   };
 }
@@ -74,7 +76,7 @@ console.log("M7/F11 (B5e) - CVE-2012-2459 duplicate-txid rejection:");
 
   const malSrc = malleateLastTx(honestSrc, 33700);
   const badr = await unionOne(NAME, CLAIM, hints, malSrc);
-  check(`F11: a duplicated-txid block is REFUSED (${badr.reason ?? "?"})`, badr.verified === false && /duplicate txid|CVE-2012-2459/i.test(badr.reason || ""));
+  check(`F11: a duplicated-txid block is REFUSED (${badr.reason ?? "?"})`, badr.verified === false && /repeats a txid/.test(badr.reason || ""));
 }
 
 // ── M7: the fillspv (offer-payment) merkle bind, via the exported provenOfferPayto ──────────────────
@@ -90,7 +92,7 @@ console.log("M7/F11 (B5e) - CVE-2012-2459 duplicate-txid rejection:");
   const blocks = new Map([[H, [offTx, f1, f2]]]);
   const honestSrc = {
     async prepare() { return { verifiedTip: H + 10, nodeTip: H + 10 }; },
-    async blockAt(height) { const txs = blocks.get(height); return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs }; },
+    async blockAt(height) { const txs = blocks.get(height); return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) }; },
     async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); },
   };
 

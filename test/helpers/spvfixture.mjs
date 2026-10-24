@@ -67,9 +67,9 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
  * Installs globalThis.fetch serving /api/headers/:from/:count and the node RPC (/tip, /block/height/:h, /tx/:id)
  * from the fixture. `net.tip` is the node tip; `net.tamper(from, rows)` may rewrite a page; `net.down` answers 500
  * to everything; `net.tipDown` answers 500 to /tip only; `net.unserved(from)` true answers 404 to that page.
- * `net.blocks` (height to node block JSON) and `net.txs` (txid to node /tx JSON) serve real bodies, `net.rawTxs`
- * (txid to /tx response text) serves a body JSON.stringify cannot write (a u64 above 2^53); other blocks
- * are served with no transactions. `net.log` lists every /api/headers path requested. Returns a restore function.
+ * `net.blocks` (height to node block JSON) and `net.txs` (txid to node /tx JSON) serve real bodies, `net.rawBlocks`
+ * (height to /block response text) and `net.rawTxs` (txid to /tx response text) serve a body JSON.stringify cannot
+ * write (a u64 above 2^53); other blocks are served with no transactions. `net.log` lists every /api/headers path requested. Returns a restore function.
  */
 export function serveFixture(net) {
   net.log ??= [];
@@ -94,6 +94,7 @@ export function serveFixture(net) {
     }
     if (u.endsWith("/tip")) return net.tipDown ? json({ ok: false }, 500) : json({ height: net.tip, hash: has(net.tip) ? hashOf(net.tip) : undefined });
     const b = /\/block\/height\/(\d+)$/.exec(u);
+    if (b && net.rawBlocks?.has(Number(b[1]))) return new Response(net.rawBlocks.get(Number(b[1])), { status: 200, headers: { "content-type": "application/json" } });
     if (b && net.blocks?.has(Number(b[1]))) return json(net.blocks.get(Number(b[1])));
     if (b) return json({ ok: true, height: Number(b[1]), hash: hashOf(Number(b[1])), header: headerOf(Number(b[1])), txs: [] });
     const t = /\/tx\/(0x[0-9a-f]{64})$/.exec(u);

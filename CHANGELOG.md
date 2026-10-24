@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Internal: the block bind and the author bind come from the vendored csd-sdk packages. `bindBlock` in
+  `src/core/spvbind.ts` calls csd-light's `bindBlockBody` on the `/block` response text (the SPV source now reads
+  the body as text with the same client, timeout and size cap), and `bindSigner` calls csd-crypto's `authorOf`.
+  Verdicts are unchanged for every input class; the refusal texts that now come from csd-light are "block N
+  repeats a txid (a malleated body)" (was "block N has a duplicate txid (malleated read path, CVE-2012-2459)"),
+  "block N: tx P does not decode (...)", "block N: the body is not JSON (...)" and "block N: the node returned no
+  block" (each after "couldn't verify on-chain (fail-closed): " on a name check).
+
 - Internal: the wallet's own JSON reviver for node bodies (`spvJsonReviver` in `src/core/node.ts`) is deleted; the
   SPV client now uses csd-client's default `parseJsonExact` (the same rule: an integer literal outside the safe JS
   range becomes an exact bigint, a float literal stays a number). A block body or prevout source tx carrying a

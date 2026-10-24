@@ -39,7 +39,7 @@ import {
   V28_HEIGHT, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, CLAIM_COOLDOWN_BLOCKS, FILL_TIP_MARGIN,
   FEE_BPS_V16, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
@@ -91,7 +91,7 @@ function fillSource(blocks, tip) {
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
     async blockAt(height) {
       const txs = blocks.get(height) ?? [FILLER];
-      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs };
+      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) };
     },
     async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); },
   };
