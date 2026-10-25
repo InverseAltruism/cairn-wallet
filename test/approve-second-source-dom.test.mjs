@@ -32,8 +32,8 @@ const fill = (id) => ({ id, method: "fillOffer", origin: "https://dapp.example",
 const armed = async () => { await flush(); await sleep(760); await flush(); };
 const click = async (id) => { registry.get(id)._listeners.click(); await flush(20); };
 const msgEl = () => registry.get("msg");
-const PENDING = "⚠ Second source not consulted: the second source (clarvis) had not answered yet when this fill was signed, so its check of your reservation did not run. Check on the explorer that the fill delivered.";
-const FAILED = "⚠ Second source not consulted: the second source (clarvis) did not give a usable answer when this fill was signed, so its check of your reservation did not run. Check on the explorer that the fill delivered.";
+const PENDING = "Second source not consulted: the second source (clarvis) had not answered yet when this fill was signed, so its check of your reservation did not run. Check on the explorer that the fill delivered.";
+const FAILED = "Second source not consulted: the second source (clarvis) did not give a usable answer when this fill was signed, so its check of your reservation did not run. Check on the explorer that the fill delivered.";
 
 console.log("approval window: second source not consulted");
 assert.equal(secondSourceNote("pending"), PENDING);

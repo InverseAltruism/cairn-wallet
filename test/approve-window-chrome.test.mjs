@@ -8,6 +8,7 @@
 //      RED-FIRST: remove the `.ap-foot:has(#btn-reject:disabled)` rule and 2a fails; remove the .latch element and
 //      every case fails.
 // Needs playwright-core (PLAYWRIGHT_CORE) and a Chromium (PLAYWRIGHT_CHROMIUM); prints SKIP without them.
+import { APPROVE_FRAME_PX, APPROVE_WINDOW } from "../src/approve-window.ts";
 import { checker } from "./helpers/check.mjs";
 import { launchOrSkip, openWalletPage } from "./helpers/walletpage.mjs";
 
@@ -26,7 +27,7 @@ const themeOf = (page) => page.evaluate(() => ({ mode: document.documentElement.
 try {
   console.log("1. theme");
   {
-    const { page, ctx, errors } = await openWalletPage(browser, "approve", answers, { viewport: { width: 380, height: 620 }, colorScheme: "light" });
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", answers, { viewport: { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height - APPROVE_FRAME_PX }, colorScheme: "light" });
     try {
       await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
       const before = await themeOf(page);
@@ -42,7 +43,7 @@ try {
     } finally { await ctx.close(); }
   }
   {
-    const { page, ctx } = await openWalletPage(browser, "approve", answers, { viewport: { width: 380, height: 620 }, colorScheme: "light" });
+    const { page, ctx } = await openWalletPage(browser, "approve", answers, { viewport: { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height - APPROVE_FRAME_PX }, colorScheme: "light" });
     try {
       await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
       await page.waitForTimeout(600);
@@ -66,7 +67,7 @@ try {
     requestAnimationFrame(step);
   }));
   for (const reduced of [false, true]) {
-    const { page, ctx, errors } = await openWalletPage(browser, "approve", answers, { viewport: { width: 380, height: 620 } });
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", answers, { viewport: { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height - APPROVE_FRAME_PX } });
     try {
       if (reduced) await page.emulateMedia({ reducedMotion: "reduce" });
       const s = await sampleLatch(page);

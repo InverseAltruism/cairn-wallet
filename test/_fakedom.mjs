@@ -33,7 +33,11 @@ export function installFakeDom({ autoCreate = false } = {}) {
         registry.set(attrs.id, el); this._kids.push(attrs.id);
       }
     }
-    insertAdjacentHTML(_pos, html) { this._html += String(html); this._adopt(html); }
+    // "afterend" and "beforebegin" add the markup to the parent, as a browser does (the place inside it is not modelled)
+    insertAdjacentHTML(pos, html) {
+      const into = (pos === "afterend" || pos === "beforebegin") && this._parent ? this._parent : this;
+      into._html += String(html); into._adopt(html);
+    }
     appendChild(c) { this._html += c?.textContent ?? ""; return c; }
     addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
     setAttribute(name, value) { (this._attrs ||= {})[name] = String(value); }

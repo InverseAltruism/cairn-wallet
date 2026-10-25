@@ -28,6 +28,7 @@ import { join, extname, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadChromium } from "./playwright-core.mjs";
 import { idsFromSource } from "./popup-ids.mjs";
+import { APPROVE_FRAME_PX, APPROVE_WINDOW } from "../src/approve-window.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = join(ROOT, "dist");
@@ -275,7 +276,7 @@ async function standalone() {
     await rctx.close();
 
     // approve.html static + ID sweep (locked state; request cards need a live extension)
-    const actx = await browser.newContext({ viewport: { width: 380, height: 620 } });
+    const actx = await browser.newContext({ viewport: { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height - APPROVE_FRAME_PX } });
     const apage = await actx.newPage();
     watchPage(apage, "approve", errs);
     await apage.goto(base + "/approve.html");

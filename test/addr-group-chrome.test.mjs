@@ -8,6 +8,7 @@
 // Needs playwright-core (PLAYWRIGHT_CORE) and a Chromium (PLAYWRIGHT_CHROMIUM) for parts 1 and 2; part 3 runs without.
 import * as cx from "../src/core/cairnx.ts";
 import { groupedAddr, escapeHtml } from "../src/popup/clearsign.ts";
+import { APPROVE_FRAME_PX, APPROVE_WINDOW } from "../src/approve-window.ts";
 import { checker } from "./helpers/check.mjs";
 import { launchOrSkip, openWalletPage } from "./helpers/walletpage.mjs";
 
@@ -79,7 +80,7 @@ try {
     const { page, ctx, errors } = await openWalletPage(browser, "approve", {
       status: { hasVault: true, unlocked: true, addr: ME, active: 0, accounts: [{ addr: ME, label: "Main" }], tradeApi: "https://x.invalid" },
       balance: { confirmed: 1e11 }, history: [], pending: [req], tip: 120_000, epoch: 4_000, tipFloor: 0, sealedClaims: [], tokenDisplayMeta: {},
-    }, { viewport: { width: 380, height: 620 } });
+    }, { viewport: { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height - APPROVE_FRAME_PX } });
     try {
       await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
       await page.waitForTimeout(800);

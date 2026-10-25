@@ -736,14 +736,14 @@
   @keyframes pop { from { transform: scale(0.4); opacity: 0; } 60% { transform: scale(1.25); } }
 }
 
-/* ── page: the approval window (380 by 620, opened by the background) ─────────────────────────────────── */
+/* ── page: the approval window (src/approve-window.ts, opened by the background) ──────────────────────── */
 @layer page {
   .page-approve #app { height: 100vh; display: flex; flex-direction: column; }
   /* the site block: the requesting origin in full (approve.ts writes it from the browser's sender origin), what it
      asks, and the account that signs */
   .ap-top {
-    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-2);
-    padding: var(--ui-space-4) var(--ui-space-4) var(--ui-space-3); border-bottom: 1px solid var(--ui-line);
+    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-1);
+    padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-2); border-bottom: 1px solid var(--ui-line);
   }
   .ap-site { display: flex; align-items: center; gap: var(--ui-space-3); min-width: 0; }
   .ap-tile {
@@ -756,15 +756,16 @@
   .ap-ask { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-body); }
   .ap-signer {
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--ui-space-2);
-    color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-body);
+    color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug);
   }
   .ap-signer b { color: var(--ui-ink-2); font-weight: 600; }
   .ap-signer code { overflow-wrap: anywhere; }
   .page-approve #view-req { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  /* One dense scale for the request: everything 0.2.99 showed above the buttons still fits at 380 by 620, and the cost
-     rows sit above them on every request type (test/approve-layout-chrome.test.mjs). */
+  /* One dense scale for the request: every element with weight sits above the buttons at the window's real size, for
+     every request type (test/approve-layout-chrome.test.mjs), so rows, check rows and boxes take snug line heights and
+     the smallest paddings on the scale. */
   .ap-body {
-    flex: 1; min-height: 0; overflow-y: auto; padding: var(--ui-space-3) var(--ui-space-4);
+    flex: 1; min-height: 0; overflow-y: auto; padding: var(--ui-space-2) var(--ui-space-4);
     font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); overflow-wrap: anywhere;
   }
   .ap-body > * + * { margin-top: var(--ui-space-2); }
@@ -774,29 +775,31 @@
   .ap-title { color: var(--ui-muted); font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); }
   .ap-title code { color: var(--ui-ink); }
   .ap-amt {
-    font-size: var(--ui-text-3xl); font-weight: 500; letter-spacing: var(--ui-track-heading); line-height: var(--ui-leading-tight);
+    font-size: var(--ui-text-stat); font-weight: 600; letter-spacing: var(--ui-track-heading); line-height: var(--ui-leading-tight);
     font-variant-numeric: tabular-nums;
   }
   .ap-amt .dim { font-size: var(--ui-text-sm); letter-spacing: 0; }
-  .ap-lede { color: var(--ui-ink-2); line-height: var(--ui-leading-body); }
+  .ap-lede { color: var(--ui-ink-2); }
   .ap-note { margin-top: var(--ui-space-1); color: var(--ui-muted); font-size: var(--ui-text-caption); }
   .page-approve .kv { margin: 0; display: flex; flex-direction: column; border-top: 1px solid var(--ui-line); }
   .page-approve .kv > div {
     display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-3);
-    padding: var(--ui-space-2) 0; border-bottom: 1px solid var(--ui-line);
+    padding: var(--ui-space-1) 0; border-bottom: 1px solid var(--ui-line);
   }
   .page-approve .kv dt { flex: none; color: var(--ui-muted); }
   .page-approve .kv dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .page-approve .kv dd b { font-weight: 600; }
-  /* an address at the caption size fits one line beside its label at 380 px; longer ids wrap */
+  /* a whole address at the caption size and a short amount fit one line beside the label; longer ids wrap */
   .page-approve .kv dd code { font-size: var(--ui-text-caption); }
   /* the amount ends the address's last line when it fits there, kept whole */
   .page-approve .out-amt { display: inline-block; margin-left: var(--ui-space-2); white-space: nowrap; }
   .page-approve .checks { display: flex; flex-direction: column; gap: var(--ui-space-2); }
+  .page-approve .check { grid-template-columns: 16px minmax(0, 1fr); padding: var(--ui-space-1) var(--ui-space-2); line-height: var(--ui-leading-snug); }
+  .page-approve .check > svg.i { width: 16px; height: 16px; margin-top: 0; }
   /* a block, not a flex column: the token quote is running text with inline emphasis */
   .ap-box {
-    padding: var(--ui-space-2) var(--ui-space-3);
-    border-radius: var(--ui-radius-md); background: var(--ui-sunken); line-height: var(--ui-leading-body);
+    padding: var(--ui-space-1) var(--ui-space-2);
+    border-radius: var(--ui-radius-md); background: var(--ui-sunken);
   }
   .ap-box > * + :is(.kv, .check, p), .ap-box > :is(.kv, .check, p) + * { margin-top: var(--ui-space-2); }
   .ap-box > .kv { border-top: 0; }
@@ -805,8 +808,8 @@
   /* The footer: the latch, then Reject and Approve side by side at equal width. The latch fills with ink while Reject
      is disarmed after a new request and stays full once it arms. */
   .ap-foot {
-    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-3);
-    padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-4); border-top: 1px solid var(--ui-line); background: var(--ui-bg);
+    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-2);
+    padding: var(--ui-space-2) var(--ui-space-4) var(--ui-space-3); border-top: 1px solid var(--ui-line); background: var(--ui-bg);
   }
   .latch { height: 3px; border-radius: var(--ui-radius-pill); background: var(--ui-line); overflow: hidden; }
   .latch > i { display: block; width: 100%; height: 100%; background: var(--ui-ink); }

@@ -223,7 +223,7 @@ function paintNfinNote(g: { block: boolean; note: string | null }) {
   document.getElementById("nfin-note")?.remove();
   if (!g.note) return;
   // after the cost rows and the warnings under them, before the record's own rows (test/approve-layout-chrome.test.mjs)
-  const html = `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: `⚠ ${escapeHtml(g.note)}` })}</div>`;
+  const html = `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: escapeHtml(g.note) })}</div>`;
   const after = document.getElementById("send-warn") ?? document.getElementById("cost");
   if (after) after.insertAdjacentHTML("afterend", html); else $("req").insertAdjacentHTML("beforeend", html);
 }
@@ -401,7 +401,10 @@ async function fillBalance(r: any) {
     rs(r.id).balShort = Number(b.confirmed) - debitOf(r) < 0;
     if (rs(r.id).balShort) {
       ($("btn-approve") as HTMLButtonElement).disabled = true;
-      $("req").insertAdjacentHTML("beforeend", `<div class="req">${checkRow({ tier: "danger", html: escapeHtml(balanceShortNote("Reject this")) })}</div>`);
+      // under the cost rows it explains, above the buttons (test/approve-layout-chrome.test.mjs)
+      const short = `<div class="checks">${checkRow({ tier: "danger", html: escapeHtml(balanceShortNote("Reject this")) })}</div>`;
+      const cost = document.getElementById("cost");
+      if (cost) cost.insertAdjacentHTML("afterend", short); else $("req").insertAdjacentHTML("beforeend", short);
     }
   } catch {
     // offline: the cost rows stay, and the balance after says it could not be read

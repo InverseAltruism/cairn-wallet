@@ -7,6 +7,9 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launchOrSkip, openWalletPage } from "../test/helpers/walletpage.mjs";
+import { APPROVE_FRAME_PX, APPROVE_WINDOW } from "../src/approve-window.ts";
+// the approval window's page at its real size: the window less the frame the layout test allows for
+const APPROVE_PAGE = { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height - APPROVE_FRAME_PX };
 
 const ROOT = join(import.meta.dirname, "..");
 const OUT = join(ROOT, "store", "assets");
@@ -74,7 +77,7 @@ html,body{width:${w}px;height:${h}px;overflow:hidden;background:var(--ui-bg);col
 ${css}</style><body>${body}</body></html>`;
 
 function screenshot({ shot, theme, kicker, head, sub }, img) {
-  const w = img.page === "approve" ? 380 : 360, h = img.page === "approve" ? 620 : 600, scale = 640 / h;
+  const w = img.page === "approve" ? APPROVE_PAGE.width : 360, h = img.page === "approve" ? APPROVE_PAGE.height : 600, scale = 640 / h;
   return page(theme, 1280, 800, `
 .wrap{width:1280px;height:800px;display:flex;align-items:center;gap:var(--ui-space-9);padding:0 var(--ui-space-9)}
 .left{flex:1;display:flex;flex-direction:column;gap:var(--ui-space-5)}
@@ -110,7 +113,7 @@ const shots = new Map();
 try {
   for (const [file, which, theme, steps] of CAPTURES) {
     const answers = which === "approve" ? approveAnswers : popupAnswers;
-    const viewport = which === "approve" ? { width: 380, height: 620 } : { width: 360, height: 600 };
+    const viewport = which === "approve" ? APPROVE_PAGE : { width: 360, height: 600 };
     const { page: p, ctx, errors } = await openWalletPage(browser, which, answers, { viewport, colorScheme: theme, deviceScaleFactor: 2 });
     try {
       await p.waitForSelector(which === "approve" ? "#view-req:not([hidden])" : "#view-main:not([hidden])", { timeout: 15_000 });
