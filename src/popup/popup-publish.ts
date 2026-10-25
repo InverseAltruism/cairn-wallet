@@ -7,6 +7,7 @@ import { $, busy, msg, val } from "./popup-dom.js";
 import { currentExplorer } from "./popup-state.js";
 import { openPanel } from "./popup-panels.js";
 import { refreshBalance } from "./popup-balance.js";
+import { EXTERNAL_ICON, whenText } from "./popup-history.js";
 
 $("btn-post-t").addEventListener("click", () => { if (openPanel("post-form")) populateDomains(); });
 // Fill the category dropdown from the live Cairn board (/api/domains), with a
@@ -49,13 +50,13 @@ export async function renderSealed() {
   const el = $("seal-list");
   if (!list.length) { el.innerHTML = `<div class="dim" style="padding:6px 0">No sealed claims yet. Seal one above; it stays secret until you reveal.</div>`; return; }
   el.innerHTML = list.map((s) => {
-    const when = s.committedTs ? new Date(s.committedTs).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    const when = s.committedTs ? whenText(s.committedTs) : "";
     // a maybe-path seal's anchor may never have landed (0.2.57): say so; revealing it would fail
     // its on-chain commit check, and the honest state is "verify the anchor first".
     const status = s.revealed ? `<span style="color:var(--green)">Revealed</span>`
       : s.maybe ? `Sealed <span class="dim">(anchor may not have landed: check the txid on the explorer)</span>` : `Sealed`;
     const right = s.revealed
-      ? `<a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(s.txid)))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
+      ? `<a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(s.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(s.txid).slice(0, 10))}…${EXTERNAL_ICON}</a>`
       : `<button class="mini" data-reveal="${escapeHtml(String(s.txid))}">Reveal</button>`;
     return `<div class="tx"><div class="tx-top"><span class="tx-kind">${status}</span><span class="dim">${when}</span></div>
       <div class="tx-sub"><span class="dim">${escapeHtml(String(s.claim).slice(0, 44))}</span>${right}</div></div>`;

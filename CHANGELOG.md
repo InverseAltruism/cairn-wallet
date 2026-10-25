@@ -9,8 +9,11 @@
   phrase and reveal key are under More. The approval and review buttons changed sides: Reject, Cancel and Back on
   the left, Approve and Confirm on the right, equal width.
 - An account with a primary name shows the shared cairn-ui avatar for that name (a soft blue to peach conic gradient,
-  the one its names page draws) without a letter, and the account switcher shows each account's avatar from its
-  address at 16 px (was a 10 px dot); the old dark two-colour gradient, often olive green, is gone.
+  the one its names page draws) without a letter, and the account switcher shows each account's avatar at 16 px (was a
+  10 px dot); the old dark two-colour gradient, often olive green, is gone. One account draws one avatar: the
+  switcher draws the account the header shows with the header's avatar (its name's, or the cairn mark), and another
+  account with its primary name's avatar once the popup has read it, the mark when it has none, and its address's
+  until then.
 - The approval window shows each request as a title and label and value rows, with every check as a row whose tint
   and icon give its weight (red where the text was red, amber where it was neutral). The cost rows and the balance
   after sit above the buttons on every request type, the requesting site is named in full at the top, and the
@@ -98,6 +101,14 @@
   unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount
   stays, dimmed, with "Not refreshed: the last balance read. Refresh to try again." under it. The refresh button is
   the retry; the CSD row reads "Unavailable" or the dimmed amount.
+- Links to the explorer and the site end in the external-link icon instead of an arrow character ("View address",
+  each Activity row's transaction, a revealed claim's transaction, Terms of Use, Privacy). Times in Activity and in
+  the sealed claims read one way on every machine, in the block explorer's 24-hour UTC format without the seconds:
+  "24 Oct 2026, 15:30 UTC" (was the browser's locale, such as "Oct 24, 05:30 PM").
+- The Accounts sheet no longer repeats Rename and Remove on every row: a row opens to its own actions, as a name row
+  opens its detail. The active account carries an "Active" mark (was a leading dot); the remove step asks "Remove
+  this account?" with Yes and No (was "Remove?" with Yes and no), and an imported key's password step has Remove and
+  Cancel (was Remove and no). The imported key's warning, its password and the refusal without it are unchanged.
 - Internal: the popup script is split into one module per view or concern (`src/popup/popup-*.ts`, the largest
   183 lines, from one file of 1,532); its code is line for line the same apart from five lines that now write
   another module's state through a setter, and the popup shows the same pixels before and after the split in every

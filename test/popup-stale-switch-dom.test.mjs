@@ -139,6 +139,7 @@ console.log("5. removing the active account moves it, with the same effect");
   const aToken = rowsOf(byId("assets"), "tsend")[0];
   holdNext.add("assets");
   await byId("btn-accts").click(); await flush();
+  await byId("accts-list").querySelectorAll("[data-open]")[0].click(); await flush();
   await byId("accts-list").querySelectorAll("[data-remove]")[0].click(); await flush();
   await byId("accts-list").querySelectorAll("[data-confirm-remove]")[0].click(); await flush();
   check("5a after the removal moved the account to B, A's token row is gone while B loads", rowsOf(byId("assets"), "tsend").length === 0);

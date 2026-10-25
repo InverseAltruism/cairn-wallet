@@ -96,6 +96,8 @@
   button.primary { background: var(--ui-ink); border-color: transparent; color: var(--ui-on-ink); }
   button.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--ui-ink) 86%, var(--ui-bg)); }
   .btn-link svg.i { width: 15px; height: 15px; color: var(--ui-muted); }
+  /* the external-link icon after a link's text (Activity, the sealed claims, the legal links) */
+  a svg.i.ext { width: 1em; height: 1em; margin-left: 0.25em; vertical-align: -0.125em; }
   button.mini, a.mini {
     width: auto; min-height: 30px; padding: 0 var(--ui-space-3);
     display: inline-flex; align-items: center; gap: var(--ui-space-1);
@@ -223,6 +225,10 @@
   .acct-pick-line { display: flex; align-items: center; gap: var(--ui-space-2); min-width: 0; max-width: 100%; }
   /* the account's avatar (ui/avatar.css draws the circle and its hairline) */
   .acct-dot { --ui-avatar-size: var(--ui-space-4); }
+  /* the mark in a 16 px row avatar, as the header draws it at 32 px */
+  .acct-dot.mark { display: inline-grid; place-items: center; overflow: hidden; color: var(--ui-ink); }
+  .acct-dot.mark svg { width: 10px; height: 10px; }
+  .acct-av { display: contents; }
   .menu-item {
     justify-content: flex-start; gap: var(--ui-space-3); min-height: 40px; padding: 0 var(--ui-space-3);
     border: 0; border-radius: var(--ui-radius-md); font-weight: 400; color: var(--ui-ink);
@@ -694,9 +700,19 @@
   .legal a { color: var(--ui-muted); text-decoration: none; }
   .legal a:hover { color: var(--ui-ink); }
   #accts-list .tx-sub .dim { font: 400 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); }
-  #accts-list .tx-top .row { flex-wrap: nowrap; }
   #accts-list input { min-height: 30px; padding: var(--ui-space-1) var(--ui-space-2); font-size: var(--ui-text-xs); }
-  .acct-rename-input { width: 120px; }
+  /* an account row is one button that opens its actions under it (popup-accounts.ts renderAccts) */
+  .acct-hit {
+    display: block; width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: none;
+    font-weight: 400; text-align: left; white-space: normal;
+  }
+  .acct-hit:hover:not(:disabled) { background: none; }
+  .acct-hit:active:not(:disabled) { transform: none; }
+  .acct-chev { width: 14px; height: 14px; color: var(--ui-muted); transition: transform var(--ui-dur-2) var(--ui-ease); }
+  .acct-row.open .acct-chev { transform: rotate(180deg); }
+  .acct-actions { flex-wrap: nowrap; margin-top: var(--ui-space-2); }
+  .acct-actions > input { flex: 1; min-width: 0; }
+  .acct-actions > .dim { font-size: var(--ui-text-xs); }
 
   /* the status line: an ink toast at the top, clear of every sheet's buttons; text only, so it never blocks a click */
   .page-popup #msg {

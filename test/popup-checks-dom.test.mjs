@@ -17,7 +17,8 @@
 //      HONEST PATH: 4c-4e (a renew from the detail reviews and signs with the production call shape).
 //   5. The imported-key removal warning (W-23) renders as a danger row with its R3 section 4 text (meaning kept, the
 //      em dash now a colon). RED-FIRST: write it back as a plain line, or as caution, and 5a fails. HONEST PATH: 5b
-//      (an HD account still removes in one click, with no password).
+//      (an HD account still removes with one confirm, with no password). The rows carry no Rename or Remove until
+//      one is opened (W-12): RED-FIRST: render the actions on every row and 5c fails.
 //   6. An account switch closes every sheet (W-23): a name's detail cannot carry account A's name into a review
 //      signed by account B. RED-FIRST: drop closeAllPanels from switchAcct and 6a fails. HONEST PATH: 6b.
 //   7. Token rows: the tile never shows part of a ticker (the longest legal ticker is 12 characters), a served token
@@ -194,10 +195,16 @@ console.log("5. imported-key removal");
 {
   await byId("btn-accts").click(); await flush();
   const list = byId("accts-list");
+  // W-12: the rows carry no Rename or Remove until one is opened, and opening one shows its actions alone
+  const closed = list.querySelectorAll("[data-remove]").length + list.querySelectorAll("[data-rename]").length;
+  await list.querySelectorAll("[data-open]").find((b) => b.dataset.open === IMP).click(); await flush();
+  check(`5c no row repeats Rename and Remove: none on the closed list (${closed}), one of each on the opened row`,
+    closed === 0 && list.querySelectorAll("[data-remove]").length === 1 && list.querySelectorAll("[data-rename]").length === 1 && list.querySelectorAll("[data-remove]")[0].dataset.remove === IMP);
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === IMP).click(); await flush();
   const html = String(list.innerHTML);
   check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
   await list.querySelectorAll("[data-cancel]")[0].click(); await flush();
+  await list.querySelectorAll("[data-open]").find((b) => b.dataset.open === HD2).click(); await flush();
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === HD2).click(); await flush();
   await list.querySelectorAll("[data-confirm-remove]")[0].click(); await flush();
   check("5b honest: an HD account removes in one click, with no password", JSON.stringify(removed.at(-1)) === JSON.stringify([HD2]));
@@ -256,6 +263,22 @@ console.log("9. the send review's Name row");
   check(`9a the Name row is the name and the short address (${name})`, name === "alice.csd → 0x313131…3131 (via owner)");
   check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("Chain-backed"));
   check("9c the To address is grouped in fours and its text is the raw address", String(byId("c-to").innerHTML).replace(/<[^>]*>/g, "") === PAID && (String(byId("c-to").innerHTML).match(/<span>/g) || []).length === 10);
+}
+
+// 10. W-12: a link to the explorer or the site ends in the sprite's external-link icon, never an arrow character, and
+//     a row's time reads one way on every machine, in the explorer's 24-hour UTC format.
+//     RED-FIRST: put "… ↗" back in renderHistory and 10a fails; put toLocaleString back and 10b fails.
+console.log("10. links and times");
+{
+  history = [{ type: "send", to: PAID, amount: 1e8, fee: 1e6, txid: TXID, ts: Date.UTC(2026, 9, 24, 15, 30, 59) }];
+  await byId("nav-home").click();
+  await byId("btn-activity-t").click(); await flush();
+  const list = String(byId("history-list").innerHTML);
+  check("10a an Activity row's explorer link ends in the external-link icon, with no arrow character", list.includes('<use href="icons.svg#i-external-link"/>') && !list.includes("↗"));
+  check(`10b the row's time is "24 Oct 2026, 15:30 UTC" (${(/· ([^<]*UTC)/.exec(list) || [])[1]})`, list.includes("· 24 Oct 2026, 15:30 UTC"));
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../src/popup/popup.html", import.meta.url), "utf8");
+  check("10c popup.html carries no arrow character in a link", !html.includes("↗"));
 }
 
 done("popup-checks-dom");

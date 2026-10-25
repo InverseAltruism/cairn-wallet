@@ -4,7 +4,7 @@ import { escapeHtml } from "./clearsign.js";
 import { enterOnce } from "./motion.js";
 import { call } from "./popup-bridge.js";
 import { $ } from "./popup-dom.js";
-import { curAddr, siteApi, bindView, viewCurrent, nextAccountGen, nextListGen } from "./popup-state.js";
+import { curAddr, siteApi, bindView, viewCurrent, nextAccountGen, nextListGen, knownNames } from "./popup-state.js";
 import { dropStaleView, openPanel } from "./popup-panels.js";
 import { paintAvatar, resetBalanceView, supersedeBalance } from "./popup-balance.js";
 import { openTokenSend } from "./popup-tokensend.js";
@@ -65,6 +65,7 @@ export async function renderAssets() {
   const el = $("assets") as HTMLElement;
   const a = await call("cairnxAssets").catch(() => ({ ok: false }));
   if (seq !== assetsSeq) return;
+  if (a?.ok) knownNames.set(curAddr.toLowerCase(), typeof a.primaryName === "string" && a.primaryName ? a.primaryName : null);
   setIdentity(a?.ok ? a.primaryName : null);
   if (!a?.ok) {
     el.hidden = false;

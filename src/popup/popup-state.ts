@@ -41,3 +41,6 @@ export function nextListGen() { listGen++; }
 // sheet's estimate reads it instead of a read of its own. Here, in this leaf module, so a view can subscribe while
 // the popup's module graph is still loading.
 export const balanceState: { last: number | null; onChange: (() => void) | null } = { last: null, onChange: null };
+// The primary names this popup has read, per account (lower-cased address; null: read, and the account has none), so
+// the account switcher draws an account with the avatar the header draws for it.
+export const knownNames = new Map<string, string | null>();

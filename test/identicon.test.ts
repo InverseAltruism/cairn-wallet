@@ -4,7 +4,10 @@
 //  - a primary name paints a `ui-avatar` whose background is the vendored avatarBackground of that name, with no
 //    letter in it, the same for that name under any address;
 //  - a name-less account shows the cairn mark, and a later name clears the mark;
-//  - each account switcher row carries the vendored avatar seeded by its address in lower case.
+//  - one account, one avatar on a screen (W-6): the switcher draws the account the header shows with the header's avatar
+//    (its name's, or the mark), another account with its known primary name's avatar, the mark when it is known to
+//    have none, and its address's (lower case) when its name was not read.
+//    RED-FIRST: seed every row by its address again (identitySeed(null, addr)) and the name and mark row checks fail.
 // Run: npx tsx test/identicon.test.ts   (offline)
 import { avatarBackground, avatarHtml } from "../src/vendor/cairn-ui/avatar.js";
 import { checker } from "./helpers/check.mjs";
@@ -43,6 +46,7 @@ g.matchMedia = () => ({ matches: true });
 // after the stub: the popup modules read the document when they run
 const { paintAvatar } = await import("../src/popup/popup-balance.js");
 const { renderAcctSelect } = await import("../src/popup/popup-accounts.js");
+const { knownNames } = await import("../src/popup/popup-state.js");
 
 const A = "0x7A3F9C21" + "7a3f9c21".repeat(4);
 const B = "0x" + "c9d8e7f6".repeat(5);
@@ -63,9 +67,22 @@ check("a name after the mark: the mark is gone", !av.classList.contains("mark") 
 check("the name seeds the avatar, not the address: alice under another account draws the same", av.style.background === avatarBackground("alice"));
 check("and it differs from that account's address avatar", av.style.background !== avatarBackground(B));
 
+// the header now shows alice for the active account A
+const C = "0x" + "a1b2c3d4".repeat(5);
+renderAcctSelect([{ addr: A, label: "Main" }, { addr: B, label: "Miner key" }, { addr: C, label: "Spare" }], 0);
+let menu = byId("acct-menu").innerHTML;
+check("the active row draws the header's avatar: alice's, not A's address avatar", menu.includes(avatarHtml("alice", "acct-dot")) && !menu.includes(avatarHtml(A.toLowerCase(), "acct-dot")));
+check("an account whose name was not read draws its address's avatar, in lower case", menu.includes(avatarHtml(B, "acct-dot")) && menu.includes(avatarHtml(C, "acct-dot")));
+check("three accounts, three avatars", (menu.match(/class="ui-avatar acct-dot/g) || []).length === 3);
+knownNames.set(B, "bob");
+knownNames.set(C, null);
+renderAcctSelect([{ addr: A, label: "Main" }, { addr: B, label: "Miner key" }, { addr: C, label: "Spare" }], 0);
+menu = byId("acct-menu").innerHTML;
+check("once B's primary name is read, B's row draws bob's avatar, as the header would", menu.includes(avatarHtml("bob", "acct-dot")) && !menu.includes(avatarHtml(B, "acct-dot")));
+check("an account read to have no name draws the mark, as the header would", menu.includes('class="ui-avatar acct-dot mark"') && !menu.includes(avatarHtml(C, "acct-dot")));
+paintAvatar(null, A);
 renderAcctSelect([{ addr: A, label: "Main" }, { addr: B, label: "Miner key" }], 0);
-const menu = byId("acct-menu").innerHTML;
-check("each switcher row carries the vendored avatar of its address, in lower case", menu.includes(avatarHtml(A.toLowerCase(), "acct-dot")) && menu.includes(avatarHtml(B, "acct-dot")));
-check("two accounts, two avatars", (menu.match(/class="ui-avatar acct-dot"/g) || []).length === 2);
+menu = byId("acct-menu").innerHTML;
+check("a name-less active account: its row draws the mark the header draws", menu.includes('class="ui-avatar acct-dot mark"') && !menu.includes(avatarHtml("alice", "acct-dot")) && !menu.includes(avatarHtml(A.toLowerCase(), "acct-dot")));
 
 done("identicon");

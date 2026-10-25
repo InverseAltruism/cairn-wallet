@@ -1,12 +1,12 @@
 // The balance hero: the amount and its count-up, the identity avatar and the pending-merge line.
 import { INCLUSION_NOTICE_BLOCKS } from "../core/inclusion.js";
 import { escapeHtml, fmtBalance } from "./clearsign.js";
-import { avatarBackground, identitySeed } from "../vendor/cairn-ui/avatar.js";
+import { avatarBackground, avatarHtml, identitySeed } from "../vendor/cairn-ui/avatar.js";
 import { flashChange, tokenEase, tokenMs } from "./motion.js";
 import { call } from "./popup-bridge.js";
 import { $ } from "./popup-dom.js";
 import { renderHistory } from "./popup-history.js";
-import { balanceState } from "./popup-state.js";
+import { balanceState, knownNames } from "./popup-state.js";
 
 // Send-success moment: the balance settles once (popup.css `.bal-hero.sent`), `delay` ms from now (once the closing sheet
 // has cleared the hero); display only, reduced-motion aware.
@@ -33,10 +33,11 @@ const balHtml = (base: number) => `${escapeHtml(fmtBalance(base))}<span class="b
 // letter (the name is printed beside it); a name-less account shows the cairn mark instead of an address gradient.
 // avatarBackground output is numbers only, so it is safe in style.background.
 const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
+const MARK = "__mark__";
 export function paintAvatar(name: string | null, addr: string) {
   const av = document.getElementById("avatar") as HTMLElement | null;
   if (!av) return;
-  const seed = name ? identitySeed(name, addr) : "__mark__";
+  const seed = name ? identitySeed(name, addr) : MARK;
   if (av.dataset.seed === seed) return;
   av.dataset.seed = seed;
   av.classList.add("ui-avatar");
@@ -49,6 +50,19 @@ export function paintAvatar(name: string | null, addr: string) {
     av.style.background = "";
     av.innerHTML = CAIRN_MARK_SVG; // static markup, no interpolation
   }
+  repaintRowAvatars();
+}
+// One account, one avatar on a screen: the account switcher draws the account the header shows with the header's avatar,
+// and any other account with the avatar its known primary name draws (knownNames), the mark when it is known to have
+// none, and its address's when its name was not read. avatarHtml writes numbers only, whatever the seed.
+export function rowAvatarHtml(addr: string, active: boolean): string {
+  const header = active ? (document.getElementById("avatar") as HTMLElement | null)?.dataset.seed : undefined;
+  const known = knownNames.get(addr.toLowerCase());
+  const seed = active ? (header && header !== MARK ? header : null) : typeof known === "string" ? identitySeed(known, addr) : known === null ? null : identitySeed(null, addr);
+  return seed === null ? `<span class="ui-avatar acct-dot mark" aria-hidden="true">${CAIRN_MARK_SVG}</span>` : avatarHtml(seed, "acct-dot");
+}
+function repaintRowAvatars() {
+  for (const el of document.querySelectorAll<HTMLElement>("#acct-menu [data-avatar-for]")) el.innerHTML = rowAvatarHtml(el.dataset.avatarFor ?? "", el.dataset.active === "1");
 }
 // Pending-merge state (Plans/66 B4): derived by the engine from history + the utxo set the
 // balance fetch ALREADY returned (zero extra requests). Cached module-level so the refusal copy

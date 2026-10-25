@@ -135,7 +135,7 @@ async function selectRpc(url: string) {
 $("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLElement; if (m.hidden) { renderRpcMenu(); m.hidden = false; } else m.hidden = true; });
 
 // ── Explorer dropdown (header, left of RPC); choose the block explorer for activity/address links ──
-// Navigation-only: switching it changes where ↗ links point; it never grants fetch/host access (no ensureHostAccess).
+// Navigation-only: switching it changes where the explorer links point; it never grants fetch/host access (no ensureHostAccess).
 async function renderExplorerMenu() {
   const customs: string[] = await call("explorerList").catch(() => []);
   buildMenu($("explorer-menu"), {
