@@ -1,6 +1,6 @@
 // Clear-signing formatter coverage; the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate } from "../src/popup/clearsign.js";
+import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate, FILL_PAYS } from "../src/popup/clearsign.js";
 import { nameActApproveGate } from "../src/core/namegate.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
@@ -60,7 +60,9 @@ ok("describe(fillOffer) clear-signs the full recipient + amount", shown(foHtml).
 ok("describe(fillOffer) shows the fee + signed score/confidence", foHtml.includes("0.05 CSD") && foHtml.includes("score 100"));
 ok("describe(fillOffer) mounts the address-poisoning warn slot", foHtml.includes('id="send-warn"'));
 ok("debitOf(fillOffer) = outputs + fee", debitOf(fo) === 205_000_000);
-ok("costBlock(fillOffer) shows the fee and the total; describe states the fill is atomic", costBlock(fo).includes("<dt>Network fee</dt><dd>0.05 CSD</dd>") && costBlock(fo).includes("<dt>Total</dt><dd>2.05 CSD</dd>") && /atomic/i.test(describe(fo)));
+ok("costBlock(fillOffer) shows the fee and the total", costBlock(fo).includes("<dt>Network fee</dt><dd>0.05 CSD</dd>") && costBlock(fo).includes("<dt>Total</dt><dd>2.05 CSD</dd>"));
+// A CSD-paid fill's payment is final on chain while CairnX may still refuse the delivery: never "atomic".
+ok("describe(fillOffer) says the payment is not returned if CairnX refuses the fill, and never calls it atomic", describe(fo).includes(FILL_PAYS) && !/atomic/i.test(describe(fo)));
 const foBad = describe({ method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), outputs: [{ to: ADDR, value: "evil" }], fee: "junk" } });
 ok("describe(fillOffer, garbage amounts): 'invalid amount', never 'NaN'", foBad.includes("invalid amount") && !foBad.includes("NaN"));
 ok("debitOf(fillOffer, garbage) is finite", Number.isFinite(debitOf({ method: "fillOffer", params: { outputs: [{ value: "x" }], fee: "y" } })));

@@ -276,7 +276,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
         ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee, expectSigner: exp })
         : await wallet.send(x.to, x.amount, x.fee, exp);
     }
-    // Atomic fill (Attest + payment in one tx; CairnX DvP). Same posture as send:
+    // Offer fill (Attest + payment in one tx; CairnX applies the delivery). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
     // and change only ever returns to the wallet's own address.
     else if (p.method === "fillOffer") {

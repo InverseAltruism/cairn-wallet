@@ -212,7 +212,7 @@ async function main() {
     && mouts.some((o: any) => spkHex(o.script_pubkey) === R2 && Number(o.value) === 30_000_000)
     && mouts.some((o: any) => spkHex(o.script_pubkey) === addr));
 
-  console.log("\n=== dApp `fillOffer` (Attest + payment, atomic DvP) is approval-gated and cannot smuggle ===");
+  console.log("\n=== dApp `fillOffer` (Attest + payment in one tx) is approval-gated and cannot smuggle ===");
   lastSubmit = null;
   const OFFER_ID = "0x" + "22".repeat(32);
   const SELLER = "0x" + "ee".repeat(20);

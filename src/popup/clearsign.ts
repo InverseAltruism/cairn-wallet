@@ -348,6 +348,8 @@ const TOKEN_SIM = `<div id="token-sim" class="ap-box" hidden></div>`;
 const FILL_VIEW = `<div id="fill-view" class="ap-box" hidden></div>`;
 const REVEAL_PREVIEW = `<div id="reveal-preview" class="ap-box" hidden></div>`;
 const attestation = (score: number, conf: number) => `score ${score} · confidence ${conf}`;
+export const FILL_PAYS = "One transaction pays the recipients above and records the fill. CairnX then delivers what you buy; if it refuses the fill, the payment is not returned.";
+export const FILL_RECORDS = "One transaction records the fill.";
 
 export function describe(r: any): string {
   const p = r.params || {};
@@ -485,7 +487,8 @@ export function describe(r: any): string {
     const hero = outs.length > 1 ? `${fmtCsd(total)} <span class="dim">to ${outs.length} recipients</span>` : fmtCsd(outs[0]?.value);
     return title("Send CSD") + `<div class="ap-amt">${hero}</div>` + cost + o.hidden + SEND_WARN + rows(o.list);
   }
-  // Atomic fill (CairnX DvP): an attest and payment outputs in one tx. Funds move to a page-chosen recipient, so it
+  // Fill: an attest and payment outputs in one tx; CairnX applies the delivery afterwards and may refuse it, and a
+  // refused CSD-paid fill keeps its payment, so the copy never calls it atomic. Funds move to a page-chosen recipient, so it
   // clear-signs like a send, plus the offer id the attest commits to. What the user receives is convention-level; a
   // CSD-paid fill paints it into #fill-view from the offer service's listing (fillViewHtml), attributed to it.
   if (r.method === "fillOffer") {
@@ -501,7 +504,7 @@ export function describe(r: any): string {
     // Weight first (test/approve-layout-chrome.test.mjs): the amount, the cost rows, the warnings, the recipients and the
     // listing; then the explanation, the offer id and the attestation.
     return title("Fill offer") + (outs.length ? `<div class="ap-amt">${fmtCsd(total)}</div>` : "")
-      + tokenFill + cost + o.hidden + SEND_WARN + rows(o.list) + (tokenFill ? "" : FILL_VIEW) + lede("Pay and attest in one atomic transaction.")
+      + tokenFill + cost + o.hidden + SEND_WARN + rows(o.list) + (tokenFill ? "" : FILL_VIEW) + lede(tokenFill ? FILL_RECORDS : FILL_PAYS)
       + rows([["Offer", `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`], ["Attestation", attestation(Number(p.score ?? 100) >>> 0, conf)]]);
   }
   return title(escapeHtml(r.method)) + cost;

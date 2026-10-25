@@ -31,6 +31,14 @@
   below: scroll to see it") while a recipient row is not fully shown, otherwise "More below: scroll to read the whole
   request". It goes once the request is scrolled to its end and comes back if the request grows; its line is always
   reserved, so it never moves the buttons, never covers the request and never holds back Approve.
+- Each request in the approval window opens at its top, also when the queue moves on from a request the user had
+  scrolled to its end, and on a reservation's confirm step: before, the next request could open scrolled down with
+  its amount, fee and warnings above the view (test/approve-layout-chrome.test.mjs, "queue advance").
+- A fill no longer reads "Pay and attest in one atomic transaction.": a CSD-paid fill says "One transaction pays the
+  recipients above and records the fill. CairnX then delivers what you buy; if it refuses the fill, the payment is
+  not returned.", and a token-priced fill says "One transaction records the fill." The store listing's two mentions
+  of "trustless" name verification lose the word. test/wallet-claims.test.mjs keeps "atomic", "trustless",
+  "guaranteed" and "risk-free" out of everything the wallet shows.
 - In the approval window the check rows drop their leading ⚠, as in the popup (the row's icon and tint carry it),
   and so do the balance note in the popup's send review and the second-source note after a sent fill; the inline
   "⚠ unusually large fee" and "⚠ unusually long claim window" marks inside a value stay. Two texts follow the new

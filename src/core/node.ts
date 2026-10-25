@@ -844,7 +844,7 @@ export async function consolidatePreview(rpc: string, addr: string, fee: number)
   } catch { return { ok: false, error: "node unreachable" }; }
 }
 
-// Fill an on-chain offer (CairnX-style atomic delivery-versus-payment): ONE transaction
+// Fill an on-chain offer: ONE transaction
 // that carries an Attest app payload AND payment outputs. Same trust posture as sendMany —
 // recipients validated, sums safe-integer guarded, inputs selected INTERNALLY, change only
 // ever returns to this account's own address. The attest fee floor (0.05 CSD) applies.

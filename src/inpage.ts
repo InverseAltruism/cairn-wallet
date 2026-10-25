@@ -59,7 +59,7 @@ declare const __WALLET_VERSION__: string; // package.json version, stamped by bu
     // commitment, and reveal can only be done by the wallet that sealed it.
     sealClaim: (p: any) => req("sealClaim", p),
     revealClaim: (txid: string) => req("revealClaim", txid),
-    // Atomic fill (CairnX delivery-versus-payment): ONE tx = Attest(proposalId, score,
+    // Offer fill: ONE tx = Attest(proposalId, score,
     // confidence) + payment outputs. ALWAYS clear-signed like send — the approval window
     // shows the offer id, every recipient/amount, the fee and balance-after. The wallet
     // selects its own inputs; change returns only to itself.

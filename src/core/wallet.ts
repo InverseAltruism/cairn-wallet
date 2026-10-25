@@ -70,7 +70,7 @@ const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refus
 const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim; ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset; a long-lived identity record
-// Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
+// Attest fee floor (0.05 CSD): the default fee for an offer fill (Attest + payment in one tx).
 // B9: single-sourced into core/cairnx.ts defaultFeeFor("attest"); the same table the clear-sign
 // display reads, so the screen and the signer can never disagree again (the local literal was the twin).
 // The app-layer confidence SENTINEL for a token-priced fill. NOT consensus math - it is the value the trade
@@ -596,7 +596,7 @@ export class Wallet {
     const fee = p.fee ?? defaultFeeFor("attest");
     const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
   }
-  // Atomic fill (Attest + payment in ONE tx; CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
+  // Offer fill (Attest + payment in ONE tx; CairnX applies the delivery). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
   // Ordering is load-bearing: capture the signer BEFORE the preflight await (so the account the preflight
   // validates IS the account that signs), re-assert it AFTER the last await and immediately before the

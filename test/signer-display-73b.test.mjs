@@ -22,7 +22,7 @@
 //
 // Run: node --import tsx test/signer-display-73b.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
-import { fmtCsd, fmtBalance, describe, costBlock, feeValue, tokenQuoteHtml, tokenAmountBothScales, fillViewHtml, expiryValue } from "../src/popup/clearsign.ts";
+import { fmtCsd, fmtBalance, describe, costBlock, feeValue, tokenQuoteHtml, tokenAmountBothScales, fillViewHtml, expiryValue, FILL_PAYS } from "../src/popup/clearsign.ts";
 import { registerContent } from "../src/core/node.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
@@ -62,7 +62,7 @@ check("B5 honest: a fill card without decimals for an unpinned token shows base 
 console.log("C. fill cost line");
 const fill = { method: "fillOffer", params: { proposalId: PID, outputs: [{ to: A1, value: 500_000_000 }, { to: A2, value: 7_500_000 }], fee: 5_000_000 } };
 check("C1 the fill cost line does not say the outputs go to the seller", !/seller/i.test(describe(fill)));
-check("C2 honest: it states the full amount out and the network fee", describe(fill).includes(`<div class="ap-amt">5.075 CSD</div>`) && costBlock(fill).includes("<dt>Network fee</dt><dd>0.05 CSD</dd>") && costBlock(fill).includes("<dt>Total</dt><dd>5.125 CSD</dd>") && /atomic/i.test(describe(fill)));
+check("C2 honest: it states the full amount out and the network fee", describe(fill).includes(`<div class="ap-amt">5.075 CSD</div>`) && costBlock(fill).includes("<dt>Network fee</dt><dd>0.05 CSD</dd>") && costBlock(fill).includes("<dt>Total</dt><dd>5.125 CSD</dd>") && describe(fill).includes(FILL_PAYS) && !/atomic/i.test(describe(fill)));
 
 console.log("D. epoch length");
 check(`D1 24 epochs from now read as about a day (EPOCH_LEN ${EPOCH_LEN})`, expiryValue(124, 100).includes("in ~1 day(s)") && expiryValue(101, 100).includes("in ~1 h"));
