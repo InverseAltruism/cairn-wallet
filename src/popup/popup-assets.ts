@@ -28,7 +28,7 @@ function setIdentity(name: string | null | undefined) {
   if (!el) return;
   if (name) { el.textContent = `${name}.csd`; (el as HTMLElement).hidden = false; }
   else { el.textContent = ""; (el as HTMLElement).hidden = true; }
-  paintAvatar(name || null, curAddr); // identicon follows the resolved identity (name seed == CNS profile)
+  paintAvatar(name || null, curAddr); // the avatar follows the resolved identity (a name seeds the same avatar as its names page)
 }
 // epochs ≈ hours → a short remaining-time label for a lease
 function leaseLabel(n: any): string {

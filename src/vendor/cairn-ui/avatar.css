@@ -1,0 +1,17 @@
+/* The identity avatar (avatar.js writes its gradient): a circle edged by a hairline of the ink, 8% black on light grounds
+   and 8% white on dark ones. Its size is --ui-avatar-size (32 px by default), set by the consumer. The layer statement
+   repeats tokens.css's order so the file can load in any position. */
+@layer tokens, base, components, page;
+
+@layer components {
+  .ui-avatar {
+    display: inline-block;
+    flex: none;
+    width: var(--ui-avatar-size, var(--ui-space-6));
+    height: var(--ui-avatar-size, var(--ui-space-6));
+    border-radius: var(--ui-radius-pill);
+    background-color: var(--ui-sunken);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ui-ink) 8%, transparent);
+    vertical-align: middle;
+  }
+}

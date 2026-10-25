@@ -213,7 +213,8 @@
   }
   .rpc-add input { min-height: 34px; font-size: var(--ui-text-xs); }
   .acct-pick-line { display: flex; align-items: center; gap: var(--ui-space-2); min-width: 0; max-width: 100%; }
-  .acct-dot { width: 10px; height: 10px; flex: none; border-radius: var(--ui-radius-pill); }
+  /* the account's avatar (ui/avatar.css draws the circle and its hairline) */
+  .acct-dot { --ui-avatar-size: var(--ui-space-4); }
   .menu-item {
     justify-content: flex-start; gap: var(--ui-space-3); min-height: 40px; padding: 0 var(--ui-space-3);
     border: 0; border-radius: var(--ui-radius-md); font-weight: 400; color: var(--ui-ink);
@@ -405,22 +406,14 @@
     display: flex; align-items: center; gap: var(--ui-space-2); padding: var(--ui-space-3) var(--ui-space-3) 0;
   }
   .acct-chip {
-    /* the page theme's values, for the avatar's mark state inside its dark island */
-    --avatar-mark-bg: var(--ui-sunken); --avatar-mark-fg: var(--ui-ink);
     position: relative; min-width: 0; margin-right: auto;
     display: grid; grid-template-columns: 32px minmax(0, auto); column-gap: var(--ui-space-2); align-items: center;
     padding: var(--ui-space-1) var(--ui-space-2) var(--ui-space-1) var(--ui-space-1);
     border-radius: var(--ui-radius-pill); transition: background-color var(--ui-dur-1) var(--ui-ease);
   }
   .acct-chip:hover { background: var(--ui-sunken); }
-  .id-avatar {
-    grid-row: 1 / span 2; width: 32px; height: 32px; border-radius: var(--ui-radius-pill);
-    display: grid; place-items: center; overflow: hidden;
-    /* the identity gradient is the same in both themes, so the monogram is light in both (a dark island) */
-    color: var(--ui-ink); text-shadow: 0 1px 2px var(--ui-scrim); font-weight: 600; font-size: var(--ui-text-xs);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--avatar-mark-fg) 8%, transparent);
-  }
-  .id-avatar.mark { background: var(--avatar-mark-bg); color: var(--avatar-mark-fg); text-shadow: none; }
+  /* ui/avatar.css draws the circle, its hairline and the mark state's ground (--ui-sunken); this places it in the chip */
+  .id-avatar { grid-row: 1 / span 2; display: grid; place-items: center; overflow: hidden; color: var(--ui-ink); }
   .id-avatar.mark svg { width: 18px; height: 18px; }
   .primary-name { font-weight: 600; letter-spacing: var(--ui-track-snug); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .acct-chip .primary-name { grid-column: 2; grid-row: 1; font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); }

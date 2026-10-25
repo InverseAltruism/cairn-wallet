@@ -8,6 +8,9 @@
   pickers moved to Settings › Network (they were top right, also before unlocking). Accounts, post, seal, recovery
   phrase and reveal key are under More. The approval and review buttons changed sides: Reject, Cancel and Back on
   the left, Approve and Confirm on the right, equal width.
+- An account with a primary name shows the shared cairn-ui avatar for that name (a soft blue to peach conic gradient,
+  the one its names page draws) without a letter, and the account switcher shows each account's avatar from its
+  address at 16 px (was a 10 px dot); the old dark two-colour gradient, often olive green, is gone.
 - The approval window shows each request as a title and label and value rows, with every check as a row whose tint
   and icon give its weight (red where the text was red, amber where it was neutral). The cost rows and the balance
   after sit above the buttons on every request type, the requesting site is named in full at the top, and the

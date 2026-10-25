@@ -1,6 +1,6 @@
 // The account switcher in the header and the Accounts sheet (rename, remove, add, import).
+import { avatarHtml, identitySeed } from "../vendor/cairn-ui/avatar.js";
 import { checkRow, escapeHtml, groupedAddr, short } from "./clearsign.js";
-import { avatarGradient, identitySeed } from "./identicon.js";
 import { call } from "./popup-bridge.js";
 import { $, msg, val } from "./popup-dom.js";
 import { clearSendDrafts, closeAllPanels, openPanel, syncNav } from "./popup-panels.js";
@@ -8,8 +8,8 @@ import { invalidateAccountViews } from "./popup-assets.js";
 import { render } from "./popup-render.js";
 
 // Custom account switcher (same visual system as the Explorer/RPC dropdowns; the native
-// <select> popup can't be styled and clashed with them). Each row carries the account's
-// identity-gradient dot (avatarGradient output is numbers-only: injection-safe by construction).
+// <select> popup can't be styled and clashed with them). Each row carries the account's avatar, seeded by its
+// address (avatarHtml writes numbers only into the markup, whatever the seed).
 export function renderAcctSelect(accounts: { addr: string; label: string }[], active: number) {
   const a = accounts[active];
   $("acct-select").innerHTML = a
@@ -18,7 +18,7 @@ export function renderAcctSelect(accounts: { addr: string; label: string }[], ac
   const menu = $("acct-menu");
   menu.innerHTML = accounts.map((x, i) => `
     <div class="rpc-row${i === active ? " active" : ""}">
-      <button class="rpc-pick" data-acct="${i}"${i === active ? ' aria-current="true"' : ""}><span class="acct-pick-line"><span class="acct-dot" style="background:${avatarGradient(identitySeed(null, x.addr))}"></span><span class="rpc-label">${escapeHtml(x.label)}</span></span><span class="rpc-url">${escapeHtml(short(x.addr))}</span></button>
+      <button class="rpc-pick" data-acct="${i}"${i === active ? ' aria-current="true"' : ""}><span class="acct-pick-line">${avatarHtml(identitySeed(null, x.addr), "acct-dot")}<span class="rpc-label">${escapeHtml(x.label)}</span></span><span class="rpc-url">${escapeHtml(short(x.addr))}</span></button>
     </div>`).join("");
   menu.querySelectorAll<HTMLElement>("[data-acct]").forEach((b) => (b.onclick = () => switchAcct(Number(b.dataset.acct))));
 }

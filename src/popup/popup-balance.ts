@@ -1,7 +1,7 @@
 // The balance hero: the amount and its count-up, the identity avatar and the pending-merge line.
 import { INCLUSION_NOTICE_BLOCKS } from "../core/inclusion.js";
 import { escapeHtml, fmtBalance } from "./clearsign.js";
-import { avatarGradient, monogram, identitySeed } from "./identicon.js";
+import { avatarBackground, identitySeed } from "../vendor/cairn-ui/avatar.js";
 import { flashChange, tokenEase, tokenMs } from "./motion.js";
 import { call } from "./popup-bridge.js";
 import { $ } from "./popup-dom.js";
@@ -26,8 +26,9 @@ let lastBal: number | null = null;
 let balSeq = 0;
 // The amount in Geist with the unit muted; fmtBalance output is digits, separators and a sign only.
 const balHtml = (base: number) => `${escapeHtml(fmtBalance(base))}<span class="bal-unit">CSD</span>`;
-// Identity avatar: a primary .csd name gets its CNS-parity gradient + monogram; a name-less
-// account gets the phosphor cairn mark (a bare gradient + hex nibble read as a placeholder).
+// Identity avatar: a primary .csd name draws cairn-ui's avatar for that name, the one its names page draws, with no
+// letter (the name is printed beside it); a name-less account shows the cairn mark instead of an address gradient.
+// avatarBackground output is numbers only, so it is safe in style.background.
 const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
 export function paintAvatar(name: string | null, addr: string) {
   const av = document.getElementById("avatar") as HTMLElement | null;
@@ -35,10 +36,11 @@ export function paintAvatar(name: string | null, addr: string) {
   const seed = name ? identitySeed(name, addr) : "__mark__";
   if (av.dataset.seed === seed) return;
   av.dataset.seed = seed;
+  av.classList.add("ui-avatar");
   if (name) {
     av.classList.remove("mark");
-    av.style.background = avatarGradient(identitySeed(name, addr));
-    av.textContent = monogram(name, addr);
+    av.style.background = avatarBackground(seed);
+    av.innerHTML = "";
   } else {
     av.classList.add("mark");
     av.style.background = "";
