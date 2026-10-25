@@ -99,7 +99,7 @@ export async function refreshBalance(settleIn = 0) {
     ($("bal-note") as HTMLElement).hidden = true;
     const next = Number(b.confirmed);
     const from = balanceState.last;
-    balanceState.last = next;
+    balanceState.last = next; balanceState.stale = false;
     const row = $("csd-row-amt");
     row.textContent = fmtBalance(next); row.classList.remove("stale");
     balanceState.onChange?.();
@@ -125,6 +125,7 @@ export async function refreshBalance(settleIn = 0) {
 // caption alone in the amount's place. The refresh button beside it is the retry.
 function balanceFailed() {
   const el = $("balance"), row = $("csd-row-amt"), note = $("bal-note") as HTMLElement;
+  balanceState.stale = true;
   el.classList.remove("loading");
   el.classList.add("stale");
   row.classList.add("stale");
@@ -152,4 +153,4 @@ export function resetBalanceView() {
   row.textContent = ""; row.classList.remove("stale");
   ($("bal-note") as HTMLElement).hidden = true;
 }
-export function forgetBalance() { balanceState.last = null; }
+export function forgetBalance() { balanceState.last = null; balanceState.stale = false; }

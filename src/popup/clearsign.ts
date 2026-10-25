@@ -36,10 +36,13 @@ export const checkRow = (c: Check): string => `<div class="check ${c.tier}"><svg
 const danger = (html: string): string => checkRow({ tier: "danger", html });
 const caution = (html: string): string => checkRow({ tier: "caution", html });
 // Label and value rows; labels are fixed copy, values are markup the caller escaped. `id` names the list for approve.ts.
-// A recipient row carries its address in data-to, so the approval window can mark it when the warning box only counts.
+// A recipient row carries its address in data-to (recipientKey), so the approval window can mark it when the warning box
+// only counts.
 type Row = [label: string, value: string, to?: string];
+/** A recipient's key: its address in lower case with control characters made visible, as data-to reads back. */
+export const recipientKey = (to: string): string => neutralizeControls(String(to).toLowerCase());
 const rows = (list: Row[], id?: string): string => list.length
-  ? `<dl class="kv"${id ? ` id="${id}"` : ""}>${list.map(([l, v, to]) => `<div${to !== undefined ? ` data-to="${escapeHtml(to.toLowerCase())}"` : ""}><dt>${l}</dt><dd>${v}</dd></div>`).join("")}</dl>` : "";
+  ? `<dl class="kv"${id ? ` id="${id}"` : ""}>${list.map(([l, v, to]) => `<div${to !== undefined ? ` data-to="${escapeHtml(recipientKey(to))}"` : ""}><dt>${l}</dt><dd>${v}</dd></div>`).join("")}</dl>` : "";
 const title = (html: string): string => `<div class="ap-title">${html}</div>`;
 const lede = (html: string): string => `<p class="ap-lede">${html}</p>`;
 
@@ -669,9 +672,13 @@ const recipientOf = (raw: Recipient): { to: string; kind: RecipientKind } => ({
 });
 export function recipientFlags(recipients: Recipient[], sentTo: string[], ownAddrs: string[]): RecipientFlag[] {
   const flags: RecipientFlag[] = [];
+  const seen = new Set<string>();
   for (const raw of recipients) {
     const { to, kind } = recipientOf(raw);
     if (to.toLowerCase() === TREASURY_ADDR) continue;          // fixed protocol sink, never a user recipient
+    // one flag per address: a request paying one address twice is one new address, and each of its rows gets one mark
+    if (seen.has(to.toLowerCase())) continue;
+    seen.add(to.toLowerCase());
     const { lookalike, firstTime } = recipientStatus(to, sentTo, ownAddrs);
     if (lookalike) flags.push({ to, kind, tier: "danger", lookalike });
     else if (firstTime) flags.push({ to, kind, tier: "caution", lookalike: null });

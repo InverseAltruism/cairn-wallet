@@ -40,7 +40,8 @@ export function nextListGen() { listGen++; }
 // The balance the hero shows (the last read for this account, null before one), and who repaints with it: the send
 // sheet's estimate reads it instead of a read of its own. Here, in this leaf module, so a view can subscribe while
 // the popup's module graph is still loading.
-export const balanceState: { last: number | null; onChange: (() => void) | null } = { last: null, onChange: null };
+// `stale`: the latest read failed, so `last` is an earlier read.
+export const balanceState: { last: number | null; stale: boolean; onChange: (() => void) | null } = { last: null, stale: false, onChange: null };
 // The primary names this popup has read, per account (lower-cased address; null: read, and the account has none), so
 // the account switcher draws an account with the avatar the header draws for it.
 export const knownNames = new Map<string, string | null>();

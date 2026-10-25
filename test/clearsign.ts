@@ -1,6 +1,6 @@
 // Clear-signing formatter coverage; the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate, FILL_PAYS } from "../src/popup/clearsign.js";
+import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, recipientKey, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate, FILL_PAYS } from "../src/popup/clearsign.js";
 import { nameActApproveGate } from "../src/core/namegate.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
@@ -422,6 +422,12 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   const many = sendWarnings([LOOK, "0x333333" + "66".repeat(15) + "3333", NEW(40)], [PAID], []);
   ok("W-8: two look-alikes and one new address read in the plural and the singular", many[0]!.html.includes("2 of these addresses resemble ones you've seen before but are <b>not</b> identical. Each is marked")
     && many[1]!.html.includes("1 of these addresses is new to this wallet. It is marked"));
+  // one flag per address: three outputs to one new address are one new address, named once
+  // RED-FIRST: drop the `seen` check in recipientFlags and this reads three lines for one address.
+  const dup = sendWarnings([NEW(50), NEW(50), NEW(50)], [PAID], []);
+  ok("W-8: a request paying one new address three times names it once", dup.length === 1 && dup[0]!.html.split("<br>").length === 1 && !/of these addresses/.test(dup[0]!.html));
+  // a row's key is what data-to reads back, control characters included, so its mark lands
+  ok("W-8: recipientKey lower-cases and makes control characters visible, as data-to stores them", recipientKey("0xAB\u200Bcd") === "0xab\\u200Bcd");
   ok("W-8: the treasury is never flagged", sendWarnings([TREASURY_ADDR], [], []).length === 0);
 }
 

@@ -16,7 +16,7 @@ $("csd-row").addEventListener("click", () => { openPanel("send-form"); updateSen
 // read of its own). Display only: the review reads the balance again, and a negative result there keeps Confirm down.
 function updateSendEstimate() {
   $("s-fee").textContent = fmtCsd(SEND_FEE);
-  const after = $("s-after"), bal = balanceState.last;
+  const after = $("s-after"), bal = balanceState.stale ? null : balanceState.last;
   const raw = val("s-amt").trim();
   const base = raw ? parseUnits(raw, 8) : "0";
   if (bal === null || base === null) { after.textContent = bal === null ? "Unknown" : "Not a valid amount"; after.className = "dim"; return; }

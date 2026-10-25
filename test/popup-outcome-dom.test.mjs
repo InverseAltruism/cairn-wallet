@@ -280,7 +280,14 @@ console.log("11. W-4: the send sheet shows the network fee and the balance after
   t(`11c nothing typed: the balance as it is (${JSON.stringify(c)})`, () => { assert.equal(c.after, "100 CSD"); });
   const d = typed("1.123456789");
   t(`11d more than 8 decimals: not a valid amount (${JSON.stringify(d)})`, () => { assert.equal(d.after, "Not a valid amount"); });
-  // RED-FIRST: drop the input listener and 11a-11d keep the first value; drop SEND_FEE from the sum and 11a, 11b fail.
+  // after a failed refresh the hero shows an earlier read, dimmed and captioned; the estimate does not build on it
+  h.balance = () => { throw new Error("rpc down"); };
+  await byId("btn-refresh").click(); await flush();
+  const e = typed("1");
+  t(`11e after a failed refresh the balance after is unknown, not built on the earlier read (${JSON.stringify(e)})`, () => { assert.equal(e.after, "Unknown"); });
+  h.balance = () => ({ confirmed: 100e8, utxos: [] });
+  // RED-FIRST: drop the input listener and 11a-11d keep the first value; drop SEND_FEE from the sum and 11a, 11b fail;
+  // read balanceState.last regardless of `stale` and 11e fails.
 }
 
 console.log(`\npopup-outcome-dom: ${pass} passed, ${fail} failed`);
