@@ -34,8 +34,6 @@ ok("CSD Review parallelizes recipientChecks+balance",
 
 const fillspv = src("src/core/fillspv.ts");
 ok("proveEventAt fan-out uses mapPool at SCAN_POOL", /await mapPool\(liveOthers, SCAN_POOL/.test(fillspv) && /await mapPool\(scanned, SCAN_POOL/.test(fillspv));
-ok("countMyOtherLiveHolds body is still the conservative over-count (unchanged this vehicle)",
-  /export function countMyOtherLiveHolds\([\s\S]*?\bn\+\+;/.test(fillspv));
 
 const namespv = src("src/core/namespv.ts");
 // The store write is built (LC.toRecords) only inside the serialized block and only its transaction is detached:

@@ -9,12 +9,27 @@
 // module-scoped; each tsx test file is its own process, so the registry is naturally isolated per file.
 import { TREASURY_ADDR } from "../src/core/cairnx.js";
 import { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.js";
-import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
+import { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, countOtherHoldsAtGrant, parseRecord, type RpcTxJson } from "../src/vendor/cairnx-spv.js";
 
 // Re-export the building blocks so a test imports its whole rig surface from here (one import line).
 export { buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR } from "../src/core/cairnx.js";
 export { signSighash, buildScriptSig, addrFromPriv } from "../src/core/csdtx.js";
 export { txid as ctxid, sighash as vSighash, merkleRoot, rpcTxToTx, resolve } from "../src/vendor/cairnx-spv.js";
+
+// A node `/block` response body as text, which is what SpvSource.blockAt returns (the bind parses the text itself).
+// A bigint field is written as a bare integer literal, as the node writes a u64.
+export const nodeBlockBody = (txs: readonly unknown[]): string =>
+  JSON.stringify({ ok: true, txs }, (_k, v) => (typeof v === "bigint" ? `@@BIG:${v}` : v)).replace(/"@@BIG:(-?\d+)"/g, "$1");
+
+// The count liveFillSpvSource computes, over chain events: cairnx-core countOtherHoldsAtGrant at the fclaim on
+// `offerId` mined at `height`; undefined (the fill preflight refuses) when it refuses or there is no such fclaim.
+interface ProposeLike { kind?: string; id: string; height: number; pos: number; proposer: string; uri: string; payloadHash: string; expiresEpoch: number }
+export function holdCountAt(events: readonly ProposeLike[], offerId: string, me: string, height: number): number | undefined {
+  const proposes = events.filter((e) => e.kind === "propose");
+  const fc = proposes.find((e) => e.height === height && (parseRecord(e.uri, e.payloadHash) as { offer?: string } | null)?.offer === offerId);
+  const hc = fc ? countOtherHoldsAtGrant(proposes, { id: fc.id, height: fc.height, pos: fc.pos, offer: offerId }, me) : null;
+  return hc?.ok ? hc.count : undefined;
+}
 
 export const CAIRNX_DOMAIN = "cairnx:v1";
 export const REG_FEE = 1000_000_000; // 10 CSD; generously above any nameRegFee (overpay is accepted)
@@ -32,7 +47,7 @@ export const prevoutFor = (t: unknown): string | null => PREVOUTS.get(String(t).
 export const pick = (b: Built): Built => ({ uri: b.uri, payloadHash: b.payloadHash });
 export const feeOut = (v: number = REG_FEE): Output[] => [{ to: TREASURY_ADDR, value: v }];
 
-// Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape; exactly what SpvSource.blockAt returns. Each
+// Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape; exactly what a node block body carries. Each
 // tx references a UNIQUE prevout whose scriptPubkey is registered here; by default the signer spends their
 // OWN coin (the honest case), and `prevScriptPubkey` overrides it to simulate a swapped scriptSig.
 export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: number; priv: string; outputs?: Output[]; prevScriptPubkey?: string; domain?: string }): RpcTxJson {
@@ -101,7 +116,7 @@ export function source(
   opts: { tamperMerkle?: number | null; verifiedTip?: number; nodeTip?: number; floorTip?: number } = {},
 ): {
   prepare(): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number }>;
-  blockAt(height: number): Promise<{ merkle: string; txs: RpcTxJson[] }>;
+  blockAt(height: number): Promise<{ merkle: string; body: string }>;
   prevoutScriptPubkey(prevTxid: string): Promise<string | null>;
 } {
   // floorTip (WALLET-LAPSE-TIP-1): the persisted, trusted-across-sessions tip high-water used ONLY to
@@ -114,7 +129,7 @@ export function source(
       if (!txs) throw new Error(`no verified header at ${height}`);
       let merkle = merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t))));
       if (tamperMerkle === height) merkle = "0x" + "ff".repeat(32);
-      return { merkle, txs };
+      return { merkle, body: nodeBlockBody(txs) };
     },
     async prevoutScriptPubkey(prevTxid: string) { return prevoutFor(prevTxid); }, // H3 prevout-ownership oracle
   };

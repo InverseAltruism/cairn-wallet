@@ -9,7 +9,7 @@ import { checker } from "./_check.ts";
 import {
   buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR,
   addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, resolve,
-  REG_FEE, proposeTx, attestTx, world, source, feeOut, pick, prevoutFor, mkFetch as mkFetchByBase,
+  REG_FEE, proposeTx, attestTx, world, source, feeOut, pick, prevoutFor, nodeBlockBody, mkFetch as mkFetchByBase,
 } from "./_spvrig.ts";
 import { nameCommit, nameCommitRecord, nameFinalize, V25_HEIGHT, V28_HEIGHT, REG_COMMIT_MAX_BLOCKS, offer, fclaim, deploy, mint, tradeFee, makerRebate, epochOf, SCORE_FILL, CONF_TOKEN_FILL, DEPLOY_FEE } from "../src/vendor/cairnx-spv.js";
 
@@ -118,7 +118,7 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   const blocks = new Map([[33700, txs]]);
   const hints = [{ txid: ctxid(rpcTxToTx(claimTx)), height: 33700, pos: 0 }];
   // a source that serves the real (filler-padded) tx-set + its true merkle
-  const src = { async prepare() { return { verifiedTip: 33800, nodeTip: 33800 }; }, async blockAt() { return { merkle, txs }; }, async prevoutScriptPubkey(t) { return prevoutFor(t); } };
+  const src = { async prepare() { return { verifiedTip: 33800, nodeTip: 33800 }; }, async blockAt() { return { merkle, body: nodeBlockBody(txs) }; }, async prevoutScriptPubkey(t) { return prevoutFor(t); } };
   // only a claim (no nset) ⇒ addr defaults to owner A
   const r = await unionOne(NAME, { addr: A, owner: A }, hints, src);
   ok("an app-less filler tx in a hinted block does NOT break verification (no throw)", r.verified === true && r.owner === A);

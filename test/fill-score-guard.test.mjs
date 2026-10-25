@@ -44,7 +44,7 @@ const csdOuts = (me) => requiredFillOutputs(csdOffer(me), BigInt(V)).map(({ to, 
 // 0.2.71: the quote the approval window displays for tokOffer (40,000,000 ask at 150 bps: fee 600,000)
 const TOK_Q = { ticker: "USDX", amount: "40000000", fee: "600000", total: "40600000", giveTicker: "AAA", giveAmount: "10" };
 const tokOffer = (me) => ({ id: TOID, seller: SELLER, status: "open", give: { ticker: "AAA", amount: "10" }, want: { ticker: "USDX", amount: "40000000" }, taker: me, height: 47_000, feeBps: 150 });
-const tokProven = (me) => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: me.toLowerCase(), bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "USDX", wantAmount: "40000000" });
+const tokProven = (me) => ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: me.toLowerCase(), bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token", wantTicker: "USDX", wantAmount: "40000000" }, wantTicker: "USDX", wantAmount: "40000000" });
 
 function mkStub(offerFor) {
   const stats = { submits: [] };

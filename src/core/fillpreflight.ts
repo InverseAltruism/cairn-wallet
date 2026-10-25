@@ -3,7 +3,7 @@
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
-import { fclaimHoldEnd, offerExpiryHeightOf, FILL_TIP_MARGIN, type CxOfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, offerExpiryHeightOf, FILL_TIP_MARGIN, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -31,11 +31,9 @@ export function tipDependentFillReason(reason: string): boolean {
   return /^(no live claim by you|this fclaim is not the live granted hold|too close to the hold deadline)|not buried deep enough yet/.test(String(reason));
 }
 
-// B7e-FIX (W1 token-lane close): this predicate now runs on the TOKEN-priced lane too (tokenLanePreflight), not only
-// the CSD lane. On the token lane the give leg is the load-bearing content bind
-// and the want-type leg is a real rejecter (on the CSD lane the pre-existing value leg shadows it). The
-// want-type leg binds only the want TYPE (token vs CSD), so the token lane binds want.ticker/want.amount
-// separately: bindOfferTerms carries no token-want ticker/amount leg (see tokenLanePreflight).
+// Runs on the CSD lanes and the token lane (tokenLanePreflight). On the token lane the give leg and the want leg
+// are the content bind: the want leg refuses a proven CSD offer served as a token offer and, for a proven token
+// want, a served want.ticker or want.amount that differs from the record (on the CSD lane the value leg shadows it).
 function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean {
   return bindOfferTerms(offer, t, { give: true, wantType: true });
 }
@@ -60,6 +58,21 @@ async function offerExpiryRefusal(wallet: FillPreflightIo, proven: ProvenOfferPa
   return null;
 }
 
+/** Thrown by the fclaim-lane source (fillspv.ts) when the merkle-proven offer Propose is not an offer the resolver admits (cairnx-core
+ *  provenOfferRefusal: its domain, payee and creation rules), so a fill would pay and deliver nothing. */
+export class OfferNotAdmittedError extends Error {
+  constructor(readonly reason: string) {
+    super(`fill-SPV: the proven offer is not an offer the resolver admits (${reason})`);
+    this.name = "OfferNotAdmittedError";
+  }
+}
+
+// A merkle-proven offer the resolver does not admit as an offer (provenOfferRefusal: a foreign settlement domain, the
+// treasury as payee, a record rule at its creation): the resolver ignores a fill of it, so the payment would be lost.
+function offerNotAdmitted(reason: string): FillRefusal {
+  return refuse("FILL_UNSAFE", `refusing to sign: this offer's on-chain record is not an offer the marketplace accepts (${reason}), so the chain would take your payment and deliver nothing`);
+}
+
 // Abort bound for the fclaim-lane second-source reads (offer and reservation record). The fill does not wait on
 // them: an answer is used only if it arrived before the SPV scan finished (fclaimLanePreflight; timed in
 // test/fill-offer-crosscheck and test/fill-reservation-verdict).
@@ -74,14 +87,16 @@ export type FillNotes = { secondSource?: "pending" | "failed" };
 // What the SPV seams return to the fill preflight: the fclaim lane's proof source with the computed cap
 // over-count, the proven terms and whether the tip was floor-clamped; the legacy lane's proven offer author.
 export type FillSpvIoExt = FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean };
-export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; wantTicker?: string; wantAmount?: string };
+export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number };
+// The proven offer Propose is not an offer the resolver admits; `refused` is cairnx-core provenOfferRefusal's reason.
+export type ProvenOfferRefused = { refused: string };
 // The reads the fill preflight makes through the wallet: the CairnX read API, the node tip and its PoW-backed
 // floor, and the two merkle-proving SPV seams.
 export interface FillPreflightIo {
   tradeGet(path: string): Promise<Response>;
   tip(): Promise<number | null>;
   tipFloor(): Promise<number>;
-  makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | null>;
+  makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
   makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIoExt>;
 }
 
@@ -112,11 +127,11 @@ export type TokenFillQuote = {
 // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
 export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
-  let offer: CxOfferState | null = null;
+  let offer: OfferState | null = null;
   let fetchFailed = false;
   try {
     const r0 = await wallet.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default): recipient path fails clean
-    if (r0.ok) offer = (await r0.json().catch(() => null)) as CxOfferState | null;   // shape checked next: a string status
+    if (r0.ok) offer = (await r0.json().catch(() => null)) as OfferState | null;   // shape checked next: a string status
     else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
   } catch { fetchFailed = true; }
   if (offer && typeof offer.status === "string") {
@@ -218,7 +233,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
 // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35); the same
 // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
 // this block hand-mirrored it. Pure local math over data already in hand; no added I/O.
-async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, payto: string, pay: bigint, tip: number): Promise<FillRefusal | null> {
+async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums: Map<string, bigint>, payto: string, pay: bigint, tip: number): Promise<FillRefusal | null> {
   // F2-legacy: this SPV-less LEGACY / dApp lane (window.cairn.fillOffer, no swapguard in the loop) sizes the
   // payment against the resolver-served want.payto and the rebate against the served seller, so a lying read-
   // path redirects the payment (theft) or mis-sizes the rebate so resolve() rejects the fill (burn). Bind both
@@ -226,6 +241,7 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, su
   // transient read (never a hard decline on an honest fill), FILL_UNSAFE on a proven mismatch. Honest offers
   // default payto/seller to the author, so no honest fill declines.
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
+  if (proven && "refused" in proven) return offerNotAdmitted(proven.refused);
   if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
     return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   const expiry = await offerExpiryRefusal(wallet, proven, tip);
@@ -255,7 +271,7 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, su
 
 // The offer-id token lane: the fill pays in tokens (an Attest with no CSD outputs). The give and want content are
 // bound to the merkle-proven offer and the reviewed quote to the proven want, fee and total.
-async function tokenLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, sums: Map<string, bigint>, tip: number, reviewedQuote?: TokenFillQuote): Promise<FillRefusal | null> {
+async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums: Map<string, bigint>, tip: number, reviewedQuote?: TokenFillQuote): Promise<FillRefusal | null> {
   // XR-1 (N26): a token-priced fill routes NO CSD - its on-chain tx is the Attest with outputs:[].
   // The attest->fillOffer reroute hardcodes outputs:[] (in attest()), but a DIRECT dApp fillOffer
   // on a token-priced served offer can still carry CSD outputs, which this lane never checks. `sums`
@@ -273,21 +289,15 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, 
   // record), so no honest token fill declines. No CSD payto/need-map bind here: a token fill routes no CSD
   // (outputs:[], N26), so the payment legs do not apply.
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
+  if (proven && "refused" in proven) return offerNotAdmitted(proven.refused);
   if (!proven)
     return { ok: false, error: "couldn't prove this token offer's on-chain terms yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   const expiry = await offerExpiryRefusal(wallet, proven, tip);
   if (expiry) return expiry;
-  // give legs (give.ticker/amount/name) + the symmetric want-TYPE refusal, via the SAME vendored predicate
-  // the CSD lane uses. The want-type leg also refuses a proven CSD offer served as a token offer, so once
-  // this passes the proven offer is genuinely token-priced (proven.wantTicker is defined).
+  // The give legs and the want leg (type, and for a token want its ticker and amount) through the vendored
+  // bindOfferTerms; once this passes the proven offer is token-priced and the served want is the proven one.
   if (provenTermsMismatch(offer, proven.terms))
-    return { ok: false, error: "refusing to sign: the offer's asset (give) or want-type does not match its on-chain record (a lying resolver may be misrepresenting what you receive)", sighashMatch: false, code: "FILL_UNSAFE" };
-  // The token ticker/amount you PAY is bound explicitly: bindOfferTerms binds the want TYPE but carries no
-  // token want ticker/amount leg. A deflated want.amount or a swapped want.ticker would otherwise let the
-  // resolver understate your cost for what you receive. Mirrors swapguard verifyOfferContent's want leg.
-  const w = (offer.want as { ticker?: string; amount?: string }) ?? {};
-  if (String(w.ticker) !== String(proven.wantTicker ?? "") || String(w.amount) !== String(proven.wantAmount ?? ""))
-    return { ok: false, error: "refusing to sign: the token or amount you would pay does not match the offer's on-chain record (a lying resolver may be understating your cost)", sighashMatch: false, code: "FILL_UNSAFE" };
+    return { ok: false, error: "refusing to sign: what you would receive or what you would pay does not match the offer's on-chain record (a lying resolver may be misrepresenting the trade)", sighashMatch: false, code: "FILL_UNSAFE" };
   // RT-W2: bind the number the user SAW at review to the chain-proven want. The review card's
   // quote was a live resolver read; a resolver answering low on that read and honest at click
   // used to debit the larger proven amount behind the low card. The displayed quote must equal
@@ -300,15 +310,15 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: CxOfferState, 
     return refuse("REVIEW_REQUIRED", "the wallet could not show you the exact token amount this fill debits, so it will not sign it. Reopen the purchase and approve once the amount is shown.");
   if (reviewedQuote && reviewedQuote.ticker !== undefined) {
     const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
-    if (qT !== String(proven.wantTicker ?? "") || qA !== String(proven.wantAmount ?? ""))
-      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.wantAmount ?? "?"} ${proven.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
+    if (qT !== String(proven.terms.wantTicker ?? "") || qA !== String(proven.terms.wantAmount ?? ""))
+      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.terms.wantAmount ?? "?"} ${proven.terms.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
   }
   // 0.2.71 (CX-15): bind the reviewed fee and total. The fee follows from the proven amount and the
   // offer's proven inclusion height (1.5% from V16, 1% before), not from the served feeBps, so a
   // quote that understated the fee (e.g. a served feeBps of 0) cannot sign a larger debit.
   {
     let provenAmt: bigint;
-    try { provenAmt = BigInt(String(proven.wantAmount ?? "")); } catch { return refuse("FILL_UNSAFE", "refusing to sign: the offer's on-chain amount could not be read"); }
+    try { provenAmt = BigInt(String(proven.terms.wantAmount ?? "")); } catch { return refuse("FILL_UNSAFE", "refusing to sign: the offer's on-chain amount could not be read"); }
     const provenBps = Number((proven.terms as { feeBps?: unknown }).feeBps);
     const bps = Number.isFinite(provenBps) ? provenBps : (Number(offer.height) >= V16_HEIGHT ? FEE_BPS_V16 : FEE_BPS);
     const fee = cairnxTradeFee(provenAmt, bps);
@@ -347,6 +357,7 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
     // chain) or the header source (a false header with valid PoW) is wrong; the refusal names both and blames
     // neither. Every other failure here is a read that could not complete (no tip, a missing chunk, a timeout)
     // and is retryable.
+    if (e instanceof OfferNotAdmittedError) return offerNotAdmitted(e.reason);
     if (e instanceof BodyMismatchError && e.bodySource)
       return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified${e.headerSource ? ` from ${e.headerSource}` : ""}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
     return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };

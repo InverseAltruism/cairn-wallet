@@ -13,7 +13,7 @@ import { serveFixture, serveOffer, splitSource, memStore, legacyOf, OFFER, FIX_T
 import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { liveFillSpvSource, provenOfferPayto } from "../src/core/fillspv.ts";
 import { fclaim, epochOf, feeBpsAt, V29_HEIGHT } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { mkCoin, txReply } from "./_coin.ts";
@@ -45,7 +45,7 @@ const window = {
   async prepare() { return { verifiedTip: TIP, nodeTip: TIP }; },
   async blockAt(h) {
     const txs = blocks.get(h) ?? [FILLER];
-    return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs };
+    return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) };
   },
   async prevoutScriptPubkey(t) { return prevoutFor(t); },
 };

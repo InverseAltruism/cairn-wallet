@@ -1,7 +1,7 @@
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/crypto.js
+// node_modules/@noble/hashes/esm/crypto.js
 var crypto = typeof globalThis === "object" && "crypto" in globalThis ? globalThis.crypto : void 0;
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/utils.js
+// node_modules/@noble/hashes/esm/utils.js
 function isBytes(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
 }
@@ -140,7 +140,7 @@ function randomBytes(bytesLength = 32) {
   throw new Error("crypto.getRandomValues must be defined");
 }
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/_md.js
+// node_modules/@noble/hashes/esm/_md.js
 function setBigUint64(view, byteOffset, value, isLE) {
   if (typeof view.setBigUint64 === "function")
     return view.setBigUint64(byteOffset, value, isLE);
@@ -260,7 +260,7 @@ var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
   1541459225
 ]);
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha2.js
+// node_modules/@noble/hashes/esm/sha2.js
 var SHA256_K = /* @__PURE__ */ Uint32Array.from([
   1116352408,
   1899447441,
@@ -400,10 +400,10 @@ var SHA256 = class extends HashMD {
 };
 var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/sha256.js
+// node_modules/@noble/hashes/esm/sha256.js
 var sha2562 = sha256;
 
-// packages/codec/dist/index.js
+// node_modules/@inversealtruism/csd-codec/dist/index.js
 var strip0x = (h) => h.startsWith("0x") ? h.slice(2) : h;
 var hb = (h) => hexToBytes(strip0x(h));
 var hx = (b) => "0x" + bytesToHex(b);
@@ -639,28 +639,6 @@ function verifyMerkleProof(txidHex, pos, branchHex, merkleRootHex) {
     return false;
   }
 }
-function merkleBranch(txidsHex, pos) {
-  let layer = txidsHex.map(hb);
-  const branch = [];
-  let idx = pos;
-  while (layer.length > 1) {
-    const sibIdx = idx ^ 1;
-    const sib = sibIdx < layer.length ? layer[sibIdx] : layer[idx];
-    branch.push(hx(sib));
-    const next = [];
-    for (let i = 0; i < layer.length; i += 2) {
-      const left = layer[i];
-      const right = i + 1 < layer.length ? layer[i + 1] : layer[i];
-      const buf = new Uint8Array(64);
-      buf.set(left, 0);
-      buf.set(right, 32);
-      next.push(sha256d(buf));
-    }
-    layer = next;
-    idx >>= 1;
-  }
-  return branch;
-}
 var MAX_DEPTH = 256;
 var NATIVE_OBJECT_SOURCE = Function.prototype.toString.call(Object);
 var isPlainObject = (v) => {
@@ -690,7 +668,11 @@ function payloadHash(content) {
   return "0x" + bytesToHex(sha2562(utf8ToBytes(canonicalJson(content))));
 }
 
-// packages/client/dist/index.js
+// node_modules/@inversealtruism/csd-client/dist/index.js
+var exactIntReviver = (_key, value, context) => typeof value === "number" && !Number.isSafeInteger(value) && typeof context?.source === "string" && /^-?\d+$/.test(context.source) ? BigInt(context.source) : value;
+function parseJsonExact(text) {
+  return JSON.parse(text, exactIntReviver);
+}
 var DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 var DEFAULT_RETRIES = 0;
 var finiteOr = (v, dflt) => v !== void 0 && Number.isFinite(v) ? v : dflt;
@@ -704,7 +686,7 @@ var CsdClient = class {
   constructor(opts) {
     this.base = opts.baseUrl.replace(/\/+$/, "");
     this.maxBytes = Math.max(1, finiteOr(opts.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES));
-    this.parseJson = opts.parseJson ?? JSON.parse;
+    this.parseJson = opts.parseJson ?? parseJsonExact;
     const gf = globalThis.fetch;
     this.f = opts.fetch ?? (gf ? gf.bind(globalThis) : gf);
     this.timeoutMs = opts.timeoutMs ?? 1e4;
@@ -891,7 +873,7 @@ function rpcHeaderToHeader(h) {
   return { version: h.version, prev: h.prev, merkle: h.merkle, time: h.time, bits: h.bits, nonce: h.nonce };
 }
 
-// packages/light/dist/index.js
+// node_modules/@inversealtruism/csd-light/dist/index.js
 var TARGET_MEMO_CAP = 4096;
 var targetMemo = /* @__PURE__ */ new Map();
 function bitsToTargetBigInt(bits) {
@@ -964,6 +946,40 @@ function expectedBitsFromWindow(window, height) {
   if (bitsToTargetBigInt(bits) > POW_LIMIT_TARGET2) return POW_LIMIT_BITS;
   return bits;
 }
+function bindBlockTxs(txs, verified) {
+  const h = verified.height;
+  if (!Array.isArray(txs)) return { ok: false, kind: "malformed", reason: `block ${h}: the body has no tx list` };
+  const out = [];
+  for (let pos = 0; pos < txs.length; pos++) {
+    const j = txs[pos];
+    const json = j && typeof j === "object" && !j.app ? { ...j, app: { type: "None" } } : j;
+    let tx, id;
+    try {
+      tx = rpcTxToTx(json);
+      id = txid(tx);
+    } catch (e) {
+      return { ok: false, kind: "malformed", reason: `block ${h}: tx ${pos} does not decode (${e?.message ?? e})` };
+    }
+    out.push({ pos, txid: id, tx, json });
+  }
+  const ids = out.map((t) => t.txid.toLowerCase());
+  if (new Set(ids).size !== ids.length)
+    return { ok: false, kind: "duplicate-txid", reason: `block ${h} repeats a txid (a malleated body)` };
+  if (merkleRoot(ids).toLowerCase() !== String(verified.header.merkle).toLowerCase())
+    return { ok: false, kind: "body-mismatch", reason: `block ${h} does not match its verified merkle root` };
+  return { ok: true, txs: out };
+}
+function bindBlockBody(bodyText, verified) {
+  let body;
+  try {
+    body = parseJsonExact(bodyText);
+  } catch (e) {
+    return { ok: false, kind: "malformed", reason: `block ${verified.height}: the body is not JSON (${e?.message ?? e})` };
+  }
+  const b = body;
+  if (!b || typeof b !== "object" || b.ok === false) return { ok: false, kind: "malformed", reason: `block ${verified.height}: the node returned no block` };
+  return bindBlockTxs(b.txs, verified);
+}
 var satAddWork = (a, bits) => {
   const s = a + workForBitsMemo(bits);
   return s > MAX_U128 ? MAX_U128 : s;
@@ -1024,7 +1040,7 @@ var LightClient = class _LightClient {
   checkpoints;
   /** Verified header chain. chain[i].height = baseHeight + i. */
   chain = [];
-  /** Height of chain[0] — 0 for genesis-start, the seed start for checkpoint-start. */
+  /** Height of chain[0]: 0 for genesis-start, the seed start for checkpoint-start. */
   baseHeight = 0;
   batch;
   /** Whether a real per-height source exists (vs the default provider that can only throw). */
@@ -1123,7 +1139,7 @@ var LightClient = class _LightClient {
    *
    * Edge (safe-direction): right after a checkpoint seed shorter than MTP_WINDOW, the available window
    * can be shorter than the node's full MTP walk (which would reach below baseHeight). A truncated
-   * median over ascending times is ≥ the node's, so the `time > mtp` gate is only ever STRICTER here —
+   * median over ascending times is ≥ the node's, so the `time > mtp` gate is only ever STRICTER here:
    * it can reject a header the node accepts, never accept one the node rejects. The standard API
    * (`syncFromCheckpoint`, context = LWMA_WINDOW = 45 ≥ MTP_WINDOW) always supplies a full window.
    */
@@ -1139,7 +1155,7 @@ var LightClient = class _LightClient {
   }
   /**
    * Seed a TRUSTED, contiguous header run ending at a pinned checkpoint, so forward sync needs
-   * only a small window — not a 27k-block genesis fetch. The seed is the trust anchor (PoW links
+   * only a small window, not a 27k-block genesis fetch. The seed is the trust anchor (PoW links
    * are still spot-checked, but seed bits aren't LWMA-re-derived; that's the explicit trade for
    * not syncing from genesis). chainwork becomes RELATIVE to the seed. `checkpointHash` MUST match
    * the last seeded header.
@@ -1228,17 +1244,10 @@ var LightClient = class _LightClient {
     return { adopted: true, rolledBack, newTip: altTip.height };
   }
   /**
-   * Verify a tx's inclusion against a verified header (merkle proof built from the block).
-   *
-   * SG-CONTENT-BIND-1: the merkle branch is folded over a txid RE-DERIVED from each tx BODY
-   * (`codecTxid(rpcTxToTx(body))`), NEVER the server-reported `.txid` field. The txid commits to the
-   * whole tx (incl. `app.payload_hash`), so a body whose recomputed id folds to the PoW-verified merkle
-   * root is authentic byte-for-byte — a lying read path that swaps a body while keeping the reported
-   * `.txid` re-derives to a different id and fails closed (it neither matches the requested txid nor
-   * folds to the root). On a proven inclusion we SURFACE the proven tx (`tx`) and, for a Propose, its
-   * committed `appPayloadHash`, so a caller can bind an offer's terms to the ON-CHAIN commitment
-   * instead of a resolver-served `/proposal` (which the same routed backend controls). This mirrors the
-   * shipped `verifyClaimSPV` block re-derivation (cairn swapguard.js), made canonical here for A1/B4.
+   * Verify a tx's inclusion against a verified header, through the block bind (bind.ts): every txid re-derived
+   * from its body, no repeated txid, the set hashing to the verified merkle root. On success it surfaces the
+   * proven body (`tx`) and, for a Propose, its committed `appPayloadHash`, so a caller binds an offer to the
+   * on-chain commitment rather than a served `/proposal`. The body's scriptSigs are not committed by the txid.
    */
   async verifyTxInclusion(txidHex) {
     if (!this.client) return { trustLevel: "rpc-trusted", included: false, reason: "no client for proof fetch" };
@@ -1249,31 +1258,23 @@ var LightClient = class _LightClient {
     if (height < this.baseHeight) return { trustLevel: "rpc-trusted", included: false, reason: `tx below the synced base (${this.baseHeight})` };
     if (height > tipHeight) {
       const gap = height - tipHeight;
-      if (gap > 256) return { trustLevel: "rpc-trusted", included: false, reason: `tx at ${height} is ${gap} blocks beyond tip \u2014 sync(${height}) first` };
+      if (gap > 256) return { trustLevel: "rpc-trusted", included: false, reason: `tx at ${height} is ${gap} blocks beyond tip; sync(${height}) first` };
       await this.sync(height);
       tipHeight = this.baseHeight + this.chain.length - 1;
     }
     const verified = this.at(height);
     if (!verified) return { trustLevel: "rpc-trusted", included: false, reason: "could not verify the containing header" };
     const b = await this.client.blockByHeight(height);
-    const derivedIds = [];
-    for (const jt of b.txs) {
-      try {
-        derivedIds.push(txid(rpcTxToTx(jt)));
-      } catch {
-        return { trustLevel: "rpc-trusted", included: false, reason: "undecodable tx in block (tampered read path)" };
-      }
-    }
-    const pos = derivedIds.findIndex((x) => x.toLowerCase() === txidHex.toLowerCase());
-    if (pos < 0) return { trustLevel: "rpc-trusted", included: false, reason: "tx body not found in block (or re-derived txid mismatch)" };
-    const ok = verifyMerkleProof(derivedIds[pos], pos, merkleBranch(derivedIds, pos), verified.header.merkle);
-    if (!ok) return { trustLevel: "rpc-trusted", included: false, reason: "merkle proof failed" };
-    const provenTx = b.txs[pos];
+    const bound = bindBlockTxs(b.txs, verified);
+    if (!bound.ok) return { trustLevel: "rpc-trusted", included: false, reason: bound.reason };
+    const hit = bound.txs.find((t2) => t2.txid.toLowerCase() === txidHex.toLowerCase());
+    if (!hit) return { trustLevel: "rpc-trusted", included: false, reason: "tx body not found in block (or re-derived txid mismatch)" };
+    const provenTx = hit.json;
     const appPayloadHash = provenTx.app.type === "Propose" ? provenTx.app.payload_hash : void 0;
     return { trustLevel: "verified-inclusion", included: true, blockHeight: height, confirmations: tipHeight - height + 1, tx: provenTx, appPayloadHash };
   }
   /**
-   * Balance for an address. HONEST: `rpc-trusted` — a header chain cannot prove an output is still
+   * Balance for an address. HONEST: `rpc-trusted`; a header chain cannot prove an output is still
    * unspent (no UTXO commitment). A future Neutrino-style scan would yield `trustLevel:'scanned'`.
    */
   async balance(addr) {
@@ -1284,7 +1285,7 @@ var LightClient = class _LightClient {
   /**
    * Serialize the verified chain for persistence. A long-lived consumer (wallet, bridge differ)
    * snapshots on shutdown and `fromSnapshot`s on boot instead of re-fetching FULL BLOCK BODIES
-   * for the whole window every restart (the default provider's per-header cost). Headers only —
+   * for the whole window every restart (the default provider's per-header cost). Headers only:
    * tiny (≈100 bytes/height as JSON).
    */
   toSnapshot() {
@@ -1303,10 +1304,10 @@ var LightClient = class _LightClient {
     return out;
   }
   /**
-   * Restore from a snapshot. The load RE-VERIFIES — hash recomputation, prev links, timestamp
+   * Restore from a snapshot. The load RE-VERIFIES: hash recomputation, prev links, timestamp
    * rules, PoW on every header, AND `bits` re-derived from the LWMA window for every NON-trusted
    * (forward-synced) header, exactly as the live `sync`/`verifyOne` path accepted it. Only the
-   * original seed window (`trusted`) skips the time/LWMA re-derivation — the same posture
+   * original seed window (`trusted`) skips the time/LWMA re-derivation, the same posture
    * `seedTrusted` allows for the checkpoint trade. A checkpoint-configured client additionally
    * refuses ANY snapshot, genesis-rooted included, unless a pinned checkpoint COVERS the whole
    * trusted seed prefix: `baseHeight + LWMA_WINDOW - 1 <= cp <= last` for some configured `cp`
@@ -1317,7 +1318,7 @@ var LightClient = class _LightClient {
    * recomputed, never read from the file.
    */
   /** Shared restore setup (containment + baseHeight normalisation) for fromSnapshot /
-      fromSnapshotAsync — one copy, so the two entry points can never drift on the anchor rules. */
+      fromSnapshotAsync: one copy, so the two entry points can never drift on the anchor rules. */
   static prepareRestore(s, opts) {
     if (s.v !== 1 || !Array.isArray(s.headers) || !s.headers.length) throw new Error("bad snapshot");
     const lc2 = new _LightClient(opts);
@@ -1335,7 +1336,7 @@ var LightClient = class _LightClient {
     return { lc: lc2, baseHeight };
   }
   /** The per-header restore step, shared VERBATIM by fromSnapshot (sync) and fromSnapshotAsync
-      (chunked) — a second verifier copy could drift (S5-a). Carries (prevHash, work) across. */
+      (chunked): a second verifier copy could drift (S5-a). Carries (prevHash, work) across. */
   static restoreOne(lc2, baseHeight, e, i, prevHash, work) {
     const height = Number(e.height);
     if (!Number.isSafeInteger(height) || height < 0) throw new Error(`snapshot bad height at index ${i}: ${height}`);
@@ -1372,12 +1373,12 @@ var LightClient = class _LightClient {
     }
     return lc2;
   }
-  /** S5-a (register Phase 4, 2026-09-12): the CHUNKED async restore — the IDENTICAL per-header
+  /** S5-a (register Phase 4, 2026-09-12): the CHUNKED async restore, the IDENTICAL per-header
       verification (restoreOne, shared with the sync path), but yields to the event loop every
       `chunk` headers so a long snapshot restore doesn't freeze the MV3 UI thread on slow hardware.
       The consumer view stays atomic: the wallet holds the PROMISE (`_spvSrc`) and only the resolved
       client is ever read. The checkpoint is NEVER bumped and the rejection semantics are unchanged
-      (a hostile snapshot is still refused whole — the throw just happens at a later await). */
+      (a hostile snapshot is still refused whole; the throw just happens at a later await). */
   static async fromSnapshotAsync(s, opts = {}, chunk = 2e3) {
     const { lc: lc2, baseHeight } = _LightClient.prepareRestore(s, opts);
     let prevHash = null, work = 0n;
@@ -1426,7 +1427,7 @@ var LightClient = class _LightClient {
   }
 };
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/hmac.js
+// node_modules/@noble/hashes/esm/hmac.js
 var HMAC = class extends Hash {
   constructor(hash, _key) {
     super();
@@ -1494,7 +1495,7 @@ var HMAC = class extends Hash {
 var hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
 hmac.create = (hash, key) => new HMAC(hash, key);
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/utils.js
+// node_modules/@noble/curves/esm/utils.js
 var _0n = /* @__PURE__ */ BigInt(0);
 var _1n = /* @__PURE__ */ BigInt(1);
 function _abool2(value, title = "") {
@@ -1647,7 +1648,7 @@ function memoized(fn) {
   };
 }
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/modular.js
+// node_modules/@noble/curves/esm/abstract/modular.js
 var _0n2 = BigInt(0);
 var _1n2 = BigInt(1);
 var _2n = /* @__PURE__ */ BigInt(2);
@@ -1992,7 +1993,7 @@ function mapHashToField(key, fieldOrder, isLE = false) {
   return isLE ? numberToBytesLE(reduced, fieldLen) : numberToBytesBE(reduced, fieldLen);
 }
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/curve.js
+// node_modules/@noble/curves/esm/abstract/curve.js
 var _0n3 = BigInt(0);
 var _1n3 = BigInt(1);
 function negateCt(condition, item) {
@@ -2270,7 +2271,7 @@ function _createCurveFields(type, CURVE, curveOpts = {}, FpFnLE) {
   return { CURVE, Fp, Fn };
 }
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/abstract/weierstrass.js
+// node_modules/@noble/curves/esm/abstract/weierstrass.js
 var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n2) / den;
 function _splitEndoScalar(k, basis, n) {
   const [[a1, b1], [a2, b2]] = basis;
@@ -3284,13 +3285,13 @@ function weierstrass(c) {
   return _ecdsa_new_output_to_legacy(c, signs);
 }
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/_shortw_utils.js
+// node_modules/@noble/curves/esm/_shortw_utils.js
 function createCurve(curveDef, defHash) {
   const create = (hash) => weierstrass({ ...curveDef, hash });
   return { ...create(defHash), create };
 }
 
-// node_modules/.pnpm/@noble+curves@1.9.7/node_modules/@noble/curves/esm/secp256k1.js
+// node_modules/@noble/curves/esm/secp256k1.js
 var secp256k1_CURVE = {
   p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
   n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
@@ -3333,7 +3334,7 @@ function sqrtMod(y) {
 var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
 var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/legacy.js
+// node_modules/@noble/hashes/esm/legacy.js
 var Rho160 = /* @__PURE__ */ Uint8Array.from([
   7,
   4,
@@ -3451,15 +3452,29 @@ var RIPEMD160 = class extends HashMD {
 };
 var ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160());
 
-// node_modules/.pnpm/@noble+hashes@1.8.0/node_modules/@noble/hashes/esm/ripemd160.js
+// node_modules/@noble/hashes/esm/ripemd160.js
 var ripemd1602 = ripemd160;
 
-// packages/crypto/dist/index.js
+// node_modules/@inversealtruism/csd-crypto/dist/index.js
 function hash160(bytes) {
   return hx(ripemd1602(sha2562(bytes)));
 }
 function addrFromPub(pub33) {
   return hash160(hb(pub33));
+}
+var RUST_WS = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
+var rustTrim = (s) => {
+  let a = 0, b = s.length;
+  while (a < b && RUST_WS.test(s.charAt(a))) a++;
+  while (b > a && RUST_WS.test(s.charAt(b - 1))) b--;
+  return s.slice(a, b);
+};
+var HEX40 = /^[0-9a-fA-F]{40}$/;
+function addrFromScriptPubkey(spk) {
+  if (typeof spk !== "string") return null;
+  const t = rustTrim(spk);
+  const h = t.startsWith("0x") ? t.slice(2) : t;
+  return HEX40.test(h) ? "0x" + h.toLowerCase() : null;
 }
 function verifyDigest(sig64, pub33, digestHex) {
   try {
@@ -3494,8 +3509,21 @@ function recoverSigner(scriptSig, digestHex) {
     return null;
   }
 }
+function authorOf(tx, prevoutScriptPubkey) {
+  const in0 = tx.inputs?.[0];
+  if (!in0) return null;
+  const owner = addrFromScriptPubkey(prevoutScriptPubkey);
+  if (!owner) return null;
+  let digest;
+  try {
+    digest = sighash(tx);
+  } catch {
+    return null;
+  }
+  return recoverSigner(in0.scriptSig, digest) === owner ? owner : null;
+}
 
-// packages/cairnx/dist/index.js
+// node_modules/@inversealtruism/cairnx-core/dist/index.js
 var DOMAIN = "cairnx:v1";
 var ACTIVATION_HEIGHT = 29860;
 var V11_HEIGHT = 29960;
@@ -3518,6 +3546,7 @@ function expiredClaimFee(name, epochsPastGraceEnd, height) {
 }
 var MAX_RECORD_BYTES = MAX_URI_BYTES;
 var MAX_AMOUNT = (1n << 96n) - 1n;
+var MAX_TOKEN_DECIMALS = 8;
 var SCORE_FILL = 100;
 var SCORE_CANCEL = 0;
 var SCORE_CLAIM = 50;
@@ -3663,7 +3692,7 @@ function parseRecord(uri, payloadHashHex) {
       if (!onlyKeys(r, DEPLOY_KEYS)) return null;
       if (!isTicker(r.ticker)) return null;
       if (r.name !== void 0 && (typeof r.name !== "string" || r.name.length > 32)) return null;
-      if (typeof r.decimals !== "number" || !Number.isInteger(r.decimals) || r.decimals < 0 || r.decimals > 8) return null;
+      if (typeof r.decimals !== "number" || !Number.isInteger(r.decimals) || r.decimals < 0 || r.decimals > MAX_TOKEN_DECIMALS) return null;
       if (parseAmount(r.supply) === null) return null;
       if (r.mint !== "open" && r.mint !== "issuer") return null;
       if (r.mint === "open" && parseAmount(r.mintLimit) === null) return null;
@@ -3827,25 +3856,10 @@ var fclaim = (r) => buildRecord({ v: 1, t: "fclaim", ...r });
 function ptAmt(v) {
   return typeof v === "string" && AMOUNT_RE.test(v) ? BigInt(v) : 0n;
 }
-var ord = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-function resolve(events, tipHeight) {
-  const ordered = [...events].sort(
-    (a, b) => a.height - b.height || Number(a.kind === "attest") - Number(b.kind === "attest") || a.pos - b.pos || ord(
-      a.kind === "propose" ? a.id : a.txid,
-      b.kind === "propose" ? b.id : b.txid
-    )
-  );
-  const eid = (e) => e.kind === "propose" ? e.id : e.txid;
-  const seenIds = /* @__PURE__ */ new Set();
-  const applied = [];
-  for (const e of ordered) {
-    if (e.height >= V29_HEIGHT) {
-      const k = eid(e);
-      if (seenIds.has(k)) continue;
-      seenIds.add(k);
-    }
-    applied.push(e);
-  }
+var effExpiry = (e, height) => e.height >= V22_HEIGHT ? e.expiresEpoch : height >= V21_HEIGHT ? Math.min(e.expiresEpoch, epochOf(e.height) + MAX_OFFER_EPOCHS) : e.expiresEpoch;
+var claimGrace = (o) => o.claimUntilHeight !== void 0 ? claimGraceOf(o.claimUntilHeight, o.claimTxid) : 0;
+var claimHeld = (o, height) => o.claimedBy !== void 0 && o.claimUntilHeight !== void 0 && height < o.claimUntilHeight + claimGrace(o);
+function createContext() {
   const tokens = /* @__PURE__ */ new Map();
   const balances = /* @__PURE__ */ new Map();
   const names = /* @__PURE__ */ new Map();
@@ -3874,13 +3888,6 @@ function resolve(events, tipHeight) {
   };
   const fclaims = /* @__PURE__ */ new Map();
   const log = [];
-  let feesPaid = 0n;
-  let pendingCancels = [];
-  let pendingBlock = -1;
-  const applyPendingCancels = () => {
-    for (const f of pendingCancels) f();
-    pendingCancels = [];
-  };
   const bal = (ticker, addr) => {
     let m = balances.get(ticker);
     if (!m) {
@@ -3906,7 +3913,6 @@ function resolve(events, tipHeight) {
       b.available += amt;
     }
   };
-  const effExpiry = (e, height) => e.height >= V22_HEIGHT ? e.expiresEpoch : height >= V21_HEIGHT ? Math.min(e.expiresEpoch, epochOf(e.height) + MAX_OFFER_EPOCHS) : e.expiresEpoch;
   const sweepExpired = (height) => {
     const ep = epochOf(height);
     for (const id of [...openOffers]) {
@@ -3944,10 +3950,6 @@ function resolve(events, tipHeight) {
       if (height > r.finalizeBy) recaptures.delete(nm);
     }
   };
-  const V15_EPOCH = epochOf(V15_HEIGHT);
-  const paidThrough = (n) => n.paidThroughEpoch ?? V15_EPOCH + NAME_TERM_EPOCHS;
-  const lapsed = (n, ep) => ep > paidThrough(n) + NAME_GRACE_EPOCHS;
-  const inGrace = (n, ep) => ep > paidThrough(n) && !lapsed(n, ep);
   const markBidDone = (o, buyer) => {
     if (!o.bid) return;
     const b = bids.get(o.bid);
@@ -3960,34 +3962,960 @@ function resolve(events, tipHeight) {
       setOfferStatus(o, "cancelled");
     }
   };
-  const earlierAnchor = (effHeight, pos, id, inc) => effHeight < inc.effHeight || effHeight === inc.effHeight && (pos < inc.pos || pos === inc.pos && id < inc.id);
-  const claimGrace = (o) => o.claimUntilHeight !== void 0 ? claimGraceOf(o.claimUntilHeight, o.claimTxid) : 0;
-  const claimHeld = (o, height) => o.claimedBy !== void 0 && o.claimUntilHeight !== void 0 && height < o.claimUntilHeight + claimGrace(o);
-  const openFillReject = (o, height, who, targetId) => {
-    if (!(height >= V13_HEIGHT && !o.taker)) return void 0;
-    if (height < V17_HEIGHT) return "v1.3: open CSD-quoted fills disabled (offer must be taker-bound)";
-    if (height >= V28_HEIGHT && o.claimTxid !== void 0 && targetId === o.id) return "v2.8: fill the fclaim txid, not the offer";
-    if (!(claimHeld(o, height) && who === o.claimedBy)) return "v1.7: open offer \u2014 claim it first (no live claim by you)";
-    return void 0;
-  };
-  const deliverNameToBuyer = (n, who, ev) => {
-    n.owner = who;
-    n.locked = false;
-    n.addr = void 0;
-    n.profile = void 0;
-    if (ev.height >= V13_HEIGHT) {
-      n.effHeight = ev.height;
-      n.pos = ev.pos;
-      n.id = ev.txid;
-      n.height = ev.height;
-      n.viaFill = true;
-    }
+  const liveHoldCount = (who, height) => {
+    let liveN = 0;
+    for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, height) && (height < V29_HEIGHT || x.status === "open")) liveN++;
+    return liveN;
   };
   const releaseGiveLock = (o, who, amt) => {
     const t = o.give.ticker;
     bal(t, o.seller).locked -= amt;
     bal(t, who).available += amt;
     offerLock.delete(o.id);
+  };
+  return {
+    tokens,
+    balances,
+    names,
+    commits,
+    recaptures,
+    offers,
+    offerLock,
+    bids,
+    openOffers,
+    openBids,
+    pendingNames,
+    fclaims,
+    log,
+    setOfferStatus,
+    setBidStatus,
+    putName,
+    bal,
+    note,
+    releaseGive,
+    sweepExpired,
+    markBidDone,
+    voidOpenNameOffers,
+    liveHoldCount,
+    releaseGiveLock,
+    feesPaid: 0n,
+    // v1.4 fill-before-cancel: at V14_HEIGHT+ a cancel/ocancel's EFFECT is deferred to the block
+    // boundary, so any same-block fill wins — a seller can no longer snipe a buyer's in-flight
+    // payment by front-running the fill with a cheap cancel (cancel applies first in consensus
+    // order: proposals before attests, and a paid-up cancel attest can out-pos the fill). A fill
+    // that lands = seller got paid = a completed sale; the late cancel then no-ops. Pre-v14 blocks
+    // never populate pendingCancels, so all historical replay stays byte-identical.
+    pendingCancels: []
+  };
+}
+var openFillReject = (o, height, who, targetId) => {
+  if (!(height >= V13_HEIGHT && !o.taker)) return void 0;
+  if (height < V17_HEIGHT) return "v1.3: open CSD-quoted fills disabled (offer must be taker-bound)";
+  if (height >= V28_HEIGHT && o.claimTxid !== void 0 && targetId === o.id) return "v2.8: fill the fclaim txid, not the offer";
+  if (!(claimHeld(o, height) && who === o.claimedBy)) return "v1.7: open offer \u2014 claim it first (no live claim by you)";
+  return void 0;
+};
+var deliverNameToBuyer = (n, who, ev) => {
+  n.owner = who;
+  n.locked = false;
+  n.addr = void 0;
+  n.profile = void 0;
+  if (ev.height >= V13_HEIGHT) {
+    n.effHeight = ev.height;
+    n.pos = ev.pos;
+    n.id = ev.txid;
+    n.height = ev.height;
+    n.viaFill = true;
+  }
+};
+function applyAttest(c, ev) {
+  const { offers, fclaims, bids, note, setBidStatus } = c;
+  const who = ev.attester.toLowerCase();
+  let o = offers.get(ev.proposalId);
+  if (!o && ev.height >= V28_HEIGHT && ev.score === SCORE_FILL) {
+    const fc = fclaims.get(ev.proposalId);
+    if (fc && fc.granted) {
+      const linked = offers.get(fc.offer);
+      if (linked && linked.claimTxid === ev.proposalId) o = linked;
+    }
+  }
+  if (!o) {
+    if (ev.height >= V28_HEIGHT && ev.score === SCORE_FILL && fclaims.has(ev.proposalId)) {
+      note(ev, ev.txid, "fill", false, "fclaim not current (denied or superseded): no delivery, denied-fclaim fill");
+      return;
+    }
+    const b = bids.get(ev.proposalId);
+    if (b && ev.score === SCORE_CANCEL) {
+      if (who !== b.bidder) {
+        note(ev, ev.txid, "bidcancel", false, "only bidder may cancel");
+        return;
+      }
+      if (b.status !== "open") {
+        note(ev, ev.txid, "bidcancel", false, `bid ${b.status}`);
+        return;
+      }
+      setBidStatus(b, "cancelled");
+      note(ev, ev.txid, "bidcancel", true);
+    }
+    return;
+  }
+  if (ev.score === SCORE_CANCEL) applyCancel(c, ev, o, who);
+  else if (ev.score === SCORE_FILL && isTokenWant(o.want)) applyTokenFill(c, ev, o, who);
+  else if (ev.score === SCORE_FILL && o.min !== void 0 && !isNameGive(o.give)) applyPartialFill(c, ev, o, who);
+  else if (ev.score === SCORE_FILL) applyFill(c, ev, o, who);
+  else if (ev.height >= V17_HEIGHT && ev.score === SCORE_CLAIM) applyLegacyClaim(c, ev, o, who);
+}
+function applyCancel(c, ev, o, who) {
+  const { note, releaseGive, setOfferStatus } = c;
+  if (who !== o.seller) {
+    note(ev, ev.txid, "cancel", false, "only seller may cancel");
+    return;
+  }
+  if (o.status !== "open") {
+    note(ev, ev.txid, "cancel", false, `offer ${o.status}`);
+    return;
+  }
+  if (o.taker !== void 0 && o.height >= V28_HEIGHT) {
+    note(ev, ev.txid, "cancel", false, "v2.8: taker-bound offers are firm quotes (uncancellable)");
+    return;
+  }
+  if (ev.height >= V14_HEIGHT) {
+    c.pendingCancels.push(() => {
+      if (ev.height >= V28_HEIGHT && o.claimTxid !== void 0 && claimHeld(o, ev.height)) {
+        note(ev, ev.txid, "cancel", false, "v2.8: frozen (fclaim hold live)");
+        return;
+      }
+      if (o.status === "open") {
+        releaseGive(o);
+        setOfferStatus(o, "cancelled");
+        note(ev, ev.txid, "cancel", true);
+      } else note(ev, ev.txid, "cancel", false, "superseded by same-block fill (v1.4)");
+    });
+  } else {
+    releaseGive(o);
+    setOfferStatus(o, "cancelled");
+    note(ev, ev.txid, "cancel", true);
+  }
+}
+function applyTokenFill(c, ev, o, who) {
+  const { tokens, names, offerLock, bal, note, setOfferStatus, markBidDone, releaseGiveLock } = c;
+  if (o.status !== "open") {
+    note(ev, ev.txid, "fill", false, `offer ${o.status}`);
+    return;
+  }
+  if (o.taker && who !== o.taker) {
+    note(ev, ev.txid, "fill", false, "taker-bound offer");
+    return;
+  }
+  if (ev.confidence !== CONF_TOKEN_FILL) {
+    note(ev, ev.txid, "fill", false, "token fill requires confidence marker");
+    return;
+  }
+  if (!tokens.has(o.want.ticker)) {
+    note(ev, ev.txid, "fill", false, "want ticker does not exist");
+    return;
+  }
+  const amt = BigInt(o.want.amount);
+  const fee = o.feeBps ? tradeFee(amt, o.feeBps) : 0n;
+  const buyer = bal(o.want.ticker, who);
+  if (buyer.available < amt + fee) {
+    note(ev, ev.txid, "fill", false, "insufficient want-token balance");
+    return;
+  }
+  const giveName = isNameGive(o.give) ? names.get(o.give.name) : void 0;
+  if (isNameGive(o.give) && !giveName) {
+    note(ev, ev.txid, "fill", false, "name vanished (consensus violation)");
+    return;
+  }
+  const giveLock = isNameGive(o.give) ? void 0 : offerLock.get(o.id);
+  if (!isNameGive(o.give) && giveLock === void 0) {
+    note(ev, ev.txid, "fill", false, "offer lock missing");
+    return;
+  }
+  buyer.available -= amt + fee;
+  bal(o.want.ticker, o.want.payto).available += amt;
+  if (fee > 0n) bal(o.want.ticker, TREASURY_ADDR).available += fee;
+  if (isNameGive(o.give)) deliverNameToBuyer(giveName, who, ev);
+  else releaseGiveLock(o, who, giveLock);
+  setOfferStatus(o, "filled");
+  o.fill = { buyer: who, txid: ev.txid, height: ev.height, paid: amt.toString(), fee: fee.toString() };
+  markBidDone(o, who);
+  note(ev, ev.txid, "fill", true);
+}
+function applyPartialFill(c, ev, o, who) {
+  const { offerLock, bal, note, setOfferStatus, markBidDone } = c;
+  if (o.status !== "open") {
+    note(ev, ev.txid, "fill", false, `offer ${o.status}`);
+    return;
+  }
+  if (o.taker && who !== o.taker) {
+    note(ev, ev.txid, "fill", false, "taker-bound offer");
+    return;
+  }
+  const blk = openFillReject(o, ev.height, who, ev.proposalId);
+  if (blk) {
+    note(ev, ev.txid, "fill", false, blk);
+    return;
+  }
+  const pt = ev.paidTo ?? {};
+  const want = BigInt(o.want.value);
+  const paidSoFar = BigInt(o.paid ?? "0");
+  const remaining = want - paidSoFar;
+  const X = ptAmt(pt[o.want.payto]);
+  const minV = BigInt(o.min);
+  const effMin = remaining < minV ? remaining : minV;
+  if (X < effMin) {
+    note(ev, ev.txid, "fill", false, "payment below offer min");
+    return;
+  }
+  const x = X < remaining ? X : remaining;
+  const fee = o.feeBps ? tradeFee(x, o.feeBps) : 0n;
+  if (ptAmt(pt[TREASURY_ADDR]) < fee) {
+    note(ev, ev.txid, "fill", false, "protocol fee unpaid");
+    return;
+  }
+  const giveTotal = BigInt(o.give.amount);
+  const newPaid = paidSoFar + x;
+  const deliveredSoFar = BigInt(o.delivered ?? "0");
+  const newDelivered = giveTotal * newPaid / want;
+  const out = newDelivered - deliveredSoFar;
+  if (out === 0n) {
+    note(ev, ev.txid, "fill", false, "fill too small to deliver any tokens");
+    return;
+  }
+  const lock = offerLock.get(o.id);
+  if (lock === void 0) {
+    note(ev, ev.txid, "fill", false, "offer lock missing");
+    return;
+  }
+  bal(o.give.ticker, o.seller).locked -= out;
+  bal(o.give.ticker, who).available += out;
+  offerLock.set(o.id, lock - out);
+  o.paid = newPaid.toString();
+  o.delivered = newDelivered.toString();
+  const entry = { buyer: who, txid: ev.txid, height: ev.height, paid: x.toString(), fee: fee.toString(), got: out.toString() };
+  (o.fills ??= []).push(entry);
+  c.feesPaid += fee;
+  if (newPaid === want) {
+    setOfferStatus(o, "filled");
+    o.fill = entry;
+    offerLock.delete(o.id);
+    markBidDone(o, who);
+  }
+  note(ev, ev.txid, "fill", true, `partial ${x}/${want}`);
+}
+function applyFill(c, ev, o, who) {
+  const { names, offerLock, note, setOfferStatus, markBidDone, releaseGiveLock } = c;
+  if (o.status !== "open") {
+    note(ev, ev.txid, "fill", false, `offer ${o.status}`);
+    return;
+  }
+  if (o.taker && who !== o.taker) {
+    note(ev, ev.txid, "fill", false, "taker-bound offer");
+    return;
+  }
+  const blk = openFillReject(o, ev.height, who, ev.proposalId);
+  if (blk) {
+    note(ev, ev.txid, "fill", false, blk);
+    return;
+  }
+  const pt = ev.paidTo ?? {};
+  const want = BigInt(o.want.value);
+  const fee = o.feeBps ? tradeFee(want, o.feeBps) : 0n;
+  const restingLiquidity = o.taker !== void 0 && o.bid !== void 0 || o.height >= V17_HEIGHT && o.taker === void 0;
+  const rebate = o.height >= V16_HEIGHT && restingLiquidity ? makerRebate(want) : 0n;
+  const need = /* @__PURE__ */ new Map();
+  const addNeed = (a, v) => need.set(a, (need.get(a) ?? 0n) + v);
+  addNeed(o.want.payto, want);
+  addNeed(TREASURY_ADDR, fee);
+  if (rebate > 0n) addNeed(o.seller, rebate);
+  let unpaid;
+  for (const [addr, amt] of need) if (ptAmt(pt[addr]) < amt) {
+    unpaid = addr === TREASURY_ADDR ? "protocol fee unpaid" : rebate > 0n && addr === o.seller ? "maker rebate unpaid (v1.6)" : "payment below want.value";
+    break;
+  }
+  if (unpaid) {
+    note(ev, ev.txid, "fill", false, unpaid);
+    return;
+  }
+  const paid = ptAmt(pt[o.want.payto]);
+  if (isNameGive(o.give)) {
+    const n = names.get(o.give.name);
+    if (!n) {
+      note(ev, ev.txid, "fill", false, "name vanished (consensus violation)");
+      return;
+    }
+    deliverNameToBuyer(n, who, ev);
+  } else {
+    const amt = offerLock.get(o.id);
+    if (amt === void 0) {
+      note(ev, ev.txid, "fill", false, "offer lock missing");
+      return;
+    }
+    releaseGiveLock(o, who, amt);
+  }
+  c.feesPaid += fee;
+  setOfferStatus(o, "filled");
+  o.fill = { buyer: who, txid: ev.txid, height: ev.height, paid: paid.toString(), fee: fee.toString() };
+  markBidDone(o, who);
+  note(ev, ev.txid, "fill", true);
+}
+function applyLegacyClaim(c, ev, o, who) {
+  const { note, liveHoldCount } = c;
+  if (ev.height >= V28_HEIGHT) {
+    note(ev, ev.txid, "claim", false, "v2.8: claims are fclaim proposals now");
+    return;
+  }
+  if (o.status !== "open") {
+    note(ev, ev.txid, "claim", false, `offer ${o.status}`);
+    return;
+  }
+  if (o.taker) {
+    note(ev, ev.txid, "claim", false, "taker-bound offer needs no claim");
+    return;
+  }
+  if (isTokenWant(o.want)) {
+    note(ev, ev.txid, "claim", false, "claims are for CSD-priced offers (token offers are no-op-safe)");
+    return;
+  }
+  if (claimHeld(o, ev.height)) {
+    note(ev, ev.txid, "claim", false, "offer already claimed (hold live)");
+    return;
+  }
+  if (o.claimedBy === who && o.claimUntilHeight !== void 0 && ev.height < o.claimUntilHeight + claimGrace(o) + CLAIM_COOLDOWN_BLOCKS) {
+    note(ev, ev.txid, "claim", false, "claim cooldown (you just held this offer)");
+    return;
+  }
+  if (liveHoldCount(who, ev.height) >= MAX_ACTIVE_CLAIMS) {
+    note(ev, ev.txid, "claim", false, `max ${MAX_ACTIVE_CLAIMS} live claims per address`);
+    return;
+  }
+  o.claimedBy = who;
+  o.claimUntilHeight = ev.height + claimWindowAt(ev.height);
+  note(ev, ev.txid, "claim", true);
+}
+var V15_EPOCH = epochOf(V15_HEIGHT);
+var paidThrough = (n) => n.paidThroughEpoch ?? V15_EPOCH + NAME_TERM_EPOCHS;
+var lapsed = (n, ep) => ep > paidThrough(n) + NAME_GRACE_EPOCHS;
+var inGrace = (n, ep) => ep > paidThrough(n) && !lapsed(n, ep);
+var earlierAnchor = (effHeight, pos, id, inc) => effHeight < inc.effHeight || effHeight === inc.effHeight && (pos < inc.pos || pos === inc.pos && id < inc.id);
+function applyNcommit(c, ev, rec) {
+  const { commits, note } = c;
+  const v11 = ev.height >= V11_HEIGHT;
+  if (!v11) {
+    note(ev, ev.id, "ncommit", false, "before v1.1 activation");
+    return;
+  }
+  const prev = commits.get(rec.commit);
+  if (prev === void 0 || ev.height < prev) commits.set(rec.commit, ev.height);
+  note(ev, ev.id, "ncommit", true);
+}
+function applyName(c, ev, rec, who, feeToTreasury) {
+  const { commits, names, recaptures, note, putName, voidOpenNameOffers } = c;
+  const v11 = ev.height >= V11_HEIGHT;
+  const v15 = ev.height >= V15_HEIGHT;
+  const v25 = ev.height >= V25_HEIGHT;
+  const v26 = ev.height >= V26_HEIGHT;
+  if (!v11) {
+    note(ev, ev.id, "name", false, "before v1.1 activation");
+    return;
+  }
+  const regWindow = v25 || v26 ? REG_COMMIT_MAX_BLOCKS : COMMIT_MAX_BLOCKS;
+  let effHeight = ev.height;
+  if (rec.salt !== void 0) {
+    const ch = nameCommit(rec.name, rec.salt, who);
+    const cH = commits.get(ch);
+    if (cH === void 0 || cH >= ev.height || ev.height - cH > regWindow) {
+      note(ev, ev.id, "name", false, "no valid in-window commit for this reveal");
+      return;
+    }
+    effHeight = cH;
+  }
+  const cur = names.get(rec.name);
+  const epClaim = epochOf(ev.height);
+  const curActive = cur && cur.pending && cur.finalizeBy !== void 0 && ev.height > cur.finalizeBy ? void 0 : cur;
+  if (curActive && !curActive.pending && v15 && lapsed(curActive, epClaim)) {
+    if (v26) {
+      if (rec.salt === void 0) {
+        note(ev, ev.id, "name", false, "v2.6: recapture requires a commit-reveal (salt)");
+        return;
+      }
+      const cr = recaptures.get(rec.name);
+      const crActive = cr && ev.height > cr.finalizeBy ? void 0 : cr;
+      const better2 = !crActive || earlierAnchor(effHeight, ev.pos, ev.id, crActive);
+      if (!better2) {
+        note(ev, ev.id, "name", false, "recapture already reserved (earlier anchor wins)");
+        return;
+      }
+      let myR = 0;
+      for (const [nm, r] of recaptures) if (r.owner === who && nm !== rec.name && ev.height <= r.finalizeBy) myR++;
+      if (myR >= MAX_PENDING_REG) {
+        note(ev, ev.id, "name", false, "too many pending recaptures (max reached)");
+        return;
+      }
+      recaptures.set(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
+      note(ev, ev.id, "name", true, crActive ? "recapture reserved (displaced prior reservation)" : "recapture reserved (pending finalize)");
+      return;
+    }
+    const fee = expiredClaimFee(rec.name, epClaim - (paidThrough(curActive) + NAME_GRACE_EPOCHS), ev.height);
+    if (feeToTreasury < fee) {
+      note(ev, ev.id, "name", false, "lapsed-name claim fee unpaid (decaying premium)");
+      return;
+    }
+    voidOpenNameOffers(rec.name, ev.height);
+    putName(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, viaFill: true, paidThroughEpoch: epClaim + NAME_TERM_EPOCHS });
+    c.feesPaid += fee;
+    note(ev, ev.id, "name", true, "lapsed lease re-claimed (premium)");
+    return;
+  }
+  if (v25) {
+    if (rec.salt === void 0) {
+      note(ev, ev.id, "name", false, "v2.5: registration requires a commit-reveal (salt)");
+      return;
+    }
+    const better2 = !curActive || !curActive.viaFill && earlierAnchor(effHeight, ev.pos, ev.id, curActive);
+    if (!better2) {
+      note(ev, ev.id, "name", false, curActive?.viaFill ? "name taken (purchased \u2014 not displaceable)" : "name taken (earlier anchor wins)");
+      return;
+    }
+    let myPending = 0;
+    for (const [nm, n] of names) if (n.pending && n.owner === who && nm !== rec.name && n.finalizeBy !== void 0 && ev.height <= n.finalizeBy) myPending++;
+    if (myPending >= MAX_PENDING_REG) {
+      note(ev, ev.id, "name", false, "too many pending reservations (max reached)");
+      return;
+    }
+    if (curActive) {
+      voidOpenNameOffers(rec.name, ev.height);
+    }
+    putName(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, pending: true, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
+    note(ev, ev.id, "name", true, curActive ? "reserved (displaced prior reservation)" : "reserved (pending finalize)");
+    return;
+  }
+  if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
+    note(ev, ev.id, "name", false, "name registration fee unpaid");
+    return;
+  }
+  const cand = {
+    owner: who,
+    effHeight,
+    pos: ev.pos,
+    id: ev.id,
+    height: ev.height,
+    locked: false,
+    ...v15 ? { paidThroughEpoch: epClaim + NAME_TERM_EPOCHS } : {}
+  };
+  const better = !curActive || !curActive.viaFill && earlierAnchor(effHeight, ev.pos, ev.id, curActive);
+  if (!better) {
+    note(ev, ev.id, "name", false, curActive?.viaFill ? "name taken (purchased \u2014 not displaceable)" : "name taken (earlier anchor wins)");
+    return;
+  }
+  if (curActive) {
+    voidOpenNameOffers(rec.name, ev.height);
+  }
+  putName(rec.name, cand);
+  c.feesPaid += nameRegFee(rec.name, ev.height);
+  note(ev, ev.id, "name", true, curActive ? "displaced prior holder" : void 0);
+}
+function applyNfinalize(c, ev, rec, who, feeToTreasury) {
+  const { commits, names, recaptures, pendingNames, note, putName, voidOpenNameOffers } = c;
+  const v25 = ev.height >= V25_HEIGHT;
+  const v26 = ev.height >= V26_HEIGHT;
+  if (!v25) {
+    note(ev, ev.id, "nfinalize", false, "before v2.5 activation");
+    return;
+  }
+  const n = names.get(rec.name);
+  if (n && n.pending && n.owner === who) {
+    const cH = commits.get(nameCommit(rec.name, rec.salt, who));
+    if (cH === void 0 || cH !== n.effHeight) {
+      note(ev, ev.id, "nfinalize", false, "salt does not match the reservation commit");
+      return;
+    }
+    if (!(ev.height > n.effHeight + REG_COMMIT_MAX_BLOCKS)) {
+      note(ev, ev.id, "nfinalize", false, "too early \u2014 displacement contest not yet frozen");
+      return;
+    }
+    if (n.finalizeBy !== void 0 && ev.height > n.finalizeBy) {
+      note(ev, ev.id, "nfinalize", false, "reservation expired");
+      return;
+    }
+    if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
+      note(ev, ev.id, "nfinalize", false, "name registration fee unpaid");
+      return;
+    }
+    delete n.pending;
+    delete n.finalizeBy;
+    pendingNames.delete(rec.name);
+    n.paidThroughEpoch = epochOf(ev.height) + NAME_TERM_EPOCHS;
+    c.feesPaid += nameRegFee(rec.name, ev.height);
+    note(ev, ev.id, "nfinalize", true);
+    return;
+  }
+  const r = v26 ? recaptures.get(rec.name) : void 0;
+  if (r && r.owner === who) {
+    const cH = commits.get(nameCommit(rec.name, rec.salt, who));
+    if (cH === void 0 || cH !== r.effHeight) {
+      note(ev, ev.id, "nfinalize", false, "salt does not match the recapture commit");
+      return;
+    }
+    if (!(ev.height > r.effHeight + REG_COMMIT_MAX_BLOCKS)) {
+      note(ev, ev.id, "nfinalize", false, "too early \u2014 recapture contest not yet frozen");
+      return;
+    }
+    if (ev.height > r.finalizeBy) {
+      note(ev, ev.id, "nfinalize", false, "recapture reservation expired");
+      return;
+    }
+    const cur = names.get(rec.name);
+    const ep = epochOf(ev.height);
+    if (!cur || cur.pending || !lapsed(cur, ep)) {
+      recaptures.delete(rec.name);
+      note(ev, ev.id, "nfinalize", false, "name is no longer lapsed");
+      return;
+    }
+    const fee = expiredClaimFee(rec.name, ep - (paidThrough(cur) + NAME_GRACE_EPOCHS), ev.height);
+    if (feeToTreasury < fee) {
+      note(ev, ev.id, "nfinalize", false, "recapture premium unpaid (decaying)");
+      return;
+    }
+    voidOpenNameOffers(rec.name, ev.height);
+    putName(rec.name, { owner: who, effHeight: r.effHeight, pos: r.pos, id: r.id, height: r.height, locked: false, paidThroughEpoch: ep + NAME_TERM_EPOCHS });
+    recaptures.delete(rec.name);
+    c.feesPaid += fee;
+    note(ev, ev.id, "nfinalize", true, "recapture finalized (premium)");
+    return;
+  }
+  note(ev, ev.id, "nfinalize", false, "no matching pending reservation you own");
+}
+function applyNxfer(c, ev, rec, who) {
+  const { names, note } = c;
+  const v15 = ev.height >= V15_HEIGHT;
+  const n = names.get(rec.name);
+  if (!n || n.owner !== who) {
+    note(ev, ev.id, "nxfer", false, "not the name owner");
+    return;
+  }
+  if (n.pending) {
+    note(ev, ev.id, "nxfer", false, "name reservation not yet finalized");
+    return;
+  }
+  if (v15 && lapsed(n, epochOf(ev.height))) {
+    note(ev, ev.id, "nxfer", false, "lease lapsed \u2014 claim it instead");
+    return;
+  }
+  if (n.locked) {
+    note(ev, ev.id, "nxfer", false, "name is locked by an open offer");
+    return;
+  }
+  n.owner = rec.to.toLowerCase();
+  n.addr = void 0;
+  n.profile = void 0;
+  note(ev, ev.id, "nxfer", true);
+}
+function applyNset(c, ev, rec, who) {
+  const { names, note } = c;
+  const v15 = ev.height >= V15_HEIGHT;
+  const v23 = ev.height >= V23_HEIGHT;
+  const n = names.get(rec.name);
+  if (!n || n.owner !== who) {
+    note(ev, ev.id, "nset", false, "not the name owner");
+    return;
+  }
+  if (n.pending) {
+    note(ev, ev.id, "nset", false, "name reservation not yet finalized");
+    return;
+  }
+  if (v15 && lapsed(n, epochOf(ev.height))) {
+    note(ev, ev.id, "nset", false, "lease lapsed \u2014 claim it instead");
+    return;
+  }
+  if (v23 && rec.addr.toLowerCase() === ZERO_ADDR) n.addr = void 0;
+  else n.addr = rec.addr.toLowerCase();
+  note(ev, ev.id, "nset", true);
+}
+function applyNprofile(c, ev, rec, who) {
+  const { names, note } = c;
+  const v15 = ev.height >= V15_HEIGHT;
+  const v19 = ev.height >= V19_HEIGHT;
+  if (!v19) {
+    note(ev, ev.id, "nprofile", false, "before v1.9 activation");
+    return;
+  }
+  const n = names.get(rec.name);
+  if (!n || n.owner !== who) {
+    note(ev, ev.id, "nprofile", false, "not the name owner");
+    return;
+  }
+  if (n.pending) {
+    note(ev, ev.id, "nprofile", false, "name reservation not yet finalized");
+    return;
+  }
+  if (v15 && lapsed(n, epochOf(ev.height))) {
+    note(ev, ev.id, "nprofile", false, "lease lapsed \u2014 claim it instead");
+    return;
+  }
+  n.profile = Object.keys(rec.p).length ? { ...rec.p } : void 0;
+  note(ev, ev.id, "nprofile", true);
+}
+function applyNrenew(c, ev, rec, who, feeToTreasury) {
+  const { names, note } = c;
+  const v15 = ev.height >= V15_HEIGHT;
+  if (!v15) {
+    note(ev, ev.id, "nrenew", false, "nrenew needs v1.5");
+    return;
+  }
+  const n = names.get(rec.name);
+  const ep = epochOf(ev.height);
+  if (n && n.pending) {
+    note(ev, ev.id, "nrenew", false, "name reservation not yet finalized");
+    return;
+  }
+  if (!n || lapsed(n, ep)) {
+    note(ev, ev.id, "nrenew", false, "no live lease (lapsed names are claimed, not renewed)");
+    return;
+  }
+  if (inGrace(n, ep) && who !== n.owner) {
+    note(ev, ev.id, "nrenew", false, "grace period: only the owner may renew");
+    return;
+  }
+  if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
+    note(ev, ev.id, "nrenew", false, "renewal fee unpaid");
+    return;
+  }
+  n.paidThroughEpoch = paidThrough(n) + NAME_TERM_EPOCHS;
+  c.feesPaid += nameRegFee(rec.name, ev.height);
+  note(ev, ev.id, "nrenew", true, `paid through epoch ${n.paidThroughEpoch}`);
+}
+function applyOffer(c, ev, rec, who) {
+  const { tokens, names, offers, offerLock, openOffers, bids, bal, note } = c;
+  const v11 = ev.height >= V11_HEIGHT;
+  const v15 = ev.height >= V15_HEIGHT;
+  const v16 = ev.height >= V16_HEIGHT;
+  const wantIsToken = isTokenWant(rec.want);
+  const refusal = offerEnvelopeRefusal(rec, who, ev.height, ev.expiresEpoch);
+  if (refusal !== null) {
+    note(ev, ev.id, "offer", false, refusal);
+    return;
+  }
+  const payto = (rec.want.payto ?? who).toLowerCase();
+  const give = rec.give;
+  if (isNameGive(give)) {
+    if (!v11) {
+      note(ev, ev.id, "offer", false, "name offers need v1.1");
+      return;
+    }
+    const n = names.get(give.name);
+    if (!n || n.owner !== who) {
+      note(ev, ev.id, "offer", false, "you don't own this name");
+      return;
+    }
+    if (n.pending) {
+      note(ev, ev.id, "offer", false, "name reservation not yet finalized");
+      return;
+    }
+    if (n.locked) {
+      note(ev, ev.id, "offer", false, "name already locked by another offer");
+      return;
+    }
+    const saleEmbargo = ev.height >= V27_HEIGHT ? REG_COMMIT_MAX_BLOCKS : COMMIT_MAX_BLOCKS;
+    if (ev.height >= V13_HEIGHT && !n.viaFill && ev.height - n.effHeight <= saleEmbargo) {
+      note(ev, ev.id, "offer", false, "name too young to sell (must out-age the reveal window)");
+      return;
+    }
+    if (v15 && paidThrough(n) < ev.expiresEpoch) {
+      note(ev, ev.id, "offer", false, "v1.5: lease ends inside the offer window (renew first)");
+      return;
+    }
+    n.locked = true;
+  } else {
+    if (!tokens.has(give.ticker)) {
+      note(ev, ev.id, "offer", false, "unknown ticker");
+      return;
+    }
+    const amt = parseAmount(give.amount);
+    const s = bal(give.ticker, who);
+    if (s.available < amt) {
+      note(ev, ev.id, "offer", false, "insufficient available balance");
+      return;
+    }
+    s.available -= amt;
+    s.locked += amt;
+    offerLock.set(ev.id, amt);
+  }
+  const o = {
+    id: ev.id,
+    seller: who,
+    give,
+    want: wantIsToken ? { ticker: rec.want.ticker, amount: rec.want.amount, payto } : { value: rec.want.value, payto },
+    ...rec.taker ? { taker: rec.taker.toLowerCase() } : {},
+    ...rec.min !== void 0 ? { min: rec.min, paid: "0", delivered: "0", fills: [] } : {},
+    ...rec.bid !== void 0 ? { bid: rec.bid } : {},
+    status: "open",
+    expiresEpoch: ev.expiresEpoch,
+    height: ev.height,
+    feeBps: v11 ? v16 ? FEE_BPS_V16 : FEE_BPS : 0
+  };
+  offers.set(ev.id, o);
+  openOffers.add(ev.id);
+  const linked = rec.bid !== void 0 ? bids.get(rec.bid) : void 0;
+  if (linked) linked.offers.push(ev.id);
+  note(ev, ev.id, "offer", true);
+}
+function applyBid(c, ev, rec, who) {
+  const { bids, openBids, note } = c;
+  const v12 = ev.height >= V12_HEIGHT;
+  if (!v12) {
+    note(ev, ev.id, "bid", false, "bids need v1.2");
+    return;
+  }
+  if (!Number.isSafeInteger(ev.expiresEpoch)) {
+    note(ev, ev.id, "bid", false, "expiresEpoch out of safe-integer range");
+    return;
+  }
+  if (epochOf(ev.height) > ev.expiresEpoch) {
+    note(ev, ev.id, "bid", false, "already expired at anchor");
+    return;
+  }
+  if (ev.height >= V21_HEIGHT && ev.height < V22_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
+    note(ev, ev.id, "bid", false, "v2.1: bid duration exceeds the max");
+    return;
+  }
+  bids.set(ev.id, {
+    id: ev.id,
+    bidder: who,
+    want: rec.want,
+    give: rec.give,
+    status: "open",
+    expiresEpoch: ev.expiresEpoch,
+    height: ev.height,
+    offers: []
+  });
+  openBids.add(ev.id);
+  note(ev, ev.id, "bid", true);
+}
+function applyOcancel(c, ev, rec, who) {
+  const { offers, note, releaseGive, setOfferStatus } = c;
+  const v12 = ev.height >= V12_HEIGHT;
+  if (!v12) {
+    note(ev, ev.id, "ocancel", false, "ocancel needs v1.2");
+    return;
+  }
+  const targets = [];
+  for (const o of offers.values()) {
+    if (o.status !== "open" || o.seller !== who) continue;
+    if (o.taker !== void 0 && o.height >= V28_HEIGHT) continue;
+    if (rec.ticker !== void 0 && !(!isNameGive(o.give) && o.give.ticker === rec.ticker)) continue;
+    if (rec.name !== void 0 && !(isNameGive(o.give) && o.give.name === rec.name)) continue;
+    targets.push(o);
+  }
+  if (ev.height >= V14_HEIGHT) {
+    c.pendingCancels.push(() => {
+      let n = 0;
+      for (const o of targets) {
+        if (ev.height >= V28_HEIGHT && o.claimTxid !== void 0 && claimHeld(o, ev.height)) continue;
+        if (o.status === "open") {
+          releaseGive(o);
+          setOfferStatus(o, "cancelled");
+          n++;
+        }
+      }
+      note(ev, ev.id, "ocancel", true, `${n} cancelled (deferred past same-block fills)`);
+    });
+  } else {
+    for (const o of targets) {
+      releaseGive(o);
+      setOfferStatus(o, "cancelled");
+    }
+    note(ev, ev.id, "ocancel", true, `${targets.length} cancelled`);
+  }
+}
+function applyFclaim(c, ev, rec, who) {
+  const { offers, fclaims, note, liveHoldCount } = c;
+  if (ev.height < V28_HEIGHT) {
+    note(ev, ev.id, "fclaim", false, "fclaim needs v2.8");
+    return;
+  }
+  const target = offers.get(rec.offer);
+  const E = ev.expiresEpoch;
+  const deny = (why) => {
+    fclaims.set(ev.id, { offer: rec.offer, proposer: who, expiresEpoch: E, height: ev.height, granted: false });
+    note(ev, ev.id, "fclaim", false, why);
+  };
+  if (!Number.isSafeInteger(E)) {
+    deny("expiresEpoch out of safe-integer range");
+    return;
+  }
+  if (!target) {
+    deny("unknown offer");
+    return;
+  }
+  if (target.status !== "open") {
+    deny(`offer ${target.status}`);
+    return;
+  }
+  if (target.taker) {
+    deny("taker-bound offer needs no claim");
+    return;
+  }
+  if (isTokenWant(target.want)) {
+    deny("claims are for CSD-priced offers");
+    return;
+  }
+  if (E > effExpiry(target, ev.height)) {
+    deny("hold would outlive the offer expiry");
+    return;
+  }
+  if (E > epochOf(ev.height) + FCLAIM_MAX_EPOCH_AHEAD) {
+    deny("hold too far ahead (anti-squat)");
+    return;
+  }
+  if (epochOf(ev.height) > E) {
+    deny("expiry already in the past");
+    return;
+  }
+  if (claimHeld(target, ev.height)) {
+    deny("offer already claimed (hold live)");
+    return;
+  }
+  if (target.claimedBy === who && target.claimUntilHeight !== void 0 && ev.height < target.claimUntilHeight + claimGrace(target) + CLAIM_COOLDOWN_BLOCKS) {
+    deny("claim cooldown (you just held this offer)");
+    return;
+  }
+  if (liveHoldCount(who, ev.height) >= MAX_ACTIVE_CLAIMS) {
+    deny(`max ${MAX_ACTIVE_CLAIMS} live claims per address`);
+    return;
+  }
+  target.claimedBy = who;
+  target.claimUntilHeight = (E + 1) * EPOCH_LEN;
+  target.claimTxid = ev.id;
+  fclaims.set(ev.id, { offer: rec.offer, proposer: who, expiresEpoch: E, height: ev.height, granted: true });
+  note(ev, ev.id, "fclaim", true);
+}
+function offerEnvelopeRefusal(rec, who, height, expiresEpoch) {
+  const wantIsToken = isTokenWant(rec.want);
+  if ((wantIsToken || rec.min !== void 0 || rec.bid !== void 0) && height < V12_HEIGHT) return "v1.2 offer shape before activation";
+  if (height >= V13_HEIGHT && height < V17_HEIGHT && !wantIsToken && rec.taker === void 0) return "v1.3: CSD-priced offers must be taker-bound (use bid/RFQ)";
+  if ((rec.want.payto ?? who).toLowerCase() === TREASURY_ADDR) return "payto cannot be the protocol treasury";
+  if (!Number.isSafeInteger(expiresEpoch)) return "expiresEpoch out of safe-integer range";
+  if (epochOf(height) > expiresEpoch) return "already expired at anchor";
+  if (height >= V21_HEIGHT && height < V22_HEIGHT && expiresEpoch - epochOf(height) > MAX_OFFER_EPOCHS) return "v2.1: offer duration exceeds the max";
+  return null;
+}
+function applyDeploy(c, ev, rec, who, feeToTreasury) {
+  const { tokens, note } = c;
+  const v11 = ev.height >= V11_HEIGHT;
+  if (tokens.has(rec.ticker)) {
+    note(ev, ev.id, "deploy", false, "ticker taken (first anchor wins)");
+    return;
+  }
+  if (v11 && feeToTreasury < BigInt(DEPLOY_FEE)) {
+    note(ev, ev.id, "deploy", false, "deploy fee unpaid");
+    return;
+  }
+  const supply = parseAmount(rec.supply);
+  const mintLimit = rec.mint === "open" ? parseAmount(rec.mintLimit) : null;
+  tokens.set(rec.ticker, {
+    minted: 0n,
+    supply,
+    mintLimit,
+    meta: { ticker: rec.ticker, deployId: ev.id, deployer: who, name: rec.name, decimals: rec.decimals, supply: rec.supply, minted: "0", mint: rec.mint, mintLimit: rec.mintLimit, height: ev.height }
+  });
+  if (v11) c.feesPaid += BigInt(DEPLOY_FEE);
+  note(ev, ev.id, "deploy", true);
+}
+function applyMint(c, ev, rec, who) {
+  const { tokens, bal, note } = c;
+  const tok = tokens.get(rec.ticker);
+  if (!tok) {
+    note(ev, ev.id, "mint", false, "unknown ticker");
+    return;
+  }
+  const remaining = tok.supply - tok.minted;
+  if (remaining <= 0n) {
+    note(ev, ev.id, "mint", false, "supply exhausted");
+    return;
+  }
+  let credit;
+  if (tok.meta.mint === "issuer") {
+    if (who !== tok.meta.deployer) {
+      note(ev, ev.id, "mint", false, "issuer-only mint");
+      return;
+    }
+    const req = rec.amount !== void 0 ? parseAmount(rec.amount) : null;
+    if (req === null) {
+      note(ev, ev.id, "mint", false, "issuer mint requires amount");
+      return;
+    }
+    credit = req < remaining ? req : remaining;
+  } else {
+    const req = rec.amount !== void 0 ? parseAmount(rec.amount) : tok.mintLimit;
+    const capped = req < tok.mintLimit ? req : tok.mintLimit;
+    credit = capped < remaining ? capped : remaining;
+  }
+  tok.minted += credit;
+  bal(rec.ticker, who).available += credit;
+  note(ev, ev.id, "mint", true, credit.toString());
+}
+function applyTransfer(c, ev, rec, who) {
+  const { tokens, bal, note } = c;
+  if (!tokens.has(rec.ticker)) {
+    note(ev, ev.id, "transfer", false, "unknown ticker");
+    return;
+  }
+  const amt = parseAmount(rec.amount);
+  const from = bal(rec.ticker, who);
+  if (from.available < amt) {
+    note(ev, ev.id, "transfer", false, "insufficient available balance");
+    return;
+  }
+  from.available -= amt;
+  bal(rec.ticker, rec.to.toLowerCase()).available += amt;
+  note(ev, ev.id, "transfer", true);
+}
+function applyTmeta(c, ev, rec, who) {
+  const { tokens, note } = c;
+  const v15 = ev.height >= V15_HEIGHT;
+  if (!v15) {
+    note(ev, ev.id, "tmeta", false, "tmeta needs v1.5");
+    return;
+  }
+  const tok = tokens.get(rec.ticker);
+  if (!tok) {
+    note(ev, ev.id, "tmeta", false, "unknown ticker");
+    return;
+  }
+  if (who !== tok.meta.deployer) {
+    note(ev, ev.id, "tmeta", false, "issuer-only metadata");
+    return;
+  }
+  tok.meta.tmeta = rec.hash;
+  note(ev, ev.id, "tmeta", true);
+}
+var ord = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function resolve(events, tipHeight) {
+  const ordered = [...events].sort(
+    (a, b) => a.height - b.height || Number(a.kind === "attest") - Number(b.kind === "attest") || a.pos - b.pos || ord(
+      a.kind === "propose" ? a.id : a.txid,
+      b.kind === "propose" ? b.id : b.txid
+    )
+  );
+  const eid = (e) => e.kind === "propose" ? e.id : e.txid;
+  const seenIds = /* @__PURE__ */ new Set();
+  const applied = [];
+  for (const e of ordered) {
+    if (e.height >= V29_HEIGHT) {
+      const k = eid(e);
+      if (seenIds.has(k)) continue;
+      seenIds.add(k);
+    }
+    applied.push(e);
+  }
+  const c = createContext();
+  const { tokens, balances, names, recaptures, offers, bids, fclaims, log, note, sweepExpired } = c;
+  let pendingBlock = -1;
+  const applyPendingCancels = () => {
+    for (const f of c.pendingCancels) f();
+    c.pendingCancels = [];
   };
   for (const ev of applied) {
     if (ev.height < ACTIVATION_HEIGHT) continue;
@@ -3996,14 +4924,6 @@ function resolve(events, tipHeight) {
       pendingBlock = ev.height;
     }
     sweepExpired(ev.height);
-    const v11 = ev.height >= V11_HEIGHT;
-    const v12 = ev.height >= V12_HEIGHT;
-    const v15 = ev.height >= V15_HEIGHT;
-    const v16 = ev.height >= V16_HEIGHT;
-    const v19 = ev.height >= V19_HEIGHT;
-    const v23 = ev.height >= V23_HEIGHT;
-    const v25 = ev.height >= V25_HEIGHT;
-    const v26 = ev.height >= V26_HEIGHT;
     const feeToTreasury = ev.kind === "propose" ? ptAmt((ev.paidTo ?? {})[TREASURY_ADDR]) : 0n;
     if (ev.kind === "propose") {
       const rec = parseRecord(ev.uri, ev.payloadHash);
@@ -4012,812 +4932,55 @@ function resolve(events, tipHeight) {
         continue;
       }
       const who = ev.proposer.toLowerCase();
-      if (rec.t === "deploy") {
-        if (tokens.has(rec.ticker)) {
-          note(ev, ev.id, "deploy", false, "ticker taken (first anchor wins)");
-          continue;
-        }
-        if (v11 && feeToTreasury < BigInt(DEPLOY_FEE)) {
-          note(ev, ev.id, "deploy", false, "deploy fee unpaid");
-          continue;
-        }
-        const supply = parseAmount(rec.supply);
-        const mintLimit = rec.mint === "open" ? parseAmount(rec.mintLimit) : null;
-        tokens.set(rec.ticker, {
-          minted: 0n,
-          supply,
-          mintLimit,
-          meta: { ticker: rec.ticker, deployId: ev.id, deployer: who, name: rec.name, decimals: rec.decimals, supply: rec.supply, minted: "0", mint: rec.mint, mintLimit: rec.mintLimit, height: ev.height }
-        });
-        if (v11) feesPaid += BigInt(DEPLOY_FEE);
-        note(ev, ev.id, "deploy", true);
-      } else if (rec.t === "mint") {
-        const tok = tokens.get(rec.ticker);
-        if (!tok) {
-          note(ev, ev.id, "mint", false, "unknown ticker");
-          continue;
-        }
-        const remaining = tok.supply - tok.minted;
-        if (remaining <= 0n) {
-          note(ev, ev.id, "mint", false, "supply exhausted");
-          continue;
-        }
-        let credit;
-        if (tok.meta.mint === "issuer") {
-          if (who !== tok.meta.deployer) {
-            note(ev, ev.id, "mint", false, "issuer-only mint");
-            continue;
-          }
-          const req = rec.amount !== void 0 ? parseAmount(rec.amount) : null;
-          if (req === null) {
-            note(ev, ev.id, "mint", false, "issuer mint requires amount");
-            continue;
-          }
-          credit = req < remaining ? req : remaining;
-        } else {
-          const req = rec.amount !== void 0 ? parseAmount(rec.amount) : tok.mintLimit;
-          const capped = req < tok.mintLimit ? req : tok.mintLimit;
-          credit = capped < remaining ? capped : remaining;
-        }
-        tok.minted += credit;
-        bal(rec.ticker, who).available += credit;
-        note(ev, ev.id, "mint", true, credit.toString());
-      } else if (rec.t === "transfer") {
-        if (!tokens.has(rec.ticker)) {
-          note(ev, ev.id, "transfer", false, "unknown ticker");
-          continue;
-        }
-        const amt = parseAmount(rec.amount);
-        const from = bal(rec.ticker, who);
-        if (from.available < amt) {
-          note(ev, ev.id, "transfer", false, "insufficient available balance");
-          continue;
-        }
-        from.available -= amt;
-        bal(rec.ticker, rec.to.toLowerCase()).available += amt;
-        note(ev, ev.id, "transfer", true);
-      } else if (rec.t === "ncommit") {
-        if (!v11) {
-          note(ev, ev.id, "ncommit", false, "before v1.1 activation");
-          continue;
-        }
-        const prev = commits.get(rec.commit);
-        if (prev === void 0 || ev.height < prev) commits.set(rec.commit, ev.height);
-        note(ev, ev.id, "ncommit", true);
-      } else if (rec.t === "name") {
-        if (!v11) {
-          note(ev, ev.id, "name", false, "before v1.1 activation");
-          continue;
-        }
-        const regWindow = v25 || v26 ? REG_COMMIT_MAX_BLOCKS : COMMIT_MAX_BLOCKS;
-        let effHeight = ev.height;
-        if (rec.salt !== void 0) {
-          const ch = nameCommit(rec.name, rec.salt, who);
-          const cH = commits.get(ch);
-          if (cH === void 0 || cH >= ev.height || ev.height - cH > regWindow) {
-            note(ev, ev.id, "name", false, "no valid in-window commit for this reveal");
-            continue;
-          }
-          effHeight = cH;
-        }
-        const cur = names.get(rec.name);
-        const epClaim = epochOf(ev.height);
-        const curActive = cur && cur.pending && cur.finalizeBy !== void 0 && ev.height > cur.finalizeBy ? void 0 : cur;
-        if (curActive && !curActive.pending && v15 && lapsed(curActive, epClaim)) {
-          if (v26) {
-            if (rec.salt === void 0) {
-              note(ev, ev.id, "name", false, "v2.6: recapture requires a commit-reveal (salt)");
-              continue;
-            }
-            const cr = recaptures.get(rec.name);
-            const crActive = cr && ev.height > cr.finalizeBy ? void 0 : cr;
-            const better2 = !crActive || earlierAnchor(effHeight, ev.pos, ev.id, crActive);
-            if (!better2) {
-              note(ev, ev.id, "name", false, "recapture already reserved (earlier anchor wins)");
-              continue;
-            }
-            let myR = 0;
-            for (const [nm, r] of recaptures) if (r.owner === who && nm !== rec.name && ev.height <= r.finalizeBy) myR++;
-            if (myR >= MAX_PENDING_REG) {
-              note(ev, ev.id, "name", false, "too many pending recaptures (max reached)");
-              continue;
-            }
-            recaptures.set(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
-            note(ev, ev.id, "name", true, crActive ? "recapture reserved (displaced prior reservation)" : "recapture reserved (pending finalize)");
-            continue;
-          }
-          const fee = expiredClaimFee(rec.name, epClaim - (paidThrough(curActive) + NAME_GRACE_EPOCHS), ev.height);
-          if (feeToTreasury < fee) {
-            note(ev, ev.id, "name", false, "lapsed-name claim fee unpaid (decaying premium)");
-            continue;
-          }
-          voidOpenNameOffers(rec.name, ev.height);
-          putName(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, viaFill: true, paidThroughEpoch: epClaim + NAME_TERM_EPOCHS });
-          feesPaid += fee;
-          note(ev, ev.id, "name", true, "lapsed lease re-claimed (premium)");
-          continue;
-        }
-        if (v25) {
-          if (rec.salt === void 0) {
-            note(ev, ev.id, "name", false, "v2.5: registration requires a commit-reveal (salt)");
-            continue;
-          }
-          const better2 = !curActive || !curActive.viaFill && earlierAnchor(effHeight, ev.pos, ev.id, curActive);
-          if (!better2) {
-            note(ev, ev.id, "name", false, curActive?.viaFill ? "name taken (purchased \u2014 not displaceable)" : "name taken (earlier anchor wins)");
-            continue;
-          }
-          let myPending = 0;
-          for (const [nm, n] of names) if (n.pending && n.owner === who && nm !== rec.name && n.finalizeBy !== void 0 && ev.height <= n.finalizeBy) myPending++;
-          if (myPending >= MAX_PENDING_REG) {
-            note(ev, ev.id, "name", false, "too many pending reservations (max reached)");
-            continue;
-          }
-          if (curActive) {
-            voidOpenNameOffers(rec.name, ev.height);
-          }
-          putName(rec.name, { owner: who, effHeight, pos: ev.pos, id: ev.id, height: ev.height, locked: false, pending: true, finalizeBy: effHeight + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS });
-          note(ev, ev.id, "name", true, curActive ? "reserved (displaced prior reservation)" : "reserved (pending finalize)");
-          continue;
-        }
-        if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
-          note(ev, ev.id, "name", false, "name registration fee unpaid");
-          continue;
-        }
-        const cand = {
-          owner: who,
-          effHeight,
-          pos: ev.pos,
-          id: ev.id,
-          height: ev.height,
-          locked: false,
-          ...v15 ? { paidThroughEpoch: epClaim + NAME_TERM_EPOCHS } : {}
-        };
-        const better = !curActive || !curActive.viaFill && earlierAnchor(effHeight, ev.pos, ev.id, curActive);
-        if (!better) {
-          note(ev, ev.id, "name", false, curActive?.viaFill ? "name taken (purchased \u2014 not displaceable)" : "name taken (earlier anchor wins)");
-          continue;
-        }
-        if (curActive) {
-          voidOpenNameOffers(rec.name, ev.height);
-        }
-        putName(rec.name, cand);
-        feesPaid += nameRegFee(rec.name, ev.height);
-        note(ev, ev.id, "name", true, curActive ? "displaced prior holder" : void 0);
-      } else if (rec.t === "nfinalize") {
-        if (!v25) {
-          note(ev, ev.id, "nfinalize", false, "before v2.5 activation");
-          continue;
-        }
-        const n = names.get(rec.name);
-        if (n && n.pending && n.owner === who) {
-          const cH = commits.get(nameCommit(rec.name, rec.salt, who));
-          if (cH === void 0 || cH !== n.effHeight) {
-            note(ev, ev.id, "nfinalize", false, "salt does not match the reservation commit");
-            continue;
-          }
-          if (!(ev.height > n.effHeight + REG_COMMIT_MAX_BLOCKS)) {
-            note(ev, ev.id, "nfinalize", false, "too early \u2014 displacement contest not yet frozen");
-            continue;
-          }
-          if (n.finalizeBy !== void 0 && ev.height > n.finalizeBy) {
-            note(ev, ev.id, "nfinalize", false, "reservation expired");
-            continue;
-          }
-          if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
-            note(ev, ev.id, "nfinalize", false, "name registration fee unpaid");
-            continue;
-          }
-          delete n.pending;
-          delete n.finalizeBy;
-          pendingNames.delete(rec.name);
-          n.paidThroughEpoch = epochOf(ev.height) + NAME_TERM_EPOCHS;
-          feesPaid += nameRegFee(rec.name, ev.height);
-          note(ev, ev.id, "nfinalize", true);
-          continue;
-        }
-        const r = v26 ? recaptures.get(rec.name) : void 0;
-        if (r && r.owner === who) {
-          const cH = commits.get(nameCommit(rec.name, rec.salt, who));
-          if (cH === void 0 || cH !== r.effHeight) {
-            note(ev, ev.id, "nfinalize", false, "salt does not match the recapture commit");
-            continue;
-          }
-          if (!(ev.height > r.effHeight + REG_COMMIT_MAX_BLOCKS)) {
-            note(ev, ev.id, "nfinalize", false, "too early \u2014 recapture contest not yet frozen");
-            continue;
-          }
-          if (ev.height > r.finalizeBy) {
-            note(ev, ev.id, "nfinalize", false, "recapture reservation expired");
-            continue;
-          }
-          const cur = names.get(rec.name);
-          const ep = epochOf(ev.height);
-          if (!cur || cur.pending || !lapsed(cur, ep)) {
-            recaptures.delete(rec.name);
-            note(ev, ev.id, "nfinalize", false, "name is no longer lapsed");
-            continue;
-          }
-          const fee = expiredClaimFee(rec.name, ep - (paidThrough(cur) + NAME_GRACE_EPOCHS), ev.height);
-          if (feeToTreasury < fee) {
-            note(ev, ev.id, "nfinalize", false, "recapture premium unpaid (decaying)");
-            continue;
-          }
-          voidOpenNameOffers(rec.name, ev.height);
-          putName(rec.name, { owner: who, effHeight: r.effHeight, pos: r.pos, id: r.id, height: r.height, locked: false, paidThroughEpoch: ep + NAME_TERM_EPOCHS });
-          recaptures.delete(rec.name);
-          feesPaid += fee;
-          note(ev, ev.id, "nfinalize", true, "recapture finalized (premium)");
-          continue;
-        }
-        note(ev, ev.id, "nfinalize", false, "no matching pending reservation you own");
-      } else if (rec.t === "nxfer") {
-        const n = names.get(rec.name);
-        if (!n || n.owner !== who) {
-          note(ev, ev.id, "nxfer", false, "not the name owner");
-          continue;
-        }
-        if (n.pending) {
-          note(ev, ev.id, "nxfer", false, "name reservation not yet finalized");
-          continue;
-        }
-        if (v15 && lapsed(n, epochOf(ev.height))) {
-          note(ev, ev.id, "nxfer", false, "lease lapsed \u2014 claim it instead");
-          continue;
-        }
-        if (n.locked) {
-          note(ev, ev.id, "nxfer", false, "name is locked by an open offer");
-          continue;
-        }
-        n.owner = rec.to.toLowerCase();
-        n.addr = void 0;
-        n.profile = void 0;
-        note(ev, ev.id, "nxfer", true);
-      } else if (rec.t === "nset") {
-        const n = names.get(rec.name);
-        if (!n || n.owner !== who) {
-          note(ev, ev.id, "nset", false, "not the name owner");
-          continue;
-        }
-        if (n.pending) {
-          note(ev, ev.id, "nset", false, "name reservation not yet finalized");
-          continue;
-        }
-        if (v15 && lapsed(n, epochOf(ev.height))) {
-          note(ev, ev.id, "nset", false, "lease lapsed \u2014 claim it instead");
-          continue;
-        }
-        if (v23 && rec.addr.toLowerCase() === ZERO_ADDR) n.addr = void 0;
-        else n.addr = rec.addr.toLowerCase();
-        note(ev, ev.id, "nset", true);
-      } else if (rec.t === "nprofile") {
-        if (!v19) {
-          note(ev, ev.id, "nprofile", false, "before v1.9 activation");
-          continue;
-        }
-        const n = names.get(rec.name);
-        if (!n || n.owner !== who) {
-          note(ev, ev.id, "nprofile", false, "not the name owner");
-          continue;
-        }
-        if (n.pending) {
-          note(ev, ev.id, "nprofile", false, "name reservation not yet finalized");
-          continue;
-        }
-        if (v15 && lapsed(n, epochOf(ev.height))) {
-          note(ev, ev.id, "nprofile", false, "lease lapsed \u2014 claim it instead");
-          continue;
-        }
-        n.profile = Object.keys(rec.p).length ? { ...rec.p } : void 0;
-        note(ev, ev.id, "nprofile", true);
-      } else if (rec.t === "offer") {
-        const wantIsToken = isTokenWant(rec.want);
-        if ((wantIsToken || rec.min !== void 0 || rec.bid !== void 0) && !v12) {
-          note(ev, ev.id, "offer", false, "v1.2 offer shape before activation");
-          continue;
-        }
-        if (ev.height >= V13_HEIGHT && ev.height < V17_HEIGHT && !wantIsToken && rec.taker === void 0) {
-          note(ev, ev.id, "offer", false, "v1.3: CSD-priced offers must be taker-bound (use bid/RFQ)");
-          continue;
-        }
-        const payto = (rec.want.payto ?? who).toLowerCase();
-        if (payto === TREASURY_ADDR) {
-          note(ev, ev.id, "offer", false, "payto cannot be the protocol treasury");
-          continue;
-        }
-        if (!Number.isSafeInteger(ev.expiresEpoch)) {
-          note(ev, ev.id, "offer", false, "expiresEpoch out of safe-integer range");
-          continue;
-        }
-        if (epochOf(ev.height) > ev.expiresEpoch) {
-          note(ev, ev.id, "offer", false, "already expired at anchor");
-          continue;
-        }
-        if (ev.height >= V21_HEIGHT && ev.height < V22_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
-          note(ev, ev.id, "offer", false, "v2.1: offer duration exceeds the max");
-          continue;
-        }
-        const give = rec.give;
-        if (isNameGive(give)) {
-          if (!v11) {
-            note(ev, ev.id, "offer", false, "name offers need v1.1");
-            continue;
-          }
-          const n = names.get(give.name);
-          if (!n || n.owner !== who) {
-            note(ev, ev.id, "offer", false, "you don't own this name");
-            continue;
-          }
-          if (n.pending) {
-            note(ev, ev.id, "offer", false, "name reservation not yet finalized");
-            continue;
-          }
-          if (n.locked) {
-            note(ev, ev.id, "offer", false, "name already locked by another offer");
-            continue;
-          }
-          const saleEmbargo = ev.height >= V27_HEIGHT ? REG_COMMIT_MAX_BLOCKS : COMMIT_MAX_BLOCKS;
-          if (ev.height >= V13_HEIGHT && !n.viaFill && ev.height - n.effHeight <= saleEmbargo) {
-            note(ev, ev.id, "offer", false, "name too young to sell (must out-age the reveal window)");
-            continue;
-          }
-          if (v15 && paidThrough(n) < ev.expiresEpoch) {
-            note(ev, ev.id, "offer", false, "v1.5: lease ends inside the offer window (renew first)");
-            continue;
-          }
-          n.locked = true;
-        } else {
-          if (!tokens.has(give.ticker)) {
-            note(ev, ev.id, "offer", false, "unknown ticker");
-            continue;
-          }
-          const amt = parseAmount(give.amount);
-          const s = bal(give.ticker, who);
-          if (s.available < amt) {
-            note(ev, ev.id, "offer", false, "insufficient available balance");
-            continue;
-          }
-          s.available -= amt;
-          s.locked += amt;
-          offerLock.set(ev.id, amt);
-        }
-        const o = {
-          id: ev.id,
-          seller: who,
-          give,
-          want: wantIsToken ? { ticker: rec.want.ticker, amount: rec.want.amount, payto } : { value: rec.want.value, payto },
-          ...rec.taker ? { taker: rec.taker.toLowerCase() } : {},
-          ...rec.min !== void 0 ? { min: rec.min, paid: "0", delivered: "0", fills: [] } : {},
-          ...rec.bid !== void 0 ? { bid: rec.bid } : {},
-          status: "open",
-          expiresEpoch: ev.expiresEpoch,
-          height: ev.height,
-          feeBps: v11 ? v16 ? FEE_BPS_V16 : FEE_BPS : 0
-        };
-        offers.set(ev.id, o);
-        openOffers.add(ev.id);
-        const linked = rec.bid !== void 0 ? bids.get(rec.bid) : void 0;
-        if (linked) linked.offers.push(ev.id);
-        note(ev, ev.id, "offer", true);
-      } else if (rec.t === "bid") {
-        if (!v12) {
-          note(ev, ev.id, "bid", false, "bids need v1.2");
-          continue;
-        }
-        if (!Number.isSafeInteger(ev.expiresEpoch)) {
-          note(ev, ev.id, "bid", false, "expiresEpoch out of safe-integer range");
-          continue;
-        }
-        if (epochOf(ev.height) > ev.expiresEpoch) {
-          note(ev, ev.id, "bid", false, "already expired at anchor");
-          continue;
-        }
-        if (ev.height >= V21_HEIGHT && ev.height < V22_HEIGHT && ev.expiresEpoch - epochOf(ev.height) > MAX_OFFER_EPOCHS) {
-          note(ev, ev.id, "bid", false, "v2.1: bid duration exceeds the max");
-          continue;
-        }
-        bids.set(ev.id, {
-          id: ev.id,
-          bidder: who,
-          want: rec.want,
-          give: rec.give,
-          status: "open",
-          expiresEpoch: ev.expiresEpoch,
-          height: ev.height,
-          offers: []
-        });
-        openBids.add(ev.id);
-        note(ev, ev.id, "bid", true);
-      } else if (rec.t === "ocancel") {
-        if (!v12) {
-          note(ev, ev.id, "ocancel", false, "ocancel needs v1.2");
-          continue;
-        }
-        const targets = [];
-        for (const o of offers.values()) {
-          if (o.status !== "open" || o.seller !== who) continue;
-          if (o.taker !== void 0 && o.height >= V28_HEIGHT) continue;
-          if (rec.ticker !== void 0 && !(!isNameGive(o.give) && o.give.ticker === rec.ticker)) continue;
-          if (rec.name !== void 0 && !(isNameGive(o.give) && o.give.name === rec.name)) continue;
-          targets.push(o);
-        }
-        if (ev.height >= V14_HEIGHT) {
-          pendingCancels.push(() => {
-            let n = 0;
-            for (const o of targets) {
-              if (ev.height >= V28_HEIGHT && o.claimTxid !== void 0 && claimHeld(o, ev.height)) continue;
-              if (o.status === "open") {
-                releaseGive(o);
-                setOfferStatus(o, "cancelled");
-                n++;
-              }
-            }
-            note(ev, ev.id, "ocancel", true, `${n} cancelled (deferred past same-block fills)`);
-          });
-        } else {
-          for (const o of targets) {
-            releaseGive(o);
-            setOfferStatus(o, "cancelled");
-          }
-          note(ev, ev.id, "ocancel", true, `${targets.length} cancelled`);
-        }
-      } else if (rec.t === "nrenew") {
-        if (!v15) {
-          note(ev, ev.id, "nrenew", false, "nrenew needs v1.5");
-          continue;
-        }
-        const n = names.get(rec.name);
-        const ep = epochOf(ev.height);
-        if (n && n.pending) {
-          note(ev, ev.id, "nrenew", false, "name reservation not yet finalized");
-          continue;
-        }
-        if (!n || lapsed(n, ep)) {
-          note(ev, ev.id, "nrenew", false, "no live lease (lapsed names are claimed, not renewed)");
-          continue;
-        }
-        if (inGrace(n, ep) && who !== n.owner) {
-          note(ev, ev.id, "nrenew", false, "grace period: only the owner may renew");
-          continue;
-        }
-        if (feeToTreasury < nameRegFee(rec.name, ev.height)) {
-          note(ev, ev.id, "nrenew", false, "renewal fee unpaid");
-          continue;
-        }
-        n.paidThroughEpoch = paidThrough(n) + NAME_TERM_EPOCHS;
-        feesPaid += nameRegFee(rec.name, ev.height);
-        note(ev, ev.id, "nrenew", true, `paid through epoch ${n.paidThroughEpoch}`);
-      } else if (rec.t === "tmeta") {
-        if (!v15) {
-          note(ev, ev.id, "tmeta", false, "tmeta needs v1.5");
-          continue;
-        }
-        const tok = tokens.get(rec.ticker);
-        if (!tok) {
-          note(ev, ev.id, "tmeta", false, "unknown ticker");
-          continue;
-        }
-        if (who !== tok.meta.deployer) {
-          note(ev, ev.id, "tmeta", false, "issuer-only metadata");
-          continue;
-        }
-        tok.meta.tmeta = rec.hash;
-        note(ev, ev.id, "tmeta", true);
-      } else if (rec.t === "fclaim") {
-        if (ev.height < V28_HEIGHT) {
-          note(ev, ev.id, "fclaim", false, "fclaim needs v2.8");
-          continue;
-        }
-        const target = offers.get(rec.offer);
-        const E = ev.expiresEpoch;
-        const deny = (why) => {
-          fclaims.set(ev.id, { offer: rec.offer, proposer: who, expiresEpoch: E, height: ev.height, granted: false });
-          note(ev, ev.id, "fclaim", false, why);
-        };
-        if (!Number.isSafeInteger(E)) {
-          deny("expiresEpoch out of safe-integer range");
-          continue;
-        }
-        if (!target) {
-          deny("unknown offer");
-          continue;
-        }
-        if (target.status !== "open") {
-          deny(`offer ${target.status}`);
-          continue;
-        }
-        if (target.taker) {
-          deny("taker-bound offer needs no claim");
-          continue;
-        }
-        if (isTokenWant(target.want)) {
-          deny("claims are for CSD-priced offers");
-          continue;
-        }
-        if (E > effExpiry(target, ev.height)) {
-          deny("hold would outlive the offer expiry");
-          continue;
-        }
-        if (E > epochOf(ev.height) + FCLAIM_MAX_EPOCH_AHEAD) {
-          deny("hold too far ahead (anti-squat)");
-          continue;
-        }
-        if (epochOf(ev.height) > E) {
-          deny("expiry already in the past");
-          continue;
-        }
-        if (claimHeld(target, ev.height)) {
-          deny("offer already claimed (hold live)");
-          continue;
-        }
-        if (target.claimedBy === who && target.claimUntilHeight !== void 0 && ev.height < target.claimUntilHeight + claimGrace(target) + CLAIM_COOLDOWN_BLOCKS) {
-          deny("claim cooldown (you just held this offer)");
-          continue;
-        }
-        let liveN = 0;
-        for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, ev.height) && (ev.height < V29_HEIGHT || x.status === "open")) liveN++;
-        if (liveN >= MAX_ACTIVE_CLAIMS) {
-          deny(`max ${MAX_ACTIVE_CLAIMS} live claims per address`);
-          continue;
-        }
-        target.claimedBy = who;
-        target.claimUntilHeight = (E + 1) * EPOCH_LEN;
-        target.claimTxid = ev.id;
-        fclaims.set(ev.id, { offer: rec.offer, proposer: who, expiresEpoch: E, height: ev.height, granted: true });
-        note(ev, ev.id, "fclaim", true);
+      switch (rec.t) {
+        case "deploy":
+          applyDeploy(c, ev, rec, who, feeToTreasury);
+          break;
+        case "mint":
+          applyMint(c, ev, rec, who);
+          break;
+        case "transfer":
+          applyTransfer(c, ev, rec, who);
+          break;
+        case "tmeta":
+          applyTmeta(c, ev, rec, who);
+          break;
+        case "ncommit":
+          applyNcommit(c, ev, rec);
+          break;
+        case "name":
+          applyName(c, ev, rec, who, feeToTreasury);
+          break;
+        case "nfinalize":
+          applyNfinalize(c, ev, rec, who, feeToTreasury);
+          break;
+        case "nxfer":
+          applyNxfer(c, ev, rec, who);
+          break;
+        case "nset":
+          applyNset(c, ev, rec, who);
+          break;
+        case "nprofile":
+          applyNprofile(c, ev, rec, who);
+          break;
+        case "nrenew":
+          applyNrenew(c, ev, rec, who, feeToTreasury);
+          break;
+        case "offer":
+          applyOffer(c, ev, rec, who);
+          break;
+        case "bid":
+          applyBid(c, ev, rec, who);
+          break;
+        case "ocancel":
+          applyOcancel(c, ev, rec, who);
+          break;
+        case "fclaim":
+          applyFclaim(c, ev, rec, who);
+          break;
       }
     } else {
-      const who = ev.attester.toLowerCase();
-      let o = offers.get(ev.proposalId);
-      if (!o && ev.height >= V28_HEIGHT && ev.score === SCORE_FILL) {
-        const fc = fclaims.get(ev.proposalId);
-        if (fc && fc.granted) {
-          const linked = offers.get(fc.offer);
-          if (linked && linked.claimTxid === ev.proposalId) o = linked;
-        }
-      }
-      if (!o) {
-        if (ev.height >= V28_HEIGHT && ev.score === SCORE_FILL && fclaims.has(ev.proposalId)) {
-          note(ev, ev.txid, "fill", false, "fclaim not current (denied or superseded): no delivery, denied-fclaim fill");
-          continue;
-        }
-        const b = bids.get(ev.proposalId);
-        if (b && ev.score === SCORE_CANCEL) {
-          if (who !== b.bidder) {
-            note(ev, ev.txid, "bidcancel", false, "only bidder may cancel");
-            continue;
-          }
-          if (b.status !== "open") {
-            note(ev, ev.txid, "bidcancel", false, `bid ${b.status}`);
-            continue;
-          }
-          setBidStatus(b, "cancelled");
-          note(ev, ev.txid, "bidcancel", true);
-        }
-        continue;
-      }
-      if (ev.score === SCORE_CANCEL) {
-        if (who !== o.seller) {
-          note(ev, ev.txid, "cancel", false, "only seller may cancel");
-          continue;
-        }
-        if (o.status !== "open") {
-          note(ev, ev.txid, "cancel", false, `offer ${o.status}`);
-          continue;
-        }
-        if (o.taker !== void 0 && o.height >= V28_HEIGHT) {
-          note(ev, ev.txid, "cancel", false, "v2.8: taker-bound offers are firm quotes (uncancellable)");
-          continue;
-        }
-        if (ev.height >= V14_HEIGHT) {
-          pendingCancels.push(() => {
-            if (ev.height >= V28_HEIGHT && o.claimTxid !== void 0 && claimHeld(o, ev.height)) {
-              note(ev, ev.txid, "cancel", false, "v2.8: frozen (fclaim hold live)");
-              return;
-            }
-            if (o.status === "open") {
-              releaseGive(o);
-              setOfferStatus(o, "cancelled");
-              note(ev, ev.txid, "cancel", true);
-            } else note(ev, ev.txid, "cancel", false, "superseded by same-block fill (v1.4)");
-          });
-        } else {
-          releaseGive(o);
-          setOfferStatus(o, "cancelled");
-          note(ev, ev.txid, "cancel", true);
-        }
-      } else if (ev.score === SCORE_FILL && isTokenWant(o.want)) {
-        if (o.status !== "open") {
-          note(ev, ev.txid, "fill", false, `offer ${o.status}`);
-          continue;
-        }
-        if (o.taker && who !== o.taker) {
-          note(ev, ev.txid, "fill", false, "taker-bound offer");
-          continue;
-        }
-        if (ev.confidence !== CONF_TOKEN_FILL) {
-          note(ev, ev.txid, "fill", false, "token fill requires confidence marker");
-          continue;
-        }
-        if (!tokens.has(o.want.ticker)) {
-          note(ev, ev.txid, "fill", false, "want ticker does not exist");
-          continue;
-        }
-        const amt = BigInt(o.want.amount);
-        const fee = o.feeBps ? tradeFee(amt, o.feeBps) : 0n;
-        const buyer = bal(o.want.ticker, who);
-        if (buyer.available < amt + fee) {
-          note(ev, ev.txid, "fill", false, "insufficient want-token balance");
-          continue;
-        }
-        const giveName = isNameGive(o.give) ? names.get(o.give.name) : void 0;
-        if (isNameGive(o.give) && !giveName) {
-          note(ev, ev.txid, "fill", false, "name vanished (consensus violation)");
-          continue;
-        }
-        const giveLock = isNameGive(o.give) ? void 0 : offerLock.get(o.id);
-        if (!isNameGive(o.give) && giveLock === void 0) {
-          note(ev, ev.txid, "fill", false, "offer lock missing");
-          continue;
-        }
-        buyer.available -= amt + fee;
-        bal(o.want.ticker, o.want.payto).available += amt;
-        if (fee > 0n) bal(o.want.ticker, TREASURY_ADDR).available += fee;
-        if (isNameGive(o.give)) deliverNameToBuyer(giveName, who, ev);
-        else releaseGiveLock(o, who, giveLock);
-        setOfferStatus(o, "filled");
-        o.fill = { buyer: who, txid: ev.txid, height: ev.height, paid: amt.toString(), fee: fee.toString() };
-        markBidDone(o, who);
-        note(ev, ev.txid, "fill", true);
-      } else if (ev.score === SCORE_FILL && o.min !== void 0 && !isNameGive(o.give)) {
-        if (o.status !== "open") {
-          note(ev, ev.txid, "fill", false, `offer ${o.status}`);
-          continue;
-        }
-        if (o.taker && who !== o.taker) {
-          note(ev, ev.txid, "fill", false, "taker-bound offer");
-          continue;
-        }
-        const blk = openFillReject(o, ev.height, who, ev.proposalId);
-        if (blk) {
-          note(ev, ev.txid, "fill", false, blk);
-          continue;
-        }
-        const pt = ev.paidTo ?? {};
-        const want = BigInt(o.want.value);
-        const paidSoFar = BigInt(o.paid ?? "0");
-        const remaining = want - paidSoFar;
-        const X = ptAmt(pt[o.want.payto]);
-        const minV = BigInt(o.min);
-        const effMin = remaining < minV ? remaining : minV;
-        if (X < effMin) {
-          note(ev, ev.txid, "fill", false, "payment below offer min");
-          continue;
-        }
-        const x = X < remaining ? X : remaining;
-        const fee = o.feeBps ? tradeFee(x, o.feeBps) : 0n;
-        if (ptAmt(pt[TREASURY_ADDR]) < fee) {
-          note(ev, ev.txid, "fill", false, "protocol fee unpaid");
-          continue;
-        }
-        const giveTotal = BigInt(o.give.amount);
-        const newPaid = paidSoFar + x;
-        const deliveredSoFar = BigInt(o.delivered ?? "0");
-        const newDelivered = giveTotal * newPaid / want;
-        const out = newDelivered - deliveredSoFar;
-        if (out === 0n) {
-          note(ev, ev.txid, "fill", false, "fill too small to deliver any tokens");
-          continue;
-        }
-        const lock = offerLock.get(o.id);
-        if (lock === void 0) {
-          note(ev, ev.txid, "fill", false, "offer lock missing");
-          continue;
-        }
-        bal(o.give.ticker, o.seller).locked -= out;
-        bal(o.give.ticker, who).available += out;
-        offerLock.set(o.id, lock - out);
-        o.paid = newPaid.toString();
-        o.delivered = newDelivered.toString();
-        const entry = { buyer: who, txid: ev.txid, height: ev.height, paid: x.toString(), fee: fee.toString(), got: out.toString() };
-        (o.fills ??= []).push(entry);
-        feesPaid += fee;
-        if (newPaid === want) {
-          setOfferStatus(o, "filled");
-          o.fill = entry;
-          offerLock.delete(o.id);
-          markBidDone(o, who);
-        }
-        note(ev, ev.txid, "fill", true, `partial ${x}/${want}`);
-      } else if (ev.score === SCORE_FILL) {
-        if (o.status !== "open") {
-          note(ev, ev.txid, "fill", false, `offer ${o.status}`);
-          continue;
-        }
-        if (o.taker && who !== o.taker) {
-          note(ev, ev.txid, "fill", false, "taker-bound offer");
-          continue;
-        }
-        const blk = openFillReject(o, ev.height, who, ev.proposalId);
-        if (blk) {
-          note(ev, ev.txid, "fill", false, blk);
-          continue;
-        }
-        const pt = ev.paidTo ?? {};
-        const want = BigInt(o.want.value);
-        const fee = o.feeBps ? tradeFee(want, o.feeBps) : 0n;
-        const restingLiquidity = o.taker !== void 0 && o.bid !== void 0 || o.height >= V17_HEIGHT && o.taker === void 0;
-        const rebate = o.height >= V16_HEIGHT && restingLiquidity ? makerRebate(want) : 0n;
-        const need = /* @__PURE__ */ new Map();
-        const addNeed = (a, v) => need.set(a, (need.get(a) ?? 0n) + v);
-        addNeed(o.want.payto, want);
-        addNeed(TREASURY_ADDR, fee);
-        if (rebate > 0n) addNeed(o.seller, rebate);
-        let unpaid;
-        for (const [addr, amt] of need) if (ptAmt(pt[addr]) < amt) {
-          unpaid = addr === TREASURY_ADDR ? "protocol fee unpaid" : rebate > 0n && addr === o.seller ? "maker rebate unpaid (v1.6)" : "payment below want.value";
-          break;
-        }
-        if (unpaid) {
-          note(ev, ev.txid, "fill", false, unpaid);
-          continue;
-        }
-        const paid = ptAmt(pt[o.want.payto]);
-        if (isNameGive(o.give)) {
-          const n = names.get(o.give.name);
-          if (!n) {
-            note(ev, ev.txid, "fill", false, "name vanished (consensus violation)");
-            continue;
-          }
-          deliverNameToBuyer(n, who, ev);
-        } else {
-          const amt = offerLock.get(o.id);
-          if (amt === void 0) {
-            note(ev, ev.txid, "fill", false, "offer lock missing");
-            continue;
-          }
-          releaseGiveLock(o, who, amt);
-        }
-        feesPaid += fee;
-        setOfferStatus(o, "filled");
-        o.fill = { buyer: who, txid: ev.txid, height: ev.height, paid: paid.toString(), fee: fee.toString() };
-        markBidDone(o, who);
-        note(ev, ev.txid, "fill", true);
-      } else if (ev.height >= V17_HEIGHT && ev.score === SCORE_CLAIM) {
-        if (ev.height >= V28_HEIGHT) {
-          note(ev, ev.txid, "claim", false, "v2.8: claims are fclaim proposals now");
-          continue;
-        }
-        if (o.status !== "open") {
-          note(ev, ev.txid, "claim", false, `offer ${o.status}`);
-          continue;
-        }
-        if (o.taker) {
-          note(ev, ev.txid, "claim", false, "taker-bound offer needs no claim");
-          continue;
-        }
-        if (isTokenWant(o.want)) {
-          note(ev, ev.txid, "claim", false, "claims are for CSD-priced offers (token offers are no-op-safe)");
-          continue;
-        }
-        if (claimHeld(o, ev.height)) {
-          note(ev, ev.txid, "claim", false, "offer already claimed (hold live)");
-          continue;
-        }
-        if (o.claimedBy === who && o.claimUntilHeight !== void 0 && ev.height < o.claimUntilHeight + claimGrace(o) + CLAIM_COOLDOWN_BLOCKS) {
-          note(ev, ev.txid, "claim", false, "claim cooldown (you just held this offer)");
-          continue;
-        }
-        let liveN = 0;
-        for (const x of offers.values()) if (x.claimedBy === who && claimHeld(x, ev.height) && (ev.height < V29_HEIGHT || x.status === "open")) liveN++;
-        if (liveN >= MAX_ACTIVE_CLAIMS) {
-          note(ev, ev.txid, "claim", false, `max ${MAX_ACTIVE_CLAIMS} live claims per address`);
-          continue;
-        }
-        o.claimedBy = who;
-        o.claimUntilHeight = ev.height + claimWindowAt(ev.height);
-        note(ev, ev.txid, "claim", true);
-      }
+      applyAttest(c, ev);
     }
   }
   applyPendingCancels();
@@ -4867,7 +5030,7 @@ function resolve(events, tipHeight) {
   for (const [nm, r] of [...recaptures.entries()].sort(([a], [b]) => ord(a, b))) recapturesOut[nm] = { owner: r.owner, effectiveHeight: r.effHeight, finalizeBy: r.finalizeBy };
   const fclaimsOut = {};
   for (const [txid2, fc] of [...fclaims.entries()].sort(([a], [b]) => ord(a, b))) if (fc.granted) fclaimsOut[txid2] = { offer: fc.offer, proposer: fc.proposer, expiresEpoch: fc.expiresEpoch, height: fc.height };
-  return { tipHeight, tokens: tokensOut, balances: balancesOut, names: namesOut, offers: offersOut, bids: bidsOut, recaptures: recapturesOut, fclaims: fclaimsOut, events: log, feesPaid: feesPaid.toString() };
+  return { tipHeight, tokens: tokensOut, balances: balancesOut, names: namesOut, offers: offersOut, bids: bidsOut, recaptures: recapturesOut, fclaims: fclaimsOut, events: log, feesPaid: c.feesPaid.toString() };
 }
 function canonicalState(s) {
   const sortKeys = (v) => {
@@ -5015,8 +5178,9 @@ function finalizeWinnerCheck(nameState, me, commitHeight, tip) {
   if (nameState.pending !== true) return { safe: false, reason: "already registered to you \u2014 no second finalize fee is needed" };
   if (Number(nameState.effectiveHeight) !== Number(commitHeight))
     return { safe: false, reason: "your reservation was displaced (effective height changed) \u2014 a finalize now would burn the fee" };
-  if (tip !== void 0 && tip !== null && Number.isFinite(Number(tip))) {
-    const t = Number(tip);
+  if (tip !== void 0 && tip !== null) {
+    if (!Number.isSafeInteger(tip) || tip < 0) return { safe: false, reason: `the chain tip given (${String(tip)}) is not a block height, so the finalize window cannot be checked` };
+    const t = tip;
     const eff = Number(nameState.effectiveHeight);
     const freezeEnd = eff + REG_COMMIT_MAX_BLOCKS;
     const closeAt = eff + REG_COMMIT_MAX_BLOCKS + REG_FINALIZE_GRACE_BLOCKS - FINALIZE_TIP_MARGIN;
@@ -5073,15 +5237,17 @@ async function verifyFillSpv(offerId, fclaimTxid, me, io, opts) {
     return no("could not enumerate the offer's events");
   }
   const want = /* @__PURE__ */ new Set([offerId.toLowerCase(), fclaimTxid.toLowerCase(), ...(hintIds ?? []).map((x) => String(x).toLowerCase())]);
+  const unproven = (wid) => wid === offerId.toLowerCase() ? no("offer not merkle-proven (no PoW-verified offer Propose)") : wid === fclaimTxid.toLowerCase() ? no("fclaim not merkle-proven (no PoW-verified fclaim Propose)") : no(`an event on this offer could not be merkle-proven (${wid}) - refusing, the replay would miss it`);
   const proven = [];
   for (const wid of want) {
     let ev;
     try {
       ev = await io.provenEvent(wid);
     } catch {
-      ev = null;
+      return unproven(wid);
     }
-    if (ev && (ev.kind === "propose" ? ev.id : ev.txid).toLowerCase() === wid) proven.push(ev);
+    if (!ev || (ev.kind === "propose" ? ev.id : ev.txid).toLowerCase() !== wid) return unproven(wid);
+    proven.push(ev);
   }
   const isProp = (e) => e.kind === "propose";
   const offerEv = proven.find((e) => isProp(e) && e.id.toLowerCase() === offerId.toLowerCase());
@@ -5160,7 +5326,9 @@ function provenOfferTerms(offerRec, provenHeight) {
     giveTicker: g.ticker !== void 0 ? String(g.ticker) : void 0,
     giveAmount: g.amount !== void 0 ? String(g.amount) : void 0,
     giveName: g.name !== void 0 ? String(g.name) : void 0,
-    wantType: isTokenWant(offerRec.want) ? "token" : "csd"
+    wantType: isTokenWant(offerRec.want) ? "token" : "csd",
+    wantTicker: isTokenWant(offerRec.want) ? String(w.ticker) : void 0,
+    wantAmount: isTokenWant(offerRec.want) ? String(w.amount) : void 0
   };
 }
 function bindOfferTerms(servedOffer, t, opts) {
@@ -5175,7 +5343,8 @@ function bindOfferTerms(servedOffer, t, opts) {
   if ((om !== void 0 && om !== null) !== (t.min !== void 0)) return true;
   if (t.min !== void 0 && String(om) !== t.min) return true;
   if (opts?.wantType !== false) {
-    if (t.wantType === void 0 || typeof o?.want?.ticker === "string" !== (t.wantType === "token")) return true;
+    if (t.wantType === void 0) return true;
+    if (t.wantType === "token" ? String(o?.want?.ticker) !== t.wantTicker || String(o?.want?.amount) !== t.wantAmount : typeof o?.want?.ticker === "string") return true;
   }
   if (opts?.give !== false) {
     const g = o?.give;
@@ -5244,6 +5413,30 @@ function myProvenFillClosedOffer(fill, fclaim2, offerEv, me, grantHeight) {
   if (!need) return false;
   return need.every((leg) => ptAmt(fill.paidTo?.[lc(leg.to)]) >= leg.value);
 }
+var lastLegacyClaimEnd = V28_HEIGHT - 1 + claimWindowAt(V28_HEIGHT - 1);
+var LEGACY_HOLD_SUNSET_HEIGHT = lastLegacyClaimEnd + claimGraceOf(lastLegacyClaimEnd);
+function countOtherHoldsAtGrant(candidates, target, me, closed = /* @__PURE__ */ new Set()) {
+  if (!(Number.isSafeInteger(target.height) && target.height >= LEGACY_HOLD_SUNSET_HEIGHT))
+    return { ok: false, reason: `this reservation was granted at ${target.height}, before block ${LEGACY_HOLD_SUNSET_HEIGHT}, while claims made before V28 could still count against the cap; it cannot be checked here` };
+  const meL = String(me).toLowerCase(), tid = String(target.id).toLowerCase(), toffer = String(target.offer).toLowerCase();
+  const offers = /* @__PURE__ */ new Set();
+  for (const c of candidates) {
+    const cid = String(c.id).toLowerCase();
+    if (cid === tid || closed.has(cid) || String(c.proposer).toLowerCase() !== meL) continue;
+    if (!(c.height < target.height || c.height === target.height && c.pos < target.pos)) continue;
+    if (!(fclaimHoldEnd(Number(c.expiresEpoch)) >= target.height)) continue;
+    const rec = parseRecord(String(c.uri), String(c.payloadHash));
+    if (!rec || rec.t !== "fclaim") continue;
+    const offer2 = String(rec.offer).toLowerCase();
+    if (offer2 !== toffer) offers.add(offer2);
+  }
+  return { ok: true, count: offers.size };
+}
+function provenOfferRefusal(rec, tx) {
+  if (tx.domain !== DOMAIN) return `not a ${DOMAIN} Propose (domain ${JSON.stringify(String(tx.domain))})`;
+  const ee = typeof tx.expiresEpoch === "bigint" ? Number(tx.expiresEpoch) : tx.expiresEpoch;
+  return offerEnvelopeRefusal(rec, String(tx.seller).toLowerCase(), tx.height, ee);
+}
 export {
   ACTIVATION_HEIGHT,
   ADDR_RE,
@@ -5276,6 +5469,7 @@ export {
   HASH_RE,
   HEADER_BYTES,
   INITIAL_REWARD,
+  LEGACY_HOLD_SUNSET_HEIGHT,
   LWMA_WINDOW,
   LightClient,
   MAX_ACTIVE_CLAIMS,
@@ -5284,6 +5478,7 @@ export {
   MAX_PENDING_REG,
   MAX_RECORD_BYTES,
   MAX_SCAN,
+  MAX_TOKEN_DECIMALS,
   MINT_KEYS,
   MIN_FEE_ATTEST,
   MIN_FEE_PROPOSE,
@@ -5339,7 +5534,10 @@ export {
   V29_HEIGHT,
   ZERO_ADDR,
   addrFromPub,
+  addrFromScriptPubkey,
+  authorOf,
   bid,
+  bindBlockBody,
   bindOfferTerms,
   bindProvenOffer,
   blockReward,
@@ -5351,6 +5549,7 @@ export {
   claimGraceOf,
   claimWindowAt,
   claimWindowOf,
+  countOtherHoldsAtGrant,
   deploy,
   deserializeHeader,
   epochOf,
@@ -5387,11 +5586,13 @@ export {
   offerExpiryHeightOf,
   paidToFromOutputs,
   parseAmount,
+  parseJsonExact,
   parseRecord,
   payloadHash,
   pickPrimaryName,
   previewFill,
   primaryRankBefore,
+  provenOfferRefusal,
   provenOfferTerms,
   ptAmt,
   recoverSigner,

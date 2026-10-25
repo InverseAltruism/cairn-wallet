@@ -196,7 +196,7 @@ const baseAmt = (v: unknown) => `<b>${esc(v)}</b> <span class="dim">base units</
 function tokenAmt(amount: unknown, ticker: unknown, meta?: TokenDisplayMeta): string {
   const m = meta?.[String(ticker)];
   const { decimals: dec, pinned } = displayDecimals(ticker, m?.decimals);
-  const human = typeof dec === "number" && Number.isInteger(dec) && dec >= 0 && dec <= 8;
+  const human = isTokenDecimals(dec);
   const amt = human
     ? `<b>${esc(tokenAmountBothScales(amount, dec, ticker))}</b>${unverifiedMark(ticker, pinned, m?.deployId)}`
     : `${baseAmt(amount)} of <b>${esc(ticker)}</b>`;
@@ -226,7 +226,7 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: Token
       return `<b>CairnX token transfer</b><br>token: <b>${esc(r.ticker)}</b><br>amount: ${tokenAmt(r.amount, r.ticker, meta)}<br>to: <code>${esc(r.to)}</code>${memo}`;
     case "deploy": {
       const limit = r.mint === "open" ? ` · mint limit ${esc(r.mintLimit)}/tx` : "";
-      // N22 counter-case (B5g): THIS record's decimals are part of the signed bytes (schema: integer 0..8),
+      // N22 counter-case (B5g): THIS record's decimals are part of the signed bytes (schema: integer 0..MAX_TOKEN_DECIMALS),
       // so scaling the supply by them is proven-value-derived - the one token surface where a human scale
       // cannot be lied into existence. Everywhere else decimals are resolver state and base units stay
       // the authoritative render.

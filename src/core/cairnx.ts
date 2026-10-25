@@ -18,7 +18,7 @@ import {
   FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT,
   CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
-  MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES,
+  MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES, MAX_TOKEN_DECIMALS,
   // functions
   canonicalJson, payloadHash, tradeFee, nameRegFee, parseRecord,
   parseAmount as parseAmountCanonical,
@@ -221,8 +221,8 @@ export function displayDecimals(ticker: unknown, served: unknown): { decimals: u
   const pin = Object.prototype.hasOwnProperty.call(PINNED_TOKENS, String(ticker)) ? PINNED_TOKENS[String(ticker)] : undefined;
   return pin ? { decimals: pin.decimals, pinned: true } : { decimals: served, pinned: false };
 }
-/** A token's decimals as the record schema allows them: an integer 0..8. */
-export const isTokenDecimals = (d: unknown): d is number => typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= 8;
+/** A token's decimals as the record schema allows them: an integer 0..MAX_TOKEN_DECIMALS (parseRecord's bound). */
+export const isTokenDecimals = (d: unknown): d is number => typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= MAX_TOKEN_DECIMALS;
 /** The one base-units to decimal-string formatter: exact (bigint), trailing zeros trimmed, "?" on bad input. */
 export function formatUnits(base: unknown, decimals: unknown): string {
   let v: bigint;
@@ -260,7 +260,7 @@ export function parseUnits(human: string, decimals: number): string | null {
   if (typeof human !== "string") return null;
   const m = /^(\d+)(?:\.(\d+))?$/.exec(human.trim());
   if (!m || m[1] === undefined) return null;   // group 1 is required by the pattern
-  const d = Number.isInteger(decimals) && decimals >= 0 && decimals <= 8 ? decimals : 0;
+  const d = isTokenDecimals(decimals) ? decimals : 0;
   const frac = m[2] ?? "";
   if (frac.length > d) return null; // more precision than the token has
   const v = BigInt(m[1]) * 10n ** BigInt(d) + BigInt(frac.padEnd(d, "0") || "0");

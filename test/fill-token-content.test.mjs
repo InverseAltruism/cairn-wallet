@@ -29,7 +29,7 @@ const SELLER = "0x" + "cd".repeat(20);
 // The TRUE, merkle-proven terms resolve() would materialize from the on-chain offer record: give 10 AAA for
 // 7 PAY. provenPaytoForTest injects these (the live SPV path is unavailable under the stubbed fetch); the
 // SERVED offer is what a hostile resolver returns, and the bind refuses whenever the two diverge.
-const TRUE_PROVEN = () => ({ payto: SELLER, seller: SELLER, expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token" }, wantTicker: "PAY", wantAmount: "7" });
+const TRUE_PROVEN = () => ({ payto: SELLER, seller: SELLER, expiresEpoch: 9e15, height: 47_000, terms: { height: 47_000, feeBps: 150, value: undefined, taker: undefined, bid: undefined, giveTicker: "AAA", giveAmount: "10", giveName: undefined, wantType: "token", wantTicker: "PAY", wantAmount: "7" }, wantTicker: "PAY", wantAmount: "7" });
 // The HONEST served offer (matches TRUE_PROVEN exactly).
 const honestOffer = { id: OID, seller: SELLER, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 };
 
@@ -86,21 +86,20 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
   check(`LIED give.ticker (BBB vs proven AAA) is REFUSED (${r?.code})`, r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
 }
 
-// 4. a LIED WANT AMOUNT (served want.amount 1 vs proven 7 - understating your cost) is REFUSED. This leg is
-//    NOT covered by bindOfferTerms (it binds only the want TYPE); the explicit want.ticker/want.amount bind
-//    catches it, mirroring the site.
+// 4. a LIED WANT AMOUNT (served want.amount 1 vs proven 7 - understating your cost) is REFUSED by bindOfferTerms'
+//    want leg. The reviewed quote is the honest one, so the later quote bind cannot be what refuses it.
 {
   const lied = { ...honestOffer, want: { ticker: "PAY", amount: "1" } };
-  const { r, s } = await fillServed("pw-wantamt-12345", lied);
-  check(`LIED want.amount (1 vs proven 7) is REFUSED with FILL_UNSAFE (${r?.code})`, r?.ok === false && r?.code === "FILL_UNSAFE");
+  const { r, s } = await fillServed("pw-wantamt-12345", lied, TRUE_PROVEN, quoteFor(honestOffer));
+  check(`LIED want.amount (1 vs proven 7) is REFUSED with FILL_UNSAFE (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /what you would pay/.test(r?.error ?? ""));
   check("...and nothing was submitted (no understated cost)", s.submits.length === 0);
 }
 
 // 5. a LIED WANT TICKER (served want.ticker CSD-TOKEN vs proven PAY - a different token to pay) is REFUSED.
 {
   const lied = { ...honestOffer, want: { ticker: "OTHER", amount: "7" } };
-  const { r, s } = await fillServed("pw-wanttick-12345", lied);
-  check(`LIED want.ticker (OTHER vs proven PAY) is REFUSED (${r?.code})`, r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
+  const { r, s } = await fillServed("pw-wanttick-12345", lied, TRUE_PROVEN, quoteFor(honestOffer));
+  check(`LIED want.ticker (OTHER vs proven PAY) is REFUSED (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /what you would pay/.test(r?.error ?? "") && s.submits.length === 0);
 }
 
 // 6. WANT-TYPE lie: the proven offer is actually CSD-priced (wantType csd, no want.ticker) but the resolver

@@ -1,7 +1,7 @@
 // The wallet's epoch math uses the vendored consensus EPOCH_LEN, not a local copy of the number.
 //
 // wallet.ts carried `const BLOCKS_PER_EPOCH = 30` with a comment saying the vendored .d.ts did not export
-// EPOCH_LEN. It does (src/vendor/cairnx-spv.d.ts), so the local twin is removed.
+// EPOCH_LEN. It does (src/vendor/cairnx-spv.d.ts, generated from cairnx-core), so the local twin is removed.
 //   RED-FIRST: (1) fails on any wallet.ts that declares its own blocks-per-epoch constant.
 //   EQUIVALENCE (the change must not move any number): (2) EPOCH_LEN is 30 and wallet.epoch() returns
 //   floor(tip / 30) from a mocked /tip; every expiresEpoch in wallet.ts uses the same floor(tip / EPOCH_LEN).
@@ -17,7 +17,10 @@ const src = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf
 const dts = readFileSync(new URL("../src/vendor/cairnx-spv.d.ts", import.meta.url), "utf8");
 
 console.log("(1) wallet.ts imports EPOCH_LEN from the vendored bundle and declares no local copy");
-assert.match(dts, /export const EPOCH_LEN: number;/, "the vendored .d.ts exports EPOCH_LEN");
+// The .d.ts is generated: it re-exports cairnx-core whole, whose own declarations export EPOCH_LEN.
+assert.match(dts, /^export \* from "@inversealtruism\/cairnx-core";$/m, "the vendored .d.ts re-exports cairnx-core");
+const coreDts = readFileSync(new URL("../node_modules/@inversealtruism/cairnx-core/dist/index.d.ts", import.meta.url), "utf8");
+assert.match(coreDts, /\bEPOCH_LEN\b[^;]*from '@inversealtruism\/csd-codec'/, "cairnx-core exports EPOCH_LEN (from csd-codec)");
 assert.match(src, /import \{[^}]*\bEPOCH_LEN\b[^}]*\} from "\.\.\/vendor\/cairnx-spv\.js";/, "wallet.ts imports it");
 assert.doesNotMatch(src, /BLOCKS_PER_EPOCH/, "no BLOCKS_PER_EPOCH twin");
 assert.doesNotMatch(src, /const\s+\w*EPOCH\w*\s*=\s*30\s*;/, "no local 30-block epoch literal");

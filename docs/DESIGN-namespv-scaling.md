@@ -113,7 +113,7 @@ below the stored tip, and no table entry lies between the anchor and the pin:
 
 Any other outcome (no pin, a malformed one, a failed walk, a pin from another table) runs the full restore.
 
-Why the trust is the same, from the vendored source (`src/vendor/cairnx-spv.js`): `verifyLinkedRecords` (985-1001)
+Why the trust is the same, from the vendored source (`src/vendor/cairnx-spv.js`): `verifyLinkedRecords` (1001-1017)
 recomputes sha256d of every record and compares it byte for byte with the next record's prev field and, for the last,
 with the pin, so the walked bytes are the ones whose hash chain ends at the pin; finding other bytes with that chain
 needs a sha256d second preimage. The pin is written only from the light client's own chain, whose headers passed

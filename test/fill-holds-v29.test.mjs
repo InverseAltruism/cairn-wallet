@@ -8,14 +8,14 @@
 // the wallet never counts below the cap while the resolver denies the claim.
 // Run: npx tsx test/fill-holds-v29.test.mjs
 import assert from "node:assert/strict";
-import { liveFillSpvSource, countMyOtherLiveHolds } from "../src/core/fillspv.ts";
+import { liveFillSpvSource } from "../src/core/fillspv.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import {
-  deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs, myProvenFillClosedOffer,
+  deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs, myProvenFillClosedOffer, countOtherHoldsAtGrant,
   V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, feeBpsAt, tradeFee,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick } from "./_spvrig.ts";
+import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.ts";
 import { serveFixture, serveOffer, splitSource, memStore, legacyOf, OFFER, FIX_ANCHORS } from "./helpers/spvfixture.mjs";
 import { liveSpvSource } from "../src/core/namespv.ts";
@@ -36,7 +36,7 @@ function fillSource(blocks, tip) {
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
     async blockAt(height) {
       const txs = blocks.get(height) ?? [FILLER];
-      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), txs };
+      return { merkle: merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } })))), body: nodeBlockBody(txs) };
     },
     async prevoutScriptPubkey(prevTxid) { return prevoutFor(prevTxid); },
   };
@@ -244,11 +244,13 @@ await test("the predicate binds the fill to this fclaim and the proof to this of
   assert.equal(myProvenFillClosedOffer(f0, c0, tokenEv, ME, H_G), false, "a token-priced offer has no CSD fill to prove");
 });
 
-await test("the pure counter skips only the fclaim txids it is handed", async () => {
+await test("the counter skips only the fclaim txids it is handed", async () => {
   const s = fourBuys({ fills: {} });
-  const held = s.events.filter((e) => e.kind === "propose" && s.claims.includes(e.id));
-  assert.equal(countMyOtherLiveHolds(held, s.mainOffer, ME, H_G), 3);
-  assert.equal(countMyOtherLiveHolds(held, s.mainOffer, ME, H_G, new Set([s.claims[0]])), 2);
+  const fc = s.events.find((e) => e.kind === "propose" && e.id === s.fourth);
+  const target = { id: s.fourth, height: fc.height, pos: fc.pos, offer: s.mainOffer };
+  const proposes = s.events.filter((e) => e.kind === "propose");
+  assert.equal(holdCountAt(s.events, s.mainOffer, ME, H_G), 3);
+  assert.deepEqual(countOtherHoldsAtGrant(proposes, target, ME, new Set([s.claims[0]])), { ok: true, count: 2 });
 });
 
 await test("production wiring: the wallet's fill source looks the offer height up on its resolver", async () => {

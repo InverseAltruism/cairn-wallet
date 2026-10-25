@@ -1,8 +1,31 @@
 {
-  "note": "Provenance for src/vendor/cairnx-spv.js (the vendored SPV bundle). Rebuild with scripts/build-spv-vendor.sh, then regenerate with `node scripts/check-vendor-fresh.mjs --write`. Verified by scripts/check-vendor-fresh.mjs (audit NSPV-SUPPLY-1 / NSPV-MIRROR-1).",
-  "csdSdkVersion": "0.2.0",
-  "csdSdkCommit": "e25c0202fc23cac2bcbd33e2c0d0e62f4aae27d6",
-  "bundleSha256": "27aa1831d2b7e1c842664951360042e0ab55ce24cc7275f49143ad24dcca13b0",
+  "note": "Provenance for src/vendor/cairnx-spv.js and cairnx-spv.d.ts. Built by scripts/build-spv-vendor.sh from the csd-sdk packages below; regenerate with `node scripts/check-vendor-fresh.mjs --write`; verified by scripts/check-vendor-fresh.mjs.",
+  "packages": {
+    "@inversealtruism/cairnx-core": {
+      "version": "0.2.2",
+      "integrity": "sha512-WKft7TPYYR+hQ1DFA1tV44SjAPff1Dmi4GBWJaCWVk+hGwIssCMqJKrG/VTbbGA9Eo3vA7avFBfgaDdQrVZ7Ww=="
+    },
+    "@inversealtruism/csd-client": {
+      "version": "0.1.19",
+      "integrity": "sha512-8nF5PPTvK3cUH2VERjs9fJ5EqF7AdtlvVY37BFKdW5AdTTOZy4vaAFZb0bTi+EYNXpZVTAGeVqrmZdx5tuVozA=="
+    },
+    "@inversealtruism/csd-codec": {
+      "version": "0.1.18",
+      "integrity": "sha512-/K0CdP9TlWPyUMlBwH6KGbQ3iSxO7RKC38+3/osAleGam8kld6p1s3VSzoJ6oyOiH2hSQa36uEDm10bvBuH3XQ=="
+    },
+    "@inversealtruism/csd-crypto": {
+      "version": "0.1.20",
+      "integrity": "sha512-W3ZUaeyODbw9/z4xtdG82ASM4LRMdS1dqNDAbV8PMc7HSYfN/aR1veVuMYRz/aqkObqJrEWIz3ELnVr9M92Xlg=="
+    },
+    "@inversealtruism/csd-light": {
+      "version": "0.1.25",
+      "integrity": "sha512-g+InolYaPKHcYZ2DVRjB2++7eeMCb8Un6wR++J2+/prLBTsXMoPK3hX7jGehw/ZZJ1/Th0gi0x980aHPonyUGw=="
+    }
+  },
+  "sha256": {
+    "cairnx-spv.js": "5bddcdc45b8e909279573a447f700f2a08b3fd14433d8f6093517b6a3ec91b82",
+    "cairnx-spv.d.ts": "621a267171f4b46f5192f51b0676d650fe9d616aa15e128f4923383b9fa41d17"
+  },
   "noble": {
     "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0"

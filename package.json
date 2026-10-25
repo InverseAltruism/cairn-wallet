@@ -22,6 +22,11 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@inversealtruism/cairnx-core": "0.2.2",
+    "@inversealtruism/csd-client": "0.1.19",
+    "@inversealtruism/csd-codec": "0.1.18",
+    "@inversealtruism/csd-crypto": "0.1.20",
+    "@inversealtruism/csd-light": "0.1.25",
     "esbuild": "0.28.2",
     "tsx": "4.22.3",
     "typescript": "5.9.3"

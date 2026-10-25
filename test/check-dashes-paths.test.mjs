@@ -36,7 +36,7 @@ try {
   put("scripts/build-spv-vendor.sh", 'SDK="${CSD_SDK_DIR:-../csd-sdk}"\n');
   const found = offences(dir).map((l) => l.split(":")[0]).sort();
   t.check(`only the tracked offences outside the exceptions are reported (${found.join(", ")})`, JSON.stringify(found) === JSON.stringify([
-    "README.md", "src/reads-host.ts", "src/reads-sdk.mjs", "tools/run.sh",
+    "README.md", "scripts/build-spv-vendor.sh", "src/reads-host.ts", "src/reads-sdk.mjs", "tools/run.sh",
   ]));
   t.check("an em dash is reported as one", offences(dir).includes("README.md: em dash (U+2014)"));
   t.check("a sibling read names the path it matched", offences(dir).includes("src/reads-sdk.mjs: reads a sibling checkout (../csd-sdk)"));
