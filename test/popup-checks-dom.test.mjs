@@ -1,11 +1,13 @@
 // Plan 89 7b, the popup's B edits, driven through the REAL popup.ts against a fake DOM and a scripted background.
 //
 //   1. Review checks carry a tier (W-01, W-02): the name caution is positive only where nameCautionHtml says ✓ (two
-//      sources agree), caution on every other branch; the first-time and the address-poisoning warnings and a balance
-//      that does not cover the send are danger.
+//      sources agree) at a depth that can no longer reorg (NAME_SAFE_DEPTH), caution on every other branch and below
+//      that depth; the first-time and the address-poisoning warnings and a balance that does not cover the send are
+//      danger.
 //      RED-FIRST: give the first-time warning tier "caution" and 1d fails; make nameCheck return "ok" for every
-//      verified name and 1b fails. HONEST PATH: 1a, 1g (a send with nothing to warn about arms Confirm and signs
-//      with the production call shape).
+//      verified name and 1b fails; drop the depth from nameCheck and 1b' fails at depth 1 and 2; compare with <= and
+//      1b' fails at depth 3. HONEST PATH: 1a, 1b' at depth 3, 1g (a send with nothing to warn about arms Confirm and
+//      signs with the production call shape).
 //   2. The 1.5 s pending poll rewrites the request card only when the queue changed (W-15).
 //      RED-FIRST: drop the `key === pendingShown` return and 2a fails. HONEST PATH: 2b, 2c.
 //   3. History labels say what the wallet sent, not a verdict it never read (W-18, register row 124).
@@ -108,6 +110,12 @@ for (const [label, extra] of branches) {
   await review("alice.csd");
   const r = rows();
   check(`1b ${label}: the name row is caution, and its copy does not read ✓`, r.length === 1 && r[0].tier === "caution" && !r[0].html.startsWith("✓"));
+}
+for (const [depth, tier] of [[1, "caution"], [2, "caution"], [3, "ok"]]) {
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth, via: "owner" };
+  await review("alice.csd");
+  const r = rows();
+  check(`1b' two sources agree at depth ${depth}: the name row is ${tier}${depth < 3 ? " (it reads could still reorg)" : ""}`, r.length === 1 && r[0].tier === tier && /could still reorg/.test(r[0].html) === (depth < 3));
 }
 resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
 await review(LOOK);

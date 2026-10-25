@@ -604,8 +604,10 @@ async function doNameAction() {
 }
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
+// Below this many confirmations a name's resolution could still reorg: the badge says so and the review row is caution.
+const NAME_SAFE_DEPTH = 3;
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
-async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
   const r = (raw || "").trim();
   // Refuse the zero address outright: a send there is an irrecoverable burn. Defense-in-depth for the V23
   // transition: a wallet that CARRIES this guard but whose vendored core still lacked the v23 branch would
@@ -633,7 +635,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // competing-claim withholding redirect is live, so it must read visibly weaker than 2-source
     // agreement, not like the same green check; and a barely-buried (1-2 conf) resolution gets a
     // reorg caution instead of a plain check. Both stay informational; never a block.
-    const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < 3;
+    const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < NAME_SAFE_DEPTH;
     const badge = !verified
       ? (viaFill ? "⚠ purchased name: can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified: confirm the address")
       : res.soleSource ? `⚠ only ONE name source could prove this address and it isn't independently corroborated: confirm it out-of-band before sending${conf}`
@@ -641,7 +643,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
       : (res.sources ?? 1) >= 2
         ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree, only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
         : `△ chain-backed but only 1 source answered: second server unreachable, weaker guarantee${conf}`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})`, badge };
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})`, badge };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
@@ -708,13 +710,13 @@ async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookal
 type Tier = "ok" | "caution" | "danger";
 type Check = { tier: Tier; html: string };
 const TIER_ICON: Record<Tier, string> = { ok: "i-shield-check", caution: "i-triangle-alert", danger: "i-octagon-alert" };
-type NameInfo = { name?: string | null; badge?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
-// The name caution's tier follows nameCautionHtml's branches: only the "two sources agree" branch is positive
-// (test/popup-checks-dom.test.mjs walks every branch and pins tier ok exactly where the copy reads ✓).
+type NameInfo = { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+// The tier follows the meaning: positive only where two sources agree (nameCautionHtml's ✓ branch) at a depth that
+// can no longer reorg; a shallower resolution is caution (test/popup-checks-dom.test.mjs walks every branch).
 function nameCheck(rr: NameInfo): Check | null {
   if (!rr.name) return null;
   const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
-  const ok = rr.verified === true && !rr.viaFill && !rr.soleSource && !rr.disagree && (rr.sources ?? 1) >= 2;
+  const ok = rr.verified === true && !rr.viaFill && !rr.soleSource && !rr.disagree && (rr.sources ?? 1) >= 2 && !rr.lowDepth;
   const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";
   return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge };
 }
