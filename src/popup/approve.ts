@@ -222,7 +222,10 @@ async function checkNameAct(kind: "nrenew" | "nset", name: string, tradeApi: str
 function paintNfinNote(g: { block: boolean; note: string | null }) {
   document.getElementById("nfin-note")?.remove();
   if (!g.note) return;
-  $("req").insertAdjacentHTML("beforeend", `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: `⚠ ${escapeHtml(g.note)}` })}</div>`);
+  // after the cost rows and the warnings under them, before the record's own rows (test/approve-layout-chrome.test.mjs)
+  const html = `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: `⚠ ${escapeHtml(g.note)}` })}</div>`;
+  const after = document.getElementById("send-warn") ?? document.getElementById("cost");
+  if (after) after.insertAdjacentHTML("afterend", html); else $("req").insertAdjacentHTML("beforeend", html);
 }
 // Record a verdict for request `id` and, when that request is on screen, show it: note in place, Approve
 // down on a block, back up on a pass once this paint's own re-enable floor has run.
@@ -464,7 +467,8 @@ async function fillSendWarning(r: any) {
     // primary" prompt right after registration) no longer warns about the user's own address on a no-CSD op.
     const warns = sendWarnings(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
     const el = document.getElementById("send-warn");
-    if (el && warns.length) { el.innerHTML = warns.map((html) => checkRow({ tier: "danger", html })).join(""); (el as HTMLElement).hidden = false; }
+    // one box for every warning, each on its own line: a request to two new recipients keeps both above the buttons
+    if (el && warns.length) { el.innerHTML = checkRow({ tier: "danger", html: warns.join("<br>") }); (el as HTMLElement).hidden = false; }
   } catch { /* no history → no warning */ }
 }
 // Anti-click-through: when the request view (re)builds for a NEW request, disable both

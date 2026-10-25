@@ -2,7 +2,8 @@
 // top), for every request type: no line break inside the request is hidden by CSS, every warning, origin and cost
 // line that wallet 0.2.99 (dee68d7) showed above the action bar is still fully above it, and the cost rows (with the
 // balance after) are above it on every request type. The 0.2.99 expectations were measured on that build; the
-// stylesheet may show more, never less.
+// stylesheet may show more, never less. A website name action's verdict (#nfin-note) and the first-time warnings of a
+// request with two recipients (#send-warn) are above it too.
 // Needs playwright-core (PLAYWRIGHT_CORE) and a Chromium (PLAYWRIGHT_CHROMIUM); prints SKIP without them.
 import * as cx from "../src/core/cairnx.ts";
 import * as v from "../src/vendor/cairnx-spv.js";
@@ -27,6 +28,8 @@ const R = {
   send: { id: "r-send", method: "send", origin: "https://dapp.example", params: { to: RCPT, amount: 150_000_000, fee: 1_000_000 } },
   "send-poison": { id: "r-send-p", method: "send", origin: "https://dapp.example", params: { to: LOOK, amount: 150_000_000, fee: 1_000_000 } },
   "fill-csd": { id: "r-fill", method: "fillOffer", origin: O, params: { proposalId: "0x" + "ab".repeat(32), outputs: [{ to: RCPT, value: 250_000_000 }, { to: T, value: 3_750_000 }], fee: 1_000_000, score: 100, confidence: 100 } },
+  "send-2": { id: "r-send2", method: "send", origin: "https://dapp.example", params: { outputs: [{ to: RCPT, value: 100_000_000 }, { to: "0x" + "32".repeat(20), value: 200_000_000 }], fee: 1_000_000 } },
+  "fill-2": { id: "r-fill2", method: "fillOffer", origin: O, params: { proposalId: "0x" + "cd".repeat(32), outputs: [{ to: RCPT, value: 500_000_000 }, { to: "0x" + "34".repeat(20), value: 7_500_000 }], fee: 5_000_000, score: 100, confidence: 100 } },
   "fill-token": { id: "r-fillt", method: "fillOffer", origin: O, params: { proposalId: "0x" + "cd".repeat(32), outputs: [], fee: 1_000_000, score: 100, confidence: cx.CONF_TOKEN_FILL } },
   "propose-transfer": { id: "r-xfer", method: "propose", origin: O, params: prop(cx.buildTransfer({ ticker: "CAIRN", amount: "1500000000", to: RCPT })) },
   "propose-raw": { id: "r-raw", method: "propose", origin: "https://dapp.example", params: { domain: "csd:apps", payloadHash: "0x" + "77".repeat(32), uri: "https://dapp.example/p/42", fee: 25_000_000 } },
@@ -52,8 +55,8 @@ const CASES = [
   ["fill-token", R["fill-token"], {}, ["Token-priced fill", "origin", "cost"]],
   ["propose-transfer", R["propose-transfer"], {}, ["First time sending tokens to", "origin", "cost"]],
   ["propose-raw", R["propose-raw"], {}, ["origin", "cost"]],
-  ["name-nset", R["name-nset"], {}, ["First time pointing a name at", "origin", "cost"]],
-  ["name-nrenew", R["name-nrenew"], {}, ["origin", "cost"]],
+  ["name-nset", R["name-nset"], {}, ["First time pointing a name at", "origin", "cost", "#nfin-note"]],
+  ["name-nrenew", R["name-nrenew"], {}, ["origin", "cost", "#nfin-note"]],
   ["name-nxfer", R["name-nxfer"], {}, ["First time transferring a name to", "origin", "cost"]],
   ["name-nprofile", R["name-nprofile"], {}, ["origin", "cost"]],
   ["name-nfinalize", R["name-nfinalize"], {}, ["transfers funds out of your wallet", "b=5 CSD", "cost"]],
@@ -63,6 +66,9 @@ const CASES = [
   ["fill-csd+view", R["fill-csd"], { fillOfferView: view }, ["First time sending to", "cost"]],
   ["send-poison+hist", R["send-poison"], { history: [{ type: "send", to: RCPT, amount: 1, txid: "0x" + "a1".repeat(32) }] }, ["Possible address-poisoning", "origin", "cost"]],
   ["send-short", R.send, { balance: { confirmed: 50_000_000 } }, ["First time sending to", "origin", "cost"]],
+  // a page-chosen second recipient: every first-time warning stays above the buttons
+  ["send-2", R["send-2"], {}, ["#send-warn", "origin", "cost"]],
+  ["fill-2", R["fill-2"], {}, ["#send-warn", "cost"]],
 ];
 
 const base = {
@@ -118,6 +124,7 @@ try {
           // the requesting origin sits in the header, in full
           if (label === "origin") { const o = document.getElementById("ap-origin"); return o && o.textContent === origin ? o : null; }
           if (label === "cost") return document.getElementById("cost");
+          if (label.startsWith("#")) return document.getElementById(label.slice(1));
           if (label.startsWith("b=")) return [...req.querySelectorAll("b")].find((b) => b.textContent === label.slice(2));
           const walker = document.createTreeWalker(req, NodeFilter.SHOW_TEXT);
           for (let n = walker.nextNode(); n; n = walker.nextNode()) {

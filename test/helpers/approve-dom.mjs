@@ -40,7 +40,14 @@ export function mountApproveWindow(handlers) {
         this._kids.push(m[1]);
       }
     }
-    insertAdjacentHTML(_pos, html) {
+    // "afterend" and "beforebegin" add the markup to the parent, as a browser does; the place inside the parent is
+    // not modelled (test/approve-layout-chrome.test.mjs measures it in Chrome).
+    insertAdjacentHTML(pos, html) {
+      const into = pos === "afterend" || pos === "beforebegin" ? this._parent : this;
+      if (!into) throw new Error(`approve-dom: ${pos} on an element with no parent`);
+      into._insert(html);
+    }
+    _insert(html) {
       const ids = [...String(html).matchAll(TAG_WITH_ID)].map((m) => m[1]);
       this._html += String(html); this._adopt(html);
       // remember the inserted chunk, so remove() can take exactly that markup back out of the parent

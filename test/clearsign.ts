@@ -289,7 +289,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
 
 // ── NACT (Plans/68 B2): the nrenew/nset approve gate; fee-bearing records that BURN on a resolver
 //    no-op. Block only on definitive no-ops (404; nset owner mismatch); warn on transport failure
-//    (fail-open, the F-FINALIZE non-goal) and on a lapsed renew (in-grace renewal is legal).
+//    (fail-open, the F-FINALIZE non-goal) and on a pending or lapsed name (the record may be stale).
 {
   const ME = "0x" + "cd".repeat(20);
   const OTHER = "0x" + "ee".repeat(20);
@@ -323,9 +323,18 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, pending: true } }, ME);
     return g.block === false && /pending reservation/.test(g.note || "");
   })());
-  ok("NRENEW-AFTER-FEE: nrenew of a GRACE-period (lapsed) name owned by someone else WARNS (in-grace renewal is owner-only): not blocked", (() => {
+  // `expired` is set only past the grace period, where the resolver rejects every renewal whoever owns the name
+  ok("NRENEW-AFTER-FEE: nrenew of a lapsed name owned by someone else WARNS with the resolver's reason: not blocked", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: OTHER, expired: true } }, ME);
-    return g.block === false && /different address/.test(g.note || "");
+    return g.block === false && /claimed again, not renewed/.test(g.note || "");
+  })());
+  ok("NACT: nset on my own PENDING reservation WARNS (the resolver's nset rejects it): not blocked", (() => {
+    const g = nameActApproveGate("nset", { record: { name: "gm", owner: ME, pending: true } }, ME);
+    return g.block === false && /pending reservation/.test(g.note || "") && /anchor fee/.test(g.note || "");
+  })());
+  ok("NACT: nset on my own LAPSED name WARNS (the resolver's nset rejects it): not blocked", (() => {
+    const g = nameActApproveGate("nset", { record: { name: "gm", owner: ME, expired: true } }, ME);
+    return g.block === false && /has lapsed/.test(g.note || "") && /anchor fee/.test(g.note || "");
   })());
   ok("NRENEW-AFTER-FEE: a legit OWNER renewal of a LIVE name does NOT warn (no fee-burn signal, no UX regression)", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME } }, ME);

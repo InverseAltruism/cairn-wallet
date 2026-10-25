@@ -4,7 +4,8 @@
 // name methods to a real Wallet exactly as background.ts runPopupMethod does; fetch answers the node and the trade API.
 // The name service flips between Review and Confirm, which is the window the popup review leaves open.
 // RED-FIRST: drop the two `if (refusal) throw` lines in wallet.ts and the refusal cases sign (submits grow).
-// HONEST PATH: an owned live name renews and sets primary; a name service that does not answer still signs.
+// HONEST PATH: an owned live name renews and sets primary, an own name in grace renews; a name service that does not
+// answer still signs.
 // Run: node --import tsx test/name-action-gate.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -30,7 +31,11 @@ globalThis.fetch = async (url, init) => {
   const u = String(url);
   if (u.includes("/cairnx/name/")) {
     nameReads.push(u);
-    const rec = { owned: { name: NAME, owner: ME }, pending: { name: NAME, owner: OTHER, pending: true }, lapsed: { name: NAME, owner: ME, expired: true }, other: { name: NAME, owner: OTHER } }[nameState];
+    const rec = {
+      owned: { name: NAME, owner: ME }, pending: { name: NAME, owner: OTHER, pending: true }, lapsed: { name: NAME, owner: ME, expired: true }, other: { name: NAME, owner: OTHER },
+      // the service's record of an own name in its grace period: paid through an epoch before the tip's, not expired
+      grace: { name: NAME, owner: ME, paidThroughEpoch: 2_000 }, minePending: { name: NAME, owner: ME, pending: true },
+    }[nameState];
     if (nameState === "throw") throw new TypeError("Failed to fetch");
     if (nameState === "down") return { ok: false, status: 503, json: async () => ({}) };
     if (!rec) return { ok: false, status: 404, json: async () => ({ error: "not found" }) };
@@ -94,11 +99,12 @@ console.log("renew");
 }
 {
   const n = await act(RENEW, "owned", "lapsed");
-  t.check(`a name that lapsed after review is not renewed (${status()})`, n === 0 && /appears lapsed/.test(status()));
+  t.check(`a name that lapsed after review is not renewed, and the reason is the resolver's: claimed again, not renewed (${status()})`, n === 0 && /grace period are over/.test(status()) && /claimed again, not renewed/.test(status()));
 }
 {
   const n = await act(RENEW, "owned", "missing");
   t.check(`a name the service no longer knows is not renewed (${status()})`, n === 0 && /not registered/.test(status()) && /^Refusing to sign/.test(status()));
+  t.check("...and the refusal says the service may still be catching up", /may still be catching up: try again later/.test(status()));
 }
 {
   const n = await act(RENEW, "owned", "down");
@@ -109,6 +115,10 @@ console.log("renew");
 {
   const n = await act(RENEW, "owned", "other");
   t.check(`honest: anyone may renew a live lease, so a live name now owned elsewhere still renews (${status()})`, n === 1);
+}
+{
+  const n = await act(RENEW, "owned", "grace");
+  t.check(`honest: an own name in its grace period still renews (${status()})`, n === 1 && /^renewed/.test(status()));
 }
 
 console.log("set primary");
@@ -122,7 +132,15 @@ console.log("set primary");
 }
 {
   const n = await act(PRIMARY, "owned", "missing");
-  t.check(`a name the service no longer knows is not set as primary (${status()})`, n === 0 && /not registered/.test(status()));
+  t.check(`a name the service no longer knows is not set as primary (${status()})`, n === 0 && /not registered/.test(status()) && /may still be catching up/.test(status()));
+}
+{
+  const n = await act(PRIMARY, "owned", "minePending");
+  t.check(`an own name that is a pending reservation is not set as primary (the resolver's nset rejects it) (${status()})`, n === 0 && /pending reservation/.test(status()) && /anchor fee/.test(status()));
+}
+{
+  const n = await act(PRIMARY, "owned", "lapsed");
+  t.check(`an own name that lapsed is not set as primary (the resolver's nset rejects it) (${status()})`, n === 0 && /has lapsed/.test(status()) && /anchor fee/.test(status()));
 }
 {
   const n = await act(PRIMARY, "owned", "down");

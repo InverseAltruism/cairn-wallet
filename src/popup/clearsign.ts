@@ -479,11 +479,11 @@ export function describe(r: any): string {
     const tokenFill = conf === CONF_TOKEN_FILL
       ? danger(`⚠ <b>Token-priced fill: approving spends tokens from your CairnX balance.</b> The trading convention debits the offer's asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Verify the offer's price on the site or the explorer before approving.`) + TOKEN_SIM
       : "";
-    // A fill's offer id and recipients run to several lines each, so the cost rows and the warnings come first: at
-    // 380 by 620 they stay above the buttons on every fill (test/approve-layout-chrome.test.mjs).
+    // The cost rows and the warnings come first, then the listing and the recipients; the offer id and the attestation
+    // last (test/approve-layout-chrome.test.mjs).
     return title("Fill offer") + lede("Pay and attest in one atomic transaction.") + (outs.length ? `<div class="ap-amt">${fmtCsd(total)}</div>` : "")
-      + tokenFill + cost + o.hidden + (tokenFill ? "" : FILL_VIEW) + SEND_WARN
-      + rows([["Offer", `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`], ...o.list, ["Attestation", attestation(Number(p.score ?? 100) >>> 0, conf)]]);
+      + tokenFill + cost + o.hidden + SEND_WARN + (tokenFill ? "" : FILL_VIEW) + rows(o.list)
+      + rows([["Offer", `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`], ["Attestation", attestation(Number(p.score ?? 100) >>> 0, conf)]]);
   }
   return title(escapeHtml(r.method)) + cost;
 }
