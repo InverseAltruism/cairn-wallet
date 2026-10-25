@@ -461,6 +461,15 @@
   .bal.loading .bal-unit { visibility: hidden; }
   @keyframes skeleton { 50% { opacity: 0.55; } }
   .merge-note { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); }
+  /* a failed read (popup-balance.ts balanceFailed): the earlier amount dimmed with the caption under it, or, with none, the
+     caption alone in the amount's place, at the caption scale; the refresh button beside it retries */
+  .bal-xl.stale { color: var(--ui-muted); }
+  .bal-xl.failed {
+    display: flex; align-items: center;
+    font: 400 var(--ui-text-xs) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: 0;
+  }
+  .bal-note { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); }
+  #csd-row-amt.stale { color: var(--ui-muted); font-weight: 400; }
   /* the full address, wrapped rather than cut (no ellipsis on an address) */
   .menu-addr {
     display: flex; flex-direction: column; align-items: flex-start; gap: var(--ui-space-2);
@@ -622,8 +631,21 @@
   /* in flow after the review rows: Confirm is never drawn over part of a warning; a long review scrolls to it */
   .sheet-actions { flex-wrap: nowrap; margin-top: var(--ui-space-1); }
   .sheet-actions > button { flex: 1 1 0; }
+  /* an amount field with its unit inside it, at the right; the unit is display only (the number is parsed alone) */
+  .field-unit { position: relative; display: block; }
+  .field-unit > input { padding-right: var(--ui-space-7); appearance: textfield; }
+  .field-unit > input::-webkit-inner-spin-button, .field-unit > input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+  .field-unit > .unit {
+    position: absolute; right: var(--ui-space-3); top: 50%; transform: translateY(-50%); pointer-events: none;
+    font: 500 var(--ui-text-sm) / 1 var(--ui-font-mono); color: var(--ui-muted);
+  }
+  /* the sheet's title names its step: the form, then the review, while the review card is shown */
+  .panel-title > .step-review,
+  :is(#send-form:has(> #send-confirm:not([hidden])), #tsend-form:has(> #tsend-confirm:not([hidden]))) .panel-title > .step-form { display: none; }
+  :is(#send-form:has(> #send-confirm:not([hidden])), #tsend-form:has(> #tsend-confirm:not([hidden]))) .panel-title > .step-review { display: inline; }
   /* review mode: the inputs the snapshot was read from step aside; the frozen rows are what gets signed */
   #send-form:has(> #send-confirm:not([hidden])) > label,
+  #send-form:has(> #send-confirm:not([hidden])) > #s-est,
   #send-form:has(> #send-confirm:not([hidden])) > .step-actions,
   #tsend-form:has(> #tsend-confirm:not([hidden])) > label,
   #tsend-form:has(> #tsend-confirm:not([hidden])) > #ts-avail,
@@ -697,6 +719,14 @@
   .page-popup #msg.ok::before { opacity: 1; }
   .page-popup #msg:has(.spinner)::before { display: none; }
   .page-popup #msg button { pointer-events: auto; flex: none; }
+  .page-popup #msg .msg-body { display: flex; flex-direction: column; min-width: 0; }
+  .page-popup #msg .msg-body small { font-size: var(--ui-text-xs); opacity: 0.72; }
+  /* The sent toast shows after its sheet has closed (popup-sendflow.ts sentOk), so it sits at the bottom, over the list,
+     as in the approved design, and leaves the top clear for the balance that settles there; every other status keeps
+     the top, clear of an open sheet's buttons. */
+  .page-popup #msg.sent { top: auto; bottom: var(--ui-space-3); }
+  .page-popup #msg.sent.fade { transform: translateY(calc(100% + var(--ui-space-3))); }
+  @starting-style { .page-popup #msg.sent:not(:empty) { opacity: 0; transform: translateY(calc(100% + var(--ui-space-3))); } }
 
   /* motion: views enter once; list rows stagger in on a list's first fill (motion.ts enterOnce), never on the
      1.5 s pending poll or a refresh; a balance change flashes its direction */
@@ -713,7 +743,7 @@
     [data-enter] > :nth-child(n + 5) { animation-delay: var(--ui-dur-1); }
     /* a sheet's step: the review and the fields cross in from the side */
     :is(#send-confirm, #tsend-confirm):not([hidden]),
-    :is(#send-form, #tsend-form):not(:has(> :is(#send-confirm, #tsend-confirm):not([hidden]))) > :is(label, .step-actions) {
+    :is(#send-form, #tsend-form):not(:has(> :is(#send-confirm, #tsend-confirm):not([hidden]))) > :is(label, .est-box, .step-actions) {
       animation: pane-in var(--ui-dur-3) var(--ui-ease) both;
     }
     .bal-xl.flash-up { animation: flash-up calc(var(--ui-dur-4) * 2) var(--ui-ease); }

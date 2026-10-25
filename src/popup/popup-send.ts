@@ -3,14 +3,29 @@ import { parseUnits } from "../core/cairnx.js";
 import { nameCheck, escapeHtml, fmtCsd, fmtBalance, balanceShortNote, groupedAddr } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 import { $, busy, msg, val } from "./popup-dom.js";
-import { curAddr, reviewState } from "./popup-state.js";
+import { balanceState, curAddr, reviewState } from "./popup-state.js";
 import { openPanel } from "./popup-panels.js";
 import { resolveRecipient, nameStillPointsTo, setNameRow, recipientChecks } from "./popup-recipient.js";
 import { CSD_FLOW, teardownReview, armReview, composeSendWarning, setWarn, sendThrew, sendRefused, sentOk } from "./popup-sendflow.js";
 
-$("btn-send-t").addEventListener("click", () => { openPanel("send-form"); });
+$("btn-send-t").addEventListener("click", () => { openPanel("send-form"); updateSendEstimate(); });
 
-$("csd-row").addEventListener("click", () => { openPanel("send-form"); });
+$("csd-row").addEventListener("click", () => { openPanel("send-form"); updateSendEstimate(); });
+
+// While the amount is typed: the network fee and the balance after it, from SEND_FEE and the balance the hero shows (no
+// read of its own). Display only: the review reads the balance again, and a negative result there keeps Confirm down.
+function updateSendEstimate() {
+  $("s-fee").textContent = fmtCsd(SEND_FEE);
+  const after = $("s-after"), bal = balanceState.last;
+  const raw = val("s-amt").trim();
+  const base = raw ? parseUnits(raw, 8) : "0";
+  if (bal === null || base === null) { after.textContent = bal === null ? "Unknown" : "Not a valid amount"; after.className = "dim"; return; }
+  const left = raw ? bal - Number(base) - SEND_FEE : bal;
+  after.textContent = fmtBalance(left) + " CSD";
+  after.className = left < 0 ? "err" : "dim";
+}
+$("s-amt").addEventListener("input", updateSendEstimate);
+balanceState.onChange = updateSendEstimate;
 
 // Address-poisoning lookalike: attackers seed your history with an address that
 // shares the head+tail you eyeball but differs in the middle. Flag a recipient that
@@ -64,11 +79,10 @@ $("btn-send-confirm").addEventListener("click", async () => {
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7); fail-closed to a re-review either way.
   if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err");
-  try {
-    busy("Sending…"); const r = await call("send", to, amt, SEND_FEE, signer ?? undefined);
-    if (r.ok) sentOk(CSD_FLOW, "Sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
-    else sendRefused(CSD_FLOW, r);                    // structured refusal: show the REAL reason (FOOT-3 teardown inside)
-  } catch (e: any) {
-    sendThrew(CSD_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
-  }
+  // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
+  let r: any;
+  try { busy("Sending…"); r = await call("send", to, amt, SEND_FEE, signer ?? undefined); }
+  catch (e: any) { return sendThrew(CSD_FLOW, e); }   // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
+  if (r?.ok) sentOk(CSD_FLOW, "Sent " + fmtCsd(amt));
+  else sendRefused(CSD_FLOW, r);                     // structured refusal: show the REAL reason (FOOT-3 teardown inside)
 });

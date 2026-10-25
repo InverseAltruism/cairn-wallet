@@ -6,23 +6,26 @@ import { flashChange, tokenEase, tokenMs } from "./motion.js";
 import { call } from "./popup-bridge.js";
 import { $ } from "./popup-dom.js";
 import { renderHistory } from "./popup-history.js";
+import { balanceState } from "./popup-state.js";
 
-// Send-success moment: the balance settles once (popup.css `.bal-hero.sent`); display only, reduced-motion aware.
-export function celebrateSend() {
+// Send-success moment: the balance settles once (popup.css `.bal-hero.sent`), `delay` ms from now (once the closing sheet
+// has cleared the hero); display only, reduced-motion aware.
+export function celebrateSend(delay = 0) {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const hero = document.querySelector(".bal-hero") as HTMLElement | null;
   const dur = tokenMs("--ui-dur-4");
   if (!hero || dur === null) return;
-  hero.classList.remove("sent"); void hero.offsetWidth; hero.classList.add("sent");
-  setTimeout(() => hero.classList.remove("sent"), dur * 2);
+  setTimeout(() => {
+    hero.classList.remove("sent"); void hero.offsetWidth; hero.classList.add("sent");
+    setTimeout(() => hero.classList.remove("sent"), dur * 2);
+  }, delay);
 }
 
 // Balance count-up: a display-only tween between the previous fetched value and the new one
 // (ends on the exact canonical string; skipped on first paint, on reduced-motion, and on failure).
-// `lastBal` is reset on lock and account switch (clearSendDrafts / render) so a tween never
-// crosses an identity boundary; `balSeq` supersedes a stale tween if refreshes overlap.
+// `balanceState.last` is reset when render() sees another account (forgetBalance), so neither a tween nor a failed read's
+// dimmed amount crosses an identity boundary; `balSeq` supersedes a stale tween if refreshes overlap.
 
-let lastBal: number | null = null;
 let balSeq = 0;
 // The amount in Geist with the unit muted; fmtBalance output is digits, separators and a sign only.
 const balHtml = (base: number) => `${escapeHtml(fmtBalance(base))}<span class="bal-unit">CSD</span>`;
@@ -68,7 +71,9 @@ async function updateMergePending(utxos: unknown) {
   // the reconcile may have settled history rows: repaint their markers if the list is on screen
   if (!($("activity") as HTMLElement).hidden) void renderHistory();
 }
-export async function refreshBalance() {
+// `settleIn`: ms from now before a change shows (the flash and the count-up), so a send's settle plays once the closing
+// sheet has cleared the hero; the value itself is current from the read on.
+export async function refreshBalance(settleIn = 0) {
   const el = $("balance");
   const seq = ++balSeq;
   el.classList.add("loading");                 // shimmer while we fetch
@@ -76,29 +81,61 @@ export async function refreshBalance() {
     const b = await call("balance");
     if (seq !== balSeq) return;                // a newer refresh superseded this one
     void updateMergePending(b.utxos);          // piggybacks the utxos this fetch already carried
-    el.classList.remove("loading");
+    el.classList.remove("loading", "stale", "failed");
+    ($("bal-note") as HTMLElement).hidden = true;
     const next = Number(b.confirmed);
-    const from = lastBal;
-    lastBal = next;
-    $("csd-row-amt").textContent = fmtBalance(next);
-    if (from !== null && from !== next) flashChange(el, next > from ? "up" : "down");
+    const from = balanceState.last;
+    balanceState.last = next;
+    const row = $("csd-row-amt");
+    row.textContent = fmtBalance(next); row.classList.remove("stale");
+    balanceState.onChange?.();
+    if (from !== null && from !== next) setTimeout(() => { if (seq === balSeq) flashChange(el, next > from ? "up" : "down"); }, settleIn);
     const dur = from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches ? null : tokenMs("--ui-dur-4");
     const ease = dur === null ? null : tokenEase();
     if (from === null || dur === null || ease === null) {
       el.innerHTML = balHtml(next);
     } else {
-      const t0 = performance.now();
+      const t0 = performance.now() + settleIn;
       const step = (t: number) => {
         if (seq !== balSeq) return;            // superseded mid-tween: let the newer write win
-        const p = Math.min(1, (t - t0) / dur);
+        const p = Math.min(1, Math.max(0, (t - t0) / dur));
         el.innerHTML = p < 1 ? balHtml(Math.round(from + (next - from) * ease(p))) : balHtml(next);
         if (p < 1) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
     }
   }
-  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "unavailable"; $("csd-row-amt").textContent = "unavailable"; lastBal = null; } }
+  catch { if (seq === balSeq) balanceFailed(); }
+}
+// A failed read: the last balance this popup read for the account, dimmed, with a caption that says so; with none, the
+// caption alone in the amount's place. The refresh button beside it is the retry.
+function balanceFailed() {
+  const el = $("balance"), row = $("csd-row-amt"), note = $("bal-note") as HTMLElement;
+  el.classList.remove("loading");
+  el.classList.add("stale");
+  row.classList.add("stale");
+  if (balanceState.last !== null) {
+    el.classList.remove("failed");
+    el.innerHTML = balHtml(balanceState.last);
+    row.textContent = fmtBalance(balanceState.last);
+    note.textContent = "Not refreshed: the last balance read. Refresh to try again.";
+    note.hidden = false;
+  } else {
+    el.classList.add("failed");
+    el.textContent = "Balance unavailable. Refresh to try again.";
+    row.textContent = "Unavailable";
+    note.hidden = true;
+  }
+  balanceState.onChange?.();
 }
 
 export function supersedeBalance() { balSeq++; }
-export function forgetBalance() { lastBal = null; }
+// At an account switch: the old account's amount, its failed state and caption go, and the amount shimmers until the
+// new account's read lands.
+export function resetBalanceView() {
+  const el = $("balance"), row = $("csd-row-amt");
+  el.classList.remove("stale", "failed"); el.classList.add("loading");
+  row.textContent = ""; row.classList.remove("stale");
+  ($("bal-note") as HTMLElement).hidden = true;
+}
+export function forgetBalance() { balanceState.last = null; }

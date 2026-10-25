@@ -8,11 +8,14 @@ export function show(view: string) { for (const v of ["setup", "backup", "locked
 // fading (the outcome still lives in Activity/history). busy() cancels any pending fade.
 let msgTimer: ReturnType<typeof setTimeout> | undefined;
 let msgFadeTimer: ReturnType<typeof setTimeout> | undefined;
-export function msg(text: string, cls = "info") {
+// `detail`, when given, is a second, smaller line under the text (the sent toast says what happens next).
+export function msg(text: string, cls = "info", detail?: string) {
   const m = $("msg");
   clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
   m.classList.remove("fade");
-  m.textContent = text; m.className = "msg " + cls;
+  if (detail) m.innerHTML = `<span class="msg-body">${escapeHtml(text)}<small>${escapeHtml(detail)}</small></span>`;
+  else m.textContent = text;
+  m.className = "msg " + cls;
   if (!text) return;
   const hold = cls.includes("err") ? 8000 : 3500;
   msgTimer = setTimeout(() => {

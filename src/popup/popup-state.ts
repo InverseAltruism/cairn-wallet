@@ -36,3 +36,8 @@ export function setEndpoints(st: any) {
 export function setCurAddr(addr: string) { curAddr = addr; }
 export function nextAccountGen() { acctGen++; listGen++; }
 export function nextListGen() { listGen++; }
+
+// The balance the hero shows (the last read for this account, null before one), and who repaints with it: the send
+// sheet's estimate reads it instead of a read of its own. Here, in this leaf module, so a view can subscribe while
+// the popup's module graph is still loading.
+export const balanceState: { last: number | null; onChange: (() => void) | null } = { last: null, onChange: null };

@@ -6,7 +6,7 @@ import { call } from "./popup-bridge.js";
 import { $ } from "./popup-dom.js";
 import { curAddr, siteApi, bindView, viewCurrent, nextAccountGen, nextListGen } from "./popup-state.js";
 import { dropStaleView, openPanel } from "./popup-panels.js";
-import { paintAvatar, supersedeBalance } from "./popup-balance.js";
+import { paintAvatar, resetBalanceView, supersedeBalance } from "./popup-balance.js";
 import { openTokenSend } from "./popup-tokensend.js";
 import { confirmNameAction } from "./popup-nameaction.js";
 
@@ -58,8 +58,7 @@ export function invalidateAccountViews() {
   el.hidden = false; el.setAttribute("aria-busy", "true"); el.innerHTML = LIST_LOADING;
   $("names-list").innerHTML = LIST_LOADING;
   $("nd-actions").innerHTML = "";
-  $("csd-row-amt").textContent = "";
-  $("balance").classList.add("loading");
+  resetBalanceView();
 }
 export async function renderAssets() {
   const seq = ++assetsSeq;

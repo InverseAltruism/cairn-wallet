@@ -4,6 +4,8 @@ import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
 import { $, msg, msgAction } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
 import { celebrateSend, mergePendingNow, refreshBalance } from "./popup-balance.js";
+import { closeAllPanels, syncNav } from "./popup-panels.js";
+import { tokenMs } from "./motion.js";
 import { renderAssets } from "./popup-assets.js";
 import { openConsolidatePanel } from "./popup-coins.js";
 
@@ -15,10 +17,12 @@ import { openConsolidatePanel } from "./popup-coins.js";
 //   • warning noun: "transfers" (token) vs "payments" (CSD); DELIBERATE per-flow copy, not drift;
 //   • snapshot shape: reviewState.reviewed (token, base-unit string) vs .reviewedSend (CSD, number).
 // Only the SUCCESS path clears the typed recipient/amount (fail/catch keep the draft for a re-Review);
-// Back clears nothing and never refreshes.
-type SendFlow = { ids: { confirm: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: () => void };
-export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: () => { refreshBalance(); renderAssets(); } };
-export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: () => { refreshBalance(); } };
+// Back clears nothing and never refreshes. `sent` is the sent toast's second line.
+type SendFlow = { ids: { confirm: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: string };
+export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
+  sent: "Waiting for inclusion in a block. The token balance updates once it is mined." };
+export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
+  sent: "Waiting for inclusion in a block." };
 // Hide the confirm card, drop every frozen snapshot, re-enable the inputs. Success alone clears the
 // typed values; every other exit (Back / fail / catch) keeps the draft.
 export function teardownReview(f: SendFlow, clearValues: boolean) {
@@ -37,7 +41,8 @@ export function armReview(f: SendFlow) {
 
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
-// otherwise the historical ones byte-for-byte. Empty return = nothing to warn about (box hidden).
+// otherwise the historical ones byte-for-byte. A look-alike is danger, a first send caution, as in the approval window
+// (clearsign.warningChecks). Empty return = nothing to warn about (box hidden).
 export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments"): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
   const out: Check[] = nameCaution ? [nameCaution] : [];
@@ -81,10 +86,14 @@ export function sendRefused(f: SendFlow, r: any) {
   }
   msg(text, "err");
 }
-// Success teardown: outcome message + hero glow first, then the one clear-the-draft path.
+// Success: the one clear-the-draft path, then the sheet closes (only a confirmed submission closes it; a refusal or an
+// ambiguous outcome keeps the sheet and the draft, sendOutcome and sendRefused above), the sent toast shows, and the
+// balance settles in the hero once the closing sheet has cleared it.
 export function sentOk(f: SendFlow, text: string) {
-  msg(text, "ok sent");
-  celebrateSend();
   teardownReview(f, true);
-  f.refresh();
+  closeAllPanels(); syncNav();
+  msg(text, "ok sent", f.sent);
+  const settleIn = tokenMs("--ui-dur-2") ?? 0;
+  celebrateSend(settleIn);
+  f.refresh(settleIn);
 }

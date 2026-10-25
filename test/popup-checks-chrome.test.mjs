@@ -162,7 +162,110 @@ async function receive() {
   return r;
 }
 
+// W-1, W-4, W-9: the send sheet while the amount is typed (the fee and the balance after, the unit in the field), its
+// review (titled Review send, Confirm send, the Network fee label, no Amount caption over the amount), then a confirmed
+// send: the sheet closes, the sent toast shows at the bottom with what happens next, and the balance settles in the
+// hero once the sheet has cleared it.
+// RED-FIRST: drop closeAllPanels from sentOk and the closed-sheet and balance checks fail; drop the `#msg.sent` rule
+// and the bottom check fails; drop the step-title rules and the title checks fail.
+async function sendSheet(theme) {
+  const { page, ctx, errors } = await openWalletPage(browser, "popup", { ...base, send: { ok: true, txid: "0x" + "ee".repeat(32) } }, { viewport: { width: 360, height: 600 }, colorScheme: theme });
+  await page.waitForSelector("#view-main:not([hidden])");
+  await page.waitForTimeout(400);
+  await page.click("#btn-send-t");
+  await page.fill("#s-to", NEW);
+  await page.fill("#s-amt", "1.5");
+  await page.waitForTimeout(500);
+  const form = await page.evaluate(() => {
+    const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+    const unit = document.querySelector("#send-form .field-unit > .unit"), amt = document.getElementById("s-amt");
+    const u = unit.getBoundingClientRect(), a = amt.getBoundingClientRect();
+    return { title: document.getElementById("send-form-title").innerText, fee: document.getElementById("s-fee").textContent, after: document.getElementById("s-after").textContent,
+      rows: vis(document.getElementById("s-est")), unit: unit.textContent, unitInside: u.left > a.left && u.right <= a.right && u.top >= a.top && u.bottom <= a.bottom };
+  });
+  await page.click("#btn-send");
+  await page.waitForSelector("#send-confirm:not([hidden])");
+  await page.waitForTimeout(500);
+  const review = await page.evaluate(() => ({
+    title: document.getElementById("send-form-title").innerText, confirm: document.getElementById("btn-send-confirm").textContent,
+    labels: [...document.querySelectorAll("#send-confirm .crow .label")].filter((l) => l.getClientRects().length).map((l) => l.textContent),
+    estHidden: document.getElementById("s-est").getClientRects().length === 0,
+  }));
+  // the balance read after the send answers the lower amount the node now reports
+  await page.evaluate(() => {
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = (m, cb) => m.method === "balance" ? setTimeout(() => cb({ ok: true, result: { confirmed: 128_322_500_000, utxos: [] } }), 5) : send(m, cb);
+    window.__bal = [];
+    const tick = () => { window.__bal.push(document.getElementById("balance").textContent); if (window.__bal.length < 90) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  });
+  await page.click("#btn-send-confirm");
+  await page.waitForTimeout(1200);
+  const sent = await page.evaluate(() => {
+    const m = document.getElementById("msg"), r = m.getBoundingClientRect();
+    return { sheet: document.getElementById("send-form").hidden, cls: m.className, text: m.innerText, bottom: Math.round(innerHeight - r.bottom), top: Math.round(r.top),
+      seen: [...new Set(window.__bal)], scrim: getComputedStyle(document.querySelector("#layer > .scrim")).opacity };
+  });
+  await ctx.close();
+  return { form, review, sent, errors };
+}
+
+// W-7: a failed balance read. With no earlier read the caption takes the amount's place at the caption scale, muted;
+// over an earlier read the amount stays, dimmed, with the caption under it; the refresh button beside it is the retry,
+// and a good read clears both. RED-FIRST: put back `el.textContent = "unavailable"` in refreshBalance's catch and the
+// caption checks fail.
+async function balanceFailure(theme) {
+  const answers = { ...base };
+  delete answers.balance;
+  const { page, ctx, errors } = await openWalletPage(browser, "popup", answers, { viewport: { width: 360, height: 600 }, colorScheme: theme });
+  await page.waitForSelector("#view-main:not([hidden])");
+  await page.waitForTimeout(600);
+  const look = () => page.evaluate(() => {
+    const probe = (v) => { const d = document.createElement("div"); d.style.color = `var(${v})`; document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c; };
+    const b = document.getElementById("balance"), n = document.getElementById("bal-note"), row = document.getElementById("csd-row-amt");
+    const cs = getComputedStyle(b);
+    return { text: b.textContent, size: cs.fontSize, muted: cs.color === probe("--ui-muted"), note: n.hidden ? null : n.textContent, noteSize: getComputedStyle(n).fontSize,
+      row: row.textContent, rowMuted: getComputedStyle(row).color === probe("--ui-muted"), retry: !!document.getElementById("btn-refresh")?.getClientRects().length };
+  });
+  const none = await look();
+  // a good read, then a refresh that fails
+  await page.evaluate(() => {
+    const send = chrome.runtime.sendMessage;
+    window.__balOk = true;
+    chrome.runtime.sendMessage = (m, cb) => m.method !== "balance" ? send(m, cb)
+      : setTimeout(() => cb(window.__balOk ? { ok: true, result: { confirmed: 128_473_500_000, utxos: [] } } : { ok: false, error: "rpc down" }), 5);
+  });
+  await page.click("#btn-refresh"); await page.waitForTimeout(400);
+  await page.evaluate(() => { window.__balOk = false; });
+  await page.click("#btn-refresh"); await page.waitForTimeout(400);
+  const stale = await look();
+  await page.evaluate(() => { window.__balOk = true; });
+  await page.click("#btn-refresh"); await page.waitForTimeout(900);
+  const back = await look();
+  await ctx.close();
+  return { none, stale, back, errors };
+}
+
 try {
+  for (const theme of ["light", "dark"]) {
+    const f = await balanceFailure(theme);
+    t.check(`${theme}: no earlier read: the caption in the amount's place, 13 px, muted, the retry beside it (${JSON.stringify(f.none)})`,
+      f.none.text === "Balance unavailable. Refresh to try again." && f.none.size === "13px" && f.none.muted && f.none.note === null && f.none.row === "Unavailable" && f.none.rowMuted && f.none.retry);
+    t.check(`${theme}: over an earlier read: that amount, dimmed, the caption under it (${JSON.stringify(f.stale)})`,
+      f.stale.text === "1,284.735CSD" && f.stale.size === "40px" && f.stale.muted && f.stale.note === "Not refreshed: the last balance read. Refresh to try again." && f.stale.noteSize === "13px" && f.stale.row === "1,284.735" && f.stale.rowMuted);
+    t.check(`${theme}: a good read clears the failed state (${JSON.stringify(f.back)})`, f.back.text === "1,284.735CSD" && !f.back.muted && f.back.note === null && !f.back.rowMuted);
+    t.check(`${theme}: balance failure: no page error (${f.errors.join(" | ") || "none"})`, f.errors.length === 0);
+    const s = await sendSheet(theme);
+    t.check(`${theme}: the form says Send CSD, shows the network fee and the balance after (${JSON.stringify(s.form)})`, s.form.title === "Send CSD" && s.form.rows && s.form.fee === "0.01 CSD" && s.form.after === "1,283.225 CSD");
+    t.check(`${theme}: the amount field carries its CSD unit inside it`, s.form.unit === "CSD" && s.form.unitInside);
+    t.check(`${theme}: the review is titled Review send, its button says Confirm send, its fee row Network fee, and no Amount caption (${JSON.stringify(s.review)})`,
+      s.review.title === "Review send" && s.review.confirm === "Confirm send" && s.review.labels.includes("Network fee") && !s.review.labels.includes("Amount") && !s.review.labels.includes("Fee") && s.review.estHidden);
+    t.check(`${theme}: a confirmed send closes the sheet and the scrim (${s.sent.sheet}, scrim ${s.sent.scrim})`, s.sent.sheet === true && s.sent.scrim === "0");
+    t.check(`${theme}: the sent toast sits at the bottom and says what happens next (${JSON.stringify({ cls: s.sent.cls, text: s.sent.text, bottom: s.sent.bottom })})`,
+      /\bsent\b/.test(s.sent.cls) && s.sent.bottom >= 0 && s.sent.bottom <= 16 && s.sent.top > 300 && /^Sent 1\.5 CSD/.test(s.sent.text) && /Waiting for inclusion in a block\./.test(s.sent.text));
+    t.check(`${theme}: the balance counts down to the new amount in the hero (${s.sent.seen.length} values, ends ${s.sent.seen.at(-1)})`, s.sent.seen.length > 3 && s.sent.seen.at(-1) === "1,283.225CSD");
+    t.check(`${theme}: send sheet: no page error (${s.errors.join(" | ") || "none"})`, s.errors.length === 0);
+  }
   {
     const k = await sheets();
     t.check(`opening a sheet from the keyboard moves focus into it (${k.into})`, k.into === "s-to");

@@ -84,6 +84,20 @@
   dash); the review warnings, the name check and its badges drop the ⚠, ✓ and △ marks, which the row's icon and
   tint now carry; the sealed claims list says Sealed and Revealed instead of two emoji. No amount, recipient,
   warning or refusal changed its meaning.
+- The send sheet shows the network fee and the balance after it while the amount is typed (from the fee and the
+  balance already read; nothing is read for it), and the amount field carries its unit, CSD. Its review step is
+  titled "Review send" (the token send's too), its button says "Confirm send" (was "Confirm & send"), the fee row is
+  "Network fee" (was "Fee"), and the "Amount" caption over the amount is gone.
+- After a confirmed send the sheet closes, the sent toast shows at the bottom of the popup ("Sent 1.5 CSD", and under
+  it "Waiting for inclusion in a block."; a token send adds "The token balance updates once it is mined."; the toast
+  no longer prints the txid, which Activity lists), and the balance counts down in the view once the sheet has
+  cleared it. A refused or ambiguous send keeps the sheet, the draft and its copy as before. The send handlers read
+  only the call's own outcome: a failure in the success path's display can no longer be reported as a submit
+  outcome.
+- A failed balance read no longer writes "unavailable" in the 40 px amount: with no earlier read, "Balance
+  unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount
+  stays, dimmed, with "Not refreshed: the last balance read. Refresh to try again." under it. The refresh button is
+  the retry; the CSD row reads "Unavailable" or the dimmed amount.
 - Internal: the popup script is split into one module per view or concern (`src/popup/popup-*.ts`, the largest
   183 lines, from one file of 1,532); its code is line for line the same apart from five lines that now write
   another module's state through a setter, and the popup shows the same pixels before and after the split in every

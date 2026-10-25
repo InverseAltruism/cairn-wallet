@@ -76,12 +76,14 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
   // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1) or its
   // chain-verification regressed since review (L7).
   if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err");
+  // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
+  let r: any;
   try {
     busy("Sending…");
-    const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
-    if (r.ok) sentOk(TOKEN_FLOW, `Sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)} · ${String(r.txid).slice(0, 12)}… (settles once it is mined).`); // W8: both scales here too
-    else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
+    r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
   } catch (e: any) {
-    sendThrew(TOKEN_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
+    return sendThrew(TOKEN_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
   }
+  if (r?.ok) sentOk(TOKEN_FLOW, `Sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)}`); // W8: both scales here too
+  else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
 });

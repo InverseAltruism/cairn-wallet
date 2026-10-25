@@ -77,6 +77,9 @@ export function installFakeDom({ autoCreate = false } = {}) {
   globalThis.ResizeObserver = Unobserved;
   globalThis.window = { close: () => {} };
   globalThis.matchMedia = () => ({ matches: true });
+  // no tokens: motion reads none (tokenMs is null), so no tween or delay runs
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
+  globalThis.document.documentElement = {};
   return { registry, El, byId };
 }
 

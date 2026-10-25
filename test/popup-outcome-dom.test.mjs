@@ -228,5 +228,60 @@ console.log("9. the popup's own send review with a negative balance-after (same 
   t("9d honest: and it sends", () => { assert.equal(sends, before + 1); assert.match(text(), /^Sent 1 CSD/); });
 }
 
+console.log("10. W-1: a confirmed send closes its sheet; a refused or ambiguous one keeps the sheet and the draft");
+{
+  const sendIn = async (answer) => {
+    byId("send-form").hidden = false;
+    h.send = answer;
+    await csdReview(EXTERNAL);
+    await byId("btn-send-confirm").click(); await flush();
+    return { open: !byId("send-form").hidden, to: byId("s-to").value, amt: byId("s-amt").value, msg: text(), cls: byId("msg").className };
+  };
+  const ok = await sendIn(() => ({ ok: true, txid: TXID }));
+  t("10a a confirmed send closes the sheet, clears the draft and shows the sent toast with what happens next", () => {
+    assert.equal(ok.open, false); assert.equal(ok.to, ""); assert.equal(ok.amt, "");
+    assert.match(ok.msg, /^Sent 1 CSD/); assert.match(ok.msg, /Waiting for inclusion in a block\./); assert.equal(ok.cls, "msg ok sent");
+  });
+  const refused = await sendIn(() => ({ ok: false, code: "INSUFFICIENT", error: "insufficient confirmed balance" }));
+  t("10b a refused send keeps the sheet open with the draft and its copy", () => {
+    assert.equal(refused.open, true); assert.equal(refused.to, EXTERNAL); assert.equal(refused.amt, "1"); assert.match(refused.msg, /Nothing was sent/);
+  });
+  const maybe = await sendIn(() => ({ ok: false, code: "SUBMIT_MAYBE_INFLIGHT", txid: TXID, error: "/tx/submit -> 502" }));
+  t("10c an ambiguous send keeps the sheet open with the draft and says it may be in flight", () => {
+    assert.equal(maybe.open, true); assert.equal(maybe.to, EXTERNAL); assert.match(maybe.msg, IN_FLIGHT);
+  });
+  const thrown = await sendIn(() => { throw new Error("/utxos -> malformed response"); });
+  t("10d a wallet-answered throw keeps the sheet open with the draft", () => {
+    assert.equal(thrown.open, true); assert.equal(thrown.to, EXTERNAL); assert.match(thrown.msg, /Nothing was sent/);
+  });
+  // A throw from the success path's own display code (here the motion token read) is not a submit outcome: the send
+  // went through, so the popup must not say it may be in flight or that nothing was sent.
+  // RED-FIRST: move sentOk back inside the try around call("send") and 10e fails.
+  const real = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => { throw new Error("display failed"); };
+  const shown = await sendIn(() => ({ ok: true, txid: TXID })).catch(() => ({ msg: text() }));
+  globalThis.getComputedStyle = real;
+  t("10e a display throw after a confirmed send never reads as 'may already be in flight' or 'Nothing was sent'", () => {
+    assert.doesNotMatch(shown.msg, IN_FLIGHT); assert.doesNotMatch(shown.msg, /Nothing was sent/);
+  });
+}
+
+console.log("11. W-4: the send sheet shows the network fee and the balance after while the amount is typed");
+{
+  h.balance = () => ({ confirmed: 100e8, utxos: [] });
+  await byId("btn-refresh").click(); await flush();
+  await byId("btn-send-t").click(); await flush();
+  const typed = (v) => { byId("s-amt").value = v; for (const fn of byId("s-amt")._listeners.input || []) fn(); return { fee: byId("s-fee").textContent, after: byId("s-after").textContent, cls: byId("s-after").className }; };
+  const a = typed("1.5");
+  t(`11a 1.5 CSD of 100: fee 0.01 CSD, balance after 98.49 CSD (${JSON.stringify(a)})`, () => { assert.equal(a.fee, "0.01 CSD"); assert.equal(a.after, "98.49 CSD"); assert.equal(a.cls, "dim"); });
+  const b = typed("100");
+  t(`11b more than the balance: the negative balance after, in the refusal colour (${JSON.stringify(b)})`, () => { assert.equal(b.after, "-0.01 CSD"); assert.equal(b.cls, "err"); });
+  const c = typed("");
+  t(`11c nothing typed: the balance as it is (${JSON.stringify(c)})`, () => { assert.equal(c.after, "100 CSD"); });
+  const d = typed("1.123456789");
+  t(`11d more than 8 decimals: not a valid amount (${JSON.stringify(d)})`, () => { assert.equal(d.after, "Not a valid amount"); });
+  // RED-FIRST: drop the input listener and 11a-11d keep the first value; drop SEND_FEE from the sum and 11a, 11b fail.
+}
+
 console.log(`\npopup-outcome-dom: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
