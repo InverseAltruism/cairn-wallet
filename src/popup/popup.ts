@@ -162,7 +162,7 @@ async function render() {
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
   renderAcctSelect(st.accounts || [], st.active || 0);
   $("addr").textContent = st.addr;
-  if (st.addr !== curAddr) { curAddr = st.addr; lastBal = null; paintAvatar(null, curAddr); } // new account: reset identity + balance tween base
+  if (st.addr !== curAddr) { curAddr = st.addr; invalidateAccountViews(); lastBal = null; paintAvatar(null, curAddr); } // new account: old rows inert, reset identity + balance tween base
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerLink(currentExplorer, "addr", st.addr);
   (($("set-api") as HTMLInputElement)).value = st.api;
   (($("set-tradeapi") as HTMLInputElement)).value = st.tradeApi || "";
@@ -202,8 +202,9 @@ async function switchAcct(i: number) {
   // a name's detail lists the old account's names, and its actions must not reach a review under the new one.
   clearSendDrafts();
   closeAllPanels(); syncNav();
+  invalidateAccountViews();   // before the await: the old account's rows go inert while the switch is in flight
   try { await call("switchAccount", i); msg("switched account", "ok"); render(); }
-  catch (err: any) { msg(err.message, "err"); }
+  catch (err: any) { msg(err.message, "err"); render(); }
 }
 // per-row inline edit state (rename/remove) so we never use a browser prompt/confirm
 let acctEdit: { addr: string; mode: "rename" | "remove" } | null = null;
@@ -426,6 +427,26 @@ function tradeNameUrl(name: string): string {
 // Supersession guard (same pattern as balSeq): an in-flight assets response for a PREVIOUS
 // account must never repaint identity/avatar/assets after a switch.
 let assetsSeq = 0;
+// What a row, a name's detail or a token send acts for. acctGen moves when a switch starts and when render() sees a
+// new address; listGen moves on every write of the lists. An action whose binding no longer matches does nothing and
+// closes the sheets: a row or a detail drawn for account A must not open a review that account B would sign.
+let acctGen = 0, listGen = 0;
+type ViewBind = { acct: number; addr: string; list?: number };
+const bindView = (withList = false): ViewBind => ({ acct: acctGen, addr: curAddr, ...(withList ? { list: listGen } : {}) });
+const viewCurrent = (b: ViewBind | undefined) => !!b && b.acct === acctGen && b.addr === curAddr && (b.list === undefined || b.list === listGen);
+function dropStaleView() { closeAllPanels(); syncNav(); }
+const LIST_LOADING = `<div class="skeleton-row"></div><div class="skeleton-row"></div>`;
+// At the start of a switch: nothing drawn for the old account stays clickable, and its in-flight reads do not paint.
+function invalidateAccountViews() {
+  acctGen++; listGen++; assetsSeq++; balSeq++;
+  nameDetails = new Map(); ndOpen = null;
+  const el = $("assets") as HTMLElement;
+  el.hidden = false; el.setAttribute("aria-busy", "true"); el.innerHTML = LIST_LOADING;
+  $("names-list").innerHTML = LIST_LOADING;
+  $("nd-actions").innerHTML = "";
+  $("csd-row-amt").textContent = "";
+  $("balance").classList.add("loading");
+}
 async function renderAssets() {
   const seq = ++assetsSeq;
   const el = $("assets") as HTMLElement;
@@ -436,10 +457,11 @@ async function renderAssets() {
     el.hidden = false;
     el.setAttribute("aria-busy", "false");
     el.innerHTML = `<div class="assets-retry dim">token balances unavailable · <a id="assets-retry">retry</a></div>`;
-    nameDetails = new Map();
+    nameDetails = new Map(); listGen++;
     $("names-list").innerHTML = `<div class="assets-retry dim">names unavailable · refresh the balance to try again</div>`;
     const rt = document.getElementById("assets-retry");
     if (rt) rt.onclick = () => { el.innerHTML = `<div class="assets-retry dim">retrying…</div>`; renderAssets(); };
+    refreshOpenDetail();
     return;
   }
   const balances: Record<string, { available: string; locked: string }> = a.balances || {};
@@ -468,7 +490,7 @@ async function renderAssets() {
   // .csd names: a row opens the name's detail (renew, set primary, the site); a lease near its end also gets a
   // Renew chip on the row. Both lead to the same review sheet; nothing here signs.
   const tip = Number(a.tipHeight) || 0;
-  nameDetails = new Map();
+  nameDetails = new Map(); listGen++;
   const nameRows = details.map((n) => {
     const nm = String(n.name);
     const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized; no owner actions
@@ -495,12 +517,21 @@ async function renderAssets() {
   const nl = $("names-list");
   nl.innerHTML = nameRows || `<p class="empty">No .csd names yet. Names held by this account show here; register one at cairn-substrate.com/names.</p>`;
   if (!($("names-tab") as HTMLElement).hidden) enterOnce(nl, curAddr);
-  el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = () => {
+  const rows0 = bindView(true);
+  const live = (fn: () => void) => () => { if (viewCurrent(rows0)) fn(); else dropStaleView(); };
+  el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = live(() => {
     const t = b.dataset.tsend!;
     openTokenSend(t, decOf(t), balances[t]?.available ?? "0");
-  });
-  nl.querySelectorAll<HTMLElement>("[data-name]").forEach((b) => b.onclick = () => openNameDetail(b.dataset.name!));
-  nl.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
+  }));
+  nl.querySelectorAll<HTMLElement>("[data-name]").forEach((b) => b.onclick = live(() => openNameDetail(b.dataset.name!)));
+  nl.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = live(() => confirmNameAction("renew", b.dataset.nrenew!)));
+  refreshOpenDetail();
+}
+// A refreshed list redraws the open name detail from the new read: a name now pending or lapsed loses its actions,
+// a name the read no longer returns closes the sheet.
+function refreshOpenDetail() {
+  if (!ndOpen || ($("name-detail") as HTMLElement).hidden) return;
+  if (nameDetails.has(ndOpen)) openNameDetail(ndOpen); else dropStaleView();
 }
 // Thousands separators on formatUnits' output, display only: every digit and the decimal point stay as they are, and
 // anything that is not a plain decimal ("?" on bad input) passes through unchanged.
@@ -510,12 +541,16 @@ function groupDigits(s: string): string {
 }
 // The names the last assets read returned, for the detail sheet a row opens.
 let nameDetails = new Map<string, { name: string; isPending: boolean; isPrimary: boolean; lapsed: boolean; status: string }>();
+let ndOpen: string | null = null;   // the name whose detail sheet is open
 // A name's detail: its state and the owner actions. A pending reservation or a lapsed name gets only the link to the
 // site: renew and set-primary on them broadcast a fee the resolver rejects (nrenew and nset refuse a pending record).
 function openNameDetail(name: string) {
   const d = nameDetails.get(name);
   if (!d) return;
   if (!openPanel("name-detail")) ($("name-detail") as HTMLElement).hidden = false;   // a second row keeps the sheet open
+  ndOpen = d.name;
+  const bound = bindView(true);
+  const act = (kind: "renew" | "primary") => () => { if (viewCurrent(bound) && nameDetails.get(d.name) === d) confirmNameAction(kind, d.name); else dropStaleView(); };
   $("name-detail-title").textContent = `${d.name}.csd`;
   $("nd-rows").innerHTML = `<div class="crow"><span class="label">Status</span><span>${escapeHtml(d.status || "Registered")}</span></div>`;
   const site = (label: string) => `<a class="btn-link" href="${escapeHtml(tradeNameUrl(d.name))}" target="_blank" rel="noopener noreferrer">${label}<svg class="i" aria-hidden="true"><use href="icons.svg#i-external-link"/></svg></a>`;
@@ -525,8 +560,8 @@ function openNameDetail(name: string) {
     : `<button class="primary" type="button" data-nrenew="${escapeHtml(d.name)}">Renew</button>`
       + (d.isPrimary ? "" : `<button type="button" data-nprimary="${escapeHtml(d.name)}">Set as primary</button>`)
       + site("Open on the site");
-  acts.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
-  acts.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
+  acts.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = act("renew"));
+  acts.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = act("primary"));
 }
 
 // One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
@@ -537,6 +572,7 @@ function openNameDetail(name: string) {
 let nameActSeq = 0;   // QA #18: supersede stale async continuations; a newer invocation bumps this; older ones abort after their awaits
 async function confirmNameAction(kind: "renew" | "primary", name: string) {
   const seq = ++nameActSeq;
+  const bound = bindView();   // a switch during the reads below leaves no primed review behind
   dropReviews();
   openPanel("name-action-form");
   ($("name-action-form") as HTMLElement).hidden = false;   // always SHOW the review; openPanel toggles, and a name action must never toggle the panel closed
@@ -548,7 +584,7 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   let renewFee = 0;
   if (kind === "renew") {
     renewFee = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
-    if (seq !== nameActSeq) return;   // a newer name action superseded this one; don't clobber its panel/snapshot
+    if (seq !== nameActSeq || !viewCurrent(bound)) return;   // superseded, or the account changed meanwhile
     ($("nc-fee-row") as HTMLElement).hidden = false;
     $("nc-fee").textContent = renewFee ? fmtCsd(renewFee) : "priced at confirm";
   } else {
@@ -563,7 +599,7 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   // unknown; subtracting the anchor-only 0.25 would understate a 15.25 action in the second row too.
   let after = "";
   try { const b = await call("balance"); after = (kind === "renew" && !renewFee) ? "" : fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
-  if (seq !== nameActSeq) return;   // superseded after the balance fetch; abort before priming the snapshot
+  if (seq !== nameActSeq || !viewCurrent(bound)) return;   // superseded or switched after the balance fetch; abort before priming the snapshot
   $("nc-after").textContent = after || "unknown";
   $("nc-note").textContent = kind === "renew"
     ? "Extends this name's lease by one term. Anyone may renew a live lease."
@@ -667,7 +703,7 @@ function setNameRow(rowId: string, valId: string, label: string | null | undefin
 // The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
 // the existing propose pipeline with the 0.25 CSD convention fee; no value outputs.
 const CAIRNX_FEE = CAIRNX_PROPOSE_FEE; // 0.25 CSD (anchor fee, paid in CSD); the vendored MIN_FEE_PROPOSE, never a hand-typed literal
-let tsend: { ticker: string; decimals: number; available: string } | null = null;
+let tsend: { ticker: string; decimals: number; available: string; bind: ViewBind } | null = null;
 
 // ── shared send-flow engine ───────────────────────────────────────────────────────────────────
 // The CSD and token send panels are deliberate twins with three real deltas, carried by a flow
@@ -776,7 +812,7 @@ function sentOk(f: SendFlow, text: string) {
 }
 
 function openTokenSend(ticker: string, decimals: number, available: string) {
-  tsend = { ticker, decimals, available };
+  tsend = { ticker, decimals, available, bind: bindView() };
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
   if (!openPanel("tsend-form")) ($("tsend-form") as HTMLElement).hidden = false;
   ($("ts-ticker") as HTMLElement).textContent = ticker;
@@ -787,6 +823,7 @@ function openTokenSend(ticker: string, decimals: number, available: string) {
 }
 $("btn-tsend").addEventListener("click", async () => {
   if (!tsend) return;
+  if (!viewCurrent(tsend.bind)) { tsend = null; return dropStaleView(); }   // opened for another account
   const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
   if (base === null || base === "0") return msg(tsend.decimals ? `enter an amount (up to ${tsend.decimals} decimal places)` : "enter a whole-number amount (this token has 0 decimals)", "err");
   const rr = await resolveRecipient(val("ts-to").trim());   // 0x… or alice.csd (refuse lapsed)
