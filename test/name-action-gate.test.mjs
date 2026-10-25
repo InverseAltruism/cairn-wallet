@@ -89,7 +89,7 @@ const fee = Number(nameRegFee(NAME, buildFeeHeight(TIP)));
 console.log("renew");
 {
   const n = await act(RENEW, "owned", "owned");
-  t.check(`honest: an owned live name renews (${status()})`, n === 1 && /^renewed: alice\.csd/.test(status()));
+  t.check(`honest: an owned live name renews (${status()})`, n === 1 && /^Renewed: alice\.csd/.test(status()));
   t.check(`honest: Confirm read the name once (${lastReads})`, lastReads === 1);
   t.check(`honest: the renewal pays the reviewed fee to the treasury (${toTreasury(submits.at(-1))} = ${fee})`, toTreasury(submits.at(-1)) === fee);
 }
@@ -108,9 +108,9 @@ console.log("renew");
 }
 {
   const n = await act(RENEW, "owned", "down");
-  t.check(`fail-open: a name service answering 503 does not block the renewal (${status()})`, n === 1 && /^renewed/.test(status()));
+  t.check(`fail-open: a name service answering 503 does not block the renewal (${status()})`, n === 1 && /^Renewed/.test(status()));
   const m = await act(RENEW, "owned", "throw");
-  t.check(`fail-open: a name service that cannot be reached does not block the renewal (${status()})`, m === 1 && /^renewed/.test(status()));
+  t.check(`fail-open: a name service that cannot be reached does not block the renewal (${status()})`, m === 1 && /^Renewed/.test(status()));
 }
 {
   const n = await act(RENEW, "owned", "other");
@@ -118,13 +118,13 @@ console.log("renew");
 }
 {
   const n = await act(RENEW, "owned", "grace");
-  t.check(`honest: an own name in its grace period still renews (${status()})`, n === 1 && /^renewed/.test(status()));
+  t.check(`honest: an own name in its grace period still renews (${status()})`, n === 1 && /^Renewed/.test(status()));
 }
 
 console.log("set primary");
 {
   const n = await act(PRIMARY, "owned", "owned");
-  t.check(`honest: an owned name is set as primary (${status()})`, n === 1 && /^set primary: alice\.csd/.test(status()));
+  t.check(`honest: an owned name is set as primary (${status()})`, n === 1 && /^Set primary: alice\.csd/.test(status()));
 }
 {
   const n = await act(PRIMARY, "owned", "other");

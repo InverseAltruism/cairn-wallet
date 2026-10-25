@@ -30,7 +30,7 @@ async function switchAcct(i: number) {
   clearSendDrafts();
   closeAllPanels(); syncNav();
   invalidateAccountViews();   // before the await: the old account's rows go inert while the switch is in flight
-  try { await call("switchAccount", i); msg("switched account", "ok"); render(); }
+  try { await call("switchAccount", i); msg("Switched account.", "ok"); render(); }
   catch (err: any) { msg(err.message, "err"); render(); }
 }
 // per-row inline edit state (rename/remove) so we never use a browser prompt/confirm
@@ -40,32 +40,32 @@ export async function renderAccts() {
   const el = $("accts-list");
   el.innerHTML = (st.accounts || []).map((a: any, i: number) => {
     const editing = acctEdit && acctEdit.addr.toLowerCase() === a.addr.toLowerCase();
-    const tag = a.imported ? ` <span class="badge">imported</span>` : "";
+    const tag = a.imported ? ` <span class="badge">Imported</span>` : "";
     let right: string;
     if (editing && acctEdit!.mode === "rename") {
       right = `<span class="row" style="gap:6px">
           <input class="acct-rename-input" data-addr="${escapeHtml(a.addr)}" value="${escapeHtml(a.label)}" />
-          <button class="mini" data-save="${escapeHtml(a.addr)}">save</button>
-          <button class="mini" data-cancel="1">cancel</button></span>`;
+          <button class="mini" data-save="${escapeHtml(a.addr)}">Save</button>
+          <button class="mini" data-cancel="1">Cancel</button></span>`;
     } else if (editing && a.imported) {
       // A2 (Plans/68 F4): an imported key is NOT in the recovery phrase; a one-click remove was
       // permanent fund loss. Removal is password-gated (the background enforces it; this UI collects
       // it) with the irreversibility spelled out. HD accounts below keep the frictionless yes/no.
       right = `<span class="row" style="gap:6px">
-          <input class="acct-remove-pw" type="password" data-addr="${escapeHtml(a.addr)}" placeholder="wallet password" style="width:110px" />
-          <button class="mini" data-confirm-remove="${escapeHtml(a.addr)}" data-imported="1">remove</button>
+          <input class="acct-remove-pw" type="password" data-addr="${escapeHtml(a.addr)}" placeholder="Wallet password" style="width:110px" />
+          <button class="mini" data-confirm-remove="${escapeHtml(a.addr)}" data-imported="1">Remove</button>
           <button class="mini" data-cancel="1">no</button></span>`;
     } else if (editing) {
-      right = `<span class="row" style="gap:6px"><span class="dim" style="font-size:11px">remove?</span>
-          <button class="mini" data-confirm-remove="${escapeHtml(a.addr)}">yes</button>
+      right = `<span class="row" style="gap:6px"><span class="dim" style="font-size:11px">Remove?</span>
+          <button class="mini" data-confirm-remove="${escapeHtml(a.addr)}">Yes</button>
           <button class="mini" data-cancel="1">no</button></span>`;
     } else {
       right = `<span class="row" style="gap:6px">
-          <button class="mini" data-rename="${escapeHtml(a.addr)}">rename</button>
-          ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}</span>`;
+          <button class="mini" data-rename="${escapeHtml(a.addr)}">Rename</button>
+          ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">Remove</button>` : ""}</span>`;
     }
     const removeWarn = editing && acctEdit!.mode === "remove" && a.imported
-      ? checkRow({ tier: "danger", html: "this imported key is NOT in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
+      ? checkRow({ tier: "danger", html: "This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
@@ -78,19 +78,19 @@ export async function renderAccts() {
   el.querySelectorAll<HTMLElement>("[data-cancel]").forEach((b) => b.onclick = () => { acctEdit = null; renderAccts(); });
   el.querySelectorAll<HTMLElement>("[data-save]").forEach((b) => b.onclick = async () => {
     const inp = el.querySelector(`.acct-rename-input[data-addr="${b.dataset.save}"]`) as HTMLInputElement | null;
-    const label = inp?.value.trim(); if (!label) return msg("enter a label", "err");
+    const label = inp?.value.trim(); if (!label) return msg("Enter a label.", "err");
     try { await call("renameAccount", b.dataset.save, label); acctEdit = null; renderAccts(); render(); } catch (e: any) { msg(e.message, "err"); }
   });
   el.querySelectorAll<HTMLElement>("[data-confirm-remove]").forEach((b) => b.onclick = async () => {
     // imported rows carry a password field (A2); HD rows pass no password and stay one-click.
     const pwInp = b.dataset.imported ? el.querySelector(`.acct-remove-pw[data-addr="${b.dataset.confirmRemove}"]`) as HTMLInputElement | null : null;
-    if (b.dataset.imported && !pwInp?.value) return msg("enter your wallet password to remove an imported key", "err");
+    if (b.dataset.imported && !pwInp?.value) return msg("Enter your wallet password to remove an imported key.", "err");
     try {
       await call("removeAccount", b.dataset.confirmRemove, ...(pwInp?.value ? [pwInp.value] : []));
-      acctEdit = null; msg("account removed", "ok"); renderAccts(); render();
+      acctEdit = null; msg("Account removed.", "ok"); renderAccts(); render();
     } catch (e: any) {
       const m = String(e?.message || e);
-      msg(m === "REMOVE_IMPORTED_REAUTH" ? "enter your wallet password to remove an imported key" : m, "err");
+      msg(m === "REMOVE_IMPORTED_REAUTH" ? "Enter your wallet password to remove an imported key." : m, "err");
     }
   });
   const ri = el.querySelector(".acct-rename-input") as HTMLInputElement | null;
@@ -100,13 +100,13 @@ export async function renderAccts() {
 $("acct-select").addEventListener("click", () => { const m = $("acct-menu") as HTMLElement; m.hidden = !m.hidden; });
 $("btn-accts").addEventListener("click", () => { if (openPanel("accts-panel")) renderAccts(); });
 $("btn-add-acct").addEventListener("click", async () => {
-  try { const r = await call("addAccount"); msg("added " + (r.addr ? r.addr.slice(0, 10) + "…" : "account"), "ok"); render(); }
+  try { const r = await call("addAccount"); msg("Added " + (r.addr ? r.addr.slice(0, 10) + "…" : "an account") + ".", "ok"); render(); }
   catch (e: any) { msg(e.message, "err"); }
 });
 $("btn-imp-acct").addEventListener("click", async () => {
-  const key = val("imp-acct-key").trim(); if (!key) return msg("paste a private key", "err");
+  const key = val("imp-acct-key").trim(); if (!key) return msg("Paste a private key.", "err");
   // A2 defense-in-depth: state the misconception up front; an imported key is NOT covered by the
   // recovery phrase, so the user learns it at import time, not at (password-gated) removal time.
-  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported. Note: imported keys are NOT in your recovery phrase; keep their own backup", "ok"); render(); }
+  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("Account imported. Imported keys are not in your recovery phrase: keep their own backup.", "ok"); render(); }
   catch (e: any) { msg(e.message, "err"); }
 });

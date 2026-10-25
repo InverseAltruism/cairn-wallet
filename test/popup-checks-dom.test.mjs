@@ -119,9 +119,9 @@ for (const [depth, tier] of [[1, "caution"], [2, "caution"], [3, "ok"]]) {
 }
 resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
 await review(LOOK);
-check("1c address poisoning is a danger row with its copy", rows().length === 1 && rows()[0].tier === "danger" && /Possible address-poisoning/.test(rows()[0].html));
+check("1c address poisoning is a danger row with its copy", rows().length === 1 && rows()[0].tier === "danger" && /^<b>Possible address-poisoning\.<\/b>/.test(rows()[0].html) && /is <b>not<\/b> the same address/.test(rows()[0].html));
 await review(NEW);
-check("1d a first send is a danger row (red, as in 0.2.99)", rows().length === 1 && rows()[0].tier === "danger" && /First time sending to this address/.test(rows()[0].html));
+check("1d a first send is a danger row (red, as in 0.2.99), the row's icon in place of a ⚠ glyph", rows().length === 1 && rows()[0].tier === "danger" && /^First time sending to this address: check every character\. Payments are irreversible\.$/.test(rows()[0].html));
 resolveAns = { ok: true, addr: NEW, verified: true, sources: 2, depth: 14, via: "owner" };
 await review("alice.csd");
 check("1e a named first send: the positive name row, then the danger row", rows().map((r) => r.tier).join() === "ok,danger");
@@ -196,7 +196,7 @@ console.log("5. imported-key removal");
   const list = byId("accts-list");
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === IMP).click(); await flush();
   const html = String(list.innerHTML);
-  check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("this imported key is NOT in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
+  check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
   await list.querySelectorAll("[data-cancel]")[0].click(); await flush();
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === HD2).click(); await flush();
   await list.querySelectorAll("[data-confirm-remove]")[0].click(); await flush();
@@ -252,9 +252,9 @@ console.log("9. the send review's Name row");
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
   await review("alice.csd");
   const name = String(byId("c-name").textContent);
-  const badge = "✓ chain-backed, 2 name servers agree (same operator) (14 conf)";
+  const badge = "Chain-backed, 2 name servers agree (same operator) (14 conf).";
   check(`9a the Name row is the name and the short address (${name})`, name === "alice.csd → 0x313131…3131 (via owner)");
-  check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("chain-backed"));
+  check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("Chain-backed"));
   check("9c the To address is grouped in fours and its text is the raw address", String(byId("c-to").innerHTML).replace(/<[^>]*>/g, "") === PAID && (String(byId("c-to").innerHTML).match(/<span>/g) || []).length === 10);
 }
 

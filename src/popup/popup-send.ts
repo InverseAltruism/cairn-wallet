@@ -29,9 +29,9 @@ $("btn-send").addEventListener("click", async () => {
   // the user typed/saw. parseUnits enforces /^\d+(\.\d{0,8})?$/ and exact base-unit conversion (same path
   // the token send already uses), so a malformed amount is rejected up front instead of silently coerced.
   const amtStr = parseUnits(val("s-amt").trim(), 8);
-  if (amtStr === null || amtStr === "0") return msg("enter a valid amount (up to 8 decimal places)", "err");
+  if (amtStr === null || amtStr === "0") return msg("Enter a valid amount (up to 8 decimal places).", "err");
   const amt = Number(amtStr);
-  if (!Number.isSafeInteger(amt) || amt <= 0) return msg("amount out of range", "err");
+  if (!Number.isSafeInteger(amt) || amt <= 0) return msg("Amount out of range.", "err");
   const rr = await resolveRecipient(raw);   // 0x… as-is, or alice.csd → resolved address (refuse lapsed)
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
@@ -42,7 +42,7 @@ $("btn-send").addEventListener("click", async () => {
   $("c-to").innerHTML = groupedAddr(to);           // FULL address, not truncated
   $("c-amt").textContent = fmtCsd(amt);
   $("c-fee").textContent = fmtCsd(SEND_FEE);
-  $("c-after").textContent = after || "unknown";
+  $("c-after").textContent = after || "Unknown";
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status; verifying the resolved address is the whole defense the wallet can offer here.
   // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's
@@ -63,10 +63,10 @@ $("btn-send-confirm").addEventListener("click", async () => {
   const { to, amt, name, verified, signer } = reviewState.reviewedSend;
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7); fail-closed to a re-review either way.
-  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
+  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err");
   try {
-    busy("sending…"); const r = await call("send", to, amt, SEND_FEE, signer ?? undefined);
-    if (r.ok) sentOk(CSD_FLOW, "sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
+    busy("Sending…"); const r = await call("send", to, amt, SEND_FEE, signer ?? undefined);
+    if (r.ok) sentOk(CSD_FLOW, "Sent " + fmtCsd(amt) + " · " + String(r.txid).slice(0, 12) + "…");
     else sendRefused(CSD_FLOW, r);                    // structured refusal: show the REAL reason (FOOT-3 teardown inside)
   } catch (e: any) {
     sendThrew(CSD_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous

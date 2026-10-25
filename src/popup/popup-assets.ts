@@ -70,11 +70,11 @@ export async function renderAssets() {
   if (!a?.ok) {
     el.hidden = false;
     el.setAttribute("aria-busy", "false");
-    el.innerHTML = `<div class="assets-retry dim">token balances unavailable · <a id="assets-retry">retry</a></div>`;
+    el.innerHTML = `<div class="assets-retry dim">Token balances unavailable · <a id="assets-retry">Retry</a></div>`;
     nameDetails = new Map(); nextListGen();
-    $("names-list").innerHTML = `<div class="assets-retry dim">names unavailable · refresh the balance to try again</div>`;
+    $("names-list").innerHTML = `<div class="assets-retry dim">Names unavailable: refresh the balance to try again.</div>`;
     const rt = document.getElementById("assets-retry");
-    if (rt) rt.onclick = () => { el.innerHTML = `<div class="assets-retry dim">retrying…</div>`; renderAssets(); };
+    if (rt) rt.onclick = () => { el.innerHTML = `<div class="assets-retry dim">Retrying…</div>`; renderAssets(); };
     refreshOpenDetail();
     return;
   }

@@ -19,7 +19,7 @@ function showBackup(mnemonic: string, privkey: string) {
   ($("btn-backup-done") as HTMLButtonElement).disabled = true;
   show("backup");
 }
-$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("enter a password", "err"); const r = await call("create", pw); ($("setup-pw") as HTMLInputElement).value = ""; const h0 = document.getElementById("setup-pw-hint"); if (h0) h0.textContent = ""; showBackup(r.mnemonic, r.privkey); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-create").addEventListener("click", async () => { try { const pw = val("setup-pw"); if (!pw) return msg("Enter a password.", "err"); const r = await call("create", pw); ($("setup-pw") as HTMLInputElement).value = ""; const h0 = document.getElementById("setup-pw-hint"); if (h0) h0.textContent = ""; showBackup(r.mnemonic, r.privkey); } catch (e: any) { msg(e.message, "err"); } });
 // CUST-1-1 nudge: a no-dependency password-strength HINT on the new-wallet field. NON-blocking (the keystore
 // still enforces the 8-char minimum); it just steers users toward a long passphrase, which is the real defense
 // against an offline brute of an exfiltrated at-rest vault. Length-dominant with a small variety bonus; no dep.
@@ -33,19 +33,19 @@ function pwStrength(pw: string): string {
 }
 $("setup-pw").addEventListener("input", () => {
   const v = ($("setup-pw") as HTMLInputElement).value; const h = document.getElementById("setup-pw-hint");
-  if (h) h.textContent = v ? `password strength: ${pwStrength(v)}` : "";
+  if (h) h.textContent = v ? `Password strength: ${pwStrength(v)}` : "";
 });
-$("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("enter your recovery phrase", "err"); if (!pw) return msg("enter a password to encrypt it", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("wallet restored", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-restore").addEventListener("click", async () => { try { const ph = val("restore-phrase").trim(); const pw = val("restore-pw"); if (!ph) return msg("Enter your recovery phrase.", "err"); if (!pw) return msg("Enter a password to encrypt it.", "err"); await call("restore", ph, pw); ($("restore-phrase") as HTMLTextAreaElement).value = ""; ($("restore-pw") as HTMLInputElement).value = ""; msg("Wallet restored.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-copy-seed").addEventListener("click", () => copyText("btn-copy-seed", backupPhrase));
 $("btn-copy-priv").addEventListener("click", () => copyText("btn-copy-priv", backupPriv));
 ($("ack-backup") as HTMLInputElement).addEventListener("change", (e) => { ($("btn-backup-done") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked; });
 $("btn-backup-done").addEventListener("click", () => {
   backupPhrase = ""; backupPriv = ""; $("seed-words").innerHTML = ""; $("backup-priv").textContent = "";
-  msg("wallet ready", "ok"); render();
+  msg("Wallet ready.", "ok"); render();
   // wallet-ready moment: one-shot ring pulse over the balance hero (CSS-only; killed by reduced-motion)
   const vm = $("view-main");
   vm.classList.add("born");
   setTimeout(() => vm.classList.remove("born"), 1600);
 });
-$("btn-import").addEventListener("click", async () => { try { if (!val("import-pw")) return msg("enter a password to encrypt the key", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("key imported", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
-$("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-import").addEventListener("click", async () => { try { if (!val("import-pw")) return msg("Enter a password to encrypt the key.", "err"); await call("import", val("import-key").trim(), val("import-pw")); msg("Key imported.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-unlock").addEventListener("click", async () => { try { await call("unlock", val("unlock-pw")); msg("Unlocked.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });

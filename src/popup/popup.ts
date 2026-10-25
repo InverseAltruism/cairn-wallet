@@ -23,7 +23,7 @@ import "./popup-coins.js";
 import "./popup-settings.js";
 import "./popup-publish.js";
 
-$("btn-lock").addEventListener("click", async () => { await call("lock"); msg("locked"); render(); });
+$("btn-lock").addEventListener("click", async () => { await call("lock"); msg("Locked."); render(); });
 $("btn-refresh").addEventListener("click", () => { refreshBalance(); renderAssets(); });
 $("btn-copy").addEventListener("click", () => copyText("btn-copy", $("addr").textContent || ""));
 

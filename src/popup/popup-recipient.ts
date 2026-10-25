@@ -15,17 +15,17 @@ export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr
   // types.ts (set V23_HEIGHT only after wallet ADOPTION, not publication).
   // isZeroAddr is the shared (0x)?-optional guard from clearsign.ts; one test for all three former copies.
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) {
-    if (isZeroAddr(r)) return { ok: false, error: "that is the zero address: sends there are burned and unrecoverable" };
+    if (isZeroAddr(r)) return { ok: false, error: "That is the zero address: sends there are burned and unrecoverable." };
     return { ok: true, addr: r.toLowerCase(), name: null, label: null };
   }
   if (looksLikeName(r)) {
     const nm = r.toLowerCase().replace(/\.csd$/, "");
-    const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "name lookup failed" }));
+    const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "Name lookup failed." }));
     // resolveName SPV-verifies the name over two name sources (primary and clarvis, same operator). A disagreeing
     // source warns rather than refuses: the target is the proven winner with `disagree` set, and an unprovable
     // name comes back verified:false for the badge to caution. res.ok is false only for an invalid, unregistered,
     // address-less or lapsed name, or a failed lookup.
-    if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
+    if (!res.ok) return { ok: false, error: res.error || `Couldn't resolve ${nm}.csd.` };
     if (isZeroAddr(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address: refusing (sends would be burned)` };
     const verified = res.verified === true;
     const viaFill = res.viaFill === true;
@@ -36,15 +36,15 @@ export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr
     // reorg caution instead of a plain check. Both stay informational; never a block.
     const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < NAME_SAFE_DEPTH;
     const badge = !verified
-      ? (viaFill ? "⚠ purchased name: can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified: confirm the address")
-      : res.soleSource ? `⚠ only ONE name source could prove this address and it isn't independently corroborated: confirm it out-of-band before sending${conf}`
-      : res.disagree ? `⚠ chain-backed but a name source DISAGREED (or hasn't indexed it yet): verify the address${conf}`
+      ? (viaFill ? "Purchased name: it can't be name-scope-proven, so confirm the address." : "Not chain-verified: confirm the address.")
+      : res.soleSource ? `Only one name source could prove this address, and it isn't independently corroborated: confirm it out-of-band before sending${conf}.`
+      : res.disagree ? `Chain-backed, but a name source disagreed (or hasn't indexed it yet): verify the address${conf}.`
       : (res.sources ?? 1) >= 2
-        ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree, only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
-        : `△ chain-backed but only 1 source answered: second server unreachable, weaker guarantee${conf}`;
+        ? (lowDepth ? `Chain-backed, ${res.sources} servers agree, only${conf}: it could still reorg.` : `Chain-backed, ${res.sources} name servers agree (same operator)${conf}.`)
+        : `Chain-backed, but only 1 source answered: the second server is unreachable, a weaker guarantee${conf}.`;
     return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})`, badge };
   }
-  return { ok: false, error: "enter a 0x… address or a name.csd" };
+  return { ok: false, error: "Enter a 0x… address or a name.csd." };
 }
 // XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time and REFUSE unless it still
 // returns EXACTLY the reviewed address. Fail-closed on any error / network failure. The equality +

@@ -30,7 +30,7 @@ export async function confirmNameAction(kind: "renew" | "primary", name: string)
     renewFee = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
     if (seq !== nameActSeq || !viewCurrent(bound)) return;   // superseded, or the account changed meanwhile
     ($("nc-fee-row") as HTMLElement).hidden = false;
-    $("nc-fee").textContent = renewFee ? fmtCsd(renewFee) : "priced at confirm";
+    $("nc-fee").textContent = renewFee ? fmtCsd(renewFee) : "Priced at confirm";
   } else {
     ($("nc-fee-row") as HTMLElement).hidden = true;
   }
@@ -38,13 +38,13 @@ export async function confirmNameAction(kind: "renew" | "primary", name: string)
   // anchor-only 0.25 (which would understate a 15.25 action). The fee row already says "priced at
   // confirm"; the total must not contradict it. Set-primary is anchor-only, so its total is exact.
   const total = CAIRNX_FEE + renewFee;
-  $("nc-total").textContent = (kind === "renew" && !renewFee) ? "unknown (priced at confirm)" : fmtCsd(total);
+  $("nc-total").textContent = (kind === "renew" && !renewFee) ? "Unknown (priced at confirm)" : fmtCsd(total);
   // M8 residual (Fable final QC): when the renew fee is unpriceable the AFTER balance is likewise
   // unknown; subtracting the anchor-only 0.25 would understate a 15.25 action in the second row too.
   let after = "";
   try { const b = await call("balance"); after = (kind === "renew" && !renewFee) ? "" : fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
   if (seq !== nameActSeq || !viewCurrent(bound)) return;   // superseded or switched after the balance fetch; abort before priming the snapshot
-  $("nc-after").textContent = after || "unknown";
+  $("nc-after").textContent = after || "Unknown";
   $("nc-note").textContent = kind === "renew"
     ? "Extends this name's lease by one term. Anyone may renew a live lease."
     // QA #5: the wallet's set-primary is a single nset→self; it makes the name primary only if it's your
@@ -59,13 +59,13 @@ async function doNameAction() {
   const bound = bindView();                                 // the account this review belongs to
   dropReviews();                                            // consume the snapshot: one Confirm = one signature
   try {
-    busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
+    busy(kind === "renew" ? `Renewing ${name}.csd…` : `Setting ${name}.csd as primary…`);
     // WL-FEE-FREEZE-1: a renew signs EXACTLY the reviewed fee; the background throws FEE_CHANGED (without
     // signing) if the tip crossed a fee-gate since review, so the user never signs a different amount.
     // A1: the reviewed signer rides along; a mid-flight account switch refuses instead of signing.
     const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee, signer ?? undefined] : [signer ?? undefined]));
     const what = kind === "renew" ? "renewal" : "set-primary";
-    if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "renewed" : "set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (takes effect once it is mined)`, "ok"); refreshBalance(); renderAssets(); }
+    if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "Renewed" : "Set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (takes effect once it is mined).`, "ok"); refreshBalance(); renderAssets(); }
     else {
       const o = refusedCopy(r, what);
       if (o.maybe) { ($("name-action-form") as HTMLElement).hidden = true; refreshBalance(); }
@@ -78,11 +78,11 @@ async function doNameAction() {
       // re-review only for the account and the name it was for: the account may have changed while Confirm was in flight
       if (!viewCurrent(bound) || !nameDetails.has(name)) {
         dropStaleView();
-        msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Nothing was signed; open the name again to review it`, "err");
+        msg(`The renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Nothing was signed; open the name again to review it.`, "err");
         return;
       }
       await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
-      msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Check it and confirm again`, "err");  // …then explain
+      msg(`The renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Check it and confirm again.`, "err");  // …then explain
       return;
     }
     const o = thrownCopy(e, kind === "renew" ? "renewal" : "set-primary");

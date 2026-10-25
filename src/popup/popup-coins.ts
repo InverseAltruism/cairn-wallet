@@ -16,12 +16,12 @@ export async function renderCoinsInfo() {
   info.textContent = "…"; btn.hidden = true;
   try {
     const p = await call("consolidatePreview", SEND_FEE);
-    if (!p?.ok) { info.textContent = "coin count unavailable (node unreachable)"; return; }
+    if (!p?.ok) { info.textContent = "Coin count unavailable (node unreachable)."; return; }
     info.textContent = p.coins < 2
-      ? `you have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"}: nothing to merge`
-      : `you have ${p.coins} spendable coins · one merge combines ${p.merge} of them (${fmtBalance(p.total)} CSD) into a single coin`;
+      ? `You have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"}: nothing to merge.`
+      : `You have ${p.coins} spendable coins. One merge combines ${p.merge} of them (${fmtBalance(p.total)} CSD) into a single coin.`;
     btn.hidden = p.coins < 2;
-  } catch { info.textContent = "coin count unavailable"; }
+  } catch { info.textContent = "Coin count unavailable."; }
 }
 // A single merge can be in flight for ~10s (verifying up to 512 inputs). `consolidating` latches ACROSS
 // a panel reopen so a second concurrent merge can't be fired (the reopen re-enables the confirm button);
@@ -44,7 +44,7 @@ export async function openConsolidatePanel(force = false) {
   note.textContent = "";
   try {
     const p = await call("consolidatePreview", SEND_FEE);
-    if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "nothing to merge: fewer than two spendable coins." : "node unreachable: try again in a moment."; return; }
+    if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "Nothing to merge: fewer than two spendable coins." : "Node unreachable: try again in a moment."; return; }
     $("cs-merge").textContent = String(p.merge) + (p.coins > p.merge ? ` of ${p.coins}` : "");
     $("cs-total").textContent = fmtBalance(p.total) + " CSD";
     $("cs-fee").textContent = fmtCsd(SEND_FEE);
@@ -52,13 +52,13 @@ export async function openConsolidatePanel(force = false) {
     // Round plan: merging 512 coins into 1 retires 511 per pass, and intermediate outputs get
     // swept into a later pass once confirmed; so ceil((coins-1)/511) covers the whole plan.
     const rounds = Math.ceil((p.coins - 1) / 511);
-    note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins, so about ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
-      + (consolidating ? "a merge is already in progress in this window; wait for it to finish." : "")
-      + (!consolidating && mergePendingNow.pending ? `a previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming; merging more coins now is safe. ` : "")
+    note.textContent = (p.coins > p.merge ? `A transaction fits at most ${p.merge} coins, so about ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
+      + (consolidating ? "A merge is already in progress in this window; wait for it to finish. " : "")
+      + (!consolidating && mergePendingNow.pending ? `A previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming; merging more coins now is safe. ` : "")
       + "This is a normal payment to yourself: your balance only changes by the fee.";
-    if (p.out <= 0) { note.textContent = "these coins are too small to cover the fee: nothing to gain by merging them."; return; } // keep Confirm down: the engine would refuse anyway
+    if (p.out <= 0) { note.textContent = "These coins are too small to cover the fee: nothing to gain by merging them."; return; } // keep Confirm down: the engine would refuse anyway
     if (!consolidating) ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;   // keep it latched only while a merge runs in THIS popup
-  } catch { note.textContent = "node unreachable: try again in a moment."; }
+  } catch { note.textContent = "Node unreachable: try again in a moment."; }
 }
 $("btn-consolidate").addEventListener("click", () => { void openConsolidatePanel(); });
 $("btn-consolidate-back").addEventListener("click", () => { openPanel("settings"); renderConnectedSites(); renderCoinsInfo(); });
@@ -67,13 +67,13 @@ $("btn-consolidate-confirm").addEventListener("click", async () => {
   if (btn.disabled || consolidating) return;
   btn.disabled = true; consolidating = true; // latch across the ~10s verify AND any panel reopen
   try {
-    busy("verifying & merging coins… (can take ~10s)");
+    busy("Verifying and merging coins (this can take about 10 seconds)…");
     const r = await call("consolidate", SEND_FEE);
     if (r.ok) {
       // Sent, not merged: the merge line under the balance says when it is mined. The next round selects
       // DISJOINT coins (the node's available view excludes this round's inputs), so "run the next merge
       // right away" is true; only the final combining pass waits on confirmations.
-      msg(`merge sent (${String(r.txid).slice(0, 12)}…); confirming` + (r.remaining >= 1 ? `. ${r.remaining} coin(s) left; you can run the next merge right away` : ""), "ok sent");
+      msg(`Merge sent (${String(r.txid).slice(0, 12)}…), confirming.` + (r.remaining >= 1 ? ` ${r.remaining} coin(s) left; you can run the next merge right away.` : ""), "ok sent");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
     } else {

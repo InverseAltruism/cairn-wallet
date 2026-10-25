@@ -23,15 +23,15 @@ export type Outcome = { text: string; cls: "err" | "info"; maybe: boolean };
 const clause = (s: unknown): string => String(s).replace(/[.\s]+$/, "");
 function inFlightCopy(prefix: string, what: string, txid?: string): Outcome {
   const where = txid ? ` It's in your history as ${String(txid).slice(0, 12)}…` : "";
-  return { text: `${prefix}${prefix ? "The" : "the"} ${what} didn't confirm; it may already be in flight. Check your history before trying again.${where}`, cls: "err", maybe: true };
+  return { text: `${prefix}The ${what} didn't confirm; it may already be in flight. Check your history before trying again.${where}`, cls: "err", maybe: true };
 }
 export function refusedCopy(r: any, what: string): Outcome {
   if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return inFlightCopy(r?.error ? clause(r.error) + ". " : "", what, r?.txid);
-  if (r?.code === "SUBMIT_DUPLICATE") return { text: String(r?.error ?? "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again"), cls: "info", maybe: true };
-  return { text: `${r?.error ? clause(r.error) : `the ${what} was refused`}. Nothing was sent.`, cls: "err", maybe: false };
+  if (r?.code === "SUBMIT_DUPLICATE") return { text: String(r?.error ?? "This transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again."), cls: "info", maybe: true };
+  return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. Nothing was sent.`, cls: "err", maybe: false };
 }
 export function thrownCopy(e: any, what: string): Outcome {
   if (!(e instanceof AnsweredError)) return inFlightCopy(e?.message ? clause(e.message) + ". " : "", what);
-  if (e.message === "locked") return { text: "the wallet locked before anything was signed. Nothing was sent. Unlock and try again.", cls: "err", maybe: false };
+  if (e.message === "locked") return { text: "The wallet locked before anything was signed. Nothing was sent. Unlock and try again.", cls: "err", maybe: false };
   return { text: `${clause(e.message)}. Nothing was sent.`, cls: "err", maybe: false };
 }

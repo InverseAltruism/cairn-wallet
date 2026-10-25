@@ -19,7 +19,7 @@ export function openTokenSend(ticker: string, decimals: number, available: strin
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
   if (!openPanel("tsend-form")) ($("tsend-form") as HTMLElement).hidden = false;
   ($("ts-ticker") as HTMLElement).textContent = ticker;
-  ($("ts-avail") as HTMLElement).textContent = `available: ${formatUnits(available, decimals)} ${ticker} · fee: 0.25 CSD`;
+  ($("ts-avail") as HTMLElement).textContent = `Available: ${formatUnits(available, decimals)} ${ticker} · fee 0.25 CSD`;
   ($("ts-to") as HTMLInputElement).value = ""; ($("ts-amt") as HTMLInputElement).value = "";
   ($("tsend-confirm") as HTMLElement).hidden = true;
   msg("");
@@ -28,7 +28,7 @@ $("btn-tsend").addEventListener("click", async () => {
   if (!tsend) return;
   if (!viewCurrent(tsend.bind)) { tsend = null; return dropStaleView(); }   // opened for another account
   const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
-  if (base === null || base === "0") return msg(tsend.decimals ? `enter an amount (up to ${tsend.decimals} decimal places)` : "enter a whole-number amount (this token has 0 decimals)", "err");
+  if (base === null || base === "0") return msg(tsend.decimals ? `Enter an amount (up to ${tsend.decimals} decimal places).` : "Enter a whole-number amount (this token has 0 decimals).", "err");
   const rr = await resolveRecipient(val("ts-to").trim());   // 0x… or alice.csd (refuse lapsed)
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
@@ -37,7 +37,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // throw out of the handler and silently kill the send flow; treat unparseable as zero.
   let avail = 0n;
   try { avail = BigInt(tsend.available || "0"); } catch { avail = 0n; }
-  if (BigInt(base) > avail) return msg(`amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)})`, "err");
+  if (BigInt(base) > avail) return msg(`The amount exceeds your available ${tsend.ticker} balance (${formatUnits(tsend.available, tsend.decimals)}).`, "err");
   // A token transfer still anchors on-chain via a Propose carrying the 0.25 CSD fee. "Received
   // tokens but holds no CSD" is a completely normal account state, so pre-check the CSD side HERE
   // with a message that names the actual problem; otherwise the engine's generic "insufficient
@@ -47,7 +47,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // so a slow node doesn't add serial latency before the review card arms. Offline -> b is null -> the fee
   // check is skipped and the engine still refuses cleanly at sign time.
   const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
-  if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} for the on-chain anchor fee; your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD`, "err");
+  if (b && Number(b.confirmed ?? 0) < CAIRNX_FEE) return msg(`Sending ${tsend.ticker} needs ${fmtCsd(CAIRNX_FEE)} for the on-chain anchor fee; your confirmed CSD balance is ${fmtBalance(Number(b.confirmed ?? 0))} CSD.`, "err");
   // same first-time / address-poisoning checks as a CSD send; token sends are just as irreversible
   const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
@@ -75,11 +75,11 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
   const { to, base, name, verified, signer } = reviewState.reviewed;
   // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1) or its
   // chain-verification regressed since review (L7).
-  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points — review again`, "err");
+  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err");
   try {
-    busy("sending…");
+    busy("Sending…");
     const r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
-    if (r.ok) sentOk(TOKEN_FLOW, `sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)} · ${String(r.txid).slice(0, 12)}… (settles once it is mined)`); // W8: both scales here too
+    if (r.ok) sentOk(TOKEN_FLOW, `Sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)} · ${String(r.txid).slice(0, 12)}… (settles once it is mined).`); // W8: both scales here too
     else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
   } catch (e: any) {
     sendThrew(TOKEN_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous

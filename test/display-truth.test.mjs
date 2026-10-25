@@ -169,7 +169,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   const popupSrc = scriptSource("popup.ts");
   const approveSrc = readFileSync(new URL("../src/popup/approve.ts", import.meta.url), "utf8");
   ok("PIN W8: the token review card renders via tokenAmountBothScales at its use-site", /\$\("tc-amt"\)\.textContent = tokenAmountBothScales\(/.test(popupSrc));
-  ok("PIN W8: the sent toast renders via tokenAmountBothScales", popupSrc.includes("sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)}"));
+  ok("PIN W8: the sent toast renders via tokenAmountBothScales", popupSrc.includes("Sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)}"));
   ok("PIN M10: the affirmative 'likely never landed' claim is gone from popup.ts", !popupSrc.includes("likely never landed"));
   // The >1h tombstone this pinned is gone: an open row's marker now comes from chain state, and
   // test/popup-inclusion-dom.test.mjs (1)-(3) asserts no marker calls a possibly-landed send lost.

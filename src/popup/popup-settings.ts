@@ -22,7 +22,7 @@ export async function renderConnectedSites() {
   el.innerHTML = sites.map((s) =>
     `<div class="row" style="justify-content:space-between;align-items:center;gap:8px">`
     + `<code class="addr" title="${escapeHtml(s.origin)}">${escapeHtml(s.origin)}</code>`
-    + `<button class="mini" data-disconnect="${escapeHtml(s.origin)}">disconnect</button></div>`
+    + `<button class="mini" data-disconnect="${escapeHtml(s.origin)}">Disconnect</button></div>`
   ).join("");
   el.querySelectorAll<HTMLElement>("[data-disconnect]").forEach((b) => b.onclick = async () => {
     try { await call("disconnectSite", b.dataset.disconnect); } catch { /* ignore */ }
@@ -58,11 +58,11 @@ $("btn-save-settings").addEventListener("click", async () => {
   const api = val("set-api").trim();
   const tradeApi = val("set-tradeapi").trim();
   const granted = await ensureHostAccess(tradeApi ? [api, tradeApi] : [api]);
-  if (!granted) return msg("not saved: host access denied (the wallet can't reach an API it has no permission for)", "err");
+  if (!granted) return msg("Not saved: host access denied (the wallet can't reach an API it has no permission for).", "err");
   await call("setApi", api);
   await call("setTradeApi", tradeApi);
   forgetTokenMeta(); // re-read token metadata from the new endpoint
-  msg("settings saved", "ok"); render();
+  msg("Settings saved.", "ok"); render();
 });
 
 // ── header dropdown menus (RPC + Explorer); one builder, two configs ──────────────────────────
@@ -85,10 +85,10 @@ function buildMenu(menu: HTMLElement, cfg: {
   const row = (e: MenuEntry) => `
     <div class="rpc-row${cfg.isActive(e.value) ? " active" : ""}">
       <button class="rpc-pick" ${cfg.pickAttr}="${escapeHtml(e.value)}"${cfg.isActive(e.value) ? ' aria-current="true"' : ""}><span class="rpc-label">${escapeHtml(e.label)}</span><span class="rpc-url">${escapeHtml(e.hint)}</span></button>
-      ${e.removable ? `<button class="rpc-del mini" ${cfg.delAttr}="${escapeHtml(e.value)}" title="remove" aria-label="remove"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button>` : ""}
+      ${e.removable ? `<button class="rpc-del mini" ${cfg.delAttr}="${escapeHtml(e.value)}" title="Remove" aria-label="Remove"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button>` : ""}
     </div>`;
   menu.innerHTML = cfg.entries.map(row).join("")
-    + `<div class="rpc-add"><input id="${cfg.addInputId}" placeholder="${cfg.placeholder}" /><button id="${cfg.addBtnId}" class="mini">add</button></div>`;
+    + `<div class="rpc-add"><input id="${cfg.addInputId}" placeholder="${cfg.placeholder}" /><button id="${cfg.addBtnId}" class="mini">Add</button></div>`;
   menu.querySelectorAll<HTMLElement>(`[${cfg.pickAttr}]`).forEach((b) => b.onclick = () => cfg.pick(b.getAttribute(cfg.pickAttr)!));
   menu.querySelectorAll<HTMLElement>(`[${cfg.delAttr}]`).forEach((b) => b.onclick = async (e) => { e.stopPropagation(); await cfg.remove(b.getAttribute(cfg.delAttr)!); cfg.rerender(); });
   ($(cfg.addBtnId) as HTMLElement).onclick = async () => {
@@ -120,7 +120,7 @@ async function renderRpcMenu() {
     isActive: (v) => v === currentRpc,
     pickAttr: "data-url", delAttr: "data-del",
     addInputId: "rpc-add-input", addBtnId: "rpc-add-btn", placeholder: "http://127.0.0.1:port",
-    badUrlMsg: "enter a local node URL (http://127.0.0.1:port or http://localhost:port)",
+    badUrlMsg: "Enter a local node URL (http://127.0.0.1:port or http://localhost:port).",
     pick: (v) => selectRpc(v),
     remove: (v) => call("removeRpc", v),
     rerender: renderRpcMenu,
@@ -129,7 +129,7 @@ async function renderRpcMenu() {
 }
 async function selectRpc(url: string) {
   const granted = await ensureHostAccess([url]);
-  if (!granted) return msg("RPC not switched: host access denied", "err");
+  if (!granted) return msg("RPC not switched: host access denied.", "err");
   await call("setRpc", url); ($("rpc-menu") as HTMLElement).hidden = true; msg("RPC: " + url.replace(/^https?:\/\//, ""), "ok"); render();
 }
 $("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLElement; if (m.hidden) { renderRpcMenu(); m.hidden = false; } else m.hidden = true; });
@@ -146,7 +146,7 @@ async function renderExplorerMenu() {
     isActive: (v) => v === currentExplorer,
     pickAttr: "data-exp", delAttr: "data-delexp",
     addInputId: "exp-add-input", addBtnId: "exp-add-btn", placeholder: "https://your-explorer…",
-    badUrlMsg: "enter a full explorer URL (https://…)",
+    badUrlMsg: "Enter a full explorer URL (https://…).",
     pick: (v) => selectExplorer(v),
     remove: (v) => call("removeExplorer", v),
     rerender: renderExplorerMenu,

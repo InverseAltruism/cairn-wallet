@@ -23,7 +23,7 @@ export async function renderHistory() {
     const csd = t.type === "tokenSend"
       ? `${escapeHtml(String(t.human ?? t.amount ?? ""))} ${escapeHtml(String(t.ticker || ""))}`
       : t.type === "consolidate"
-        ? "fee " + fmtBalance(Number(t.fee ?? 0)) + " CSD"
+        ? "Fee " + fmtBalance(Number(t.fee ?? 0)) + " CSD"
         : fmtBalance(Number(t.amount ?? t.fee ?? 0)) + " CSD";
     const kind = TX_LABEL[t.type] || t.type;
     const detail = (t.type === "send" || t.type === "fillOffer" || t.type === "tokenSend") ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`

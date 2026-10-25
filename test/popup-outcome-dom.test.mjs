@@ -81,7 +81,7 @@ console.log("1. CSD send: a throw is routed by whether anything could have been 
 {
   const ok = await csdSend(() => ({ ok: true, txid: TXID, sighashMatch: true }));
   t("1a honest: a successful send still reads 'sent 1 CSD'", () => {
-    assert.match(ok, /^sent 1 CSD/);
+    assert.match(ok, /^Sent 1 CSD/);
   });
   const pre = await csdSend(() => { throw new Error("/utxos -> malformed response"); });
   t("1b a wallet-answered throw (VC-01 class) says 'Nothing was sent', not 'may already be in flight'", () => {
@@ -112,7 +112,7 @@ console.log("2. token send: a pre-sign builder throw");
   });
   const ok = await tokenSend(() => ({ ok: true, txid: TXID }));
   t("2b honest: a successful token send reads 'sent', settling once mined", () => {
-    assert.match(ok, /^sent 1 CAIRN = 100000000 base units/); assert.match(ok, /once it is mined/);
+    assert.match(ok, /^Sent 1 CAIRN = 100000000 base units/); assert.match(ok, /once it is mined/);
   });
 }
 
@@ -147,7 +147,7 @@ console.log("4. renew and set-primary results through the SUBMIT_* reading");
   });
   const ok = await nameAct("[data-nrenew]", "cairnxNameRenew", () => ({ ok: true, txid: TXID }));
   t("4d honest: a successful renew reads 'renewed', taking effect once mined", () => {
-    assert.match(ok, /^renewed: alice\.csd/); assert.match(ok, /takes effect once it is mined/);
+    assert.match(ok, /^Renewed: alice\.csd/); assert.match(ok, /takes effect once it is mined/);
   });
   const refused = await nameAct("[data-nrenew]", "cairnxNameRenew", () => ({ ok: false, code: "INSUFFICIENT", error: "insufficient confirmed balance" }));
   t("4e a refused renew says 'Nothing was sent'", () => {
@@ -225,7 +225,7 @@ console.log("9. the popup's own send review with a negative balance-after (same 
   t("9c honest: a covered send keeps Confirm enabled", () => { assert.equal(byId("btn-send-confirm").disabled, false); });
   const before = sends;
   await byId("btn-send-confirm").click(); await flush();
-  t("9d honest: and it sends", () => { assert.equal(sends, before + 1); assert.match(text(), /^sent 1 CSD/); });
+  t("9d honest: and it sends", () => { assert.equal(sends, before + 1); assert.match(text(), /^Sent 1 CSD/); });
 }
 
 console.log(`\npopup-outcome-dom: ${pass} passed, ${fail} failed`);

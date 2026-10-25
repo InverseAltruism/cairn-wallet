@@ -56,10 +56,10 @@ async function updateMergePending(utxos: unknown) {
     mergePendingNow = await call("pendingMerge", utxos);
     if (mergePendingNow?.pending) {
       line.textContent = mergePendingNow.stuck
-        ? `merge of ${fmtBalance(mergePendingNow.amount)} CSD still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer`
+        ? `Merge of ${fmtBalance(mergePendingNow.amount)} CSD still not included after ${INCLUSION_NOTICE_BLOCKS} blocks: check the explorer.`
         : mergePendingNow.maybe
-          ? `up to +${fmtBalance(mergePendingNow.amount)} CSD may be merging; back in your balance once the merge is mined`
-          : `+${fmtBalance(mergePendingNow.amount)} CSD merging; back in your balance once the merge is mined`;
+          ? `Up to +${fmtBalance(mergePendingNow.amount)} CSD may be merging; back in your balance once the merge is mined.`
+          : `+${fmtBalance(mergePendingNow.amount)} CSD merging; back in your balance once the merge is mined.`;
       line.hidden = false;
     } else line.hidden = true;
   } catch { line.hidden = true; mergePendingNow = { pending: false, amount: 0, maybe: false, stuck: false }; }

@@ -55,9 +55,9 @@ export async function copyText(btnId: string, text: string) {
   try {
     if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
     await navigator.clipboard.writeText(text);
-    flashBtn(btnId, "copied ✓");
+    flashBtn(btnId, "Copied");
   } catch {
-    flashBtn(btnId, "copy failed", false);
-    msg("could not copy to the clipboard. Select the text and copy it by hand.", "err");
+    flashBtn(btnId, "Copy failed", false);
+    msg("Could not copy to the clipboard. Select the text and copy it by hand.", "err");
   }
 }

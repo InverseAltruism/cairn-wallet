@@ -69,11 +69,11 @@ check("(4) paired: a row whose submit was answered carries no marker", !/include
 merge = { pending: true, amount: 5e8, maybe: false, stuck: false };
 await refresh();
 check("(5) paired: pendingMerge gets the balance fetch's utxos", mergeCalls.at(-1)?.[0]?.txid === UTXOS[0].txid);
-check("(5) paired: an open merge that is not stuck keeps its merging line", byId("merge-pending").hidden === false && byId("merge-pending").textContent === "+5 CSD merging; back in your balance once the merge is mined");
+check("(5) paired: an open merge that is not stuck keeps its merging line", byId("merge-pending").hidden === false && byId("merge-pending").textContent === "+5 CSD merging; back in your balance once the merge is mined.");
 merge = { pending: true, amount: 5e8, maybe: false, stuck: true };
 history = [send(id("a1"), { subTip: 1_000, chkTip: 1_011 })];   // the reconcile settled a1 meanwhile
 await refresh();
-check("(6) a stuck merge shows the standing notice", byId("merge-pending").textContent === "merge of 5 CSD still not included after 10 blocks; check the explorer");
+check("(6) a stuck merge shows the standing notice", byId("merge-pending").textContent === "Merge of 5 CSD still not included after 10 blocks: check the explorer.");
 check("(6) the refresh repainted the open activity list: a1 settled, no marker", rowOf(id("a1")).length > 0 && !/included/.test(rowOf(id("a1"))));
 merge = { pending: false, amount: 0, maybe: false, stuck: false };
 await refresh();
@@ -84,12 +84,12 @@ check("(6) the merge line hides once nothing is open", byId("merge-pending").hid
 const MTX = id("m7");
 h.consolidate = () => ({ ok: true, txid: MTX, merged: 3, remaining: 0, total: 3e8, sighashMatch: true });
 await byId("btn-consolidate-confirm").click(); await flush();
-check("(7a) the success copy says sent and confirming", byId("msg").textContent === `merge sent (${MTX.slice(0, 12)}…); confirming`);
+check("(7a) the success copy says sent and confirming", byId("msg").textContent === `Merge sent (${MTX.slice(0, 12)}…), confirming.`);
 check("(7a) ...and does not claim the coins are merged", !/merged/.test(byId("msg").textContent));
 h.consolidate = () => ({ ok: true, txid: MTX, merged: 512, remaining: 40, total: 3e8, sighashMatch: true });
 byId("btn-consolidate-confirm").disabled = false;
 await byId("btn-consolidate-confirm").click(); await flush();
 check("(7b) paired: with coins left it still says the next merge can run now",
-  byId("msg").textContent === `merge sent (${MTX.slice(0, 12)}…); confirming. 40 coin(s) left; you can run the next merge right away`);
+  byId("msg").textContent === `Merge sent (${MTX.slice(0, 12)}…), confirming. 40 coin(s) left; you can run the next merge right away.`);
 
 done("popup-inclusion-dom");

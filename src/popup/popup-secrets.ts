@@ -21,7 +21,7 @@ export function resetPhrasePanel() {
 // Reveal private key; in-popup panel (password → masked secret box).
 $("btn-export").addEventListener("click", () => { openPanel("reveal-panel"); });
 $("btn-reveal-go").addEventListener("click", async () => {
-  const pw = val("reveal-pw"); if (!pw) return msg("enter your password", "err");
+  const pw = val("reveal-pw"); if (!pw) return msg("Enter your password.", "err");
   try {
     revealedKey = await call("export", pw);
     const out = $("reveal-out") as HTMLElement;
@@ -36,7 +36,7 @@ $("btn-reveal-close").addEventListener("click", () => { resetRevealPanel(); ($("
 // Reveal recovery phrase; in-popup panel (password → blurred 12-word grid).
 $("btn-phrase").addEventListener("click", () => { openPanel("phrase-panel"); });
 $("btn-phrase-go").addEventListener("click", async () => {
-  const pw = val("phrase-pw"); if (!pw) return msg("enter your password", "err");
+  const pw = val("phrase-pw"); if (!pw) return msg("Enter your password.", "err");
   try {
     revealedPhrase = await call("exportMnemonic", pw);
     const out = $("phrase-out") as HTMLElement;
