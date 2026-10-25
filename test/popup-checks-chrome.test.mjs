@@ -71,7 +71,50 @@ async function entrances() {
   return { first, again, kept, errors };
 }
 
+// While a sheet is open the scrim, not the account chip, takes a click at the chip's centre (an account switch under an
+// open review is the path W-23 guards); the review's To address is grouped in fours and a selection copies it raw;
+// the longest legal ticker (12 characters) is shown whole; the account address in More is whole.
+async function layout() {
+  const LONGEST = "ABCDEFGHIJKL";
+  const answers = { ...base, cairnxAssets: { ok: true, balances: { [LONGEST]: { available: "123456789012345678", locked: "0" } }, names: [], nameDetails: [] },
+    cairnxTokens: { ok: true, tokens: [{ ticker: LONGEST, decimals: 0 }] } };
+  const { page, ctx, errors } = await openWalletPage(browser, "popup", answers, { viewport: { width: 360, height: 600 } });
+  await page.waitForSelector("#assets .w-row");
+  const ticker = await page.evaluate(() => { const b = document.querySelector("#assets .w-row .nm b"); return { text: b.textContent, clipped: b.scrollWidth > b.clientWidth + 1 || b.getBoundingClientRect().right > innerWidth }; });
+  await page.click(".act-more");
+  await page.waitForTimeout(300);
+  const addr = await page.evaluate(() => { const a = document.getElementById("addr"); const r = a.getBoundingClientRect(); return { text: a.textContent, clipped: a.scrollWidth > a.clientWidth + 1, inView: r.right <= innerWidth && r.height > 0 }; });
+  await page.keyboard.press("Escape");
+  await page.click("#btn-send-t");
+  await page.waitForTimeout(600);
+  const hit = await page.evaluate(() => {
+    const r = document.querySelector(".acct-chip").getBoundingClientRect();
+    const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return el?.classList.contains("scrim") ? "scrim" : (el?.closest(".acct-chip") ? "chip" : el?.tagName);
+  });
+  await page.fill("#s-to", "0x" + "42".repeat(20));
+  await page.fill("#s-amt", "1");
+  await page.click("#btn-send");
+  await page.waitForSelector("#send-confirm:not([hidden])");
+  const to = await page.evaluate(() => {
+    const el = document.getElementById("c-to");
+    const range = document.createRange(); range.selectNodeContents(el);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    return { text: el.textContent, selected: sel.toString(), groups: el.children.length };
+  });
+  await ctx.close();
+  return { ticker, addr, hit, to, errors, LONGEST };
+}
+
 try {
+  {
+    const l = await layout();
+    t.check(`the longest legal ticker shows whole (${JSON.stringify(l.ticker)})`, l.ticker.text === l.LONGEST && !l.ticker.clipped);
+    t.check(`More shows the account address whole (${JSON.stringify(l.addr)})`, l.addr.text === ME && !l.addr.clipped && l.addr.inView);
+    t.check(`with a sheet open the scrim takes a click at the account chip's centre (${l.hit})`, l.hit === "scrim");
+    t.check(`the To address shows in groups of four and a selection copies it raw (${JSON.stringify(l.to)})`, l.to.groups === 10 && l.to.text === "0x" + "42".repeat(20) && l.to.selected === l.to.text);
+    t.check(`layout: no page error (${l.errors.join(" | ") || "none"})`, l.errors.length === 0);
+  }
   {
     const e = await entrances();
     t.check(`rows play row-in on the list's first fill (${e.first})`, e.first === "row-in|row-in");

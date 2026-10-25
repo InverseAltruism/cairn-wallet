@@ -198,8 +198,10 @@ function renderAcctSelect(accounts: { addr: string; label: string }[], active: n
 async function switchAcct(i: number) {
   ($("acct-menu") as HTMLElement).hidden = true;
   // WYSIWYS (R2-WYSIWYS / SIGN-3): tear down any primed send / name-action review BEFORE switching
-  // accounts; a review under the old account must never be Confirmed under the new one.
+  // accounts; a review under the old account must never be Confirmed under the new one. Every sheet closes too:
+  // a name's detail lists the old account's names, and its actions must not reach a review under the new one.
   clearSendDrafts();
+  closeAllPanels(); syncNav();
   try { await call("switchAccount", i); msg("switched account", "ok"); render(); }
   catch (err: any) { msg(err.message, "err"); }
 }
@@ -235,7 +237,7 @@ async function renderAccts() {
           ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}</span>`;
     }
     const removeWarn = editing && acctEdit!.mode === "remove" && a.imported
-      ? checkRow({ tier: "caution", html: "this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
+      ? checkRow({ tier: "danger", html: "this imported key is NOT in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
@@ -384,7 +386,7 @@ async function refreshBalance() {
       requestAnimationFrame(step);
     }
   }
-  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "—"; $("csd-row-amt").textContent = "—"; lastBal = null; } }
+  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "unavailable"; $("csd-row-amt").textContent = "unavailable"; lastBal = null; } }
 }
 // ── CairnX assets (token balances + .csd names); read-only, never blocks the CSD UI ──
 // Balances come from the public CairnX resolver API. When it's unreachable we show a
@@ -453,13 +455,15 @@ async function renderAssets() {
   const rows = tickers.map((t) => {
     const b = balances[t] || { available: "0", locked: "0" };
     const dec = decOf(t);
+    // The served token name is deployer text, so no row shows it; a pinned token says nothing, the rest "Unverified".
     const sub = [
-      b.locked && b.locked !== "0" ? `${formatUnits(b.locked, dec)} locked in offers` : "",
-      displayDecimals(t, meta[t]?.decimals).pinned ? String(meta[t]?.name ?? "") : "Unverified",
+      b.locked && b.locked !== "0" ? `${groupDigits(formatUnits(b.locked, dec))} locked in offers` : "",
+      displayDecimals(t, meta[t]?.decimals).pinned ? "" : "Unverified",
     ].filter(Boolean).join(" · ");
-    return `<button class="w-row" type="button" data-tsend="${escapeHtml(t)}"><span class="ti">${escapeHtml(t.slice(0, 3))}</span>`
+    // the tile is a neutral glyph: part of a ticker would be a look-alike, and the full ticker is the title
+    return `<button class="w-row" type="button" data-tsend="${escapeHtml(t)}"><span class="ti"><svg class="i" aria-hidden="true"><use href="icons.svg#i-coins"/></svg></span>`
       + `<span class="nm"><b>${escapeHtml(t)}</b>${sub ? `<small>${escapeHtml(sub)}</small>` : ""}</span>`
-      + `<span class="vl">${escapeHtml(formatUnits(b.available, dec))}</span></button>`;
+      + `<span class="vl">${escapeHtml(groupDigits(formatUnits(b.available, dec)))}</span></button>`;
   }).join("");
   // .csd names: a row opens the name's detail (renew, set primary, the site); a lease near its end also gets a
   // Renew chip on the row. Both lead to the same review sheet; nothing here signs.
@@ -497,6 +501,12 @@ async function renderAssets() {
   });
   nl.querySelectorAll<HTMLElement>("[data-name]").forEach((b) => b.onclick = () => openNameDetail(b.dataset.name!));
   nl.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
+}
+// Thousands separators on formatUnits' output, display only: every digit and the decimal point stay as they are, and
+// anything that is not a plain decimal ("?" on bad input) passes through unchanged.
+function groupDigits(s: string): string {
+  const m = /^(\d+)(\.\d+)?$/.exec(s);
+  return m ? m[1]!.replace(/\B(?=(\d{3})+$)/g, ",") + (m[2] ?? "") : s;
 }
 // The names the last assets read returned, for the detail sheet a row opens.
 let nameDetails = new Map<string, { name: string; isPending: boolean; isPrimary: boolean; lapsed: boolean; status: string }>();
@@ -548,13 +558,13 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   // anchor-only 0.25 (which would understate a 15.25 action). The fee row already says "priced at
   // confirm"; the total must not contradict it. Set-primary is anchor-only, so its total is exact.
   const total = CAIRNX_FEE + renewFee;
-  $("nc-total").textContent = (kind === "renew" && !renewFee) ? "— (priced at confirm)" : fmtCsd(total);
+  $("nc-total").textContent = (kind === "renew" && !renewFee) ? "unknown (priced at confirm)" : fmtCsd(total);
   // M8 residual (Fable final QC): when the renew fee is unpriceable the AFTER balance is likewise
   // unknown; subtracting the anchor-only 0.25 would understate a 15.25 action in the second row too.
   let after = "";
   try { const b = await call("balance"); after = (kind === "renew" && !renewFee) ? "" : fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
   if (seq !== nameActSeq) return;   // superseded after the balance fetch; abort before priming the snapshot
-  $("nc-after").textContent = after || "—";
+  $("nc-after").textContent = after || "unknown";
   $("nc-note").textContent = kind === "renew"
     ? "Extends this name's lease by one term. Anyone may renew a live lease."
     // QA #5: the wallet's set-primary is a single nset→self; it makes the name primary only if it's your
@@ -585,7 +595,7 @@ async function doNameAction() {
     if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm; nothing was signed
       const newFee = Number(m.slice("FEE_CHANGED:".length));
       await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
-      msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed — re-check and confirm again`, "err");  // …then explain
+      msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Check it and confirm again`, "err");  // …then explain
       return;
     }
     const o = thrownCopy(e, kind === "renew" ? "renewal" : "set-primary");
@@ -595,7 +605,7 @@ async function doNameAction() {
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
-async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
   const r = (raw || "").trim();
   // Refuse the zero address outright: a send there is an irrecoverable burn. Defense-in-depth for the V23
   // transition: a wallet that CARRIES this guard but whose vendored core still lacked the v23 branch would
@@ -604,7 +614,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
   // types.ts (set V23_HEIGHT only after wallet ADOPTION, not publication).
   // isZeroAddr is the shared (0x)?-optional guard from clearsign.ts; one test for all three former copies.
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) {
-    if (isZeroAddr(r)) return { ok: false, error: "that is the zero address — sends there are burned and unrecoverable" };
+    if (isZeroAddr(r)) return { ok: false, error: "that is the zero address: sends there are burned and unrecoverable" };
     return { ok: true, addr: r.toLowerCase(), name: null, label: null };
   }
   if (looksLikeName(r)) {
@@ -615,7 +625,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // name comes back verified:false for the badge to caution. res.ok is false only for an invalid, unregistered,
     // address-less or lapsed name, or a failed lookup.
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
-    if (isZeroAddr(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address — refusing (sends would be burned)` };
+    if (isZeroAddr(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address: refusing (sends would be burned)` };
     const verified = res.verified === true;
     const viaFill = res.viaFill === true;
     const conf = res.depth ? ` (${res.depth} conf)` : "";
@@ -625,13 +635,13 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // reorg caution instead of a plain check. Both stay informational; never a block.
     const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < 3;
     const badge = !verified
-      ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
+      ? (viaFill ? "⚠ purchased name: can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified: confirm the address")
       : res.soleSource ? `⚠ only ONE name source could prove this address and it isn't independently corroborated: confirm it out-of-band before sending${conf}`
-      : res.disagree ? `⚠ chain-backed but a name source DISAGREED (or hasn't indexed it yet) — verify the address${conf}`
+      : res.disagree ? `⚠ chain-backed but a name source DISAGREED (or hasn't indexed it yet): verify the address${conf}`
       : (res.sources ?? 1) >= 2
-        ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree — only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
-        : `△ chain-backed but only 1 source answered — second server unreachable, weaker guarantee${conf}`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
+        ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree, only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
+        : `△ chain-backed but only 1 source answered: second server unreachable, weaker guarantee${conf}`;
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})`, badge };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
@@ -642,6 +652,8 @@ async function nameStillPointsTo(name: string, reviewed: string, reviewedVerifie
   const re = await call("confirmName", name).catch(() => ({ ok: false }));
   return reresolveUnchanged(reviewed, re, reviewedVerified); // L7: also refuses a verified→unverified regression
 }
+// An address in groups of four for comparing by eye; the spans hold no spaces, so its text is the raw address.
+const groupedAddr = (a: string) => (a.match(/^0x.{0,4}|.{1,4}/g) || []).map((g) => `<span>${escapeHtml(g)}</span>`).join("");
 function setNameRow(rowId: string, valId: string, label: string | null | undefined) {
   const row = document.getElementById(rowId), v = document.getElementById(valId);
   if (!row || !v) return;
@@ -696,14 +708,15 @@ async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookal
 type Tier = "ok" | "caution" | "danger";
 type Check = { tier: Tier; html: string };
 const TIER_ICON: Record<Tier, string> = { ok: "i-shield-check", caution: "i-triangle-alert", danger: "i-octagon-alert" };
-type NameInfo = { name?: string | null; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+type NameInfo = { name?: string | null; badge?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
 // The name caution's tier follows nameCautionHtml's branches: only the "two sources agree" branch is positive
 // (test/popup-checks-dom.test.mjs walks every branch and pins tier ok exactly where the copy reads ✓).
 function nameCheck(rr: NameInfo): Check | null {
   if (!rr.name) return null;
   const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
   const ok = rr.verified === true && !rr.viaFill && !rr.soleSource && !rr.disagree && (rr.sources ?? 1) >= 2;
-  return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) };
+  const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";
+  return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge };
 }
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
@@ -711,8 +724,8 @@ function nameCheck(rr: NameInfo): Check | null {
 function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments"): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
   const out: Check[] = nameCaution ? [nameCaution] : [];
-  if (lookalike) out.push({ tier: "danger", html: `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — ${noun} are irreversible.` });
-  else if (firstTime) out.push({ tier: "danger", html: `⚠ First time sending to this address — check every character. ${Noun} are irreversible.` });
+  if (lookalike) out.push({ tier: "danger", html: `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character. ${Noun} are irreversible.` });
+  else if (firstTime) out.push({ tier: "danger", html: `⚠ First time sending to this address: check every character. ${Noun} are irreversible.` });
   return out;
 }
 const checkRow = (c: Check) => `<div class="check ${c.tier}"><svg class="i" aria-hidden="true"><use href="icons.svg#${TIER_ICON[c.tier]}"/></svg><div>${c.html}</div></div>`;
@@ -796,7 +809,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // same first-time / address-poisoning checks as a CSD send; token sends are just as irreversible
   const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
-  $("tc-to").textContent = to.toLowerCase();              // FULL address, as it will appear in the signed record
+  $("tc-to").innerHTML = groupedAddr(to.toLowerCase());     // FULL address, as it will appear in the signed record
   // W8 (B5g): BOTH scales on the review card. `decimals` is resolver-served (the popup token list), so a
   // decimals lie rescales the human number by up to 10^8 while the balance guard compares against the SAME
   // resolver's `available`; the card alone could confirm a rescaled amount back to the user. The base-unit
@@ -883,7 +896,7 @@ function pwStrength(pw: string): string {
   let classes = 0; for (const re of [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/]) if (re.test(pw)) classes++;
   if (len >= 16 || (len >= 12 && classes >= 3)) return "strong";
   if (len >= 12 && classes >= 2) return "fair";
-  return "weak — use a longer passphrase";
+  return "weak: use a longer passphrase";
 }
 $("setup-pw").addEventListener("input", () => {
   const v = ($("setup-pw") as HTMLInputElement).value; const h = document.getElementById("setup-pw-hint");
@@ -938,6 +951,7 @@ function closeAllPanels() {
   dropReviews();
   for (const id of ["s-to", "s-amt", "ts-to", "ts-amt"]) { const el = document.getElementById(id) as HTMLInputElement | null; if (el) el.disabled = false; }
   resetRevealPanel(); resetPhrasePanel();
+  $("nd-actions").innerHTML = "";   // a closed name detail keeps no action that could open a review
 }
 // Show `id` and hide every other panel; returns true if it ended up OPEN. Wipes any
 // revealed secret so a key/phrase never lingers behind a now-hidden panel.
@@ -994,7 +1008,7 @@ async function renderReceive() {
     if (($("receive-panel") as HTMLElement).hidden) return;   // closed while we fetched
     // Groups of four for comparing by eye; the spans hold no spaces, so textContent (what Copy copies) is the address.
     const addr = String(st.addr || "");
-    $("receive-addr").innerHTML = (addr.match(/^0x.{0,4}|.{1,4}/g) || []).map((g) => `<span>${escapeHtml(g)}</span>`).join("");
+    $("receive-addr").innerHTML = groupedAddr(addr);
     const pn = $("primary-name"), rn = $("receive-name") as HTMLElement;
     if (!(pn as HTMLElement).hidden && pn.textContent) { rn.textContent = pn.textContent; rn.hidden = false; }
     else { rn.textContent = ""; rn.hidden = true; }
@@ -1051,7 +1065,7 @@ async function renderCoinsInfo() {
     const p = await call("consolidatePreview", SEND_FEE);
     if (!p?.ok) { info.textContent = "coin count unavailable (node unreachable)"; return; }
     info.textContent = p.coins < 2
-      ? `you have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"} — nothing to merge`
+      ? `you have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"}: nothing to merge`
       : `you have ${p.coins} spendable coins · one merge combines ${p.merge} of them (${fmtBalance(p.total)} CSD) into a single coin`;
     btn.hidden = p.coins < 2;
   } catch { info.textContent = "coin count unavailable"; }
@@ -1077,7 +1091,7 @@ async function openConsolidatePanel(force = false) {
   note.textContent = "";
   try {
     const p = await call("consolidatePreview", SEND_FEE);
-    if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "nothing to merge — fewer than two spendable coins." : "node unreachable — try again in a moment."; return; }
+    if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "nothing to merge: fewer than two spendable coins." : "node unreachable: try again in a moment."; return; }
     $("cs-merge").textContent = String(p.merge) + (p.coins > p.merge ? ` of ${p.coins}` : "");
     $("cs-total").textContent = fmtBalance(p.total) + " CSD";
     $("cs-fee").textContent = fmtCsd(SEND_FEE);
@@ -1087,11 +1101,11 @@ async function openConsolidatePanel(force = false) {
     const rounds = Math.ceil((p.coins - 1) / 511);
     note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins, so about ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
       + (consolidating ? "a merge is already in progress in this window; wait for it to finish." : "")
-      + (!consolidating && mergePendingNow.pending ? `a previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming — merging more coins now is safe. ` : "")
+      + (!consolidating && mergePendingNow.pending ? `a previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming; merging more coins now is safe. ` : "")
       + "This is a normal payment to yourself: your balance only changes by the fee.";
-    if (p.out <= 0) { note.textContent = "these coins are too small to cover the fee — nothing to gain by merging them."; return; } // keep Confirm down: the engine would refuse anyway
+    if (p.out <= 0) { note.textContent = "these coins are too small to cover the fee: nothing to gain by merging them."; return; } // keep Confirm down: the engine would refuse anyway
     if (!consolidating) ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;   // keep it latched only while a merge runs in THIS popup
-  } catch { note.textContent = "node unreachable — try again in a moment."; }
+  } catch { note.textContent = "node unreachable: try again in a moment."; }
 }
 $("btn-consolidate").addEventListener("click", () => { void openConsolidatePanel(); });
 $("btn-consolidate-back").addEventListener("click", () => { openPanel("settings"); renderConnectedSites(); renderCoinsInfo(); });
@@ -1172,7 +1186,7 @@ $("btn-save-settings").addEventListener("click", async () => {
   const api = val("set-api").trim();
   const tradeApi = val("set-tradeapi").trim();
   const granted = await ensureHostAccess(tradeApi ? [api, tradeApi] : [api]);
-  if (!granted) return msg("not saved — host access denied (the wallet can't reach an API it has no permission for)", "err");
+  if (!granted) return msg("not saved: host access denied (the wallet can't reach an API it has no permission for)", "err");
   await call("setApi", api);
   await call("setTradeApi", tradeApi);
   tokensCache = null; // re-read token metadata from the new endpoint
@@ -1243,7 +1257,7 @@ async function renderRpcMenu() {
 }
 async function selectRpc(url: string) {
   const granted = await ensureHostAccess([url]);
-  if (!granted) return msg("RPC not switched — host access denied", "err");
+  if (!granted) return msg("RPC not switched: host access denied", "err");
   await call("setRpc", url); ($("rpc-menu") as HTMLElement).hidden = true; msg("RPC: " + url.replace(/^https?:\/\//, ""), "ok"); render();
 }
 $("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLElement; if (m.hidden) { renderRpcMenu(); m.hidden = false; } else m.hidden = true; });
@@ -1293,7 +1307,7 @@ $("btn-imp-acct").addEventListener("click", async () => {
   const key = val("imp-acct-key").trim(); if (!key) return msg("paste a private key", "err");
   // A2 defense-in-depth: state the misconception up front; an imported key is NOT covered by the
   // recovery phrase, so the user learns it at import time, not at (password-gated) removal time.
-  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported — note: imported keys are NOT in your recovery phrase; keep their own backup", "ok"); render(); }
+  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported. Note: imported keys are NOT in your recovery phrase; keep their own backup", "ok"); render(); }
   catch (e: any) { msg(e.message, "err"); }
 });
 
@@ -1345,7 +1359,7 @@ async function renderSealed() {
     // a maybe-path seal's anchor may never have landed (0.2.57): say so; revealing it would fail
     // its on-chain commit check, and the honest state is "verify the anchor first".
     const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>`
-      : s.maybe ? `🔒 sealed <span class="dim">(anchor may not have landed — check the txid on the explorer)</span>` : `🔒 sealed`;
+      : s.maybe ? `🔒 sealed <span class="dim">(anchor may not have landed: check the txid on the explorer)</span>` : `🔒 sealed`;
     const right = s.revealed
       ? `<a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(s.txid)))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
       : `<button class="mini" data-reveal="${escapeHtml(String(s.txid))}">Reveal</button>`;
@@ -1355,7 +1369,7 @@ async function renderSealed() {
   el.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", async () => {
     const id = (b as HTMLElement).dataset.reveal!; busy("revealing…");
     const r = await call("revealClaim", id);
-    (r && r.ok) ? msg("revealed ✓ — now public + provably committed earlier", "ok") : msg("reveal failed: " + ((r && r.error) || "?"), "err");
+    (r && r.ok) ? msg("revealed ✓: now public + provably committed earlier", "ok") : msg("reveal failed: " + ((r && r.error) || "?"), "err");
     renderSealed();
   }));
 }
@@ -1386,10 +1400,10 @@ $("btn-send").addEventListener("click", async () => {
   const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
   const { firstTime, lookalike } = checks;
   const after = b ? fmtBalance(b.confirmed - amt - SEND_FEE) + " CSD" : "";
-  $("c-to").textContent = to;                       // FULL address, not truncated
+  $("c-to").innerHTML = groupedAddr(to);           // FULL address, not truncated
   $("c-amt").textContent = fmtCsd(amt);
   $("c-fee").textContent = fmtCsd(SEND_FEE);
-  $("c-after").textContent = after || "—";
+  $("c-after").textContent = after || "unknown";
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status; verifying the resolved address is the whole defense the wallet can offer here.
   // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's

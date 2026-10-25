@@ -297,6 +297,8 @@
   .crow > :last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .crow b { font-weight: 500; }
   .crow .addr { font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); color: var(--ui-ink); }
+  .crow .addr > span + span { margin-left: var(--ui-space-1); }
+  .check-line { display: block; margin-top: var(--ui-space-1); color: var(--ui-muted); }
   /* the amount leads the review, large and centred, as the sum the user confirms */
   .confirm-box > .crow-amount:first-child {
     flex-direction: column; align-items: center; gap: 0; padding: var(--ui-space-2) 0 var(--ui-space-3);
@@ -459,10 +461,12 @@
   .bal.loading .bal-unit { visibility: hidden; }
   @keyframes skeleton { 50% { opacity: 0.55; } }
   .merge-note { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); }
-  .addr-row { display: flex; align-items: center; gap: var(--ui-space-2); margin-top: var(--ui-space-2); }
   /* the full address, wrapped rather than cut (no ellipsis on an address) */
-  .addr-row .addr { min-width: 0; font-size: var(--ui-text-2xs); line-height: var(--ui-leading-body); color: var(--ui-muted); }
-  .addr-row .mini.text { font-size: var(--ui-text-xs); }
+  .menu-addr {
+    display: flex; flex-direction: column; align-items: flex-start; gap: var(--ui-space-2);
+    margin-bottom: var(--ui-space-1); padding: var(--ui-space-2) var(--ui-space-3) var(--ui-space-3); border-bottom: 1px solid var(--ui-line);
+  }
+  .menu-addr .addr { font-size: var(--ui-text-2xs); line-height: var(--ui-leading-body); color: var(--ui-ink-2); }
 
   .actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--ui-space-2); padding: var(--ui-space-5) var(--ui-space-4) var(--ui-space-2); }
   .act {
@@ -771,8 +775,8 @@
   }
   .page-approve #send-warn b, .page-approve #send-warn .err { color: var(--ui-down); }
 
-  /* The footer: the latch bar, then Reject and Approve side by side at equal width. The bar is a visible track that
-     fills while both buttons stay disarmed after a new request and stays full once they arm. */
+  /* The footer: the latch bar, then Reject and Approve side by side at equal width. The bar is a thin muted track that
+     fills with ink while Reject stays disarmed after a new request (the latch) and rests muted again once it arms. */
   .page-approve .actions {
     flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2);
     padding: var(--ui-space-3) var(--ui-space-4);
@@ -780,11 +784,11 @@
   }
   .page-approve .actions::before {
     content: ""; grid-column: 1 / -1; height: 3px; border-radius: var(--ui-radius-pill);
-    background: var(--ui-line) linear-gradient(var(--ui-ink), var(--ui-ink)) no-repeat 0 0 / 100% 100%;
+    background: var(--ui-line) linear-gradient(var(--ui-ink), var(--ui-ink)) no-repeat 0 0 / 0 100%;
   }
   /* 700ms is approve.ts's re-enable floor (R3 section 3), not a design duration */
-  .page-approve .actions:has(#btn-reject:disabled)::before { animation: arm 700ms linear both; }
-  @keyframes arm { from { background-size: 0 100%; } }
+  .page-approve .actions:has(#btn-reject:disabled)::before { animation: arm 700ms linear forwards; }
+  @keyframes arm { to { background-size: 100% 100%; } }
   .page-approve .actions button:disabled { opacity: 0.32; }
   .page-approve #msg { flex: none; padding: 0 var(--ui-space-4) var(--ui-space-3); font-size: var(--ui-text-xs); text-align: center; color: var(--ui-muted); background: var(--ui-bg); }
   .page-approve #msg:empty { display: none; }

@@ -94,10 +94,6 @@
         <!-- The one persistent explainer for the post-merge balance dip: a submitted merge removes its input coins
              from the confirmed balance until the next block. -->
         <div id="merge-pending" class="merge-note" hidden></div>
-        <div class="addr-row">
-          <code id="addr" class="addr"></code>
-          <button id="btn-copy" class="mini text">Copy</button>
-        </div>
       </div>
 
       <div class="actions">
@@ -107,6 +103,8 @@
         <button class="act act-more" popovertarget="more-menu"><span class="act-ic"><svg class="i" aria-hidden="true"><use href="icons.svg#i-ellipsis"/></svg></span>More</button>
       </div>
       <div id="more-menu" class="menu more-menu" popover>
+        <!-- the account's full address, and Copy copies exactly this text -->
+        <div class="menu-addr"><code id="addr" class="addr"></code><button id="btn-copy" class="mini">Copy address</button></div>
         <button id="btn-accts" class="menu-item" popovertarget="more-menu" popovertargetaction="hide"><svg class="i" aria-hidden="true"><use href="icons.svg#i-users"/></svg>Accounts</button>
         <button id="btn-post-t" class="menu-item" popovertarget="more-menu" popovertargetaction="hide"><svg class="i" aria-hidden="true"><use href="icons.svg#i-message-square-text"/></svg>Post to Cairn</button>
         <button id="btn-seal-t" class="menu-item" popovertarget="more-menu" popovertargetaction="hide"><svg class="i" aria-hidden="true"><use href="icons.svg#i-stamp"/></svg>Seal a claim</button>

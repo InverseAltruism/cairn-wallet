@@ -13,7 +13,7 @@ const LUCIDE_VERSION = "1.54.0";
 const ICONS = [
   "arrow-up-right", "arrow-down-left", "arrow-left-right", "ellipsis", "settings-2", "lock", "chevron-down", "x",
   "refresh-cw", "users", "key-round", "scroll-text", "message-square-text", "stamp", "plus",
-  "check", "shield-check", "triangle-alert", "octagon-alert", "info", "chevron-right", "external-link",
+  "check", "coins", "shield-check", "triangle-alert", "octagon-alert", "info", "chevron-right", "external-link",
 ];
 // The Cairn logo (public/icons/logo-white.png) traced to polygons: the prompt, the cursor and four stones.
 const MARK = [

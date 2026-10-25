@@ -13,9 +13,17 @@
 //   4. Names (W-11, W-12): a pending reservation or a lapsed name offers no owner action; the Renew chip shows only
 //      near the lease's end. RED-FIRST: render the live actions for every name in openNameDetail and 4a, 4b fail.
 //      HONEST PATH: 4c-4e (a renew from the detail reviews and signs with the production call shape).
-//   5. The imported-key removal warning (W-23) renders as a caution row with its R3 section 4 text.
-//      RED-FIRST: write it back as a plain line and 5a fails. HONEST PATH: 5b (an HD account still removes in one
-//      click, with no password).
+//   5. The imported-key removal warning (W-23) renders as a danger row with its R3 section 4 text (meaning kept, the
+//      em dash now a colon). RED-FIRST: write it back as a plain line, or as caution, and 5a fails. HONEST PATH: 5b
+//      (an HD account still removes in one click, with no password).
+//   6. An account switch closes every sheet (W-23): a name's detail cannot carry account A's name into a review
+//      signed by account B. RED-FIRST: drop closeAllPanels from switchAcct and 6a fails. HONEST PATH: 6b.
+//   7. Token rows: the tile never shows part of a ticker (the longest legal ticker is 12 characters), a served token
+//      name never shows, amounts are grouped without changing a digit. RED-FIRST: put `t.slice(0, 3)` back in the
+//      tile and 7a fails; show meta name on a pinned row and 7b fails; drop groupDigits and 7c fails.
+//   8. Copy on the account address copies the full raw address. RED-FIRST: copy short(addr) and 8a fails.
+//   9. The send review's Name row is the name and the short address; the badge sentence lives only in the name check
+//      row, word for word. RED-FIRST: put the badge back on the label and 9a fails.
 // Run: node --import tsx test/popup-checks-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -34,20 +42,26 @@ let history = [{ type: "send", to: PAID, amount: 1e8, fee: 1e6, txid: TXID, ts: 
 let pending = [];
 let resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
 const sent = [];
+let active = 0;
+let assets = null;
+const written = [];
+Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, get: () => ({ writeText: async (t) => { written.push(t); } }) });
 const renewed = [];
+const primaried = [];
 const removed = [];
 const h = {
-  status: () => ({ hasVault: true, unlocked: true, addr: ME, accounts: [{ label: "A1", addr: ME }, { label: "A2", addr: HD2 }, { label: "K", addr: IMP, imported: true }], active: 0, rpc: "https://x", api: "https://x", tradeApi: "https://x/trade/api", explorer: "cairn", hasMnemonic: true }),
+  status: () => ({ hasVault: true, unlocked: true, addr: active ? HD2 : ME, active, accounts: [{ label: "A1", addr: ME }, { label: "A2", addr: HD2 }, { label: "K", addr: IMP, imported: true }], rpc: "https://x", api: "https://x", tradeApi: "https://x/trade/api", explorer: "cairn", hasMnemonic: true }),
   balance: () => ({ confirmed: 100e8, utxos: [] }),
   pendingMerge: () => ({ pending: false, amount: 0, maybe: false, stuck: false }),
-  cairnxAssets: () => ({ ok: true, balances: {}, names: [], primaryName: "alice", tipHeight: 100,
+  cairnxAssets: () => assets ?? ({ ok: true, balances: {}, names: [], primaryName: "alice", tipHeight: 100,
     nameDetails: [
       { name: "alice", leased: true, epochsLeft: 6000 },
       { name: "bob", leased: true, epochsLeft: 30 },
       { name: "satoshi", pending: true, finalizeBy: 150 },
       { name: "oldname", lapsed: true },
     ] }),
-  cairnxTokens: () => ({ ok: true, tokens: [] }),
+  // the served list: deployer-set names, and decimals for the tokens the wallet does not pin
+  cairnxTokens: () => ({ ok: true, tokens: [{ ticker: "CAIRN", decimals: 0, name: "Cairn Official Token" }, { ticker: "ABCDEFGHIJKL", decimals: 3, name: "Abc deployer text" }, { ticker: "BIGNUM", decimals: 0 }, { ticker: "ZERO", decimals: 2 }] }),
   prewarmSpv: () => ({ ok: true }),
   pending: () => pending,
   history: () => history,
@@ -57,8 +71,11 @@ const h = {
   send: (...args) => { sent.push(args); return { ok: true, txid: TXID }; },
   cairnxNameRenewFee: () => 15e8,
   cairnxNameRenew: (...args) => { renewed.push(args); return { ok: true, txid: TXID }; },
+  cairnxSetPrimary: (...args) => { primaried.push(args); return { ok: true, txid: TXID }; },
   removeAccount: (...args) => { removed.push(args); return true; },
+  switchAccount: (i) => { active = i; return true; },
 };
+
 installBridge(h);
 let poll = null;
 globalThis.setInterval = (fn) => { poll = fn; return 0; };
@@ -171,11 +188,66 @@ console.log("5. imported-key removal");
   const list = byId("accts-list");
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === IMP).click(); await flush();
   const html = String(list.innerHTML);
-  check("5a the warning is a caution row with its text", /<div class="check caution">/.test(html) && html.includes("this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
+  check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("this imported key is NOT in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
   await list.querySelectorAll("[data-cancel]")[0].click(); await flush();
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === HD2).click(); await flush();
   await list.querySelectorAll("[data-confirm-remove]")[0].click(); await flush();
   check("5b honest: an HD account removes in one click, with no password", JSON.stringify(removed.at(-1)) === JSON.stringify([HD2]));
+}
+
+console.log("6. an account switch closes every sheet");
+{
+  await byId("nav-home").click();
+  await byId("nav-names").click(); await flush();
+  await nl().querySelectorAll("[data-name]").find((b) => b.dataset.name === "bob").click(); await flush();
+  const opened = byId("name-detail").hidden === false && /data-nprimary="bob"/.test(byId("nd-actions").innerHTML);
+  await byId("acct-menu").querySelectorAll("[data-acct]").find((b) => b.dataset.acct === "1").click(); await flush();
+  check("6a after a switch the detail is closed and holds no name action", opened && byId("name-detail").hidden === true && !/data-n(renew|primary)/.test(byId("nd-actions").innerHTML) && byId("name-action-form").hidden === true);
+  await byId("nav-names").click(); await flush();
+  await nl().querySelectorAll("[data-name]").find((b) => b.dataset.name === "bob").click(); await flush();
+  await byId("nd-actions").querySelectorAll("[data-nprimary]")[0].click(); await flush();
+  await byId("btn-name-confirm").click(); await flush();
+  check("6b honest: under the new account a fresh detail reviews and signs as that account", renewed.length === 1 && byId("msg").className.includes("err") === false && JSON.stringify(primaried.at(-1)) === JSON.stringify(["bob", HD2]));
+}
+
+console.log("7. token rows");
+{
+  const LONGEST = "ABCDEFGHIJKL";
+  const { isTicker, formatUnits } = await import("../src/core/cairnx.ts");
+  assets = { ok: true, names: [], nameDetails: [], primaryName: null, tipHeight: 1, balances: {
+    CAIRN: { available: "150000000000", locked: "250000000000" }, [LONGEST]: { available: "1234567891", locked: "0" },
+    BIGNUM: { available: "123456789012345678", locked: "0" }, ZERO: { available: "0", locked: "0" } } };
+  await byId("btn-refresh").click(); await flush();
+  const rows = String(byId("assets").innerHTML).split('<button class="w-row"').slice(1);
+  const row = (t) => rows.find((r) => r.includes(`data-tsend="${t}"`)) || "";
+  const tile = (t) => (/<span class="ti">(.*?)<\/span><span class="nm">/s.exec(row(t)) || [])[1] || "";
+  const val = (t) => (/<span class="vl">(.*?)<\/span>/.exec(row(t)) || [])[1] || "";
+  check(`7a the longest legal ticker (${LONGEST}: ${isTicker(LONGEST)}, 13 chars: ${isTicker(LONGEST + "M")}) is the whole title, and no tile carries a letter of a ticker`,
+    isTicker(LONGEST) && !isTicker(LONGEST + "M") && row(LONGEST).includes(`<b>${LONGEST}</b>`) && Object.keys(assets.balances).every((t) => !/[A-Z]/.test(tile(t).replace(/<[^>]*>/g, ""))));
+  check("7b no served token name shows; the pinned row says nothing more, the others Unverified",
+    !rows.join("").includes("Cairn Official Token") && !rows.join("").includes("Abc deployer text") && !/Unverified/.test(row("CAIRN")) && /Unverified/.test(row(LONGEST)));
+  const grouped = { CAIRN: "1,500", [LONGEST]: "1,234,567.891", BIGNUM: "123,456,789,012,345,678", ZERO: "0" };
+  const dec = { CAIRN: 8, [LONGEST]: 3, BIGNUM: 0, ZERO: 2 };
+  check(`7c amounts are grouped and every digit is formatUnits' (${Object.keys(grouped).map(val).join(" | ")})`,
+    Object.entries(grouped).every(([t, g]) => val(t) === g && g.replace(/,/g, "") === formatUnits(assets.balances[t].available, dec[t])) && row("CAIRN").includes("2,500 locked in offers"));
+  assets = null;
+}
+
+console.log("8. copy the account address");
+{
+  await byId("btn-copy").click(); await flush();
+  check(`8a Copy copies the full raw address (${written.at(-1)})`, written.at(-1) === HD2 && byId("addr").textContent === HD2);
+}
+
+console.log("9. the send review's Name row");
+{
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
+  await review("alice.csd");
+  const name = String(byId("c-name").textContent);
+  const badge = "✓ chain-backed, 2 name servers agree (same operator) (14 conf)";
+  check(`9a the Name row is the name and the short address (${name})`, name === "alice.csd → 0x313131…3131 (via owner)");
+  check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("chain-backed"));
+  check("9c the To address is grouped in fours and its text is the raw address", String(byId("c-to").innerHTML).replace(/<[^>]*>/g, "") === PAID && (String(byId("c-to").innerHTML).match(/<span>/g) || []).length === 10);
 }
 
 done("popup-checks-dom");

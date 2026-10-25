@@ -55,7 +55,7 @@ try {
     // matches at all, so the test reads the loaded faces themselves.
     const r = await page.evaluate(async () => {
       document.getElementById("view-main").hidden = false;
-      document.getElementById("addr").textContent = "0x7a3f9c217a3f9c217a3f9c217a3f9c217a3f9c21";
+      document.getElementById("acct-select").innerHTML = '<span class="acct-cur">Main</span><span class="acct-addr">0x7a3f9c…9c21</span>';
       document.getElementById("balance").textContent = "1,284.735";
       await new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok)));
       await document.fonts.ready;
