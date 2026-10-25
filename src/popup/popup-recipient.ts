@@ -1,8 +1,7 @@
 // A send's recipient: an address or a .csd name resolved and badged, the confirm-time re-check, and the first-time
 // and look-alike reads.
 import { isPlainName } from "../core/cairnx.js";
-import { NAME_SAFE_DEPTH, reresolveUnchanged, recipientStatus, paidRecipients, isZeroAddr } from "./clearsign.js";
-import { short } from "./addr.js";
+import { NAME_SAFE_DEPTH, reresolveUnchanged, recipientStatus, paidRecipients, isZeroAddr, short } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).

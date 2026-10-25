@@ -1,7 +1,6 @@
 // Sending CSD: recipient and amount, the review, the signature.
 import { parseUnits } from "../core/cairnx.js";
-import { nameCheck, escapeHtml, fmtCsd, fmtBalance, balanceShortNote } from "./clearsign.js";
-import { groupedAddr } from "./addr.js";
+import { nameCheck, escapeHtml, fmtCsd, fmtBalance, balanceShortNote, groupedAddr } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 import { $, busy, msg, val } from "./popup-dom.js";
 import { curAddr, reviewState } from "./popup-state.js";

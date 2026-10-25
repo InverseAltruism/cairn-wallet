@@ -1,6 +1,6 @@
 // The Receive sheet.
+import { groupedAddr } from "./clearsign.js";
 import { drawQr } from "./qr/draw.js";
-import { groupedAddr } from "./addr.js";
 import { call } from "./popup-bridge.js";
 import { $, copyText } from "./popup-dom.js";
 import { openPanel } from "./popup-panels.js";

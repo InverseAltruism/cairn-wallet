@@ -20,6 +20,8 @@ export function installFakeDom({ autoCreate = false } = {}) {
       this._kids = []; this._qsa = {};
       this._html = String(v);
       this._adopt(this._html);
+      // as in a browser, the markup's text becomes the element's text (tags dropped, the five escapes decoded)
+      this.textContent = this._html.replace(/<[^>]*>/g, "").replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[e]);
     }
     _adopt(html) {
       for (const m of String(html).matchAll(TAG)) {

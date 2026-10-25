@@ -1,7 +1,6 @@
 // Sending a CairnX token: recipient and amount, the review, the signature.
 import { formatUnits, parseUnits, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
-import { nameCheck, fmtCsd, fmtBalance, tokenAmountBothScales } from "./clearsign.js";
-import { groupedAddr } from "./addr.js";
+import { nameCheck, fmtCsd, fmtBalance, tokenAmountBothScales, groupedAddr } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 import { $, busy, msg, val } from "./popup-dom.js";
 import { curAddr, reviewState, type ViewBind, bindView, viewCurrent } from "./popup-state.js";

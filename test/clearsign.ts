@@ -54,7 +54,9 @@ ok("escapeHtml neutralizes <script>", escapeHtml("<script>") === "&lt;script&gt;
 const fo = { method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), score: 100, confidence: 100, outputs: [{ to: ADDR, value: 200_000_000 }], fee: 5_000_000 } };
 const foHtml = describe(fo);
 ok("describe(fillOffer) names the action + the offer id", foHtml.includes("Fill offer") && foHtml.includes("aa".repeat(32)));
-ok("describe(fillOffer) clear-signs the full recipient + amount", foHtml.includes(ADDR) && foHtml.includes("2 CSD"));
+// the address is grouped into spans, so its text (tags dropped) is where the full recipient must appear
+const shown = (html: string) => html.replace(/<[^>]+>/g, "");
+ok("describe(fillOffer) clear-signs the full recipient + amount", shown(foHtml).includes(ADDR) && foHtml.includes("2 CSD"));
 ok("describe(fillOffer) shows the fee + signed score/confidence", foHtml.includes("0.05 CSD") && foHtml.includes("score 100"));
 ok("describe(fillOffer) mounts the address-poisoning warn slot", foHtml.includes('id="send-warn"'));
 ok("debitOf(fillOffer) = outputs + fee", debitOf(fo) === 205_000_000);
@@ -70,7 +72,7 @@ ok("describe(fillOffer) escapes hostile offer id + recipient", !foXss.includes("
 const propFee = { method: "propose", params: { domain: "cairnx:v1", payloadHash: "0x" + "11".repeat(32), uri: '{"t":"name"}', expiresEpoch: 1, fee: 25000000, outputs: [{ to: ADDR, value: 100000000 }] } };
 const pfHtml = describe(propFee);
 ok("describe(propose+outputs) labels them NEUTRALLY as funds leaving (not a benign 'fee')", /transfers funds out/i.test(pfHtml) && !pfHtml.includes("protocol fee"));
-ok("describe(propose+outputs) shows the full recipient + amount", pfHtml.includes(ADDR) && pfHtml.includes("1 CSD"));
+ok("describe(propose+outputs) shows the full recipient + amount", shown(pfHtml).includes(ADDR) && pfHtml.includes("1 CSD"));
 ok("describe(propose+outputs) mounts the address-poisoning warn slot (#send-warn)", pfHtml.includes('id="send-warn"'));
 ok("debitOf(propose+outputs) = outputs + anchor fee (true funds leaving)", debitOf(propFee) === 100000000 + 25000000);
 ok("costBlock(propose+outputs) says funds transferred out", /transferred out/i.test(costBlock(propFee)));

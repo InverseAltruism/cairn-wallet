@@ -19,6 +19,14 @@ const neutralizeControls = (s: string): string =>
 export const escapeHtml = (s: string): string =>
   neutralizeControls(String(s)).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
+// An address cut to its head and tail, for a menu line; every review shows it in full.
+export const short = (a: string) => a && a.length > 14 ? a.slice(0, 8) + "…" + a.slice(-4) : a;
+// A whole address (0x and 40 hex digits) in groups of four for comparing by eye. The spans hold no spaces, so what a
+// selection or Copy takes is the bare address (test/addr-group-chrome.test.mjs). Any other value is only escaped.
+const WHOLE_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+export const groupedAddr = (a: string): string =>
+  WHOLE_ADDRESS.test(a) ? (a.match(/^0x.{4}|.{4}/g) || []).map((g) => `<span>${escapeHtml(g)}</span>`).join("") : escapeHtml(a);
+
 // A check row: positive, caution, or danger (a warning that stands against signing). The tint and the icon carry the
 // tier; `html` is markup the caller escaped.
 export type Tier = "ok" | "caution" | "danger";
@@ -150,7 +158,7 @@ export function revealPreviewHtml(rec: { domain?: unknown; claim?: unknown; fail
 // describe() branches (send, fillOffer, propose with outputs), so the rendering cannot drift.
 function outputRows(outs: any[], shown = 12): { list: Row[]; hidden: string } {
   const all = Array.isArray(outs) ? outs : [];
-  const list: Row[] = all.slice(0, shown).map((o: any) => ["To", `<code>${escapeHtml(String(o.to))}</code><b class="out-amt">${fmtCsd(o.value)}</b>`]);
+  const list: Row[] = all.slice(0, shown).map((o: any) => ["To", `<code class="addr">${groupedAddr(String(o.to))}</code><b class="out-amt">${fmtCsd(o.value)}</b>`]);
   if (all.length <= shown) return { list, hidden: "" };
   const rest = all.slice(shown);
   const hiddenTotal = rest.reduce((a: number, o: any) => a + baseVal(o.value), 0);
@@ -242,7 +250,7 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: Token
   switch (r.t) {
     case "transfer": {
       const a = tokenAmt(r.amount, r.ticker, meta);
-      return title("CairnX token transfer") + rows([["Token", `<b>${esc(r.ticker)}</b>`], ["Amount", a.html], ["To", `<code>${esc(r.to)}</code>`], ...memo]) + warnRows(a.warn);
+      return title("CairnX token transfer") + rows([["Token", `<b>${esc(r.ticker)}</b>`], ["Amount", a.html], ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`], ...memo]) + warnRows(a.warn);
     }
     case "deploy": {
       const limit = r.mint === "open" ? ` · mint limit ${esc(r.mintLimit)}/tx` : "";
@@ -261,9 +269,9 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: Token
       const give = sideStr(r.give, meta), want = sideStr(r.want, meta);
       const extras: Row[] = [
         ...(r.min !== undefined ? [["Partial fills from", baseAmt(r.min)] as Row] : []),
-        ...(r.taker !== undefined ? [["Only fillable by", `<code>${esc(r.taker)}</code>`] as Row] : []),
+        ...(r.taker !== undefined ? [["Only fillable by", `<code class="addr">${groupedAddr(String(r.taker))}</code>`] as Row] : []),
         ...(r.bid !== undefined ? [["Accepts bid", `<code>${esc(r.bid)}</code>`] as Row] : []),
-        ...((r.want as any)?.payto !== undefined ? [["Paid to", `<code>${esc((r.want as any).payto)}</code>`] as Row] : []),
+        ...((r.want as any)?.payto !== undefined ? [["Paid to", `<code class="addr">${groupedAddr(String((r.want as any).payto))}</code>`] as Row] : []),
       ];
       return title("CairnX offer") + lede("Escrows what you give until it is filled or cancelled.") + rows([["Give", give.html], ["Want", want.html], ...extras, ...memo]) + warnRows(give.warn, want.warn);
     }
@@ -287,7 +295,7 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: Token
       return title(".csd registration, step 3 of 3 (finalize and pay)") + rows([nameRow])
         + lede("Completes your reservation and pays the fee shown below (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner of the name pays, and only once; a lost race is never charged.");
     case "nxfer":
-      return title(".csd name transfer") + rows([nameRow, ["To", `<code>${esc(r.to)}</code>`]]);
+      return title(".csd name transfer") + rows([nameRow, ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`]]);
     case "nset": {
       // QA #4: a zero-address nset is the V23 "un-point" sentinel, not a send to 0x0. The wallet cannot know the
       // landing height at sign time, so it states both effects and the backstop (sends to a 0x0-resolving name are
@@ -296,7 +304,7 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: Token
         return title(".csd un-point (clear address record)") + lede(`Clears the resolver record on <code>${esc(r.name)}.csd</code>. At the V23 upgrade it falls back to its owner and drops out of your primary name.`)
           + lede(`<span class="dim">Before V23 it would set the literal zero address; either way the wallet refuses any send to a 0x0-resolving name.</span>`);
       }
-      return title(".csd name → address record") + rows([nameRow, ["Resolves to", `<code>${esc(r.addr)}</code>`]]);
+      return title(".csd name → address record") + rows([nameRow, ["Resolves to", `<code class="addr">${groupedAddr(String(r.addr))}</code>`]]);
     }
     case "nrenew":
       return title(".csd name renewal") + lede(`Extends the lease on <code>${esc(r.name)}.csd</code>.`);

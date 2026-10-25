@@ -421,7 +421,7 @@ async function main() {
   // one re-opens the surface, so both must be covered here as well as in build.mjs's FORBIDDEN tripwire.
   const SCAN = [
     "../src/background.ts", "../src/content.ts", "../src/inpage.ts",
-    "../src/popup/approve.ts", "../src/popup/clearsign.ts", "../src/popup/addr.ts",
+    "../src/popup/approve.ts", "../src/popup/clearsign.ts",
     "../src/core/wallet.ts", "../src/core/node.ts", "../public/manifest.json",
   ].map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).concat(scriptSource("popup.ts")).join("\n");
   check("no `externally_connectable` anywhere in src/ or manifest", !/externally_connectable/.test(SCAN));

@@ -297,7 +297,6 @@
   .crow > :last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .crow b { font-weight: 500; }
   .crow .addr { font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); color: var(--ui-ink); }
-  .crow .addr > span + span { margin-left: var(--ui-space-1); }
   .check-line { display: block; margin-top: var(--ui-space-1); color: var(--ui-muted); }
   /* the amount leads the review, large and centred, as the sum the user confirms */
   .confirm-box > .crow-amount:first-child {
@@ -654,8 +653,9 @@
     font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); text-align: center;
   }
   /* groups are atomic inlines with a margin, not flex items: a line breaks between groups, and a selection of the
-     address copies it raw, with no newline between groups (popup-checks-chrome) */
-  .addr-big > span, .crow .addr > span { display: inline-block; }
+     address copies it raw, with no newline between groups (popup-checks-chrome, addr-group-chrome) */
+  .addr > span { display: inline-block; }
+  .addr > span + span { margin-left: var(--ui-space-1); }
   .addr-big > span { margin: 0 var(--ui-space-1); }
   .receive-note { text-align: center; }
 
@@ -790,7 +790,8 @@
   .page-approve .kv dd b { font-weight: 600; }
   /* an address at the caption size fits one line beside its label at 380 px; longer ids wrap */
   .page-approve .kv dd code { font-size: var(--ui-text-caption); }
-  .page-approve .out-amt { display: block; }
+  /* the amount ends the address's last line when it fits there, kept whole */
+  .page-approve .out-amt { display: inline-block; margin-left: var(--ui-space-2); white-space: nowrap; }
   .page-approve .checks { display: flex; flex-direction: column; gap: var(--ui-space-2); }
   /* a block, not a flex column: the token quote is running text with inline emphasis */
   .ap-box {

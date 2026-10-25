@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type RecipientKind } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
@@ -128,7 +128,7 @@ async function render() {
     // 1.2s tick would refetch balance and history twice a second per open approval window.
     balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
-    $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b>${escapeHtml(acct.label)}</b>` : ""}<code>${escapeHtml(String(st.addr || ""))}</code>`;
+    $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b>${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
     $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
     msg(""); // clear any stale "approved"/"rejected" from a previous request

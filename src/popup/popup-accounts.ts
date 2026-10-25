@@ -1,7 +1,6 @@
 // The account switcher in the header and the Accounts sheet (rename, remove, add, import).
-import { checkRow, escapeHtml } from "./clearsign.js";
+import { checkRow, escapeHtml, groupedAddr, short } from "./clearsign.js";
 import { avatarGradient, identitySeed } from "./identicon.js";
-import { short } from "./addr.js";
 import { call } from "./popup-bridge.js";
 import { $, msg, val } from "./popup-dom.js";
 import { clearSendDrafts, closeAllPanels, openPanel, syncNav } from "./popup-panels.js";
@@ -70,7 +69,7 @@ export async function renderAccts() {
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
-      <div class="tx-sub"><span class="dim">${escapeHtml(a.addr)}</span></div>${removeWarn}
+      <div class="tx-sub"><code class="addr dim">${groupedAddr(String(a.addr))}</code></div>${removeWarn}
     </div>`;
   }).join("");
   const edit = (addr: string | undefined, mode: "rename" | "remove") => { if (addr) { acctEdit = { addr, mode }; renderAccts(); } };

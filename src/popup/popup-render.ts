@@ -1,5 +1,6 @@
 // One status read decides the view and repaints every open per-account panel.
 import { explorerLink } from "../core/explorer.js";
+import { groupedAddr } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 import { $, show } from "./popup-dom.js";
 import { curAddr, currentExplorer, setCurAddr, setEndpoints } from "./popup-state.js";
@@ -27,7 +28,7 @@ export async function render() {
   // Only HD wallets have a recovery phrase; hide the reveal button for imported keys.
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
   renderAcctSelect(st.accounts || [], st.active || 0);
-  $("addr").textContent = st.addr;
+  $("addr").innerHTML = groupedAddr(String(st.addr || ""));
   if (st.addr !== curAddr) { setCurAddr(st.addr); clearSendDrafts(); invalidateAccountViews(); forgetBalance(); paintAvatar(null, curAddr); } // new account: old rows inert, reset identity + balance tween base
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerLink(currentExplorer, "addr", st.addr);
   (($("set-api") as HTMLInputElement)).value = st.api;
