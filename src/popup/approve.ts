@@ -1,16 +1,25 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, warningsCounted, rowFlagHtml, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, warningsCounted, rowFlagHtml, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
+import { chooseDensity, reservesFor } from "./approve-density.js";
+import { tokenMs } from "./motion.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
 // never hold the approval UI hostage. A miss degrades to null (callers fail soft).
 const bounded = (p: Promise<unknown>): Promise<unknown> =>
   Promise.race([p.catch(() => null), new Promise((res) => setTimeout(() => res(null), 2500))]);
+
+// The density probe measures text set in Geist and Geist Mono (local files, font-src 'self'), so the first paint waits for
+// both faces, at most a second; a page without document.fonts goes on at once.
+const fontsLoaded: Promise<unknown> = Promise.race([
+  Promise.all([document.fonts?.load("500 14px Geist"), document.fonts?.load("400 12px 'Geist Mono'")]).catch(() => null),
+  new Promise((res) => setTimeout(res, 1000)),
+]);
 
 function call(method: string, ...args: any[]): Promise<any> {
   return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
@@ -107,6 +116,7 @@ async function render() {
     if (f != null) current.tipFloor = f;
   }
   if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
+  await fontsLoaded;   // the density probe below measures text; resolved after the first paint
   if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
@@ -132,9 +142,12 @@ async function render() {
     $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
     // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm
-    // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which #ap-more,
-    // reporting only what is below, would not mention.
+    // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which the line under the
+    // buttons (#ap-state), reporting only what is below, would not mention.
     $("req").scrollTop = 0;
+    // The density for this paint, decided before the first frame and kept (approve-density.ts); then the entrance.
+    $("app").dataset.density = chooseDensity($("app"), $("req"), reservesFor(current, String(st.addr || "")));
+    enterBody();
     msg(""); // clear any stale "approved"/"rejected" from a previous request
     holdOutcome = false;
     warnPainted = fillSendWarning(current);
@@ -227,7 +240,7 @@ function paintNfinNote(g: { block: boolean; note: string | null }) {
   document.getElementById("nfin-note")?.remove();
   if (!g.note) return;
   // after the cost rows and the warnings under them, before the record's own rows (test/approve-layout-chrome.test.mjs)
-  const html = `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: escapeHtml(g.note) })}</div>`;
+  const html = nfinNoteBox({ block: g.block, note: g.note });
   const after = document.getElementById("send-warn") ?? document.getElementById("cost");
   if (after) after.insertAdjacentHTML("afterend", html); else $("req").insertAdjacentHTML("beforeend", html);
 }
@@ -406,7 +419,7 @@ async function fillBalance(r: any) {
     if (rs(r.id).balShort) {
       ($("btn-approve") as HTMLButtonElement).disabled = true;
       // under the cost rows it explains, above the buttons (test/approve-layout-chrome.test.mjs)
-      const short = `<div class="checks">${checkRow({ tier: "danger", html: escapeHtml(balanceShortNote("Reject this")) })}</div>`;
+      const short = balanceShortBox();
       const cost = document.getElementById("cost");
       if (cost) cost.insertAdjacentHTML("afterend", short); else $("req").insertAdjacentHTML("beforeend", short);
     }
@@ -542,22 +555,45 @@ async function resolve(approve: boolean) {
   render();
 }
 
-// A site can make a request longer than the window (more recipients, a long origin). While the request body does not
-// end in view, #ap-more says so, counting the recipient rows not fully shown. It reads geometry only: it never touches
-// the buttons, and it is recomputed on a scroll, on any change to the request (the async rows) and on a resize.
+// The line under the buttons (#ap-state). While the latch holds both buttons it says so; once they arm, while the request
+// does not end in view it counts the recipient rows not fully shown (a site can make a request longer than the window:
+// more recipients, a long origin), or says more is below; otherwise it says whether Approve is live. It reads geometry
+// and the buttons only, never sets them, and is recomputed on a scroll, on any change to the request or the buttons
+// and on a resize. Its line is always reserved, so it never moves the buttons.
 const RECIPIENT_ROWS = new Set(["To", "Resolves to", "Paid to", "Only fillable by"]);
-function updateMore() {
+function updateState() {
   const req = $("req");
-  const open = !($("view-req") as HTMLElement).hidden && req.scrollTop + req.clientHeight < req.scrollHeight - 1;
+  const shown = !($("view-req") as HTMLElement).hidden;
+  const open = shown && req.scrollTop + req.clientHeight < req.scrollHeight - 1;
   const fold = req.getBoundingClientRect().bottom;
   const hidden = open ? [...req.querySelectorAll(".kv > div")]
     .filter((row) => RECIPIENT_ROWS.has(row.querySelector("dt")?.textContent ?? "") && row.getBoundingClientRect().bottom > fold + 0.5).length : 0;
-  const text = open ? moreBelowText(hidden) : "";
-  if ($("ap-more").textContent !== text) $("ap-more").textContent = text;
+  const latched = ($("btn-reject") as HTMLButtonElement).disabled;
+  const live = !($("btn-approve") as HTMLButtonElement).disabled;
+  const text = !shown || !current ? "" : latched ? APPROVE_STATE.arming : open ? moreBelowText(hidden)
+    : live ? (warnedFor === current.id ? APPROVE_STATE.readyUnconfirmed : APPROVE_STATE.ready)
+    : tokenNotReady(current) ? APPROVE_STATE.tokenWait : APPROVE_STATE.held;
+  const el = $("ap-state");
+  if (el.textContent !== text) el.textContent = text;
+  el.classList.toggle("more", open && !latched);
 }
-$("req").addEventListener("scroll", updateMore);
-new MutationObserver(updateMore).observe($("app"), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden"] });
-new ResizeObserver(updateMore).observe($("req"));
+$("req").addEventListener("scroll", updateState);
+new MutationObserver(updateState).observe($("app"), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "disabled"] });
+new ResizeObserver(updateState).observe($("req"));
+
+// A request painted into the window rises in over the approved design's 320 ms (--ui-dur-3); with reduced motion it
+// fades in instead. Display only: the latch, not this, decides when a click counts.
+function enterBody() {
+  const req = $("req");
+  if (typeof req.animate !== "function") return;
+  const dur = tokenMs("--ui-dur-3");
+  if (dur === null) return;
+  for (const a of req.getAnimations()) a.cancel();
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ease = getComputedStyle(document.documentElement).getPropertyValue("--ui-ease").trim() || "ease-out";
+  const rise = getComputedStyle(document.documentElement).getPropertyValue("--ui-space-2").trim() || "8px";
+  req.animate(still ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: `translateY(${rise})` }, { opacity: 1, transform: "none" }], { duration: dur, easing: ease });
+}
 
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("Unlocked.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-approve").addEventListener("click", () => { if (!($("btn-approve") as HTMLButtonElement).disabled) resolve(true); });

@@ -548,6 +548,15 @@ export function moreBelowText(recipients: number): string {
 // The approval window's buttons, and their labels in the reservation confirm step (RESERVATION_UNCONFIRMED).
 export const APPROVE_LABELS = { approve: "Approve", reject: "Reject" } as const;
 export const UNCONFIRMED_LABELS = { approve: "Sign anyway", reject: "Cancel" } as const;
+// The line under the buttons: the latch while both wait, then what is below the fold (moreBelowText), then whether
+// Approve is live. Approve held down after the latch has its reason on screen above, except a token quote still loading.
+export const APPROVE_STATE = {
+  arming: "Arming: both buttons wait 700 ms",
+  ready: "Ready. Approve signs exactly what is shown.",
+  readyUnconfirmed: "Ready. Read the warning above before you sign.",
+  held: "Approve is off: see the warning above.",
+  tokenWait: "Approve waits for the token amount.",
+} as const;
 
 // The confirm step: the second resolver (clarvis) has scanned past the reservation's proven height and does not know it.
 export function reservationUnconfirmedHtml(u: { fclaimHeight: number; tipHeight: number }): string {
@@ -565,6 +574,11 @@ export function secondSourceNote(state: unknown): string | null {
   if (!why) return null;
   return `Second source not consulted: the second source (clarvis) ${why} when this fill was signed, so its check of your reservation did not run. Check on the explorer that the fill delivered.`;
 }
+
+// The box approve.ts places under the cost rows when the balance does not cover a request, and a name action's verdict
+// box; one markup each for the window and the density probe that reserves their room before the paint.
+export const balanceShortBox = (): string => `<div class="checks">${danger(escapeHtml(balanceShortNote("Reject this")))}</div>`;
+export const nfinNoteBox = (g: { block: boolean; note: string }): string => `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: escapeHtml(g.note) })}</div>`;
 
 // The balance-after is negative: the node's spendable balance (the sum of its available coins, the same
 // coins the engine selects from) does not cover the debit, so signing could only end in INSUFFICIENT.

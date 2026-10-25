@@ -10,8 +10,11 @@
 // Each case also names what must render, so a missing row cannot pass as "not below"; check rows carry their tier in
 // the icon and tint, with no leading ⚠; the cost and the warnings come before the first recipient and the cost before
 // any row without weight, so a request a site makes longer than the window keeps them in view; and no <br> inside the
-// request is hidden or merged by CSS. While the request does not end in view, the line above the buttons (#ap-more)
-// names the recipient rows not fully shown, or says more is below; it never moves the buttons or covers the request.
+// request is hidden or merged by CSS. The line under the buttons (#ap-state) says the latch holds both buttons, then,
+// while the request does not end in view, names the recipient rows not fully shown, or says more is below, and
+// otherwise whether Approve is live; it never moves the buttons or covers the request. Each paint is roomy (the approved
+// design's sizes) only when the whole request fits in them, compact otherwise, and keeps its density from its first
+// frame (W-3).
 // RED-FIRST: with f700817's approval window (src/popup clearsign.ts, approve.ts, popup.css) 64 checks fail at this size
 // (11 cases below the fold, 23 out of order, 30 with a leading ⚠); in its own 380 by 620 window, 26 cases fail the fold.
 // Restore f700817's popup.css alone and 11 cases fail the fold; put a record's rows before the cost, the send's
@@ -38,6 +41,7 @@ const R3 = "0x" + "33".repeat(20);
 const LOOK = "0x313131" + "9".repeat(30) + "3131";
 const O = "https://cairn-substrate.com";
 const D = "https://dapp.example";
+const LONG = "https://cairn-substrate.com.account-security-verification.session-renewal.wallet-support-desk.example";
 const T = cx.TREASURY_ADDR;
 const pick = (b) => ({ uri: b.uri, payloadHash: b.payloadHash });
 const prop = (rec, extra = {}) => ({ domain: cx.CAIRNX_DOMAIN, ...pick(rec), fee: 25_000_000, expiresEpoch: 4_100, ...extra });
@@ -66,6 +70,8 @@ const CASES = [
   // the worst send: three recipients, one a look-alike, a fee past the warning line, and a balance that does not cover it
   ["send-3-worst", [req("s3w", "send", D, sendTo([[LOOK, 100_000_000], [R2, 200_000_000], [R3, 300_000_000]], 600_000_000))], { ...seen, balance: { confirmed: 50_000_000 } }, ["Possible address-poisoning", "warn:3", "to:3", "unusually large fee", "spendable balance does not cover", "cost"]],
   ["send-short", [req("ss", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })], { balance: { confirmed: 50_000_000 } }, ["spendable balance does not cover", "cost"]],
+  // a short balance from an origin that wraps the header: the note that lands after the paint has its room reserved
+  ["send-short-long-origin", [req("ssl", "send", LONG, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })], { balance: { confirmed: 50_000_000 } }, ["spendable balance does not cover", "cost"]],
   ["token-send", [req("tx", "propose", O, prop(cx.buildTransfer({ ticker: "CAIRN", amount: "1500000000", to: RCPT })))], {}, ["First time sending tokens to", "to:1", "cost"]],
   ["token-send-lookalike-ticker", [req("tx2", "propose", O, prop(cx.buildTransfer({ ticker: "USDT", amount: "1500000000", to: RCPT })))], { tokenDisplayMeta: { USDT: { decimals: 6 } } }, ["well-known or Cairn-like ticker", "First time sending tokens to", "cost"]],
   ["fill-csd", [req("f1", "fillOffer", O, fill([[RCPT, 250_000_000], [T, 3_750_000]]))], { fillOfferView: view }, ["#fill-view", "First time sending to", "to:2", "cost"]],
@@ -211,13 +217,19 @@ function measure([expect, origin]) {
     if (i > 0 && !broke) lost.push(`no break before "${segs[i].slice(0, 24)}"`);
     at = found + segs[i].length;
   }
-  // the "more below" line: shown exactly while the request does not end in view, naming the recipient rows not fully
-  // in view; it sits in the footer, below the request, so it covers nothing
+  // the line under the buttons: while the request does not end in view it names the recipient rows not fully in view,
+  // otherwise it says whether Approve is live; it sits in the footer under the buttons, inside the window, so it covers
+  // nothing
   const RCPT = new Set(["To", "Resolves to", "Paid to", "Only fillable by"]);
   const open = reqEl.scrollTop + reqEl.clientHeight < reqEl.scrollHeight - 1;
   const hiddenRcpt = [...reqEl.querySelectorAll(".kv > div")].filter((r) => RCPT.has(r.querySelector("dt")?.textContent ?? "") && r.getBoundingClientRect().bottom > reqEl.getBoundingClientRect().bottom + 0.5).length;
-  const cueEl = document.getElementById("ap-more");
-  const cue = { text: cueEl ? cueEl.textContent : null, open, hiddenRcpt, clear: !!cueEl && cueEl.getBoundingClientRect().top >= reqEl.getBoundingClientRect().bottom - 0.5 && cueEl.getBoundingClientRect().bottom <= barTop + 0.5 };
+  const cueEl = document.getElementById("ap-state");
+  const barBottom = Math.max(document.getElementById("btn-reject").getBoundingClientRect().bottom, document.getElementById("btn-approve").getBoundingClientRect().bottom);
+  const sim = document.getElementById("token-sim");
+  const approve = document.getElementById("btn-approve");
+  const cue = { text: cueEl ? cueEl.textContent : null, open, hiddenRcpt, clear: !!cueEl && cueEl.getBoundingClientRect().top >= barBottom - 0.5 && cueEl.getBoundingClientRect().bottom <= innerHeight + 0.5,
+    live: !approve.disabled, latched: document.getElementById("btn-reject").disabled, confirmStep: approve.textContent === "Sign anyway",
+    tokenWait: !!sim && !/^Filling this debits/.test(sim.textContent) };
   // a look-alike is danger, a first send caution (owner decision 2026-10-25): each warning row's tier against its words
   const tiers = [...(document.getElementById("send-warn")?.querySelectorAll(".check") ?? [])].map((c) => {
     const tier = c.classList.contains("danger") ? "danger" : c.classList.contains("caution") ? "caution" : "other";
@@ -242,13 +254,44 @@ const settle = (page) => page.evaluate(() => new Promise((done) => {
   tick();
 }));
 
-// The cue's words, written out here so a change to them fails this file.
-const cueText = ({ open, hiddenRcpt }) => !open ? "" : hiddenRcpt === 1 ? "1 more recipient below: scroll to see it"
-  : hiddenRcpt > 1 ? `${hiddenRcpt} more recipients below: scroll to see them` : "More below: scroll to read the whole request";
+// The line's words, written out here so a change to them fails this file (security copy: listed for the owner's sign-off).
+const STATE = { arming: "Arming: both buttons wait 700 ms", ready: "Ready. Approve signs exactly what is shown.", readyUnconfirmed: "Ready. Read the warning above before you sign.",
+  held: "Approve is off: see the warning above.", tokenWait: "Approve waits for the token amount." };
+const cueText = ({ open, hiddenRcpt, live, latched, confirmStep, tokenWait }) => latched ? STATE.arming
+  : open ? (hiddenRcpt === 1 ? "1 more recipient below: scroll to see it" : hiddenRcpt > 1 ? `${hiddenRcpt} more recipients below: scroll to see them` : "More below: scroll to read the whole request")
+  : live ? (confirmStep ? STATE.readyUnconfirmed : STATE.ready) : tokenWait ? STATE.tokenWait : STATE.held;
+// W-3: the density each request paints in, from every frame since it first showed: one value means no jump on open and no
+// shift after the latch arms. A roomy paint has the approved design's sizes and shows the whole request.
+function recordFrames() {
+  window.__frames = [];
+  const tick = () => {
+    const app = document.getElementById("app"), req = document.getElementById("req"), view = document.getElementById("view-req");
+    if (app && req && view && !view.hidden && req.firstElementChild) window.__frames.push(app.dataset.density || "none");
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+const densityOf = () => {
+  const app = document.getElementById("app"), req = document.getElementById("req");
+  const cs = (el) => el && getComputedStyle(el);
+  const amt = cs(req.querySelector(".ap-amt"));
+  const oneLine = [...req.querySelectorAll(".kv > div")].find((r) => r.getClientRects().length && r.getBoundingClientRect().height < 45);
+  const row = cs(req.querySelector(".kv > div"));
+  const check = cs(req.querySelector(".check"));
+  return { density: app.dataset.density, frames: [...new Set(window.__frames)], whole: req.scrollHeight <= req.clientHeight + 1,
+    amount: amt && `${amt.fontSize} ${amt.fontWeight}`, row: row && `${row.fontSize} ${row.paddingTop}`, rowH: oneLine ? Math.round(oneLine.getBoundingClientRect().height) : null,
+    check: check && `${check.fontSize} ${check.paddingTop} ${check.paddingLeft}` };
+};
+// The paints that must come out roomy (they fit the window whole with every mount at its tallest) and compact, at this
+// size, which takes the largest frame seen; FULL_HEIGHT below repeats the common requests in the whole 716 px.
+const ROOMY = new Set(["connect", "signin", "signin-mismatch", "seal", "propose-raw", "offer-cancel"]);
+const COMPACT = new Set(["send-3-worst", "send-short-long-origin", "fill-unconfirmed", "queue", "name-nfinalize-underpaid", "name-ncommit"]);
 const table = [];
 try {
-  for (const [name, queue, extra, expect, action] of CASES) {
-    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue, ...extra }, { viewport: { width: WIDTH, height: INNER_H } });
+  // light, then dark: every check in both themes (a dark case is named "dark <case>")
+  for (const theme of ["light", "dark"]) for (const [base_, queue, extra, expect, action] of CASES) {
+    const name = theme === "light" ? base_ : `dark ${base_}`;
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue, ...extra }, { viewport: { width: WIDTH, height: INNER_H }, colorScheme: theme, init: recordFrames });
     try {
       await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
       await settle(page);
@@ -258,15 +301,54 @@ try {
         await settle(page);
       }
       const r = await page.evaluate(measure, [expect, queue[0].origin]);
-      table.push([name, r.lowest]);
+      if (theme === "light") table.push([name, r.lowest]);
       t.check(`${name}: what must render is there (missing: ${r.missing.join(", ") || "none"})`, r.missing.length === 0);
       t.check(`${name}: every element with weight is above the buttons, unscrolled (lowest: ${r.lowest?.what}, ${r.lowest?.gap} px above; below: ${r.below.join(", ") || "none"})`, r.below.length === 0 && r.scrollTop === 0);
       t.check(`${name}: the cost and the warnings come before the recipients and the rows without weight (late: ${r.late.join(", ") || "none"})`, r.late.length === 0);
       t.check(`${name}: no check row starts with a ⚠ mark (${r.marked})`, r.marked === 0);
       t.check(`${name}: each warning row has its tier, danger for a look-alike, caution for a first send (${r.tiers.map((x) => x.tier).join(",") || "none"})`, r.tiers.every((x) => x.ok));
-      t.check(`${name}: the line above the buttons matches what is below the fold ("${r.cue.text}", ${r.cue.hiddenRcpt} recipient rows hidden) and covers nothing`, r.cue.text === cueText(r.cue) && r.cue.clear);
+      t.check(`${name}: the line under the buttons matches the latch and what is below the fold ("${r.cue.text}", ${r.cue.hiddenRcpt} recipient rows hidden) and covers nothing`, r.cue.text === cueText(r.cue) && r.cue.clear);
       t.check(`${name}: no <br> in the request is hidden (${r.hiddenBr}) and the text breaks at every one (${r.lost.join("; ") || "all kept"})`, r.hiddenBr === 0 && r.lost.length === 0);
+      const d = await page.evaluate(densityOf);
+      if (theme === "light") table.at(-1).push(d.density);
+      // the confirm step is a second paint after a click, which decides again
+      const one = action === "approve" ? d.frames.at(-1) === d.density : d.frames.length === 1 && d.frames[0] === d.density;
+      t.check(`${name}: one density from the first frame that shows the request to the end (${d.frames.join(",")})`, one && (d.density === "roomy" || d.density === "compact"));
+      if (d.density === "roomy") {
+        t.check(`${name}: roomy shows the whole request and the approved sizes (amount ${d.amount}, row ${d.row}, one-line row ${d.rowH} px, check ${d.check})`,
+          d.whole && (d.amount === null || d.amount === "36px 500") && (d.row === null || d.row === "13.5px 9px") && (d.rowH === null || d.rowH === 40) && (d.check === null || d.check === "12.5px 10px 12px"));
+      }
+      if (ROOMY.has(base_)) t.check(`${name}: paints roomy (${d.density})`, d.density === "roomy");
+      if (COMPACT.has(base_)) t.check(`${name}: paints compact (${d.density})`, d.density === "compact");
       t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  // The common requests in a window with no frame (Linux draws none): the approved design's request, a send to a new
+  // address, paints roomy; a balance that does not cover it lands in the room reserved for its note, so the paint stays
+  // roomy and nothing moves (one density in every frame). RED-FIRST: return no reserves from reservesFor and
+  // send-short-long-origin above paints roomy, and its balance note, landing after the paint, pushes its recipient past
+  // the fold; return "compact" from chooseDensity and every roomy pin fails; decide the density a moment after the
+  // paint and the one-density checks fail; drop the roomy row rule from popup.css and the size checks fail.
+  console.log("full height:");
+  for (const [name, queue, extra, want] of [
+    ["send", [req("h1", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })], {}, "roomy"],
+    ["send-poison", [req("h2", "send", D, { to: LOOK, amount: 150_000_000, fee: 1_000_000 })], seen, "roomy"],
+    ["send-short", [req("h4", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })], { balance: { confirmed: 50_000_000 } }, "roomy"],
+  ]) {
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue, ...extra }, { viewport: { width: WIDTH, height: APPROVE_WINDOW.height }, init: recordFrames });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      const r = await page.evaluate(measure, [[], queue[0].origin]);
+      const d = await page.evaluate(densityOf);
+      t.check(`full height ${name}: paints ${want} (${d.density}), one density in every frame (${d.frames.join(",")})`, d.density === want && d.frames.length === 1 && d.frames[0] === want);
+      t.check(`full height ${name}: the whole request in view, the approved sizes (amount ${d.amount}, row ${d.row}, one-line row ${d.rowH} px, check ${d.check})`,
+        d.whole && d.amount === "36px 500" && d.row === "13.5px 9px" && d.rowH === 40 && (d.check === null || d.check === "12.5px 10px 12px"));
+      t.check(`full height ${name}: everything with weight above the buttons (below: ${r.below.join(", ") || "none"})`, r.below.length === 0 && r.scrollTop === 0);
+      t.check(`full height ${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();
     }
@@ -280,7 +362,6 @@ try {
   const buttonsAt = (page) => page.evaluate(() => [document.getElementById("btn-reject").getBoundingClientRect().top, document.getElementById("btn-approve").getBoundingClientRect().top, document.getElementById("req").getBoundingClientRect().bottom]);
   let ordinary = null;
   // five recipients fit at this size; eight from a look-alike origin long enough to wrap the header do not
-  const LONG = "https://cairn-substrate.com.account-security-verification.session-renewal.wallet-support-desk.example";
   for (const [name, queue] of [["send-1", [req("m1", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })]], ["send-5", [req("m5", "send", D, many(5))]],
     ["send-8-long-origin", [req("m8o", "send", LONG, many(8))]], ["send-13", [req("m13", "send", D, many(13))]]]) {
     const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue }, { viewport: { width: WIDTH, height: INNER_H } });
@@ -292,7 +373,7 @@ try {
       const approve = await page.evaluate(() => !document.getElementById("btn-approve").disabled);
       if (name === "send-1" || name === "send-5") {
         ordinary ??= at;
-        t.check(`${name}: a request that ends in view shows no line ("${r.cue.text}"), everything with weight above the buttons (below: ${r.below.join(", ") || "none"})`, !r.cue.open && r.cue.text === "" && r.below.length === 0 && at.join() === ordinary.join());
+        t.check(`${name}: a request that ends in view says Approve is ready ("${r.cue.text}"), everything with weight above the buttons (below: ${r.below.join(", ") || "none"})`, !r.cue.open && r.cue.text === STATE.ready && r.below.length === 0 && at.join() === ordinary.join());
         continue;
       }
       t.check(`${name}: the line names the hidden recipients ("${r.cue.text}", ${r.cue.hiddenRcpt} rows not in view)`, r.cue.open && r.cue.hiddenRcpt > 0 && r.cue.text === cueText(r.cue));
@@ -301,18 +382,18 @@ try {
         const q = document.getElementById("req");
         const rows = [...q.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === "To");
         q.scrollTop += rows.at(-2).getBoundingClientRect().bottom - q.getBoundingClientRect().bottom + 1;
-        return new Promise((done) => setTimeout(() => done(document.getElementById("ap-more")?.textContent ?? null), 200));
+        return new Promise((done) => setTimeout(() => done(document.getElementById("ap-state")?.textContent ?? null), 200));
       });
       t.check(`${name}: scrolled until one recipient row is left below, the line says so ("${one}")`, one === "1 more recipient below: scroll to see it");
       t.check(`${name}: the buttons and the end of the request area sit where an ordinary request has them (${at} vs ${ordinary}) and Approve is armed (${approve})`, at.join() === ordinary.join() && approve);
       await page.evaluate(() => { const q = document.getElementById("req"); q.scrollTop = q.scrollHeight; });
       await page.waitForTimeout(200);
-      const end = await page.evaluate(() => document.getElementById("ap-more")?.textContent ?? null);
-      t.check(`${name}: scrolled to its end, the line is gone ("${end}") and neither the buttons nor the request area moved`, end === "" && (await buttonsAt(page)).join() === ordinary.join());
+      const end = await page.evaluate(() => document.getElementById("ap-state")?.textContent ?? null);
+      t.check(`${name}: scrolled to its end, the line says Approve is ready ("${end}") and neither the buttons nor the request area moved`, end === STATE.ready && (await buttonsAt(page)).join() === ordinary.join());
       // content added under the end, as an async row does: the line comes back
       await page.evaluate(() => document.querySelector("#req > .req:not(.dim)").insertAdjacentHTML("beforeend", '<p class="ap-lede">added</p>'));
       await page.waitForTimeout(200);
-      const back = await page.evaluate(() => document.getElementById("ap-more")?.textContent ?? null);
+      const back = await page.evaluate(() => document.getElementById("ap-state")?.textContent ?? null);
       t.check(`${name}: when the request grows past the end, the line comes back ("${back}")`, back === "More below: scroll to read the whole request");
       t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
@@ -380,9 +461,47 @@ try {
       await ctx.close();
     }
   }
+
+  // W-10: a request painted into the open window enters as the approved design's body does (320 ms, rising 8 px; a
+  // crossfade with reduced motion), and the line under the buttons says the latch holds both, then that Approve is
+  // ready. RED-FIRST: drop enterBody() from render() and the entrance checks fail; drop the arming branch in
+  // updateState and the first line check fails.
+  console.log("new request:");
+  for (const reducedMotion of ["no-preference", "reduce"]) {
+    const a = req("n1", "connect", D, {}), b = req("n2", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 });
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: [a, b] }, { viewport: { width: WIDTH, height: INNER_H }, reducedMotion });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      const ready = await page.evaluate(() => document.getElementById("ap-state").textContent);
+      await page.evaluate((next) => {
+        const send = chrome.runtime.sendMessage;
+        chrome.runtime.sendMessage = (m, cb) => m.method === "pending" ? setTimeout(() => cb({ ok: true, result: [next] }), 5) : send(m, cb);
+      }, b);
+      const at = await page.waitForFunction(() => {
+        const q = document.getElementById("req");
+        if (!q.querySelector(".ap-amt")) return null;
+        const an = q.getAnimations()[0];
+        const k = an?.effect?.getKeyframes() ?? [];
+        return { line: document.getElementById("ap-state").textContent, rejectOff: document.getElementById("btn-reject").disabled,
+          duration: an?.effect?.getTiming().duration ?? null, moves: k.some((f) => f.transform && f.transform !== "none"), fades: Number(k[0]?.opacity) === 0 };
+      }, null, { timeout: 5_000, polling: "raf" }).then((h) => h.jsonValue());
+      await settle(page);
+      const after = await page.evaluate(() => document.getElementById("ap-state").textContent);
+      const tag = reducedMotion === "reduce" ? "reduced motion" : "motion";
+      t.check(`${tag}: before the new request the line says Approve is ready ("${ready}")`, ready === STATE.ready);
+      t.check(`${tag}: the new request's first frame: the line says the latch holds both buttons ("${at.line}", Reject off ${at.rejectOff})`, at.line === STATE.arming && at.rejectOff);
+      t.check(`${tag}: the request body enters over 320 ms from transparent (${at.duration} ms, fades ${at.fades})`, at.duration === 320 && at.fades);
+      t.check(`${tag}: ${reducedMotion === "reduce" ? "a crossfade, no movement" : "it rises as it enters"} (moves ${at.moves})`, at.moves === (reducedMotion !== "reduce"));
+      t.check(`${tag}: once armed the line says Approve is ready ("${after}")`, after === STATE.ready);
+      t.check(`${tag}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
 } finally {
   await browser.close();
 }
-console.log("\nfold table (lowest element with weight, px above the fold; negative is below):");
-for (const [name, l] of table) console.log(`  ${name.padEnd(28)} ${String(l?.gap).padStart(5)}  ${l?.what}`);
+console.log("\nfold table (lowest element with weight, px above the fold; negative is below; the paint's density):");
+for (const [name, l, density] of table) console.log(`  ${name.padEnd(28)} ${String(l?.gap).padStart(5)}  ${String(density).padEnd(8)} ${l?.what}`);
 t.done("approve-layout-chrome");

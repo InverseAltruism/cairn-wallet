@@ -36,11 +36,22 @@
   line; rows, check rows and boxes are denser. Before, a CSD fill's recipients, a send's third first-time warning and
   a finalize's verdict sat below the buttons. The window is wider rather than only taller because width is what small
   screens can spare. A site can still make a request longer than the window (more recipients, a very long origin);
-  the cost, the recipient warnings and a name action's verdict then stay on top, and the rest scrolls. A line directly
-  above the buttons then says what is out of view: "2 more recipients below: scroll to see them" (or "1 more recipient
-  below: scroll to see it") while a recipient row is not fully shown, otherwise "More below: scroll to read the whole
-  request". It goes once the request is scrolled to its end and comes back if the request grows; its line is always
-  reserved, so it never moves the buttons, never covers the request and never holds back Approve.
+  the cost, the recipient warnings and a name action's verdict then stay on top, and the rest scrolls.
+- A line under the buttons says what the window is doing: "Arming: both buttons wait 700 ms" while the latch holds
+  both buttons, then "2 more recipients below: scroll to see them" (or "1 more recipient below: scroll to see it")
+  while a recipient row is not fully shown and "More below: scroll to read the whole request" while anything else is,
+  and otherwise "Ready. Approve signs exactly what is shown." ("Ready. Read the warning above before you sign." on a
+  reservation's confirm step), "Approve waits for the token amount." while a token quote loads, or "Approve is off: see
+  the warning above." when a refusal holds Approve down. Its line is always reserved, so it never moves the buttons,
+  never covers the request and never holds back Approve. A request painted into the open window enters as in the
+  approved design: it rises 8 px and fades in over 320 ms, and fades in only with reduced motion.
+- The approval window has two densities. A request that fits the window whole in the approved design's sizes (a 36 px
+  amount, 40 px rows of 13.5 px text, check rows with 10 and 12 px padding) paints in them; a request that does not
+  keeps the dense sizes above, which hold the fold for every request shape. The window measures the request before
+  its first frame, with every part that fills in later (the recipient warnings, the balance note, a name action's
+  verdict, a fill's listing, the token quote, a reveal's secret) counted at its tallest, and keeps that density for
+  the request, so nothing jumps on open or moves after the buttons arm. The header and the buttons keep one geometry
+  in both densities.
 - Each request in the approval window opens at its top, also when the queue moves on from a request the user had
   scrolled to its end, and on a reservation's confirm step: before, the next request could open scrolled down with
   its amount, fee and warnings above the view (test/approve-layout-chrome.test.mjs, "queue advance").

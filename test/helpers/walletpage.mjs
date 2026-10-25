@@ -60,10 +60,11 @@ function installRuntime(answers) {
   };
 }
 
-/** Opens `page` ("popup" or "approve") in a fresh context; returns { page, ctx, errors }. */
-export async function openWalletPage(browser, which, answers, { viewport, colorScheme = "light", deviceScaleFactor = 1 } = {}) {
+/** Opens `page` ("popup" or "approve") in a fresh context; returns { page, ctx, errors }. `init` runs in the page before
+ *  any of its scripts, after the scripted runtime. */
+export async function openWalletPage(browser, which, answers, { viewport, colorScheme = "light", deviceScaleFactor = 1, reducedMotion, init } = {}) {
   const js = await bundle(which);
-  const ctx = await browser.newContext({ viewport, colorScheme, deviceScaleFactor });
+  const ctx = await browser.newContext({ viewport, colorScheme, deviceScaleFactor, ...(reducedMotion ? { reducedMotion } : {}) });
   await ctx.route("**/*", (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== ORIGIN) return route.abort();
@@ -72,6 +73,7 @@ export async function openWalletPage(browser, which, answers, { viewport, colorS
     return route.fulfill({ status: 200, contentType: TYPES[url.pathname.split(".").pop()] || "application/octet-stream", body });
   });
   await ctx.addInitScript(installRuntime, answers);
+  if (init) await ctx.addInitScript(init);
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));

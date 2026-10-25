@@ -22,6 +22,7 @@ import { sendWarnings, fillViewHtml, tokenQuoteHtml } from "../src/popup/clearsi
 import { fillOfferView, tokenFillQuote } from "../src/core/cairnxview.ts";
 import { buildNameSet, CAIRNX_DOMAIN } from "../src/core/cairnx.ts";
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
+import { APPROVE_IDS } from "./helpers/approve-dom.mjs";
 
 let pass = 0, fail = 0;
 const t = (name, fn) => { try { fn(); pass++; console.log("  ✓ " + name); } catch (e) { fail++; console.error("  ✗ " + name + "\n    " + String(e?.message || e).split("\n")[0]); } };
@@ -78,7 +79,7 @@ t("1f the card says the wallet will refuse a fill only when it will", () => {
 
 // ── the real approval window ──────────────────────────────────────────────────────────────────────────
 const { byId, registry, El } = installFakeDom();
-for (const id of ["view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw", "ap-origin", "ap-ask", "ap-signer"]) registry.set(id, new El(id));
+for (const id of APPROVE_IDS) registry.set(id, new El(id));
 const state = { pending: [], balance: 100e8, resolves: 0, views: 0 };
 const h = {
   status: () => ({ unlocked: true, accounts: [{ label: "A1", addr: ME }], active: 0, addr: ME, tradeApi: "https://x/trade/api" }),

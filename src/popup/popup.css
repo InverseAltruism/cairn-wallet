@@ -1,7 +1,15 @@
 /* Cairn Wallet: the popup (popup.html) and the approval window (approve.html).
    Every colour, type size, radius, spacing step and duration is a cairn-ui token from ui/tokens.css, which declares
    the first layer. popup.ts, approve.ts and clearsign.ts write markup with the class hooks styled here. Raw px values
-   are component dimensions (control heights, icon and tile sizes), which the token scale does not hold. */
+   are component dimensions (control heights, icon and tile sizes), which the token scale does not hold.
+   Values the scale lacks are calcs of tokens, declared once on .page-approve for the approval window's roomy density
+   (the approved design's sizes):
+     --ap-row-text      13.5px   calc((--ui-text-xs + --ui-text-sm) / 2)            row text
+     --ap-small-text    12.5px   calc((--ui-text-caption + --ui-text-xs) / 2)       check text, the address, the state line
+     --ap-row-pad        9px     calc(--ui-space-2 + --ui-space-1 / 4)              row padding (a 40 px row)
+     --ap-check-pad     10px     calc(--ui-space-2 + --ui-space-1 / 2)              check padding and gap
+     --ap-check-leading  1.45    calc(--ui-leading-body - (--ui-leading-tight - 1)) check line height
+     --ap-amt-track     -0.035em calc(--ui-track-heading + (--ui-track-display - --ui-track-heading) / 3) amount */
 @layer tokens, base, components, page;
 
 /* ── base ─────────────────────────────────────────────────────────────────────────────────────────────── */
@@ -816,12 +824,13 @@
   /* 700ms is approve.ts's re-enable floor (R3 section 3), not a design duration */
   .ap-foot:has(#btn-reject:disabled) .latch > i { animation: arm 700ms linear both; }
   @keyframes arm { from { width: 0; } to { width: 100%; } }
-  /* what the request hides below the fold (approve.ts): its line is always reserved, so the cue never moves the
-     buttons and never takes room from the request */
-  .ap-more {
-    margin: 0; min-height: 1lh; white-space: nowrap; text-align: center;
-    color: var(--ui-ink-2); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug);
+  /* the line under the buttons (approve.ts updateState): the latch, what is below the fold, or whether Approve is live;
+     its line is always reserved, so it never moves the buttons and never takes room from the request */
+  .ap-state {
+    margin: 0; min-height: 1lh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+    color: var(--ui-muted); font-size: var(--ap-small-text); line-height: var(--ui-leading-snug);
   }
+  .ap-state.more { color: var(--ui-ink-2); }
   .page-approve .actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2); padding: 0; }
   .page-approve .actions button:disabled { opacity: 0.32; }
   .page-approve #msg { flex: none; padding: 0 var(--ui-space-4) var(--ui-space-3); font-size: var(--ui-text-xs); text-align: center; color: var(--ui-muted); background: var(--ui-bg); }
@@ -830,6 +839,30 @@
   .page-approve #msg.err { color: var(--ui-down); }
   .page-approve #msg > .check { margin-top: var(--ui-space-2); text-align: left; }
   .page-approve .lock-view { padding-top: var(--ui-space-7); }
+
+  /* Roomy: the approved design's sizes in the request, for a paint that fits the window whole in them with every mount
+     at its tallest (approve-density.ts decides before the first frame). The header and the footer keep one geometry,
+     so the buttons sit in the same place for every request. */
+  .page-approve {
+    --ap-row-text: calc((var(--ui-text-xs) + var(--ui-text-sm)) / 2);
+    --ap-small-text: calc((var(--ui-text-caption) + var(--ui-text-xs)) / 2);
+    --ap-row-pad: calc(var(--ui-space-2) + var(--ui-space-1) / 4);
+    --ap-check-pad: calc(var(--ui-space-2) + var(--ui-space-1) / 2);
+    --ap-check-leading: calc(var(--ui-leading-body) - (var(--ui-leading-tight) - 1));
+    --ap-amt-track: calc(var(--ui-track-heading) + (var(--ui-track-display) - var(--ui-track-heading)) / 3);
+  }
+  #app[data-density="roomy"] .ap-body { padding: var(--ui-space-4); line-height: var(--ui-leading-body); }
+  #app[data-density="roomy"] .ap-body > * + * { margin-top: var(--ui-space-3); }
+  #app[data-density="roomy"] .ap-body > .req:not(.dim) { gap: var(--ui-space-3); }
+  #app[data-density="roomy"] .ap-amt { font-size: var(--ui-text-3xl); font-weight: 500; letter-spacing: var(--ap-amt-track); line-height: 1; }
+  #app[data-density="roomy"] .kv > div { padding: var(--ap-row-pad) 0; font-size: var(--ap-row-text); line-height: var(--ui-leading-body); }
+  #app[data-density="roomy"] .kv dd code { font-size: var(--ap-small-text); }
+  #app[data-density="roomy"] .check {
+    grid-template-columns: 20px minmax(0, 1fr); gap: var(--ap-check-pad); padding: var(--ap-check-pad) var(--ui-space-3);
+    font-size: var(--ap-small-text); line-height: var(--ap-check-leading);
+  }
+  #app[data-density="roomy"] .check > svg.i { width: 18px; height: 18px; margin-top: 1px; }
+  #app[data-density="roomy"] .ap-box { padding: var(--ui-space-2) var(--ui-space-3); }
   @media (prefers-reduced-motion: no-preference) {
     .page-approve section:not([hidden]) { animation: fade var(--ui-dur-2) var(--ui-ease) both; }
   }
