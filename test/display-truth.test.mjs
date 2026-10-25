@@ -14,6 +14,7 @@
 //
 // Run: node --import tsx test/display-truth.test.mjs   (offline)
 import { readFileSync } from "node:fs";
+import { scriptSource } from "../scripts/popup-ids.mjs";
 import { describe, costBlock, debitOf, fmtCsd, truncLoud, tokenAmountBothScales, tokenQuoteHtml, revealPreviewHtml } from "../src/popup/clearsign.ts";
 import { canonicalJson, cairnxPayloadHash, defaultFeeFor, CAIRNX_DOMAIN, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16 } from "../src/core/cairnx.ts";
 import { MIN_FEE_PROPOSE, MIN_FEE_ATTEST } from "../src/vendor/cairnx-spv.js";
@@ -165,7 +166,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
 
 // ── Source pins (use-site truth: a helper test alone cannot see a reverted caller) ─
 {
-  const popupSrc = readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
+  const popupSrc = scriptSource("popup.ts");
   const approveSrc = readFileSync(new URL("../src/popup/approve.ts", import.meta.url), "utf8");
   ok("PIN W8: the token review card renders via tokenAmountBothScales at its use-site", /\$\("tc-amt"\)\.textContent = tokenAmountBothScales\(/.test(popupSrc));
   ok("PIN W8: the sent toast renders via tokenAmountBothScales", popupSrc.includes("sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)}"));

@@ -13,6 +13,7 @@
 // Module-level ghostSeen cache is shared across cases in this process → distinct coin VALUES per
 // case (mkCoin derives the txid from the tx, so distinct values ⇒ distinct txids).
 import { readFileSync } from "node:fs";
+import { scriptSource } from "../scripts/popup-ids.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";
@@ -264,7 +265,7 @@ try {
     const bg = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
     const dappLine = bg.split("\n").find((l) => l.includes("const DAPP_METHODS"));
     check("consolidate is NOT a dApp method", !!dappLine && !dappLine.includes("consolidate"));
-    const popup = readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
+    const popup = scriptSource("popup.ts");
     check("CSD send ok:false routes through sendRefused (real reason, not 'in flight')", popup.includes("else sendRefused(CSD_FLOW, r)"));
     check("token send ok:false routes through sendRefused", popup.includes("else sendRefused(TOKEN_FLOW, r)"));
     check("no bare else sendDidntConfirm remains (in-flight copy reserved for catch/maybe-inflight)", !/else sendDidntConfirm\(/.test(popup));
@@ -346,7 +347,7 @@ try {
     check("pendingMerge is NOT a dApp method", !!dappLine && !dappLine.includes("pendingMerge"));
     const roLine = bg.split("\n").find((l) => l.includes("const READ_ONLY_METHODS"));
     check("pendingMerge is a READ-ONLY popup method (must not reset the idle lock)", !!roLine && roLine.includes("pendingMerge"));
-    const popup = readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
+    const popup = scriptSource("popup.ts");
     check("TOO_MANY_INPUTS refusal offers the inline merge action", popup.includes('"Merge coins now"'));
     check("popup treats SUBMIT_DUPLICATE as pending, never 'nothing was sent'", /SUBMIT_DUPLICATE/.test(popup));
     check("balance hero has the pending-merge line wired", popup.includes('$("merge-pending")'));
@@ -542,7 +543,7 @@ try {
     check("unparseable 2xx submit answer classifies SUBMIT_MAYBE_INFLIGHT (server processed it)", r.ok === false && r.code === "SUBMIT_MAYBE_INFLIGHT" && !!r.txid);
     const nodeSrc = readFileSync(new URL("../src/core/node.ts", import.meta.url), "utf8");
     check("POST timeout pinned at 20s (submit must outwait the proxy's 4s+6s failover chain)", /POST_TIMEOUT_MS = 20_000/.test(nodeSrc));
-    const popupSrc = readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
+    const popupSrc = scriptSource("popup.ts");
     check("token send pre-checks the CSD anchor fee with a message naming the actual problem", /needs \$\{fmtCsd\(CAIRNX_FEE\)\} for the on-chain anchor fee/.test(popupSrc));
   }
 } finally {
