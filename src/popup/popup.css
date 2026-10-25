@@ -272,7 +272,7 @@
   .tx-amt { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .tx-sub {
     display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-2);
-    margin-top: var(--ui-space-1); font-size: var(--ui-text-xs); color: var(--ui-muted); overflow-wrap: anywhere;
+    margin-top: var(--ui-space-1); font-size: var(--ui-text-caption); color: var(--ui-muted); overflow-wrap: anywhere;
   }
   .tx-sub a { color: var(--ui-muted); text-decoration: none; font-family: var(--ui-font-mono); font-size: var(--ui-text-2xs); white-space: nowrap; }
   .tx-sub a:hover { color: var(--ui-ink); }
@@ -751,7 +751,7 @@
   .ap-tile svg.mark { width: 18px; height: 17px; }
   .ap-who { display: flex; flex-direction: column; min-width: 0; }
   .ap-brand { font-weight: 600; font-size: var(--ui-text-sm); line-height: var(--ui-leading-snug); }
-  .ap-sub { color: var(--ui-muted); font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); }
+  .ap-sub { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug); }
   .page-approve #view-req { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   /* One dense scale for the request: everything 0.2.99 showed above the buttons still fits at 380 by 620
      (test/approve-layout-chrome.test.mjs). */
@@ -763,7 +763,7 @@
   .page-approve #req > .req:last-child { border-bottom: 0; }
   .page-approve #req > .req.dim b { color: var(--ui-ink); font-weight: 500; }
   /* the signer line sits under the site block, before the hairline under it, as the preview's "Signing as" */
-  .page-approve #req > .req.dim:first-child { padding-top: 0; color: var(--ui-muted); }
+  .page-approve #req > .req.dim:first-child { padding-top: 0; color: var(--ui-muted); font-size: var(--ui-text-caption); }
   .page-approve #req > .req:not(.dim) { padding: var(--ui-space-3) 0; color: var(--ui-ink); }
   /* the title stays inline: describe() puts text and <br> after it, and every break must show */
   .page-approve #req > .req:not(.dim) > b:first-child { font-size: var(--ui-text-sm); letter-spacing: var(--ui-track-snug); }
