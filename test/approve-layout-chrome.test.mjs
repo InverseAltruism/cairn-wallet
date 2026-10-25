@@ -310,6 +310,37 @@ try {
       await ctx.close();
     }
   }
+
+  // The queue advances while the request is scrolled to its end (the user read it, then rejected): the next request
+  // must open at its top, with its amount, fee and warnings in view and the line counting its own hidden rows.
+  console.log("queue advance:");
+  {
+    const first = req("q1", "send", D, many(13)), second = req("q2", "send", LONG, many(13));
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: [first, second] }, { viewport: { width: WIDTH, height: INNER_H } });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      await page.evaluate(() => { const q = document.getElementById("req"); q.scrollTop = q.scrollHeight; });
+      const scrolled = await page.evaluate(() => document.getElementById("req").scrollTop);
+      // the background resolved the first request: the 1.2 s poll now reads a queue holding only the second
+      await page.evaluate((next) => {
+        const send = chrome.runtime.sendMessage;
+        chrome.runtime.sendMessage = (m, cb) => m.method === "pending" ? setTimeout(() => cb({ ok: true, result: [next] }), 5) : send(m, cb);
+      }, second);
+      await page.waitForFunction(() => document.getElementById("app")?.textContent.includes("account-security-verification"), null, { timeout: 5_000 });
+      await settle(page);
+      const r = await page.evaluate(measure, [[], second.origin]);
+      const amountTop = await page.evaluate(() => {
+        const q = document.getElementById("req"), a = q.querySelector(".ap-amt");
+        return a ? Math.round(a.getBoundingClientRect().top - q.getBoundingClientRect().top) : null;
+      });
+      t.check(`queue advance: the next request opens at its top (scrollTop ${r.scrollTop}, was ${scrolled}) with its amount in view (${amountTop} px below the area's top)`, scrolled > 0 && r.scrollTop === 0 && amountTop !== null && amountTop >= 0);
+      t.check(`queue advance: the line counts the next request's hidden recipients ("${r.cue.text}")`, r.cue.open && r.cue.hiddenRcpt > 0 && r.cue.text === cueText(r.cue));
+      t.check(`queue advance: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
 } finally {
   await browser.close();
 }

@@ -131,6 +131,10 @@ async function render() {
     $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b>${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
     $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
+    // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm
+    // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which #ap-more,
+    // reporting only what is below, would not mention.
+    $("req").scrollTop = 0;
     msg(""); // clear any stale "approved"/"rejected" from a previous request
     holdOutcome = false;
     warnPainted = fillSendWarning(current);
