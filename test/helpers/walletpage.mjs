@@ -61,9 +61,9 @@ function installRuntime(answers) {
 }
 
 /** Opens `page` ("popup" or "approve") in a fresh context; returns { page, ctx, errors }. */
-export async function openWalletPage(browser, which, answers, { viewport, colorScheme = "light" } = {}) {
+export async function openWalletPage(browser, which, answers, { viewport, colorScheme = "light", deviceScaleFactor = 1 } = {}) {
   const js = await bundle(which);
-  const ctx = await browser.newContext({ viewport, colorScheme });
+  const ctx = await browser.newContext({ viewport, colorScheme, deviceScaleFactor });
   await ctx.route("**/*", (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== ORIGIN) return route.abort();
