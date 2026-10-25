@@ -17,8 +17,15 @@
   700 ms pause before the buttons arm is shown as a bar that fills. Its copy has no em dashes, is in sentence case
   and marks emphasis in bold instead of capitals; every warning and refusal keeps its meaning.
 - In the approval window a website's renewal or name record verdict sits right under the cost rows and the
-  warnings, and all first-time and address-poisoning warnings of a request share one red row, each on its own line,
-  so a request to two new recipients shows both above the buttons.
+  warnings. A look-alike of an address used before (address poisoning) is a red row and a first send to an address an
+  amber row, in the popup's send review and in the approval window alike (0.2.99 showed the first send red too). Up
+  to two flagged recipients are named, each on its own line; past two, the red row says how many recipients are
+  look-alikes and the amber row how many are new, and each flagged recipient row carries a "Look-alike" or "New"
+  mark, so the warnings stay a few lines above the buttons however many recipients a request carries.
+- The approval window lists every recipient of a request, each whole and in groups of four with its amount, and keeps
+  the count and the total in the amount line. It showed the first 12 and summarised the rest in a red line. A CSD
+  fill shows what it buys before its recipients. test/approve-layout-chrome.test.mjs pins the fold at 13, 20 and 500
+  recipients (500 outputs is the most the wallet signs on a send) and for a 100-output fill.
 - The approval window opens at 460 by 716 (was 380 by 620), and everything that decides a signature sits above Reject
   and Approve without scrolling, for every request type and for the long cases test/approve-layout-chrome.test.mjs
   builds (an unconfirmed reservation's confirm step, an underpaid name fee with its verdict, a token fill with a

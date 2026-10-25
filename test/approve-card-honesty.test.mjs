@@ -32,16 +32,16 @@ const LIST = "0x" + "a1".repeat(32), RES = "0x" + "b2".repeat(32);
 
 console.log("1. UX-1: op-aware first-time warning (pure)");
 t("1a honest: a payment recipient still warns that payments are irreversible", () => {
-  const w = sendWarnings([EXT], [], [ME]).join(" ");
+  const w = sendWarnings([EXT], [], [ME]).map((c) => c.html).join(" ");
   assert.match(w, /First time sending to/); assert.match(w, /Payments are irreversible/);
 });
 t("1b a name pointed at a new address does not say payments are irreversible", () => {
-  const w = sendWarnings([{ to: EXT, kind: "name-point" }], [], [ME]).join(" ");
+  const w = sendWarnings([{ to: EXT, kind: "name-point" }], [], [ME]).map((c) => c.html).join(" ");
   assert.match(w, /First time pointing a name at/); assert.doesNotMatch(w, /[Pp]ayments are irreversible/);
 });
 t("1c a name-transfer look-alike keeps the poisoning flag with name wording", () => {
   const near = EXT.slice(0, 10) + "99" + EXT.slice(12);
-  const w = sendWarnings([{ to: near, kind: "name-transfer" }], [EXT], [ME]).join(" ");
+  const w = sendWarnings([{ to: near, kind: "name-transfer" }], [EXT], [ME]).map((c) => c.html).join(" ");
   assert.match(w, /Possible address-poisoning/); assert.match(w, /The new owner controls the name/); assert.doesNotMatch(w, /[Pp]ayments are irreversible/);
 });
 t("1d the wallet's own address is not a first-time recipient", () => {

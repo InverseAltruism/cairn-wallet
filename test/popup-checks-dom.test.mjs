@@ -2,9 +2,9 @@
 //
 //   1. Review checks carry a tier (W-01, W-02): the name caution is positive only on nameCautionHtml's agree copy (two
 //      sources agree) at a depth that can no longer reorg (NAME_SAFE_DEPTH), caution on every other branch and below
-//      that depth; the first-time and the address-poisoning warnings and a balance that does not cover the send are
-//      danger.
-//      RED-FIRST: give the first-time warning tier "caution" and 1d fails; make nameCheck return "ok" for every
+//      that depth; a first send to an address is caution (owner decision 2026-10-25, as the approval window), the
+//      address-poisoning warning and a balance that does not cover the send are danger.
+//      RED-FIRST: give the first-time warning tier "danger" and 1d, 1e fail; make nameCheck return "ok" for every
 //      verified name and 1b fails; drop the depth from nameCheck and 1b' fails at depth 1 and 2; compare with <= and
 //      1b' fails at depth 3. HONEST PATH: 1a, 1b' at depth 3, 1g (a send with nothing to warn about arms Confirm and
 //      signs with the production call shape).
@@ -121,10 +121,10 @@ resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via:
 await review(LOOK);
 check("1c address poisoning is a danger row with its copy", rows().length === 1 && rows()[0].tier === "danger" && /^<b>Possible address-poisoning\.<\/b>/.test(rows()[0].html) && /is <b>not<\/b> the same address/.test(rows()[0].html));
 await review(NEW);
-check("1d a first send is a danger row (red, as in 0.2.99), the row's icon in place of a ⚠ glyph", rows().length === 1 && rows()[0].tier === "danger" && /^First time sending to this address: check every character\. Payments are irreversible\.$/.test(rows()[0].html));
+check("1d a first send is a caution row (amber), the row's icon in place of a ⚠ glyph", rows().length === 1 && rows()[0].tier === "caution" && /^First time sending to this address: check every character\. Payments are irreversible\.$/.test(rows()[0].html));
 resolveAns = { ok: true, addr: NEW, verified: true, sources: 2, depth: 14, via: "owner" };
 await review("alice.csd");
-check("1e a named first send: the positive name row, then the danger row", rows().map((r) => r.tier).join() === "ok,danger");
+check("1e a named first send: the positive name row, then the caution row", rows().map((r) => r.tier).join() === "ok,caution");
 resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
 await review(PAID, "200");
 check("1f a balance that does not cover the send is a danger row and keeps Confirm down", rows()[0]?.tier === "danger" && /does not cover/.test(rows()[0].html) && byId("btn-send-confirm").disabled === true);

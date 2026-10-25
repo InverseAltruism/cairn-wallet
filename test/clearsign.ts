@@ -138,19 +138,23 @@ ok("lookalikeOf flags a head/tail twin", lookalikeOf(twin, [real]) === real);
 ok("lookalikeOf does NOT flag an unrelated address", lookalikeOf(other, [real]) === null);
 ok("lookalikeOf does NOT flag an identical address", lookalikeOf(real, [real]) === null);
 
-// WYSIWYS-TRUNC-1; a multi-output send with MORE recipients than the display cap must LOUDLY disclose the
-// hidden recipients + their TOTAL (not a quiet "…and N more"), so a dApp can't hide where funds go.
+// W-8 (wave R10): a multi-output request lists EVERY recipient, each whole and grouped in fours with its amount, and keeps
+// the count and the total; nothing is summarised as "N more not shown". The window scrolls and its line above the
+// buttons counts the recipient rows below the fold (test/approve-layout-chrome.test.mjs).
+// RED-FIRST: put back the 12-row cap in outputRows and the 15-, 20- and 500-recipient checks fail.
 {
-  const manyOuts = Array.from({ length: 15 }, (_, i) => ({ to: "0x" + (i + 1).toString(16).padStart(40, "0"), value: 1e8 }));
-  const manyHtml = describe({ method: "send", params: { outputs: manyOuts, fee: 1e6 } });
-  ok("TRUNC-1: truncated multi-send LOUDLY flags the hidden recipients (err class, not a dim aside)",
-    /NOT shown/i.test(manyHtml) && manyHtml.includes('class="check danger"') && /3 more recipient/i.test(manyHtml)); // 15−12=3 hidden
-  ok("TRUNC-1: truncated multi-send discloses the HIDDEN total (3 × 1 CSD)", /3 CSD/.test(manyHtml));
-  ok("TRUNC-1: a send within the cap shows no truncation warning (no false alarm)",
-    !/NOT shown/i.test(describe({ method: "send", params: { outputs: manyOuts.slice(0, 5), fee: 1e6 } })));
-  // and the SAME loud truncation applies to a dApp fillOffer (single-sourced renderer)
-  ok("TRUNC-1: a truncated fillOffer also flags hidden recipients",
-    /NOT shown/i.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), outputs: manyOuts, fee: 5e6 } })));
+  const outs = (n: number) => Array.from({ length: n }, (_, i) => ({ to: "0x" + (i + 1).toString(16).padStart(40, "0"), value: 1e8 }));
+  const toRows = (html: string) => (html.match(/<dt>To<\/dt>/g) || []).length;
+  for (const n of [15, 20, 500]) {
+    const html = describe({ method: "send", params: { outputs: outs(n), fee: 1e6 } });
+    ok(`W-8: a ${n}-recipient send lists all ${n} rows (${toRows(html)})`, toRows(html) === n);
+    ok(`W-8: a ${n}-recipient send says nothing is hidden (no "not shown" line)`, !/not shown/i.test(html));
+    ok(`W-8: a ${n}-recipient send keeps the count and the total in its amount line`, html.includes(`to ${n} recipients`) && html.includes(`${n} CSD`));
+    ok(`W-8: a ${n}-recipient send shows the last recipient whole, in groups of four, tagged for its mark`,
+      html.includes(`data-to="${outs(n).at(-1)!.to}"`) && html.includes("<span>" + outs(n).at(-1)!.to.slice(38) + "</span>"));
+  }
+  const fill = describe({ method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), outputs: outs(100), fee: 5e6 } });
+  ok("W-8: a 100-output fillOffer lists all 100 recipients", toRows(fill) === 100 && !/not shown/i.test(fill));
 }
 
 // DOMAIN-CAP (G9, B8w): the clear-sign DOMAIN display cap tracks the node's MAX_DOMAIN_BYTES (128), so a
@@ -377,18 +381,44 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   // (b) a genuinely-new EXTERNAL recipient still warns (the defense is preserved for real strangers).
   {
     const w = sendWarnings([STRANGER], [], [MY]);
-    ok("NS own-account: a genuinely-new external recipient STILL gets a first-time warning", w.length === 1 && /First time sending/.test(w[0] ?? ""));
+    ok("NS own-account: a genuinely-new external recipient STILL gets a first-time warning", w.length === 1 && /First time sending/.test(w[0]?.html ?? ""));
   }
   // (c) a LOOK-ALIKE of one of your own addresses STILL fires the poisoning warning (the delicate half).
   {
     const w = sendWarnings([MY_LOOKALIKE], [], [MY]);
-    ok("NS own-account: a look-alike of your OWN address still fires the address-poisoning warning", w.length === 1 && /address-poisoning/.test(w[0] ?? ""));
+    ok("NS own-account: a look-alike of your OWN address still fires the address-poisoning warning", w.length === 1 && /address-poisoning/.test(w[0]?.html ?? ""));
   }
   // (d) a PRIOR paid recipient is not re-warned.
   ok("NS own-account: a prior paid recipient is not re-warned", sendWarnings([PAID], [PAID], [MY]).length === 0);
   // MUT control (non-vacuity): keying the first-time check on paidRecipients ALONE (own addr NOT in the set)
   // WOULD warn on the own address; the pre-fix behavior this suppression fixes.
   ok("NS own-account MUT control: keying on sends-only (own addr absent) WOULD warn (proves the fix is load-bearing)", sendWarnings([MY], [], []).length === 1);
+}
+
+// W-2 and W-8 (wave R10): a look-alike is a danger row, a first send a caution row (owner decision 2026-10-25), in one row
+// per tier; up to NAMED_WARNINGS flagged recipients are named, past it each tier counts and the rows carry the marks.
+// RED-FIRST: tier the first-time line "danger" and the caution checks fail; drop the NAMED_WARNINGS bound and the 13 and
+// 500 checks fail (one named line per recipient).
+{
+  const PAID = "0x" + "33".repeat(20);
+  const LOOK = "0x333333" + "55".repeat(15) + "3333";
+  const NEW = (i: number) => "0x" + (0x1000 + i).toString(16).padStart(40, "0");
+  const one = sendWarnings([NEW(1)], [PAID], []);
+  ok("W-2: a first send is one caution row, named", one.length === 1 && one[0]!.tier === "caution" && one[0]!.html.startsWith("First time sending to <code>"));
+  const bad = sendWarnings([LOOK], [PAID], []);
+  ok("W-2: a look-alike is one danger row, named with what it resembles", bad.length === 1 && bad[0]!.tier === "danger" && /resembles <code>0x33333333…333333<\/code>/.test(bad[0]!.html));
+  const mix = sendWarnings([LOOK, NEW(2)], [PAID], []);
+  ok("W-2: a look-alike and a new address: the danger row first, then the caution row, both named", mix.map((c) => c.tier).join() === "danger,caution" && mix.every((c) => /<code>0x/.test(c.html)));
+  const two = sendWarnings([NEW(3), NEW(4)], [PAID], []);
+  ok("W-8: two new addresses share one caution row, one line each", two.length === 1 && two[0]!.tier === "caution" && two[0]!.html.split("<br>").length === 2);
+  for (const n of [13, 500]) {
+    const w = sendWarnings([LOOK, ...Array.from({ length: n - 1 }, (_, i) => NEW(10 + i))], [PAID], []);
+    ok(`W-8: ${n} flagged recipients: two counting rows, no recipient named (${w.map((c) => c.tier).join()})`,
+      w.map((c) => c.tier).join() === "danger,caution" && !/<code>/.test(w.map((c) => c.html).join("")) && !w.some((c) => c.html.includes("<br>")));
+    ok(`W-8: ${n} flagged: the rows say how many and that each is marked`, w[0]!.html.includes("1 of these addresses resemble") && w[1]!.html.includes(`${n - 1} of these addresses are new to this wallet`) && w.every((c) => c.html.includes("Each is marked in the list below")));
+    ok(`W-8: ${n} flagged: the box is as long as at 13 (bounded, not per recipient)`, w.map((c) => c.html).join("").length < 600);
+  }
+  ok("W-8: the treasury is never flagged", sendWarnings([TREASURY_ADDR], [], []).length === 0);
 }
 
 // ── NS-1 (Plan 75 P75-7) badge: a verified result whose winner was decided by a LONE source (soleSource) must

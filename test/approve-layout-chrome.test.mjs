@@ -163,8 +163,10 @@ function measure([expect, origin]) {
     if (label === "cost") return [document.getElementById("cost")];
     if (label.startsWith("#")) return [document.getElementById(label.slice(1))];
     if (label.startsWith("to:")) return [...reqEl.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === "To");
-    // the recipients #send-warn names (a look-alike line also names what it resembles, which is not a recipient)
-    if (label.startsWith("warn:")) return [...new Set([...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent))];
+    // the recipients #send-warn names (a look-alike line also names what it resembles, which is not a recipient), or,
+    // when the box only counts them, the recipient rows that carry a mark
+    if (label.startsWith("warn:")) return [...new Set([...[...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent),
+      ...[...reqEl.querySelectorAll(".kv > div[data-to]")].filter((r) => r.querySelector(".row-flag")).map((r) => r.dataset.to)])];
     if (label === "Resolves to") return [...reqEl.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === label);
     const words = label.replace(/[<>]/g, "");
     const walker = document.createTreeWalker(reqEl, NodeFilter.SHOW_ELEMENT);
@@ -216,7 +218,13 @@ function measure([expect, origin]) {
   const hiddenRcpt = [...reqEl.querySelectorAll(".kv > div")].filter((r) => RCPT.has(r.querySelector("dt")?.textContent ?? "") && r.getBoundingClientRect().bottom > reqEl.getBoundingClientRect().bottom + 0.5).length;
   const cueEl = document.getElementById("ap-more");
   const cue = { text: cueEl ? cueEl.textContent : null, open, hiddenRcpt, clear: !!cueEl && cueEl.getBoundingClientRect().top >= reqEl.getBoundingClientRect().bottom - 0.5 && cueEl.getBoundingClientRect().bottom <= barTop + 0.5 };
-  return { below, cue, late, marked, missing, lowest: lowest && { what: lowest.what, gap: Math.round(fold - lowest.bottom) }, scrollTop: reqEl.scrollTop, hiddenBr, lost };
+  // a look-alike is danger, a first send caution (owner decision 2026-10-25): each warning row's tier against its words
+  const tiers = [...(document.getElementById("send-warn")?.querySelectorAll(".check") ?? [])].map((c) => {
+    const tier = c.classList.contains("danger") ? "danger" : c.classList.contains("caution") ? "caution" : "other";
+    const want = /address-poisoning/.test(c.textContent) ? "danger" : "caution";
+    return { tier, ok: tier === want };
+  });
+  return { below, cue, late, marked, missing, tiers, lowest: lowest && { what: lowest.what, gap: Math.round(fold - lowest.bottom) }, scrollTop: reqEl.scrollTop, hiddenBr, lost };
 }
 
 // Wait until Reject is armed, every mount the request carries is painted (the listing, the token quote, the reveal
@@ -255,6 +263,7 @@ try {
       t.check(`${name}: every element with weight is above the buttons, unscrolled (lowest: ${r.lowest?.what}, ${r.lowest?.gap} px above; below: ${r.below.join(", ") || "none"})`, r.below.length === 0 && r.scrollTop === 0);
       t.check(`${name}: the cost and the warnings come before the recipients and the rows without weight (late: ${r.late.join(", ") || "none"})`, r.late.length === 0);
       t.check(`${name}: no check row starts with a ⚠ mark (${r.marked})`, r.marked === 0);
+      t.check(`${name}: each warning row has its tier, danger for a look-alike, caution for a first send (${r.tiers.map((x) => x.tier).join(",") || "none"})`, r.tiers.every((x) => x.ok));
       t.check(`${name}: the line above the buttons matches what is below the fold ("${r.cue.text}", ${r.cue.hiddenRcpt} recipient rows hidden) and covers nothing`, r.cue.text === cueText(r.cue) && r.cue.clear);
       t.check(`${name}: no <br> in the request is hidden (${r.hiddenBr}) and the text breaks at every one (${r.lost.join("; ") || "all kept"})`, r.hiddenBr === 0 && r.lost.length === 0);
       t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
@@ -270,10 +279,10 @@ try {
   // where the buttons are and where the request area ends: neither moves when the line comes or goes
   const buttonsAt = (page) => page.evaluate(() => [document.getElementById("btn-reject").getBoundingClientRect().top, document.getElementById("btn-approve").getBoundingClientRect().top, document.getElementById("req").getBoundingClientRect().bottom]);
   let ordinary = null;
-  // five recipients fit at this size; from a look-alike origin long enough to wrap the header they do not
+  // five recipients fit at this size; eight from a look-alike origin long enough to wrap the header do not
   const LONG = "https://cairn-substrate.com.account-security-verification.session-renewal.wallet-support-desk.example";
   for (const [name, queue] of [["send-1", [req("m1", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })]], ["send-5", [req("m5", "send", D, many(5))]],
-    ["send-5-long-origin", [req("m5o", "send", LONG, many(5))]], ["send-13", [req("m13", "send", D, many(13))]]]) {
+    ["send-8-long-origin", [req("m8o", "send", LONG, many(8))]], ["send-13", [req("m13", "send", D, many(13))]]]) {
     const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue }, { viewport: { width: WIDTH, height: INNER_H } });
     try {
       await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
@@ -305,6 +314,36 @@ try {
       await page.waitForTimeout(200);
       const back = await page.evaluate(() => document.getElementById("ap-more")?.textContent ?? null);
       t.check(`${name}: when the request grows past the end, the line comes back ("${back}")`, back === "More below: scroll to read the whole request");
+      t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  // W-8: a site can send to hundreds of recipients. The engine signs up to 500 outputs on a send and 100 on a fill (the
+  // 100 KB transaction cap would allow more; validateOutputs refuses them before signing), so those are the largest
+  // requests that reach a signature. Every recipient is listed; the warning box counts past NAMED_WARNINGS and the
+  // flagged rows carry the marks, so the cost, the balance after, every warning and what a fill buys stay above the
+  // buttons, and the line names the recipient rows below. The first recipient is a look-alike of one paid before.
+  // RED-FIRST: name every flagged recipient in the box (no NAMED_WARNINGS bound) and the 13, 20 and 500 cases fail the
+  // fold; put the listing after the recipient rows and fill-100 fails it.
+  console.log("many recipients:");
+  const addrN = (i) => "0x" + (0x5000 + i).toString(16).padStart(40, "0");
+  const crowd = (n) => [[LOOK, 10_000_000], ...Array.from({ length: n - 1 }, (_, i) => [addrN(i), 10_000_000])];
+  const RCPT_ROW = /^row (To|Resolves to|Paid to) /;
+  for (const [name, n, r] of [["send-13", 13, req("w13", "send", D, sendTo(crowd(13)))], ["send-20", 20, req("w20", "send", D, sendTo(crowd(20)))],
+    ["send-500", 500, req("w500", "send", D, sendTo(crowd(500)))], ["fill-100", 100, req("w100", "fillOffer", O, fill(crowd(100)))]]) {
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, ...seen, fillOfferView: view, pending: [r] }, { viewport: { width: WIDTH, height: INNER_H } });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 20_000 });
+      await settle(page);
+      const m = await page.evaluate(measure, [["cost", "#send-warn", `warn:${n}`, `to:${n}`, ...(name.startsWith("fill") ? ["#fill-view"] : [])], r.origin]);
+      const weightBelow = m.below.filter((w) => !RCPT_ROW.test(w));
+      t.check(`${name}: the cost, the balance after, every warning${name.startsWith("fill") ? " and the listing" : ""} sit above the buttons, unscrolled (below, besides recipient rows: ${weightBelow.join(", ") || "none"})`, weightBelow.length === 0 && m.scrollTop === 0);
+      t.check(`${name}: all ${n} recipients are listed and each is flagged (missing: ${m.missing.join(", ") || "none"})`, m.missing.length === 0);
+      t.check(`${name}: the warning rows count, danger then caution, and name no recipient`, m.tiers.map((x) => x.tier).join() === "danger,caution" && m.tiers.every((x) => x.ok)
+        && await page.evaluate(() => document.getElementById("send-warn").querySelectorAll("code").length === 0));
+      t.check(`${name}: the line names the recipient rows below ("${m.cue.text}", ${m.cue.hiddenRcpt} rows not in view)`, m.cue.open && m.cue.hiddenRcpt > 0 && m.cue.text === cueText(m.cue) && m.cue.clear);
       t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();

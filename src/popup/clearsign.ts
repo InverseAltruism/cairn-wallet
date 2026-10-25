@@ -36,9 +36,10 @@ export const checkRow = (c: Check): string => `<div class="check ${c.tier}"><svg
 const danger = (html: string): string => checkRow({ tier: "danger", html });
 const caution = (html: string): string => checkRow({ tier: "caution", html });
 // Label and value rows; labels are fixed copy, values are markup the caller escaped. `id` names the list for approve.ts.
-type Row = [label: string, value: string];
+// A recipient row carries its address in data-to, so the approval window can mark it when the warning box only counts.
+type Row = [label: string, value: string, to?: string];
 const rows = (list: Row[], id?: string): string => list.length
-  ? `<dl class="kv"${id ? ` id="${id}"` : ""}>${list.map(([l, v]) => `<div><dt>${l}</dt><dd>${v}</dd></div>`).join("")}</dl>` : "";
+  ? `<dl class="kv"${id ? ` id="${id}"` : ""}>${list.map(([l, v, to]) => `<div${to !== undefined ? ` data-to="${escapeHtml(to.toLowerCase())}"` : ""}><dt>${l}</dt><dd>${v}</dd></div>`).join("")}</dl>` : "";
 const title = (html: string): string => `<div class="ap-title">${html}</div>`;
 const lede = (html: string): string => `<p class="ap-lede">${html}</p>`;
 
@@ -152,17 +153,12 @@ export function revealPreviewHtml(rec: { domain?: unknown; claim?: unknown; fail
   return lede("Approving makes this <b>public</b>:") + rows([domain, ["Claim", `<code>${truncLoud(rec.claim, 300)}</code>`]]);
 }
 
-// WYSIWYS-TRUNC-1: the value outputs as rows. Caps the visible rows so the cost rows and the buttons cannot be
-// scrolled out of the window, but makes truncation loud and discloses the hidden recipients' total: a dApp must
-// never be able to hide where funds go behind a quiet "and N more". Single source for the three fund-moving
-// describe() branches (send, fillOffer, propose with outputs), so the rendering cannot drift.
-function outputRows(outs: any[], shown = 12): { list: Row[]; hidden: string } {
-  const all = Array.isArray(outs) ? outs : [];
-  const list: Row[] = all.slice(0, shown).map((o: any) => ["To", `<code class="addr">${groupedAddr(String(o.to))}</code><b class="out-amt">${fmtCsd(o.value)}</b>`]);
-  if (all.length <= shown) return { list, hidden: "" };
-  const rest = all.slice(shown);
-  const hiddenTotal = rest.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-  return { list, hidden: danger(`${rest.length} more recipient(s) <b>not shown</b> here: ${fmtCsd(hiddenTotal)} to addresses you cannot see. Only approve if you fully trust this site.`) };
+// The value outputs as rows, every one: each recipient whole, in groups of four, with its amount. Nothing is summarised
+// away: the request scrolls, the line above the buttons counts the recipient rows below the fold, and the cost rows and
+// the warnings render before this list (test/approve-layout-chrome.test.mjs). Single source for the three fund-moving
+// describe() branches (send, fillOffer, propose with outputs).
+function outputRows(outs: any[]): Row[] {
+  return (Array.isArray(outs) ? outs : []).map((o: any): Row => ["To", `<code class="addr">${groupedAddr(String(o.to))}</code><b class="out-amt">${fmtCsd(o.value)}</b>`, String(o.to)]);
 }
 
 // The fee as a row value. `??` (not `||`): an explicit fee:0 must render as 0; the engine refuses it BAD_FEE, and
@@ -255,7 +251,7 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
   switch (r.t) {
     case "transfer": {
       const a = tokenAmt(r.amount, r.ticker, meta);
-      return parts("CairnX token transfer", rows([["Token", `<b>${esc(r.ticker)}</b>`], ["Amount", a.html], ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`], ...memo]) + warnRows(a.warn));
+      return parts("CairnX token transfer", rows([["Token", `<b>${esc(r.ticker)}</b>`], ["Amount", a.html], ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`, String(r.to)], ...memo]) + warnRows(a.warn));
     }
     case "deploy": {
       const limit = r.mint === "open" ? ` · mint limit ${esc(r.mintLimit)}/tx` : "";
@@ -276,7 +272,7 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
         ...(r.min !== undefined ? [["Partial fills from", baseAmt(r.min)] as Row] : []),
         ...(r.taker !== undefined ? [["Only fillable by", `<code class="addr">${groupedAddr(String(r.taker))}</code>`] as Row] : []),
         ...(r.bid !== undefined ? [["Accepts bid", `<code>${esc(r.bid)}</code>`] as Row] : []),
-        ...((r.want as any)?.payto !== undefined ? [["Paid to", `<code class="addr">${groupedAddr(String((r.want as any).payto))}</code>`] as Row] : []),
+        ...((r.want as any)?.payto !== undefined ? [["Paid to", `<code class="addr">${groupedAddr(String((r.want as any).payto))}</code>`, String((r.want as any).payto)] as Row] : []),
       ];
       return parts("CairnX offer", rows([["Give", give.html], ["Want", want.html], ...extras, ...memo]) + warnRows(give.warn, want.warn), lede("Escrows what you give until it is filled or cancelled."));
     }
@@ -300,7 +296,7 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
       return parts(".csd registration, step 3 of 3 (finalize and pay)", rows([nameRow]),
         lede("Completes your reservation and pays the fee shown above (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner of the name pays, and only once; a lost race is never charged."));
     case "nxfer":
-      return parts(".csd name transfer", rows([nameRow, ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`]]));
+      return parts(".csd name transfer", rows([nameRow, ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`, String(r.to)]]));
     case "nset": {
       // QA #4: a zero-address nset is the V23 "un-point" sentinel, not a send to 0x0. The wallet cannot know the
       // landing height at sign time, so it states both effects and the backstop (sends to a 0x0-resolving name are
@@ -309,7 +305,7 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
         return parts(".csd un-point (clear address record)", lede(`Clears the resolver record on <code>${esc(r.name)}.csd</code>. At the V23 upgrade it falls back to its owner and drops out of your primary name.`),
           lede(`<span class="dim">Before V23 it would set the literal zero address; either way the wallet refuses any send to a 0x0-resolving name.</span>`));
       }
-      return parts(".csd name → address record", rows([nameRow, ["Resolves to", `<code class="addr">${groupedAddr(String(r.addr))}</code>`]]));
+      return parts(".csd name → address record", rows([nameRow, ["Resolves to", `<code class="addr">${groupedAddr(String(r.addr))}</code>`, String(r.addr)]]));
     }
     case "nrenew":
       return parts(".csd name renewal", lede(`Extends the lease on <code>${esc(r.name)}.csd</code>.`));
@@ -385,10 +381,9 @@ export function describe(r: any): string {
     // first-time and look-alike warnings as a send (#send-warn, filled by approve.ts).
     const outs = Array.isArray(p.outputs) ? p.outputs : [];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const o = outputRows(outs);
     // NXFER-POISON-DROP: the poisoning mount renders even when a cairnx repoint (nxfer, nset) carries no CSD outputs.
-    const xfer = outs.length ? caution(`This proposal also transfers funds out of your wallet: <b>${fmtCsd(total)}</b> in total.`) + o.hidden : "";
-    const outRows = rows(o.list);
+    const xfer = outs.length ? caution(`This proposal also transfers funds out of your wallet: <b>${fmtCsd(total)}</b> in total.`) : "";
+    const outRows = rows(outputRows(outs));
     // The dApp-supplied expiry is part of the signed bytes: shown humanized in both branches.
     const exp: Row[] = p.expiresEpoch !== undefined ? [["Expires", expiryValue(p.expiresEpoch, r.currentEpoch)]] : [];
     if (String(p.domain) === CAIRNX_DOMAIN) {
@@ -483,9 +478,8 @@ export function describe(r: any): string {
   if (r.method === "send") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [{ to: p.to, value: p.amount }];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const o = outputRows(outs);
     const hero = outs.length > 1 ? `${fmtCsd(total)} <span class="dim">to ${outs.length} recipients</span>` : fmtCsd(outs[0]?.value);
-    return title("Send CSD") + `<div class="ap-amt">${hero}</div>` + cost + o.hidden + SEND_WARN + rows(o.list);
+    return title("Send CSD") + `<div class="ap-amt">${hero}</div>` + cost + SEND_WARN + rows(outputRows(outs));
   }
   // Fill: an attest and payment outputs in one tx; CairnX applies the delivery afterwards and may refuse it, and a
   // refused CSD-paid fill keeps its payment, so the copy never calls it atomic. Funds move to a page-chosen recipient, so it
@@ -494,17 +488,17 @@ export function describe(r: any): string {
   if (r.method === "fillOffer") {
     const outs = Array.isArray(p.outputs) ? p.outputs : [];
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const o = outputRows(outs);
     const conf = Number(p.confidence ?? 100) >>> 0;
     // CairnX v1.2: the token-priced fill marker lets the convention debit the user's CairnX token balance (ask plus
     // the FEE_BPS_V16 protocol fee) with no CSD output visible here; an outputs-free fill would otherwise read free.
     const tokenFill = conf === CONF_TOKEN_FILL
       ? danger(`<b>Token-priced fill: approving spends tokens from your CairnX balance.</b> The trading convention debits the offer's asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Verify the offer's price on the site or the explorer before approving.`) + TOKEN_SIM
       : "";
-    // Weight first (test/approve-layout-chrome.test.mjs): the amount, the cost rows, the warnings, the recipients and the
-    // listing; then the explanation, the offer id and the attestation.
+    // Weight first (test/approve-layout-chrome.test.mjs): the amount, the cost rows, the warnings, the listing (what the
+    // fill buys) and the recipients, so a fill to many recipients keeps what it buys above the buttons; then the
+    // explanation, the offer id and the attestation.
     return title("Fill offer") + (outs.length ? `<div class="ap-amt">${fmtCsd(total)}</div>` : "")
-      + tokenFill + cost + o.hidden + SEND_WARN + rows(o.list) + (tokenFill ? "" : FILL_VIEW) + lede(tokenFill ? FILL_RECORDS : FILL_PAYS)
+      + tokenFill + cost + SEND_WARN + (tokenFill ? "" : FILL_VIEW) + rows(outputRows(outs)) + lede(tokenFill ? FILL_RECORDS : FILL_PAYS)
       + rows([["Offer", `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`], ["Attestation", attestation(Number(p.score ?? 100) >>> 0, conf)]]);
   }
   return title(escapeHtml(r.method)) + cost;
@@ -624,18 +618,102 @@ const WARN_TAIL: Record<RecipientKind, string> = {
   "name-point": "Sends to this name will go to this address.", "name-transfer": "The new owner controls the name.",
   proceeds: "The sale proceeds will be paid to this address.",
 };
-export function sendWarnings(recipients: (string | { to: string; kind: RecipientKind })[], sentTo: string[], ownAddrs: string[]): string[] {
-  const warns: string[] = [];
-  for (const raw of recipients) {
-    const to = String((typeof raw === "string" ? raw : raw?.to) || "");
-    const kind: RecipientKind = typeof raw === "string" || !raw || !(raw.kind in WARN_TAIL) ? "payment" : raw.kind;
-    if (to.toLowerCase() === TREASURY_ADDR) continue;          // fixed protocol sink, never a user recipient
-    const tag = `<code>${escapeHtml(to.slice(0, 10))}…${escapeHtml(to.slice(-6))}</code>`;
-    const { lookalike: la, firstTime } = recipientStatus(to, sentTo, ownAddrs);
-    if (la) warns.push(`<b>Possible address-poisoning:</b> ${tag} resembles <code>${escapeHtml(la.slice(0, 10))}…${escapeHtml(la.slice(-6))}</code> you've seen before but is <b>not</b> identical. Verify every character. ${WARN_TAIL[kind]}`);
-    else if (firstTime) warns.push(`${FIRST_TIME_LEAD[kind]} ${tag}. Verify every character. ${WARN_TAIL[kind]}`);
+/** The recipients a request's first-time and look-alike checks cover. Send, fillOffer and a propose with outputs move
+ *  funds to dApp-chosen recipients (propose outputs could be a disguised payout, so they are covered too, and shown
+ *  neutrally as funds leaving the wallet). A cairnx record adds the address it acts on. */
+export function requestRecipients(r: any): { to: string; kind: RecipientKind }[] {
+  if (r?.method !== "send" && r?.method !== "fillOffer" && r?.method !== "propose") return [];
+  const p = r.params || {};
+  const outs: { to: string; kind: RecipientKind }[] = (Array.isArray(p.outputs) ? p.outputs : (p.to ? [{ to: p.to }] : [])).map((o: any) => ({ to: String(o?.to || ""), kind: "payment" as const }));
+  // A dApp-proposed CairnX token transfer carries its recipient in the decoded record's `to` (NOT a CSD
+  // output), so the first-time / address-poisoning check would otherwise skip it (audit POPUP-1). Decode
+  // the canonical+hash-committed record and include the token recipient in the same check.
+  if (r.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
+    const rec = decodeCairnxRecord(p.uri, p.payloadHash);
+    if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "token" });
+    // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
+    // nxfer hands the name to a new owner; both carry an attacker-influenceable address that deserves the
+    // same first-time / address-poisoning (look-alike) check as a transfer recipient.
+    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr, kind: "name-point" });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient; skip the poisoning check (0x0 sends are hard-blocked anyway)
+    if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "name-transfer" });
+    // M1 (deep-review 2026-07-03): an `offer` routes its SALE PROCEEDS to want.payto when it fills. A
+    // bad-faith dApp can set payto to a look-alike of the user's OWN address, silently redirecting the
+    // proceeds. The field is shown at clear-sign but had no automated look-alike flag; add it here so it
+    // gets the same first-time / address-poisoning check as every other dApp-supplied recipient.
+    if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto, kind: "proceeds" });
   }
-  return warns;
+  return outs;
+}
+// A recipient the first-time and look-alike checks flag: a look-alike of an address this wallet paid or holds is danger
+// (the address-poisoning pattern), an address it has never used is caution. The wallet's own accounts and the treasury
+// are never flagged.
+export type Recipient = string | { to: string; kind: RecipientKind };
+export type RecipientFlag = { to: string; kind: RecipientKind; tier: "danger" | "caution"; lookalike: string | null };
+const recipientOf = (raw: Recipient): { to: string; kind: RecipientKind } => ({
+  to: String((typeof raw === "string" ? raw : raw?.to) || ""),
+  kind: typeof raw === "string" || !raw || !(raw.kind in WARN_TAIL) ? "payment" : raw.kind,
+});
+export function recipientFlags(recipients: Recipient[], sentTo: string[], ownAddrs: string[]): RecipientFlag[] {
+  const flags: RecipientFlag[] = [];
+  for (const raw of recipients) {
+    const { to, kind } = recipientOf(raw);
+    if (to.toLowerCase() === TREASURY_ADDR) continue;          // fixed protocol sink, never a user recipient
+    const { lookalike, firstTime } = recipientStatus(to, sentTo, ownAddrs);
+    if (lookalike) flags.push({ to, kind, tier: "danger", lookalike });
+    else if (firstTime) flags.push({ to, kind, tier: "caution", lookalike: null });
+  }
+  return flags;
+}
+// Up to this many flagged recipients are each named in the warning box. Past it, each tier states how many and the
+// approval window marks every flagged row (rowFlagHtml), so the box keeps a few lines above the buttons however many
+// recipients a request carries (W-8: a site can send to hundreds).
+export const NAMED_WARNINGS = 2;
+const addrTag = (a: string) => `<code>${escapeHtml(a.slice(0, 10))}…${escapeHtml(a.slice(-6))}</code>`;
+const tailsOf = (fs: RecipientFlag[]) => [...new Set(fs.map((f) => WARN_TAIL[f.kind]))].join(" ");
+/** The warning box's rows for these flags: the danger row first, then the caution row. */
+export function warningChecks(flags: RecipientFlag[]): Check[] {
+  const named = flags.length <= NAMED_WARNINGS;
+  const out: Check[] = [];
+  for (const tier of ["danger", "caution"] as const) {
+    const fs = flags.filter((f) => f.tier === tier);
+    if (!fs.length) continue;
+    const html = named
+      ? fs.map((f) => f.tier === "danger"
+        ? `<b>Possible address-poisoning:</b> ${addrTag(f.to)} resembles ${addrTag(f.lookalike ?? "")} you've seen before but is <b>not</b> identical. Verify every character. ${WARN_TAIL[f.kind]}`
+        : `${FIRST_TIME_LEAD[f.kind]} ${addrTag(f.to)}. Verify every character. ${WARN_TAIL[f.kind]}`).join("<br>")
+      : tier === "danger"
+        ? `<b>Possible address-poisoning:</b> ${fs.length} of these addresses resemble ones you've seen before but are <b>not</b> identical. Each is marked in the list below. Verify every character. ${tailsOf(fs)}`
+        : `${fs.length} of these addresses are new to this wallet. Each is marked in the list below. Verify every character. ${tailsOf(fs)}`;
+    out.push({ tier, html });
+  }
+  return out;
+}
+/** Whether the warning box only counts these flags, so the flagged rows carry the marks. */
+export const warningsCounted = (flags: RecipientFlag[]): boolean => flags.length > NAMED_WARNINGS;
+/** The mark on a flagged recipient row when the box only counts. */
+export const rowFlagHtml = (tier: "danger" | "caution"): string => `<span class="row-flag ${tier}">${tier === "danger" ? "Look-alike" : "New"}</span>`;
+export function sendWarnings(recipients: Recipient[], sentTo: string[], ownAddrs: string[]): Check[] {
+  return warningChecks(recipientFlags(recipients, sentTo, ownAddrs));
+}
+// Every warning box these recipients can produce, whatever the history says: the approval window reserves the tallest
+// before it paints (approve-density.ts), so the box landing later never pushes the request past the fold. Named boxes
+// flag the two recipients with the longest lines in every tier combination; counted boxes flag all of them.
+export function warningCandidates(recipients: Recipient[]): Check[][] {
+  const rs = recipients.map(recipientOf).filter((r) => r.to.toLowerCase() !== TREASURY_ADDR);
+  if (!rs.length) return [];
+  const flag = (r: { to: string; kind: RecipientKind }, tier: "danger" | "caution"): RecipientFlag =>
+    ({ ...r, tier, lookalike: tier === "danger" ? r.to : null });
+  const len = (r: { kind: RecipientKind }) => FIRST_TIME_LEAD[r.kind].length + WARN_TAIL[r.kind].length;
+  const longest = [...rs].sort((a, b) => len(b) - len(a)).slice(0, NAMED_WARNINGS);
+  const tiers = ["danger", "caution"] as const;
+  const out: Check[][] = [];
+  const combos = longest.length === 1 ? tiers.map((t) => [t]) : tiers.flatMap((a) => tiers.map((b) => [a, b]));
+  for (const c of combos) out.push(warningChecks(longest.map((r, i) => flag(r, c[i]!))));
+  if (rs.length > NAMED_WARNINGS) {
+    out.push(warningChecks(rs.map((r) => flag(r, "danger"))), warningChecks(rs.map((r) => flag(r, "caution"))),
+      warningChecks(rs.map((r, i) => flag(r, i === 0 ? "danger" : "caution"))));
+  }
+  return out;
 }
 
 // XREPO-1. Sending to "<name>.csd" resolves the address through a configurable / MITM-able name service.

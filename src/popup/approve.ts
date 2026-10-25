@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, warningsCounted, rowFlagHtml, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
@@ -442,40 +442,27 @@ async function fillFillView(r: any) {
 let warnForId: string | null = null;
 async function fillSendWarning(r: any) {
   // send / fillOffer / propose-with-outputs all move funds to dApp-chosen recipients → same
-  // first-time / look-alike (address-poisoning) defenses. (propose outputs could be a disguised
-  // payout, so they get the warning too; they're shown neutrally as "transfers OUT" in clearsign.)
+  // first-time / look-alike (address-poisoning) defenses (clearsign.requestRecipients).
   if ((r.method !== "send" && r.method !== "fillOffer" && r.method !== "propose") || warnForId === r.id) return; warnForId = r.id;
-  const p = r.params || {};
-  const outs: { to: string; kind: RecipientKind }[] = (Array.isArray(p.outputs) ? p.outputs : (p.to ? [{ to: p.to }] : [])).map((o: any) => ({ to: String(o?.to || ""), kind: "payment" as const }));
-  // A dApp-proposed CairnX token transfer carries its recipient in the decoded record's `to` (NOT a CSD
-  // output), so the first-time / address-poisoning check would otherwise skip it (audit POPUP-1). Decode
-  // the canonical+hash-committed record and include the token recipient in the same check.
-  if (r.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
-    const rec = decodeCairnxRecord(p.uri, p.payloadHash);
-    if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "token" });
-    // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
-    // nxfer hands the name to a new owner; both carry an attacker-influenceable address that deserves the
-    // same first-time / address-poisoning (look-alike) check as a transfer recipient.
-    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr, kind: "name-point" });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient; skip the poisoning check (0x0 sends are hard-blocked anyway)
-    if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "name-transfer" });
-    // M1 (deep-review 2026-07-03): an `offer` routes its SALE PROCEEDS to want.payto when it fills. A
-    // bad-faith dApp can set payto to a look-alike of the user's OWN address, silently redirecting the
-    // proceeds. The field is shown at clear-sign but had no automated look-alike flag; add it here so it
-    // gets the same first-time / address-poisoning check as every other dApp-supplied recipient.
-    if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto, kind: "proceeds" });
-  }
+  const outs = requestRecipients(r);
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
     if (renderedId !== r.id) return; // W2 (AW-3): superseded, never paint a resolved request's warnings over the one now on screen
     const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
-    // NXFER-POISON-DROP (Part B): the first-time / poisoning computation is the pure clearsign.sendWarnings
+    // NXFER-POISON-DROP (Part B): the first-time / poisoning computation is the pure clearsign.recipientFlags
     // (approve.ts owns only the DOM read + mount). It keys the first-time check on `known` = paid recipients
     // PLUS the wallet's OWN account addresses, so an nset pre-filled with the user's own address (the "set as
     // primary" prompt right after registration) no longer warns about the user's own address on a no-CSD op.
-    const warns = sendWarnings(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
+    const flags = recipientFlags(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
     const el = document.getElementById("send-warn");
-    // one box for every warning, each on its own line: a request to two new recipients keeps both above the buttons
-    if (el && warns.length) { el.innerHTML = checkRow({ tier: "danger", html: warns.join("<br>") }); (el as HTMLElement).hidden = false; }
+    if (!el || !flags.length) return;
+    // a look-alike is a danger row, a first send a caution row; past NAMED_WARNINGS the rows count and each flagged
+    // recipient row carries its mark
+    el.innerHTML = warningChecks(flags).map(checkRow).join(""); (el as HTMLElement).hidden = false;
+    if (warningsCounted(flags)) {
+      const rows = [...$("req").querySelectorAll<HTMLElement>(".kv > div[data-to]")];
+      for (const f of flags) for (const row of rows) if (row.dataset.to === f.to.toLowerCase()) row.querySelector("dd")?.insertAdjacentHTML("beforeend", rowFlagHtml(f.tier));
+    }
   } catch { /* no history → no warning */ }
 }
 // Anti-click-through: when the request view (re)builds for a NEW request, disable both

@@ -786,6 +786,13 @@
   .page-approve .kv dd code { font-size: var(--ui-text-caption); }
   /* the amount ends the address's last line when it fits there, kept whole */
   .page-approve .out-amt { display: inline-block; margin-left: var(--ui-space-2); white-space: nowrap; }
+  /* a flagged recipient when the warning box only counts (clearsign.rowFlagHtml): the tier's tint, like its check row */
+  .row-flag {
+    display: inline-block; margin-left: var(--ui-space-2); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-pill);
+    font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-sans); white-space: nowrap;
+  }
+  .row-flag.danger { background: var(--ui-down-tint); color: var(--ui-down); }
+  .row-flag.caution { background: var(--ui-warn-tint); color: var(--ui-warn); }
   .page-approve .checks { display: flex; flex-direction: column; gap: var(--ui-space-2); }
   .page-approve .check { grid-template-columns: 16px minmax(0, 1fr); padding: var(--ui-space-1) var(--ui-space-2); line-height: var(--ui-leading-snug); }
   .page-approve .check > svg.i { width: 16px; height: 16px; margin-top: 0; }

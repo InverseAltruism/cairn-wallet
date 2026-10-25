@@ -1,9 +1,10 @@
 // The popup's send review in Chrome at 360 by 600, light and dark: each review check renders in its tier's colour
-// (W-01, W-02). A first send to an address is red again, as in 0.2.99: at 5788776 only `.warn:has(> code)` was red,
-// so the first-time warning, which carries no <code>, read as neutral. A positive name row is green, a caution
-// amber, and every row sits above Confirm.
-// RED-FIRST: drop the `.check.danger` rule from popup.css and the danger checks fail; restore popup.css and
-// popup.ts from 5788776 and every tier check fails; drop the `key === pendingShown` return in renderPending and the
+// (W-01, W-02). A first send to an address is a caution, amber, as in the approved design (owner decision 2026-10-25,
+// which replaces 0.2.99's red); an address-poisoning look-alike stays danger, red. A positive name row is green, and
+// every row sits above Confirm.
+// RED-FIRST: drop the `.check.caution` rule from popup.css and the caution checks fail; drop `.check.danger` and the
+// look-alike checks fail; give the first-time warning tier "danger" in popup-sendflow.ts and the first-send checks
+// fail; restore popup.css and popup.ts from 5788776 and every tier check fails; drop the `key === pendingShown` return in renderPending and the
 // pending card check fails; set data-enter on every write in enterOnce and the refresh check fails.
 // HONEST PATH: the positive row on a two-source name; the first fill's stagger.
 // Needs playwright-core (PLAYWRIGHT_CORE) and a Chromium (PLAYWRIGHT_CHROMIUM); prints SKIP without them.
@@ -36,8 +37,8 @@ const readRows = () => {
   });
 };
 
-async function review(theme, resolveName, to) {
-  const { page, ctx, errors } = await openWalletPage(browser, "popup", { ...base, resolveName, confirmName: resolveName }, { viewport: { width: 360, height: 600 }, colorScheme: theme });
+async function review(theme, resolveName, to, extra = {}) {
+  const { page, ctx, errors } = await openWalletPage(browser, "popup", { ...base, resolveName, confirmName: resolveName, ...extra }, { viewport: { width: 360, height: 600 }, colorScheme: theme });
   await page.waitForSelector("#view-main:not([hidden])");
   await page.click("#btn-send-t");
   await page.fill("#s-to", to);
@@ -196,11 +197,15 @@ try {
     const a = await review(theme, { ok: true, addr: NEW, verified: true, sources: 2, depth: 14, via: "owner" }, "alice.csd");
     const [name, first] = a.rows;
     t.check(`${theme}: a two-source name renders a positive row in the up tint (${JSON.stringify(name)})`, name?.tier === "ok" && name.tinted && name.icon && name.visible);
-    t.check(`${theme}: a first send renders a danger row in the down tint (${JSON.stringify(first)})`, first?.tier === "danger" && first.tinted && first.icon && first.visible && /First time sending/.test(first.text));
+    t.check(`${theme}: a first send renders a caution row in the warn tint (${JSON.stringify(first)})`, first?.tier === "caution" && first.tinted && first.icon && first.visible && /First time sending/.test(first.text));
     t.check(`${theme}: every row sits above Confirm`, a.rows.length === 2 && a.rows.every((r) => r.aboveConfirm));
     const b = await review(theme, { ok: true, addr: NEW, verified: true, sources: 2, soleSource: true, depth: 14, via: "owner" }, "alice.csd");
     t.check(`${theme}: a single-source name renders a caution row in the warn tint (${JSON.stringify(b.rows[0])})`, b.rows[0]?.tier === "caution" && b.rows[0].tinted && b.rows[0].visible);
-    t.check(`${theme}: no page error (${[...a.errors, ...b.errors].join(" | ") || "none"})`, a.errors.length + b.errors.length === 0);
+    // an address-poisoning look-alike of an address this account paid: shares its head and tail, differs inside
+    const PAID = "0x" + "31".repeat(20), LOOK = "0x313131" + "9".repeat(30) + "3131";
+    const c = await review(theme, null, LOOK, { history: [{ type: "send", to: PAID, amount: 1, txid: "0x" + "a1".repeat(32) }] });
+    t.check(`${theme}: a look-alike renders a danger row in the down tint (${JSON.stringify(c.rows[0])})`, c.rows.length === 1 && c.rows[0].tier === "danger" && c.rows[0].tinted && c.rows[0].icon && /address-poisoning/.test(c.rows[0].text) && c.rows[0].aboveConfirm);
+    t.check(`${theme}: no page error (${[...a.errors, ...b.errors, ...c.errors].join(" | ") || "none"})`, a.errors.length + b.errors.length + c.errors.length === 0);
   }
 } finally {
   await browser.close();

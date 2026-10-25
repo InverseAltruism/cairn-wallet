@@ -42,7 +42,7 @@ export function composeSendWarning(lookalike: string | null, firstTime: boolean,
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
   const out: Check[] = nameCaution ? [nameCaution] : [];
   if (lookalike) out.push({ tier: "danger", html: `<b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is <b>not</b> the same address. Verify every character. ${Noun} are irreversible.` });
-  else if (firstTime) out.push({ tier: "danger", html: `First time sending to this address: check every character. ${Noun} are irreversible.` });
+  else if (firstTime) out.push({ tier: "caution", html: `First time sending to this address: check every character. ${Noun} are irreversible.` });
   return out;
 }
 export function setWarn(el: HTMLElement, checks: Check[]) {
