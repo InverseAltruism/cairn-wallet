@@ -248,7 +248,7 @@
   .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .nm b { font-weight: 500; font-size: var(--ui-text-sm); overflow-wrap: anywhere; }
   .nm b .dim { font-weight: 400; }
-  .nm small, .vl small { font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); color: var(--ui-muted); overflow-wrap: anywhere; }
+  .nm small, .vl small { font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug); color: var(--ui-muted); overflow-wrap: anywhere; }
   .vl {
     flex: none; display: flex; flex-direction: column; align-items: flex-end; text-align: right;
     font-weight: 500; font-size: var(--ui-text-sm); font-variant-numeric: tabular-nums;
@@ -272,7 +272,7 @@
   .tx-amt { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .tx-sub {
     display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-2);
-    margin-top: var(--ui-space-1); font-size: var(--ui-text-xs); color: var(--ui-muted); overflow-wrap: anywhere;
+    margin-top: var(--ui-space-1); font-size: var(--ui-text-caption); color: var(--ui-muted); overflow-wrap: anywhere;
   }
   .tx-sub a { color: var(--ui-muted); text-decoration: none; font-family: var(--ui-font-mono); font-size: var(--ui-text-2xs); white-space: nowrap; }
   .tx-sub a:hover { color: var(--ui-ink); }
@@ -439,7 +439,7 @@
   /* the whole chip opens the account menu */
   .acct-btn::after { content: ""; position: absolute; inset: 0; border-radius: var(--ui-radius-pill); }
   .acct-cur { grid-area: cur; max-width: 170px; overflow: hidden; text-overflow: ellipsis; font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); }
-  .acct-addr { grid-area: addr; font: 400 var(--ui-text-xs) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: 0; color: var(--ui-muted); }
+  .acct-addr { grid-area: addr; font: 400 var(--ui-text-caption) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: 0; color: var(--ui-muted); }
   .acct-caret { grid-area: caret; width: 16px; height: 16px; color: var(--ui-muted); }
   .acct-chip:has(#primary-name:not([hidden])) .acct-cur { display: none; }
   .acct-chip:has(#primary-name:not([hidden])) .acct-btn { grid-template-areas: ". caret" "addr caret"; }
@@ -450,7 +450,7 @@
   .bal-line .icon-btn { margin-left: auto; }
   .bal-xl {
     min-width: 0; min-height: 36px;
-    font-size: var(--ui-text-3xl); font-weight: 500; letter-spacing: var(--ui-track-display);
+    font-size: var(--ui-text-figure); font-weight: 500; letter-spacing: var(--ui-track-display);
     line-height: 1; font-variant-numeric: tabular-nums;
   }
   .bal-unit { margin-left: var(--ui-space-2); font-size: var(--ui-text-lg); font-weight: 500; letter-spacing: var(--ui-track-snug); color: var(--ui-muted); }
@@ -472,7 +472,7 @@
   .act {
     width: auto; min-height: 0; padding: 0; border: 0; border-radius: var(--ui-radius-md);
     display: flex; flex-direction: column; align-items: center; gap: var(--ui-space-2);
-    background: none; color: var(--ui-ink-2); font-size: var(--ui-text-xs); font-weight: 500; letter-spacing: 0; text-decoration: none;
+    background: none; color: var(--ui-ink-2); font-size: var(--ui-text-caption); font-weight: 500; letter-spacing: 0; text-decoration: none;
   }
   button.act.primary, button.act.primary:hover:not(:disabled) { background: none; color: var(--ui-ink-2); }
   .act:hover:not(:disabled) { color: var(--ui-ink); }
@@ -751,7 +751,7 @@
   .ap-tile svg.mark { width: 18px; height: 17px; }
   .ap-who { display: flex; flex-direction: column; min-width: 0; }
   .ap-brand { font-weight: 600; font-size: var(--ui-text-sm); line-height: var(--ui-leading-snug); }
-  .ap-sub { color: var(--ui-muted); font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); }
+  .ap-sub { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug); }
   .page-approve #view-req { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   /* One dense scale for the request: everything 0.2.99 showed above the buttons still fits at 380 by 620
      (test/approve-layout-chrome.test.mjs). */
@@ -763,7 +763,7 @@
   .page-approve #req > .req:last-child { border-bottom: 0; }
   .page-approve #req > .req.dim b { color: var(--ui-ink); font-weight: 500; }
   /* the signer line sits under the site block, before the hairline under it, as the preview's "Signing as" */
-  .page-approve #req > .req.dim:first-child { padding-top: 0; color: var(--ui-muted); }
+  .page-approve #req > .req.dim:first-child { padding-top: 0; color: var(--ui-muted); font-size: var(--ui-text-caption); }
   .page-approve #req > .req:not(.dim) { padding: var(--ui-space-3) 0; color: var(--ui-ink); }
   /* the title stays inline: describe() puts text and <br> after it, and every break must show */
   .page-approve #req > .req:not(.dim) > b:first-child { font-size: var(--ui-text-sm); letter-spacing: var(--ui-track-snug); }

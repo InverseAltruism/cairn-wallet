@@ -17,6 +17,11 @@
   --ui-text-4xl: 48px;
   --ui-text-5xl: 56px;
   --ui-text-hero: clamp(44px, 7.4vw, 96px);
+  --ui-text-caption: 12px;
+  --ui-text-subhead: 15px;
+  --ui-text-stat: 20px;
+  --ui-text-title: 32px;
+  --ui-text-figure: 40px;
   --ui-leading-tight: 1.1;
   --ui-leading-snug: 1.3;
   --ui-leading-body: 1.55;
