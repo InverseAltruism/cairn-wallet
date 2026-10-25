@@ -55,7 +55,7 @@ try {
     // matches at all, so the test reads the loaded faces themselves.
     const r = await page.evaluate(async () => {
       document.getElementById("view-main").hidden = false;
-      document.getElementById("addr").textContent = "0x7a3f9c217a3f9c217a3f9c217a3f9c217a3f9c21";
+      document.getElementById("acct-select").innerHTML = '<span class="acct-cur">Main</span><span class="acct-addr">0x7a3f9c…9c21</span>';
       document.getElementById("balance").textContent = "1,284.735";
       await new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok)));
       await document.fonts.ready;
@@ -64,7 +64,7 @@ try {
       return { family: s.fontFamily.split(",")[0].replace(/"/g, "").trim(), size: s.fontSize, geist: loaded("Geist"), mono: loaded("Geist Mono") };
     });
     t.check(`body text is Geist, not the platform font Chrome sets for extension pages (got ${r.family})`, r.family === "Geist");
-    t.check(`body text is 14 px (--ui-text-sm), not Chrome's 75% (got ${r.size})`, r.size === "14px");
+    t.check(`body text is 16 px (--ui-text-md), not Chrome's 75% (got ${r.size})`, r.size === "16px");
     t.check(`the page loads a Geist face and a Geist Mono face under the manifest CSP (font-src 'self'): ${r.geist}, ${r.mono}`, r.geist && r.mono);
     t.check(`no CSP refusal on the page (${csp.join(" | ") || "none"})`, csp.length === 0);
   }

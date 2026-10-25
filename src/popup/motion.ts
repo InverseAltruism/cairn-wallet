@@ -33,3 +33,22 @@ export function tokenEase(name = "--ui-ease"): ((t: number) => number) | null {
   if (x1 < 0 || x1 > 1 || x2 < 0 || x2 > 1) return null;
   return cubicBezier(x1, y1, x2, y2);
 }
+
+/** Lets a list's rows play their entrance once per `key` (an account): `data-enter` is set for the length of the
+ *  stagger, and a later write with the same key (a refresh, a poll) shows its rows in place. */
+export function enterOnce(list: HTMLElement, key: string): void {
+  if (list.dataset.entered === key) return;
+  list.dataset.entered = key;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const dur = tokenMs("--ui-dur-4");
+  if (dur === null) return;
+  list.dataset.enter = "";
+  setTimeout(() => { delete list.dataset.enter; }, dur * 2);
+}
+
+/** Colours a value up or down for a moment after a real change (the `flash-up` and `flash-down` keyframes). */
+export function flashChange(el: HTMLElement, dir: "up" | "down"): void {
+  el.classList.remove("flash-up", "flash-down");
+  void el.offsetWidth;
+  el.classList.add(dir === "up" ? "flash-up" : "flash-down");
+}

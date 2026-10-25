@@ -68,9 +68,11 @@ async function tokenSend(answer) {
   await byId("btn-tsend-confirm").click(); await flush();
   return text();
 }
+// A name's actions live in its detail sheet: the row opens it, the action there opens the review.
 async function nameAct(sel, method, answer) {
   h[method] = answer;
-  await assets().querySelectorAll(sel)[0].click(); await flush();
+  await byId("names-list").querySelectorAll("[data-name]")[0].click(); await flush();
+  await byId("nd-actions").querySelectorAll(sel)[0].click(); await flush();
   await byId("btn-name-confirm").click(); await flush();
   return text();
 }
