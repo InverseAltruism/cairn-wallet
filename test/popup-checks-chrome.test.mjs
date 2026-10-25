@@ -106,7 +106,77 @@ async function layout() {
   return { ticker, addr, hit, to, errors, LONGEST };
 }
 
+// While a sheet is open the page behind it is inert: Tab never reaches the header, the tabs or the lists, focus moves
+// into the sheet and back to what opened it; Escape and the back button still close; the request band shows the
+// longest origin whole; the receive address copies raw.
+const LONG = "https://cairn-substrate.com.account-verify.evil.example";
+const LONGEST = "https://" + "a".repeat(63) + "." + "b".repeat(63) + "." + "c".repeat(48) + ".example";
+async function sheets() {
+  const answers = { ...base, pending: [{ id: "p1", method: "send", origin: LONG }, { id: "p2", method: "propose", origin: "https://dapp.example" }] };
+  const { page, ctx, errors } = await openWalletPage(browser, "popup", answers, { viewport: { width: 360, height: 600 } });
+  await page.waitForSelector("#pending:not([hidden])");
+  const BEHIND = "#view-main > .topbar, #view-main > .bal-hero, #view-main > .actions, #tabs, #home, #names-tab, #activity";
+  await page.focus("#btn-send-t"); await page.keyboard.press("Enter"); await page.waitForTimeout(600);
+  const into = await page.evaluate(() => document.activeElement?.id);
+  const visited = [];
+  for (let i = 0; i < 40; i++) { await page.keyboard.press("Tab"); visited.push(await page.evaluate((sel) => { const a = document.activeElement; return { id: a?.id || a?.className || a?.tagName, behind: !!a?.closest(sel) }; }, BEHIND)); }
+  const band = await page.evaluate(() => {
+    const p = document.getElementById("pending"), req = p.querySelector(".req"), sheet = document.getElementById("send-form");
+    const r = p.getBoundingClientRect(), s = sheet.getBoundingClientRect(), rv = p.querySelector("[data-review]").getBoundingClientRect();
+    const top = document.elementFromPoint(rv.left + rv.width / 2, rv.top + rv.height / 2);
+    return { whole: req.scrollHeight <= req.clientHeight + 1 && req.textContent.includes("account-verify.evil.example"), clear: r.bottom <= s.top + 0.5, reviewOnTop: !!top?.closest("[data-review]") };
+  });
+  await page.keyboard.press("Escape"); await page.waitForTimeout(600);
+  const back = await page.evaluate(() => ({ closed: document.getElementById("send-form").hidden, focus: document.activeElement?.id }));
+  let chip = false;
+  for (let i = 0; i < 30 && !chip; i++) { await page.keyboard.press("Tab"); chip = await page.evaluate(() => document.activeElement?.id === "acct-select"); }
+  await page.click("#btn-receive"); await page.waitForTimeout(600);
+  await page.click("#receive-panel .panel-head .panel-back"); await page.waitForTimeout(600);
+  const backBtn = await page.evaluate(() => document.getElementById("receive-panel").hidden);
+  await ctx.close();
+  return { into, visited, band, back, chip, backBtn, errors };
+}
+async function longestBand() {
+  const { page, ctx } = await openWalletPage(browser, "popup", { ...base, pending: [{ id: "p1", method: "send", origin: LONGEST }] }, { viewport: { width: 360, height: 600 } });
+  await page.waitForSelector("#pending:not([hidden])");
+  await page.click("#btn-send-t"); await page.waitForTimeout(700);
+  const r = await page.evaluate(() => {
+    const p = document.getElementById("pending"), req = p.querySelector(".req"), s = document.getElementById("send-form").getBoundingClientRect();
+    return { whole: req.scrollHeight <= req.clientHeight + 1 && req.getBoundingClientRect().bottom <= innerHeight, clear: p.getBoundingClientRect().bottom <= s.top + 0.5, text: req.textContent.length };
+  });
+  await ctx.close();
+  return r;
+}
+async function receive() {
+  const { page, ctx } = await openWalletPage(browser, "popup", { ...base }, { viewport: { width: 360, height: 600 } });
+  await page.waitForSelector("#view-main:not([hidden])");
+  await page.click("#btn-receive"); await page.waitForSelector("#receive-addr span");
+  const r = await page.evaluate(() => {
+    const el = document.getElementById("receive-addr");
+    const range = document.createRange(); range.selectNodeContents(el);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    return { selected: sel.toString(), text: el.textContent, unsplit: [...el.children].every((g) => g.getClientRects().length === 1) };
+  });
+  await ctx.close();
+  return r;
+}
+
 try {
+  {
+    const k = await sheets();
+    t.check(`opening a sheet from the keyboard moves focus into it (${k.into})`, k.into === "s-to");
+    t.check(`40 Tabs from the sheet never reach the header, the tabs or the lists (${[...new Set(k.visited.map((v) => v.id))].join(", ")})`, k.visited.every((v) => !v.behind));
+    t.check("...and they do reach the request band's Review", k.visited.some((v) => /primary/.test(v.id)));
+    t.check(`the band shows the long origin whole, above the sheet, Review on top (${JSON.stringify(k.band)})`, k.band.whole && k.band.clear && k.band.reviewOnTop);
+    t.check(`Escape closes the sheet and focus returns to Send (${JSON.stringify(k.back)})`, k.back.closed && k.back.focus === "btn-send-t");
+    t.check("after it closes, Tab reaches the account chip again", k.chip);
+    t.check("the back button still closes a sheet", k.backBtn);
+    t.check(`sheets: no page error (${k.errors.join(" | ") || "none"})`, k.errors.length === 0);
+    const b = await longestBand();
+    t.check(`a ${b.text}-character request line with a 200-character origin shows whole, the sheet below it (${JSON.stringify(b)})`, b.whole && b.clear);
+    const r = await receive();
+    t.check(`Receive: a selection copies the raw address, each group on one line (${JSON.stringify(r)})`, r.selected === ME && r.text === ME && r.unsplit);
+  }
   {
     const l = await layout();
     t.check(`the longest legal ticker shows whole (${JSON.stringify(l.ticker)})`, l.ticker.text === l.LONGEST && !l.ticker.clipped);

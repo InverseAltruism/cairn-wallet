@@ -162,7 +162,7 @@ async function render() {
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
   renderAcctSelect(st.accounts || [], st.active || 0);
   $("addr").textContent = st.addr;
-  if (st.addr !== curAddr) { curAddr = st.addr; invalidateAccountViews(); lastBal = null; paintAvatar(null, curAddr); } // new account: old rows inert, reset identity + balance tween base
+  if (st.addr !== curAddr) { curAddr = st.addr; clearSendDrafts(); invalidateAccountViews(); lastBal = null; paintAvatar(null, curAddr); } // new account: old rows inert, reset identity + balance tween base
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerLink(currentExplorer, "addr", st.addr);
   (($("set-api") as HTMLInputElement)).value = st.api;
   (($("set-tradeapi") as HTMLInputElement)).value = st.tradeApi || "";
@@ -612,6 +612,7 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
 async function doNameAction() {
   if (!reviewState.reviewedNameAct) return;
   const { kind, name, fee, signer } = reviewState.reviewedNameAct;
+  const bound = bindView();                                 // the account this review belongs to
   dropReviews();                                            // consume the snapshot: one Confirm = one signature
   try {
     busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
@@ -630,6 +631,12 @@ async function doNameAction() {
     const m = String(e?.message || e);
     if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm; nothing was signed
       const newFee = Number(m.slice("FEE_CHANGED:".length));
+      // re-review only for the account and the name it was for: the account may have changed while Confirm was in flight
+      if (!viewCurrent(bound) || !nameDetails.has(name)) {
+        dropStaleView();
+        msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Nothing was signed; open the name again to review it`, "err");
+        return;
+      }
       await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
       msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Check it and confirm again`, "err");  // …then explain
       return;
@@ -1027,6 +1034,42 @@ function closeSheetOnEscape(e: KeyboardEvent) {
   close.click();
 }
 document.addEventListener("keydown", closeSheetOnEscape);
+// While a sheet is open the page behind it is inert, so Tab and a pointer reach only the sheet and the request band;
+// focus moves to the sheet's first control after its header (or its close button), without scrolling, and back to
+// what opened it when it closes.
+const BEHIND = ["#view-main > .topbar", "#view-main > .bal-hero", "#view-main > .actions", "#tabs", "#home", "#names-tab", "#activity", "#more-menu"];
+let sheetOpener: HTMLElement | null = null;
+function syncSheetFocus() {
+  const sheet = document.querySelector<HTMLElement>("#layer > .sheet:not([hidden])");
+  if (sheet && !sheetOpener) {
+    const from = document.activeElement as HTMLElement | null;
+    sheetOpener = from && from !== document.body && !sheet.contains(from) ? from : null;
+  }
+  for (const sel of BEHIND) { const el = document.querySelector<HTMLElement>(sel); if (el) el.inert = !!sheet; }
+  if (sheet) {
+    if (!sheet.contains(document.activeElement)) {
+      const first = [...sheet.querySelectorAll<HTMLElement>("input:not([disabled]), textarea, select, button:not([disabled]), a[href], [tabindex='0']")]
+        .find((el) => !el.closest(".panel-head") && el.tabIndex >= 0 && el.offsetParent !== null);
+      (first ?? sheet.querySelector<HTMLElement>(".panel-head .panel-back"))?.focus({ preventScroll: true });
+    }
+  } else if (sheetOpener) {
+    if (sheetOpener.isConnected) sheetOpener.focus();
+    sheetOpener = null;
+  }
+}
+if (typeof MutationObserver === "function") {
+  new MutationObserver(syncSheetFocus).observe($("layer"), { subtree: true, attributes: true, attributeFilter: ["hidden"] });
+}
+// The request band over an open sheet shows its first origin in full however long; the sheet and the toast start
+// under the band's real height.
+if (typeof ResizeObserver === "function") {
+  const pend = $("pending"), app = $("app");
+  new ResizeObserver(() => {
+    if (getComputedStyle(pend).position !== "fixed") return;
+    const gap = parseFloat(getComputedStyle(app).getPropertyValue("--ui-space-2")) || 0;   // the gap under the band
+    app.style.setProperty("--pending-band", `${Math.ceil(pend.getBoundingClientRect().bottom + gap)}px`);
+  }).observe(pend);
+}
 $("nav-home").addEventListener("click", () => { closeAllPanels(); syncNav(); msg(""); });
 // One delegated back-button for every panel head (no per-panel IDs): exits the panel with the
 // same full teardown as any panel switch (snapshots dropped, secrets wiped).

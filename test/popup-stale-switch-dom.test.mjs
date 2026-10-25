@@ -9,7 +9,11 @@
 //   - drop the viewCurrent check after confirmNameAction's balance read: 3a fails (a review primed for A's name
 //     under B signs set-primary as B);
 //   - drop refreshOpenDetail() from renderAssets: 4a and 4b fail.
-//   HONEST PATH: 2c (B's own name signs set-primary as B), 4c (an unchanged refresh keeps the detail actionable).
+//   - re-review on FEE_CHANGED without the binding check: 6a fails (the review reopens under B for A's name and
+//     Confirm signs cairnxNameRenew("alice", fee, B));
+//   - drop clearSendDrafts() from render()'s new-address branch: 7a fails (a send primed under A is dispatched).
+//   HONEST PATH: 2c (B's own name signs set-primary as B), 4c (an unchanged refresh keeps the detail actionable),
+//   6b (FEE_CHANGED with no switch re-reviews the same name for the same account and signs the new fee).
 // Run: node --import tsx test/popup-stale-switch-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -43,7 +47,13 @@ const h = {
   confirmName: () => ({ ok: true, addr: TO, verified: true, sources: 2, depth: 14, via: "owner" }),
   cairnxNameRenewFee: () => 15e8,
   cairnxSetPrimary: (...a) => { dispatched.push(["cairnxSetPrimary", ...a]); return { ok: true, txid: TXID }; },
-  cairnxNameRenew: (...a) => { dispatched.push(["cairnxNameRenew", ...a]); return { ok: true, txid: TXID }; },
+  cairnxNameRenew: (...a) => {
+    dispatched.push(["cairnxNameRenew", ...a]);
+    if (holdNext.delete("renew-fee-changed")) return hold("renew").then(() => { throw new Error("FEE_CHANGED:1600000000"); });
+    return { ok: true, txid: TXID };
+  },
+  send: (...a) => { dispatched.push(["send", ...a]); return { ok: true, txid: TXID }; },
+  setApi: () => true, setTradeApi: () => true,
   cairnxTransfer: (...a) => { dispatched.push(["cairnxTransfer", ...a]); return { ok: true, txid: TXID }; },
 };
 installBridge(h);
@@ -136,6 +146,48 @@ console.log("5. removing the active account moves it, with the same effect");
   await release("assets");
   await pressAll([aToken]);
   check(`5b A's token row sends nothing from B (${JSON.stringify(dispatched)})`, dispatched.length === 0 && byId("tsend-form").hidden === true);
+}
+
+console.log("6. FEE_CHANGED while the account changed");
+async function renewAliceUnderA() {
+  await switchTo(0);
+  await byId("nav-home").click(); await byId("nav-names").click(); await flush();
+  await rowsOf(nl(), "name").find((b) => b.dataset.name === "alice").click(); await flush();
+  await rowsOf(byId("nd-actions"), "nrenew")[0].click(); await flush();
+}
+{
+  ASSETS[A].nameDetails = [{ name: "alice", leased: true, epochsLeft: 30 }]; ASSETS[A].names = ["alice"];
+  await renewAliceUnderA();
+  dispatched.length = 0;
+  holdNext.add("renew-fee-changed");
+  void byId("btn-name-confirm").click(); await flush();              // Confirm in flight, signed as A
+  await switchTo(1);
+  await release("renew");                                             // the background answers FEE_CHANGED
+  await byId("btn-name-confirm").click(); await flush();
+  check(`6a no re-review under B: only A's own Confirm was dispatched (${JSON.stringify(dispatched.map((d) => d.at(-1)))})`,
+    dispatched.length === 1 && dispatched[0].at(-1) === A && byId("name-action-form").hidden === true && /Nothing was signed/.test(byId("msg").textContent));
+  await renewAliceUnderA();
+  dispatched.length = 0;
+  holdNext.add("renew-fee-changed");
+  void byId("btn-name-confirm").click(); await flush();
+  await release("renew");
+  const reopened = byId("name-action-form").hidden === false && byId("nc-name").textContent === "alice.csd" && /Check it and confirm again/.test(byId("msg").textContent);
+  await byId("btn-name-confirm").click(); await flush();
+  check(`6b honest: with no switch the review reopens for alice under A and signs (${JSON.stringify(dispatched.at(-1))})`, reopened && JSON.stringify(dispatched.at(-1)) === JSON.stringify(["cairnxNameRenew", "alice", 15e8, A]));
+}
+
+console.log("7. render() sees a new address with a send review primed");
+{
+  await switchTo(0);
+  dispatched.length = 0;
+  await byId("btn-send-t").click(); await flush();
+  byId("s-to").value = TO; byId("s-amt").value = "1"; byId("s-to").disabled = false; byId("s-amt").disabled = false;
+  await byId("btn-send").click(); await flush();
+  const primed = byId("send-confirm").hidden === false;
+  active = 1;                                                          // the account moved outside this popup
+  await byId("btn-save-settings").click(); await flush();              // a path that re-renders without a switch
+  await byId("btn-send-confirm").click(); await flush();
+  check(`7a the primed review is gone and nothing was sent (${JSON.stringify(dispatched)})`, primed && dispatched.length === 0 && byId("send-confirm").hidden === true);
 }
 
 done("popup-stale-switch-dom");

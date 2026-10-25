@@ -629,18 +629,19 @@
   #tsend-form:has(> #tsend-confirm:not([hidden])) > #ts-avail,
   #tsend-form:has(> #tsend-confirm:not([hidden])) > .step-actions { display: none; }
   /* A waiting dApp request stays on top of an open sheet as a band: the Review action first, then the first
-     request on at most two lines (the Review label carries the count; the full card is on home). --pending-band holds
-     the top gap, that card and the gap under it; test/popup-layout-chrome.test.mjs checks 1, 2 and 5 requests. */
+     request with its origin in full, however long (the Review label carries the count; the full card is on home).
+     --pending-band is the band's bottom plus the gap under it, set by popup.ts from the band's real height (120 px
+     until then); test/popup-layout-chrome.test.mjs checks 1, 2 and 5 requests, popup-checks-chrome the longest origin. */
   .page-popup #app { --pending-band: 120px; }
   #view-main:has(#pending:not([hidden])):has(#layer > .sheet:not([hidden])) .sheet { top: var(--pending-band); }
   #view-main:has(#layer > .sheet:not([hidden])) #pending {
     position: fixed; top: var(--ui-space-2); left: var(--ui-space-3); right: var(--ui-space-3);
-    z-index: calc(var(--ui-z-modal) + 1); max-height: calc(var(--pending-band) - var(--ui-space-2) * 2); overflow: hidden;
+    z-index: calc(var(--ui-z-modal) + 1);
     display: flex; flex-direction: column; gap: var(--ui-space-2); margin: 0; box-shadow: var(--ui-shadow-2);
   }
   #view-main:has(#layer > .sheet:not([hidden])) #pending .row { order: -1; flex-wrap: nowrap; }
   #view-main:has(#layer > .sheet:not([hidden])) #pending [data-rj] { display: none; }
-  #view-main:has(#layer > .sheet:not([hidden])) #pending .req { margin: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  #view-main:has(#layer > .sheet:not([hidden])) #pending .req { margin: 0; }
   #view-main:has(#layer > .sheet:not([hidden])) #pending .req ~ .req { display: none; }
   /* the status toast moves below that band, so it never covers the request */
   .page-popup #view-main:has(#pending:not([hidden])):has(#layer > .sheet:not([hidden])) ~ #msg { top: var(--pending-band); }
@@ -649,10 +650,13 @@
   .receive-card canvas { border-radius: var(--ui-radius-md); }
   #receive-panel .primary-name { text-align: center; }
   .addr-big {
-    display: flex; flex-wrap: wrap; justify-content: center; gap: var(--ui-space-1) var(--ui-space-2);
-    padding: var(--ui-space-3); border-radius: var(--ui-radius-md); background: var(--ui-sunken);
-    font-size: var(--ui-text-sm); line-height: var(--ui-leading-snug); text-align: center;
+    display: block; padding: var(--ui-space-3); border-radius: var(--ui-radius-md); background: var(--ui-sunken);
+    font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); text-align: center;
   }
+  /* groups are atomic inlines with a margin, not flex items: a line breaks between groups, and a selection of the
+     address copies it raw, with no newline between groups (popup-checks-chrome) */
+  .addr-big > span, .crow .addr > span { display: inline-block; }
+  .addr-big > span { margin: 0 var(--ui-space-1); }
   .receive-note { text-align: center; }
 
   .group { display: flex; flex-direction: column; gap: var(--ui-space-3); padding: var(--ui-space-3) 0 var(--ui-space-4); border-bottom: 1px solid var(--ui-line); }
