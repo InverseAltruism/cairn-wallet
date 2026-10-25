@@ -1,6 +1,46 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+- The popup and the approval window are redesigned: the popup is 360 by 600, set in Geist, light and dark with a
+  choice in Settings › Appearance (System, Light, Dark; the approval window follows the same choice, also when it
+  changes while the window is open), and forms open as sheets that Escape closes. The node RPC and block explorer
+  pickers moved to Settings › Network (they were top right, also before unlocking). Accounts, post, seal, recovery
+  phrase and reveal key are under More. The approval and review buttons changed sides: Reject, Cancel and Back on
+  the left, Approve and Confirm on the right, equal width.
+- The approval window shows each request as a title and label and value rows, with every check as a row whose tint
+  and icon give its weight (red where the text was red, amber where it was neutral). The cost rows and the balance
+  after sit above the buttons on every request type, the requesting site is named in full at the top, and the
+  700 ms pause before the buttons arm is shown as a bar that fills. Its copy has no em dashes, is in sentence case
+  and marks emphasis in bold instead of capitals; every warning and refusal keeps its meaning.
+- In the approval window a website's renewal or name record verdict sits right under the cost rows and the
+  warnings, and all first-time and address-poisoning warnings of a request share one red row, each on its own line,
+  so a request to two new recipients shows both above the buttons. A CSD fill shows the cost rows, the warnings and
+  the listing first, then the recipients, then the offer id and the attestation.
+- The wallet's own Renew and Set as primary read the name again from the name service right before they sign, and
+  refuse when it is not registered, when it is owned by another address (set primary), when it is a pending
+  reservation, or when it has lapsed. A review left open while the name changed could otherwise pay a fee the
+  resolver ignores. When the name service does not answer, they still sign, as before. A website's set primary
+  (nset) is now warned about on a pending or lapsed name as a renewal already was, since the resolver ignores both.
+  The lapsed text gives the resolver's reason: "This name has lapsed: its lease and grace period are over, and a
+  lapsed name is claimed again, not renewed, so the renewal fee would be burned." (it said a renewal is honored
+  within its grace period, but the name service marks a name lapsed only after it). A refusal for a name the
+  service does not know adds "If it was registered in the last few minutes, the name service may still be catching
+  up: try again later."
+- Addresses a person compares show in groups of four: the account address under More, the accounts list, the send
+  and token reviews and Receive in the popup, and the signer and the recipient, name record, taker and paid-to rows
+  in the approval window. Copy address, and selecting the address, still take the bare 42 characters. A value that
+  is not a whole address is shown as it is.
+- The popup's messages and labels are in sentence case and end with a period; the message after a name changed
+  between review and Confirm reads "changed where it points. Nothing was sent: review it again." (it had an em
+  dash); the review warnings and name badges
+  drop the ⚠, ✓ and △ marks, which the row's icon and tint now carry; the sealed claims list says Sealed and
+  Revealed instead of two emoji. No amount, recipient, warning or refusal changed its meaning.
+- Internal: the popup script is split into one module per view or concern (`src/popup/popup-*.ts`, the largest
+  183 lines, from one file of 1,532); its code is line for line the same apart from five lines that now write
+  another module's state through a setter, and the popup shows the same pixels before and after the split in every
+  view of the screenshot run.
+- The Chrome Web Store images are rendered from the real pages in the new design (`store/gen-assets.mjs`).
 
 - Internal: the token-priced fill's check that the served want ticker and amount equal the offer's on-chain record
   is the vendored `bindOfferTerms` want leg (cairnx-core 0.2.2), and the wallet's own copy is deleted; the reviewed
