@@ -1,7 +1,8 @@
 // What the approval window shows before a signature (R3 section 3), at its real size (380 by 620, scrolled to the
-// top), for every request type: no line break inside the request is hidden by CSS, and every warning, origin and cost
-// line that wallet 0.2.99 (dee68d7) showed above the action bar is still fully above it. The expectations below were
-// measured on that build; the stylesheet may show more, never less.
+// top), for every request type: no line break inside the request is hidden by CSS, every warning, origin and cost
+// line that wallet 0.2.99 (dee68d7) showed above the action bar is still fully above it, and the cost rows (with the
+// balance after) are above it on every request type. The 0.2.99 expectations were measured on that build; the
+// stylesheet may show more, never less.
 // Needs playwright-core (PLAYWRIGHT_CORE) and a Chromium (PLAYWRIGHT_CHROMIUM); prints SKIP without them.
 import * as cx from "../src/core/cairnx.ts";
 import * as v from "../src/vendor/cairnx-spv.js";
@@ -40,25 +41,26 @@ const R = {
 };
 const view = { ok: true, giveTicker: "CAIRN", giveAmount: "100000000", giveDecimals: 8, expiresAt: nfinTip + 300 };
 const CASES = [
-  // [name, request, extra answers, the lines 0.2.99 showed above the action bar]
+  // [name, request, extra answers, the lines that must be fully above the action bar: what 0.2.99 showed there, plus
+  // the cost rows ("cost") on every request type]
   ["connect", R.connect, {}, ["origin", "cost"]],
   ["signin", R.signin, {}, ["origin", "cost"]],
-  ["signin-mismatch", R["signin-mismatch"], {}, ["this page asked to sign in as", "origin", "cost"]],
+  ["signin-mismatch", R["signin-mismatch"], {}, ["This page asked to sign in as", "origin", "cost"]],
   ["send", R.send, {}, ["First time sending to", "origin", "cost"]],
   ["send-poison", R["send-poison"], {}, ["First time sending to", "origin", "cost"]],
-  ["fill-csd", R["fill-csd"], {}, ["could not load this listing", "First time sending to"]],
-  ["fill-token", R["fill-token"], {}, ["TOKEN-PRICED FILL", "origin"]],
-  ["propose-transfer", R["propose-transfer"], {}, ["First time sending tokens to", "origin"]],
+  ["fill-csd", R["fill-csd"], {}, ["Could not load this listing", "First time sending to", "cost"]],
+  ["fill-token", R["fill-token"], {}, ["Token-priced fill", "origin", "cost"]],
+  ["propose-transfer", R["propose-transfer"], {}, ["First time sending tokens to", "origin", "cost"]],
   ["propose-raw", R["propose-raw"], {}, ["origin", "cost"]],
-  ["name-nset", R["name-nset"], {}, ["First time pointing a name at", "origin"]],
-  ["name-nrenew", R["name-nrenew"], {}, ["origin"]],
-  ["name-nxfer", R["name-nxfer"], {}, ["First time transferring a name to", "origin"]],
+  ["name-nset", R["name-nset"], {}, ["First time pointing a name at", "origin", "cost"]],
+  ["name-nrenew", R["name-nrenew"], {}, ["origin", "cost"]],
+  ["name-nxfer", R["name-nxfer"], {}, ["First time transferring a name to", "origin", "cost"]],
   ["name-nprofile", R["name-nprofile"], {}, ["origin", "cost"]],
-  ["name-nfinalize", R["name-nfinalize"], {}, ["transfers funds OUT of your wallet", "b=5 CSD"]],
+  ["name-nfinalize", R["name-nfinalize"], {}, ["transfers funds out of your wallet", "b=5 CSD", "cost"]],
   ["seal", R.seal, {}, ["origin", "cost"]],
   ["reveal", R.reveal, {}, ["origin", "cost"]],
   ["reserve", R.reserve, {}, ["origin", "cost"]],
-  ["fill-csd+view", R["fill-csd"], { fillOfferView: view }, ["First time sending to"]],
+  ["fill-csd+view", R["fill-csd"], { fillOfferView: view }, ["First time sending to", "cost"]],
   ["send-poison+hist", R["send-poison"], { history: [{ type: "send", to: RCPT, amount: 1, txid: "0x" + "a1".repeat(32) }] }, ["Possible address-poisoning", "origin", "cost"]],
   ["send-short", R.send, { balance: { confirmed: 50_000_000 } }, ["First time sending to", "origin", "cost"]],
 ];
@@ -75,7 +77,7 @@ try {
     try {
       await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
       await page.waitForTimeout(1_800);
-      const r = await page.evaluate((expect) => {
+      const r = await page.evaluate(([expect, origin]) => {
         const req = document.getElementById("req");
         const bar = document.querySelector("#view-req .actions");
         const fold = Math.min(req.getBoundingClientRect().bottom, bar.getBoundingClientRect().top, innerHeight);
@@ -113,7 +115,8 @@ try {
         }
         const kids = [...req.children];
         const target = (label) => {
-          if (label === "origin") return kids.find((k) => k.textContent.startsWith("from "));
+          // the requesting origin sits in the header, in full
+          if (label === "origin") { const o = document.getElementById("ap-origin"); return o && o.textContent === origin ? o : null; }
           if (label === "cost") return document.getElementById("cost");
           if (label.startsWith("b=")) return [...req.querySelectorAll("b")].find((b) => b.textContent === label.slice(2));
           const walker = document.createTreeWalker(req, NodeFilter.SHOW_TEXT);
@@ -127,7 +130,7 @@ try {
           return !el || el.getBoundingClientRect().height === 0 || el.getBoundingClientRect().bottom > fold + 0.5;
         });
         return { hiddenBr, lost, missing };
-      }, expect);
+      }, [expect, req.origin]);
       t.check(`${name}: no <br> in the request is hidden (${r.hiddenBr})`, r.hiddenBr === 0);
       t.check(`${name}: the request text breaks at every <br> (${r.lost.join("; ") || "all kept"})`, r.lost.length === 0);
       t.check(`${name}: everything 0.2.99 showed above the buttons is still there (missing: ${r.missing.join(", ") || "none"})`, r.missing.length === 0);

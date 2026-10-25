@@ -73,10 +73,10 @@ function tipStub(height) {
   const ren = buildNameRenew({ name: NAME });
   const mk = (treasuryVal, currentTip, tipFloor) => describe({ method: "propose", currentTip, tipFloor,
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
-  check("review: deflated tip + floor 47,000 WARNS on an underpaying pre-V24-tier payment", /BELOW the current price/.test(mk(feeDeflated, 40_000, 47_000)));
-  check("review: paying the V24 tier under the same deflated tip does NOT warn", !/BELOW the current price/.test(mk(feeAtFloor, 40_000, 47_000)));
-  check("review: floor-only (tip read failed) still arms the warning", /BELOW the current price/.test(mk(feeDeflated, undefined, 47_000)));
-  check("review: fully offline (no tip, no floor) still skips the check (no false warning)", !/BELOW the current price/.test(mk(feeDeflated, undefined, 0)));
+  check("review: deflated tip + floor 47,000 WARNS on an underpaying pre-V24-tier payment", /below the current price/i.test(mk(feeDeflated, 40_000, 47_000)));
+  check("review: paying the V24 tier under the same deflated tip does NOT warn", !/below the current price/i.test(mk(feeAtFloor, 40_000, 47_000)));
+  check("review: floor-only (tip read failed) still arms the warning", /below the current price/i.test(mk(feeDeflated, undefined, 47_000)));
+  check("review: fully offline (no tip, no floor) still skips the check (no false warning)", !/below the current price/i.test(mk(feeDeflated, undefined, 0)));
 }
 
 // ── source pins: ONE helper at every pricing site (build AND review) ───────────────────────────────
@@ -156,6 +156,8 @@ console.log("\nPAIRED HAPPY-PATH (W5): fresh install, live tip 67,500, floor 0:"
     if (u.includes("/tx/submit")) { submits.push(JSON.parse(init?.body ?? "{}")); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
     if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: LIVE_TIP }) };
     if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coins.reduce((s, c) => s + c.coin.value, 0), utxos: coins.map((c) => c.coin) }) };
+    // the renew re-reads the name before it signs (test/name-action-gate.test.mjs); a live name the user owns
+    if (u.includes(`/cairnx/name/${NAME}`)) return { ok: true, status: 200, json: async () => ({ name: NAME, owner: w.addr() }) };
     const t = txReply(u, coins);
     if (t) return t;
     return { ok: false, status: 404, json: async () => ({}) };
@@ -177,13 +179,13 @@ console.log("\nPAIRED HAPPY-PATH (W5): fresh install, live tip 67,500, floor 0:"
   const mk = (treasuryVal) => describe({ method: "propose", currentTip: LIVE_TIP, tipFloor: 0,
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
   const need = Number(nameRegFee(NAME, buildFeeHeight(LIVE_TIP)));
-  check("review: an underpaid third-party nrenew at the live tip still WARNS", /BELOW the current price/.test(mk(need - 1)));
-  check("review: a correctly paid one does NOT warn", !/BELOW the current price/.test(mk(need)));
+  check("review: an underpaid third-party nrenew at the live tip still WARNS", /below the current price/i.test(mk(need - 1)));
+  check("review: a correctly paid one does NOT warn", !/below the current price/i.test(mk(need)));
   // and the disarming input is now inert: a fractional served tip cannot silence the warning by throwing.
   const mkTip = (treasuryVal, tip, floor) => describe({ method: "propose", currentTip: tip, tipFloor: floor,
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
-  check("review: a fractional served tip WITH a PoW floor still warns (the floor governs)", /BELOW the current price/.test(mkTip(need - 1, 65100.5, LIVE_TIP)));
-  check("review: a fractional served tip with NO floor skips rather than showing a false clean bill", !/BELOW the current price/.test(mkTip(need - 1, 65100.5, 0)));
+  check("review: a fractional served tip WITH a PoW floor still warns (the floor governs)", /below the current price/i.test(mkTip(need - 1, 65100.5, LIVE_TIP)));
+  check("review: a fractional served tip with NO floor skips rather than showing a false clean bill", !/below the current price/i.test(mkTip(need - 1, 65100.5, 0)));
 }
 
 globalThis.fetch = origFetch;

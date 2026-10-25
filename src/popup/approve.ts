@@ -1,8 +1,10 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type NameFetchResult, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type RecipientKind } from "./clearsign.js";
+import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
+import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
@@ -17,6 +19,12 @@ function call(method: string, ...args: any[]): Promise<any> {
   }));
 }
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
+// What each request type asks for, under the requesting origin in the header.
+function asks(r: any): string {
+  if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions") return "asks to connect to your wallet";
+  if (r.method === "signin" || r.method === "signinWithCsd") return "asks you to sign in";
+  return "asks you to sign a transaction";
+}
 
 let current: any = null;
 // 0.2.71 (CX-23): per-request review state, keyed by request id. `current` is a FRESH object on every
@@ -46,6 +54,7 @@ async function render() {
   const st = await call("status");
   if (seq !== renderSeq) return;
   ($("view-locked") as HTMLElement).hidden = st.unlocked;
+  ($("ap-signer") as HTMLElement).hidden = !st.unlocked;   // the account can change while locked; the unlock repaint writes it
   const pend = await call("pending");
   if (seq !== renderSeq) return;
   if (!pend.length) {
@@ -53,6 +62,9 @@ async function render() {
     window.close(); return;
   }
   current = pend[0];
+  // The requesting origin, in full however long (a look-alike keeps its tail), set from the browser's sender origin.
+  $("ap-origin").textContent = String(current.origin);
+  $("ap-ask").textContent = asks(current);
   void refreshNfinalize(current.id);   // runs while locked too, so the unlock repaint shows a current verdict
   const reqView = $("view-req") as HTMLElement;
   reqView.hidden = !st.unlocked;
@@ -98,13 +110,12 @@ async function render() {
   if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
-  const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
-  const queued = pend.length > 1 ? `<div class="req dim">request 1 of ${pend.length} — review each separately</div>` : "";
+  const queued = pend.length > 1 ? `<div class="req dim">Request 1 of ${pend.length}: review each separately.</div>` : "";
   // For a connection request, tell the user exactly what approving grants: address
   // visibility until they disconnect the site; NOT permission to move funds (every
   // send/propose/attest still asks separately).
   const connectNote = (current.method === "connect" || current.method === "getAddress")
-    ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings → Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
+    ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings › Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
     : "";
   try {
     // W1 (AW-4): this assignment DESTROYS every element describe() emits (#send-warn, #token-sim,
@@ -117,10 +128,8 @@ async function render() {
     // 1.2s tick would refetch balance and history twice a second per open approval window.
     balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
-    $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>${queued}`
-      + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
-      + connectNote
-      + `<div class="req dim" id="cost">${costLine(current)}</div>`;
+    $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b>${escapeHtml(acct.label)}</b>` : ""}<code>${escapeHtml(String(st.addr || ""))}</code>`;
+    $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
     msg(""); // clear any stale "approved"/"rejected" from a previous request
     holdOutcome = false;
@@ -186,13 +195,9 @@ const NFIN_REFRESH_MS = 20_000;
 // the read; it fires when the poll was throttled or suspended (background tab, sleep), when the verdict can be
 // blocks stale.
 const NFIN_CLICK_MAX_AGE_MS = 35_000;
-async function fetchNameRecord(name: string, tradeApi: string): Promise<NameFetchResult> {
-  try {
-    const res = await fetch(`${String(tradeApi || "").replace(/\/$/, "")}/cairnx/name/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
-    if (res.status === 404) return { record: null };
-    if (res.ok) { const j = await res.json().catch(() => null); if (j && typeof j === "object") return { record: j }; }
-  } catch { /* unreachable → fail-open (gate warns, never blocks) */ }
-  return { failed: true };
+function fetchNameRecord(name: string, tradeApi: string): Promise<NameFetchResult> {
+  const base = String(tradeApi || "").replace(/\/$/, "");
+  return readNameRecord((path) => fetch(base + path, { signal: AbortSignal.timeout(NAME_READ_TIMEOUT_MS) }), name);
 }
 async function readTip(): Promise<number | null> {
   const t = await bounded(call("tip"));
@@ -217,9 +222,7 @@ async function checkNameAct(kind: "nrenew" | "nset", name: string, tradeApi: str
 function paintNfinNote(g: { block: boolean; note: string | null }) {
   document.getElementById("nfin-note")?.remove();
   if (!g.note) return;
-  $("req").insertAdjacentHTML("beforeend",
-    g.block ? `<div class="req" id="nfin-note"><b class="err">⚠ ${escapeHtml(g.note)}</b></div>`
-            : `<div class="req dim" id="nfin-note">⚠ ${escapeHtml(g.note)}</div>`);
+  $("req").insertAdjacentHTML("beforeend", `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: `⚠ ${escapeHtml(g.note)}` })}</div>`);
 }
 // Record a verdict for request `id` and, when that request is on screen, show it: note in place, Approve
 // down on a block, back up on a pass once this paint's own re-enable floor has run.
@@ -388,16 +391,21 @@ async function fillBalance(r: any) {
   try {
     const b = await call("balance");
     if (gen !== paintGen || renderedId !== r.id) return;
-    const el = document.getElementById("cost");
-    if (el) el.textContent = `${costLine(r)}  balance: ${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`;
+    const el = document.getElementById("bal-after");
+    if (el) { el.textContent = `${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`; el.className = ""; }
     // The engine spends only the coins this balance counts, so a negative balance-after can only end in an
     // INSUFFICIENT refusal: keep Approve down and say why. Reject stays available.
     rs(r.id).balShort = Number(b.confirmed) - debitOf(r) < 0;
     if (rs(r.id).balShort) {
       ($("btn-approve") as HTMLButtonElement).disabled = true;
-      $("req").insertAdjacentHTML("beforeend", `<div class="req"><b class="err">${escapeHtml(balanceShortNote("Reject this"))}</b></div>`);
+      $("req").insertAdjacentHTML("beforeend", `<div class="req">${checkRow({ tier: "danger", html: escapeHtml(balanceShortNote("Reject this")) })}</div>`);
     }
-  } catch { /* offline; leave the static cost line */ }
+  } catch {
+    // offline: the cost rows stay, and the balance after says it could not be read
+    if (gen !== paintGen || renderedId !== r.id) return;
+    const el = document.getElementById("bal-after");
+    if (el) el.textContent = "unavailable";
+  }
 }
 // The tip a fill card measures the offer's expiry against: the node tip clamped up by the PoW-backed floor, as the
 // preflight clamps it; undefined when neither read answers (the card then shows the expiry block alone).
@@ -456,7 +464,7 @@ async function fillSendWarning(r: any) {
     // primary" prompt right after registration) no longer warns about the user's own address on a no-CSD op.
     const warns = sendWarnings(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
     const el = document.getElementById("send-warn");
-    if (el && warns.length) { el.innerHTML = warns.join("<br>"); (el as HTMLElement).hidden = false; }
+    if (el && warns.length) { el.innerHTML = warns.map((html) => checkRow({ tier: "danger", html })).join(""); (el as HTMLElement).hidden = false; }
   } catch { /* no history → no warning */ }
 }
 // Anti-click-through: when the request view (re)builds for a NEW request, disable both
@@ -496,8 +504,8 @@ async function resolve(approve: boolean) {
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
   const displayedQuote = rs(id).tokenQuoteDisplayed; // RT-W2: the number the user actually saw (survives the 1.2 s re-poll)
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
-  if (approve && tokenNotReady(current)) { msg("the token amount is not shown yet; wait for it or reject", "err"); return; }
-  if (approve && rs(id).balShort) { msg("your spendable balance does not cover this request; reject it and retry once your pending transaction is mined", "err"); return; }
+  if (approve && tokenNotReady(current)) { msg("The token amount is not shown yet. Wait for it or reject.", "err"); return; }
+  if (approve && rs(id).balShort) { msg("Your spendable balance does not cover this request. Reject it and retry once your pending transaction is mined.", "err"); return; }
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip, plus one
   // 2.5s tip read when the verdict is older than NFIN_CLICK_MAX_AGE_MS), then acts on the latest one recorded.
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
@@ -507,14 +515,14 @@ async function resolve(approve: boolean) {
     if (!current || current.id !== id) return;   // superseded while awaiting the verdict
     const g = await nfinAtClick(id, nfinSettled ?? first);   // the latest verdict, re-derived first when stale
     if (!current || current.id !== id) return;
-    if (g?.block) { msg(g.note || "refusing to approve this finalize", "err"); return; }
+    if (g?.block) { msg(g.note || "Refusing to sign this finalize.", "err"); return; }
   }
   // Only a click on the warning-state paint of this request acknowledges the unconfirmed reservation.
   const u = warnedFor === id ? rs(id).unconfirmed : undefined;
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
   current = null; renderedId = null; renderedSigner = null; warnedFor = null; renderSeq++;
-  if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("rejected"); render(); return; }
-  msg("approving…");
+  if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("Rejected. Nothing was signed."); render(); return; }
+  msg("Approving…");
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
   let r: any;
@@ -526,19 +534,21 @@ async function resolve(approve: boolean) {
   if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
-  } else if (r && r.ok === false) { msg("failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdOutcome = true; }
+  } else if (r && r.ok === false) { msg("Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdOutcome = true; }
   else if (r && r.txid) {
-    msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
+    msg("Sent " + String(r.txid).slice(0, 10) + "…", "ok");
     const note = secondSourceNote(r.secondSource);
-    if (note) { $("msg").insertAdjacentHTML("beforeend", `<br><b class="err">${escapeHtml(note)}</b>`); holdOutcome = true; }
+    if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); holdOutcome = true; }
   }
-  else msg("approved", "ok");
+  else msg("Approved.", "ok");
   render();
 }
 
-$("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
+$("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("Unlocked.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-approve").addEventListener("click", () => { if (!($("btn-approve") as HTMLButtonElement).disabled) resolve(true); });
 $("btn-reject").addEventListener("click", () => { if (!($("btn-reject") as HTMLButtonElement).disabled) resolve(false); });
+// Follow a theme chosen in the popup's Settings while this window is open (theme.js, loaded by approve.html).
+(globalThis as { CairnTheme?: CairnThemeApi }).CairnTheme?.startSync();
 render();
 setInterval(render, 1200);
 

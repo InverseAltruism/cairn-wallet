@@ -49,9 +49,9 @@ answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" +
 let c0 = closes();
 await click("btn-approve");
 await tick(); await flush();
-assert.match(msgEl().textContent, /^sent 0xcdcdcdcd/, "(1) sent is shown");
+assert.match(msgEl().textContent, /^Sent 0xcdcdcdcd/, "(1) sent is shown");
 assert.equal(msgEl().className, "msg ok");
-assert.ok(msgEl().innerHTML.includes(`<b class="err">${escapeHtml(PENDING)}</b>`), "(1) the line is shown under it");
+assert.ok(msgEl().innerHTML.includes(`<div class="check danger"><svg class="i" aria-hidden="true"><use href="icons.svg#i-octagon-alert"/></svg><div>${escapeHtml(PENDING)}</div></div>`), "(1) the line is shown under it");
 assert.equal(closes(), c0, "(1) the window stays open so the line can be read");
 console.log("  ok (1) pending: sent, the line, the window kept open");
 
@@ -67,8 +67,8 @@ answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" +
 c0 = closes();
 await click("btn-approve");
 await tick(); await flush();
-assert.match(msgEl().textContent, /^sent 0xcececece/);
-assert.ok(msgEl().innerHTML.includes(`<b class="err">${escapeHtml(FAILED)}</b>`), "(2) the failed wording");
+assert.match(msgEl().textContent, /^Sent 0xcececece/);
+assert.ok(msgEl().innerHTML.includes(`<div class="check danger"><svg class="i" aria-hidden="true"><use href="icons.svg#i-octagon-alert"/></svg><div>${escapeHtml(FAILED)}</div></div>`), "(2) the failed wording");
 assert.equal(closes(), c0, "(2) the window stays open");
 console.log("  ok (2) failed: sent, the line, the window kept open");
 
@@ -79,7 +79,7 @@ answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" +
 c0 = closes();
 await click("btn-approve");
 await tick(); await flush();
-assert.match(msgEl().textContent, /^sent 0xeeeeeeee/);
+assert.match(msgEl().textContent, /^Sent 0xeeeeeeee/);
 assert.ok(!msgEl().innerHTML.includes("Second source not consulted"), "(3) no line");
 assert.ok(closes() > c0, "(3) the window closes as before");
 console.log("  ok (3) honest path: sent alone, the window closes");

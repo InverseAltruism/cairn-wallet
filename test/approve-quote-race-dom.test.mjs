@@ -18,7 +18,7 @@
 //   read that covers the send enables Approve, (11) one that does not keeps it disabled.
 //
 // Run: node --import tsx test/approve-quote-race-dom.test.mjs   (offline)
-import { costLine, debitOf, fmtBalance } from "../src/popup/clearsign.js";
+import { debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 
@@ -57,8 +57,8 @@ const lockThenUnlock = async (tick) => {
 };
 const lastResolve = () => resolves[resolves.length - 1];
 const sendReq = (id, amount) => ({ id, method: "send", origin: "https://dapp.example", params: { to: RCPT, amount } });
-const costText = () => registry.get("cost").textContent;
-const costFor = (r, confirmed) => `${costLine(r)}  balance: ${fmtBalance(confirmed)} → ~${fmtBalance(confirmed - debitOf(r))} CSD`;
+const costText = () => registry.get("bal-after").textContent;
+const costFor = (r, confirmed) => `${fmtBalance(confirmed)} → ~${fmtBalance(confirmed - debitOf(r))} CSD`;
 const shortNoteShown = () => registry.get("req").innerHTML.includes("does not cover");
 const reject = async () => { registry.get("btn-reject")._listeners.click(); await flush(); await sleep(20); await flush(); };
 

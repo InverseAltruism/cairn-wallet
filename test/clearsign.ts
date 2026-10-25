@@ -1,6 +1,7 @@
 // Clear-signing formatter coverage; the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, costLine, escapeHtml, expiryLine, nfinalizeApproveGate, nameActApproveGate } from "../src/popup/clearsign.js";
+import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate } from "../src/popup/clearsign.js";
+import { nameActApproveGate } from "../src/core/namegate.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck, type NameState } from "../src/vendor/cairnx-spv.js";
@@ -32,7 +33,7 @@ ok("baseVal(5) → 5", baseVal(5) === 5);
 const badSend = describe({ method: "send", params: { to: ADDR, amount: "evil" } });
 ok("describe(send, non-numeric amount): shows 'invalid amount', never 'NaN'", badSend.includes("invalid amount") && !badSend.includes("NaN"));
 ok("describe(propose, non-numeric fee): no 'NaN'", !describe({ method: "propose", params: { domain: "d", fee: "evil" } }).includes("NaN"));
-ok("costLine(send, garbage): no 'NaN'", !costLine({ method: "send", params: { amount: "x", fee: "y" } }).includes("NaN"));
+ok("costBlock(send, garbage): no 'NaN'", !costBlock({ method: "send", params: { amount: "x", fee: "y" } }).includes("NaN"));
 ok("debitOf is always finite", Number.isFinite(debitOf({ method: "send", params: { amount: "x", fee: "y" } })));
 
 // HTML-escaping of dApp-controlled strings in the clear-signing dialog (no injection)
@@ -57,7 +58,7 @@ ok("describe(fillOffer) clear-signs the full recipient + amount", foHtml.include
 ok("describe(fillOffer) shows the fee + signed score/confidence", foHtml.includes("0.05 CSD") && foHtml.includes("score 100"));
 ok("describe(fillOffer) mounts the address-poisoning warn slot", foHtml.includes('id="send-warn"'));
 ok("debitOf(fillOffer) = outputs + fee", debitOf(fo) === 205_000_000);
-ok("costLine(fillOffer) shows paid + fee, atomic", costLine(fo).includes("2 CSD") && costLine(fo).includes("0.05 CSD") && costLine(fo).toLowerCase().includes("atomic"));
+ok("costBlock(fillOffer) shows the fee and the total; describe states the fill is atomic", costBlock(fo).includes("<dt>Network fee</dt><dd>0.05 CSD</dd>") && costBlock(fo).includes("<dt>Total</dt><dd>2.05 CSD</dd>") && /atomic/i.test(describe(fo)));
 const foBad = describe({ method: "fillOffer", params: { proposalId: "0x" + "aa".repeat(32), outputs: [{ to: ADDR, value: "evil" }], fee: "junk" } });
 ok("describe(fillOffer, garbage amounts): 'invalid amount', never 'NaN'", foBad.includes("invalid amount") && !foBad.includes("NaN"));
 ok("debitOf(fillOffer, garbage) is finite", Number.isFinite(debitOf({ method: "fillOffer", params: { outputs: [{ value: "x" }], fee: "y" } })));
@@ -72,7 +73,7 @@ ok("describe(propose+outputs) labels them NEUTRALLY as funds leaving (not a beni
 ok("describe(propose+outputs) shows the full recipient + amount", pfHtml.includes(ADDR) && pfHtml.includes("1 CSD"));
 ok("describe(propose+outputs) mounts the address-poisoning warn slot (#send-warn)", pfHtml.includes('id="send-warn"'));
 ok("debitOf(propose+outputs) = outputs + anchor fee (true funds leaving)", debitOf(propFee) === 100000000 + 25000000);
-ok("costLine(propose+outputs) says funds transferred out", /transferred out/i.test(costLine(propFee)));
+ok("costBlock(propose+outputs) says funds transferred out", /transferred out/i.test(costBlock(propFee)));
 ok("describe(propose with NO outputs) shows no transfer-out warning", !/transfers funds out/i.test(describe({ method: "propose", params: { domain: "d", fee: 1 } })));
 ok("describe(propose, garbage output value): no NaN", !describe({ method: "propose", params: { domain: "d", fee: 1, outputs: [{ to: ADDR, value: "x" }] } }).includes("NaN"));
 
@@ -80,13 +81,13 @@ ok("describe(propose, garbage output value): no NaN", !describe({ method: "propo
 // user's CairnX token balance, so an outputs-free fill must NEVER clear-sign as "free".
 const foTok = { method: "fillOffer", params: { proposalId: "0x" + "bb".repeat(32), score: 100, confidence: 1_000_000, outputs: [], fee: 5_000_000 } };
 const foTokHtml = describe(foTok);
-ok("describe(token fill) warns it SPENDS TOKENS from the CairnX balance", /SPENDS TOKENS/.test(foTokHtml));
+ok("describe(token fill) warns it SPENDS TOKENS from the CairnX balance", /spends tokens/i.test(foTokHtml));
 ok("describe(token fill) still shows the signed confidence value", foTokHtml.includes("confidence 1000000"));
-ok("costLine(token fill) mentions the token debit", /tokens debited/i.test(costLine(foTok)));
-ok("describe(normal CSD fill) does NOT show the token warning", !/SPENDS TOKENS/.test(foHtml));
-ok("costLine(normal CSD fill) does NOT mention token debits", !/tokens debited/i.test(costLine(fo)));
+ok("costBlock(token fill) mentions the token debit", /tokens debited/i.test(costBlock(foTok)));
+ok("describe(normal CSD fill) does NOT show the token warning", !/spends tokens/i.test(foHtml));
+ok("costBlock(normal CSD fill) does NOT mention token debits", !/tokens debited/i.test(costBlock(fo)));
 ok("describe(confidence 999999 ≠ marker) does NOT show the token warning",
-  !/SPENDS TOKENS/.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "cc".repeat(32), confidence: 999_999, outputs: [], fee: 1 } })));
+  !/spends tokens/i.test(describe({ method: "fillOffer", params: { proposalId: "0x" + "cc".repeat(32), confidence: 999_999, outputs: [], fee: 1 } })));
 
 // v1.7 claim-to-fill; a score-50 / confidence-0 attest is a PAYMENT-FREE reservation of an open CSD
 // offer; the wallet must label it "Reserve an open offer" and say it moves no money, so the user can
@@ -94,32 +95,32 @@ ok("describe(confidence 999999 ≠ marker) does NOT show the token warning",
 const claim = describe({ method: "attest", params: { proposalId: "0x" + "dd".repeat(32), score: 50, confidence: 0, fee: 5_000_000 } });
 ok("describe(claim score50/conf0) labels it 'Reserve an open offer'", /Reserve an open offer/.test(claim));
 ok("describe(claim) states it MOVES NO MONEY (no payment)", /moves no money/i.test(claim) && /no payment/i.test(claim));
-ok("describe(claim) does NOT show the token-spend warning", !/SPENDS TOKENS/.test(claim));
+ok("describe(claim) does NOT show the token-spend warning", !/spends tokens/i.test(claim));
 const sup = describe({ method: "attest", params: { proposalId: "0x" + "ee".repeat(32), score: 80, confidence: 70, fee: 5_000_000 } });
 ok("describe(ordinary attest score80) stays 'Support / review' (claim label is score50/conf0 only)", /Support \/ review/.test(sup) && !/Reserve an open offer/.test(sup));
 const atok = describe({ method: "attest", params: { proposalId: "0x" + "ff".repeat(32), score: 100, confidence: 1_000_000, fee: 5_000_000 } });
-ok("describe(token-fill attest conf1e6) STILL warns SPENDS TOKENS (claim branch didn't swallow it)", /SPENDS TOKENS/.test(atok));
+ok("describe(token-fill attest conf1e6) STILL warns SPENDS TOKENS (claim branch didn't swallow it)", /spends tokens/i.test(atok));
 
 // F6; the dApp-supplied expiresEpoch is part of the SIGNED bytes (csdtx.ts u64) and must be shown
 // in the approval window so a site can't commit a record claimable for years past what the user expects.
 {
   const EXP = 500000;
   const raw = describe({ method: "propose", params: { domain: "csd:test", payloadHash: "0x" + "11".repeat(32), uri: "x", fee: 1000000, expiresEpoch: EXP } });
-  ok("describe(propose) RENDERS the signed expiresEpoch (F6: was silently dropped)", raw.includes("expires") && raw.includes(String(EXP)));
+  ok("describe(propose) RENDERS the signed expiresEpoch (F6: was silently dropped)", /expires/i.test(raw) && raw.includes(String(EXP)));
   const cx = describe({ method: "propose", params: { domain: "cairnx:v1", payloadHash: "0x" + "11".repeat(32), uri: '{"t":"name"}', fee: 25000000, expiresEpoch: EXP } });
-  ok("describe(propose, cairnx branch) ALSO renders the expiry", cx.includes("expires") && cx.includes(String(EXP)));
-  ok("describe(propose, no expiresEpoch) omits the expiry line cleanly", !describe({ method: "propose", params: { domain: "d", fee: 1 } }).includes("expires"));
+  ok("describe(propose, cairnx branch) ALSO renders the expiry", /expires/i.test(cx) && cx.includes(String(EXP)));
+  ok("describe(propose, no expiresEpoch) omits the expiry line cleanly", !/expires/i.test(describe({ method: "propose", params: { domain: "d", fee: 1 } })));
 
-  // expiryLine: raw epoch alone when the current epoch is unknown (offline)
-  ok("expiryLine shows the raw epoch when current epoch unknown", expiryLine(1234) === "expires: epoch 1234");
-  ok("expiryLine() empty for absent expiry", expiryLine(undefined) === "" && expiryLine(null) === "");
-  ok("expiryLine flags a non-integer/garbage epoch (never 'NaN')", expiryLine("evil").includes("invalid") && !expiryLine("evil").includes("NaN"));
+  // expiryValue: raw epoch alone when the current epoch is unknown (offline)
+  ok("expiryValue shows the raw epoch when current epoch unknown", expiryValue(1234) === "epoch 1234");
+  ok("expiryValue() empty for absent expiry", expiryValue(undefined) === "" && expiryValue(null) === "");
+  ok("expiryValue flags a non-integer/garbage epoch (never 'NaN')", expiryValue("evil").includes("invalid") && !expiryValue("evil").includes("NaN"));
   // with a known current epoch → humanized remaining window
-  const near = expiryLine(100 + 24, 100); // +24 epochs ≈ 1 day
-  ok("expiryLine humanizes the remaining window from the current epoch", /in ~1 day/.test(near) && near.includes("current epoch 100"));
-  ok("expiryLine WARNs on an unusually long claim window (mirrors FEE_WARN)", /unusually long/.test(expiryLine(100 + 100001, 100)));
-  ok("expiryLine does NOT warn on a normal horizon", !/unusually long/.test(expiryLine(100 + 24, 100)));
-  ok("expiryLine flags an already-past expiry as a no-op", /already past/.test(expiryLine(50, 100)));
+  const near = expiryValue(100 + 24, 100); // +24 epochs ≈ 1 day
+  ok("expiryValue humanizes the remaining window from the current epoch", /in ~1 day/.test(near) && near.includes("current epoch 100"));
+  ok("expiryValue WARNs on an unusually long claim window (mirrors FEE_WARN)", /unusually long/.test(expiryValue(100 + 100001, 100)));
+  ok("expiryValue does NOT warn on a normal horizon", !/unusually long/.test(expiryValue(100 + 24, 100)));
+  ok("expiryValue flags an already-past expiry as a no-op", /already past/.test(expiryValue(50, 100)));
   // the warn flows through describe() when approve.ts supplies r.currentEpoch
   const warned = describe({ method: "propose", params: { domain: "d", fee: 1, expiresEpoch: 100 + 200000 }, currentEpoch: 100 });
   ok("describe(propose) surfaces the long-window WARN when current epoch is known", /unusually long/.test(warned));
@@ -139,7 +140,7 @@ ok("lookalikeOf does NOT flag an identical address", lookalikeOf(real, [real]) =
   const manyOuts = Array.from({ length: 15 }, (_, i) => ({ to: "0x" + (i + 1).toString(16).padStart(40, "0"), value: 1e8 }));
   const manyHtml = describe({ method: "send", params: { outputs: manyOuts, fee: 1e6 } });
   ok("TRUNC-1: truncated multi-send LOUDLY flags the hidden recipients (err class, not a dim aside)",
-    /NOT shown/i.test(manyHtml) && manyHtml.includes('class="err"') && /3 more recipient/i.test(manyHtml)); // 15−12=3 hidden
+    /NOT shown/i.test(manyHtml) && manyHtml.includes('class="check danger"') && /3 more recipient/i.test(manyHtml)); // 15−12=3 hidden
   ok("TRUNC-1: truncated multi-send discloses the HIDDEN total (3 × 1 CSD)", /3 CSD/.test(manyHtml));
   ok("TRUNC-1: a send within the cap shows no truncation warning (no false alarm)",
     !/NOT shown/i.test(describe({ method: "send", params: { outputs: manyOuts.slice(0, 5), fee: 1e6 } })));
@@ -181,10 +182,10 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   const ren = buildNameRenew({ name: "audit" });
   const mk = (treasuryVal: number, tip?: number) => describe({ method: "propose", currentTip: tip,
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
-  ok("FEE-1: underpaid renewal (3 CSD where V24 needs 5) WARNS", /BELOW the current price/.test(mk(3e8, 49300)));
-  ok("FEE-1: correctly-paid renewal (5 CSD at V24) does NOT warn", !/BELOW the current price/.test(mk(5e8, 49300)));
-  ok("FEE-1: pre-V24 renewal paying the 3 CSD V18 price does NOT warn (no false alarm)", !/BELOW the current price/.test(mk(3e8, 44230)));
-  ok("FEE-1: offline (no tip) skips the fee check (no false warning)", !/BELOW the current price/.test(mk(3e8, undefined)));
+  ok("FEE-1: underpaid renewal (3 CSD where V24 needs 5) WARNS", /below the current price/i.test(mk(3e8, 49300)));
+  ok("FEE-1: correctly-paid renewal (5 CSD at V24) does NOT warn", !/below the current price/i.test(mk(5e8, 49300)));
+  ok("FEE-1: pre-V24 renewal paying the 3 CSD V18 price does NOT warn (no false alarm)", !/below the current price/i.test(mk(3e8, 44230)));
+  ok("FEE-1: offline (no tip) skips the fee check (no false warning)", !/below the current price/i.test(mk(3e8, undefined)));
 }
 
 // RT-W1: an nprofile value (consensus cap 256 bytes) must be shown in full; the popup used to cut it at
@@ -193,7 +194,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   const long = "a".repeat(150) + "TAIL";
   const prof = buildNameProfile({ name: "audit", profile: { bio: long } });
   const html = describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, uri: prof.uri, payloadHash: prof.payloadHash, fee: 25000000, expiresEpoch: 2000 } });
-  ok("RT-W1: nprofile value longer than 120 chars is shown in full", html.includes(`bio: <code>${long}</code>`));
+  ok("RT-W1: nprofile value longer than 120 chars is shown in full", html.includes(`<dt>bio</dt><dd><code>${long}</code></dd>`));
 }
 
 // NFIN-WINDOW-1 (Plan 63 carry-over, 0.2.54); the approve-path nfinalize gate: a displaced or
@@ -265,11 +266,11 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   })());
   ok("NFIN: fetch failure (5xx/timeout) WARNS but does NOT block (fail-open)", (() => {
     const g = nfinalizeApproveGate({ failed: true }, ME, winEnd - 2);
-    return g.block === false && /could not verify/.test(g.note || "");
+    return g.block === false && /Could not verify/.test(g.note || "");
   })());
   ok("NFIN: tip unavailable WARNS but does NOT block (fail-open)", (() => {
     const g = nfinalizeApproveGate({ record: mine }, ME, null);
-    return g.block === false && /could not verify/.test(g.note || "");
+    return g.block === false && /Could not verify/.test(g.note || "");
   })());
 
   // ── N-2 freeze half (Plans/68 B2; cairnx-core 0.1.36): a finalize raised BEFORE the displacement
@@ -314,7 +315,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   })());
   ok("NACT: nrenew of a LAPSED name WARNS but does not block (grace boundary is the resolver's call)", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, expired: true } }, ME);
-    return g.block === false && /LAPSED/.test(g.note || "");
+    return g.block === false && /lapsed/.test(g.note || "");
   })());
   // NRENEW-REJECT-AFTER-FEE (Plan 70 R2): fee-burning nrenew shapes WARN (never hard-block; resolver state
   // may be stale). Mutation-sensitive: dropping either warn returns note:null and fails these.
@@ -332,7 +333,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   })());
   ok("NACT: transport failure WARNS but does NOT block (fail-open)", (() => {
     const g = nameActApproveGate("nrenew", { failed: true }, ME);
-    return g.block === false && /could not verify/.test(g.note || "");
+    return g.block === false && /Could not verify/.test(g.note || "");
   })());
 }
 
@@ -390,5 +391,31 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   const strong = nameCautionHtml("alice", true, { sources: 2, disagree: false });
   ok("NS-1 badge control: a real 2-source agreement still reads 'servers agree' (strong badge unchanged)", /servers agree/i.test(strong) && !/only ONE name source/i.test(strong));
 }
+
+// nameCheck and nameCautionHtml read one branch selector, so the review row's tier cannot drift from its copy: positive
+// exactly on the two-sources-agree copy (✓) at a depth that can no longer reorg, caution on every other branch.
+// RED-FIRST: give nameCheck its own copy of the branch rules without the soleSource or disagree test and the matching
+// row below fails; drop the lowDepth test and the depth row fails.
+{
+  const base = { name: "alice", verified: true, sources: 2 };
+  const cases: [string, any, "ok" | "caution"][] = [
+    ["two sources agree", base, "ok"],
+    ["two sources agree below the safe depth", { ...base, lowDepth: true }, "caution"],
+    ["one source only", { ...base, soleSource: true }, "caution"],
+    ["sources disagree", { ...base, disagree: true }, "caution"],
+    ["bought through a fill", { ...base, viaFill: true, verified: false }, "caution"],
+    ["bought through a fill, verified flag set", { ...base, viaFill: true }, "caution"],
+    ["not chain-verified", { ...base, verified: false }, "caution"],
+    ["one source answered", { ...base, sources: 1 }, "caution"],
+  ];
+  for (const [label, rr, tier] of cases) {
+    const c = nameCheck(rr)!;
+    ok(`nameCheck ${label}: ${tier}, and its copy reads ✓ only when positive or below the safe depth`, c.tier === tier && c.html.startsWith("✓") === (tier === "ok" || !!rr.lowDepth));
+  }
+  ok("nameCheck: no name, no row", nameCheck({ name: null }) === null);
+  ok(`NAME_SAFE_DEPTH is 3 (${NAME_SAFE_DEPTH})`, NAME_SAFE_DEPTH === 3);
+  ok("nameCheck carries the badge line, escaped", nameCheck({ ...base, badge: "<i>x</i>" })!.html.includes(`<span class="check-line">&lt;i&gt;x&lt;/i&gt;</span>`));
+}
+
 
 done();

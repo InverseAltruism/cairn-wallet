@@ -4,7 +4,7 @@
 import { explorerLink, EXPLORER_PRESETS } from "../core/explorer.js";
 import { INCLUSION_NOTICE_BLOCKS, inclusionMark } from "../core/inclusion.js";
 import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
-import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
+import { nameCheck, NAME_SAFE_DEPTH, checkRow, type Check, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
 import { enterOnce, flashChange, tokenEase, tokenMs } from "./motion.js";
@@ -647,8 +647,6 @@ async function doNameAction() {
 }
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
-// Below this many confirmations a name's resolution could still reorg: the badge says so and the review row is caution.
-const NAME_SAFE_DEPTH = 3;
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
 async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
   const r = (raw || "").trim();
@@ -748,21 +746,6 @@ async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookal
     return recipientStatus(to, paidRecipients(h), (st.accounts || []).map((a: any) => String(a.addr)));
   } catch { return { firstTime: true, lookalike: null }; }
 }
-// A review check row: positive (the name is chain-backed by two sources), caution, or danger (a warning that
-// stands against sending: a look-alike, a first send, a balance that does not cover the send).
-type Tier = "ok" | "caution" | "danger";
-type Check = { tier: Tier; html: string };
-const TIER_ICON: Record<Tier, string> = { ok: "i-shield-check", caution: "i-triangle-alert", danger: "i-octagon-alert" };
-type NameInfo = { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
-// The tier follows the meaning: positive only where two sources agree (nameCautionHtml's ✓ branch) at a depth that
-// can no longer reorg; a shallower resolution is caution (test/popup-checks-dom.test.mjs walks every branch).
-function nameCheck(rr: NameInfo): Check | null {
-  if (!rr.name) return null;
-  const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
-  const ok = rr.verified === true && !rr.viaFill && !rr.soleSource && !rr.disagree && (rr.sources ?? 1) >= 2 && !rr.lowDepth;
-  const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";
-  return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge };
-}
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
 // otherwise the historical ones byte-for-byte. Empty return = nothing to warn about (box hidden).
@@ -773,7 +756,6 @@ function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCa
   else if (firstTime) out.push({ tier: "danger", html: `⚠ First time sending to this address: check every character. ${Noun} are irreversible.` });
   return out;
 }
-const checkRow = (c: Check) => `<div class="check ${c.tier}"><svg class="i" aria-hidden="true"><use href="icons.svg#${TIER_ICON[c.tier]}"/></svg><div>${c.html}</div></div>`;
 function setWarn(el: HTMLElement, checks: Check[]) {
   if (checks.length) { el.innerHTML = checks.map(checkRow).join(""); el.hidden = false; }
   else { el.innerHTML = ""; el.hidden = true; }

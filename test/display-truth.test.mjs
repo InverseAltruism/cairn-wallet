@@ -14,7 +14,7 @@
 //
 // Run: node --import tsx test/display-truth.test.mjs   (offline)
 import { readFileSync } from "node:fs";
-import { describe, costLine, debitOf, fmtCsd, truncLoud, tokenAmountBothScales, tokenQuoteHtml, revealPreviewHtml } from "../src/popup/clearsign.ts";
+import { describe, costBlock, debitOf, fmtCsd, truncLoud, tokenAmountBothScales, tokenQuoteHtml, revealPreviewHtml } from "../src/popup/clearsign.ts";
 import { canonicalJson, cairnxPayloadHash, defaultFeeFor, CAIRNX_DOMAIN, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16 } from "../src/core/cairnx.ts";
 import { MIN_FEE_PROPOSE, MIN_FEE_ATTEST } from "../src/vendor/cairnx-spv.js";
 
@@ -74,12 +74,12 @@ ok("W8: 0-decimals token still shows both scales", tokenAmountBothScales("7", 0,
   ok("M14: the reveal preview slot is mounted for approve.ts", html.includes('id="reveal-preview"'));
   ok("M14: preview renders domain + claim text as going PUBLIC", (() => {
     const p = revealPreviewHtml({ domain: "csd:sealed", claim: "the earth is round" });
-    return p.includes("csd:sealed") && p.includes("the earth is round") && /PUBLIC/.test(p);
+    return p.includes("csd:sealed") && p.includes("the earth is round") && /public/i.test(p);
   })());
-  ok("M14: no record for this txid warns LOUDLY (nothing to reveal)", /NO sealed claim/.test(revealPreviewHtml(null)));
+  ok("M14: no record for this txid warns LOUDLY (nothing to reveal)", /<b>no<\/b> sealed claim/.test(revealPreviewHtml(null)));
   ok("M14: a failed lookup is a DISTINCT caution (not 'no such claim')", (() => {
     const p = revealPreviewHtml({ failed: true });
-    return /could not load/.test(p) && !/NO sealed claim/.test(p);
+    return /could not load/i.test(p) && !/<b>no<\/b> sealed claim/.test(p);
   })());
   ok("M14: an undecryptable record still warns a secret WILL be published", /could not be decrypted/.test(revealPreviewHtml({ domain: "d" })));
   ok("M14: a long claim is truncated LOUDLY at the stated cap", (() => {
@@ -104,8 +104,8 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   const bigUri = "A".repeat(5000);
   const html = describe({ method: "propose", params: { domain: "evil:site", fee: 1_000_000, uri: bigUri, payloadHash: "0x" + "11".repeat(32), outputs: [{ to: ADDR, value: 300_000_000 }] } });
   ok("M15: an oversized dApp uri is truncated LOUDLY at the node's 512 cap", html.includes("truncated") && html.includes("512") && html.includes("5000"));
-  ok("M15: the funds-out rows render ABOVE the dApp uri", html.indexOf("transfers funds OUT") !== -1 && html.indexOf("transfers funds OUT") < html.indexOf("uri:"));
-  ok("M15: the fee row renders ABOVE the dApp domain + uri", html.indexOf("fee:") < html.indexOf("domain:") && html.indexOf("fee:") < html.indexOf("uri:"));
+  ok("M15: the funds-out rows render ABOVE the dApp uri", html.indexOf("transfers funds out") !== -1 && html.indexOf("transfers funds out") < html.indexOf("<dt>URI</dt>"));
+  ok("M15: the fee row renders ABOVE the dApp domain + uri", html.indexOf("<dt>Network fee</dt>") !== -1 && html.indexOf("<dt>Network fee</dt>") < html.indexOf("<dt>Domain</dt>") && html.indexOf("<dt>Network fee</dt>") < html.indexOf("<dt>URI</dt>"));
   ok("M15: a valid-length uri gets NO truncation marker (no false alarm)",
     !describe({ method: "propose", params: { domain: "evil:site", fee: 1_000_000, uri: "B".repeat(512) } }).includes("truncated"));
   // G9 (B8w): the domain display cap now tracks the node's MAX_DOMAIN_BYTES (128), so a 300-char domain
@@ -113,7 +113,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   const bigDomain = describe({ method: "propose", params: { domain: "D".repeat(300), fee: 1_000_000, uri: "u" } });
   ok("M15: an oversized dApp domain is truncated LOUDLY", bigDomain.includes("showing the first 128 of 300"));
   const seal = describe({ method: "sealClaim", params: { domain: "csd:sealed", claim: "C".repeat(500), fee: 25_000_000 } });
-  ok("M15: sealClaim fee row renders ABOVE the dApp claim text", seal.indexOf("fee:") !== -1 && seal.indexOf("fee:") < seal.indexOf("claim:"));
+  ok("M15: sealClaim fee row renders ABOVE the dApp claim text", seal.indexOf("<dt>Network fee</dt>") !== -1 && seal.indexOf("<dt>Network fee</dt>") < seal.indexOf("<dt>Claim</dt>"));
   ok("M15: sealClaim claim text is truncated LOUDLY (no quiet ellipsis)", seal.includes("showing the first 200 of 500"));
   const bigId = describe({ method: "attest", params: { proposalId: "P".repeat(400), score: 80, confidence: 70, fee: 5_000_000 } });
   ok("M15: an oversized attest target id is truncated LOUDLY", bigId.includes("showing the first 80 of 400"));
@@ -126,7 +126,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   const rate = `${FEE_BPS_V16 / 100}%`;
   ok("LOW-fee: token-fill attest states the 1.5% protocol fee", atok.includes(`${rate} protocol fee`) && !/\+ 1% /.test(atok));
   ok("LOW-fee: token-fill fillOffer states the 1.5% protocol fee", ftok.includes(`${rate} protocol fee`) && !/\+ 1% /.test(ftok));
-  ok("LOW-fee: costLine(attest, token fill) states 1.5%", costLine({ method: "attest", params: { confidence: 1_000_000, fee: 5_000_000 } }).includes(rate));
+  ok("LOW-fee: costBlock(attest, token fill) states 1.5%", costBlock({ method: "attest", params: { confidence: 1_000_000, fee: 5_000_000 } }).includes(rate));
 }
 
 // ── LOW: the score-50 reservation window is ~40 blocks (was '~15') ───────────
@@ -139,10 +139,10 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
 // ── LOW: score-50 past V28 warns it is a guaranteed on-chain no-op ───────────
 {
   const base = { method: "attest", params: { proposalId: ID, score: 50, confidence: 0, fee: 5_000_000 } };
-  ok("LOW-V28: no floor threaded, no warning (today's behavior)", !/REJECTED on-chain/.test(describe(base)));
-  ok("LOW-V28: floor below the gate, no warning (no false alarm mid-transition)", !/REJECTED on-chain/.test(describe({ ...base, tipFloor: V28_HEIGHT - 1 })));
+  ok("LOW-V28: no floor threaded, no warning (today's behavior)", !/rejected<\/b> on-chain/.test(describe(base)));
+  ok("LOW-V28: floor below the gate, no warning (no false alarm mid-transition)", !/rejected<\/b> on-chain/.test(describe({ ...base, tipFloor: V28_HEIGHT - 1 })));
   const warned = describe({ ...base, tipFloor: V28_HEIGHT });
-  ok("LOW-V28: PoW-backed floor at the gate warns REJECTED on-chain (fee-costing no-op)", /REJECTED on-chain/.test(warned) && warned.includes(String(V28_HEIGHT)));
+  ok("LOW-V28: PoW-backed floor at the gate warns REJECTED on-chain (fee-costing no-op)", /rejected<\/b> on-chain/.test(warned) && warned.includes(String(V28_HEIGHT)));
   ok("LOW-V28: the warning is a warn, not a re-label (reserve copy still present)", /Reserve an open offer/.test(warned));
 }
 
@@ -153,7 +153,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("LOW-fclaim: a V28 open-lane claim clear-signs as a reservation", /Reserve an open offer/.test(html) && /moves no money/i.test(html));
   ok("LOW-fclaim: the claimed offer id is shown", html.includes("ef".repeat(32)));
   ok("LOW-fclaim: no raw-JSON fallback (the rubber-stamp failure mode)", !html.includes("Post a proposal"));
-  ok("LOW-fclaim: the hold expiry (the carrying propose's) still renders", html.includes("expires"));
+  ok("LOW-fclaim: the hold expiry (the carrying propose's) still renders", /expires/i.test(html));
 }
 
 // ── N22 counter-case: a deploy's decimals are SIGNED bytes, so the human scale is provable ─
@@ -202,10 +202,10 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
 
   // Cross-row consistency: with NO dApp-supplied fee, the fee row in describe(), the cost row, and
   // the balance-after debit must ALL be the table value; the number the engine will sign.
-  const feeTxt = (base) => `fee: ${base / 1e8} CSD`;
+  const feeTxt = (base) => `<dt>Network fee</dt><dd>${base / 1e8} CSD`;
   const bareAttest = { method: "attest", params: { proposalId: ID, score: 80, confidence: 70 } };
   ok("B9: bare attest fee row shows the floor the engine signs", describe(bareAttest).includes(feeTxt(MIN_FEE_ATTEST)));
-  ok("B9: bare attest cost row agrees", costLine(bareAttest).includes(`cost: ${fmtCsd(MIN_FEE_ATTEST)} network fee`));
+  ok("B9: bare attest cost row agrees", costBlock(bareAttest).includes(`<dt>Network fee</dt><dd>${fmtCsd(MIN_FEE_ATTEST)}`));
   ok("B9: bare attest debit agrees", debitOf(bareAttest) === MIN_FEE_ATTEST);
 
   const claim = { method: "attest", params: { proposalId: ID, score: 50, confidence: 0 } };
@@ -213,7 +213,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
 
   const barePropose = { method: "propose", params: { domain: "csd:test", payloadHash: ID, uri: "u" } };
   ok("B9: bare propose shows the node-enforced 0.25 floor (not a rejected 0.01)", describe(barePropose).includes(feeTxt(MIN_FEE_PROPOSE)));
-  ok("B9: bare propose cost row agrees", costLine(barePropose).includes(`${fmtCsd(MIN_FEE_PROPOSE)} network fee`));
+  ok("B9: bare propose cost row agrees", costBlock(barePropose).includes(`<dt>Network fee</dt><dd>${fmtCsd(MIN_FEE_PROPOSE)}`));
   ok("B9: bare propose debit agrees", debitOf(barePropose) === MIN_FEE_PROPOSE);
 
   const cxRec = { v: 1, t: "transfer", ticker: "TOK", amount: "5", to: "0x" + "cd".repeat(20) };
@@ -238,9 +238,10 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   // engine must APPLY the table where it used to error on an omitted fee.
   const clearsignSrc = readFileSync(new URL("../src/popup/clearsign.ts", import.meta.url), "utf8");
   const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
-  ok("PIN B9: every feeLine use-site reads defaultFeeFor(r.method)",
-    (clearsignSrc.match(/feeLine\(p\.fee, defaultFeeFor\(r\.method\)\)/g) || []).length >= 7
-    && !/feeLine\(p\.fee(, ?\d|(, ?CAIRNX_PROPOSE_FEE)?\))/.test(clearsignSrc.replace(/feeLine\(p\.fee, defaultFeeFor\(r\.method\)\)/g, "")));
+  // One fee row now (the cost rows of every request type): its one use site reads the table.
+  ok("PIN B9: the feeValue use site reads defaultFeeFor(r.method)",
+    (clearsignSrc.match(/feeValue\(r\.params\?\.fee, defaultFeeFor\(r\.method\)\)/g) || []).length === 1
+    && (clearsignSrc.match(/feeValue\(/g) || []).length === 2);   // the definition and that one call
   ok("PIN B9: cost/debit fallbacks read the table, not literals", !/\|\| ?(1_000_000|5_000_000|1000000|5000000)\)/.test(clearsignSrc));
   ok("PIN B9: the engine defaults an omitted propose fee (was BAD_FEE after approval)", walletSrc.includes('defaultFeeFor("propose")'));
   ok("PIN B9: the engine defaults an omitted attest fee", walletSrc.includes('defaultFeeFor("attest")'));

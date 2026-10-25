@@ -6,7 +6,7 @@
 // @inversealtruism/cairnx-core builders (the convention's reference implementation),
 // so the wallet's isolated copy is pinned byte-for-byte to the resolver's reality.
 import { buildTransfer, buildNameProfile, canonicalJson, cairnxPayloadHash, formatUnits, parseUnits, decodeCairnxRecord, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE } from "../src/core/cairnx.js";
-import { describe, cairnxDescribe, costLine, nameCautionHtml, reresolveUnchanged } from "../src/popup/clearsign.js";
+import { describe, cairnxDescribe, costBlock, nameCautionHtml, reresolveUnchanged } from "../src/popup/clearsign.js";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";
@@ -71,7 +71,7 @@ const ADDR_CD = "0x" + "cd".repeat(20);
 // structured clear-sign view MUST surface].
 const RECORDS: [string, string, string, string[]][] = [
   ["deploy", `{"decimals":8,"mint":"issuer","name":"Cairn","supply":"2100000000000000","t":"deploy","ticker":"CAIRN","v":1}`,
-    "0xcfe2a4e58fbcc1ce9de97308071eb48e7952a41c6ecee43e3dfa6875b17151a0", ["token deploy", "CAIRN", "2100000000000000", "decimals: 8", "issuer"]],
+    "0xcfe2a4e58fbcc1ce9de97308071eb48e7952a41c6ecee43e3dfa6875b17151a0", ["token deploy", "CAIRN", "2100000000000000", "<dt>Decimals</dt><dd>8</dd>", "issuer"]],
   ["mint", `{"amount":"100000000","t":"mint","ticker":"CAIRN","v":1}`,
     "0x2f0b0d5a7bd25f768c157d1dcaca116b9b2eb147257ba7c834cc32d34d76f27f", ["token mint", "CAIRN", "100000000"]],
   ["transfer", `{"amount":"150000000","t":"transfer","ticker":"CAIRN","to":"${ADDR_AB}","v":1}`,
@@ -83,7 +83,7 @@ const RECORDS: [string, string, string, string[]][] = [
   ["ocancel", `{"t":"ocancel","ticker":"CAIRN","v":1}`,
     "0xbcb2c0dbc97b976d607900b72f76345c04966486ab1f4f8af0a51b287e73993a", ["cancel offers", "CAIRN"]],
   ["ocancel-all", `{"t":"ocancel","v":1}`,
-    "0xb049ba1b57455b88958ddcd233e51261ff0bf3e365532c95e90fcb631ee712fe", ["cancel offers", "ALL"]],
+    "0xb049ba1b57455b88958ddcd233e51261ff0bf3e365532c95e90fcb631ee712fe", ["cancel offers", "<b>all</b>"]],
   ["name", `{"name":"satoshi","salt":"a1b2c3d4e5f60718","t":"name","v":1}`,
     "0xe7bd075d10847e2aa7fd3df53c3ca4164555120171790e1c55fb1d2984d1a100", ["step 2 of 3", "satoshi.csd"]],   // Plan 63: titles mirror the site's step language
   ["nrenew", `{"name":"satoshi","t":"nrenew","v":1}`,
@@ -97,7 +97,7 @@ const RECORDS: [string, string, string, string[]][] = [
   ["nset", `{"addr":"${ADDR_CD}","name":"satoshi","t":"nset","v":1}`,
     "0x22ea436ed94a3af8465f5f3f491707e350f14007d1a04f0a78eff4b5f858a74d", ["address record", "satoshi.csd", ADDR_CD]],
   ["nprofile", `{"name":"satoshi","p":{"avatar":"https://a.co/x.png","com.twitter":"satoshi","display":"Satoshi"},"t":"nprofile","v":1}`,
-    "0x2534b3e7e47ef746054197113c843bc9579a65dd6bbc7e724a55b86f16a20d4e", ["identity profile", "satoshi.csd", "avatar", "com.twitter", "Satoshi", "does NOT change where funds go"]],
+    "0x2534b3e7e47ef746054197113c843bc9579a65dd6bbc7e724a55b86f16a20d4e", ["identity profile", "satoshi.csd", "avatar", "com.twitter", "Satoshi", "does <b>not</b> change where funds go"]],
 ];
 for (const [t, uri, ph, wants] of RECORDS) {
   const dec = decodeCairnxRecord(uri, ph);
@@ -129,18 +129,18 @@ for (const [t, uri, ph, wants] of RECORDS) {
   const cleared = buildNameProfile({ name: "satoshi", profile: {} });
   check("buildNameProfile: empty map (= clear) is byte-exact", cleared.uri === `{"name":"satoshi","p":{},"t":"nprofile","v":1}`);
   const clearHtml = cairnxDescribe(cleared.uri, cleared.payloadHash);
-  check("clear-sign: an empty profile renders as 'clears' + cosmetic-only", clearHtml !== null && /clears/i.test(clearHtml!) && clearHtml!.includes("cosmetic only"));
+  check("clear-sign: an empty profile renders as 'clears' + cosmetic-only", clearHtml !== null && /clears/i.test(clearHtml!) && /cosmetic only/i.test(clearHtml!));
   // decode is semantics-AGNOSTIC (mirrors the resolver): a hand-crafted record with an `addr` KEY still
   // decodes (the resolver would store it); but the clear-sign WARNS it is cosmetic, not a send address.
   const addrUri = `{"name":"satoshi","p":{"addr":"0x1234"},"t":"nprofile","v":1}`;
   const addrPh = "0xc674115ac7a31003312ecb4bf50bdabb4e0bed5a0839db44d22e0bc9dbab73f6";
   check("decode: a profile with an `addr` KEY still decodes (resolver-agnostic lockstep)", decodeCairnxRecord(addrUri, addrPh) !== null);
   const addrHtml = cairnxDescribe(addrUri, addrPh);
-  check("clear-sign WARNS when a cosmetic profile field is named like an address", addrHtml !== null && /NOT a send address/i.test(addrHtml!));
+  check("clear-sign WARNS when a cosmetic profile field is named like an address", addrHtml !== null && /<b>not<\/b> a send address/i.test(addrHtml!));
   // defense-in-depth (Gate-3): an address-shaped VALUE under a non-reserved key also warns
   const valRec = { v: 1, t: "nprofile", name: "satoshi", p: { wallet: "0x" + "ab".repeat(20) } };
   const valHtml = cairnxDescribe(canonicalJson(valRec), cairnxPayloadHash(valRec));
-  check("clear-sign WARNS on an address-shaped VALUE under a non-reserved key", valHtml !== null && /NOT a send address/i.test(valHtml!));
+  check("clear-sign WARNS on an address-shaped VALUE under a non-reserved key", valHtml !== null && /<b>not<\/b> a send address/i.test(valHtml!));
   // dApp-controlled profile values must be HTML-escaped in the structured view
   const xssRec = { v: 1, t: "nprofile", name: "satoshi", p: { display: "<img src=x onerror=alert(1)>" } };
   const xssHtml = cairnxDescribe(canonicalJson(xssRec), cairnxPayloadHash(xssRec));
@@ -168,7 +168,7 @@ for (const [t, uri, ph, wants] of RECORDS) {
   { const okts = { v: 1, t: "transfer", ticker: "TKN", amount: "1", to: ADDR_AB, ts: 1700000000 };
     check("transfer with a normal ts still decodes (no over-rejection)", cairnxDescribe(canonicalJson(okts), cairnxPayloadHash(okts)) !== null); }
   const fullUnknown = describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, payloadHash: cairnxPayloadHash({ t: "futurething", v: 1 }), uri: `{"t":"futurething","v":1}`, fee: 1 } });
-  check("describe(propose, unknown cairnx shape) still shows the RAW uri", fullUnknown.includes("futurething") && fullUnknown.includes("uri:"));
+  check("describe(propose, unknown cairnx shape) still shows the RAW uri", fullUnknown.includes("futurething") && fullUnknown.includes("<dt>URI</dt>"));
   const fullOther = describe({ method: "propose", params: { domain: "csd:apps", payloadHash: "0x" + "11".repeat(32), uri: t[1], fee: 1 } });
   check("a cairnx-looking uri in a NON-cairnx domain is NOT decoded", fullOther.includes("Post a proposal") && !fullOther.includes("token transfer"));
   // a memo is dApp-controlled text → must be HTML-escaped in the structured view
@@ -311,13 +311,13 @@ async function main() {
   {
     // ── security review HIGH-1: a bare attest carrying the token-fill marker (confidence 1e6)
     // is byte-identical to a token-priced fillOffer and MUST raise the loud token-spend warning ──
-    const WARN = "SPENDS TOKENS";
+    const WARN = "spends tokens";
     const attestFill = describe({ method: "attest", params: { proposalId: "0x" + "ab".repeat(32), score: 5, confidence: 1_000_000, fee: 5_000_000 } });
     check("attest + confidence=1e6 → loud TOKEN-PRICED FILL warning (HIGH-1)", attestFill.includes(WARN));
     const attestPlain = describe({ method: "attest", params: { proposalId: "0x" + "ab".repeat(32), score: 5, confidence: 100, fee: 5_000_000 } });
     check("attest with ordinary confidence → NO token warning (no false alarm)", !attestPlain.includes(WARN));
     // the cost line must also mention the token debit on the attest path
-    const cost = costLine({ method: "attest", params: { confidence: 1_000_000, fee: 5_000_000 } });
+    const cost = costBlock({ method: "attest", params: { confidence: 1_000_000, fee: 5_000_000 } });
     check("attest token-fill cost line mentions the token debit", /tokens debited/i.test(cost));
     // fillOffer (the already-tested path) still warns - parity check
     const fill = describe({ method: "fillOffer", params: { proposalId: "0x" + "cd".repeat(32), confidence: 1_000_000, score: 100, fee: 5_000_000, outputs: [] } });

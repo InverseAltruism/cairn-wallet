@@ -179,7 +179,7 @@ await tick(); await flush(); await settle();
 state.unlocked = false; await tick(); await flush();
 await settle(700);
 state.unlocked = true; await tick(); await flush(); await settle();
-check("(4b) RED on master: the fail-open warning that settled while locked is shown after unlock", /could not verify this name reservation/.test(reqHtml()));
+check("(4b) RED on master: the fail-open warning that settled while locked is shown after unlock", /Could not verify this name reservation/.test(reqHtml()));
 check("(4b) ...and a warning leaves Approve live (warn over block)", approveBtn().disabled === false);
 fetchDelayMs = 0; nameMode = "ok";
 

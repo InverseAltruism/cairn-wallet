@@ -6,7 +6,7 @@ import { buildSiwcMessage, siwcDigest, CSD_CHAIN_MAINNET, originToDomain, type S
 import { signSighash, verifySig, loginDigest, serialize, sighash as txSighash, type Tx } from "../src/core/csdtx.js";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { describe, costLine, debitOf } from "../src/popup/clearsign.js";
+import { describe, costBlock, debitOf } from "../src/popup/clearsign.js";
 import { sha256 } from "@noble/hashes/sha256";
 import { utf8ToBytes, bytesToHex, concatBytes } from "@noble/hashes/utils";
 
@@ -74,7 +74,7 @@ async function main() {
   check("describe states no funds move", desc.includes("No transaction, no funds move"));
   check("describe surfaces the statement", desc.includes("Sign in to CSD Casino."));
   check("debitOf is 0 for signinWithCsd", debitOf(req) === 0);
-  check("costLine says no funds move", /no funds move/i.test(costLine(req)));
+  check("costBlock says no funds move", /no funds move/i.test(costBlock(req)));
   check("describe RED-WARNS on a declared-domain mismatch", describe({ method: "signinWithCsd", origin: "https://casino.example", params: { nonce: "abc123def456", domain: "bank.example" } }).includes("will be refused"));
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);

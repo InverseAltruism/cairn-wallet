@@ -10,7 +10,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Ids that exist only after a script writes them with innerHTML, never in the static HTML.
 export const DYNAMIC_IDS = new Set([
   "assets-retry", "rpc-add-input", "rpc-add-btn", "exp-add-input", "exp-add-btn", // popup menus and assets
-  "cost", "send-warn", "token-sim", "fill-view", "reveal-preview", // approve window, injected by clearsign describe()
+  "cost", "bal-after", "send-warn", "token-sim", "fill-view", "reveal-preview", // approve window, injected by clearsign describe()
   "nfin-note", // approve window, the finalize-window verdict line approve.ts inserts while a finalize request is open
 ]);
 

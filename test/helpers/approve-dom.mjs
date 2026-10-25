@@ -10,7 +10,7 @@
 // `loadApprove`, and each test file gets one window (the module is a singleton per process).
 
 const TAG_WITH_ID = /<[a-zA-Z][^>]*\sid="([^"]+)"[^>]*>/g;
-const STATIC_IDS = ["view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw"];
+const STATIC_IDS = ["view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw", "ap-origin", "ap-ask", "ap-signer"];
 
 export function mountApproveWindow(handlers) {
   const registry = new Map();

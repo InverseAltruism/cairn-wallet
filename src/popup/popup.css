@@ -739,65 +739,86 @@
 /* ── page: the approval window (380 by 620, opened by the background) ─────────────────────────────────── */
 @layer page {
   .page-approve #app { height: 100vh; display: flex; flex-direction: column; }
-  /* the site block: a tile, what asks, and in whose name (approve.ts writes the origin and the signer into #req) */
-  .ap-head {
-    display: flex; align-items: center; gap: var(--ui-space-3); flex: none;
-    padding: var(--ui-space-4) var(--ui-space-4) var(--ui-space-3);
+  /* the site block: the requesting origin in full (approve.ts writes it from the browser's sender origin), what it
+     asks, and the account that signs */
+  .ap-top {
+    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-2);
+    padding: var(--ui-space-4) var(--ui-space-4) var(--ui-space-3); border-bottom: 1px solid var(--ui-line);
   }
+  .ap-site { display: flex; align-items: center; gap: var(--ui-space-3); min-width: 0; }
   .ap-tile {
     width: 30px; height: 30px; flex: none; display: grid; place-items: center;
     border-radius: var(--ui-radius-md); background: var(--ui-sunken); color: var(--ui-ink-2);
   }
   .ap-tile svg.mark { width: 18px; height: 17px; }
   .ap-who { display: flex; flex-direction: column; min-width: 0; }
-  .ap-brand { font-weight: 600; font-size: var(--ui-text-sm); line-height: var(--ui-leading-snug); }
-  .ap-sub { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug); }
+  .ap-origin { font-weight: 600; font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); overflow-wrap: anywhere; }
+  .ap-ask { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-body); }
+  .ap-signer {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--ui-space-2);
+    color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-body);
+  }
+  .ap-signer b { color: var(--ui-ink-2); font-weight: 600; }
+  .ap-signer code { overflow-wrap: anywhere; }
   .page-approve #view-req { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  /* One dense scale for the request: everything 0.2.99 showed above the buttons still fits at 380 by 620
-     (test/approve-layout-chrome.test.mjs). */
-  .page-approve #req {
-    flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--ui-space-4) var(--ui-space-2);
-    font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug);
+  /* One dense scale for the request: everything 0.2.99 showed above the buttons still fits at 380 by 620, and the cost
+     rows sit above them on every request type (test/approve-layout-chrome.test.mjs). */
+  .ap-body {
+    flex: 1; min-height: 0; overflow-y: auto; padding: var(--ui-space-3) var(--ui-space-4);
+    font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); overflow-wrap: anywhere;
   }
-  .page-approve #req > .req { padding: var(--ui-space-2) 0; border-bottom: 1px solid var(--ui-line); overflow-wrap: anywhere; }
-  .page-approve #req > .req:last-child { border-bottom: 0; }
-  .page-approve #req > .req.dim b { color: var(--ui-ink); font-weight: 500; }
-  /* the signer line sits under the site block, before the hairline under it, as the preview's "Signing as" */
-  .page-approve #req > .req.dim:first-child { padding-top: 0; color: var(--ui-muted); font-size: var(--ui-text-caption); }
-  .page-approve #req > .req:not(.dim) { padding: var(--ui-space-3) 0; color: var(--ui-ink); }
-  /* the title stays inline: describe() puts text and <br> after it, and every break must show */
-  .page-approve #req > .req:not(.dim) > b:first-child { font-size: var(--ui-text-sm); letter-spacing: var(--ui-track-snug); }
-  .page-approve #req code { overflow-wrap: anywhere; }
-  .page-approve #req .req .req {
-    margin-top: var(--ui-space-2); padding: var(--ui-space-2) var(--ui-space-3); border-radius: var(--ui-radius-md);
-    background: var(--ui-sunken);
+  .ap-body > * + * { margin-top: var(--ui-space-2); }
+  .ap-body > .req.dim { color: var(--ui-muted); font-size: var(--ui-text-caption); }
+  /* describe(): the title, the amount, label and value rows, check rows, the cost rows */
+  .ap-body > .req:not(.dim) { display: flex; flex-direction: column; gap: var(--ui-space-2); color: var(--ui-ink); }
+  .ap-title { color: var(--ui-muted); font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); }
+  .ap-title code { color: var(--ui-ink); }
+  .ap-amt {
+    font-size: var(--ui-text-3xl); font-weight: 500; letter-spacing: var(--ui-track-heading); line-height: var(--ui-leading-tight);
+    font-variant-numeric: tabular-nums;
   }
-  .page-approve #req > #cost { color: var(--ui-ink); font-variant-numeric: tabular-nums; }
-  .page-approve #send-warn {
-    padding: var(--ui-space-2) var(--ui-space-3); border-radius: var(--ui-radius-md);
-    background: var(--ui-down-tint); color: var(--ui-ink);
+  .ap-amt .dim { font-size: var(--ui-text-sm); letter-spacing: 0; }
+  .ap-lede { color: var(--ui-ink-2); line-height: var(--ui-leading-body); }
+  .ap-note { margin-top: var(--ui-space-1); color: var(--ui-muted); font-size: var(--ui-text-caption); }
+  .page-approve .kv { margin: 0; display: flex; flex-direction: column; border-top: 1px solid var(--ui-line); }
+  .page-approve .kv > div {
+    display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-3);
+    padding: var(--ui-space-2) 0; border-bottom: 1px solid var(--ui-line);
   }
-  .page-approve #send-warn b, .page-approve #send-warn .err { color: var(--ui-down); }
+  .page-approve .kv dt { flex: none; color: var(--ui-muted); }
+  .page-approve .kv dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .page-approve .kv dd b { font-weight: 600; }
+  /* an address at the caption size fits one line beside its label at 380 px; longer ids wrap */
+  .page-approve .kv dd code { font-size: var(--ui-text-caption); }
+  .page-approve .out-amt { display: block; }
+  .page-approve .checks { display: flex; flex-direction: column; gap: var(--ui-space-2); }
+  /* a block, not a flex column: the token quote is running text with inline emphasis */
+  .ap-box {
+    padding: var(--ui-space-2) var(--ui-space-3);
+    border-radius: var(--ui-radius-md); background: var(--ui-sunken); line-height: var(--ui-leading-body);
+  }
+  .ap-box > * + :is(.kv, .check, p), .ap-box > :is(.kv, .check, p) + * { margin-top: var(--ui-space-2); }
+  .ap-box > .kv { border-top: 0; }
+  .ap-box > .kv > div:last-child { border-bottom: 0; }
 
-  /* The footer: the latch bar, then Reject and Approve side by side at equal width. The bar is a thin muted track that
-     fills with ink while Reject stays disarmed after a new request (the latch) and rests muted again once it arms. */
-  .page-approve .actions {
-    flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2);
-    padding: var(--ui-space-3) var(--ui-space-4);
-    border-top: 1px solid var(--ui-line); background: var(--ui-bg);
+  /* The footer: the latch, then Reject and Approve side by side at equal width. The latch fills with ink while Reject
+     is disarmed after a new request and stays full once it arms. */
+  .ap-foot {
+    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-3);
+    padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-4); border-top: 1px solid var(--ui-line); background: var(--ui-bg);
   }
-  .page-approve .actions::before {
-    content: ""; grid-column: 1 / -1; height: 3px; border-radius: var(--ui-radius-pill);
-    background: var(--ui-line) linear-gradient(var(--ui-ink), var(--ui-ink)) no-repeat 0 0 / 0 100%;
-  }
+  .latch { height: 3px; border-radius: var(--ui-radius-pill); background: var(--ui-line); overflow: hidden; }
+  .latch > i { display: block; width: 100%; height: 100%; background: var(--ui-ink); }
   /* 700ms is approve.ts's re-enable floor (R3 section 3), not a design duration */
-  .page-approve .actions:has(#btn-reject:disabled)::before { animation: arm 700ms linear forwards; }
-  @keyframes arm { to { background-size: 100% 100%; } }
+  .ap-foot:has(#btn-reject:disabled) .latch > i { animation: arm 700ms linear both; }
+  @keyframes arm { from { width: 0; } to { width: 100%; } }
+  .page-approve .actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2); padding: 0; }
   .page-approve .actions button:disabled { opacity: 0.32; }
   .page-approve #msg { flex: none; padding: 0 var(--ui-space-4) var(--ui-space-3); font-size: var(--ui-text-xs); text-align: center; color: var(--ui-muted); background: var(--ui-bg); }
   .page-approve #msg:empty { display: none; }
   .page-approve #msg.ok { color: var(--ui-up); }
   .page-approve #msg.err { color: var(--ui-down); }
+  .page-approve #msg > .check { margin-top: var(--ui-space-2); text-align: left; }
   .page-approve .lock-view { padding-top: var(--ui-space-7); }
   @media (prefers-reduced-motion: no-preference) {
     .page-approve section:not([hidden]) { animation: fade var(--ui-dur-2) var(--ui-ease) both; }
