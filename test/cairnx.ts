@@ -99,15 +99,17 @@ const RECORDS: [string, string, string, string[]][] = [
   ["nprofile", `{"name":"satoshi","p":{"avatar":"https://a.co/x.png","com.twitter":"satoshi","display":"Satoshi"},"t":"nprofile","v":1}`,
     "0x2534b3e7e47ef746054197113c843bc9579a65dd6bbc7e724a55b86f16a20d4e", ["identity profile", "satoshi.csd", "avatar", "com.twitter", "Satoshi", "does <b>not</b> change where funds go"]],
 ];
+// an address is grouped into spans, so a field may be whole only in the shown text (tags dropped)
+const surfaces = (html: string, w: string) => html.includes(w) || html.replace(/<[^>]+>/g, "").includes(w);
 for (const [t, uri, ph, wants] of RECORDS) {
   const dec = decodeCairnxRecord(uri, ph);
   check(`decode(${t}) returns the record`, dec !== null && typeof dec!.t === "string");
   const html = cairnxDescribe(uri, ph);
-  check(`clear-sign(${t}) is structured + surfaces every key field`, html !== null && wants.every((w) => html!.includes(w)));
+  check(`clear-sign(${t}) is structured + surfaces every key field`, html !== null && wants.every((w) => surfaces(html!, w)));
   // full describe() integration: a dApp propose in cairnx:v1 renders structured, NOT a raw JSON blob
   const full = describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, payloadHash: ph, uri, fee: CAIRNX_PROPOSE_FEE } });
   check(`describe(propose ${t}) replaces the raw uri blob with the structured view`,
-    !full.includes("&quot;t&quot;") && wants.every((w) => full.includes(w)) && full.includes(ph));
+    !full.includes("&quot;t&quot;") && wants.every((w) => surfaces(full, w)) && full.includes(ph));
 }
 
 // ─── 3b) v1.9 nprofile (doc 36): build parity, app-layer key block, clear-sign ───
