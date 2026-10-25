@@ -52,7 +52,7 @@ export async function renderHistory() {
       : mark === "gone" ? ` <span class="dim">· not included: its coins were spent by another transaction; check the explorer before sending again</span>`
       : "";
     return `<div class="tx"><span class="ti"><svg class="i" aria-hidden="true"><use href="icons.svg#${TX_ICON[t.type] ?? "i-arrow-up-right"}"/></svg></span>
-      <span class="nm"><b class="tx-kind">${escapeHtml(kind)}</b><small><span class="dim">${detail}</span>${when ? ` · ${when}` : ""}${maybeMark}</small></span>
+      <span class="nm"><b class="tx-kind">${escapeHtml(kind)}</b><small><span class="dim">${detail}</span>${when ? ` · <span class="when">${when}</span>` : ""}${maybeMark}</small></span>
       <span class="vl"><span class="tx-amt">${csd}</span><small><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}…${EXTERNAL_ICON}</a></small></span>
     </div>`;
   }).join("");

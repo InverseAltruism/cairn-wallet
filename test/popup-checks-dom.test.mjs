@@ -275,7 +275,7 @@ console.log("10. links and times");
   await byId("btn-activity-t").click(); await flush();
   const list = String(byId("history-list").innerHTML);
   check("10a an Activity row's explorer link ends in the external-link icon, with no arrow character", list.includes('<use href="icons.svg#i-external-link"/>') && !list.includes("↗"));
-  check(`10b the row's time is "24 Oct 2026, 15:30 UTC" (${(/· ([^<]*UTC)/.exec(list) || [])[1]})`, list.includes("· 24 Oct 2026, 15:30 UTC"));
+  check(`10b the row's time is "24 Oct 2026, 15:30 UTC" (${(/· ([^<]*UTC)/.exec(list) || [])[1]})`, list.includes("· <span class=\"when\">24 Oct 2026, 15:30 UTC</span>"));
   const { readFileSync } = await import("node:fs");
   const html = readFileSync(new URL("../src/popup/popup.html", import.meta.url), "utf8");
   check("10c popup.html carries no arrow character in a link", !html.includes("↗"));

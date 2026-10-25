@@ -99,7 +99,7 @@
   outcome.
 - A failed balance read no longer writes "unavailable" in the 40 px amount: with no earlier read, "Balance
   unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount
-  stays, dimmed, with "Not refreshed: the last balance read. Refresh to try again." under it. The refresh button is
+  stays, dimmed, with "Last balance read; the refresh failed." under it. The refresh button is
   the retry; the CSD row reads "Unavailable" or the dimmed amount.
 - Links to the explorer and the site end in the external-link icon instead of an arrow character ("View address",
   each Activity row's transaction, a revealed claim's transaction, Terms of Use, Privacy). Times in Activity and in

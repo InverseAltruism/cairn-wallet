@@ -588,6 +588,7 @@
     padding: var(--ui-space-2) var(--ui-space-3); border: 0;
   }
   #history-list > .dim { padding: var(--ui-space-6) var(--ui-space-4); text-align: center; }
+  #history-list .when { white-space: nowrap; }
   .act-head { display: flex; justify-content: space-between; align-items: center; gap: var(--ui-space-2); padding: var(--ui-space-3) var(--ui-space-3) var(--ui-space-1); }
   .act-head .label { font: 400 var(--ui-text-xs) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: 0; text-transform: none; }
 

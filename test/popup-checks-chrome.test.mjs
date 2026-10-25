@@ -252,7 +252,7 @@ try {
     t.check(`${theme}: no earlier read: the caption in the amount's place, 13 px, muted, the retry beside it (${JSON.stringify(f.none)})`,
       f.none.text === "Balance unavailable. Refresh to try again." && f.none.size === "13px" && f.none.muted && f.none.note === null && f.none.row === "Unavailable" && f.none.rowMuted && f.none.retry);
     t.check(`${theme}: over an earlier read: that amount, dimmed, the caption under it (${JSON.stringify(f.stale)})`,
-      f.stale.text === "1,284.735CSD" && f.stale.size === "40px" && f.stale.muted && f.stale.note === "Not refreshed: the last balance read. Refresh to try again." && f.stale.noteSize === "13px" && f.stale.row === "1,284.735" && f.stale.rowMuted);
+      f.stale.text === "1,284.735CSD" && f.stale.size === "40px" && f.stale.muted && f.stale.note === "Last balance read; the refresh failed." && f.stale.noteSize === "13px" && f.stale.row === "1,284.735" && f.stale.rowMuted);
     t.check(`${theme}: a good read clears the failed state (${JSON.stringify(f.back)})`, f.back.text === "1,284.735CSD" && !f.back.muted && f.back.note === null && !f.back.rowMuted);
     t.check(`${theme}: balance failure: no page error (${f.errors.join(" | ") || "none"})`, f.errors.length === 0);
     const s = await sendSheet(theme);

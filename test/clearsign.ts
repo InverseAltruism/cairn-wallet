@@ -415,9 +415,13 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     const w = sendWarnings([LOOK, ...Array.from({ length: n - 1 }, (_, i) => NEW(10 + i))], [PAID], []);
     ok(`W-8: ${n} flagged recipients: two counting rows, no recipient named (${w.map((c) => c.tier).join()})`,
       w.map((c) => c.tier).join() === "danger,caution" && !/<code>/.test(w.map((c) => c.html).join("")) && !w.some((c) => c.html.includes("<br>")));
-    ok(`W-8: ${n} flagged: the rows say how many and that each is marked`, w[0]!.html.includes("1 of these addresses resemble") && w[1]!.html.includes(`${n - 1} of these addresses are new to this wallet`) && w.every((c) => c.html.includes("Each is marked in the list below")));
+    ok(`W-8: ${n} flagged: the rows say how many and that each is marked, in the singular for one`, w[0]!.html.includes("1 of these addresses resembles one you've seen before but is <b>not</b> identical. It is marked in the list below.")
+      && w[1]!.html.includes(`${n - 1} of these addresses are new to this wallet. Each is marked in the list below.`));
     ok(`W-8: ${n} flagged: the box is as long as at 13 (bounded, not per recipient)`, w.map((c) => c.html).join("").length < 600);
   }
+  const many = sendWarnings([LOOK, "0x333333" + "66".repeat(15) + "3333", NEW(40)], [PAID], []);
+  ok("W-8: two look-alikes and one new address read in the plural and the singular", many[0]!.html.includes("2 of these addresses resemble ones you've seen before but are <b>not</b> identical. Each is marked")
+    && many[1]!.html.includes("1 of these addresses is new to this wallet. It is marked"));
   ok("W-8: the treasury is never flagged", sendWarnings([TREASURY_ADDR], [], []).length === 0);
 }
 

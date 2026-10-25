@@ -132,7 +132,7 @@ function balanceFailed() {
     el.classList.remove("failed");
     el.innerHTML = balHtml(balanceState.last);
     row.textContent = fmtBalance(balanceState.last);
-    note.textContent = "Not refreshed: the last balance read. Refresh to try again.";
+    note.textContent = "Last balance read; the refresh failed.";
     note.hidden = false;
   } else {
     el.classList.add("failed");

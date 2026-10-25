@@ -696,8 +696,12 @@ export function warningChecks(flags: RecipientFlag[]): Check[] {
         ? `<b>Possible address-poisoning:</b> ${addrTag(f.to)} resembles ${addrTag(f.lookalike ?? "")} you've seen before but is <b>not</b> identical. Verify every character. ${WARN_TAIL[f.kind]}`
         : `${FIRST_TIME_LEAD[f.kind]} ${addrTag(f.to)}. Verify every character. ${WARN_TAIL[f.kind]}`).join("<br>")
       : tier === "danger"
-        ? `<b>Possible address-poisoning:</b> ${fs.length} of these addresses resemble ones you've seen before but are <b>not</b> identical. Each is marked in the list below. Verify every character. ${tailsOf(fs)}`
-        : `${fs.length} of these addresses are new to this wallet. Each is marked in the list below. Verify every character. ${tailsOf(fs)}`;
+        ? (fs.length === 1
+          ? `<b>Possible address-poisoning:</b> 1 of these addresses resembles one you've seen before but is <b>not</b> identical. It is marked in the list below. Verify every character. ${tailsOf(fs)}`
+          : `<b>Possible address-poisoning:</b> ${fs.length} of these addresses resemble ones you've seen before but are <b>not</b> identical. Each is marked in the list below. Verify every character. ${tailsOf(fs)}`)
+        : (fs.length === 1
+          ? `1 of these addresses is new to this wallet. It is marked in the list below. Verify every character. ${tailsOf(fs)}`
+          : `${fs.length} of these addresses are new to this wallet. Each is marked in the list below. Verify every character. ${tailsOf(fs)}`);
     out.push({ tier, html });
   }
   return out;
