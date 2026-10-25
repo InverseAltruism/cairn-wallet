@@ -1,6 +1,6 @@
 // Plan 89 7b, the popup's B edits, driven through the REAL popup.ts against a fake DOM and a scripted background.
 //
-//   1. Review checks carry a tier (W-01, W-02): the name caution is positive only where nameCautionHtml says ✓ (two
+//   1. Review checks carry a tier (W-01, W-02): the name caution is positive only on nameCautionHtml's agree copy (two
 //      sources agree) at a depth that can no longer reorg (NAME_SAFE_DEPTH), caution on every other branch and below
 //      that depth; the first-time and the address-poisoning warnings and a balance that does not cover the send are
 //      danger.
@@ -96,7 +96,7 @@ console.log("1. review check tiers");
 await review("alice.csd");
 {
   const r = rows();
-  check("1a honest: two sources agree reads as one positive row with the ✓ copy", r.length === 1 && r[0].tier === "ok" && r[0].html.startsWith("✓"));
+  check("1a honest: two sources agree reads as one positive row with the agree copy, no glyph", r.length === 1 && r[0].tier === "ok" && r[0].html.startsWith("<b><code>alice.csd</code>: chain-backed, 2 name servers agree.</b>"));
 }
 const branches = [
   ["one source only", { soleSource: true }],
@@ -109,7 +109,7 @@ for (const [label, extra] of branches) {
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner", ...extra };
   await review("alice.csd");
   const r = rows();
-  check(`1b ${label}: the name row is caution, and its copy does not read ✓`, r.length === 1 && r[0].tier === "caution" && !r[0].html.startsWith("✓"));
+  check(`1b ${label}: the name row is caution, its copy is not the agree copy and opens with no glyph`, r.length === 1 && r[0].tier === "caution" && !/name servers agree\./.test(r[0].html) && /^<b>/.test(r[0].html));
 }
 for (const [depth, tier] of [[1, "caution"], [2, "caution"], [3, "ok"]]) {
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth, via: "owner" };

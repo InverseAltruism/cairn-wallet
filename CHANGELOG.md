@@ -33,9 +33,9 @@
   is not a whole address is shown as it is.
 - The popup's messages and labels are in sentence case and end with a period; the message after a name changed
   between review and Confirm reads "changed where it points. Nothing was sent: review it again." (it had an em
-  dash); the review warnings and name badges
-  drop the ⚠, ✓ and △ marks, which the row's icon and tint now carry; the sealed claims list says Sealed and
-  Revealed instead of two emoji. No amount, recipient, warning or refusal changed its meaning.
+  dash); the review warnings, the name check and its badges drop the ⚠, ✓ and △ marks, which the row's icon and
+  tint now carry; the sealed claims list says Sealed and Revealed instead of two emoji. No amount, recipient,
+  warning or refusal changed its meaning.
 - Internal: the popup script is split into one module per view or concern (`src/popup/popup-*.ts`, the largest
   183 lines, from one file of 1,532); its code is line for line the same apart from five lines that now write
   another module's state through a setter, and the popup shows the same pixels before and after the split in every

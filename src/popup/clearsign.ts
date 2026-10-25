@@ -644,23 +644,23 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: NameInf
     // validity depends on state outside this name's history (a global open-lane claim cap, or a name-for-token
     // buyer's global balance), which a name-scoped proof cannot reconstruct.
     case "viaFill":
-      return `⚠ <b><code>${n}.csd</code> was acquired by an on-chain purchase (offer fill).</b> The wallet SPV-verified the records, but ownership set by a fill can hinge on chain state <b>outside</b> this name's own history, which a name-scoped proof cannot verify, so the address is <b>not</b> shown as chain-verified. Confirm the <b>To</b> address out-of-band before sending.`;
+      return `<b><code>${n}.csd</code> was acquired by an on-chain purchase (offer fill).</b> The wallet SPV-verified the records, but ownership set by a fill can hinge on chain state <b>outside</b> this name's own history, which a name-scoped proof cannot verify, so the address is <b>not</b> shown as chain-verified. Confirm the <b>To</b> address out-of-band before sending.`;
     // NS-1: one source alone recovered the winner (the union failed). The address shown is still the chain-proven
     // winner; this only stops the badge from asserting multi-source verification.
     case "soleSource":
-      return `⚠ <b><code>${n}.csd</code>: only one name source could prove this address.</b> The wallet SPV-verified the records, but a single source (which could be hostile or stale) alone decided the address and it is <b>not</b> independently corroborated. Confirm the <b>To</b> address out-of-band before sending.`;
+      return `<b><code>${n}.csd</code>: only one name source could prove this address.</b> The wallet SPV-verified the records, but a single source (which could be hostile or stale) alone decided the address and it is <b>not</b> independently corroborated. Confirm the <b>To</b> address out-of-band before sending.`;
     // A source's claim disagreed with the SPV-proven union winner, or reported the name unregistered (a lagging
     // second resolver, typically).
     case "disagree":
-      return `⚠ <b><code>${n}.csd</code>: sources disagree.</b> The wallet SPV-verified the records, but one name source's answer did <b>not</b> match what the chain proves across the others (or reported the name unregistered). A source may be hostile, stale, or still indexing. The <b>To</b> address shown is the chain-proven winner, but <b>double-check it out-of-band</b> before any sizable send.`;
+      return `<b><code>${n}.csd</code>: sources disagree.</b> The wallet SPV-verified the records, but one name source's answer did <b>not</b> match what the chain proves across the others (or reported the name unregistered). A source may be hostile, stale, or still indexing. The <b>To</b> address shown is the chain-proven winner, but <b>double-check it out-of-band</b> before any sizable send.`;
     // Two or more sources agreed. They share one operator (cairn-substrate.com and clarvis), so against record
     // withholding the residual is the single-source one: never claim independence here.
     case "agree":
-      return `✓ <b><code>${n}.csd</code>: chain-backed, ${info!.sources} name servers agree.</b> The wallet SPV-verified that this address is backed by signed, mined records. Those name servers currently share one operator, so they do not yet rule out that operator hiding a later transfer or competing claim. For any sizable send, confirm the full <b>To</b> address out-of-band.`;
+      return `<b><code>${n}.csd</code>: chain-backed, ${info!.sources} name servers agree.</b> The wallet SPV-verified that this address is backed by signed, mined records. Those name servers currently share one operator, so they do not yet rule out that operator hiding a later transfer or competing claim. For any sizable send, confirm the full <b>To</b> address out-of-band.`;
     case "oneSource":
       return `<b><code>${n}.csd</code>: chain-backed (1 source).</b> The wallet SPV-verified that this address is backed by signed, mined records, but only one name source answered, and a single source could still <b>hide</b> a later transfer or a competing claim. For any sizable send, confirm the full <b>To</b> address out-of-band.`;
     case "unverified":
-      return `⚠ <b>Sending to <code>${n}.csd</code>: verify the full address below.</b> The address was supplied by the name service and could <b>not</b> be verified on-chain right now; a malicious or intercepted server could substitute it. Confirm the <b>To</b> address is the correct owner of <code>${n}.csd</code> before sending.`;
+      return `<b>Sending to <code>${n}.csd</code>: verify the full address below.</b> The address was supplied by the name service and could <b>not</b> be verified on-chain right now; a malicious or intercepted server could substitute it. Confirm the <b>To</b> address is the correct owner of <code>${n}.csd</code> before sending.`;
   }
 }
 

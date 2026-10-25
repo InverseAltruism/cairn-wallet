@@ -404,7 +404,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
 }
 
 // nameCheck and nameCautionHtml read one branch selector, so the review row's tier cannot drift from its copy: positive
-// exactly on the two-sources-agree copy (✓) at a depth that can no longer reorg, caution on every other branch.
+// exactly on the two-sources-agree copy at a depth that can no longer reorg, caution on every other branch.
 // RED-FIRST: give nameCheck its own copy of the branch rules without the soleSource or disagree test and the matching
 // row below fails; drop the lowDepth test and the depth row fails.
 {
@@ -421,7 +421,7 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   ];
   for (const [label, rr, tier] of cases) {
     const c = nameCheck(rr)!;
-    ok(`nameCheck ${label}: ${tier}, and its copy reads ✓ only when positive or below the safe depth`, c.tier === tier && c.html.startsWith("✓") === (tier === "ok" || !!rr.lowDepth));
+    ok(`nameCheck ${label}: ${tier}, and its copy is the agree copy only when positive or below the safe depth`, c.tier === tier && /name servers agree\.<\/b>/.test(c.html) === (tier === "ok" || !!rr.lowDepth) && !/^[⚠✓]/.test(c.html));
   }
   ok("nameCheck: no name, no row", nameCheck({ name: null }) === null);
   ok(`NAME_SAFE_DEPTH is 3 (${NAME_SAFE_DEPTH})`, NAME_SAFE_DEPTH === 3);
