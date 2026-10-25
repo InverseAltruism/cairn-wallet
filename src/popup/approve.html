@@ -4,26 +4,30 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cairn · Approve</title>
+  <script src="ui/theme-init.js"></script>
+  <link rel="stylesheet" href="ui/tokens.css" />
+  <link rel="stylesheet" href="ui/fonts.css" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body class="page-approve">
   <div id="app">
-    <header><div class="brand"><img class="brandlogo" src="icons/logo-white.png" alt="" />CAIRN <span class="dim">approve</span></div></header>
-    <section id="view-locked" class="lock-view" hidden>
-      <svg class="lock-glyph" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>
+    <header class="ap-head"><span class="ap-tile"><svg class="mark" aria-hidden="true"><use href="icons.svg#mark"/></svg></span><span class="ap-who"><span class="ap-brand">Request from a site</span><span class="ap-sub">Cairn Wallet</span></span></header>
+    <section id="view-locked" class="view view-center lock-view" hidden>
+      <svg class="hero-mark" aria-hidden="true"><use href="icons.svg#mark"/></svg>
       <p class="lead">Unlock your wallet to review this request.</p>
-      <input id="unlock-pw" type="password" placeholder="password" autocomplete="current-password" />
-      <button id="btn-unlock" class="primary">Unlock</button>
-    </section>
-    <section id="view-req" hidden>
-      <p class="lead">A site is requesting:</p>
-      <div id="req" class="pending"></div>
-      <div class="actions">
-        <button id="btn-approve" class="primary">Approve</button>
-        <button id="btn-reject">Reject</button>
+      <div class="stack">
+        <input id="unlock-pw" type="password" placeholder="Password" autocomplete="current-password" />
+        <button id="btn-unlock" class="primary">Unlock</button>
       </div>
     </section>
-    <div id="msg" class="msg"></div>
+    <section id="view-req" hidden>
+      <div id="req" class="pending"></div>
+      <div class="actions">
+        <button id="btn-reject">Reject</button>
+        <button id="btn-approve" class="primary">Approve</button>
+      </div>
+    </section>
+    <div id="msg" class="msg" role="status" aria-live="polite"></div>
   </div>
   <script type="module" src="approve.js"></script>
 </body>

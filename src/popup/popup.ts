@@ -7,6 +7,9 @@ import { formatUnits, parseUnits, isPlainName, displayDecimals, isTokenDecimals,
 import { nameCautionHtml, reresolveUnchanged, recipientStatus, paidRecipients, escapeHtml, fmtCsd, fmtBalance, isZeroAddr, tokenAmountBothScales, balanceShortNote } from "./clearsign.js";
 import { avatarGradient, monogram, identitySeed } from "./identicon.js";
 import { drawQr } from "./qr/draw.js";
+import { enterOnce, flashChange, tokenEase, tokenMs } from "./motion.js";
+import { mountThemeControl } from "./themectl.js";
+import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 
 const chrome: any = (globalThis as any).chrome;
 const EXT = !!(chrome?.runtime?.sendMessage);
@@ -105,13 +108,14 @@ async function copyText(btnId: string, text: string) {
     msg("could not copy to the clipboard. Select the text and copy it by hand.", "err");
   }
 }
-// Send-success moment: one-shot glow sweep across the balance hero (display-only; reduced-motion aware).
+// Send-success moment: the balance settles once (popup.css `.bal-hero.sent`); display only, reduced-motion aware.
 function celebrateSend() {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const hero = document.querySelector(".bal-hero") as HTMLElement | null;
-  if (!hero) return;
+  const dur = tokenMs("--ui-dur-4");
+  if (!hero || dur === null) return;
   hero.classList.remove("sent"); void hero.offsetWidth; hero.classList.add("sent");
-  setTimeout(() => hero.classList.remove("sent"), 900);
+  setTimeout(() => hero.classList.remove("sent"), dur * 2);
 }
 
 let currentRpc = "";
@@ -153,11 +157,12 @@ async function render() {
   // module memory so a secret never lingers on the locked screen (audit POPUP-2).
   if (!st.unlocked) { resetRevealPanel(); resetPhrasePanel(); clearSendDrafts(); return show("locked"); }
   show("main");
+  syncNav();
   // Only HD wallets have a recovery phrase; hide the reveal button for imported keys.
   ($("btn-phrase") as HTMLElement).hidden = !st.hasMnemonic;
   renderAcctSelect(st.accounts || [], st.active || 0);
   $("addr").textContent = st.addr;
-  if (st.addr !== curAddr) { curAddr = st.addr; lastBal = null; paintAvatar(null, curAddr); } // new account: reset identity + balance tween base
+  if (st.addr !== curAddr) { curAddr = st.addr; clearSendDrafts(); invalidateAccountViews(); lastBal = null; paintAvatar(null, curAddr); } // new account: old rows inert, reset identity + balance tween base
   if (st.addr) ($("addr-explorer") as HTMLAnchorElement).href = explorerLink(currentExplorer, "addr", st.addr);
   (($("set-api") as HTMLInputElement)).value = st.api;
   (($("set-tradeapi") as HTMLInputElement)).value = st.tradeApi || "";
@@ -181,22 +186,25 @@ const short = (a: string) => a && a.length > 14 ? a.slice(0, 8) + "…" + a.slic
 function renderAcctSelect(accounts: { addr: string; label: string }[], active: number) {
   const a = accounts[active];
   $("acct-select").innerHTML = a
-    ? `<span class="acct-dot" style="background:${avatarGradient(identitySeed(null, a.addr))}"></span><span class="acct-cur">${escapeHtml(a.label)}</span><span class="acct-addr">${escapeHtml(short(a.addr))}</span><span class="acct-caret">▾</span>`
+    ? `<span class="acct-cur">${escapeHtml(a.label)}</span><span class="acct-addr">${escapeHtml(short(a.addr))}</span><svg class="i acct-caret" aria-hidden="true"><use href="icons.svg#i-chevron-down"/></svg>`
     : "";
   const menu = $("acct-menu");
   menu.innerHTML = accounts.map((x, i) => `
     <div class="rpc-row${i === active ? " active" : ""}">
-      <button class="rpc-pick" data-acct="${i}"><span class="acct-pick-line"><span class="acct-dot" style="background:${avatarGradient(identitySeed(null, x.addr))}"></span><span class="rpc-label">${i === active ? "● " : ""}${escapeHtml(x.label)}</span></span><span class="rpc-url">${escapeHtml(short(x.addr))}</span></button>
+      <button class="rpc-pick" data-acct="${i}"${i === active ? ' aria-current="true"' : ""}><span class="acct-pick-line"><span class="acct-dot" style="background:${avatarGradient(identitySeed(null, x.addr))}"></span><span class="rpc-label">${escapeHtml(x.label)}</span></span><span class="rpc-url">${escapeHtml(short(x.addr))}</span></button>
     </div>`).join("");
   menu.querySelectorAll<HTMLElement>("[data-acct]").forEach((b) => (b.onclick = () => switchAcct(Number(b.dataset.acct))));
 }
 async function switchAcct(i: number) {
   ($("acct-menu") as HTMLElement).hidden = true;
   // WYSIWYS (R2-WYSIWYS / SIGN-3): tear down any primed send / name-action review BEFORE switching
-  // accounts; a review under the old account must never be Confirmed under the new one.
+  // accounts; a review under the old account must never be Confirmed under the new one. Every sheet closes too:
+  // a name's detail lists the old account's names, and its actions must not reach a review under the new one.
   clearSendDrafts();
+  closeAllPanels(); syncNav();
+  invalidateAccountViews();   // before the await: the old account's rows go inert while the switch is in flight
   try { await call("switchAccount", i); msg("switched account", "ok"); render(); }
-  catch (err: any) { msg(err.message, "err"); }
+  catch (err: any) { msg(err.message, "err"); render(); }
 }
 // per-row inline edit state (rename/remove) so we never use a browser prompt/confirm
 let acctEdit: { addr: string; mode: "rename" | "remove" } | null = null;
@@ -230,7 +238,7 @@ async function renderAccts() {
           ${(st.accounts.length > 1) ? `<button class="mini" data-remove="${escapeHtml(a.addr)}">remove</button>` : ""}</span>`;
     }
     const removeWarn = editing && acctEdit!.mode === "remove" && a.imported
-      ? `<div class="tx-sub" style="color:var(--warn,#c90)">this imported key is NOT in your recovery phrase — removing it without a saved backup loses its funds forever. Export it first (Settings › export key), then enter your password to confirm.</div>`
+      ? checkRow({ tier: "danger", html: "this imported key is NOT in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
       : "";
     return `<div class="tx">
       <div class="tx-top"><span class="tx-kind">${i === st.active ? "● " : ""}${escapeHtml(a.label)}${tag}</span>${right}</div>
@@ -262,7 +270,10 @@ async function renderAccts() {
   if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
 }
 
-const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Filled offer", tokenSend: "Sent token", consolidate: "Merged coins" };
+// A label says what this wallet sent, not what the market or the resolver made of it: the history records no
+// verdict, so a fill the offer refused and a token transfer the balance did not cover still read as sent.
+const TX_LABEL: Record<string, string> = { send: "Sent", propose: "Proposed", post: "Posted", support: "Supported", attest: "Supported", fillOffer: "Offer fill sent", tokenSend: "Token transfer sent", consolidate: "Merged coins" };
+const TX_ICON: Record<string, string> = { send: "i-arrow-up-right", tokenSend: "i-arrow-up-right", fillOffer: "i-arrow-left-right", consolidate: "i-refresh-cw", post: "i-message-square-text", propose: "i-stamp" };
 async function renderHistory() {
   const h: any[] = await call("history");
   const el = $("history-list");
@@ -291,12 +302,12 @@ async function renderHistory() {
       : mark === "stuck" ? ` <span class="dim">· still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer before sending again</span>`
       : mark === "gone" ? ` <span class="dim">· not included: its coins were spent by another transaction; check the explorer before sending again</span>`
       : "";
-    return `<div class="tx">
-      <div class="tx-top"><span class="tx-kind">${kind}</span><span class="tx-amt">${csd}</span></div>
-      <div class="tx-sub"><span class="dim">${detail}</span><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></div>
-      <div class="tx-when dim">${when}${maybeMark}</div>
+    return `<div class="tx"><span class="ti"><svg class="i" aria-hidden="true"><use href="icons.svg#${TX_ICON[t.type] ?? "i-arrow-up-right"}"/></svg></span>
+      <span class="nm"><b class="tx-kind">${escapeHtml(kind)}</b><small><span class="dim">${detail}</span>${when ? ` · ${when}` : ""}${maybeMark}</small></span>
+      <span class="vl"><span class="tx-amt">${csd}</span><small><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}… ↗</a></small></span>
     </div>`;
   }).join("");
+  enterOnce(el, curAddr);
 }
 // Balance count-up: a display-only tween between the previous fetched value and the new one
 // (ends on the exact canonical string; skipped on first paint, on reduced-motion, and on failure).
@@ -305,7 +316,8 @@ async function renderHistory() {
 let curAddr = "";
 let lastBal: number | null = null;
 let balSeq = 0;
-const fmtBal = (base: number) => fmtBalance(base) + " CSD";
+// The amount in Geist with the unit muted; fmtBalance output is digits, separators and a sign only.
+const balHtml = (base: number) => `${escapeHtml(fmtBalance(base))}<span class="bal-unit">CSD</span>`;
 // Identity avatar: a primary .csd name gets its CNS-parity gradient + monogram; a name-less
 // account gets the phosphor cairn mark (a bare gradient + hex nibble read as a placeholder).
 const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
@@ -358,21 +370,24 @@ async function refreshBalance() {
     const next = Number(b.confirmed);
     const from = lastBal;
     lastBal = next;
-    if (from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      el.textContent = fmtBal(next);
+    $("csd-row-amt").textContent = fmtBalance(next);
+    if (from !== null && from !== next) flashChange(el, next > from ? "up" : "down");
+    const dur = from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches ? null : tokenMs("--ui-dur-4");
+    const ease = dur === null ? null : tokenEase();
+    if (from === null || dur === null || ease === null) {
+      el.innerHTML = balHtml(next);
     } else {
-      const t0 = performance.now(), dur = 450;
+      const t0 = performance.now();
       const step = (t: number) => {
         if (seq !== balSeq) return;            // superseded mid-tween: let the newer write win
-        const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3); // ease-out cubic
-        el.textContent = p < 1 ? fmtBal(Math.round(from + (next - from) * e)) : fmtBal(next);
+        const p = Math.min(1, (t - t0) / dur);
+        el.innerHTML = p < 1 ? balHtml(Math.round(from + (next - from) * ease(p))) : balHtml(next);
         if (p < 1) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
     }
-    el.classList.remove("flash"); void (el as HTMLElement).offsetWidth; el.classList.add("flash"); // retrigger green flash
   }
-  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "—"; lastBal = null; } }
+  catch { if (seq === balSeq) { el.classList.remove("loading"); el.textContent = "unavailable"; $("csd-row-amt").textContent = "unavailable"; lastBal = null; } }
 }
 // ── CairnX assets (token balances + .csd names); read-only, never blocks the CSD UI ──
 // Balances come from the public CairnX resolver API. When it's unreachable we show a
@@ -396,13 +411,15 @@ function setIdentity(name: string | null | undefined) {
 }
 // epochs ≈ hours → a short remaining-time label for a lease
 function leaseLabel(n: any): string {
-  if (n?.lapsed) return "lapsed";
+  if (n?.lapsed) return "Lapsed";
   if (!n?.leased) return "";
-  if (n.inGrace) return "in grace · renew now";
+  if (n.inGrace) return "In grace: renew now";
   const e = Number(n.epochsLeft ?? 0);   // epochs ≈ hours; 720 ≈ 1 month, 8760 ≈ 1 year
-  if (e <= 0) return "expiring";
-  return "expires " + (e < 48 ? `~${e}h` : e < 1440 ? `~${Math.round(e / 24)}d` : e < 8760 ? `~${Math.round(e / 720)}mo` : `~${(e / 8760).toFixed(1)}y`);
+  if (e <= 0) return "Lease ending";
+  return "Lease ends in about " + (e < 48 ? `${e} h` : e < 1440 ? `${Math.round(e / 24)} days` : e < 8760 ? `${Math.round(e / 720)} months` : `${(e / 8760).toFixed(1)} years`);
 }
+// A live lease this close to its end (epochs ≈ hours, so about a month) carries a Renew chip on its row.
+const RENEW_SOON_EPOCHS = 720;
 function tradeNameUrl(name: string): string {
   const base = (siteApi || "https://cairn-substrate.com").replace(/\/$/, "");
   return `${base}/trade?name=${encodeURIComponent(name)}`;
@@ -410,6 +427,26 @@ function tradeNameUrl(name: string): string {
 // Supersession guard (same pattern as balSeq): an in-flight assets response for a PREVIOUS
 // account must never repaint identity/avatar/assets after a switch.
 let assetsSeq = 0;
+// What a row, a name's detail or a token send acts for. acctGen moves when a switch starts and when render() sees a
+// new address; listGen moves on every write of the lists. An action whose binding no longer matches does nothing and
+// closes the sheets: a row or a detail drawn for account A must not open a review that account B would sign.
+let acctGen = 0, listGen = 0;
+type ViewBind = { acct: number; addr: string; list?: number };
+const bindView = (withList = false): ViewBind => ({ acct: acctGen, addr: curAddr, ...(withList ? { list: listGen } : {}) });
+const viewCurrent = (b: ViewBind | undefined) => !!b && b.acct === acctGen && b.addr === curAddr && (b.list === undefined || b.list === listGen);
+function dropStaleView() { closeAllPanels(); syncNav(); }
+const LIST_LOADING = `<div class="skeleton-row"></div><div class="skeleton-row"></div>`;
+// At the start of a switch: nothing drawn for the old account stays clickable, and its in-flight reads do not paint.
+function invalidateAccountViews() {
+  acctGen++; listGen++; assetsSeq++; balSeq++;
+  nameDetails = new Map(); ndOpen = null;
+  const el = $("assets") as HTMLElement;
+  el.hidden = false; el.setAttribute("aria-busy", "true"); el.innerHTML = LIST_LOADING;
+  $("names-list").innerHTML = LIST_LOADING;
+  $("nd-actions").innerHTML = "";
+  $("csd-row-amt").textContent = "";
+  $("balance").classList.add("loading");
+}
 async function renderAssets() {
   const seq = ++assetsSeq;
   const el = $("assets") as HTMLElement;
@@ -418,9 +455,13 @@ async function renderAssets() {
   setIdentity(a?.ok ? a.primaryName : null);
   if (!a?.ok) {
     el.hidden = false;
+    el.setAttribute("aria-busy", "false");
     el.innerHTML = `<div class="assets-retry dim">token balances unavailable · <a id="assets-retry">retry</a></div>`;
+    nameDetails = new Map(); listGen++;
+    $("names-list").innerHTML = `<div class="assets-retry dim">names unavailable · refresh the balance to try again</div>`;
     const rt = document.getElementById("assets-retry");
     if (rt) rt.onclick = () => { el.innerHTML = `<div class="assets-retry dim">retrying…</div>`; renderAssets(); };
+    refreshOpenDetail();
     return;
   }
   const balances: Record<string, { available: string; locked: string }> = a.balances || {};
@@ -428,22 +469,29 @@ async function renderAssets() {
   const details: any[] = Array.isArray(a.nameDetails) && a.nameDetails.length ? a.nameDetails : names.map((n) => ({ name: n }));
   const primary: string | null = a.primaryName ?? null;
   const tickers = Object.keys(balances).sort();
-  if (!tickers.length && !details.length) { el.hidden = true; el.innerHTML = ""; return; }
-  const meta = await tokenMeta();
+  const meta: Record<string, { decimals: number; name?: string }> = tickers.length ? await tokenMeta() : {};
   if (seq !== assetsSeq) return;
   // Decimals build the base units a token send signs, so a pinned token uses its pinned decimals, never served ones.
   const decOf = (t: string): number => { const d = displayDecimals(t, meta[t]?.decimals).decimals; return isTokenDecimals(d) ? d : 0; };
+  // A row opens the token's send sheet; the subtitle says what is locked and whether the wallet pins the token.
   const rows = tickers.map((t) => {
     const b = balances[t] || { available: "0", locked: "0" };
     const dec = decOf(t);
-    const locked = b.locked && b.locked !== "0" ? ` <span class="asset-locked">(+${escapeHtml(formatUnits(b.locked, dec))} locked)</span>` : "";
-    return `<div class="asset"><span class="asset-ticker">${escapeHtml(t)}</span>
-      <span class="asset-bal">${escapeHtml(formatUnits(b.available, dec))}${locked}</span>
-      <button class="mini" data-tsend="${escapeHtml(t)}">send</button></div>`;
+    // The served token name is deployer text, so no row shows it; a pinned token says nothing, the rest "Unverified".
+    const sub = [
+      b.locked && b.locked !== "0" ? `${groupDigits(formatUnits(b.locked, dec))} locked in offers` : "",
+      displayDecimals(t, meta[t]?.decimals).pinned ? "" : "Unverified",
+    ].filter(Boolean).join(" · ");
+    // the tile is a neutral glyph: part of a ticker would be a look-alike, and the full ticker is the title
+    return `<button class="w-row" type="button" data-tsend="${escapeHtml(t)}"><span class="ti"><svg class="i" aria-hidden="true"><use href="icons.svg#i-coins"/></svg></span>`
+      + `<span class="nm"><b>${escapeHtml(t)}</b>${sub ? `<small>${escapeHtml(sub)}</small>` : ""}</span>`
+      + `<span class="vl">${escapeHtml(groupDigits(formatUnits(b.available, dec)))}</span></button>`;
   }).join("");
-  // .csd names: identity + lease state + inline renew / set-primary + manage on /trade
+  // .csd names: a row opens the name's detail (renew, set primary, the site); a lease near its end also gets a
+  // Renew chip on the row. Both lead to the same review sheet; nothing here signs.
   const tip = Number(a.tipHeight) || 0;
-  const nameRows = details.length ? `<div class="names-head"><span class="label">.csd names</span></div>` + details.map((n) => {
+  nameDetails = new Map(); listGen++;
+  const nameRows = details.map((n) => {
     const nm = String(n.name);
     const isPending = n.pending === true;   // v2.5/v2.6 reservation: revealed but not yet finalized; no owner actions
     const isPrimary = !isPending && nm === primary;
@@ -451,31 +499,69 @@ async function renderAssets() {
     // services omit the field and the static label stays.
     const finBy = Number(n.finalizeBy) || 0;
     const pendingLabel = finBy && tip
-      ? (tip > finBy ? "reservation expired · register again on site" : `finalizing · ~${Math.max(1, (finBy - tip)) * 2} min left to complete`)
-      : "finalizing · complete on site";
+      ? (tip > finBy ? "Reservation expired: register again on the site" : `Finalizing, about ${Math.max(1, (finBy - tip)) * 2} min left to complete`)
+      : "Finalizing: complete it on the site";
     const lease = isPending ? pendingLabel : leaseLabel(n);
+    const sub = isPrimary ? (lease ? `Primary · ${lease}` : "Primary") : lease;
     const cls = isPending ? " pending" : n.lapsed ? " lapsed" : n.inGrace ? " grace" : "";
-    // A pending reservation MUST be non-actionable here: renew / set-primary on it broadcast a fee the
-    // resolver rejects on a pending record (nrenew/nset both reject `if (n.pending)`); an honest self-burn
-    // of the anchor + up to the reg fee. Surface only a link to finish the reveal on /trade.
-    const acts = isPending
-      ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">finalize ↗</a>`
-      : n.lapsed
-      ? `<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">recapture ↗</a>`
-      : `<button class="mini" data-nrenew="${escapeHtml(nm)}">renew</button>${isPrimary ? "" : `<button class="mini" data-nprimary="${escapeHtml(nm)}">★ primary</button>`}<a class="mini" href="${escapeHtml(tradeNameUrl(nm))}" target="_blank" rel="noopener noreferrer">⋯</a>`;
-    return `<div class="name-asset${cls}">
-      <span class="na-name">${escapeHtml(nm)}<span class="dim">.csd</span>${isPrimary ? ` <span class="na-tag">★ primary</span>` : ""}</span>
-      <span class="na-lease dim">${escapeHtml(lease)}</span>
-      <span class="na-acts">${acts}</span></div>`;
-  }).join("") : "";
-  el.hidden = false;
-  el.innerHTML = `<span class="label">assets</span>${rows}${nameRows}`;
-  el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = () => {
+    const soon = !isPending && !n.lapsed && n.leased && (n.inGrace || Number(n.epochsLeft ?? 0) <= RENEW_SOON_EPOCHS);
+    nameDetails.set(nm, { name: nm, isPending, isPrimary, lapsed: !!n.lapsed, status: sub });
+    return `<div class="w-row name-row${cls}"><button class="w-row-hit" type="button" data-name="${escapeHtml(nm)}"><span class="ti">.csd</span>`
+      + `<span class="nm"><b>${escapeHtml(nm)}<span class="dim">.csd</span></b>${sub ? `<small>${escapeHtml(sub)}</small>` : ""}</span></button>`
+      + (soon ? `<button class="chip-s" type="button" data-nrenew="${escapeHtml(nm)}">Renew</button>` : "") + `</div>`;
+  }).join("");
+  el.setAttribute("aria-busy", "false");
+  el.hidden = !tickers.length;
+  el.innerHTML = rows;
+  enterOnce(el, curAddr);
+  const nl = $("names-list");
+  nl.innerHTML = nameRows || `<p class="empty">No .csd names yet. Names held by this account show here; register one at cairn-substrate.com/names.</p>`;
+  if (!($("names-tab") as HTMLElement).hidden) enterOnce(nl, curAddr);
+  const rows0 = bindView(true);
+  const live = (fn: () => void) => () => { if (viewCurrent(rows0)) fn(); else dropStaleView(); };
+  el.querySelectorAll<HTMLElement>("[data-tsend]").forEach((b) => b.onclick = live(() => {
     const t = b.dataset.tsend!;
     openTokenSend(t, decOf(t), balances[t]?.available ?? "0");
-  });
-  el.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = () => confirmNameAction("renew", b.dataset.nrenew!));
-  el.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = () => confirmNameAction("primary", b.dataset.nprimary!));
+  }));
+  nl.querySelectorAll<HTMLElement>("[data-name]").forEach((b) => b.onclick = live(() => openNameDetail(b.dataset.name!)));
+  nl.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = live(() => confirmNameAction("renew", b.dataset.nrenew!)));
+  refreshOpenDetail();
+}
+// A refreshed list redraws the open name detail from the new read: a name now pending or lapsed loses its actions,
+// a name the read no longer returns closes the sheet.
+function refreshOpenDetail() {
+  if (!ndOpen || ($("name-detail") as HTMLElement).hidden) return;
+  if (nameDetails.has(ndOpen)) openNameDetail(ndOpen); else dropStaleView();
+}
+// Thousands separators on formatUnits' output, display only: every digit and the decimal point stay as they are, and
+// anything that is not a plain decimal ("?" on bad input) passes through unchanged.
+function groupDigits(s: string): string {
+  const m = /^(\d+)(\.\d+)?$/.exec(s);
+  return m ? m[1]!.replace(/\B(?=(\d{3})+$)/g, ",") + (m[2] ?? "") : s;
+}
+// The names the last assets read returned, for the detail sheet a row opens.
+let nameDetails = new Map<string, { name: string; isPending: boolean; isPrimary: boolean; lapsed: boolean; status: string }>();
+let ndOpen: string | null = null;   // the name whose detail sheet is open
+// A name's detail: its state and the owner actions. A pending reservation or a lapsed name gets only the link to the
+// site: renew and set-primary on them broadcast a fee the resolver rejects (nrenew and nset refuse a pending record).
+function openNameDetail(name: string) {
+  const d = nameDetails.get(name);
+  if (!d) return;
+  if (!openPanel("name-detail")) ($("name-detail") as HTMLElement).hidden = false;   // a second row keeps the sheet open
+  ndOpen = d.name;
+  const bound = bindView(true);
+  const act = (kind: "renew" | "primary") => () => { if (viewCurrent(bound) && nameDetails.get(d.name) === d) confirmNameAction(kind, d.name); else dropStaleView(); };
+  $("name-detail-title").textContent = `${d.name}.csd`;
+  $("nd-rows").innerHTML = `<div class="crow"><span class="label">Status</span><span>${escapeHtml(d.status || "Registered")}</span></div>`;
+  const site = (label: string) => `<a class="btn-link" href="${escapeHtml(tradeNameUrl(d.name))}" target="_blank" rel="noopener noreferrer">${label}<svg class="i" aria-hidden="true"><use href="icons.svg#i-external-link"/></svg></a>`;
+  const acts = $("nd-actions");
+  acts.innerHTML = d.isPending ? site("Finalize on the site")
+    : d.lapsed ? site("Recapture on the site")
+    : `<button class="primary" type="button" data-nrenew="${escapeHtml(d.name)}">Renew</button>`
+      + (d.isPrimary ? "" : `<button type="button" data-nprimary="${escapeHtml(d.name)}">Set as primary</button>`)
+      + site("Open on the site");
+  acts.querySelectorAll<HTMLElement>("[data-nrenew]").forEach((b) => b.onclick = act("renew"));
+  acts.querySelectorAll<HTMLElement>("[data-nprimary]").forEach((b) => b.onclick = act("primary"));
 }
 
 // One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
@@ -486,6 +572,7 @@ async function renderAssets() {
 let nameActSeq = 0;   // QA #18: supersede stale async continuations; a newer invocation bumps this; older ones abort after their awaits
 async function confirmNameAction(kind: "renew" | "primary", name: string) {
   const seq = ++nameActSeq;
+  const bound = bindView();   // a switch during the reads below leaves no primed review behind
   dropReviews();
   openPanel("name-action-form");
   ($("name-action-form") as HTMLElement).hidden = false;   // always SHOW the review; openPanel toggles, and a name action must never toggle the panel closed
@@ -497,7 +584,7 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   let renewFee = 0;
   if (kind === "renew") {
     renewFee = await call("cairnxNameRenewFee", name).then((v) => Number(v) || 0).catch(() => 0);
-    if (seq !== nameActSeq) return;   // a newer name action superseded this one; don't clobber its panel/snapshot
+    if (seq !== nameActSeq || !viewCurrent(bound)) return;   // superseded, or the account changed meanwhile
     ($("nc-fee-row") as HTMLElement).hidden = false;
     $("nc-fee").textContent = renewFee ? fmtCsd(renewFee) : "priced at confirm";
   } else {
@@ -507,13 +594,13 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
   // anchor-only 0.25 (which would understate a 15.25 action). The fee row already says "priced at
   // confirm"; the total must not contradict it. Set-primary is anchor-only, so its total is exact.
   const total = CAIRNX_FEE + renewFee;
-  $("nc-total").textContent = (kind === "renew" && !renewFee) ? "— (priced at confirm)" : fmtCsd(total);
+  $("nc-total").textContent = (kind === "renew" && !renewFee) ? "unknown (priced at confirm)" : fmtCsd(total);
   // M8 residual (Fable final QC): when the renew fee is unpriceable the AFTER balance is likewise
   // unknown; subtracting the anchor-only 0.25 would understate a 15.25 action in the second row too.
   let after = "";
   try { const b = await call("balance"); after = (kind === "renew" && !renewFee) ? "" : fmtBalance(b.confirmed - total) + " CSD"; } catch { /* offline */ }
-  if (seq !== nameActSeq) return;   // superseded after the balance fetch; abort before priming the snapshot
-  $("nc-after").textContent = after || "—";
+  if (seq !== nameActSeq || !viewCurrent(bound)) return;   // superseded or switched after the balance fetch; abort before priming the snapshot
+  $("nc-after").textContent = after || "unknown";
   $("nc-note").textContent = kind === "renew"
     ? "Extends this name's lease by one term. Anyone may renew a live lease."
     // QA #5: the wallet's set-primary is a single nset→self; it makes the name primary only if it's your
@@ -525,6 +612,7 @@ async function confirmNameAction(kind: "renew" | "primary", name: string) {
 async function doNameAction() {
   if (!reviewState.reviewedNameAct) return;
   const { kind, name, fee, signer } = reviewState.reviewedNameAct;
+  const bound = bindView();                                 // the account this review belongs to
   dropReviews();                                            // consume the snapshot: one Confirm = one signature
   try {
     busy(kind === "renew" ? `renewing ${name}.csd…` : `setting ${name}.csd as primary…`);
@@ -543,8 +631,14 @@ async function doNameAction() {
     const m = String(e?.message || e);
     if (m.startsWith("FEE_CHANGED:")) {                     // tip crossed a fee gate between Review and Confirm; nothing was signed
       const newFee = Number(m.slice("FEE_CHANGED:".length));
+      // re-review only for the account and the name it was for: the account may have changed while Confirm was in flight
+      if (!viewCurrent(bound) || !nameDetails.has(name)) {
+        dropStaleView();
+        msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Nothing was signed; open the name again to review it`, "err");
+        return;
+      }
       await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
-      msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed — re-check and confirm again`, "err");  // …then explain
+      msg(`renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Check it and confirm again`, "err");  // …then explain
       return;
     }
     const o = thrownCopy(e, kind === "renew" ? "renewal" : "set-primary");
@@ -553,8 +647,10 @@ async function doNameAction() {
 }
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
+// Below this many confirmations a name's resolution could still reorg: the badge says so and the review row is caution.
+const NAME_SAFE_DEPTH = 3;
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
-async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
+async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean }> {
   const r = (raw || "").trim();
   // Refuse the zero address outright: a send there is an irrecoverable burn. Defense-in-depth for the V23
   // transition: a wallet that CARRIES this guard but whose vendored core still lacked the v23 branch would
@@ -563,7 +659,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
   // types.ts (set V23_HEIGHT only after wallet ADOPTION, not publication).
   // isZeroAddr is the shared (0x)?-optional guard from clearsign.ts; one test for all three former copies.
   if (/^0x[0-9a-fA-F]{40}$/.test(r)) {
-    if (isZeroAddr(r)) return { ok: false, error: "that is the zero address — sends there are burned and unrecoverable" };
+    if (isZeroAddr(r)) return { ok: false, error: "that is the zero address: sends there are burned and unrecoverable" };
     return { ok: true, addr: r.toLowerCase(), name: null, label: null };
   }
   if (looksLikeName(r)) {
@@ -574,7 +670,7 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // name comes back verified:false for the badge to caution. res.ok is false only for an invalid, unregistered,
     // address-less or lapsed name, or a failed lookup.
     if (!res.ok) return { ok: false, error: res.error || `couldn't resolve ${nm}.csd` };
-    if (isZeroAddr(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address — refusing (sends would be burned)` };
+    if (isZeroAddr(res.addr)) return { ok: false, error: `${nm}.csd points at the zero address: refusing (sends would be burned)` };
     const verified = res.verified === true;
     const viaFill = res.viaFill === true;
     const conf = res.depth ? ` (${res.depth} conf)` : "";
@@ -582,15 +678,15 @@ async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: stri
     // competing-claim withholding redirect is live, so it must read visibly weaker than 2-source
     // agreement, not like the same green check; and a barely-buried (1-2 conf) resolution gets a
     // reorg caution instead of a plain check. Both stay informational; never a block.
-    const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < 3;
+    const lowDepth = typeof res.depth === "number" && res.depth > 0 && res.depth < NAME_SAFE_DEPTH;
     const badge = !verified
-      ? (viaFill ? "⚠ purchased name — can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified — confirm the address")
+      ? (viaFill ? "⚠ purchased name: can't be name-scope-proven, confirm the address" : "⚠ NOT chain-verified: confirm the address")
       : res.soleSource ? `⚠ only ONE name source could prove this address and it isn't independently corroborated: confirm it out-of-band before sending${conf}`
-      : res.disagree ? `⚠ chain-backed but a name source DISAGREED (or hasn't indexed it yet) — verify the address${conf}`
+      : res.disagree ? `⚠ chain-backed but a name source DISAGREED (or hasn't indexed it yet): verify the address${conf}`
       : (res.sources ?? 1) >= 2
-        ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree — only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
-        : `△ chain-backed but only 1 source answered — second server unreachable, weaker guarantee${conf}`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"}) · ${badge}` };
+        ? (lowDepth ? `✓ chain-backed, ${res.sources} servers agree, only${conf}, could still reorg` : `✓ chain-backed, ${res.sources} name servers agree (same operator)${conf}`)
+        : `△ chain-backed but only 1 source answered: second server unreachable, weaker guarantee${conf}`;
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})`, badge };
   }
   return { ok: false, error: "enter a 0x… address or a name.csd" };
 }
@@ -601,6 +697,8 @@ async function nameStillPointsTo(name: string, reviewed: string, reviewedVerifie
   const re = await call("confirmName", name).catch(() => ({ ok: false }));
   return reresolveUnchanged(reviewed, re, reviewedVerified); // L7: also refuses a verified→unverified regression
 }
+// An address in groups of four for comparing by eye; the spans hold no spaces, so its text is the raw address.
+const groupedAddr = (a: string) => (a.match(/^0x.{0,4}|.{1,4}/g) || []).map((g) => `<span>${escapeHtml(g)}</span>`).join("");
 function setNameRow(rowId: string, valId: string, label: string | null | undefined) {
   const row = document.getElementById(rowId), v = document.getElementById(valId);
   if (!row || !v) return;
@@ -612,7 +710,7 @@ function setNameRow(rowId: string, valId: string, label: string | null | undefin
 // The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
 // the existing propose pipeline with the 0.25 CSD convention fee; no value outputs.
 const CAIRNX_FEE = CAIRNX_PROPOSE_FEE; // 0.25 CSD (anchor fee, paid in CSD); the vendored MIN_FEE_PROPOSE, never a hand-typed literal
-let tsend: { ticker: string; decimals: number; available: string } | null = null;
+let tsend: { ticker: string; decimals: number; available: string; bind: ViewBind } | null = null;
 
 // ── shared send-flow engine ───────────────────────────────────────────────────────────────────
 // The CSD and token send panels are deliberate twins with three real deltas, carried by a flow
@@ -650,16 +748,36 @@ async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookal
     return recipientStatus(to, paidRecipients(h), (st.accounts || []).map((a: any) => String(a.addr)));
   } catch { return { firstTime: true, lookalike: null }; }
 }
+// A review check row: positive (the name is chain-backed by two sources), caution, or danger (a warning that
+// stands against sending: a look-alike, a first send, a balance that does not cover the send).
+type Tier = "ok" | "caution" | "danger";
+type Check = { tier: Tier; html: string };
+const TIER_ICON: Record<Tier, string> = { ok: "i-shield-check", caution: "i-triangle-alert", danger: "i-octagon-alert" };
+type NameInfo = { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+// The tier follows the meaning: positive only where two sources agree (nameCautionHtml's ✓ branch) at a depth that
+// can no longer reorg; a shallower resolution is caution (test/popup-checks-dom.test.mjs walks every branch).
+function nameCheck(rr: NameInfo): Check | null {
+  if (!rr.name) return null;
+  const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
+  const ok = rr.verified === true && !rr.viaFill && !rr.soleSource && !rr.disagree && (rr.sources ?? 1) >= 2 && !rr.lowDepth;
+  const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";
+  return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge };
+}
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
 // otherwise the historical ones byte-for-byte. Empty return = nothing to warn about (box hidden).
-function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: string, noun: "transfers" | "payments"): string {
+function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments"): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
-  if (lookalike) return `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character — ${noun} are irreversible.`;
-  if (firstTime) return `${nameCaution ? nameCaution + "<br><br>" : ""}⚠ First time sending to this address — check every character. ${Noun} are irreversible.`;
-  return nameCaution;
+  const out: Check[] = nameCaution ? [nameCaution] : [];
+  if (lookalike) out.push({ tier: "danger", html: `⚠ <b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is NOT the same address. Verify every character. ${Noun} are irreversible.` });
+  else if (firstTime) out.push({ tier: "danger", html: `⚠ First time sending to this address: check every character. ${Noun} are irreversible.` });
+  return out;
 }
-function setWarn(el: HTMLElement, html: string) { if (html) { el.innerHTML = html; el.hidden = false; } else el.hidden = true; }
+const checkRow = (c: Check) => `<div class="check ${c.tier}"><svg class="i" aria-hidden="true"><use href="icons.svg#${TIER_ICON[c.tier]}"/></svg><div>${c.html}</div></div>`;
+function setWarn(el: HTMLElement, checks: Check[]) {
+  if (checks.length) { el.innerHTML = checks.map(checkRow).join(""); el.hidden = false; }
+  else { el.innerHTML = ""; el.hidden = true; }
+}
 // FOOT-3 double-send guard, shared by both flows' ok:false and thrown branches: do NOT leave Confirm
 // armed on the same frozen snapshot after a failure (one more click after an ambiguous submit selects a
 // DIFFERENT coin and double-pays). Tear the review down (draft preserved) so resending takes a
@@ -701,7 +819,7 @@ function sentOk(f: SendFlow, text: string) {
 }
 
 function openTokenSend(ticker: string, decimals: number, available: string) {
-  tsend = { ticker, decimals, available };
+  tsend = { ticker, decimals, available, bind: bindView() };
   // force-open (openPanel toggles; clicking send on a second token must keep it open)
   if (!openPanel("tsend-form")) ($("tsend-form") as HTMLElement).hidden = false;
   ($("ts-ticker") as HTMLElement).textContent = ticker;
@@ -712,6 +830,7 @@ function openTokenSend(ticker: string, decimals: number, available: string) {
 }
 $("btn-tsend").addEventListener("click", async () => {
   if (!tsend) return;
+  if (!viewCurrent(tsend.bind)) { tsend = null; return dropStaleView(); }   // opened for another account
   const base = parseUnits(val("ts-amt").trim(), tsend.decimals);
   if (base === null || base === "0") return msg(tsend.decimals ? `enter an amount (up to ${tsend.decimals} decimal places)` : "enter a whole-number amount (this token has 0 decimals)", "err");
   const rr = await resolveRecipient(val("ts-to").trim());   // 0x… or alice.csd (refuse lapsed)
@@ -736,7 +855,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // same first-time / address-poisoning checks as a CSD send; token sends are just as irreversible
   const { firstTime, lookalike } = checks;
   $("tc-ticker").textContent = tsend.ticker;
-  $("tc-to").textContent = to.toLowerCase();              // FULL address, as it will appear in the signed record
+  $("tc-to").innerHTML = groupedAddr(to.toLowerCase());     // FULL address, as it will appear in the signed record
   // W8 (B5g): BOTH scales on the review card. `decimals` is resolver-served (the popup token list), so a
   // decimals lie rescales the human number by up to 10^8 while the balance guard compares against the SAME
   // resolver's `available`; the card alone could confirm a rescaled amount back to the user. The base-unit
@@ -745,8 +864,7 @@ $("btn-tsend").addEventListener("click", async () => {
   $("tc-amt").textContent = tokenAmountBothScales(base, tsend.decimals, tsend.ticker);
   $("tc-fee").textContent = fmtCsd(CAIRNX_FEE);
   // A .csd token send ALWAYS carries the name-service-trust caution (XREPO-1), same as a CSD send.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
-  setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCaution, TOKEN_FLOW.noun));
+  setWarn($("tc-warn") as HTMLElement, composeSendWarning(lookalike, firstTime, nameCheck(rr), TOKEN_FLOW.noun));
   // SNAPSHOT what was reviewed; the confirm step signs EXACTLY this, never the live inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): the confirm's nameStillPointsTo await can park across an
   // account switch; expectSigner makes the background refuse at the sign tick instead of signing from
@@ -772,9 +890,15 @@ $("btn-tsend-confirm").addEventListener("click", async () => {
   }
 });
 
+// The queue the card last showed: the 1.5 s poll rewrites the card only when it changed, so a poll does not replay
+// its entrance or take the focus off Review.
+let pendingShown: string | null = null;
 async function renderPending() {
   if (!EXT) return;
   const p = await call("pending"); const el = $("pending") as HTMLElement;
+  const key = JSON.stringify(p.map((r: any) => [r.id, r.method, r.origin]));
+  if (key === pendingShown) return;
+  pendingShown = key;
   if (!p.length) { el.hidden = true; el.innerHTML = ""; return; }
   el.hidden = false;
   // The toolbar popup NEVER approves a request inline; approving a fund-moving send/propose/
@@ -818,7 +942,7 @@ function pwStrength(pw: string): string {
   let classes = 0; for (const re of [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/]) if (re.test(pw)) classes++;
   if (len >= 16 || (len >= 12 && classes >= 3)) return "strong";
   if (len >= 12 && classes >= 2) return "fair";
-  return "weak — use a longer passphrase";
+  return "weak: use a longer passphrase";
 }
 $("setup-pw").addEventListener("input", () => {
   const v = ($("setup-pw") as HTMLInputElement).value; const h = document.getElementById("setup-pw-hint");
@@ -844,7 +968,7 @@ $("btn-copy").addEventListener("click", () => copyText("btn-copy", $("addr").tex
 // ── accordion: at most ONE action panel open at a time ──────────────────────
 // All the collapsible panels under the main view. Opening one closes the rest;
 // clicking the same trigger again closes it. Secret panels are wiped on every switch.
-const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "consolidate-form", "name-action-form", "post-form", "seal-form", "activity", "reveal-panel", "phrase-panel", "settings"];
+const PANELS = ["accts-panel", "receive-panel", "send-form", "tsend-form", "consolidate-form", "name-action-form", "name-detail", "post-form", "seal-form", "activity", "names-tab", "reveal-panel", "phrase-panel", "settings"];
 let revealedKey = "", revealedPhrase = "";
 // C-8 / PH-16 (2026-09-09): the "auto-clears" clipboard promise was FALSE (the clear needs a
 // clipboardRead permission the manifest lacks, and the beforeunload path never settles in the
@@ -873,6 +997,7 @@ function closeAllPanels() {
   dropReviews();
   for (const id of ["s-to", "s-amt", "ts-to", "ts-amt"]) { const el = document.getElementById(id) as HTMLInputElement | null; if (el) el.disabled = false; }
   resetRevealPanel(); resetPhrasePanel();
+  $("nd-actions").innerHTML = "";   // a closed name detail keeps no action that could open a review
 }
 // Show `id` and hide every other panel; returns true if it ended up OPEN. Wipes any
 // revealed secret so a key/phrase never lingers behind a now-hidden panel.
@@ -883,11 +1008,67 @@ function openPanel(id: string): boolean {
   syncNav();
   return willOpen;
 }
-// Footer-nav active state: activity/settings when their panel is open, else home.
+// Which control shows as current: the Names or Activity tab or the Settings button when their panel is open, else
+// Assets. A sheet over a list keeps that list's tab selected.
+const TABS = ["nav-home", "nav-names", "btn-activity-t"];
 function syncNav() {
   const active = !($("activity") as HTMLElement).hidden ? "btn-activity-t"
+    : !($("names-tab") as HTMLElement).hidden ? "nav-names"
     : !($("settings") as HTMLElement).hidden ? "btn-settings" : "nav-home";
-  for (const id of ["nav-home", "btn-activity-t", "btn-settings"]) $(id).classList.toggle("active", id === active);
+  for (const id of [...TABS, "btn-settings"]) $(id).classList.toggle("active", id === active);
+  for (const id of TABS) $(id).setAttribute("aria-selected", String(id === active));
+  // the one indicator slides under the selected tab (Settings leaves it under Assets)
+  const tab = $(TABS.includes(active) ? active : "nav-home") as HTMLElement;
+  const bar = $("tabs") as HTMLElement;
+  if (typeof tab.offsetLeft === "number" && bar.style?.setProperty) {
+    bar.style.setProperty("--ind-x", `${tab.offsetLeft}px`);
+    bar.style.setProperty("--ind-w", `${tab.offsetWidth}px`);
+  }
+}
+// Escape closes the open sheet through its own close button, the same exit as a click on it.
+function closeSheetOnEscape(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  const close = document.querySelector<HTMLElement>("#layer > .sheet:not([hidden]) .panel-head .panel-back");
+  if (!close) return;
+  e.preventDefault();
+  close.click();
+}
+document.addEventListener("keydown", closeSheetOnEscape);
+// While a sheet is open the page behind it is inert, so Tab and a pointer reach only the sheet and the request band;
+// focus moves to the sheet's first control after its header (or its close button), without scrolling, and back to
+// what opened it when it closes.
+const BEHIND = ["#view-main > .topbar", "#view-main > .bal-hero", "#view-main > .actions", "#tabs", "#home", "#names-tab", "#activity", "#more-menu"];
+let sheetOpener: HTMLElement | null = null;
+function syncSheetFocus() {
+  const sheet = document.querySelector<HTMLElement>("#layer > .sheet:not([hidden])");
+  if (sheet && !sheetOpener) {
+    const from = document.activeElement as HTMLElement | null;
+    sheetOpener = from && from !== document.body && !sheet.contains(from) ? from : null;
+  }
+  for (const sel of BEHIND) { const el = document.querySelector<HTMLElement>(sel); if (el) el.inert = !!sheet; }
+  if (sheet) {
+    if (!sheet.contains(document.activeElement)) {
+      const first = [...sheet.querySelectorAll<HTMLElement>("input:not([disabled]), textarea, select, button:not([disabled]), a[href], [tabindex='0']")]
+        .find((el) => !el.closest(".panel-head") && el.tabIndex >= 0 && el.offsetParent !== null);
+      (first ?? sheet.querySelector<HTMLElement>(".panel-head .panel-back"))?.focus({ preventScroll: true });
+    }
+  } else if (sheetOpener) {
+    if (sheetOpener.isConnected) sheetOpener.focus();
+    sheetOpener = null;
+  }
+}
+if (typeof MutationObserver === "function") {
+  new MutationObserver(syncSheetFocus).observe($("layer"), { subtree: true, attributes: true, attributeFilter: ["hidden"] });
+}
+// The request band over an open sheet shows its first origin in full however long; the sheet and the toast start
+// under the band's real height.
+if (typeof ResizeObserver === "function") {
+  const pend = $("pending"), app = $("app");
+  new ResizeObserver(() => {
+    if (getComputedStyle(pend).position !== "fixed") return;
+    const gap = parseFloat(getComputedStyle(app).getPropertyValue("--ui-space-2")) || 0;   // the gap under the band
+    app.style.setProperty("--pending-band", `${Math.ceil(pend.getBoundingClientRect().bottom + gap)}px`);
+  }).observe(pend);
 }
 $("nav-home").addEventListener("click", () => { closeAllPanels(); syncNav(); msg(""); });
 // One delegated back-button for every panel head (no per-panel IDs): exits the panel with the
@@ -907,7 +1088,9 @@ async function renderReceive() {
   try {
     const st = await call("status");
     if (($("receive-panel") as HTMLElement).hidden) return;   // closed while we fetched
-    $("receive-addr").textContent = st.addr || "";
+    // Groups of four for comparing by eye; the spans hold no spaces, so textContent (what Copy copies) is the address.
+    const addr = String(st.addr || "");
+    $("receive-addr").innerHTML = groupedAddr(addr);
     const pn = $("primary-name"), rn = $("receive-name") as HTMLElement;
     if (!(pn as HTMLElement).hidden && pn.textContent) { rn.textContent = pn.textContent; rn.hidden = false; }
     else { rn.textContent = ""; rn.hidden = true; }
@@ -964,7 +1147,7 @@ async function renderCoinsInfo() {
     const p = await call("consolidatePreview", SEND_FEE);
     if (!p?.ok) { info.textContent = "coin count unavailable (node unreachable)"; return; }
     info.textContent = p.coins < 2
-      ? `you have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"} — nothing to merge`
+      ? `you have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"}: nothing to merge`
       : `you have ${p.coins} spendable coins · one merge combines ${p.merge} of them (${fmtBalance(p.total)} CSD) into a single coin`;
     btn.hidden = p.coins < 2;
   } catch { info.textContent = "coin count unavailable"; }
@@ -990,7 +1173,7 @@ async function openConsolidatePanel(force = false) {
   note.textContent = "";
   try {
     const p = await call("consolidatePreview", SEND_FEE);
-    if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "nothing to merge — fewer than two spendable coins." : "node unreachable — try again in a moment."; return; }
+    if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "nothing to merge: fewer than two spendable coins." : "node unreachable: try again in a moment."; return; }
     $("cs-merge").textContent = String(p.merge) + (p.coins > p.merge ? ` of ${p.coins}` : "");
     $("cs-total").textContent = fmtBalance(p.total) + " CSD";
     $("cs-fee").textContent = fmtCsd(SEND_FEE);
@@ -1000,11 +1183,11 @@ async function openConsolidatePanel(force = false) {
     const rounds = Math.ceil((p.coins - 1) / 511);
     note.textContent = (p.coins > p.merge ? `a transaction fits at most ${p.merge} coins, so about ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
       + (consolidating ? "a merge is already in progress in this window; wait for it to finish." : "")
-      + (!consolidating && mergePendingNow.pending ? `a previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming — merging more coins now is safe. ` : "")
+      + (!consolidating && mergePendingNow.pending ? `a previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming; merging more coins now is safe. ` : "")
       + "This is a normal payment to yourself: your balance only changes by the fee.";
-    if (p.out <= 0) { note.textContent = "these coins are too small to cover the fee — nothing to gain by merging them."; return; } // keep Confirm down: the engine would refuse anyway
+    if (p.out <= 0) { note.textContent = "these coins are too small to cover the fee: nothing to gain by merging them."; return; } // keep Confirm down: the engine would refuse anyway
     if (!consolidating) ($("btn-consolidate-confirm") as HTMLButtonElement).disabled = false;   // keep it latched only while a merge runs in THIS popup
-  } catch { note.textContent = "node unreachable — try again in a moment."; }
+  } catch { note.textContent = "node unreachable: try again in a moment."; }
 }
 $("btn-consolidate").addEventListener("click", () => { void openConsolidatePanel(); });
 $("btn-consolidate-back").addEventListener("click", () => { openPanel("settings"); renderConnectedSites(); renderCoinsInfo(); });
@@ -1085,7 +1268,7 @@ $("btn-save-settings").addEventListener("click", async () => {
   const api = val("set-api").trim();
   const tradeApi = val("set-tradeapi").trim();
   const granted = await ensureHostAccess(tradeApi ? [api, tradeApi] : [api]);
-  if (!granted) return msg("not saved — host access denied (the wallet can't reach an API it has no permission for)", "err");
+  if (!granted) return msg("not saved: host access denied (the wallet can't reach an API it has no permission for)", "err");
   await call("setApi", api);
   await call("setTradeApi", tradeApi);
   tokensCache = null; // re-read token metadata from the new endpoint
@@ -1111,8 +1294,8 @@ function buildMenu(menu: HTMLElement, cfg: {
 }) {
   const row = (e: MenuEntry) => `
     <div class="rpc-row${cfg.isActive(e.value) ? " active" : ""}">
-      <button class="rpc-pick" ${cfg.pickAttr}="${escapeHtml(e.value)}">${cfg.isActive(e.value) ? "● " : ""}<span class="rpc-label">${escapeHtml(e.label)}</span><span class="rpc-url">${escapeHtml(e.hint)}</span></button>
-      ${e.removable ? `<button class="rpc-del mini" ${cfg.delAttr}="${escapeHtml(e.value)}" title="remove">×</button>` : ""}
+      <button class="rpc-pick" ${cfg.pickAttr}="${escapeHtml(e.value)}"${cfg.isActive(e.value) ? ' aria-current="true"' : ""}><span class="rpc-label">${escapeHtml(e.label)}</span><span class="rpc-url">${escapeHtml(e.hint)}</span></button>
+      ${e.removable ? `<button class="rpc-del mini" ${cfg.delAttr}="${escapeHtml(e.value)}" title="remove" aria-label="remove"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button>` : ""}
     </div>`;
   menu.innerHTML = cfg.entries.map(row).join("")
     + `<div class="rpc-add"><input id="${cfg.addInputId}" placeholder="${cfg.placeholder}" /><button id="${cfg.addBtnId}" class="mini">add</button></div>`;
@@ -1128,7 +1311,7 @@ const noProto = (u: string) => u.replace(/^https?:\/\//, "");
 
 // A saved remote RPC was moved to the Cairn proxy at load (wallet.init); say so once, then clear the flag.
 function showRpcMoved(from: string) {
-  msgAction(`Your saved node RPC (${from.replace(/^https?:\/\//, "")}) is a remote server, which this wallet no longer supports. It now uses the Cairn proxy. A node on this computer can still be chosen from the RPC menu.`, "OK", () => {}, "info");
+  msgAction(`Your saved node RPC (${from.replace(/^https?:\/\//, "")}) is a remote server, which this wallet no longer supports. It now uses the Cairn proxy. A node on this computer can still be chosen in Settings › Network.`, "OK", () => {}, "info");
   void call("dismissRpcNotice").catch(() => { /* the notice shows again on the next open */ });
 }
 // ── RPC dropdown (header); preset + user-added nodes, switch with one click ──
@@ -1156,7 +1339,7 @@ async function renderRpcMenu() {
 }
 async function selectRpc(url: string) {
   const granted = await ensureHostAccess([url]);
-  if (!granted) return msg("RPC not switched — host access denied", "err");
+  if (!granted) return msg("RPC not switched: host access denied", "err");
   await call("setRpc", url); ($("rpc-menu") as HTMLElement).hidden = true; msg("RPC: " + url.replace(/^https?:\/\//, ""), "ok"); render();
 }
 $("btn-rpc").addEventListener("click", () => { const m = $("rpc-menu") as HTMLElement; if (m.hidden) { renderRpcMenu(); m.hidden = false; } else m.hidden = true; });
@@ -1206,7 +1389,7 @@ $("btn-imp-acct").addEventListener("click", async () => {
   const key = val("imp-acct-key").trim(); if (!key) return msg("paste a private key", "err");
   // A2 defense-in-depth: state the misconception up front; an imported key is NOT covered by the
   // recovery phrase, so the user learns it at import time, not at (password-gated) removal time.
-  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported — note: imported keys are NOT in your recovery phrase; keep their own backup", "ok"); render(); }
+  try { await call("importAccount", key, val("imp-acct-label").trim()); ($("imp-acct-key") as HTMLInputElement).value = ""; msg("account imported. Note: imported keys are NOT in your recovery phrase; keep their own backup", "ok"); render(); }
   catch (e: any) { msg(e.message, "err"); }
 });
 
@@ -1234,6 +1417,8 @@ async function populateDomains() {
   sel.onchange = () => { const isCustom = sel.value === "__custom__"; custom.hidden = !isCustom; if (isCustom) custom.focus(); };
 }
 $("btn-activity-t").addEventListener("click", () => { if (openPanel("activity")) renderHistory(); });
+$("nav-names").addEventListener("click", () => { if (openPanel("names-tab")) enterOnce($("names-list"), curAddr); });
+$("csd-row").addEventListener("click", () => { openPanel("send-form"); });
 $("btn-seal-t").addEventListener("click", () => { if (openPanel("seal-form")) renderSealed(); });
 $("btn-seal").addEventListener("click", async () => {
   const claim = val("seal-claim").trim(); if (!claim) return msg("enter a claim to seal", "err");
@@ -1256,7 +1441,7 @@ async function renderSealed() {
     // a maybe-path seal's anchor may never have landed (0.2.57): say so; revealing it would fail
     // its on-chain commit check, and the honest state is "verify the anchor first".
     const status = s.revealed ? `<span style="color:var(--green)">✅ revealed</span>`
-      : s.maybe ? `🔒 sealed <span class="dim">(anchor may not have landed — check the txid on the explorer)</span>` : `🔒 sealed`;
+      : s.maybe ? `🔒 sealed <span class="dim">(anchor may not have landed: check the txid on the explorer)</span>` : `🔒 sealed`;
     const right = s.revealed
       ? `<a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(s.txid)))}" target="_blank" rel="noopener noreferrer">${String(s.txid).slice(0, 10)}… ↗</a>`
       : `<button class="mini" data-reveal="${escapeHtml(String(s.txid))}">Reveal</button>`;
@@ -1266,7 +1451,7 @@ async function renderSealed() {
   el.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", async () => {
     const id = (b as HTMLElement).dataset.reveal!; busy("revealing…");
     const r = await call("revealClaim", id);
-    (r && r.ok) ? msg("revealed ✓ — now public + provably committed earlier", "ok") : msg("reveal failed: " + ((r && r.error) || "?"), "err");
+    (r && r.ok) ? msg("revealed ✓: now public + provably committed earlier", "ok") : msg("reveal failed: " + ((r && r.error) || "?"), "err");
     renderSealed();
   }));
 }
@@ -1297,18 +1482,17 @@ $("btn-send").addEventListener("click", async () => {
   const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
   const { firstTime, lookalike } = checks;
   const after = b ? fmtBalance(b.confirmed - amt - SEND_FEE) + " CSD" : "";
-  $("c-to").textContent = to;                       // FULL address, not truncated
+  $("c-to").innerHTML = groupedAddr(to);           // FULL address, not truncated
   $("c-amt").textContent = fmtCsd(amt);
   $("c-fee").textContent = fmtCsd(SEND_FEE);
-  $("c-after").textContent = after || "—";
+  $("c-after").textContent = after || "unknown";
   // A .csd send ALWAYS carries the name-service-trust caution (XREPO-1), regardless of first-time /
   // look-alike status; verifying the resolved address is the whole defense the wallet can offer here.
-  const nameCaution = rr.name ? nameCautionHtml(rr.name, rr.verified, { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill }) : "";
   // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's
   // INSUFFICIENT refusal stays the backstop). An unreadable balance does not block.
   const short = !!b && Number(b.confirmed) - amt - SEND_FEE < 0;
-  const warn = composeSendWarning(lookalike, firstTime, nameCaution, CSD_FLOW.noun);
-  setWarn($("c-warn") as HTMLElement, short ? `${escapeHtml(balanceShortNote("Go back"))}${warn ? "<br><br>" + warn : ""}` : warn);
+  const warn = composeSendWarning(lookalike, firstTime, nameCheck(rr), CSD_FLOW.noun);
+  setWarn($("c-warn") as HTMLElement, short ? [{ tier: "danger", html: escapeHtml(balanceShortNote("Go back")) }, ...warn] : warn);
   ($("btn-send-confirm") as HTMLButtonElement).disabled = short;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
@@ -1359,5 +1543,8 @@ $("btn-post").addEventListener("click", async () => {
   } catch (e: any) { const o = thrownCopy(e, "post"); msg(o.text, o.cls); }
 });
 
+mountThemeControl(document, (globalThis as { CairnTheme?: CairnThemeApi }).CairnTheme);
 render();
+// the tab widths change once Geist has loaded
+void document.fonts?.ready.then(syncNav);
 if (EXT) setInterval(renderPending, 1500);

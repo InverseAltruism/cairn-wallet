@@ -1,0 +1,17 @@
+/* Geist and Geist Mono (SIL Open Font License 1.1, fonts/OFL.txt), the official v1.7.2 release subset to Latin by
+   scripts/subset-fonts.sh (fonts/PROVENANCE.json). Both are variable fonts with a weight axis from 100 to 900. The
+   paths are relative to this file: serve fonts/ beside it. */
+@font-face {
+  font-family: "Geist";
+  src: url("fonts/Geist-Latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("fonts/GeistMono-Latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
