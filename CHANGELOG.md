@@ -16,7 +16,7 @@
 - In the approval window a website's renewal or name record verdict sits right under the cost rows and the
   warnings, and all first-time and address-poisoning warnings of a request share one red row, each on its own line,
   so a request to two new recipients shows both above the buttons.
-- The approval window opens at 460 by 700 (was 380 by 620), and everything that decides a signature sits above Reject
+- The approval window opens at 460 by 716 (was 380 by 620), and everything that decides a signature sits above Reject
   and Approve without scrolling, for every request type and for the long cases test/approve-layout-chrome.test.mjs
   builds (an unconfirmed reservation's confirm step, an underpaid name fee with its verdict, a token fill with a
   ticker warning, three recipients with a look-alike, a large fee and a short balance, a queue): the site and the
@@ -26,7 +26,11 @@
   line; rows, check rows and boxes are denser. Before, a CSD fill's recipients, a send's third first-time warning and
   a finalize's verdict sat below the buttons. The window is wider rather than only taller because width is what small
   screens can spare. A site can still make a request longer than the window (more recipients, a very long origin);
-  the cost, the recipient warnings and a name action's verdict then stay on top, and the rest scrolls.
+  the cost, the recipient warnings and a name action's verdict then stay on top, and the rest scrolls. A line directly
+  above the buttons then says what is out of view: "2 more recipients below: scroll to see them" (or "1 more recipient
+  below: scroll to see it") while a recipient row is not fully shown, otherwise "More below: scroll to read the whole
+  request". It goes once the request is scrolled to its end and comes back if the request grows; its line is always
+  reserved, so it never moves the buttons, never covers the request and never holds back Approve.
 - In the approval window the check rows drop their leading ⚠, as in the popup (the row's icon and tint carry it),
   and so do the balance note in the popup's send review and the second-source note after a sent fill; the inline
   "⚠ unusually large fee" and "⚠ unusually long claim window" marks inside a value stay. Two texts follow the new

@@ -10,11 +10,14 @@
 // Each case also names what must render, so a missing row cannot pass as "not below"; check rows carry their tier in
 // the icon and tint, with no leading ⚠; the cost and the warnings come before the first recipient and the cost before
 // any row without weight, so a request a site makes longer than the window keeps them in view; and no <br> inside the
-// request is hidden or merged by CSS.
+// request is hidden or merged by CSS. While the request does not end in view, the line above the buttons (#ap-more)
+// names the recipient rows not fully shown, or says more is below; it never moves the buttons or covers the request.
 // RED-FIRST: with f700817's approval window (src/popup clearsign.ts, approve.ts, popup.css) 64 checks fail at this size
 // (11 cases below the fold, 23 out of order, 30 with a leading ⚠); in its own 380 by 620 window, 26 cases fail the fold.
 // Restore f700817's popup.css alone and 11 cases fail the fold; put a record's rows before the cost, the send's
 // recipients before its cost, or the listing id first in the listing box, and the order check fails.
+// RED-FIRST for the line: on e397906 (no line) 52 checks fail; drop its scroll listener and 4 fail, its MutationObserver
+// 9, count every row instead of the recipient rows 6, its reserved height 2.
 // Needs playwright-core (PLAYWRIGHT_CORE) and a Chromium (PLAYWRIGHT_CHROMIUM); prints SKIP without them.
 import * as cx from "../src/core/cairnx.ts";
 import * as v from "../src/vendor/cairnx-spv.js";
@@ -90,6 +93,10 @@ const CASES = [
   ["name-nset-unpoint", [req("ns0", "propose", O, prop(cx.buildNameSet({ name: "alice", addr: "0x" + "0".repeat(40) })))], {}, ["#nfin-note", "cost"]],
   ["name-nxfer", [req("nx", "propose", O, prop(cx.buildNameXfer({ name: "alice", to: RCPT })))], {}, ["First time transferring a name to", "to:1", "cost"]],
   ["name-nprofile", [req("np", "propose", O, prop(cx.buildNameProfile({ name: "alice", profile: { bio: "builder", url: "https://example.org", wallet: RCPT } })))], {}, ["is cosmetic text", "cost"]],
+  ["token-mint", [req("mi", "propose", O, prop(v.mint({ ticker: "TKN", amount: "100" })))], {}, ["cost"]],
+  ["token-bid", [req("bi", "propose", O, prop(v.bid({ give: { value: "5000000000" }, want: { ticker: "TKN", amount: "4638" } })))], {}, ["cost"]],
+  ["offer-cancel", [req("oc", "propose", O, prop(v.offerCancelAll({ ticker: "TKN" })))], {}, ["cost"]],
+  ["token-meta", [req("tm", "propose", O, prop(v.tokenMeta({ ticker: "TKN", hash: "0x" + "ab".repeat(32) })))], {}, ["cost"]],
   ["reserve-legacy", [req("rs", "attest", O, { proposalId: "0x" + "ef".repeat(32), score: 50, confidence: 0, fee: 1_000_000 })], { tipFloor: cx.V28_HEIGHT + 10 }, ["legacy reservation type is", "cost"]],
   ["reserve-fclaim", [req("fc", "propose", O, prop(v.fclaim({ offer: "0x" + "ab".repeat(32) })))], {}, ["cost"]],
   ["queue", [req("q1", "send", D, sendTo([[RCPT, 100_000_000], [R2, 200_000_000], [R3, 300_000_000]])), req("q2", "connect", D, {}), req("q3", "send", D, { to: RCPT, amount: 1, fee: 1_000_000 })], {}, ["Request 1 of 3", "warn:3", "to:3", "cost"]],
@@ -202,7 +209,14 @@ function measure([expect, origin]) {
     if (i > 0 && !broke) lost.push(`no break before "${segs[i].slice(0, 24)}"`);
     at = found + segs[i].length;
   }
-  return { below, late, marked, missing, lowest: lowest && { what: lowest.what, gap: Math.round(fold - lowest.bottom) }, scrollTop: reqEl.scrollTop, hiddenBr, lost };
+  // the "more below" line: shown exactly while the request does not end in view, naming the recipient rows not fully
+  // in view; it sits in the footer, below the request, so it covers nothing
+  const RCPT = new Set(["To", "Resolves to", "Paid to", "Only fillable by"]);
+  const open = reqEl.scrollTop + reqEl.clientHeight < reqEl.scrollHeight - 1;
+  const hiddenRcpt = [...reqEl.querySelectorAll(".kv > div")].filter((r) => RCPT.has(r.querySelector("dt")?.textContent ?? "") && r.getBoundingClientRect().bottom > reqEl.getBoundingClientRect().bottom + 0.5).length;
+  const cueEl = document.getElementById("ap-more");
+  const cue = { text: cueEl ? cueEl.textContent : null, open, hiddenRcpt, clear: !!cueEl && cueEl.getBoundingClientRect().top >= reqEl.getBoundingClientRect().bottom - 0.5 && cueEl.getBoundingClientRect().bottom <= barTop + 0.5 };
+  return { below, cue, late, marked, missing, lowest: lowest && { what: lowest.what, gap: Math.round(fold - lowest.bottom) }, scrollTop: reqEl.scrollTop, hiddenBr, lost };
 }
 
 // Wait until Reject is armed, every mount the request carries is painted (the listing, the token quote, the reveal
@@ -220,6 +234,9 @@ const settle = (page) => page.evaluate(() => new Promise((done) => {
   tick();
 }));
 
+// The cue's words, written out here so a change to them fails this file.
+const cueText = ({ open, hiddenRcpt }) => !open ? "" : hiddenRcpt === 1 ? "1 more recipient below: scroll to see it"
+  : hiddenRcpt > 1 ? `${hiddenRcpt} more recipients below: scroll to see them` : "More below: scroll to read the whole request";
 const table = [];
 try {
   for (const [name, queue, extra, expect, action] of CASES) {
@@ -238,7 +255,56 @@ try {
       t.check(`${name}: every element with weight is above the buttons, unscrolled (lowest: ${r.lowest?.what}, ${r.lowest?.gap} px above; below: ${r.below.join(", ") || "none"})`, r.below.length === 0 && r.scrollTop === 0);
       t.check(`${name}: the cost and the warnings come before the recipients and the rows without weight (late: ${r.late.join(", ") || "none"})`, r.late.length === 0);
       t.check(`${name}: no check row starts with a ⚠ mark (${r.marked})`, r.marked === 0);
+      t.check(`${name}: the line above the buttons matches what is below the fold ("${r.cue.text}", ${r.cue.hiddenRcpt} recipient rows hidden) and covers nothing`, r.cue.text === cueText(r.cue) && r.cue.clear);
       t.check(`${name}: no <br> in the request is hidden (${r.hiddenBr}) and the text breaks at every one (${r.lost.join("; ") || "all kept"})`, r.hiddenBr === 0 && r.lost.length === 0);
+      t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  // A request longer than the window: the line counts the hidden recipients, leaves the buttons where they are and
+  // Approve armed, goes once the request is scrolled to its end, and comes back when the request grows.
+  console.log("more below:");
+  const many = (n) => sendTo(Array.from({ length: n }, (_, i) => ["0x" + (0x41 + i).toString(16).repeat(20), 10_000_000]));
+  // where the buttons are and where the request area ends: neither moves when the line comes or goes
+  const buttonsAt = (page) => page.evaluate(() => [document.getElementById("btn-reject").getBoundingClientRect().top, document.getElementById("btn-approve").getBoundingClientRect().top, document.getElementById("req").getBoundingClientRect().bottom]);
+  let ordinary = null;
+  // five recipients fit at this size; from a look-alike origin long enough to wrap the header they do not
+  const LONG = "https://cairn-substrate.com.account-security-verification.session-renewal.wallet-support-desk.example";
+  for (const [name, queue] of [["send-1", [req("m1", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })]], ["send-5", [req("m5", "send", D, many(5))]],
+    ["send-5-long-origin", [req("m5o", "send", LONG, many(5))]], ["send-13", [req("m13", "send", D, many(13))]]]) {
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue }, { viewport: { width: WIDTH, height: INNER_H } });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      const r = await page.evaluate(measure, [[], queue[0].origin]);
+      const at = await buttonsAt(page);
+      const approve = await page.evaluate(() => !document.getElementById("btn-approve").disabled);
+      if (name === "send-1" || name === "send-5") {
+        ordinary ??= at;
+        t.check(`${name}: a request that ends in view shows no line ("${r.cue.text}"), everything with weight above the buttons (below: ${r.below.join(", ") || "none"})`, !r.cue.open && r.cue.text === "" && r.below.length === 0 && at.join() === ordinary.join());
+        continue;
+      }
+      t.check(`${name}: the line names the hidden recipients ("${r.cue.text}", ${r.cue.hiddenRcpt} rows not in view)`, r.cue.open && r.cue.hiddenRcpt > 0 && r.cue.text === cueText(r.cue));
+      // scroll until the last recipient row is the only one not fully in view: the count follows the scroll
+      const one = await page.evaluate(() => {
+        const q = document.getElementById("req");
+        const rows = [...q.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === "To");
+        q.scrollTop += rows.at(-2).getBoundingClientRect().bottom - q.getBoundingClientRect().bottom + 1;
+        return new Promise((done) => setTimeout(() => done(document.getElementById("ap-more")?.textContent ?? null), 200));
+      });
+      t.check(`${name}: scrolled until one recipient row is left below, the line says so ("${one}")`, one === "1 more recipient below: scroll to see it");
+      t.check(`${name}: the buttons and the end of the request area sit where an ordinary request has them (${at} vs ${ordinary}) and Approve is armed (${approve})`, at.join() === ordinary.join() && approve);
+      await page.evaluate(() => { const q = document.getElementById("req"); q.scrollTop = q.scrollHeight; });
+      await page.waitForTimeout(200);
+      const end = await page.evaluate(() => document.getElementById("ap-more")?.textContent ?? null);
+      t.check(`${name}: scrolled to its end, the line is gone ("${end}") and neither the buttons nor the request area moved`, end === "" && (await buttonsAt(page)).join() === ordinary.join());
+      // content added under the end, as an async row does: the line comes back
+      await page.evaluate(() => document.querySelector("#req > .req:not(.dim)").insertAdjacentHTML("beforeend", '<p class="ap-lede">added</p>'));
+      await page.waitForTimeout(200);
+      const back = await page.evaluate(() => document.getElementById("ap-more")?.textContent ?? null);
+      t.check(`${name}: when the request grows past the end, the line comes back ("${back}")`, back === "More below: scroll to read the whole request");
       t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();

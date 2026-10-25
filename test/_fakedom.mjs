@@ -70,6 +70,11 @@ export function installFakeDom({ autoCreate = false } = {}) {
     return el ?? null;
   };
   globalThis.document = { getElementById: byId, querySelector: () => null, querySelectorAll: () => [], createElement: () => new El(), addEventListener: () => {} };
+  // approve.ts observes the request for its "more below" line; layout is not modelled here, so the observers never fire
+  // (test/approve-layout-chrome.test.mjs measures the line in Chrome)
+  class Unobserved { observe() { /* never fires */ } disconnect() { /* nothing to stop */ } }
+  globalThis.MutationObserver = Unobserved;
+  globalThis.ResizeObserver = Unobserved;
   globalThis.window = { close: () => {} };
   globalThis.matchMedia = () => ({ matches: true });
   return { registry, El, byId };

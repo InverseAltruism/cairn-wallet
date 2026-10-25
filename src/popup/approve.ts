@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type RecipientKind } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
@@ -550,6 +550,23 @@ async function resolve(approve: boolean) {
   else msg("Approved.", "ok");
   render();
 }
+
+// A site can make a request longer than the window (more recipients, a long origin). While the request body does not
+// end in view, #ap-more says so, counting the recipient rows not fully shown. It reads geometry only: it never touches
+// the buttons, and it is recomputed on a scroll, on any change to the request (the async rows) and on a resize.
+const RECIPIENT_ROWS = new Set(["To", "Resolves to", "Paid to", "Only fillable by"]);
+function updateMore() {
+  const req = $("req");
+  const open = !($("view-req") as HTMLElement).hidden && req.scrollTop + req.clientHeight < req.scrollHeight - 1;
+  const fold = req.getBoundingClientRect().bottom;
+  const hidden = open ? [...req.querySelectorAll(".kv > div")]
+    .filter((row) => RECIPIENT_ROWS.has(row.querySelector("dt")?.textContent ?? "") && row.getBoundingClientRect().bottom > fold + 0.5).length : 0;
+  const text = open ? moreBelowText(hidden) : "";
+  if ($("ap-more").textContent !== text) $("ap-more").textContent = text;
+}
+$("req").addEventListener("scroll", updateMore);
+new MutationObserver(updateMore).observe($("app"), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden"] });
+new ResizeObserver(updateMore).observe($("req"));
 
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("Unlocked.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-approve").addEventListener("click", () => { if (!($("btn-approve") as HTMLButtonElement).disabled) resolve(true); });

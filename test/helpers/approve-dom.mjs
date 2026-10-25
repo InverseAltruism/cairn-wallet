@@ -64,6 +64,11 @@ export function mountApproveWindow(handlers) {
   }
   for (const id of STATIC_IDS) registry.set(id, new El(id));
   globalThis.document = { getElementById: (id) => registry.get(id) ?? null };
+  // approve.ts observes the request for its "more below" line; layout is not modelled here, so the observers never fire
+  // (test/approve-layout-chrome.test.mjs measures the line in Chrome)
+  class Unobserved { observe() { /* never fires */ } disconnect() { /* nothing to stop */ } }
+  globalThis.MutationObserver = Unobserved;
+  globalThis.ResizeObserver = Unobserved;
   let closes = 0;
   globalThis.window = { close: () => { closes++; } };
   globalThis.chrome = {

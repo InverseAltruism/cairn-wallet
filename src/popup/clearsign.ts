@@ -540,6 +540,14 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
     + (reserved ? rows([["Listing", `<code>${escapeHtml(view.offerId!)}</code>`]]) + lede(`<span class="dim">The offer id below is your reservation of this listing.</span>`) : "");
 }
 
+// The line above the approval window's buttons while the request scrolls: how many recipient rows are not fully in
+// view, or that something else is.
+export function moreBelowText(recipients: number): string {
+  if (recipients === 1) return "1 more recipient below: scroll to see it";
+  if (recipients > 1) return `${recipients} more recipients below: scroll to see them`;
+  return "More below: scroll to read the whole request";
+}
+
 // The approval window's buttons, and their labels in the reservation confirm step (RESERVATION_UNCONFIRMED).
 export const APPROVE_LABELS = { approve: "Approve", reject: "Reject" } as const;
 export const UNCONFIRMED_LABELS = { approve: "Sign anyway", reject: "Cancel" } as const;
