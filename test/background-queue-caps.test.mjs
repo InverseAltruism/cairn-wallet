@@ -3,12 +3,15 @@
 // RATE_LIMITED without queueing, and closing the approval window settles every queued request APPROVAL_CLOSED.
 //
 // RED-FIRST: raise MAX_PENDING_PER_ORIGIN or MAX_PENDING_GLOBAL in src/background.ts by one and the matching
-// refusal check fails; remove the onRemoved settlement loop and the APPROVAL_CLOSED checks fail.
+// refusal check fails; remove the onRemoved settlement loop and the APPROVAL_CLOSED checks fail. The window opens at
+// APPROVE_WINDOW, the size test/approve-layout-chrome.test.mjs measures its page at: put a literal size back in
+// background.ts and the window-size check fails.
 // PAIRED HONEST PATHS: the 5th request from a site queues; a site under its own cap queues while another site is
 // full; another window closing leaves the queue alone; after the close the queue takes requests again.
 //
 // Run: npx tsx test/background-queue-caps.test.mjs   (offline)
 import assert from "node:assert/strict";
+import { APPROVE_WINDOW } from "../src/approve-window.ts";
 
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log("  ok " + name); };
@@ -18,6 +21,7 @@ const settle = async () => { for (let i = 0; i < 10; i++) await tick(); };
 const WIN = 77;
 const mem = new Map();
 const badges = [];
+const created = [];
 let onRemoved = null;
 const chrome = {
   runtime: {
@@ -34,7 +38,7 @@ const chrome = {
   alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
   action: { setBadgeText: ({ text }) => { badges.push(text); } },
   windows: {
-    create: (opts, cb) => { cb?.({ id: WIN }); },
+    create: (opts, cb) => { created.push(opts); cb?.({ id: WIN }); },
     update: () => {},
     onRemoved: { addListener: (fn) => { onRemoved = fn; } },
   },
@@ -68,6 +72,11 @@ await test("the first five requests from one site queue (honest path) and the si
   await settle();
   assert.deepEqual(sixth.reply, PER_ORIGIN);
   assert.equal(await pendingCount(), 5, "the refused request was not queued");
+});
+
+await test("the approval window opens once, as a popup at APPROVE_WINDOW (the size its layout is measured at)", async () => {
+  assert.equal(created.length, 1);
+  assert.deepEqual([created[0].type, created[0].width, created[0].height], ["popup", APPROVE_WINDOW.width, APPROVE_WINDOW.height]);
 });
 
 await test("honest path: a second site under its own cap queues while the first site is full", async () => {

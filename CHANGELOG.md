@@ -1,6 +1,141 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+- The popup and the approval window are redesigned: the popup is 360 by 600, set in Geist, light and dark with a
+  choice in Settings › Appearance (System, Light, Dark; the approval window follows the same choice, also when it
+  changes while the window is open), and forms open as sheets that Escape closes. The node RPC and block explorer
+  pickers moved to Settings › Network (they were top right, also before unlocking). Accounts, post, seal, recovery
+  phrase and reveal key are under More. The approval and review buttons changed sides: Reject, Cancel and Back on
+  the left, Approve and Confirm on the right, equal width.
+- An account shows the shared cairn-ui avatar (a soft blue to peach conic gradient) of its primary name, the one its
+  names page draws, and of its address while the name is not read or when it has none, without a letter; the account
+  switcher shows each account's avatar at 16 px (was a 10 px dot); the old dark two-colour gradient, often olive green,
+  is gone. One account draws one identity on every surface: the switcher draws the account the header shows with the
+  header's avatar, and another account with its primary name's avatar once the popup has read it, else its address's.
+  A name-less account no longer shows the cairn mark in the header; the mark stays the product's logo (setup, the
+  lock screen, the approval window's tile).
+- The approval window shows each request as a title and label and value rows, with every check as a row whose tint
+  and icon give its weight (red where the text was red, amber where it was neutral). The cost rows and the balance
+  after sit above the buttons on every request type, the requesting site is named in full at the top, and the
+  700 ms pause before the buttons arm is shown as a bar that fills. Its copy has no em dashes, is in sentence case
+  and marks emphasis in bold instead of capitals; every warning and refusal keeps its meaning.
+- In the approval window a website's renewal or name record verdict sits right under the cost rows and the
+  warnings. A look-alike of an address used before (address poisoning) is a red row and a first send to an address an
+  amber row, in the popup's send review and in the approval window alike (0.2.99 showed the first send red too). Up
+  to two flagged recipients are named, each on its own line; past two, the red row says how many recipients are
+  look-alikes and the amber row how many are new. Whenever a request has more than one recipient row, each flagged
+  row is marked with its tier's tint and a bar at its start (and the words "Look-alike" or "New" for assistive
+  technology), which add no height, so the warnings stay a few lines above the buttons however many recipients a
+  request carries and a flagged row is found by its whole address, not only by the head and tail the box names.
+- The approval window lists every recipient of a request, each whole and in groups of four with its amount, and keeps
+  the count and the total in the amount line. It showed the first 12 and summarised the rest in a red line. A CSD
+  fill shows what it buys before its recipients. test/approve-layout-chrome.test.mjs pins the fold at 13, 20 and 500
+  recipients (500 outputs is the most the wallet signs on a send) and for a 100-output fill.
+- The approval window opens at 460 by 716 (was 380 by 620), and everything that decides a signature sits above Reject
+  and Approve without scrolling, for every request type and for the long cases test/approve-layout-chrome.test.mjs
+  builds (an unconfirmed reservation's confirm step, an underpaid name fee with its verdict, a token fill with a
+  ticker warning, three recipients with a look-alike, a large fee and a short balance, a queue): the site and the
+  signer, the amount, the cost rows, every warning and refusal, every recipient with its amount, what a fill's
+  listing gives and its expiry, the token debit, a reveal's secret and a name action's verdict. Each request shows
+  that first and the explanations, ids, hashes and raw fields after it; a recipient and a short amount share one
+  line; rows, check rows and boxes are denser. Before, a CSD fill's recipients, a send's third first-time warning and
+  a finalize's verdict sat below the buttons. The window is wider rather than only taller because width is what small
+  screens can spare. A site can still make a request longer than the window (more recipients, a very long origin);
+  the cost, the recipient warnings and a name action's verdict then stay on top, and the rest scrolls.
+- A line under the buttons says what the window is doing: "Arming: both buttons wait 700 ms" while the latch holds
+  both buttons, then "2 more recipients below: scroll to see them" (or "1 more recipient below: scroll to see it")
+  while a recipient row is not fully shown and "More below: scroll to read the whole request" while anything else is,
+  and otherwise "Ready." ("Ready. Read the warning above before you sign." on a
+  reservation's confirm step), "Approve waits for the token amount." while a token quote loads, or "Approve is off: see
+  the warning above." when a refusal holds Approve down. Its line is always reserved, so it never moves the buttons,
+  never covers the request and never holds back Approve. A request painted into the open window enters as in the
+  approved design: it rises 8 px and fades in over 320 ms, and fades in only with reduced motion.
+- The approval window has two densities. A request that fits the window whole in the approved design's sizes (a 36 px
+  amount, 40 px rows of 13.5 px text, check rows with 10 and 12 px padding) paints in them; a request that does not
+  keeps the dense sizes above, which hold the fold for every request shape. The window measures the request before
+  its first frame, with every part that fills in later (the recipient warnings, the balance note, a name action's
+  verdict, a fill's listing, the token quote, a reveal's secret) counted at its tallest, and keeps that density for
+  the request, so nothing jumps on open or moves after the buttons arm. The header and the buttons keep one geometry
+  in both densities.
+- Each request in the approval window opens at its top, also when the queue moves on from a request the user had
+  scrolled to its end, and on a reservation's confirm step: before, the next request could open scrolled down with
+  its amount, fee and warnings above the view (test/approve-layout-chrome.test.mjs, "queue advance").
+- A fill no longer reads "Pay and attest in one atomic transaction.": a CSD-paid fill says "One transaction pays the
+  recipients above and records the fill. CairnX then delivers what you buy; if it refuses the fill, the payment is
+  not returned.", and a token-priced fill says "One transaction records the fill." The store listing's two mentions
+  of "trustless" name verification lose the word. test/wallet-claims.test.mjs keeps "atomic", "trustless",
+  "guaranteed" and "risk-free" out of everything the wallet shows.
+- In the approval window the check rows drop their leading ⚠, as in the popup (the row's icon and tint carry it),
+  and so do the balance note in the popup's send review and the second-source note after a sent fill; the inline
+  "⚠ unusually large fee" and "⚠ unusually long claim window" marks inside a value stay. Two texts follow the new
+  order: a finalize "pays the fee shown above" (was "below"), and on a reserved listing "The offer id below is your
+  reservation of this listing." (was "above"). Nothing else in the wording changed.
+- The wallet's own Renew and Set as primary read the name again from the name service right before they sign, and
+  refuse when it is not registered, when it is owned by another address (set primary), when it is a pending
+  reservation, or when it has lapsed. A review left open while the name changed could otherwise pay a fee the
+  resolver ignores. When the name service does not answer, they still sign, as before. A website's set primary
+  (nset) is now warned about on a pending or lapsed name as a renewal already was, since the resolver ignores both.
+  The lapsed text gives the resolver's reason: "This name has lapsed: its lease and grace period are over, and a
+  lapsed name is claimed again, not renewed, so the renewal fee would be burned." (it said a renewal is honored
+  within its grace period, but the name service marks a name lapsed only after it). A refusal for a name the
+  service does not know adds "If it was registered in the last few minutes, the name service may still be catching
+  up: try again later."
+- Addresses a person compares show in groups of four: the account address under More, the accounts list, the send
+  and token reviews and Receive in the popup, and the signer and the recipient, name record, taker and paid-to rows
+  in the approval window. Copy address, and selecting the address, still take the bare 42 characters. A value that
+  is not a whole address is shown as it is.
+- The popup's messages and labels are in sentence case and end with a period; the message after a name changed
+  between review and Confirm reads "changed where it points. Nothing was sent: review it again." (it had an em
+  dash); the review warnings, the name check and its badges drop the ⚠, ✓ and △ marks, which the row's icon and
+  tint now carry; the sealed claims list says Sealed and Revealed instead of two emoji. No amount, recipient,
+  warning or refusal changed its meaning.
+- The send sheet shows the network fee and the balance after it while the amount is typed (from the fee and the
+  balance already read; nothing is read for it), and the amount field carries its unit, CSD. Its review step is
+  titled "Review send" (the token send's too), its button says "Confirm send" (was "Confirm & send"), the fee row is
+  "Network fee" (was "Fee"), and the "Amount" caption over the amount is gone.
+- After a confirmed send the sheet closes, the sent toast shows at the bottom of the popup ("Sent 1.5 CSD", and under
+  it "Transaction 0x1234abcd56… is waiting for inclusion in a block."; a token send adds "The token balance updates
+  once it is mined."), and the balance counts down in the view once the sheet has cleared it. A refused or ambiguous send keeps the sheet, the draft and its copy as before. The send handlers read
+  only the call's own outcome: a failure in the success path's display can no longer be reported as a submit
+  outcome.
+- Fixed (present in 0.2.99): a popup Confirm signs the frozen review, once, and only while that review stands. A token
+  Confirm read the token and its decimals from the open sheet after the confirm-time name re-check, so closing the
+  review during that re-check and opening another token's send could sign the other token at the reviewed base-unit
+  amount; both sends kept Confirm armed while the submit was in flight, so two clicks sent twice; and Back during the
+  re-check still sent. Now the review carries every field the call signs (the token and its decimals too), Confirm is
+  disarmed on the first click before anything is awaited, and a review dropped or replaced while Confirm waited sends
+  nothing and says "The review was closed before it was signed. Nothing was sent." A name that re-points between
+  review and Confirm now also takes the review down (the draft stays), as every other failure does. The name action
+  already consumed its review on the first click. Also present in 0.2.99 and fixed: a token Review left while it
+  waited on the name lookup (another token's send opened) could bring up a review card for the other token, parsed
+  with the first token's decimals, whose Confirm signed it; and Back, Review and Confirm while a send was in flight
+  started a second send. A Review now primes nothing once the person has left it, and while a send is in flight no
+  review arms Confirm. Only the latest Confirm writes an outcome, so a Confirm overtaken during its re-check cannot
+  cover a later send's "Sent" or "Sending…", or a Post's, a Seal's or a name action's outcome. Post and Seal sign and pay
+  a fee, and two clicks on them signed twice; each is now held until its outcome lands, and so is a sealed claim's
+  Reveal (an off-chain publication of the sealed text, no fee). test/popup-confirm-snapshot-dom.test.mjs pins every
+  case.
+- An account label is stored as at most 40 characters (new, renamed and imported accounts; the popup's label fields
+  take 40), and the approval window's "Signing as" line shows the label on one line with an ellipsis and the whole
+  label as its title, so a long label stored before the cap cannot push the window into scrolling.
+- A failed balance read no longer writes "unavailable" in the 40 px amount: with no earlier read, "Balance
+  unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount
+  stays, dimmed, with "Last balance read; the refresh failed." under it. The refresh button is
+  the retry; the CSD row reads "Unavailable" or the dimmed amount.
+- Links to the explorer and the site end in the external-link icon instead of an arrow character ("View address",
+  each Activity row's transaction, a revealed claim's transaction, Terms of Use, Privacy). Times in Activity and in
+  the sealed claims read one way on every machine, in the block explorer's 24-hour UTC format without the seconds:
+  "24 Oct 2026, 15:30 UTC" (was the browser's locale, such as "Oct 24, 05:30 PM").
+- The Accounts sheet no longer repeats Rename and Remove on every row: a row opens to its own actions, as a name row
+  opens its detail. The active account carries an "Active" mark (was a leading dot); the remove step asks "Remove
+  this account?" with Yes and No (was "Remove?" with Yes and no), and an imported key's password step has Remove and
+  Cancel (was Remove and no). The imported key's warning, its password and the refusal without it are unchanged.
+- Internal: the popup script is split into one module per view or concern (`src/popup/popup-*.ts`, the largest
+  183 lines, from one file of 1,532); its code is line for line the same apart from five lines that now write
+  another module's state through a setter, and the popup shows the same pixels before and after the split in every
+  view of the screenshot run.
+- The Chrome Web Store images are rendered from the real pages in the new design (`store/gen-assets.mjs`).
 
 - Internal: the token-priced fill's check that the served want ticker and amount equal the offer's on-chain record
   is the vendored `bindOfferTerms` want leg (cairnx-core 0.2.2), and the wallet's own copy is deleted; the reviewed

@@ -1,7 +1,15 @@
 /* Cairn Wallet: the popup (popup.html) and the approval window (approve.html).
    Every colour, type size, radius, spacing step and duration is a cairn-ui token from ui/tokens.css, which declares
    the first layer. popup.ts, approve.ts and clearsign.ts write markup with the class hooks styled here. Raw px values
-   are component dimensions (control heights, icon and tile sizes), which the token scale does not hold. */
+   are component dimensions (control heights, icon and tile sizes), which the token scale does not hold.
+   Values the scale lacks are calcs of tokens, declared once on .page-approve for the approval window's roomy density
+   (the approved design's sizes):
+     --ap-row-text      13.5px   calc((--ui-text-xs + --ui-text-sm) / 2)            row text
+     --ap-small-text    12.5px   calc((--ui-text-caption + --ui-text-xs) / 2)       check text, the address, the state line
+     --ap-row-pad        9px     calc(--ui-space-2 + --ui-space-1 / 4)              row padding (a 40 px row)
+     --ap-check-pad     10px     calc(--ui-space-2 + --ui-space-1 / 2)              check padding and gap
+     --ap-check-leading  1.45    calc(--ui-leading-body - (--ui-leading-tight - 1)) check line height
+     --ap-amt-track     -0.035em calc(--ui-track-heading + (--ui-track-display - --ui-track-heading) / 3) amount */
 @layer tokens, base, components, page;
 
 /* ── base ─────────────────────────────────────────────────────────────────────────────────────────────── */
@@ -88,6 +96,8 @@
   button.primary { background: var(--ui-ink); border-color: transparent; color: var(--ui-on-ink); }
   button.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--ui-ink) 86%, var(--ui-bg)); }
   .btn-link svg.i { width: 15px; height: 15px; color: var(--ui-muted); }
+  /* the external-link icon after a link's text (Activity, the sealed claims, the legal links) */
+  a svg.i.ext { width: 1em; height: 1em; margin-left: 0.25em; vertical-align: -0.125em; }
   button.mini, a.mini {
     width: auto; min-height: 30px; padding: 0 var(--ui-space-3);
     display: inline-flex; align-items: center; gap: var(--ui-space-1);
@@ -213,7 +223,9 @@
   }
   .rpc-add input { min-height: 34px; font-size: var(--ui-text-xs); }
   .acct-pick-line { display: flex; align-items: center; gap: var(--ui-space-2); min-width: 0; max-width: 100%; }
-  .acct-dot { width: 10px; height: 10px; flex: none; border-radius: var(--ui-radius-pill); }
+  /* the account's avatar (ui/avatar.css draws the circle and its hairline) */
+  .acct-dot { --ui-avatar-size: var(--ui-space-4); }
+  .acct-av { display: contents; }
   .menu-item {
     justify-content: flex-start; gap: var(--ui-space-3); min-height: 40px; padding: 0 var(--ui-space-3);
     border: 0; border-radius: var(--ui-radius-md); font-weight: 400; color: var(--ui-ink);
@@ -297,7 +309,6 @@
   .crow > :last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .crow b { font-weight: 500; }
   .crow .addr { font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); color: var(--ui-ink); }
-  .crow .addr > span + span { margin-left: var(--ui-space-1); }
   .check-line { display: block; margin-top: var(--ui-space-1); color: var(--ui-muted); }
   /* the amount leads the review, large and centred, as the sum the user confirms */
   .confirm-box > .crow-amount:first-child {
@@ -406,23 +417,14 @@
     display: flex; align-items: center; gap: var(--ui-space-2); padding: var(--ui-space-3) var(--ui-space-3) 0;
   }
   .acct-chip {
-    /* the page theme's values, for the avatar's mark state inside its dark island */
-    --avatar-mark-bg: var(--ui-sunken); --avatar-mark-fg: var(--ui-ink);
     position: relative; min-width: 0; margin-right: auto;
     display: grid; grid-template-columns: 32px minmax(0, auto); column-gap: var(--ui-space-2); align-items: center;
     padding: var(--ui-space-1) var(--ui-space-2) var(--ui-space-1) var(--ui-space-1);
     border-radius: var(--ui-radius-pill); transition: background-color var(--ui-dur-1) var(--ui-ease);
   }
   .acct-chip:hover { background: var(--ui-sunken); }
-  .id-avatar {
-    grid-row: 1 / span 2; width: 32px; height: 32px; border-radius: var(--ui-radius-pill);
-    display: grid; place-items: center; overflow: hidden;
-    /* the identity gradient is the same in both themes, so the monogram is light in both (a dark island) */
-    color: var(--ui-ink); text-shadow: 0 1px 2px var(--ui-scrim); font-weight: 600; font-size: var(--ui-text-xs);
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--avatar-mark-fg) 8%, transparent);
-  }
-  .id-avatar.mark { background: var(--avatar-mark-bg); color: var(--avatar-mark-fg); text-shadow: none; }
-  .id-avatar.mark svg { width: 18px; height: 18px; }
+  /* ui/avatar.css draws the circle and its hairline; this places it in the chip */
+  .id-avatar { grid-row: 1 / span 2; }
   .primary-name { font-weight: 600; letter-spacing: var(--ui-track-snug); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .acct-chip .primary-name { grid-column: 2; grid-row: 1; font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); }
   /* the button spans both lines of the chip on the chip's own rows, so the caret centres across the name and the
@@ -461,6 +463,15 @@
   .bal.loading .bal-unit { visibility: hidden; }
   @keyframes skeleton { 50% { opacity: 0.55; } }
   .merge-note { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); }
+  /* a failed read (popup-balance.ts balanceFailed): the earlier amount dimmed with the caption under it, or, with none, the
+     caption alone in the amount's place, at the caption scale; the refresh button beside it retries */
+  .bal-xl.stale { color: var(--ui-muted); }
+  .bal-xl.failed {
+    display: flex; align-items: center;
+    font: 400 var(--ui-text-xs) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: 0;
+  }
+  .bal-note { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); }
+  #csd-row-amt.stale { color: var(--ui-muted); font-weight: 400; }
   /* the full address, wrapped rather than cut (no ellipsis on an address) */
   .menu-addr {
     display: flex; flex-direction: column; align-items: flex-start; gap: var(--ui-space-2);
@@ -573,6 +584,7 @@
     padding: var(--ui-space-2) var(--ui-space-3); border: 0;
   }
   #history-list > .dim { padding: var(--ui-space-6) var(--ui-space-4); text-align: center; }
+  #history-list .when { white-space: nowrap; }
   .act-head { display: flex; justify-content: space-between; align-items: center; gap: var(--ui-space-2); padding: var(--ui-space-3) var(--ui-space-3) var(--ui-space-1); }
   .act-head .label { font: 400 var(--ui-text-xs) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: 0; text-transform: none; }
 
@@ -622,8 +634,21 @@
   /* in flow after the review rows: Confirm is never drawn over part of a warning; a long review scrolls to it */
   .sheet-actions { flex-wrap: nowrap; margin-top: var(--ui-space-1); }
   .sheet-actions > button { flex: 1 1 0; }
+  /* an amount field with its unit inside it, at the right; the unit is display only (the number is parsed alone) */
+  .field-unit { position: relative; display: block; }
+  .field-unit > input { padding-right: var(--ui-space-7); appearance: textfield; }
+  .field-unit > input::-webkit-inner-spin-button, .field-unit > input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+  .field-unit > .unit {
+    position: absolute; right: var(--ui-space-3); top: 50%; transform: translateY(-50%); pointer-events: none;
+    font: 500 var(--ui-text-sm) / 1 var(--ui-font-mono); color: var(--ui-muted);
+  }
+  /* the sheet's title names its step: the form, then the review, while the review card is shown */
+  .panel-title > .step-review,
+  :is(#send-form:has(> #send-confirm:not([hidden])), #tsend-form:has(> #tsend-confirm:not([hidden]))) .panel-title > .step-form { display: none; }
+  :is(#send-form:has(> #send-confirm:not([hidden])), #tsend-form:has(> #tsend-confirm:not([hidden]))) .panel-title > .step-review { display: inline; }
   /* review mode: the inputs the snapshot was read from step aside; the frozen rows are what gets signed */
   #send-form:has(> #send-confirm:not([hidden])) > label,
+  #send-form:has(> #send-confirm:not([hidden])) > #s-est,
   #send-form:has(> #send-confirm:not([hidden])) > .step-actions,
   #tsend-form:has(> #tsend-confirm:not([hidden])) > label,
   #tsend-form:has(> #tsend-confirm:not([hidden])) > #ts-avail,
@@ -654,8 +679,9 @@
     font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); text-align: center;
   }
   /* groups are atomic inlines with a margin, not flex items: a line breaks between groups, and a selection of the
-     address copies it raw, with no newline between groups (popup-checks-chrome) */
-  .addr-big > span, .crow .addr > span { display: inline-block; }
+     address copies it raw, with no newline between groups (popup-checks-chrome, addr-group-chrome) */
+  .addr > span { display: inline-block; }
+  .addr > span + span { margin-left: var(--ui-space-1); }
   .addr-big > span { margin: 0 var(--ui-space-1); }
   .receive-note { text-align: center; }
 
@@ -671,9 +697,19 @@
   .legal a { color: var(--ui-muted); text-decoration: none; }
   .legal a:hover { color: var(--ui-ink); }
   #accts-list .tx-sub .dim { font: 400 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); }
-  #accts-list .tx-top .row { flex-wrap: nowrap; }
   #accts-list input { min-height: 30px; padding: var(--ui-space-1) var(--ui-space-2); font-size: var(--ui-text-xs); }
-  .acct-rename-input { width: 120px; }
+  /* an account row is one button that opens its actions under it (popup-accounts.ts renderAccts) */
+  .acct-hit {
+    display: block; width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: none;
+    font-weight: 400; text-align: left; white-space: normal;
+  }
+  .acct-hit:hover:not(:disabled) { background: none; }
+  .acct-hit:active:not(:disabled) { transform: none; }
+  .acct-chev { width: 14px; height: 14px; color: var(--ui-muted); transition: transform var(--ui-dur-2) var(--ui-ease); }
+  .acct-row.open .acct-chev { transform: rotate(180deg); }
+  .acct-actions { flex-wrap: nowrap; margin-top: var(--ui-space-2); }
+  .acct-actions > input { flex: 1; min-width: 0; }
+  .acct-actions > .dim { font-size: var(--ui-text-xs); }
 
   /* the status line: an ink toast at the top, clear of every sheet's buttons; text only, so it never blocks a click */
   .page-popup #msg {
@@ -696,6 +732,14 @@
   .page-popup #msg.ok::before { opacity: 1; }
   .page-popup #msg:has(.spinner)::before { display: none; }
   .page-popup #msg button { pointer-events: auto; flex: none; }
+  .page-popup #msg .msg-body { display: flex; flex-direction: column; min-width: 0; }
+  .page-popup #msg .msg-body small { font-size: var(--ui-text-xs); opacity: 0.72; }
+  /* The sent toast shows after its sheet has closed (popup-sendflow.ts sentOk), so it sits at the bottom, over the list,
+     as in the approved design, and leaves the top clear for the balance that settles there; every other status keeps
+     the top, clear of an open sheet's buttons. */
+  .page-popup #msg.sent { top: auto; bottom: var(--ui-space-3); }
+  .page-popup #msg.sent.fade { transform: translateY(calc(100% + var(--ui-space-3))); }
+  @starting-style { .page-popup #msg.sent:not(:empty) { opacity: 0; transform: translateY(calc(100% + var(--ui-space-3))); } }
 
   /* motion: views enter once; list rows stagger in on a list's first fill (motion.ts enterOnce), never on the
      1.5 s pending poll or a refresh; a balance change flashes its direction */
@@ -712,7 +756,7 @@
     [data-enter] > :nth-child(n + 5) { animation-delay: var(--ui-dur-1); }
     /* a sheet's step: the review and the fields cross in from the side */
     :is(#send-confirm, #tsend-confirm):not([hidden]),
-    :is(#send-form, #tsend-form):not(:has(> :is(#send-confirm, #tsend-confirm):not([hidden]))) > :is(label, .step-actions) {
+    :is(#send-form, #tsend-form):not(:has(> :is(#send-confirm, #tsend-confirm):not([hidden]))) > :is(label, .est-box, .step-actions) {
       animation: pane-in var(--ui-dur-3) var(--ui-ease) both;
     }
     .bal-xl.flash-up { animation: flash-up calc(var(--ui-dur-4) * 2) var(--ui-ease); }
@@ -736,69 +780,139 @@
   @keyframes pop { from { transform: scale(0.4); opacity: 0; } 60% { transform: scale(1.25); } }
 }
 
-/* ── page: the approval window (380 by 620, opened by the background) ─────────────────────────────────── */
+/* ── page: the approval window (src/approve-window.ts, opened by the background) ──────────────────────── */
 @layer page {
   .page-approve #app { height: 100vh; display: flex; flex-direction: column; }
-  /* the site block: a tile, what asks, and in whose name (approve.ts writes the origin and the signer into #req) */
-  .ap-head {
-    display: flex; align-items: center; gap: var(--ui-space-3); flex: none;
-    padding: var(--ui-space-4) var(--ui-space-4) var(--ui-space-3);
+  /* the site block: the requesting origin in full (approve.ts writes it from the browser's sender origin), what it
+     asks, and the account that signs */
+  .ap-top {
+    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-1);
+    padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-2); border-bottom: 1px solid var(--ui-line);
   }
+  .ap-site { display: flex; align-items: center; gap: var(--ui-space-3); min-width: 0; }
   .ap-tile {
     width: 30px; height: 30px; flex: none; display: grid; place-items: center;
     border-radius: var(--ui-radius-md); background: var(--ui-sunken); color: var(--ui-ink-2);
   }
   .ap-tile svg.mark { width: 18px; height: 17px; }
   .ap-who { display: flex; flex-direction: column; min-width: 0; }
-  .ap-brand { font-weight: 600; font-size: var(--ui-text-sm); line-height: var(--ui-leading-snug); }
-  .ap-sub { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug); }
+  .ap-origin { font-weight: 600; font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); overflow-wrap: anywhere; }
+  .ap-ask { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-body); }
+  .ap-signer {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--ui-space-2);
+    color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug);
+  }
+  /* the label on one line (a label stored before the 40-character cap can be any length; the title holds it whole) */
+  .ap-signer b { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-ink-2); font-weight: 600; }
+  .ap-signer code { overflow-wrap: anywhere; }
   .page-approve #view-req { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  /* One dense scale for the request: everything 0.2.99 showed above the buttons still fits at 380 by 620
-     (test/approve-layout-chrome.test.mjs). */
-  .page-approve #req {
-    flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--ui-space-4) var(--ui-space-2);
-    font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug);
+  /* One dense scale for the request: every element with weight sits above the buttons at the window's real size, for
+     every request type (test/approve-layout-chrome.test.mjs), so rows, check rows and boxes take snug line heights and
+     the smallest paddings on the scale. */
+  /* the request scrolls inside itself: anything positioned in it stays in it, never in the window's own document */
+  .ap-body {
+    position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: var(--ui-space-2) var(--ui-space-4);
+    font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); overflow-wrap: anywhere;
   }
-  .page-approve #req > .req { padding: var(--ui-space-2) 0; border-bottom: 1px solid var(--ui-line); overflow-wrap: anywhere; }
-  .page-approve #req > .req:last-child { border-bottom: 0; }
-  .page-approve #req > .req.dim b { color: var(--ui-ink); font-weight: 500; }
-  /* the signer line sits under the site block, before the hairline under it, as the preview's "Signing as" */
-  .page-approve #req > .req.dim:first-child { padding-top: 0; color: var(--ui-muted); font-size: var(--ui-text-caption); }
-  .page-approve #req > .req:not(.dim) { padding: var(--ui-space-3) 0; color: var(--ui-ink); }
-  /* the title stays inline: describe() puts text and <br> after it, and every break must show */
-  .page-approve #req > .req:not(.dim) > b:first-child { font-size: var(--ui-text-sm); letter-spacing: var(--ui-track-snug); }
-  .page-approve #req code { overflow-wrap: anywhere; }
-  .page-approve #req .req .req {
-    margin-top: var(--ui-space-2); padding: var(--ui-space-2) var(--ui-space-3); border-radius: var(--ui-radius-md);
-    background: var(--ui-sunken);
+  .ap-body > * + * { margin-top: var(--ui-space-2); }
+  .ap-body > .req.dim { color: var(--ui-muted); font-size: var(--ui-text-caption); }
+  /* describe(): the title, the amount, label and value rows, check rows, the cost rows */
+  .ap-body > .req:not(.dim) { display: flex; flex-direction: column; gap: var(--ui-space-2); color: var(--ui-ink); }
+  .ap-title { color: var(--ui-muted); font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); }
+  .ap-title code { color: var(--ui-ink); }
+  .ap-amt {
+    font-size: var(--ui-text-stat); font-weight: 600; letter-spacing: var(--ui-track-heading); line-height: var(--ui-leading-tight);
+    font-variant-numeric: tabular-nums;
   }
-  .page-approve #req > #cost { color: var(--ui-ink); font-variant-numeric: tabular-nums; }
-  .page-approve #send-warn {
-    padding: var(--ui-space-2) var(--ui-space-3); border-radius: var(--ui-radius-md);
-    background: var(--ui-down-tint); color: var(--ui-ink);
+  .ap-amt .dim { font-size: var(--ui-text-sm); letter-spacing: 0; }
+  .ap-lede { color: var(--ui-ink-2); }
+  .ap-note { margin-top: var(--ui-space-1); color: var(--ui-muted); font-size: var(--ui-text-caption); }
+  .page-approve .kv { margin: 0; display: flex; flex-direction: column; border-top: 1px solid var(--ui-line); }
+  .page-approve .kv > div {
+    display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-3);
+    padding: var(--ui-space-1) 0; border-bottom: 1px solid var(--ui-line);
   }
-  .page-approve #send-warn b, .page-approve #send-warn .err { color: var(--ui-down); }
+  .page-approve .kv dt { flex: none; color: var(--ui-muted); }
+  .page-approve .kv dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .page-approve .kv dd b { font-weight: 600; }
+  /* a whole address at the caption size and a short amount fit one line beside the label; longer ids wrap */
+  .page-approve .kv dd code { font-size: var(--ui-text-caption); }
+  /* the amount ends the address's last line when it fits there, kept whole */
+  .page-approve .out-amt { display: inline-block; margin-left: var(--ui-space-2); white-space: nowrap; }
+  /* a flagged recipient row (approve.ts, clearsign.marksRows): its tier's tint and a bar at its start, which add no
+     height; the mark's words are for assistive technology, positioned inside the row so they take no room in the
+     request or the window (test/approve-layout-chrome.test.mjs: the window's own document never scrolls) */
+  .page-approve .kv > div.flag {
+    position: relative; margin-inline: calc(var(--ui-space-2) * -1); padding-inline: var(--ui-space-2);
+  }
+  .page-approve .kv > div.flag.danger { background: var(--ui-down-tint); box-shadow: inset 3px 0 0 var(--ui-down); }
+  .page-approve .kv > div.flag.caution { background: var(--ui-warn-tint); box-shadow: inset 3px 0 0 var(--ui-warn); }
+  .row-flag {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  .page-approve .checks { display: flex; flex-direction: column; gap: var(--ui-space-2); }
+  .page-approve .check { grid-template-columns: 16px minmax(0, 1fr); padding: var(--ui-space-1) var(--ui-space-2); line-height: var(--ui-leading-snug); }
+  .page-approve .check > svg.i { width: 16px; height: 16px; margin-top: 0; }
+  /* a block, not a flex column: the token quote is running text with inline emphasis */
+  .ap-box {
+    padding: var(--ui-space-1) var(--ui-space-2);
+    border-radius: var(--ui-radius-md); background: var(--ui-sunken);
+  }
+  .ap-box > * + :is(.kv, .check, p), .ap-box > :is(.kv, .check, p) + * { margin-top: var(--ui-space-2); }
+  .ap-box > .kv { border-top: 0; }
+  .ap-box > .kv > div:last-child { border-bottom: 0; }
 
-  /* The footer: the latch bar, then Reject and Approve side by side at equal width. The bar is a thin muted track that
-     fills with ink while Reject stays disarmed after a new request (the latch) and rests muted again once it arms. */
-  .page-approve .actions {
-    flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2);
-    padding: var(--ui-space-3) var(--ui-space-4);
-    border-top: 1px solid var(--ui-line); background: var(--ui-bg);
+  /* The footer: the latch, then Reject and Approve side by side at equal width. The latch fills with ink while Reject
+     is disarmed after a new request and stays full once it arms. */
+  .ap-foot {
+    flex: none; display: flex; flex-direction: column; gap: var(--ui-space-1);
+    padding: var(--ui-space-2) var(--ui-space-4) var(--ui-space-3); border-top: 1px solid var(--ui-line); background: var(--ui-bg);
   }
-  .page-approve .actions::before {
-    content: ""; grid-column: 1 / -1; height: 3px; border-radius: var(--ui-radius-pill);
-    background: var(--ui-line) linear-gradient(var(--ui-ink), var(--ui-ink)) no-repeat 0 0 / 0 100%;
-  }
+  .latch { height: 3px; border-radius: var(--ui-radius-pill); background: var(--ui-line); overflow: hidden; }
+  .latch > i { display: block; width: 100%; height: 100%; background: var(--ui-ink); }
   /* 700ms is approve.ts's re-enable floor (R3 section 3), not a design duration */
-  .page-approve .actions:has(#btn-reject:disabled)::before { animation: arm 700ms linear forwards; }
-  @keyframes arm { to { background-size: 100% 100%; } }
+  .ap-foot:has(#btn-reject:disabled) .latch > i { animation: arm 700ms linear both; }
+  @keyframes arm { from { width: 0; } to { width: 100%; } }
+  /* the line under the buttons (approve.ts updateState): the latch, what is below the fold, or whether Approve is live;
+     its line is always reserved, so it never moves the buttons and never takes room from the request */
+  .ap-state {
+    margin: 0; min-height: 1lh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+    color: var(--ui-muted); font-size: var(--ap-small-text); line-height: var(--ui-leading-snug);
+  }
+  .ap-state.more { color: var(--ui-ink-2); }
+  .page-approve .actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ui-space-2); padding: 0; }
   .page-approve .actions button:disabled { opacity: 0.32; }
   .page-approve #msg { flex: none; padding: 0 var(--ui-space-4) var(--ui-space-3); font-size: var(--ui-text-xs); text-align: center; color: var(--ui-muted); background: var(--ui-bg); }
   .page-approve #msg:empty { display: none; }
   .page-approve #msg.ok { color: var(--ui-up); }
   .page-approve #msg.err { color: var(--ui-down); }
+  .page-approve #msg > .check { margin-top: var(--ui-space-2); text-align: left; }
   .page-approve .lock-view { padding-top: var(--ui-space-7); }
+
+  /* Roomy: the approved design's sizes in the request, for a paint that fits the window whole in them with every mount
+     at its tallest (approve-density.ts decides before the first frame). The header and the footer keep one geometry,
+     so the buttons sit in the same place for every request. */
+  .page-approve {
+    --ap-row-text: calc((var(--ui-text-xs) + var(--ui-text-sm)) / 2);
+    --ap-small-text: calc((var(--ui-text-caption) + var(--ui-text-xs)) / 2);
+    --ap-row-pad: calc(var(--ui-space-2) + var(--ui-space-1) / 4);
+    --ap-check-pad: calc(var(--ui-space-2) + var(--ui-space-1) / 2);
+    --ap-check-leading: calc(var(--ui-leading-body) - (var(--ui-leading-tight) - 1));
+    --ap-amt-track: calc(var(--ui-track-heading) + (var(--ui-track-display) - var(--ui-track-heading)) / 3);
+  }
+  #app[data-density="roomy"] .ap-body { padding: var(--ui-space-4); line-height: var(--ui-leading-body); }
+  #app[data-density="roomy"] .ap-body > * + * { margin-top: var(--ui-space-3); }
+  #app[data-density="roomy"] .ap-body > .req:not(.dim) { gap: var(--ui-space-3); }
+  #app[data-density="roomy"] .ap-amt { font-size: var(--ui-text-3xl); font-weight: 500; letter-spacing: var(--ap-amt-track); line-height: 1; }
+  #app[data-density="roomy"] .kv > div { padding: var(--ap-row-pad) 0; font-size: var(--ap-row-text); line-height: var(--ui-leading-body); }
+  #app[data-density="roomy"] .kv dd code { font-size: var(--ap-small-text); }
+  #app[data-density="roomy"] .check {
+    grid-template-columns: 20px minmax(0, 1fr); gap: var(--ap-check-pad); padding: var(--ap-check-pad) var(--ui-space-3);
+    font-size: var(--ap-small-text); line-height: var(--ap-check-leading);
+  }
+  #app[data-density="roomy"] .check > svg.i { width: 18px; height: 18px; margin-top: 1px; }
+  #app[data-density="roomy"] .ap-box { padding: var(--ui-space-2) var(--ui-space-3); }
   @media (prefers-reduced-motion: no-preference) {
     .page-approve section:not([hidden]) { animation: fade var(--ui-dur-2) var(--ui-ease) both; }
   }

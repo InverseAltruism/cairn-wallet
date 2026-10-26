@@ -17,6 +17,7 @@ import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
+import { readNameRecord, nameActSignRefusal, NAME_READ_TIMEOUT_MS } from "./namegate.js";
 import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
@@ -30,6 +31,8 @@ export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js"
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
+// An account label is display text in the popup and the approval window's signer line; one line of it is enough.
+export const MAX_LABEL = 40;
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean; rpcMovedFrom: string | null }
 
 // An in-memory account: its key + label, plus how it was created; `index` is its
@@ -69,7 +72,7 @@ const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refus
 const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim; ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset; a long-lived identity record
-// Attest fee floor (0.05 CSD): the default fee for an atomic offer fill (Attest + payment in one tx).
+// Attest fee floor (0.05 CSD): the default fee for an offer fill (Attest + payment in one tx).
 // B9: single-sourced into core/cairnx.ts defaultFeeFor("attest"); the same table the clear-sign
 // display reads, so the screen and the signer can never disagree again (the local literal was the twin).
 // The app-layer confidence SENTINEL for a token-priced fill. NOT consensus math - it is the value the trade
@@ -424,21 +427,26 @@ export class Wallet {
   // ── account management (require unlocked) ──────────────────────────────────
   private mustUnlocked(): Acct[] { if (!this.accts || !this.vaultKey) throw new Error("locked"); return this.accts; }
   accounts(): PubAcct[] { return (this.accts ?? []).map((a) => ({ addr: a.addr, label: a.label, imported: a.imported })); }
+  /** An account label as stored: trimmed, at most MAX_LABEL characters (code points), else `fallback`. */
+  static label(label: string | undefined, fallback: string): string {
+    const t = String(label ?? "").trim();
+    return t ? Array.from(t).slice(0, MAX_LABEL).join("") : fallback;
+  }
 
   // Add an account. On an HD wallet, derive the next index from the seed phrase (so it
   // is recoverable from the phrase alone); otherwise fall back to a fresh random key.
   async addAccount(label?: string): Promise<{ addr: string; index: number }> {
     const accts = this.mustUnlocked();
     const a = this.mnemonic
-      ? { ...deriveAccount(this.mnemonic, this.nextIndex), label: (label && label.trim()) || `Account ${accts.length + 1}`, index: this.nextIndex } as Acct
-      : this.acct(generate().privkey, (label && label.trim()) || `Account ${accts.length + 1}`, { imported: true });
+      ? { ...deriveAccount(this.mnemonic, this.nextIndex), label: Wallet.label(label, `Account ${accts.length + 1}`), index: this.nextIndex } as Acct
+      : this.acct(generate().privkey, Wallet.label(label, `Account ${accts.length + 1}`), { imported: true });
     if (this.mnemonic) this.nextIndex += 1;
     accts.push(a); this.active = accts.length - 1; await this.persistVault();
     return { addr: a.addr, index: this.active };
   }
   async importAccount(priv: string, label?: string): Promise<{ addr: string; index: number }> {
     const accts = this.mustUnlocked();
-    const a = this.acct(priv, (label && label.trim()) || `Account ${accts.length + 1}`, { imported: true }); // fromPriv validates; raw key ⇒ not seed-recoverable
+    const a = this.acct(priv, Wallet.label(label, `Account ${accts.length + 1}`), { imported: true }); // fromPriv validates; raw key ⇒ not seed-recoverable
     if (accts.some((x) => x.addr.toLowerCase() === a.addr.toLowerCase())) throw new Error("that account is already in this wallet");
     accts.push(a); this.active = accts.length - 1; await this.persistVault();
     return { addr: a.addr, index: this.active };
@@ -456,7 +464,7 @@ export class Wallet {
     const accts = this.mustUnlocked();
     const a = accts.find((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
     if (!a) throw new Error("no such account");
-    a.label = label.trim() || a.label; await this.persistVault();
+    a.label = Wallet.label(label, a.label); await this.persistVault();
   }
   async removeAccount(addr: string, password?: string): Promise<void> {
     const accts = this.mustUnlocked();
@@ -595,7 +603,7 @@ export class Wallet {
     const fee = p.fee ?? defaultFeeFor("attest");
     const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
   }
-  // Atomic fill (Attest + payment in ONE tx; CairnX delivery-versus-payment). fee default 0.05 CSD (attest floor).
+  // Offer fill (Attest + payment in ONE tx; CairnX applies the delivery). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
   // Ordering is load-bearing: capture the signer BEFORE the preflight await (so the account the preflight
   // validates IS the account that signs), re-assert it AFTER the last await and immediately before the
@@ -880,12 +888,17 @@ export class Wallet {
     const fee = nameRegFee(name, buildFeeHeight(tip));
     return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
   }
+  // The name's state at the sign, read the way the approval window reads it (namegate.ts), so a renew or set primary
+  // reviewed before the name turned pending, lapsed or changed owner is refused instead of paying a fee for a no-op.
+  private readNameForAct(name: string) { return readNameRecord((path) => this.tradeGet(path, NAME_READ_TIMEOUT_MS), name); }
   // Renew a .csd lease (+1 year); built on-device, pays the registration fee to the treasury.
   async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
     this.throwOnSignerChange(expectSigner);
+    const me = this.addr();
+    const nameRead = this.readNameForAct(name);   // in flight beside the tip read below
     const built = buildNameRenew({ name });
     // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee; the ONE shared helper (see there).
     const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
@@ -901,6 +914,8 @@ export class Wallet {
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
+    const refusal = nameActSignRefusal("nrenew", await nameRead, me);
+    if (refusal) throw new Error(refusal);
     const expiresEpoch = Math.floor(tip / EPOCH_LEN) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
     await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
@@ -911,8 +926,12 @@ export class Wallet {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     this.throwOnSignerChange(expectSigner);
-    const built = buildNameSet({ name, addr: this.addr() });
+    const me = this.addr();
+    const nameRead = this.readNameForAct(name);   // in flight beside the tip read below
+    const built = buildNameSet({ name, addr: me });
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + SET_PRIMARY_EXPIRY_EPOCHS;
+    const refusal = nameActSignRefusal("nset", await nameRead, me);
+    if (refusal) throw new Error(refusal);
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
     await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;

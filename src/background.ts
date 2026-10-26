@@ -5,6 +5,7 @@
 import { Wallet, AUTO_LOCK_MS } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
+import { APPROVE_WINDOW } from "./approve-window.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -275,7 +276,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
         ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee, expectSigner: exp })
         : await wallet.send(x.to, x.amount, x.fee, exp);
     }
-    // Atomic fill (Attest + payment in one tx; CairnX DvP). Same posture as send:
+    // Offer fill (Attest + payment in one tx; CairnX applies the delivery). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
     // and change only ever returns to the wallet's own address.
     else if (p.method === "fillOffer") {
@@ -327,7 +328,7 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
       // 0.2.71 (CX-15 item 4): two requests in different turns before the first create's callback can
       // each create a window. Keep exactly one: the first window to report in owns the queue; a later
       // one closes itself and focus returns to the owner (approve.html polls the whole queue anyway).
-      chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: 380, height: 620, focused: true }, (w: any) => {
+      chrome.windows.create({ url: chrome.runtime.getURL("approve.html"), type: "popup", width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height, focused: true }, (w: any) => {
         const id = w?.id ?? null;
         if (id == null) return;
         if (approveWinId != null && approveWinId !== id) {

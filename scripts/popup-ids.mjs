@@ -1,7 +1,7 @@
 // The element ids popup.ts and approve.ts read, derived from their source. Each script binds its listeners at
 // module top level through `$(id)!`, so one id missing from the page stops the whole script. Used by
 // scripts/ux-shots.mjs (in the browser) and test/popup-ids.test.mjs (against the static HTML).
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,13 +10,20 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Ids that exist only after a script writes them with innerHTML, never in the static HTML.
 export const DYNAMIC_IDS = new Set([
   "assets-retry", "rpc-add-input", "rpc-add-btn", "exp-add-input", "exp-add-btn", // popup menus and assets
-  "cost", "send-warn", "token-sim", "fill-view", "reveal-preview", // approve window, injected by clearsign describe()
+  "cost", "bal-after", "send-warn", "token-sim", "fill-view", "reveal-preview", // approve window, injected by clearsign describe()
   "nfin-note", // approve window, the finalize-window verdict line approve.ts inserts while a finalize request is open
 ]);
 
+/** The source of `src/popup/<file>`; for "popup.ts", the entry and every `popup-*.ts` module it is split into. */
+export function scriptSource(file) {
+  const dir = join(ROOT, "src", "popup");
+  const files = file === "popup.ts" ? ["popup.ts", ...readdirSync(dir).filter((f) => /^popup-[\w-]+\.ts$/.test(f)).sort()] : [file];
+  return files.map((f) => readFileSync(join(dir, f), "utf8")).join("\n");
+}
+
 /** The ids `src/popup/<file>` reads that must be in its page's static HTML. */
 export function idsFromSource(file) {
-  const src = readFileSync(join(ROOT, "src", "popup", file), "utf8");
+  const src = scriptSource(file);
   const ids = new Set();
   for (const m of src.matchAll(/(?:\$\(|getElementById\()\s*"([\w-]+)"\s*\)/g)) ids.add(m[1]); // `)` required: skips concatenations like $("view-" + v)
   // the view switcher builds "view-" + name

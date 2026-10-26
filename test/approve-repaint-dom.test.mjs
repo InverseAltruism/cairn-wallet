@@ -42,7 +42,7 @@
 //
 // Run: node --import tsx test/approve-repaint-dom.test.mjs   (offline)
 import assert from "node:assert/strict";
-import { costLine, debitOf, fmtBalance } from "../src/popup/clearsign.js";
+import { debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { bid } from "../src/vendor/cairnx-spv.js";
 import { checker } from "./helpers/check.mjs";
@@ -120,7 +120,7 @@ check("(1b) W1: after the unlock repaint #send-warn is a NEW element (the rebuil
 check("(1b) W1: and it is REPOPULATED (pre-fix it stays empty and the request is approvable with no warning)",
   !!warnAfter && warnAfter.innerHTML.length > 0 && warnAfter.hidden === false);
 check("(1b) W1: the repopulated warning is the real one, not a placeholder", /First time sending to/.test(warnAfter?.innerHTML || ""));
-check("(1b) the money row was refilled too (#cost carries a balance-after)", /balance:/.test(registry.get("cost")?.textContent || ""));
+check("(1b) the money row was refilled too (#bal-after carries a balance-after)", / → ~/.test(registry.get("bal-after")?.textContent || ""));
 
 // ── 2. W1 PAIRED HAPPY-PATH: no lock in between, and the 1.2s poll costs nothing ───────────────────────
 console.log("\nPAIRED HAPPY-PATH (W1): the poll must add zero fetches");
@@ -141,19 +141,19 @@ const B = sendReq("w2b", RCPT_B, 7_00000000);
 state.pending = [A, B];
 holdNextBalance = true;
 await tick(); await flush();
-check("(3) setup: A is painted and A's balance fetch is still in flight", typeof releaseHeldBalance === "function" && registry.get("cost") != null);
+check("(3) setup: A is painted and A's balance fetch is still in flight", typeof releaseHeldBalance === "function" && registry.get("bal-after") != null);
 
 state.pending = [B];               // the user resolves A; B comes forward
 nextBalance = 900_00000000;
 await tick(); await flush();
-const costAfterB = registry.get("cost").textContent;
-check("(3) setup: B's money row is filled from B's own balance (900 CSD)", /balance: 900/.test(costAfterB));
+const costAfterB = registry.get("bal-after").textContent;
+check("(3) setup: B's money row is filled from B's own balance (900 CSD)", /^900 → /.test(costAfterB));
 
 releaseHeldBalance({ confirmed: 500_00000000 });   // A's fetch finally lands
 await flush();
-const costFinal = registry.get("cost").textContent;
+const costFinal = registry.get("bal-after").textContent;
 check("(3) W2: A's superseded balance write does NOT change B's money row", costFinal === costAfterB);
-check("(3) W2: B's numbers are still on screen and A's 500 CSD never appears", /balance: 900/.test(costFinal) && !/balance: 500/.test(costFinal));
+check("(3) W2: B's numbers are still on screen and A's 500 CSD never appears", /^900 → /.test(costFinal) && !/500/.test(costFinal));
 
 // ── 4. W2 PAIRED HAPPY-PATH: the single-request render is byte-identical to today ──────────────────────
 console.log("\nPAIRED HAPPY-PATH (W2): a single request still fills its balance-after exactly");
@@ -161,9 +161,9 @@ const S = sendReq("w2h", RCPT_A, 2_00000000);
 state.pending = [S];
 nextBalance = 1234_00000000;
 await tick(); await flush();
-const expected = `${costLine(S)}  balance: ${fmtBalance(nextBalance)} → ~${fmtBalance(nextBalance - debitOf(S))} CSD`;
-check(`(4) the rendered money row is exactly the pre-fix string (${JSON.stringify(registry.get("cost").textContent)})`,
-  registry.get("cost").textContent === expected);
+const expected = `${fmtBalance(nextBalance)} → ~${fmtBalance(nextBalance - debitOf(S))} CSD`;
+check(`(4) the rendered balance-after is exactly the balance and the debit (${JSON.stringify(registry.get("bal-after").textContent)})`,
+  registry.get("bal-after").textContent === expected);
 check("(4) the window was never closed during any of this", closes() === 0);
 
 // ── 5. W8: the nrenew/nfinalize/nset gate note across an idle auto-lock ────────────────────────────────
@@ -311,16 +311,16 @@ await flush();
 state.pending = [];   // the background has already dropped the request from the queue
 for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
 assert.equal(closes(), closesBefore, "(10a) the poll does not close the window while the outcome is in flight");
-assert.equal(registry.get("msg").textContent, "approving\u2026");
+assert.equal(registry.get("msg").textContent, "Approving\u2026");
 const REFUSAL = "refusing to sign: the second source (clarvis) reports that this offer is cancelled, while your resolver shows it open.";
 releaseOutcome({ done: true, ok: false, error: REFUSAL, code: "OFFER_SOURCE_CONFLICT" });
 await flush();
-assert.equal(registry.get("msg").textContent, `failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the refusal and its code are painted");
+assert.equal(registry.get("msg").textContent, `Failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the refusal and its code are painted");
 assert.equal(registry.get("msg").className, "msg err");
 for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
 assert.equal(closes(), closesBefore, "(10a) the window stays open on the failure after further polls");
 assert.equal(registry.get("view-req").hidden, true, "(10a) the spent request's buttons are hidden");
-assert.equal(registry.get("msg").textContent, `failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the failure text is still there");
+assert.equal(registry.get("msg").textContent, `Failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the failure text is still there");
 console.log("  ok (10a)");
 
 state.pending = [sendReq("o2", RCPT_B, 2_00000000)];
@@ -346,7 +346,7 @@ await tick(); await flush(); await settle();
 registry.get("btn-reject")._listeners.click();
 state.pending = [];
 await flush();
-assert.equal(registry.get("msg").textContent, "rejected");
+assert.equal(registry.get("msg").textContent, "Rejected. Nothing was signed.");
 assert.equal(closes(), closesBefore + 2, "(10d) a rejection closes the window as before");
 console.log("  ok (10d)");
 

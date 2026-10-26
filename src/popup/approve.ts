@@ -1,14 +1,25 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, costLine, escapeHtml, paidRecipients, sendWarnings, fmtBalance, isZeroAddr, nfinalizeApproveGate, nameActApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, balanceShortNote, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, APPROVE_LABELS, UNCONFIRMED_LABELS, type NameFetchResult, type RecipientKind } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
+import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
+import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
+import { chooseDensity, reservesFor } from "./approve-density.js";
+import { tokenMs } from "./motion.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
 // never hold the approval UI hostage. A miss degrades to null (callers fail soft).
 const bounded = (p: Promise<unknown>): Promise<unknown> =>
   Promise.race([p.catch(() => null), new Promise((res) => setTimeout(() => res(null), 2500))]);
+
+// The density probe measures text set in Geist and Geist Mono (local files, font-src 'self'), so the first paint waits for
+// both faces, at most a second; a page without document.fonts goes on at once.
+const fontsLoaded: Promise<unknown> = Promise.race([
+  Promise.all([document.fonts?.load("500 14px Geist"), document.fonts?.load("400 12px 'Geist Mono'")]).catch(() => null),
+  new Promise((res) => setTimeout(res, 1000)),
+]);
 
 function call(method: string, ...args: any[]): Promise<any> {
   return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
@@ -17,6 +28,12 @@ function call(method: string, ...args: any[]): Promise<any> {
   }));
 }
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
+// What each request type asks for, under the requesting origin in the header.
+function asks(r: any): string {
+  if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions") return "asks to connect to your wallet";
+  if (r.method === "signin" || r.method === "signinWithCsd") return "asks you to sign in";
+  return "asks you to sign a transaction";
+}
 
 let current: any = null;
 // 0.2.71 (CX-23): per-request review state, keyed by request id. `current` is a FRESH object on every
@@ -46,6 +63,7 @@ async function render() {
   const st = await call("status");
   if (seq !== renderSeq) return;
   ($("view-locked") as HTMLElement).hidden = st.unlocked;
+  ($("ap-signer") as HTMLElement).hidden = !st.unlocked;   // the account can change while locked; the unlock repaint writes it
   const pend = await call("pending");
   if (seq !== renderSeq) return;
   if (!pend.length) {
@@ -53,6 +71,9 @@ async function render() {
     window.close(); return;
   }
   current = pend[0];
+  // The requesting origin, in full however long (a look-alike keeps its tail), set from the browser's sender origin.
+  $("ap-origin").textContent = String(current.origin);
+  $("ap-ask").textContent = asks(current);
   void refreshNfinalize(current.id);   // runs while locked too, so the unlock repaint shows a current verdict
   const reqView = $("view-req") as HTMLElement;
   reqView.hidden = !st.unlocked;
@@ -95,16 +116,16 @@ async function render() {
     if (f != null) current.tipFloor = f;
   }
   if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
+  await fontsLoaded;   // the density probe below measures text; resolved after the first paint
   if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
-  const signer = acct ? `${escapeHtml(acct.label)} · ${escapeHtml(String(st.addr || ""))}` : escapeHtml(String(st.addr || ""));
-  const queued = pend.length > 1 ? `<div class="req dim">request 1 of ${pend.length} — review each separately</div>` : "";
+  const queued = pend.length > 1 ? `<div class="req dim">Request 1 of ${pend.length}: review each separately.</div>` : "";
   // For a connection request, tell the user exactly what approving grants: address
   // visibility until they disconnect the site; NOT permission to move funds (every
   // send/propose/attest still asks separately).
   const connectNote = (current.method === "connect" || current.method === "getAddress")
-    ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings → Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
+    ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings › Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
     : "";
   try {
     // W1 (AW-4): this assignment DESTROYS every element describe() emits (#send-warn, #token-sim,
@@ -117,11 +138,17 @@ async function render() {
     // 1.2s tick would refetch balance and history twice a second per open approval window.
     balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
-    $("req").innerHTML = `<div class="req dim">signing as <b>${signer}</b></div>${queued}`
-      + `<div class="req">${describe(current)}</div><div class="req dim">from ${escapeHtml(String(current.origin))}</div>`
-      + connectNote
-      + `<div class="req dim" id="cost">${costLine(current)}</div>`;
+    $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b title="${escapeHtml(acct.label)}">${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
+    $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
+    // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm
+    // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which the line under the
+    // buttons (#ap-state), reporting only what is below, would not mention.
+    $("req").scrollTop = 0;
+    // The density for this paint, decided before the first frame and kept (approve-density.ts); then the entrance.
+    const forReq = current, me = String(st.addr || "");
+    $("app").dataset.density = chooseDensity($("app"), $("req"), () => reservesFor(forReq, me));
+    enterBody();
     msg(""); // clear any stale "approved"/"rejected" from a previous request
     holdOutcome = false;
     warnPainted = fillSendWarning(current);
@@ -186,13 +213,9 @@ const NFIN_REFRESH_MS = 20_000;
 // the read; it fires when the poll was throttled or suspended (background tab, sleep), when the verdict can be
 // blocks stale.
 const NFIN_CLICK_MAX_AGE_MS = 35_000;
-async function fetchNameRecord(name: string, tradeApi: string): Promise<NameFetchResult> {
-  try {
-    const res = await fetch(`${String(tradeApi || "").replace(/\/$/, "")}/cairnx/name/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(6000) });
-    if (res.status === 404) return { record: null };
-    if (res.ok) { const j = await res.json().catch(() => null); if (j && typeof j === "object") return { record: j }; }
-  } catch { /* unreachable → fail-open (gate warns, never blocks) */ }
-  return { failed: true };
+function fetchNameRecord(name: string, tradeApi: string): Promise<NameFetchResult> {
+  const base = String(tradeApi || "").replace(/\/$/, "");
+  return readNameRecord((path) => fetch(base + path, { signal: AbortSignal.timeout(NAME_READ_TIMEOUT_MS) }), name);
 }
 async function readTip(): Promise<number | null> {
   const t = await bounded(call("tip"));
@@ -217,9 +240,10 @@ async function checkNameAct(kind: "nrenew" | "nset", name: string, tradeApi: str
 function paintNfinNote(g: { block: boolean; note: string | null }) {
   document.getElementById("nfin-note")?.remove();
   if (!g.note) return;
-  $("req").insertAdjacentHTML("beforeend",
-    g.block ? `<div class="req" id="nfin-note"><b class="err">⚠ ${escapeHtml(g.note)}</b></div>`
-            : `<div class="req dim" id="nfin-note">⚠ ${escapeHtml(g.note)}</div>`);
+  // after the cost rows and the warnings under them, before the record's own rows (test/approve-layout-chrome.test.mjs)
+  const html = nfinNoteBox({ block: g.block, note: g.note });
+  const after = document.getElementById("send-warn") ?? document.getElementById("cost");
+  if (after) after.insertAdjacentHTML("afterend", html); else $("req").insertAdjacentHTML("beforeend", html);
 }
 // Record a verdict for request `id` and, when that request is on screen, show it: note in place, Approve
 // down on a block, back up on a pass once this paint's own re-enable floor has run.
@@ -388,16 +412,24 @@ async function fillBalance(r: any) {
   try {
     const b = await call("balance");
     if (gen !== paintGen || renderedId !== r.id) return;
-    const el = document.getElementById("cost");
-    if (el) el.textContent = `${costLine(r)}  balance: ${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`;
+    const el = document.getElementById("bal-after");
+    if (el) { el.textContent = `${fmtBalance(b.confirmed)} → ~${fmtBalance(b.confirmed - debitOf(r))} CSD`; el.className = ""; }
     // The engine spends only the coins this balance counts, so a negative balance-after can only end in an
     // INSUFFICIENT refusal: keep Approve down and say why. Reject stays available.
     rs(r.id).balShort = Number(b.confirmed) - debitOf(r) < 0;
     if (rs(r.id).balShort) {
       ($("btn-approve") as HTMLButtonElement).disabled = true;
-      $("req").insertAdjacentHTML("beforeend", `<div class="req"><b class="err">${escapeHtml(balanceShortNote("Reject this"))}</b></div>`);
+      // under the cost rows it explains, above the buttons (test/approve-layout-chrome.test.mjs)
+      const short = balanceShortBox();
+      const cost = document.getElementById("cost");
+      if (cost) cost.insertAdjacentHTML("afterend", short); else $("req").insertAdjacentHTML("beforeend", short);
     }
-  } catch { /* offline; leave the static cost line */ }
+  } catch {
+    // offline: the cost rows stay, and the balance after says it could not be read
+    if (gen !== paintGen || renderedId !== r.id) return;
+    const el = document.getElementById("bal-after");
+    if (el) el.textContent = "unavailable";
+  }
 }
 // The tip a fill card measures the offer's expiry against: the node tip clamped up by the PoW-backed floor, as the
 // preflight clamps it; undefined when neither read answers (the card then shows the expiry block alone).
@@ -424,39 +456,30 @@ async function fillFillView(r: any) {
 let warnForId: string | null = null;
 async function fillSendWarning(r: any) {
   // send / fillOffer / propose-with-outputs all move funds to dApp-chosen recipients → same
-  // first-time / look-alike (address-poisoning) defenses. (propose outputs could be a disguised
-  // payout, so they get the warning too; they're shown neutrally as "transfers OUT" in clearsign.)
+  // first-time / look-alike (address-poisoning) defenses (clearsign.requestRecipients).
   if ((r.method !== "send" && r.method !== "fillOffer" && r.method !== "propose") || warnForId === r.id) return; warnForId = r.id;
-  const p = r.params || {};
-  const outs: { to: string; kind: RecipientKind }[] = (Array.isArray(p.outputs) ? p.outputs : (p.to ? [{ to: p.to }] : [])).map((o: any) => ({ to: String(o?.to || ""), kind: "payment" as const }));
-  // A dApp-proposed CairnX token transfer carries its recipient in the decoded record's `to` (NOT a CSD
-  // output), so the first-time / address-poisoning check would otherwise skip it (audit POPUP-1). Decode
-  // the canonical+hash-committed record and include the token recipient in the same check.
-  if (r.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
-    const rec = decodeCairnxRecord(p.uri, p.payloadHash);
-    if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "token" });
-    // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
-    // nxfer hands the name to a new owner; both carry an attacker-influenceable address that deserves the
-    // same first-time / address-poisoning (look-alike) check as a transfer recipient.
-    if (rec && rec.t === "nset" && typeof rec.addr === "string" && !isZeroAddr(rec.addr)) outs.push({ to: rec.addr, kind: "name-point" });   // QA #24: a V23 un-point (nset→0x0) is a sentinel, not a recipient; skip the poisoning check (0x0 sends are hard-blocked anyway)
-    if (rec && rec.t === "nxfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "name-transfer" });
-    // M1 (deep-review 2026-07-03): an `offer` routes its SALE PROCEEDS to want.payto when it fills. A
-    // bad-faith dApp can set payto to a look-alike of the user's OWN address, silently redirecting the
-    // proceeds. The field is shown at clear-sign but had no automated look-alike flag; add it here so it
-    // gets the same first-time / address-poisoning check as every other dApp-supplied recipient.
-    if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto, kind: "proceeds" });
-  }
+  const outs = requestRecipients(r);
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
     if (renderedId !== r.id) return; // W2 (AW-3): superseded, never paint a resolved request's warnings over the one now on screen
     const sentTo = paidRecipients(h); // single-sourced paid-recipient set (audit NSPV-POISON-FILTERS)
-    // NXFER-POISON-DROP (Part B): the first-time / poisoning computation is the pure clearsign.sendWarnings
+    // NXFER-POISON-DROP (Part B): the first-time / poisoning computation is the pure clearsign.recipientFlags
     // (approve.ts owns only the DOM read + mount). It keys the first-time check on `known` = paid recipients
     // PLUS the wallet's OWN account addresses, so an nset pre-filled with the user's own address (the "set as
     // primary" prompt right after registration) no longer warns about the user's own address on a no-CSD op.
-    const warns = sendWarnings(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
+    const flags = recipientFlags(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
     const el = document.getElementById("send-warn");
-    if (el && warns.length) { el.innerHTML = warns.join("<br>"); (el as HTMLElement).hidden = false; }
+    if (!el || !flags.length) return;
+    // a look-alike is a danger row, a first send a caution row (past NAMED_WARNINGS the rows count); with more than one
+    // recipient row each flagged row carries its mark, a tint and a bar that add no height
+    el.innerHTML = warningChecks(flags).map(checkRow).join(""); (el as HTMLElement).hidden = false;
+    const rows = [...$("req").querySelectorAll<HTMLElement>(".kv > div[data-to]")];
+    if (marksRows(rows.length)) {
+      for (const f of flags) for (const row of rows) if (row.dataset.to === recipientKey(f.to)) {
+        row.classList.add("flag", f.tier);
+        row.querySelector("dd")?.insertAdjacentHTML("beforeend", rowFlagHtml(f.tier));
+      }
+    }
   } catch { /* no history → no warning */ }
 }
 // Anti-click-through: when the request view (re)builds for a NEW request, disable both
@@ -496,8 +519,8 @@ async function resolve(approve: boolean) {
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
   const displayedQuote = rs(id).tokenQuoteDisplayed; // RT-W2: the number the user actually saw (survives the 1.2 s re-poll)
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
-  if (approve && tokenNotReady(current)) { msg("the token amount is not shown yet; wait for it or reject", "err"); return; }
-  if (approve && rs(id).balShort) { msg("your spendable balance does not cover this request; reject it and retry once your pending transaction is mined", "err"); return; }
+  if (approve && tokenNotReady(current)) { msg("The token amount is not shown yet. Wait for it or reject.", "err"); return; }
+  if (approve && rs(id).balShort) { msg("Your spendable balance does not cover this request. Reject it and retry once your pending transaction is mined.", "err"); return; }
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip, plus one
   // 2.5s tip read when the verdict is older than NFIN_CLICK_MAX_AGE_MS), then acts on the latest one recorded.
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only
@@ -507,14 +530,14 @@ async function resolve(approve: boolean) {
     if (!current || current.id !== id) return;   // superseded while awaiting the verdict
     const g = await nfinAtClick(id, nfinSettled ?? first);   // the latest verdict, re-derived first when stale
     if (!current || current.id !== id) return;
-    if (g?.block) { msg(g.note || "refusing to approve this finalize", "err"); return; }
+    if (g?.block) { msg(g.note || "Refusing to sign this finalize.", "err"); return; }
   }
   // Only a click on the warning-state paint of this request acknowledges the unconfirmed reservation.
   const u = warnedFor === id ? rs(id).unconfirmed : undefined;
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
   current = null; renderedId = null; renderedSigner = null; warnedFor = null; renderSeq++;
-  if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("rejected"); render(); return; }
-  msg("approving…");
+  if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("Rejected. Nothing was signed."); render(); return; }
+  msg("Approving…");
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
   let r: any;
@@ -526,19 +549,61 @@ async function resolve(approve: boolean) {
   if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
-  } else if (r && r.ok === false) { msg("failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdOutcome = true; }
+  } else if (r && r.ok === false) { msg("Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdOutcome = true; }
   else if (r && r.txid) {
-    msg("sent " + String(r.txid).slice(0, 10) + "…", "ok");
+    msg("Sent " + String(r.txid).slice(0, 10) + "…", "ok");
     const note = secondSourceNote(r.secondSource);
-    if (note) { $("msg").insertAdjacentHTML("beforeend", `<br><b class="err">${escapeHtml(note)}</b>`); holdOutcome = true; }
+    if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); holdOutcome = true; }
   }
-  else msg("approved", "ok");
+  else msg("Approved.", "ok");
   render();
 }
 
-$("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("unlocked", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
+// The line under the buttons (#ap-state). While the latch holds both buttons it says so; once they arm, while the request
+// does not end in view it counts the recipient rows not fully shown (a site can make a request longer than the window:
+// more recipients, a long origin), or says more is below; otherwise it says whether Approve is live. It reads geometry
+// and the buttons only, never sets them, and is recomputed on a scroll, on any change to the request or the buttons
+// and on a resize. Its line is always reserved, so it never moves the buttons.
+const RECIPIENT_ROWS = new Set(["To", "Resolves to", "Paid to", "Only fillable by"]);
+function updateState() {
+  const req = $("req");
+  const shown = !($("view-req") as HTMLElement).hidden;
+  const open = shown && req.scrollTop + req.clientHeight < req.scrollHeight - 1;
+  const fold = req.getBoundingClientRect().bottom;
+  const hidden = open ? [...req.querySelectorAll(".kv > div")]
+    .filter((row) => RECIPIENT_ROWS.has(row.querySelector("dt")?.textContent ?? "") && row.getBoundingClientRect().bottom > fold + 0.5).length : 0;
+  const latched = ($("btn-reject") as HTMLButtonElement).disabled;
+  const live = !($("btn-approve") as HTMLButtonElement).disabled;
+  const text = !shown || !current ? "" : latched ? APPROVE_STATE.arming : open ? moreBelowText(hidden)
+    : live ? (warnedFor === current.id ? APPROVE_STATE.readyUnconfirmed : APPROVE_STATE.ready)
+    : tokenNotReady(current) ? APPROVE_STATE.tokenWait : APPROVE_STATE.held;
+  const el = $("ap-state");
+  if (el.textContent !== text) el.textContent = text;
+  el.classList.toggle("more", open && !latched);
+}
+$("req").addEventListener("scroll", updateState);
+new MutationObserver(updateState).observe($("app"), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "disabled"] });
+new ResizeObserver(updateState).observe($("req"));
+
+// A request painted into the window rises in over the approved design's 320 ms (--ui-dur-3); with reduced motion it
+// fades in instead. Display only: the latch, not this, decides when a click counts.
+function enterBody() {
+  const req = $("req");
+  if (typeof req.animate !== "function") return;
+  const dur = tokenMs("--ui-dur-3");
+  if (dur === null) return;
+  for (const a of req.getAnimations()) a.cancel();
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ease = getComputedStyle(document.documentElement).getPropertyValue("--ui-ease").trim() || "ease-out";
+  const rise = getComputedStyle(document.documentElement).getPropertyValue("--ui-space-2").trim() || "8px";
+  req.animate(still ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: `translateY(${rise})` }, { opacity: 1, transform: "none" }], { duration: dur, easing: ease });
+}
+
+$("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("Unlocked.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-approve").addEventListener("click", () => { if (!($("btn-approve") as HTMLButtonElement).disabled) resolve(true); });
 $("btn-reject").addEventListener("click", () => { if (!($("btn-reject") as HTMLButtonElement).disabled) resolve(false); });
+// Follow a theme chosen in the popup's Settings while this window is open (theme.js, loaded by approve.html).
+(globalThis as { CairnTheme?: CairnThemeApi }).CairnTheme?.startSync();
 render();
 setInterval(render, 1200);
 

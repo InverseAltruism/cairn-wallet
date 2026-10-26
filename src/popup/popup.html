@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="ui/tokens.css" />
   <link rel="stylesheet" href="ui/fonts.css" />
   <link rel="stylesheet" href="ui/theme.css" />
+  <link rel="stylesheet" href="ui/avatar.css" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body class="page-popup">
@@ -77,7 +78,7 @@
     <section id="view-main" hidden>
       <div class="topbar">
         <div class="acct-chip rpc-wrap">
-          <div id="avatar" class="id-avatar" data-theme="dark" aria-hidden="true"></div>
+          <div id="avatar" class="id-avatar ui-avatar" aria-hidden="true"></div>
           <div id="primary-name" class="primary-name" hidden></div>
           <button id="acct-select" class="acct-btn" title="Switch account"></button>
           <div id="acct-menu" class="rpc-menu acct-menu" hidden></div>
@@ -91,6 +92,8 @@
           <div id="balance" class="bal bal-xl"></div>
           <button id="btn-refresh" class="icon-btn sm" title="Refresh balance" aria-label="Refresh balance"><svg class="i" aria-hidden="true"><use href="icons.svg#i-refresh-cw"/></svg></button>
         </div>
+        <!-- a failed read over a balance read before: says the amount above is that earlier read (popup-balance.ts) -->
+        <p id="bal-note" class="bal-note" hidden></p>
         <!-- The one persistent explainer for the post-merge balance dip: a submitted merge removes its input coins
              from the confirmed balance until the next block. -->
         <div id="merge-pending" class="merge-note" hidden></div>
@@ -143,7 +146,7 @@
       </div>
 
       <div id="activity" class="settings tabpanel" role="tabpanel" aria-labelledby="btn-activity-t" hidden>
-        <div class="act-head"><span class="label">Recent transactions</span><a id="addr-explorer" class="mini text" target="_blank" rel="noopener noreferrer">View address ↗</a></div>
+        <div class="act-head"><span class="label">Recent transactions</span><a id="addr-explorer" class="mini text" target="_blank" rel="noopener noreferrer">View address<svg class="i ext" aria-hidden="true"><use href="icons.svg#i-external-link"/></svg></a></div>
         <div id="history-list" class="history"></div>
       </div>
 
@@ -153,7 +156,7 @@
         <button id="btn-add-acct"><svg class="i" aria-hidden="true"><use href="icons.svg#i-plus"/></svg>New account</button>
         <div class="or">or import an existing key</div>
         <input id="imp-acct-key" type="password" placeholder="Private key (0x…64 hex)" />
-        <input id="imp-acct-label" placeholder="Label (optional)" />
+        <input id="imp-acct-label" placeholder="Label (optional)" maxlength="40" />
         <button id="btn-imp-acct">Import account</button>
       </div>
 
@@ -182,9 +185,14 @@
       </div>
 
       <div id="send-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="send-form-title" hidden>
-        <div class="panel-head"><span class="panel-title" id="send-form-title">Send CSD</span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+        <div class="panel-head"><span class="panel-title" id="send-form-title"><span class="step-form">Send CSD</span><span class="step-review">Review send</span></span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Recipient <input id="s-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
-        <label>Amount (CSD) <input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" autocomplete="off" /></label>
+        <label>Amount <span class="field-unit"><input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" autocomplete="off" /><span class="unit" aria-hidden="true">CSD</span></span></label>
+        <!-- what the typed amount leaves, from the fee constant and the balance already read (popup-send.ts) -->
+        <div id="s-est" class="confirm-box est-box">
+          <div class="crow"><span class="label">Network fee</span><span id="s-fee"></span></div>
+          <div class="crow"><span class="label">Balance after</span><span id="s-after" class="dim"></span></div>
+        </div>
         <div class="row sheet-actions step-actions">
           <button class="panel-back" type="button">Cancel</button>
           <button id="btn-send" class="primary">Review send</button>
@@ -192,22 +200,22 @@
 
         <div id="send-confirm" hidden>
           <div class="confirm-box">
-            <div class="crow crow-amount"><span class="label">Amount</span><b id="c-amt" class="bal"></b></div>
+            <div class="crow crow-amount"><b id="c-amt" class="bal"></b></div>
             <div class="crow" id="c-name-row" hidden><span class="label">Name</span><span id="c-name" class="dim"></span></div>
             <div class="crow"><span class="label">To</span><code id="c-to" class="addr"></code></div>
-            <div class="crow"><span class="label">Fee</span><span id="c-fee"></span></div>
+            <div class="crow"><span class="label">Network fee</span><span id="c-fee"></span></div>
             <div class="crow"><span class="label">Balance after</span><span id="c-after" class="dim"></span></div>
             <div id="c-warn" class="warn" hidden></div>
           </div>
           <div class="row sheet-actions">
             <button id="btn-send-back">Back</button>
-            <button id="btn-send-confirm" class="primary">Confirm &amp; send</button>
+            <button id="btn-send-confirm" class="primary">Confirm send</button>
           </div>
         </div>
       </div>
 
       <div id="tsend-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="tsend-form-title" hidden>
-        <div class="panel-head"><span class="panel-title" id="tsend-form-title">Send token</span><b id="ts-ticker" class="bal"></b><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
+        <div class="panel-head"><span class="panel-title" id="tsend-form-title"><span class="step-form">Send token</span><span class="step-review">Review send</span></span><b id="ts-ticker" class="bal"></b><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Recipient <input id="ts-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount <input id="ts-amt" type="text" inputmode="decimal" placeholder="0.0" autocomplete="off" /></label>
         <div id="ts-avail" class="note"></div>
@@ -218,16 +226,16 @@
 
         <div id="tsend-confirm" hidden>
           <div class="confirm-box">
-            <div class="crow crow-amount"><span class="label">Amount</span><b id="tc-amt" class="bal"></b></div>
+            <div class="crow crow-amount"><b id="tc-amt" class="bal"></b></div>
             <div class="crow"><span class="label">Token</span><b id="tc-ticker" class="bal"></b></div>
             <div class="crow" id="tc-name-row" hidden><span class="label">Name</span><span id="tc-name" class="dim"></span></div>
             <div class="crow"><span class="label">To</span><code id="tc-to" class="addr"></code></div>
-            <div class="crow"><span class="label">Fee</span><span id="tc-fee"></span></div>
+            <div class="crow"><span class="label">Network fee</span><span id="tc-fee"></span></div>
             <div id="tc-warn" class="warn" hidden></div>
           </div>
           <div class="row sheet-actions">
             <button id="btn-tsend-back">Back</button>
-            <button id="btn-tsend-confirm" class="primary">Confirm &amp; send</button>
+            <button id="btn-tsend-confirm" class="primary">Confirm send</button>
           </div>
         </div>
       </div>
@@ -345,8 +353,8 @@
         </div>
         <!-- legal links: plain target=_blank anchors (a new-tab navigation is not subject to this page's connect-src) -->
         <div class="legal">
-          <a href="https://cairn-substrate.com/terms.html" target="_blank" rel="noopener noreferrer">Terms of Use ↗</a>
-          <a href="https://cairn-substrate.com/wallet-privacy.html" target="_blank" rel="noopener noreferrer">Privacy ↗</a>
+          <a href="https://cairn-substrate.com/terms.html" target="_blank" rel="noopener noreferrer">Terms of Use<svg class="i ext" aria-hidden="true"><use href="icons.svg#i-external-link"/></svg></a>
+          <a href="https://cairn-substrate.com/wallet-privacy.html" target="_blank" rel="noopener noreferrer">Privacy<svg class="i ext" aria-hidden="true"><use href="icons.svg#i-external-link"/></svg></a>
         </div>
       </div>
 

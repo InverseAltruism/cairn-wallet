@@ -77,7 +77,7 @@ Stores the user's encrypted key vault, public account list, local transaction hi
 ```
 - `unlimitedStorage`
 ```
-The wallet's trustless .csd name verification keeps proof-of-work-verified block headers in the extension's own IndexedDB database (84 bytes per header). That store grows with the chain, so without unlimitedStorage it would eventually hit the storage quota and degrade verification. All of this data stays on the user's own device: nothing is collected or transmitted, and the encrypted key vault is unaffected.
+The wallet's .csd name verification keeps proof-of-work-verified block headers in the extension's own IndexedDB database (84 bytes per header). That store grows with the chain, so without unlimitedStorage it would eventually hit the storage quota and degrade verification. All of this data stays on the user's own device: nothing is collected or transmitted, and the encrypted key vault is unaffected.
 ```
 - `alarms`
 ```
@@ -137,5 +137,5 @@ Google's definition, but a public wallet generally counts as a trader.)
 
 ## Notes for review (optional "notes to reviewer" field)
 ```
-Cairn Wallet is a non-custodial wallet for the Compute Substrate (CSD) blockchain. Keys are generated and stored locally (AES-256-GCM, PBKDF2). It is open source and reproducibly built (SHA-256 + SLSA provenance per release). No remote code; minimal permissions (storage, alarms, and unlimitedStorage for the local block-header cache used in trustless name verification). Host permissions are the blockchain node/API used to read chain data and submit user-approved transactions; the localhost host permission supports users running their own node. The extension does not mine cryptocurrency.
+Cairn Wallet is a non-custodial wallet for the Compute Substrate (CSD) blockchain. Keys are generated and stored locally (AES-256-GCM, PBKDF2). It is open source and reproducibly built (SHA-256 + SLSA provenance per release). No remote code; minimal permissions (storage, alarms, and unlimitedStorage for the local block-header cache used in name verification). Host permissions are the blockchain node/API used to read chain data and submit user-approved transactions; the localhost host permission supports users running their own node. The extension does not mine cryptocurrency.
 ```

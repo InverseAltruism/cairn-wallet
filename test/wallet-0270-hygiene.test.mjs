@@ -2,6 +2,7 @@
 // CSD review parallel, proveEventAt pool. The approval-window arm and latch behaviour is tested
 // through the real module in approve-guards-dom.test.mjs and approve-repaint-dom.test.mjs.
 import { readFileSync } from "node:fs";
+import { scriptSource } from "../scripts/popup-ids.mjs";
 import { refuse } from "../src/core/refuse.ts";
 import { SPV_CHECKPOINTS } from "../src/core/namespv.ts";
 import { SPV_FLOOR } from "../src/core/spvanchors.ts";
@@ -23,7 +24,7 @@ ok("await ready still sendResponse on init reject",
 ok("openApprovalWindow is single-flight latched", /openingApproval/.test(bg) && /if \(openingApproval\) return openingApproval/.test(bg));
 ok("confirmName is popup-bridged and READ_ONLY", /case "confirmName"/.test(bg) && /"confirmName"/.test(bg));
 
-const popup = src("src/popup/popup.ts");
+const popup = scriptSource("popup.ts");
 ok("popup has no Wallet value import", !/import\s*\{[^}]*\bWallet\b/.test(popup));
 ok("popup imports nothing from core/wallet.js as a value (a type-only import or none)", !/^import (?!type )[^;]*from "\.\.\/core\/wallet\.js"/m.test(popup));
 ok("popup has no side-effect import of core/wallet.js", !/^import\s*["']\.\.\/core\/wallet(\.js)?["']/m.test(popup));

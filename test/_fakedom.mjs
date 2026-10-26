@@ -20,6 +20,8 @@ export function installFakeDom({ autoCreate = false } = {}) {
       this._kids = []; this._qsa = {};
       this._html = String(v);
       this._adopt(this._html);
+      // as in a browser, the markup's text becomes the element's text (tags dropped, the five escapes decoded)
+      this.textContent = this._html.replace(/<[^>]*>/g, "").replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[e]);
     }
     _adopt(html) {
       for (const m of String(html).matchAll(TAG)) {
@@ -31,7 +33,11 @@ export function installFakeDom({ autoCreate = false } = {}) {
         registry.set(attrs.id, el); this._kids.push(attrs.id);
       }
     }
-    insertAdjacentHTML(_pos, html) { this._html += String(html); this._adopt(html); }
+    // "afterend" and "beforebegin" add the markup to the parent, as a browser does (the place inside it is not modelled)
+    insertAdjacentHTML(pos, html) {
+      const into = (pos === "afterend" || pos === "beforebegin") && this._parent ? this._parent : this;
+      into._html += String(html); into._adopt(html);
+    }
     appendChild(c) { this._html += c?.textContent ?? ""; return c; }
     addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
     setAttribute(name, value) { (this._attrs ||= {})[name] = String(value); }
@@ -64,8 +70,16 @@ export function installFakeDom({ autoCreate = false } = {}) {
     return el ?? null;
   };
   globalThis.document = { getElementById: byId, querySelector: () => null, querySelectorAll: () => [], createElement: () => new El(), addEventListener: () => {} };
+  // approve.ts observes the request for its "more below" line; layout is not modelled here, so the observers never fire
+  // (test/approve-layout-chrome.test.mjs measures the line in Chrome)
+  class Unobserved { observe() { /* never fires */ } disconnect() { /* nothing to stop */ } }
+  globalThis.MutationObserver = Unobserved;
+  globalThis.ResizeObserver = Unobserved;
   globalThis.window = { close: () => {} };
   globalThis.matchMedia = () => ({ matches: true });
+  // no tokens: motion reads none (tokenMs is null), so no tween or delay runs
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
+  globalThis.document.documentElement = {};
   return { registry, El, byId };
 }
 

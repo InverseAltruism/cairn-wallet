@@ -10,12 +10,18 @@
 // `loadApprove`, and each test file gets one window (the module is a singleton per process).
 
 const TAG_WITH_ID = /<[a-zA-Z][^>]*\sid="([^"]+)"[^>]*>/g;
-const STATIC_IDS = ["view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw"];
+/** The ids approve.html holds outside the request, which approve.ts reads at load and on every paint. */
+export const APPROVE_IDS = ["app", "view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw", "ap-origin", "ap-ask", "ap-signer", "ap-state"];
 
 export function mountApproveWindow(handlers) {
   const registry = new Map();
   class El {
-    constructor(id) { this.id = id; this._html = ""; this._text = ""; this.className = ""; this.hidden = false; this.disabled = false; this._kids = []; }
+    constructor(id) { this.id = id; this._html = ""; this._text = ""; this.className = ""; this.hidden = false; this.disabled = false; this._kids = []; this.dataset = {}; this.style = {}; }
+    // No layout: every box is empty, so the density probe (approve-density.ts) finds that everything fits.
+    get scrollHeight() { return 0; }
+    get clientHeight() { return 0; }
+    getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }; }
+    insertAdjacentElement() { /* the place is not modelled; the element keeps its own registry entries */ }
     // Setting textContent replaces the subtree, markup added with insertAdjacentHTML included.
     get textContent() { return this._text; }
     set textContent(v) {
@@ -40,7 +46,14 @@ export function mountApproveWindow(handlers) {
         this._kids.push(m[1]);
       }
     }
-    insertAdjacentHTML(_pos, html) {
+    // "afterend" and "beforebegin" add the markup to the parent, as a browser does; the place inside the parent is
+    // not modelled (test/approve-layout-chrome.test.mjs measures it in Chrome).
+    insertAdjacentHTML(pos, html) {
+      const into = pos === "afterend" || pos === "beforebegin" ? this._parent : this;
+      if (!into) throw new Error(`approve-dom: ${pos} on an element with no parent`);
+      into._insert(html);
+    }
+    _insert(html) {
       const ids = [...String(html).matchAll(TAG_WITH_ID)].map((m) => m[1]);
       this._html += String(html); this._adopt(html);
       // remember the inserted chunk, so remove() can take exactly that markup back out of the parent
@@ -48,6 +61,7 @@ export function mountApproveWindow(handlers) {
     }
     // Element.remove() for an element that arrived through insertAdjacentHTML: drops its whole chunk.
     remove() {
+      if (this._created) { for (const k of this._kids) if (registry.get(k)?._parent === this) registry.delete(k); this._kids = []; return; }
       const p = this._parent;
       if (!p || this._chunk === undefined) throw new Error("approve-dom: remove() only models elements inserted with insertAdjacentHTML");
       p._html = p._html.replace(this._chunk, "");
@@ -55,8 +69,16 @@ export function mountApproveWindow(handlers) {
     }
     addEventListener(type, fn) { (this._listeners ||= {})[type] = fn; }
   }
-  for (const id of STATIC_IDS) registry.set(id, new El(id));
-  globalThis.document = { getElementById: (id) => registry.get(id) ?? null };
+  for (const id of APPROVE_IDS) registry.set(id, new El(id));
+  // createElement: the density probe's placeholders, removed again before the paint
+  globalThis.document = { getElementById: (id) => registry.get(id) ?? null, createElement: () => Object.assign(new El(null), { _created: true }), documentElement: {} };
+  // no tokens: motion reads none, so the request's entrance does not run
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
+  // approve.ts observes the request for its "more below" line; layout is not modelled here, so the observers never fire
+  // (test/approve-layout-chrome.test.mjs measures the line in Chrome)
+  class Unobserved { observe() { /* never fires */ } disconnect() { /* nothing to stop */ } }
+  globalThis.MutationObserver = Unobserved;
+  globalThis.ResizeObserver = Unobserved;
   let closes = 0;
   globalThis.window = { close: () => { closes++; } };
   globalThis.chrome = {

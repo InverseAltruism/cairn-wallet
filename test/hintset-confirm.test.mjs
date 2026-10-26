@@ -6,6 +6,7 @@ import { evaluateHintSetSkip, hintPairsEqual, sortHintPairs, HINTSET_TTL_MS } fr
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { readFileSync } from "node:fs";
+import { scriptSource } from "../scripts/popup-ids.mjs";
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
@@ -137,7 +138,7 @@ ok("rememberHintSet refuses soleSource", /res\.soleSource/.test(walletSrc));
 ok("verifyName fail-softs rememberHintSet (own try/catch; cache throw cannot downgrade a green verify)",
   /try\s*\{\s*await rememberHintSet\(wallet, nm, res, src, gen\);\s*\}\s*catch/.test(walletSrc));
 ok("verifyNameUnion marks M12 recovered:true", /recovered: true/.test(readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8")));
-ok("popup confirm path calls confirmName (not resolveName)", /call\("confirmName"/.test(readFileSync(new URL("../src/popup/popup.ts", import.meta.url), "utf8")));
+ok("popup confirm path calls confirmName (not resolveName)", /call\("confirmName"/.test(scriptSource("popup.ts")));
 
 console.log(`\nhintset-confirm: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -7,11 +7,15 @@
   <script src="ui/theme-init.js"></script>
   <link rel="stylesheet" href="ui/tokens.css" />
   <link rel="stylesheet" href="ui/fonts.css" />
+  <link rel="stylesheet" href="ui/theme.css" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body class="page-approve">
   <div id="app">
-    <header class="ap-head"><span class="ap-tile"><svg class="mark" aria-hidden="true"><use href="icons.svg#mark"/></svg></span><span class="ap-who"><span class="ap-brand">Request from a site</span><span class="ap-sub">Cairn Wallet</span></span></header>
+    <header class="ap-top">
+      <div class="ap-site"><span class="ap-tile"><svg class="mark" aria-hidden="true"><use href="icons.svg#mark"/></svg></span><span class="ap-who"><b id="ap-origin" class="ap-origin">Request from a site</b><small id="ap-ask" class="ap-ask">Cairn Wallet</small></span></div>
+      <div id="ap-signer" class="ap-signer" hidden></div>
+    </header>
     <section id="view-locked" class="view view-center lock-view" hidden>
       <svg class="hero-mark" aria-hidden="true"><use href="icons.svg#mark"/></svg>
       <p class="lead">Unlock your wallet to review this request.</p>
@@ -21,14 +25,19 @@
       </div>
     </section>
     <section id="view-req" hidden>
-      <div id="req" class="pending"></div>
-      <div class="actions">
-        <button id="btn-reject">Reject</button>
-        <button id="btn-approve" class="primary">Approve</button>
+      <div id="req" class="ap-body"></div>
+      <div class="ap-foot">
+        <div class="latch" aria-hidden="true"><i></i></div>
+        <div class="actions">
+          <button id="btn-reject">Reject</button>
+          <button id="btn-approve" class="primary">Approve</button>
+        </div>
+        <p id="ap-state" class="ap-state" aria-live="polite"></p>
       </div>
     </section>
     <div id="msg" class="msg" role="status" aria-live="polite"></div>
   </div>
+  <script src="ui/theme.js"></script>
   <script type="module" src="approve.js"></script>
 </body>
 </html>

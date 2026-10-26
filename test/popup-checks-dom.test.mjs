@@ -1,10 +1,10 @@
 // Plan 89 7b, the popup's B edits, driven through the REAL popup.ts against a fake DOM and a scripted background.
 //
-//   1. Review checks carry a tier (W-01, W-02): the name caution is positive only where nameCautionHtml says ✓ (two
+//   1. Review checks carry a tier (W-01, W-02): the name caution is positive only on nameCautionHtml's agree copy (two
 //      sources agree) at a depth that can no longer reorg (NAME_SAFE_DEPTH), caution on every other branch and below
-//      that depth; the first-time and the address-poisoning warnings and a balance that does not cover the send are
-//      danger.
-//      RED-FIRST: give the first-time warning tier "caution" and 1d fails; make nameCheck return "ok" for every
+//      that depth; a first send to an address is caution (owner decision 2026-10-25, as the approval window), the
+//      address-poisoning warning and a balance that does not cover the send are danger.
+//      RED-FIRST: give the first-time warning tier "danger" and 1d, 1e fail; make nameCheck return "ok" for every
 //      verified name and 1b fails; drop the depth from nameCheck and 1b' fails at depth 1 and 2; compare with <= and
 //      1b' fails at depth 3. HONEST PATH: 1a, 1b' at depth 3, 1g (a send with nothing to warn about arms Confirm and
 //      signs with the production call shape).
@@ -17,7 +17,8 @@
 //      HONEST PATH: 4c-4e (a renew from the detail reviews and signs with the production call shape).
 //   5. The imported-key removal warning (W-23) renders as a danger row with its R3 section 4 text (meaning kept, the
 //      em dash now a colon). RED-FIRST: write it back as a plain line, or as caution, and 5a fails. HONEST PATH: 5b
-//      (an HD account still removes in one click, with no password).
+//      (an HD account still removes with one confirm, with no password). The rows carry no Rename or Remove until
+//      one is opened (W-12): RED-FIRST: render the actions on every row and 5c fails.
 //   6. An account switch closes every sheet (W-23): a name's detail cannot carry account A's name into a review
 //      signed by account B. RED-FIRST: drop closeAllPanels from switchAcct and 6a fails. HONEST PATH: 6b.
 //   7. Token rows: the tile never shows part of a ticker (the longest legal ticker is 12 characters), a served token
@@ -96,7 +97,7 @@ console.log("1. review check tiers");
 await review("alice.csd");
 {
   const r = rows();
-  check("1a honest: two sources agree reads as one positive row with the ✓ copy", r.length === 1 && r[0].tier === "ok" && r[0].html.startsWith("✓"));
+  check("1a honest: two sources agree reads as one positive row with the agree copy, no glyph", r.length === 1 && r[0].tier === "ok" && r[0].html.startsWith("<b><code>alice.csd</code>: chain-backed, 2 name servers agree.</b>"));
 }
 const branches = [
   ["one source only", { soleSource: true }],
@@ -109,7 +110,7 @@ for (const [label, extra] of branches) {
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner", ...extra };
   await review("alice.csd");
   const r = rows();
-  check(`1b ${label}: the name row is caution, and its copy does not read ✓`, r.length === 1 && r[0].tier === "caution" && !r[0].html.startsWith("✓"));
+  check(`1b ${label}: the name row is caution, its copy is not the agree copy and opens with no glyph`, r.length === 1 && r[0].tier === "caution" && !/name servers agree\./.test(r[0].html) && /^<b>/.test(r[0].html));
 }
 for (const [depth, tier] of [[1, "caution"], [2, "caution"], [3, "ok"]]) {
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth, via: "owner" };
@@ -119,12 +120,12 @@ for (const [depth, tier] of [[1, "caution"], [2, "caution"], [3, "ok"]]) {
 }
 resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
 await review(LOOK);
-check("1c address poisoning is a danger row with its copy", rows().length === 1 && rows()[0].tier === "danger" && /Possible address-poisoning/.test(rows()[0].html));
+check("1c address poisoning is a danger row with its copy", rows().length === 1 && rows()[0].tier === "danger" && /^<b>Possible address-poisoning\.<\/b>/.test(rows()[0].html) && /is <b>not<\/b> the same address/.test(rows()[0].html));
 await review(NEW);
-check("1d a first send is a danger row (red, as in 0.2.99)", rows().length === 1 && rows()[0].tier === "danger" && /First time sending to this address/.test(rows()[0].html));
+check("1d a first send is a caution row (amber), the row's icon in place of a ⚠ glyph", rows().length === 1 && rows()[0].tier === "caution" && /^First time sending to this address: check every character\. Payments are irreversible\.$/.test(rows()[0].html));
 resolveAns = { ok: true, addr: NEW, verified: true, sources: 2, depth: 14, via: "owner" };
 await review("alice.csd");
-check("1e a named first send: the positive name row, then the danger row", rows().map((r) => r.tier).join() === "ok,danger");
+check("1e a named first send: the positive name row, then the caution row", rows().map((r) => r.tier).join() === "ok,caution");
 resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
 await review(PAID, "200");
 check("1f a balance that does not cover the send is a danger row and keeps Confirm down", rows()[0]?.tier === "danger" && /does not cover/.test(rows()[0].html) && byId("btn-send-confirm").disabled === true);
@@ -194,10 +195,16 @@ console.log("5. imported-key removal");
 {
   await byId("btn-accts").click(); await flush();
   const list = byId("accts-list");
+  // W-12: the rows carry no Rename or Remove until one is opened, and opening one shows its actions alone
+  const closed = list.querySelectorAll("[data-remove]").length + list.querySelectorAll("[data-rename]").length;
+  await list.querySelectorAll("[data-open]").find((b) => b.dataset.open === IMP).click(); await flush();
+  check(`5c no row repeats Rename and Remove: none on the closed list (${closed}), one of each on the opened row`,
+    closed === 0 && list.querySelectorAll("[data-remove]").length === 1 && list.querySelectorAll("[data-rename]").length === 1 && list.querySelectorAll("[data-remove]")[0].dataset.remove === IMP);
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === IMP).click(); await flush();
   const html = String(list.innerHTML);
-  check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("this imported key is NOT in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
+  check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
   await list.querySelectorAll("[data-cancel]")[0].click(); await flush();
+  await list.querySelectorAll("[data-open]").find((b) => b.dataset.open === HD2).click(); await flush();
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === HD2).click(); await flush();
   await list.querySelectorAll("[data-confirm-remove]")[0].click(); await flush();
   check("5b honest: an HD account removes in one click, with no password", JSON.stringify(removed.at(-1)) === JSON.stringify([HD2]));
@@ -252,10 +259,26 @@ console.log("9. the send review's Name row");
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
   await review("alice.csd");
   const name = String(byId("c-name").textContent);
-  const badge = "✓ chain-backed, 2 name servers agree (same operator) (14 conf)";
+  const badge = "Chain-backed, 2 name servers agree (same operator) (14 conf).";
   check(`9a the Name row is the name and the short address (${name})`, name === "alice.csd → 0x313131…3131 (via owner)");
-  check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("chain-backed"));
+  check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("Chain-backed"));
   check("9c the To address is grouped in fours and its text is the raw address", String(byId("c-to").innerHTML).replace(/<[^>]*>/g, "") === PAID && (String(byId("c-to").innerHTML).match(/<span>/g) || []).length === 10);
+}
+
+// 10. W-12: a link to the explorer or the site ends in the sprite's external-link icon, never an arrow character, and
+//     a row's time reads one way on every machine, in the explorer's 24-hour UTC format.
+//     RED-FIRST: put "… ↗" back in renderHistory and 10a fails; put toLocaleString back and 10b fails.
+console.log("10. links and times");
+{
+  history = [{ type: "send", to: PAID, amount: 1e8, fee: 1e6, txid: TXID, ts: Date.UTC(2026, 9, 24, 15, 30, 59) }];
+  await byId("nav-home").click();
+  await byId("btn-activity-t").click(); await flush();
+  const list = String(byId("history-list").innerHTML);
+  check("10a an Activity row's explorer link ends in the external-link icon, with no arrow character", list.includes('<use href="icons.svg#i-external-link"/>') && !list.includes("↗"));
+  check(`10b the row's time is "24 Oct 2026, 15:30 UTC" (${(/· ([^<]*UTC)/.exec(list) || [])[1]})`, list.includes("· <span class=\"when\">24 Oct 2026, 15:30 UTC</span>"));
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../src/popup/popup.html", import.meta.url), "utf8");
+  check("10c popup.html carries no arrow character in a link", !html.includes("↗"));
 }
 
 done("popup-checks-dom");

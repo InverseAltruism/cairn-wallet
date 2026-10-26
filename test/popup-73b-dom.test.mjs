@@ -3,7 +3,7 @@
 //
 //   1. Copy buttons say "copied" only after the clipboard write resolved (seed, key, phrase, address).
 //      RED-FIRST: route the six copy handlers back to `navigator.clipboard?.writeText(x)?.catch(() => {});
-//      flashBtn(id, "copied ✓")` and 1a-1d fail. HONEST PATH: 1e-1h.
+//      flashBtn(id, "Copied")` and 1a-1d fail. HONEST PATH: 1e-1h.
 //   2. A token send signs base units built from the PINNED decimals for a pinned ticker (CAIRN), not the
 //      served ones. RED-FIRST: use `meta[t]?.decimals ?? 0` in renderAssets and 2a, 2b fail. HONEST PATH: 2c.
 //   3. The CSD anchor-fee pre-check names the fee once ("0.25 CSD", not "0.25 CSD CSD"). RED-FIRST: 3a.
@@ -94,22 +94,22 @@ async function copy(btn) { await byId(btn).click(); await flush(); return String
   await byId("btn-export").click(); byId("reveal-pw").value = "pw"; await byId("btn-reveal-go").click(); await flush();
   mode = "deny";
   const seed = await copy("btn-copy-seed"), priv = await copy("btn-copy-priv");
-  t("1a a refused write on the recovery phrase does not say copied", () => { assert.equal(seed, "copy failed"); assert.equal(byId("btn-copy-seed").classList.contains("copied"), false); assert.match(text(), /could not copy to the clipboard/); });
-  t("1b a refused write on the backup key does not say copied", () => { assert.equal(priv, "copy failed"); });
+  t("1a a refused write on the recovery phrase does not say copied", () => { assert.equal(seed, "Copy failed"); assert.equal(byId("btn-copy-seed").classList.contains("copied"), false); assert.match(text(), /Could not copy to the clipboard/); });
+  t("1b a refused write on the backup key does not say copied", () => { assert.equal(priv, "Copy failed"); });
   mode = "absent";
   const key = await copy("btn-reveal-copy"), addr = await copy("btn-copy");
   await byId("btn-phrase").click(); byId("phrase-pw").value = "pw"; await byId("btn-phrase-go").click(); await flush();
-  t("1c no clipboard API on the revealed key: copy failed", () => { assert.equal(key, "copy failed"); });
-  t("1d no clipboard API on the address: copy failed", () => { assert.equal(addr, "copy failed"); });
+  t("1c no clipboard API on the revealed key: copy failed", () => { assert.equal(key, "Copy failed"); });
+  t("1d no clipboard API on the address: copy failed", () => { assert.equal(addr, "Copy failed"); });
 
   mode = "ok"; written.length = 0;
   const okSeed = await copy("btn-copy-seed"), okPriv = await copy("btn-copy-priv"), okPhrase = await copy("btn-phrase-copy");
   await byId("btn-export").click(); byId("reveal-pw").value = "pw"; await byId("btn-reveal-go").click(); await flush();   // opening the phrase panel wiped the revealed key
   const okKey = await copy("btn-reveal-copy");
-  t("1e honest: the phrase copy writes the phrase and says copied", () => { assert.equal(okSeed, "copied ✓"); assert.equal(written[0], PHRASE); });
-  t("1f honest: the backup key copy writes the key and says copied", () => { assert.equal(okPriv, "copied ✓"); assert.equal(written[1], KEY); });
-  t("1g honest: the revealed phrase copy writes the phrase", () => { assert.equal(okPhrase, "copied ✓"); assert.equal(written[2], PHRASE); });
-  t("1h honest: the revealed key copy writes the key", () => { assert.equal(okKey, "copied ✓"); assert.equal(written[3], KEY); });
+  t("1e honest: the phrase copy writes the phrase and says copied", () => { assert.equal(okSeed, "Copied"); assert.equal(written[0], PHRASE); });
+  t("1f honest: the backup key copy writes the key and says copied", () => { assert.equal(okPriv, "Copied"); assert.equal(written[1], KEY); });
+  t("1g honest: the revealed phrase copy writes the phrase", () => { assert.equal(okPhrase, "Copied"); assert.equal(written[2], PHRASE); });
+  t("1h honest: the revealed key copy writes the key", () => { assert.equal(okKey, "Copied"); assert.equal(written[3], KEY); });
   await byId("btn-backup-done").click(); await flush();
 }
 

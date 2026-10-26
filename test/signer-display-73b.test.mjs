@@ -2,16 +2,16 @@
 //
 //   A. One bigint formatter. A CSD amount renders as an exact decimal (1 base unit = "0.00000001 CSD",
 //      never "1e-8 CSD") on recipient rows, totals, fees and cost lines.
-//      RED-FIRST: restore clearsign's `fmtCsd = (raw) => `${Number(raw) / 1e8} CSD`` (and feeLine's
+//      RED-FIRST: restore clearsign's `fmtCsd = (raw) => `${Number(raw) / 1e8} CSD`` (and feeValue's
 //      `${fee / 1e8} CSD`) and A1-A4 fail. HONEST PATH: A5, A6. Equivalence of fmtBalance with the
 //      float formatter it replaced, on values below 2^53: A7.
 //   B. Token decimals outside the schema range (0..8) never scale a figure; a pinned ticker uses its
 //      pinned decimals on the CSD-paid fill card.
 //      RED-FIRST: B1 fails on the former formatBase (accepted 0..18), B2 on the unguarded
 //      tokenAmountBothScales, B3 on fillViewHtml passing served decimals. HONEST PATH: B4, B5.
-//   C. costLine for a fill no longer says the outputs go to the seller (they include the protocol fee
+//   C. costBlock for a fill no longer says the outputs go to the seller (they include the protocol fee
 //      and the maker rebate). RED-FIRST: the former "paid to the seller" copy fails C1. HONEST PATH: C2.
-//   D. expiryLine reads the vendored EPOCH_LEN. EPOCH_LEN is 30, the literal it replaced, so no
+//   D. expiryValue reads the vendored EPOCH_LEN. EPOCH_LEN is 30, the literal it replaced, so no
 //      mutation can turn this red; D1 pins the output as an equivalence check.
 //   E. registerContent is bounded. RED-FIRST: drop the `signal` from its fetch and E1, E2 fail
 //      (E2 by timing out). HONEST PATH: E3.
@@ -22,7 +22,7 @@
 //
 // Run: node --import tsx test/signer-display-73b.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
-import { fmtCsd, fmtBalance, describe, costLine, feeLine, tokenQuoteHtml, tokenAmountBothScales, fillViewHtml, expiryLine } from "../src/popup/clearsign.ts";
+import { fmtCsd, fmtBalance, describe, costBlock, feeValue, tokenQuoteHtml, tokenAmountBothScales, fillViewHtml, expiryValue, FILL_PAYS } from "../src/popup/clearsign.ts";
 import { registerContent } from "../src/core/node.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
@@ -36,11 +36,11 @@ const PROXY = "https://cairn-substrate.com/api/rpc";
 console.log("A. one exact CSD formatter");
 check("A1 fmtCsd(1) is 0.00000001 CSD", fmtCsd(1) === "0.00000001 CSD");
 const tiny = describe({ method: "send", params: { outputs: [{ to: A1, value: 1 }, { to: A2, value: 2 }], fee: 1 } });
-check("A2 a send of 1 base unit renders exactly on its recipient row, total and fee", tiny.includes("0.00000001 CSD") && tiny.includes("total: <b>0.00000003 CSD</b>") && tiny.includes("fee: 0.00000001 CSD") && !/e-\d/.test(tiny));
-check("A3 feeLine renders a 1 base unit fee exactly", feeLine(1) === "fee: 0.00000001 CSD");
-check("A4 costLine renders a 1 base unit fee exactly", costLine({ method: "attest", params: { fee: 1 } }) === "cost: 0.00000001 CSD network fee.");
-check("A5 honest: a 1.5 CSD send still reads 1.5 CSD", describe({ method: "send", params: { to: A1, amount: 150_000_000, fee: 1_000_000 } }).includes("<b>1.5 CSD</b>"));
-check("A6 honest: a fee above the 5 CSD mark still warns, a normal fee does not", feeLine(600_000_000).includes("unusually large fee") && !feeLine(1_000_000).includes("unusually"));
+check("A2 a send of 1 base unit renders exactly on its recipient row, total and fee", tiny.includes(`<b class="out-amt">0.00000001 CSD</b>`) && tiny.includes(`<div class="ap-amt">0.00000003 CSD <span class="dim">to 2 recipients</span></div>`) && tiny.includes("<dt>Network fee</dt><dd>0.00000001 CSD</dd>") && tiny.includes("<dt>Total</dt><dd>0.00000004 CSD</dd>") && !/e-\d/.test(tiny));
+check("A3 feeValue renders a 1 base unit fee exactly", feeValue(1) === "0.00000001 CSD");
+check("A4 costBlock renders a 1 base unit fee exactly", costBlock({ method: "attest", params: { fee: 1 } }).includes("<dt>Network fee</dt><dd>0.00000001 CSD</dd>"));
+check("A5 honest: a 1.5 CSD send still reads 1.5 CSD", describe({ method: "send", params: { to: A1, amount: 150_000_000, fee: 1_000_000 } }).includes(`<div class="ap-amt">1.5 CSD</div>`));
+check("A6 honest: a fee above the 5 CSD mark still warns, a normal fee does not", feeValue(600_000_000).includes("unusually large fee") && !feeValue(1_000_000).includes("unusually"));
 {
   const old = (base) => (base / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const samples = [0, 1, 5_000, 12_345, 99_999_999, 100_000_000, 123_456_789, 1_054_000_000_000, -2_500_000, 2 ** 53 - 1];
@@ -61,11 +61,11 @@ check("B5 honest: a fill card without decimals for an unpinned token shows base 
 
 console.log("C. fill cost line");
 const fill = { method: "fillOffer", params: { proposalId: PID, outputs: [{ to: A1, value: 500_000_000 }, { to: A2, value: 7_500_000 }], fee: 5_000_000 } };
-check("C1 the fill cost line does not say the outputs go to the seller", !/seller/i.test(costLine(fill)));
-check("C2 honest: it states the full amount out and the network fee", costLine(fill) === "cost: 5.075 CSD to the recipients listed above + 0.05 CSD network fee, atomic with the fill.");
+check("C1 the fill cost line does not say the outputs go to the seller", !/seller/i.test(describe(fill)));
+check("C2 honest: it states the full amount out and the network fee", describe(fill).includes(`<div class="ap-amt">5.075 CSD</div>`) && costBlock(fill).includes("<dt>Network fee</dt><dd>0.05 CSD</dd>") && costBlock(fill).includes("<dt>Total</dt><dd>5.125 CSD</dd>") && describe(fill).includes(FILL_PAYS) && !/atomic/i.test(describe(fill)));
 
 console.log("D. epoch length");
-check(`D1 24 epochs from now read as about a day (EPOCH_LEN ${EPOCH_LEN})`, expiryLine(124, 100).includes("in ~1 day(s)") && expiryLine(101, 100).includes("in ~1 h"));
+check(`D1 24 epochs from now read as about a day (EPOCH_LEN ${EPOCH_LEN})`, expiryValue(124, 100).includes("in ~1 day(s)") && expiryValue(101, 100).includes("in ~1 h"));
 
 console.log("E. registerContent timeout");
 {

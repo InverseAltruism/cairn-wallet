@@ -70,8 +70,10 @@ console.log("3. decimals unknown or unusable on an unpinned token: base units on
     const t = text(cairnxDescribe(TBID.uri, TBID.payloadHash, { TOKX: { decimals: bad } }));
     check(`decimals ${JSON.stringify(bad)} is not used (base units only)`, t.includes("463852873290 base units of TOKX") && !t.includes(" TOKX = "));
   }
-  const noMeta = text(cairnxDescribe(TBID.uri, TBID.payloadHash));
-  check("no meta argument at all: base units only and no ticker warning", noMeta.includes("463852873290 base units of TOKX") && !/⚠/.test(noMeta));
+  const noMetaHtml = cairnxDescribe(TBID.uri, TBID.payloadHash);
+  const noMeta = text(noMetaHtml);
+  // a ticker warning is a check row (its tier in the icon and tint), so "no warning" is "no check row"
+  check("no meta argument at all: base units only and no ticker warning", noMeta.includes("463852873290 base units of TOKX") && !noMetaHtml.includes('class="check'));
   const cairnNoMeta = text(cairnxDescribe(BID.uri, BID.payloadHash, {}));
   check("CAIRN with no meta: pinned decimals still give the human figure, plus the record-did-not-load warning (D-1)",
     cairnNoMeta.includes("4638.5287329 CAIRN = 463852873290 base units") && /Could not confirm this CAIRN/.test(cairnNoMeta));

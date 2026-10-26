@@ -71,7 +71,7 @@ answer = () => { state.pending = []; return { done: true, ok: true, txid: "0x" +
 await click("btn-approve");
 assert.equal(calls.length, 2);
 assert.deepEqual(calls[1][4], { requestId: "u1", fclaimTxid: FC }, "(2) the acknowledgement is bound to (request id, fclaim)");
-assert.match(registry.get("msg").textContent, /^sent 0xcdcdcdcd/);
+assert.match(registry.get("msg").textContent, /^Sent 0xcdcdcdcd/);
 console.log("  ok (2) Sign anyway re-sends the approval with the acknowledgement");
 
 // (3) Cancel rejects
@@ -87,7 +87,7 @@ const before = calls.length;
 answer = () => { state.pending = []; return { done: true, ok: false, code: "USER_REJECTED", error: "rejected by user" }; };
 await click("btn-reject");
 assert.deepEqual(calls[before].slice(0, 2), ["u3", false], "(3) Cancel is a rejection of the same request");
-assert.equal(registry.get("msg").textContent, "rejected");
+assert.equal(registry.get("msg").textContent, "Rejected. Nothing was signed.");
 console.log("  ok (3) Cancel rejects the request");
 
 // (4) honest path: signed on the first approval, no warning, one call
@@ -99,7 +99,7 @@ await click("btn-approve");
 assert.equal(calls.length - n0, 1);
 assert.equal(calls[n0][4], undefined);
 assert.ok(!req().includes("no record of your reservation"));
-assert.match(registry.get("msg").textContent, /^sent 0xeeeeeeee/);
+assert.match(registry.get("msg").textContent, /^Sent 0xeeeeeeee/);
 console.log("  ok (4) honest path: one click, no extra step");
 
 // (5) M1 interleaving: a `pending` poll started before the click returns its pre-approval snapshot after resolve()

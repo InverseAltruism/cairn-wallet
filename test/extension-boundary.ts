@@ -7,6 +7,7 @@
 // prove they are rejected (not executed), even after the user approves.
 import { sha256 } from "@noble/hashes/sha256"; // (force module init parity w/ background)
 import { readFileSync } from "node:fs";
+import { scriptSource } from "../scripts/popup-ids.mjs";
 import { mkCoin, txReply } from "./_coin.js";
 
 declare const process: { exit(code: number): void };
@@ -211,7 +212,7 @@ async function main() {
     && mouts.some((o: any) => spkHex(o.script_pubkey) === R2 && Number(o.value) === 30_000_000)
     && mouts.some((o: any) => spkHex(o.script_pubkey) === addr));
 
-  console.log("\n=== dApp `fillOffer` (Attest + payment, atomic DvP) is approval-gated and cannot smuggle ===");
+  console.log("\n=== dApp `fillOffer` (Attest + payment in one tx) is approval-gated and cannot smuggle ===");
   lastSubmit = null;
   const OFFER_ID = "0x" + "22".repeat(32);
   const SELLER = "0x" + "ee".repeat(20);
@@ -420,9 +421,9 @@ async function main() {
   // one re-opens the surface, so both must be covered here as well as in build.mjs's FORBIDDEN tripwire.
   const SCAN = [
     "../src/background.ts", "../src/content.ts", "../src/inpage.ts",
-    "../src/popup/popup.ts", "../src/popup/approve.ts", "../src/popup/clearsign.ts",
+    "../src/popup/approve.ts", "../src/popup/clearsign.ts",
     "../src/core/wallet.ts", "../src/core/node.ts", "../public/manifest.json",
-  ].map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).join("\n");
+  ].map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).concat(scriptSource("popup.ts")).join("\n");
   check("no `externally_connectable` anywhere in src/ or manifest", !/externally_connectable/.test(SCAN));
   check("no `onMessageExternal` anywhere in src/ or manifest", !/onMessageExternal/.test(SCAN));
   check("no `onConnectExternal` anywhere in src/ or manifest (port-based external surface)", !/onConnectExternal/.test(SCAN));
