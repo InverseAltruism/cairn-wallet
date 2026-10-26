@@ -27,7 +27,8 @@ const popupAnswers = {
   status, balance: { confirmed: 128_473_500_000, utxos: [] }, pendingMerge: { pending: false, amount: 0, maybe: false, stuck: false }, prewarmSpv: { ok: true }, pending: [],
   cairnxAssets: { ok: true, primaryName: "alice", tipHeight: 120_000, balances: { CAIRN: { available: "1250000000000", locked: "0" }, SUNRISE: { available: "4200000", locked: "500000" } }, names: ["alice", "studio"],
     nameDetails: [{ name: "alice", leased: true, epochsLeft: 6000 }, { name: "studio", leased: true, epochsLeft: 400 }] },
-  cairnxTokens: { ok: true, tokens: [{ ticker: "CAIRN", decimals: 8 }, { ticker: "SUNRISE", decimals: 2 }] },
+  // CAIRN carries the deploy id the wallet pins, so its row shows the Cairn mark (src/popup/tiles.ts)
+  cairnxTokens: { ok: true, tokens: [{ ticker: "CAIRN", decimals: 8, deployId: "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517" }, { ticker: "SUNRISE", decimals: 2 }] },
   history: [
     { type: "send", to: PAID, amount: 150_000_000, fee: 1_000_000, txid: "0x" + "a1".repeat(32), ts: T0 },
     { type: "fillOffer", to: PAID, amount: 250_000_000, txid: "0x" + "a3".repeat(32), ts: T0 - 7_200_000 },
