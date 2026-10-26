@@ -8,8 +8,13 @@ export function show(view: string) { for (const v of ["setup", "backup", "locked
 // fading (the outcome still lives in Activity/history). busy() cancels any pending fade.
 let msgTimer: ReturnType<typeof setTimeout> | undefined;
 let msgFadeTimer: ReturnType<typeof setTimeout> | undefined;
+// Every flow shares the one status line. A write that says something (an outcome, a refusal, a "…ing" line; a clear
+// says nothing) moves this count, so a late note about an earlier action can tell whether anything newer is on screen.
+let msgWrites = 0;
+export const statusWrites = (): number => msgWrites;
 // `detail`, when given, is a second, smaller line under the text (the sent toast says what happens next).
 export function msg(text: string, cls = "info", detail?: string) {
+  if (text) msgWrites++;
   const m = $("msg");
   clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
   m.classList.remove("fade");
@@ -28,6 +33,7 @@ export function msg(text: string, cls = "info", detail?: string) {
 // settings breadcrumb and faded in 8s). Any later msg()/busy() replaces it, so it never overstays
 // a flow change. textContent + createElement only: r.error strings never touch innerHTML.
 export function msgAction(text: string, label: string, fn: () => void, cls = "err") {
+  msgWrites++;
   const m = $("msg");
   clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
   m.classList.remove("fade");
@@ -46,6 +52,7 @@ export function msgAction(text: string, label: string, fn: () => void, cls = "er
 // In-progress status with an animated spinner (for async actions). Never auto-fades: it is
 // always replaced by the outcome message of the action that showed it.
 export function busy(text: string) {
+  msgWrites++;
   const m = $("msg");
   clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
   m.classList.remove("fade");

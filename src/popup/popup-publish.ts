@@ -33,8 +33,10 @@ async function populateDomains() {
 }
 
 $("btn-seal-t").addEventListener("click", () => { if (openPanel("seal-form")) renderSealed(); });
-// One click is one signature (R3: "one Confirm is one signature"): Seal, Post and Reveal each sign and pay a fee, so the
-// button is disarmed before any await and armed again when the outcome lands.
+// One click is one signature (R3: "one Confirm is one signature"): Seal and Post each sign a transaction and pay its fee,
+// so the button is disarmed before any await and armed again when the outcome lands. Reveal is an off-chain POST of the
+// sealed text (core/claims.ts revealClaim, no signature, no fee, idempotent) and takes the same latch; a list re-render
+// draws a fresh Reveal button, which is harmless for that reason.
 async function once(btn: HTMLButtonElement, run: () => Promise<unknown>) {
   if (btn.disabled) return;
   btn.disabled = true;

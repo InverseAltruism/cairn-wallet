@@ -25,8 +25,16 @@
 //      lands. RED-FIRST: drop `|| submitting` from armReview and J1 sees two sends.
 //   K. Two clicks on Post post once, two on Seal seal once. RED-FIRST: drop `once` in popup-publish.ts and K1 sees two.
 //   L. After an account switch, while the new account's balance has not answered, the send sheet's balance after is
-//      unknown, never the old account's. RED-FIRST: keep `balanceState.last` in forgetBalance and L1 shows 98.99 CSD.
-// HONEST PATHS: A2, C2, D2, E2, F2, H2, I2, J2 and K2 sign once with the production call shape.
+//      unknown, never the old account's (runs last: the second account's balance never answers). RED-FIRST: keep
+//      `balanceState.last` in forgetBalance and L1 shows 98.99 CSD.
+//   M. A send Confirm left during its re-check does not write "The review was closed…" over a Post's, a Seal's or a name
+//      renewal's outcome that landed meanwhile (the status line is shared by every flow). RED-FIRST: drop the
+//      `statusWrites() === writes` condition in runConfirm and M1-M3 see the note over the outcome.
+//   N. A send outcome takes down every review card with its snapshot: no token card stays on screen, Confirm held and
+//      its inputs disabled, after a CSD outcome. RED-FIRST: hide only `f`'s card in teardownReview and N1 fails.
+//      A CSD Confirm is held while a token send is in flight (N3).
+// HONEST PATHS: A2, C2, D2, E2, F2, H2, I2, J2, K2 and N2 sign once with the production call shape; C1 and D1 show the
+// "review was closed" note when nothing else wrote the status line.
 // Run: node --import tsx test/popup-confirm-snapshot-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -231,6 +239,63 @@ console.log("K. two clicks on Post and on Seal");
     JSON.stringify(posts[0]) === JSON.stringify({ domain: "csd:apps", title: "t", body: "b", fee: 25_000_000 }) && JSON.stringify(seals[0]) === JSON.stringify({ domain: "csd:sealed", claim: "x" }));
   await byId("btn-post").click(); await flush(40);
   check("K3 once its outcome landed, Post posts again", posts.length === 2);
+}
+
+console.log("M. a left send Confirm and another flow's outcome");
+{
+  const acts = [
+    ["Post", async () => { byId("p-domain").value = "csd:apps"; byId("p-title").value = "t2"; byId("p-body").value = "b"; byId("p-fee").value = ""; await byId("btn-post").click(); }, /^Posted · /],
+    ["Seal", async () => { byId("seal-claim").value = "y"; byId("seal-domain").value = ""; await byId("btn-seal").click(); }, /^Seal submitted · /],
+    ["Renew", async () => {
+      await byId("nav-names").click(); await flush();
+      await byId("names-list").querySelectorAll("[data-name]")[0].click(); await flush();
+      await byId("nd-actions").querySelectorAll("[data-nrenew]")[0].click(); await flush();
+      await byId("btn-name-confirm").click();
+    }, /^Renewed: alice\.csd/],
+  ];
+  let i = 1;
+  for (const [what, act, okRe] of acts) {
+    await csdReview("alice.csd");
+    const before = sends.length;
+    confirmGate = new Promise((r) => (release = r));
+    const p = byId("btn-send-confirm").click(); await flush();
+    await byId("nav-home").click(); await flush();     // leave the send sheet while its Confirm re-checks the name
+    await act(); await flush(40);
+    const outcome = text();
+    release(); await p; await flush(40); confirmGate = null;
+    check(`M${i++} ${what}: its outcome stays on screen after the left send Confirm returns ("${outcome.slice(0, 40)}", then "${text().slice(0, 40)}"; ${sends.length - before} sends)`,
+      okRe.test(outcome) && text() === outcome && sends.length === before);
+  }
+}
+
+console.log("N. a send outcome and the other flow's review card");
+{
+  await csdReview(EXTERNAL);
+  const realSend = h.send;
+  let releaseS; const gateS = new Promise((r) => (releaseS = r));
+  h.send = async (...a) => { sends.push(a); await gateS; return { ok: false, code: "INSUFFICIENT", error: "insufficient funds" }; };
+  const p1 = byId("btn-send-confirm").click(); await flush();
+  await byId("nav-home").click(); await flush();     // the CSD send is in flight; the user moves on to a token send
+  await tokenReview("CAIRN", EXTERNAL, "2");
+  const held = byId("btn-tsend-confirm").disabled;
+  releaseS(); await p1; await flush(40); h.send = realSend;   // the CSD send is refused: its teardown runs, no sheet closes
+  check(`N1 after the CSD refusal no token card is left on screen, and its inputs are live again (card ${!byId("tsend-confirm").hidden}, inputs disabled ${byId("ts-to").disabled}, Confirm held while in flight ${held}; "${text().slice(0, 40)}")`,
+    held === true && byId("tsend-confirm").hidden === true && byId("ts-to").disabled === false && byId("ts-amt").disabled === false && byId("ts-amt").value === "2" && /Nothing was sent/.test(text()));
+  const before = transfers.length;
+  await byId("btn-tsend").click(); await flush();
+  await byId("btn-tsend-confirm").click(); await flush(40);
+  check(`N2 honest: the token draft reviews and signs (${JSON.stringify(transfers.at(-1))})`, transfers.length - before === 1 && JSON.stringify(transfers.at(-1)) === JSON.stringify({ ticker: "CAIRN", amount: "200000000", to: EXTERNAL, decimals: 8, fee: 25_000_000, expectSigner: ME }));
+  // the other direction: a token send in flight holds a CSD Confirm
+  await tokenReview("CAIRN", EXTERNAL, "1");
+  let releaseT; const gateT = new Promise((r) => (releaseT = r));
+  const realTransfer = h.cairnxTransfer;
+  h.cairnxTransfer = async (q) => { transfers.push(q); await gateT; return { ok: true, txid: TXID }; };
+  const pt = byId("btn-tsend-confirm").click(); await flush();
+  await byId("nav-home").click(); await flush();
+  await csdReview("alice.csd");
+  const csdHeld = byId("btn-send-confirm").disabled;
+  releaseT(); await pt; await flush(40); h.cairnxTransfer = realTransfer;
+  check(`N3 a CSD Confirm is held while a token send is in flight (${csdHeld}), and the token outcome is shown ("${text().slice(0, 30)}")`, csdHeld === true && /^Sent 1 CAIRN/.test(text()));
 }
 
 console.log("L. the send sheet's balance after an account switch");

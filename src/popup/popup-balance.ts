@@ -142,5 +142,6 @@ export function resetBalanceView() {
   row.textContent = ""; row.classList.remove("stale");
   ($("bal-note") as HTMLElement).hidden = true;
 }
-// An account switch closes every sheet, and the send sheet computes its estimate when it opens, so no repaint here.
+// No repaint here: the send sheet computes its estimate when it opens, and no path that changes the account leaves it
+// open (a switch closes every sheet; a removal runs from the Accounts sheet, one sheet at a time).
 export function forgetBalance() { balanceState.last = null; balanceState.stale = false; }

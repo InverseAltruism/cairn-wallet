@@ -112,8 +112,9 @@
   with the first token's decimals, whose Confirm signed it; and Back, Review and Confirm while a send was in flight
   started a second send. A Review now primes nothing once the person has left it, and while a send is in flight no
   review arms Confirm. Only the latest Confirm writes an outcome, so a Confirm overtaken during its re-check cannot
-  cover a later send's "Sent" or "Sending…". Post, Seal and a sealed claim's Reveal sign and pay a fee, and two clicks
-  on them signed twice; each is now held until its outcome lands. test/popup-confirm-snapshot-dom.test.mjs pins every
+  cover a later send's "Sent" or "Sending…", or a Post's, a Seal's or a name action's outcome. Post and Seal sign and pay
+  a fee, and two clicks on them signed twice; each is now held until its outcome lands, and so is a sealed claim's
+  Reveal (an off-chain publication of the sealed text, no fee). test/popup-confirm-snapshot-dom.test.mjs pins every
   case.
 - A failed balance read no longer writes "unavailable" in the 40 px amount: with no earlier read, "Balance
   unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount

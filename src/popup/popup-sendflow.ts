@@ -1,7 +1,7 @@
 // The review-and-confirm engine the CSD and token sends share.
 import { checkRow, type Check, escapeHtml, fmtBalance } from "./clearsign.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
-import { $, busy, msg, msgAction } from "./popup-dom.js";
+import { $, busy, msg, msgAction, statusWrites } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
 import { celebrateSend, mergePendingNow, refreshBalance } from "./popup-balance.js";
 import { closeAllPanels, syncNav } from "./popup-panels.js";
@@ -27,12 +27,15 @@ export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn
   sent: pending };
 // A Confirm whose review was dropped (Back, a sheet switch, a lock, an account switch) or replaced while it waited.
 export const REVIEW_GONE = "The review was closed before it was signed. Nothing was sent.";
-// Hide the confirm card, drop every frozen snapshot, re-enable the inputs. Success alone clears the
-// typed values; every other exit (Back / fail / catch) keeps the draft.
+// Drop every frozen snapshot (dropReviews, the one teardown), and with them every review card: no card stays on
+// screen without the snapshot its Confirm would sign, so both flows' cards hide and both input sets come back. Success
+// alone clears the typed values, and only `f`'s; every other exit (Back / fail / catch) keeps the drafts.
 export function teardownReview(f: SendFlow, clearValues: boolean) {
-  ($(f.ids.confirm) as HTMLElement).hidden = true;
   dropReviews();
-  for (const id of [f.ids.to, f.ids.amt]) { const el = $(id) as HTMLInputElement; el.disabled = false; if (clearValues) el.value = ""; }
+  for (const flow of [CSD_FLOW, TOKEN_FLOW]) {
+    ($(flow.ids.confirm) as HTMLElement).hidden = true;
+    for (const id of [flow.ids.to, flow.ids.amt]) { const el = $(id) as HTMLInputElement; el.disabled = false; if (clearValues && flow === f) el.value = ""; }
+  }
 }
 // Arm the review: disable the inputs the snapshot was read from and show the confirm card (editing
 // the form after "Review" must not let displayed values diverge from signed ones). Confirm is live unless `hold`
@@ -53,7 +56,9 @@ export function armReview(f: SendFlow, hold = false) {
 //   - after the confirm-time name re-check the snapshot must still be the one clicked (Back, a sheet switch, a lock, an
 //     account switch drop it, a new Review replaces it), or nothing is sent;
 //   - only the latest Confirm writes an outcome (`confirmGen`, across both flows): a Confirm overtaken during its re-check
-//     shows nothing, so it cannot cover a later Confirm's "Sent" or "Sending…";
+//     shows nothing, so it cannot cover a later Confirm's "Sent" or "Sending…"; and its "review was closed" note shows
+//     only if nothing else wrote the shared status line since the click (popup-dom statusWrites), so it cannot cover
+//     a Post's, a Seal's or a name action's outcome either;
 //   - while a submission is in flight no review arms Confirm (`submitting`), so a second submission cannot start before
 //     the first one's outcome lands.
 let confirmGen = 0;
@@ -65,11 +70,12 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   if (!snap || btn.disabled) return;
   btn.disabled = true;
   const gen = ++confirmGen;
+  const writes = statusWrites();
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7); fail-closed to a re-review either way.
   const stillPoints = !snap.name || (await nameStillPointsTo(snap.name, snap.to, snap.verified));
   if (gen !== confirmGen) return;                    // a later Confirm owns the outcome line; this one sent nothing
-  if (review.read() !== snap) return msg(REVIEW_GONE, "err");
+  if (review.read() !== snap) { if (statusWrites() === writes) msg(REVIEW_GONE, "err"); return; }
   if (!stillPoints) { teardownReview(f, false); return msg(`${snap.name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
   review.consume();                                  // a second click finds no review
   submitting = true;
