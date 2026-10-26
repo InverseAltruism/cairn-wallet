@@ -476,6 +476,7 @@ var HALVING_INTERVAL = 1051200;
 var MAX_HALVINGS = 64;
 var MIN_FEE_PROPOSE = 25e6;
 var MIN_FEE_ATTEST = 5e6;
+var MAX_TX_INPUTS = 512;
 var MAX_URI_BYTES = 512;
 var MAX_U128 = (1n << 128n) - 1n;
 function blockReward(height) {
@@ -3523,9 +3524,40 @@ function authorOf(tx, prevoutScriptPubkey) {
   return recoverSigner(in0.scriptSig, digest) === owner ? owner : null;
 }
 
+// node_modules/@inversealtruism/csd-tx/dist/index.js
+function selectInputs(utxos, need, exclude) {
+  const seen = /* @__PURE__ */ new Set();
+  const confirmed = utxos.filter((x) => {
+    const c = Number(x.confirmations ?? 0);
+    if (!Number.isFinite(c) || c < 1) return false;
+    const v = Number(x.value);
+    if (!Number.isFinite(v) || v <= 0 || !Number.isSafeInteger(v)) return false;
+    const key = `${strip0x(String(x.txid).toLowerCase())}:${Number(x.vout)}`;
+    if (exclude && (exclude.has(key) || exclude.has(`0x${key}`))) return false;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const take = (pool) => {
+    const inputs = [];
+    let total = 0;
+    for (const x of [...pool].sort((a, b) => Number(b.value) - Number(a.value))) {
+      const v = Number(x.value);
+      total += v;
+      if (!Number.isSafeInteger(total)) return null;
+      inputs.push({ txid: x.txid, vout: Number(x.vout), value: v });
+      if (inputs.length > MAX_TX_INPUTS) return null;
+      if (total >= need) return { inputs, total };
+    }
+    return null;
+  };
+  return take(confirmed.filter((x) => !x.coinbase)) ?? take(confirmed);
+}
+
 // node_modules/@inversealtruism/cairnx-core/dist/index.js
 var DOMAIN = "cairnx:v1";
 var ACTIVATION_HEIGHT = 29860;
+var beforeActivation = (height) => height < ACTIVATION_HEIGHT;
 var V11_HEIGHT = 29960;
 var V12_HEIGHT = 30300;
 var V13_HEIGHT = 31100;
@@ -4600,10 +4632,6 @@ function applyOffer(c, ev, rec, who) {
   const payto = (rec.want.payto ?? who).toLowerCase();
   const give = rec.give;
   if (isNameGive(give)) {
-    if (!v11) {
-      note(ev, ev.id, "offer", false, "name offers need v1.1");
-      return;
-    }
     const n = names.get(give.name);
     if (!n || n.owner !== who) {
       note(ev, ev.id, "offer", false, "you don't own this name");
@@ -4799,6 +4827,7 @@ function offerEnvelopeRefusal(rec, who, height, expiresEpoch) {
   if (!Number.isSafeInteger(expiresEpoch)) return "expiresEpoch out of safe-integer range";
   if (epochOf(height) > expiresEpoch) return "already expired at anchor";
   if (height >= V21_HEIGHT && height < V22_HEIGHT && expiresEpoch - epochOf(height) > MAX_OFFER_EPOCHS) return "v2.1: offer duration exceeds the max";
+  if (isNameGive(rec.give) && height < V11_HEIGHT) return "name offers need v1.1";
   return null;
 }
 function applyDeploy(c, ev, rec, who, feeToTreasury) {
@@ -4918,7 +4947,7 @@ function resolve(events, tipHeight) {
     c.pendingCancels = [];
   };
   for (const ev of applied) {
-    if (ev.height < ACTIVATION_HEIGHT) continue;
+    if (beforeActivation(ev.height)) continue;
     if (ev.height !== pendingBlock) {
       applyPendingCancels();
       pendingBlock = ev.height;
@@ -5434,6 +5463,7 @@ function countOtherHoldsAtGrant(candidates, target, me, closed = /* @__PURE__ */
 }
 function provenOfferRefusal(rec, tx) {
   if (tx.domain !== DOMAIN) return `not a ${DOMAIN} Propose (domain ${JSON.stringify(String(tx.domain))})`;
+  if (beforeActivation(tx.height)) return `anchored before CairnX activation (block ${ACTIVATION_HEIGHT})`;
   const ee = typeof tx.expiresEpoch === "bigint" ? Number(tx.expiresEpoch) : tx.expiresEpoch;
   return offerEnvelopeRefusal(rec, String(tx.seller).toLowerCase(), tx.height, ee);
 }
@@ -5479,6 +5509,7 @@ export {
   MAX_RECORD_BYTES,
   MAX_SCAN,
   MAX_TOKEN_DECIMALS,
+  MAX_TX_INPUTS,
   MINT_KEYS,
   MIN_FEE_ATTEST,
   MIN_FEE_PROPOSE,
@@ -5536,6 +5567,7 @@ export {
   addrFromPub,
   addrFromScriptPubkey,
   authorOf,
+  beforeActivation,
   bid,
   bindBlockBody,
   bindOfferTerms,
@@ -5601,8 +5633,10 @@ export {
   requiredFillOutputs,
   resolve,
   rpcTxToTx,
+  selectInputs,
   serializeHeader,
   sighash,
+  strip0x,
   tokenMeta,
   tradeFee,
   transfer,
