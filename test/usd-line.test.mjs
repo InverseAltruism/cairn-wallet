@@ -3,11 +3,11 @@
 // absent, never a guess, when the route answers 503 (the site's market data off), fails, or serves no usable price.
 // The fixture is the live body read on 2026-10-26.
 // RED-FIRST: let parseCsdMarket accept any source (drop the SOURCES lookup) and the unnamed-venue checks fail; return
-// a rate on a non-2xx answer in csdMarket and the 503 check fails; import market.js from node.ts or popup-send.ts and
-// the display-only scan fails.
+// a rate on a non-2xx answer in csdMarket and the 503 check fails; import market.js from any other file under src/
+// (node.ts, a popup module, a new file) and the importer scan fails.
 // HONEST PATH: the live body gives "≈ $79.14 · USD via SafeTrade" for 1,284.735 CSD at 0.0616.
 // Run: npx tsx test/usd-line.test.mjs   (offline)
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { csdMarket, parseCsdMarket, usdLine } from "../src/core/market.ts";
 import { checker } from "./helpers/check.mjs";
@@ -63,9 +63,15 @@ try {
 } finally { globalThis.fetch = origFetch; }
 
 // display only: the rate reaches the balance hero and nothing on a signing path
-const importers = ["src/core/node.ts", "src/core/wallet.ts", "src/background.ts", "src/popup/popup-send.ts", "src/popup/popup-sendflow.ts", "src/popup/popup-tokensend.ts", "src/popup/approve.ts", "src/popup/clearsign.ts", "src/popup/popup-balance.ts"]
-  .filter((f) => /from "\.\.?\/(core\/)?market\.js"/.test(read(f)));
-check(`market.js is imported only by wallet.ts (the read) and popup-balance.ts (the line): ${importers.join(", ")}`, importers.join() === "src/core/wallet.ts,src/popup/popup-balance.ts");
+// every file under src/ (the vendored bundle included), so a new importer anywhere is caught
+const ALLOWED = ["src/core/wallet.ts", "src/popup/popup-balance.ts"];
+const srcFiles = [];
+const walk = (d) => { for (const e of readdirSync(join(ROOT, d), { withFileTypes: true })) { const f = `${d}/${e.name}`; if (e.isDirectory()) walk(f); else if (/\.(ts|js|mjs)$/.test(e.name)) srcFiles.push(f); } };
+walk("src");
+const importers = srcFiles.filter((f) => /from\s+["'][^"']*\bmarket(\.js|\.ts)?["']|import\(\s*["'][^"']*\bmarket(\.js|\.ts)?["']/.test(read(f))).sort();
+check(`market.ts is imported only by ${ALLOWED.join(" and ")}, of ${srcFiles.length} files under src/ (${importers.join(", ")})`, srcFiles.length > 50 && importers.join() === ALLOWED.join());
+const wallet = read("src/core/wallet.ts");
+check("wallet.ts uses it only in its csdMarket read", (wallet.match(/\bcsdMarket\b/g) || []).length === 3 && wallet.includes("  csdMarket() { return csdMarket(this.api); }"));
 const bg = read("src/background.ts");
 const dapp = /const DAPP_METHODS = new Set\(\[([^\]]*)\]\)/.exec(bg)?.[1] ?? "";
 check("csdMarket is not a dApp method", dapp.length > 0 && !dapp.includes('"csdMarket"'));
