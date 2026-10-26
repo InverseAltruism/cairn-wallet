@@ -185,6 +185,26 @@ console.log("\nPAIRED HAPPY-PATH (the tamper refusal is untouched):");
   check(`(4) change to self is exactly inputs minus amount minus fee (${change})`, change === spent - 50_00000000 - 1_000_000);
 }
 
+// ── 5. unrepresentable coins in three largest-first layers: a send learns them across attempts ─────────
+// Each selection round of a send meets one layer, so three layers spend the three rounds. The verdicts are cached
+// for the session (unrepSeen, like ghosts), so the retry starts without them and signs; before the cache every
+// retry rediscovered the same layers and refused VERIFY_UNAVAILABLE for good.
+// RED-FIRST: drop `rememberSkip(unrepSeen, k, now)` in selectVerified and the retry check fails. The session caches
+// live for the whole process, so this case uses txids no earlier case uses.
+{
+  const layers = [poisonCoin(6000_00000000, "0x" + "e1".repeat(32)), poisonCoin(30_00000000, "0x" + "e2".repeat(32)), poisonCoin(10_00000500, "0x" + "e3".repeat(32))];
+  const g = Array.from({ length: 511 }, (_, i) => mkCoin(10_00001000 + i)), z = mkCoin(10_00000100);
+  const s = mkStub({ coins: [...layers, ...g, z], served: [...g, z], poisons: layers });
+  const { w } = await freshWallet("pw-unrep-layers-123");
+  const need = g.reduce((a, c) => a + c.coin.value, 0) + z.coin.value;
+  const first = await w.send(RCPT, need - 1_000_000, 1_000_000);
+  check(`(5) three layers: the first attempt spends its rounds and signs nothing (${first?.code})`, first?.ok === false && first?.code === "VERIFY_UNAVAILABLE" && s.submits.length === 0);
+  const again = await w.send(RCPT, need - 1_000_000, 1_000_000);
+  check(`(5) the retry starts from the cached verdicts and signs (${again?.error ?? "ok"})`, again?.ok === true && s.submits.length === 1);
+  const ins = submittedInputTxids(s.submits[0]);
+  check("(5) none of the unrepresentable coins is spent", layers.every((l) => !ins.includes(l.coin.txid.toLowerCase())));
+}
+
 globalThis.fetch = origFetch;
 console.log(`\nunrepresentable-coin: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

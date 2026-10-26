@@ -25,6 +25,10 @@
   apply. When the 512-coin limit or unprovable coins hold it below the balance, a line under the estimate says so. The
   review and the confirm then run as for a typed amount; if coins change before Confirm, the send refuses as before.
   Max computes nothing for a token send (the design has none there).
+- A coin whose source transaction carries a number the wallet cannot represent exactly is remembered for the session
+  (two minutes), like a coin the node cannot find. Before, a send met such coins one largest-first layer per round, and
+  with three layers every attempt spent its three rounds and refused with `VERIFY_UNAVAILABLE`; now the retry starts
+  without them and goes through.
 - Coin selection is csd-tx's `selectInputs` from the vendored bundle; the wallet's own copy in `src/core/node.ts` is
   removed. A coin the node lists twice, once with a `0x` txid and once without (or with `0X`), is now one coin: a
   send no longer takes it twice and refuses with `VERIFY_TAMPER`, a send that an honest coin can cover goes through,

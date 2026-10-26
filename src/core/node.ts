@@ -340,6 +340,25 @@ const ghostSeen = new Map<string, number>(); // outpoint -> expiry
 // never that the coin "could not be verified". An outpoint lives in exactly ONE of the two caches
 // (each classification event moves it), so the honest counts below cannot double-book a coin.
 const horizonSeen = new Map<string, number>(); // outpoint -> expiry
+// Unrepresentable outpoints (W6, see verifyInputValues) are cached the same way, in their own map for their own
+// copy, and an outpoint lives in exactly one of the three. Without the cache each selection round rediscovers them
+// one largest-first layer at a time, so three layers spend all MAX_SELECT_ROUNDS and every retry refuses
+// VERIFY_UNAVAILABLE (test/maxsendable.test.mjs case 11). The verdict is a property of the served body; a node
+// that serves another body for the txid is the same class as one that answers not-found, which ghostSeen already
+// caches.
+const unrepSeen = new Map<string, number>(); // outpoint -> expiry
+const SKIP_CACHE_MAX = 2048; // per map: a hostile RPC cannot grow one unboundedly
+/** Drops expired entries and returns every outpoint a cache still excludes. */
+function sessionExclusions(now: number): Set<string> {
+  for (const m of [ghostSeen, horizonSeen, unrepSeen]) for (const [k, exp] of m) if (exp <= now) m.delete(k);
+  return new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys(), ...unrepSeen.keys()]);
+}
+/** Files `k` under `into` (one of the three caches) and out of the other two. */
+function rememberSkip(into: Map<string, number>, k: string, now: number): void {
+  for (const m of [ghostSeen, horizonSeen, unrepSeen]) if (m !== into) m.delete(k);
+  into.set(k, now + GHOST_TTL_MS);
+  if (into.size > SKIP_CACHE_MAX) into.clear();
+}
 function roundsExhausted(count: number, value: number): { error: string; code: string } {
   return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_UNAVAILABLE" };
 }
@@ -356,9 +375,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   try { ({ utxos } = await balance(rpc, addr)); }
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
-  for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
-  for (const [k, exp] of horizonSeen) if (exp <= now) horizonSeen.delete(k);
-  const exclude = new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys()]);
+  const exclude = sessionExclusions(now);
   const verified = new Map<string, number>();
   const reportedVal = new Map<string, number>(utxos.map((u: any) => [opKey(u.txid, u.vout), Number(u.value) || 0]));
   // ghosts already known from the session cache that are present in THIS utxo set count toward the
@@ -369,6 +386,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   let unrepCount = 0, unrepValue = 0;   // W6 (ND-1): booked separately so the final copy stays honest
   for (const k of ghostSeen.keys()) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
   for (const k of horizonSeen.keys()) if (reportedVal.has(k)) { horizonCount++; horizonValue += reportedVal.get(k)!; }
+  for (const k of unrepSeen.keys()) if (reportedVal.has(k)) { unrepCount++; unrepValue += reportedVal.get(k)!; }
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
   let need = typeof needOf === "number" ? needOf : 0;
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
@@ -390,27 +408,23 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
       for (const h of ver.horizons) {
         const k = opKey(h.txid, h.vout);
         if (!exclude.has(k)) { horizonCount++; horizonValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k);
+        exclude.add(k); rememberSkip(horizonSeen, k, now);
       }
     }
     // W6 (ND-1): unrepresentable coins exclude-and-retry per coin exactly like ghosts and horizons (an
-    // unproved coin is NEVER spent). No session cache: the classification costs nothing beyond the /tx
-    // read this loop already makes, and the bounded round budget re-derives it, so a third unbounded map
-    // would buy one saved round at the cost of the memory class this file already caps twice.
+    // unproved coin is NEVER spent), and are cached like them (unrepSeen).
     if (ver.kind === "unrepresentable") {
       for (const u of ver.unrepresentables) {
         const k = opKey(u.txid, u.vout);
         if (!exclude.has(k)) { unrepCount++; unrepValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k);
+        exclude.add(k); rememberSkip(unrepSeen, k, now);
       }
     }
     for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
       const k = opKey(g.txid, g.vout);
       if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
-      exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); horizonSeen.delete(k);
+      exclude.add(k); rememberSkip(ghostSeen, k, now);
     }
-    if (ghostSeen.size > 2048) ghostSeen.clear(); // hard cap: a hostile RPC can't grow this unboundedly
-    if (horizonSeen.size > 2048) horizonSeen.clear();
   }
   // TOO_MANY_INPUTS vs INSUFFICIENT (2026-07-09): selectInputs returns null BOTH when the balance
   // genuinely can't cover `need` AND when it could but not within the MAX_TX_INPUTS cap; a
@@ -738,9 +752,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   // ghosts exclude-and-retry within the same bounded round budget, and no coin is EVER spent
   // unverified. tamper/transient verdicts refuse exactly as a send would.
   const now = Date.now();
-  for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
-  for (const [k, exp] of horizonSeen) if (exp <= now) horizonSeen.delete(k);
-  const exclude = new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys()]);
+  const exclude = sessionExclusions(now);
   const verified = new Map<string, number>();
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
@@ -751,14 +763,12 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
       if (ver.kind === "transient") return { ok: false, error: "couldn't fetch source transactions to verify coin values (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
       // BN0w: both skip classes (ghost + horizon) exclude-and-retry alike here; consolidate simply
       // merges what THIS node can prove today (the send path owns the distinct honest refusal copy).
-      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k); }
+      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); rememberSkip(horizonSeen, k, now); }
       // W6 (ND-1): the same exclude-and-retry, and THIS is the line that unbricks consolidate() against a
       // single dust coin from a stranger. The pool is smallest-first, so the poison coin was in every
       // round and its "tamper" verdict refused the whole merge, permanently.
-      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) exclude.add(opKey(u.txid, u.vout));
-      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); horizonSeen.delete(k); }
-      if (ghostSeen.size > 2048) ghostSeen.clear();
-      if (horizonSeen.size > 2048) horizonSeen.clear();
+      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) { const k = opKey(u.txid, u.vout); exclude.add(k); rememberSkip(unrepSeen, k, now); }
+      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); rememberSkip(ghostSeen, k, now); }
       continue;
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
