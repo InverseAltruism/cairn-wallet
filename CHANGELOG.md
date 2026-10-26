@@ -8,12 +8,13 @@
   pickers moved to Settings › Network (they were top right, also before unlocking). Accounts, post, seal, recovery
   phrase and reveal key are under More. The approval and review buttons changed sides: Reject, Cancel and Back on
   the left, Approve and Confirm on the right, equal width.
-- An account with a primary name shows the shared cairn-ui avatar for that name (a soft blue to peach conic gradient,
-  the one its names page draws) without a letter, and the account switcher shows each account's avatar at 16 px (was a
-  10 px dot); the old dark two-colour gradient, often olive green, is gone. One account draws one avatar: the
-  switcher draws the account the header shows with the header's avatar (its name's, or the cairn mark), and another
-  account with its primary name's avatar once the popup has read it, the mark when it has none, and its address's
-  until then.
+- An account shows the shared cairn-ui avatar (a soft blue to peach conic gradient) of its primary name, the one its
+  names page draws, and of its address while the name is not read or when it has none, without a letter; the account
+  switcher shows each account's avatar at 16 px (was a 10 px dot); the old dark two-colour gradient, often olive green,
+  is gone. One account draws one identity on every surface: the switcher draws the account the header shows with the
+  header's avatar, and another account with its primary name's avatar once the popup has read it, else its address's.
+  A name-less account no longer shows the cairn mark in the header; the mark stays the product's logo (setup, the
+  lock screen, the approval window's tile).
 - The approval window shows each request as a title and label and value rows, with every check as a row whose tint
   and icon give its weight (red where the text was red, amber where it was neutral). The cost rows and the balance
   after sit above the buttons on every request type, the requesting site is named in full at the top, and the

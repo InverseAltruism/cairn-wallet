@@ -225,9 +225,6 @@
   .acct-pick-line { display: flex; align-items: center; gap: var(--ui-space-2); min-width: 0; max-width: 100%; }
   /* the account's avatar (ui/avatar.css draws the circle and its hairline) */
   .acct-dot { --ui-avatar-size: var(--ui-space-4); }
-  /* the mark in a 16 px row avatar, as the header draws it at 32 px */
-  .acct-dot.mark { display: inline-grid; place-items: center; overflow: hidden; color: var(--ui-ink); }
-  .acct-dot.mark svg { width: 10px; height: 10px; }
   .acct-av { display: contents; }
   .menu-item {
     justify-content: flex-start; gap: var(--ui-space-3); min-height: 40px; padding: 0 var(--ui-space-3);
@@ -426,9 +423,8 @@
     border-radius: var(--ui-radius-pill); transition: background-color var(--ui-dur-1) var(--ui-ease);
   }
   .acct-chip:hover { background: var(--ui-sunken); }
-  /* ui/avatar.css draws the circle, its hairline and the mark state's ground (--ui-sunken); this places it in the chip */
-  .id-avatar { grid-row: 1 / span 2; display: grid; place-items: center; overflow: hidden; color: var(--ui-ink); }
-  .id-avatar.mark svg { width: 18px; height: 18px; }
+  /* ui/avatar.css draws the circle and its hairline; this places it in the chip */
+  .id-avatar { grid-row: 1 / span 2; }
   .primary-name { font-weight: 600; letter-spacing: var(--ui-track-snug); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .acct-chip .primary-name { grid-column: 2; grid-row: 1; font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); }
   /* the button spans both lines of the chip on the chip's own rows, so the caret centres across the name and the

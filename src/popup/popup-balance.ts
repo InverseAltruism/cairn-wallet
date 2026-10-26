@@ -29,37 +29,26 @@ export function celebrateSend(delay = 0) {
 let balSeq = 0;
 // The amount in Geist with the unit muted; fmtBalance output is digits, separators and a sign only.
 const balHtml = (base: number) => `${escapeHtml(fmtBalance(base))}<span class="bal-unit">CSD</span>`;
-// Identity avatar: a primary .csd name draws cairn-ui's avatar for that name, the one its names page draws, with no
-// letter (the name is printed beside it); a name-less account shows the cairn mark instead of an address gradient.
-// avatarBackground output is numbers only, so it is safe in style.background.
-const CAIRN_MARK_SVG = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><ellipse cx="12" cy="18.4" rx="8.4" ry="2.7"/><ellipse cx="12" cy="12.1" rx="6" ry="2.5"/><ellipse cx="12" cy="6.2" rx="3.8" ry="2.1"/></svg>`;
-const MARK = "__mark__";
+// The identity avatar: cairn-ui's avatar of the account's identity seed, its primary .csd name once read (the one its names
+// page draws) and its address until then or when it has none, with no letter (the name or the address is printed
+// beside it). One account, one avatar on every surface. avatarBackground output is numbers only, so it is safe in
+// style.background.
 export function paintAvatar(name: string | null, addr: string) {
   const av = document.getElementById("avatar") as HTMLElement | null;
   if (!av) return;
-  const seed = name ? identitySeed(name, addr) : MARK;
+  const seed = identitySeed(name, addr);
   if (av.dataset.seed === seed) return;
   av.dataset.seed = seed;
   av.classList.add("ui-avatar");
-  if (name) {
-    av.classList.remove("mark");
-    av.style.background = avatarBackground(seed);
-    av.innerHTML = "";
-  } else {
-    av.classList.add("mark");
-    av.style.background = "";
-    av.innerHTML = CAIRN_MARK_SVG; // static markup, no interpolation
-  }
+  av.style.background = avatarBackground(seed);
+  av.innerHTML = "";
   repaintRowAvatars();
 }
-// One account, one avatar on a screen: the account switcher draws the account the header shows with the header's avatar,
-// and any other account with the avatar its known primary name draws (knownNames), the mark when it is known to have
-// none, and its address's when its name was not read. avatarHtml writes numbers only, whatever the seed.
+// The account switcher draws the account the header shows with the header's seed, and any other account with the seed
+// of its primary name once this popup has read it (knownNames), else of its address. avatarHtml writes numbers only.
 export function rowAvatarHtml(addr: string, active: boolean): string {
   const header = active ? (document.getElementById("avatar") as HTMLElement | null)?.dataset.seed : undefined;
-  const known = knownNames.get(addr.toLowerCase());
-  const seed = active ? (header && header !== MARK ? header : null) : typeof known === "string" ? identitySeed(known, addr) : known === null ? null : identitySeed(null, addr);
-  return seed === null ? `<span class="ui-avatar acct-dot mark" aria-hidden="true">${CAIRN_MARK_SVG}</span>` : avatarHtml(seed, "acct-dot");
+  return avatarHtml(header || identitySeed(knownNames.get(addr.toLowerCase()) ?? null, addr), "acct-dot");
 }
 function repaintRowAvatars() {
   for (const el of document.querySelectorAll<HTMLElement>("#acct-menu [data-avatar-for]")) el.innerHTML = rowAvatarHtml(el.dataset.avatarFor ?? "", el.dataset.active === "1");

@@ -3,11 +3,12 @@
 // renderAcctSelect against a stub document:
 //  - a primary name paints a `ui-avatar` whose background is the vendored avatarBackground of that name, with no
 //    letter in it, the same for that name under any address;
-//  - a name-less account shows the cairn mark, and a later name clears the mark;
-//  - one account, one avatar on a screen (W-6): the switcher draws the account the header shows with the header's avatar
-//    (its name's, or the mark), another account with its known primary name's avatar, the mark when it is known to
-//    have none, and its address's (lower case) when its name was not read.
-//    RED-FIRST: seed every row by its address again (identitySeed(null, addr)) and the name and mark row checks fail.
+//  - a name-less account draws the avatar of its address in lower case, with no mark and no letter, and a later name
+//    replaces it with the name's avatar;
+//  - one account, one identity on every surface: the switcher draws the account the header shows with the header's
+//    avatar, another account with its primary name's avatar once read, else its address's (lower case).
+//    RED-FIRST: put back the cairn mark for a name-less account (paintAvatar and rowAvatarHtml at 0b4a582) and the
+//    address checks fail; seed every row by its address (identitySeed(null, addr)) and the name row checks fail.
 // Run: npx tsx test/identicon.test.ts   (offline)
 import { avatarBackground, avatarHtml } from "../src/vendor/cairn-ui/avatar.js";
 import { checker } from "./helpers/check.mjs";
@@ -54,16 +55,15 @@ const av = byId("avatar");
 
 paintAvatar("alice", A);
 check("a primary name: the element is a ui-avatar", av.classList.contains("ui-avatar"));
-check("a primary name: not in the mark state", !av.classList.contains("mark"));
 check(`a primary name: the background is the vendored avatar of the name (${av.style.background})`, av.style.background === avatarBackground("alice"));
 check(`a primary name: no letter is drawn (text ${JSON.stringify(av.textContent)}, markup ${JSON.stringify(av.innerHTML)})`, av.textContent === "" && av.innerHTML === "");
 
 paintAvatar(null, A);
-check("no primary name: the cairn mark", av.classList.contains("mark") && av.innerHTML.startsWith("<svg") && av.style.background === "");
-check("no primary name: still drawn as a ui-avatar (its circle and hairline)", av.classList.contains("ui-avatar"));
+check("no primary name: the avatar of the address, in lower case", av.style.background === avatarBackground(A.toLowerCase()));
+check("no primary name: no mark and no letter in it, still a ui-avatar", !av.classList.contains("mark") && av.innerHTML === "" && av.textContent === "" && av.classList.contains("ui-avatar"));
 
 paintAvatar("alice", B);
-check("a name after the mark: the mark is gone", !av.classList.contains("mark") && av.innerHTML === "" && av.textContent === "");
+check("a name after the address: the name's avatar replaces it", av.style.background === avatarBackground("alice") && av.innerHTML === "");
 check("the name seeds the avatar, not the address: alice under another account draws the same", av.style.background === avatarBackground("alice"));
 check("and it differs from that account's address avatar", av.style.background !== avatarBackground(B));
 
@@ -73,16 +73,17 @@ renderAcctSelect([{ addr: A, label: "Main" }, { addr: B, label: "Miner key" }, {
 let menu = byId("acct-menu").innerHTML;
 check("the active row draws the header's avatar: alice's, not A's address avatar", menu.includes(avatarHtml("alice", "acct-dot")) && !menu.includes(avatarHtml(A.toLowerCase(), "acct-dot")));
 check("an account whose name was not read draws its address's avatar, in lower case", menu.includes(avatarHtml(B, "acct-dot")) && menu.includes(avatarHtml(C, "acct-dot")));
-check("three accounts, three avatars", (menu.match(/class="ui-avatar acct-dot/g) || []).length === 3);
+check("three accounts, three avatars", (menu.match(/class="ui-avatar acct-dot"/g) || []).length === 3);
 knownNames.set(B, "bob");
 knownNames.set(C, null);
 renderAcctSelect([{ addr: A, label: "Main" }, { addr: B, label: "Miner key" }, { addr: C, label: "Spare" }], 0);
 menu = byId("acct-menu").innerHTML;
 check("once B's primary name is read, B's row draws bob's avatar, as the header would", menu.includes(avatarHtml("bob", "acct-dot")) && !menu.includes(avatarHtml(B, "acct-dot")));
-check("an account read to have no name draws the mark, as the header would", menu.includes('class="ui-avatar acct-dot mark"') && !menu.includes(avatarHtml(C, "acct-dot")));
+check("an account read to have no name draws its address's avatar, as the header would", menu.includes(avatarHtml(C, "acct-dot")));
 paintAvatar(null, A);
 renderAcctSelect([{ addr: A, label: "Main" }, { addr: B, label: "Miner key" }], 0);
 menu = byId("acct-menu").innerHTML;
-check("a name-less active account: its row draws the mark the header draws", menu.includes('class="ui-avatar acct-dot mark"') && !menu.includes(avatarHtml("alice", "acct-dot")) && !menu.includes(avatarHtml(A.toLowerCase(), "acct-dot")));
+check("a name-less active account: its row draws the address avatar the header draws", menu.includes(avatarHtml(A.toLowerCase(), "acct-dot")) && !menu.includes(avatarHtml("alice", "acct-dot")) && av.style.background === avatarBackground(A.toLowerCase()));
+check("no avatar anywhere carries the mark", !menu.includes("mark") && !av.classList.contains("mark"));
 
 done("identicon");
