@@ -15,7 +15,18 @@
 //   E. Two clicks on the token Confirm transfer once. F. Two clicks on the name action's Confirm sign once (it consumed
 //      its snapshot before any await already; pinned so the class stays closed). G. A name that re-points between review
 //      and Confirm sends nothing and tears the review down, keeping the draft.
-// HONEST PATHS: A2, C2, D2, E2 and F2 sign once with the production call shape.
+//   H. A Confirm overtaken during its re-check by a later Confirm that sent writes nothing over that outcome. RED-FIRST:
+//      drop the `gen !== confirmGen` return in runConfirm and H1 sees "Nothing was sent" over "Sent 1 CSD".
+//   I. A Review the user leaves while it awaits the name lookup primes nothing: another token's sheet (the amount was
+//      parsed with the first token's decimals), or Cancel on the CSD sheet. RED-FIRST: drop the `left()` checks in the
+//      token Review and I1 shows a "100000000 ZZZ" card whose Confirm signs; drop `reviewCurrent` in the CSD Review and
+//      I3 primes a snapshot.
+//   J. Back, Review and Confirm while a send is in flight cannot start a second send: Confirm stays held until the outcome
+//      lands. RED-FIRST: drop `|| submitting` from armReview and J1 sees two sends.
+//   K. Two clicks on Post post once, two on Seal seal once. RED-FIRST: drop `once` in popup-publish.ts and K1 sees two.
+//   L. After an account switch, while the new account's balance has not answered, the send sheet's balance after is
+//      unknown, never the old account's. RED-FIRST: keep `balanceState.last` in forgetBalance and L1 shows 98.99 CSD.
+// HONEST PATHS: A2, C2, D2, E2, F2, H2, I2, J2 and K2 sign once with the production call shape.
 // Run: node --import tsx test/popup-confirm-snapshot-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -24,18 +35,23 @@ const { check, done } = checker("popup Confirm signs the frozen review once (rea
 const { byId } = installFakeDom({ autoCreate: true });
 const ME = "0x" + "ab".repeat(20), EXTERNAL = "0x" + "31".repeat(20), ALICE = "0x" + "a1".repeat(20), MOVED = "0x" + "a2".repeat(20);
 const TXID = "0x" + "7e".repeat(32);
-const sends = [], transfers = [], renews = [];
-let confirmGate = null, confirmAddr = ALICE;
+const OTHER = "0x" + "cd".repeat(20);
+const sends = [], transfers = [], renews = [], posts = [], seals = [];
+let confirmGate = null, confirmAddr = ALICE, resolveGate = null, sendGate = null, active = 0;
 const h = {
-  status: () => ({ hasVault: true, unlocked: true, addr: ME, accounts: [{ label: "A1", addr: ME }], active: 0, rpc: "https://x", api: "https://x", tradeApi: "https://x/trade/api", explorer: "cairn", hasMnemonic: true }),
-  balance: () => ({ confirmed: 100e8, utxos: [] }),
+  status: () => ({ hasVault: true, unlocked: true, addr: active ? OTHER : ME, accounts: [{ label: "A1", addr: ME }, { label: "A2", addr: OTHER }], active, rpc: "https://x", api: "https://x", tradeApi: "https://x/trade/api", explorer: "cairn", hasMnemonic: true }),
+  switchAccount: (i) => { active = i; return true; },
+  // the second account's balance read does not answer in these tests
+  balance: () => (active ? new Promise(() => { /* never answers */ }) : { confirmed: 100e8, utxos: [] }),
   pendingMerge: () => ({ pending: false, amount: 0, maybe: false }),
   cairnxAssets: () => ({ ok: true, balances: { CAIRN: { available: "100000000000", locked: "0" }, ZZZ: { available: "100000000000", locked: "0" } }, names: ["alice"], nameDetails: [{ name: "alice", leased: true, epochsLeft: 9000 }], primaryName: null, tipHeight: 1 }),
   cairnxTokens: () => ({ ok: true, tokens: [{ ticker: "CAIRN", decimals: 8 }, { ticker: "ZZZ", decimals: 0 }] }),
   prewarmSpv: () => ({ ok: true }), pending: () => [], history: () => [], sealedClaims: () => [],
-  resolveName: () => ({ ok: true, addr: ALICE, verified: true, sources: 2, depth: 10 }),
+  resolveName: async () => { if (resolveGate) await resolveGate; return { ok: true, addr: ALICE, verified: true, sources: 2, depth: 10 }; },
   confirmName: async () => { if (confirmGate) await confirmGate; return { ok: true, addr: confirmAddr, verified: true, sources: 2, depth: 10 }; },
-  send: async (...a) => { sends.push(a); await new Promise((r) => setTimeout(r, 30)); return { ok: true, txid: TXID }; },
+  send: async (...a) => { sends.push(a); if (sendGate) await sendGate; await new Promise((r) => setTimeout(r, 30)); return { ok: true, txid: TXID }; },
+  cairnPost: async (p) => { posts.push(p); await new Promise((r) => setTimeout(r, 30)); return { ok: true, txid: TXID }; },
+  sealClaim: async (p) => { seals.push(p); await new Promise((r) => setTimeout(r, 30)); return { ok: true, txid: TXID }; },
   cairnxTransfer: async (p) => { transfers.push(p); await new Promise((r) => setTimeout(r, 30)); return { ok: true, txid: TXID }; },
   cairnxNameRenewFee: () => 15e8,
   cairnxNameRenew: async (...a) => { renews.push(a); await new Promise((r) => setTimeout(r, 30)); return { ok: true, txid: TXID }; },
@@ -141,6 +157,92 @@ console.log("G. a name that re-points between review and Confirm");
   confirmAddr = ALICE;
   check(`G1 nothing is sent, with the exact refusal (${sends.length - before}, "${text()}")`, sends.length - before === 0 && text() === "alice.csd changed where it points. Nothing was sent: review it again.");
   check("G2 the review is torn down and the draft kept for a re-review", byId("send-confirm").hidden === true && byId("s-to").value === "alice.csd" && byId("s-to").disabled === false);
+}
+
+console.log("H. a Confirm overtaken during its re-check by a later Confirm that sent");
+{
+  await csdReview("alice.csd");
+  confirmGate = new Promise((r) => (release = r));
+  const p1 = byId("btn-send-confirm").click(); await flush();
+  await byId("btn-send-back").click(); await flush();
+  confirmGate = null;
+  byId("s-to").value = EXTERNAL;
+  await byId("btn-send").click(); await flush();
+  const before = sends.length;
+  await byId("btn-send-confirm").click(); await flush(40);
+  const sent = text();
+  release(); await p1; await flush(40);
+  check(`H1 the later Confirm's outcome stays on screen ("${text().slice(0, 60)}")`, /^Sent 1 CSD/.test(text()) && text() === sent && !/Nothing was sent/.test(text()));
+  check(`H2 honest: one send, the later review's (${sends.length - before}, ${JSON.stringify(sends.at(-1))})`, sends.length - before === 1 && JSON.stringify(sends.at(-1)) === JSON.stringify([EXTERNAL, 1e8, 1_000_000, ME]));
+}
+
+console.log("I. a Review left while it awaits the name lookup");
+{
+  await tokenRow("CAIRN").click(); await flush();
+  byId("ts-to").value = "alice.csd"; byId("ts-amt").value = "1";
+  resolveGate = new Promise((r) => (release = r));
+  const pr = byId("btn-tsend").click(); await flush();
+  await tokenRow("ZZZ").click(); await flush();      // the user opened ZZZ's send while CAIRN's Review waited
+  release(); await pr; await flush(); resolveGate = null;
+  const before = transfers.length;
+  await byId("btn-tsend-confirm").click(); await flush(40);
+  check(`I1 no card comes up on ZZZ's sheet, and its Confirm signs nothing (card shown ${!byId("tsend-confirm").hidden}, ${transfers.length - before} transfers)`,
+    byId("tsend-confirm").hidden === true && transfers.length - before === 0);
+  byId("ts-to").value = EXTERNAL; byId("ts-amt").value = "7";
+  await byId("btn-tsend").click(); await flush();
+  await byId("btn-tsend-confirm").click(); await flush(40);
+  check(`I2 honest: ZZZ's own Review and Confirm sign ZZZ's amount (${JSON.stringify(transfers.at(-1))})`, JSON.stringify(transfers.at(-1)) === JSON.stringify({ ticker: "ZZZ", amount: "7", to: EXTERNAL, decimals: 0, fee: 25_000_000, expectSigner: ME }));
+  // the CSD sheet: Cancel while the Review waits on the lookup
+  byId("send-form").hidden = false;
+  byId("s-to").value = "alice.csd"; byId("s-amt").value = "1"; byId("s-to").disabled = false; byId("s-amt").disabled = false;
+  resolveGate = new Promise((r) => (release = r));
+  const ps = byId("btn-send").click(); await flush();
+  await byId("nav-home").click(); await flush();     // the sheet closes (the same teardown as its Cancel)
+  release(); await ps; await flush(); resolveGate = null;
+  check(`I3 the CSD Review primes nothing after the sheet closed (card shown ${!byId("send-confirm").hidden})`, byId("send-confirm").hidden === true);
+}
+
+console.log("J. Back, Review and Confirm while a send is in flight");
+{
+  await csdReview(EXTERNAL);
+  sendGate = new Promise((r) => (release = r));
+  const before = sends.length;
+  const p1 = byId("btn-send-confirm").click(); await flush();
+  await byId("btn-send-back").click(); await flush();
+  await byId("btn-send").click(); await flush();
+  const held = byId("btn-send-confirm").disabled;
+  const p2 = byId("btn-send-confirm").click(); await flush();
+  const during = sends.length - before;
+  release(); await p1; await p2; await flush(40); sendGate = null;
+  check(`J1 Confirm is held while the first send is in flight, and no second send starts (held ${held}, ${during} during, ${sends.length - before} in all)`, held === true && during === 1 && sends.length - before === 1);
+  check(`J2 honest: the first send's outcome is shown ("${text().slice(0, 40)}")`, /^Sent 1 CSD/.test(text()));
+  await csdReview(EXTERNAL);
+  check("J3 once the outcome has landed, the next review arms Confirm", byId("btn-send-confirm").disabled === false);
+}
+
+console.log("K. two clicks on Post and on Seal");
+{
+  byId("p-domain").value = "csd:apps"; byId("p-title").value = "t"; byId("p-body").value = "b"; byId("p-fee").value = "";
+  await Promise.all([byId("btn-post").click(), byId("btn-post").click()]); await flush(40);
+  byId("seal-claim").value = "x"; byId("seal-domain").value = "";
+  await Promise.all([byId("btn-seal").click(), byId("btn-seal").click()]); await flush(40);
+  check(`K1 two clicks post once and seal once (${posts.length}, ${seals.length})`, posts.length === 1 && seals.length === 1);
+  check(`K2 honest: the post and the seal as typed (${JSON.stringify(posts[0])}, ${JSON.stringify(seals[0])})`,
+    JSON.stringify(posts[0]) === JSON.stringify({ domain: "csd:apps", title: "t", body: "b", fee: 25_000_000 }) && JSON.stringify(seals[0]) === JSON.stringify({ domain: "csd:sealed", claim: "x" }));
+  await byId("btn-post").click(); await flush(40);
+  check("K3 once its outcome landed, Post posts again", posts.length === 2);
+}
+
+console.log("L. the send sheet's balance after an account switch");
+{
+  await byId("btn-send-t").click(); await flush();
+  byId("s-amt").value = "1"; for (const fn of byId("s-amt")._listeners.input || []) fn();
+  const mine = byId("s-after").textContent;
+  await byId("nav-home").click(); await flush();
+  await byId("acct-menu").querySelectorAll("[data-acct]")[1].click(); await flush();
+  await byId("btn-send-t").click(); await flush();
+  byId("s-amt").value = "1"; for (const fn of byId("s-amt")._listeners.input || []) fn();
+  check(`L1 the other account's balance has not answered: unknown, not the first account's (${mine} before, ${byId("s-after").textContent} after)`, mine === "98.99 CSD" && byId("s-after").textContent === "Unknown");
 }
 
 done("popup-confirm-snapshot-dom");

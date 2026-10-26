@@ -1,13 +1,14 @@
 // The review-and-confirm engine the CSD and token sends share.
 import { checkRow, type Check, escapeHtml, fmtBalance } from "./clearsign.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
-import { $, msg, msgAction } from "./popup-dom.js";
+import { $, busy, msg, msgAction } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
 import { celebrateSend, mergePendingNow, refreshBalance } from "./popup-balance.js";
 import { closeAllPanels, syncNav } from "./popup-panels.js";
 import { tokenMs } from "./motion.js";
 import { renderAssets } from "./popup-assets.js";
 import { openConsolidatePanel } from "./popup-coins.js";
+import { nameStillPointsTo } from "./popup-recipient.js";
 
 // ── shared send-flow engine ───────────────────────────────────────────────────────────────────
 // The CSD and token send panels are deliberate twins with three real deltas, carried by a flow
@@ -35,13 +36,50 @@ export function teardownReview(f: SendFlow, clearValues: boolean) {
 }
 // Arm the review: disable the inputs the snapshot was read from and show the confirm card (editing
 // the form after "Review" must not let displayed values diverge from signed ones). Confirm is live unless `hold`
-// (a balance that does not cover the send); a Confirm click disarms it until the next review.
+// (a balance that does not cover the send) or a send is still in flight; a Confirm click disarms it until the next
+// review.
 export function armReview(f: SendFlow, hold = false) {
   ($(f.ids.to) as HTMLInputElement).disabled = true;
   ($(f.ids.amt) as HTMLInputElement).disabled = true;
-  ($(f.ids.button) as HTMLButtonElement).disabled = hold;
+  ($(f.ids.button) as HTMLButtonElement).disabled = hold || submitting;
   ($(f.ids.confirm) as HTMLElement).hidden = false;
   msg("");
+}
+
+// ── Confirm, for both sends ────────────────────────────────────────────────────────────────────
+// Confirm signs the frozen review and nothing else (R3: "Confirm signs the frozen review snapshot"; "one Confirm is one
+// signature"; "any failure tears the review down"):
+//   - the click disarms Confirm before any await, and the snapshot is consumed before the call;
+//   - after the confirm-time name re-check the snapshot must still be the one clicked (Back, a sheet switch, a lock, an
+//     account switch drop it, a new Review replaces it), or nothing is sent;
+//   - only the latest Confirm writes an outcome (`confirmGen`, across both flows): a Confirm overtaken during its re-check
+//     shows nothing, so it cannot cover a later Confirm's "Sent" or "Sending…";
+//   - while a submission is in flight no review arms Confirm (`submitting`), so a second submission cannot start before
+//     the first one's outcome lands.
+let confirmGen = 0;
+let submitting = false;
+type Snapshot = { to: string; name?: string | null; verified?: boolean };
+export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read: () => S | null; consume: () => void }, submit: (s: S) => Promise<any>, sentText: (s: S) => string) {
+  const snap = review.read();
+  const btn = $(f.ids.button) as HTMLButtonElement;
+  if (!snap || btn.disabled) return;
+  btn.disabled = true;
+  const gen = ++confirmGen;
+  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
+  // chain-verification regressed since review (L7); fail-closed to a re-review either way.
+  const stillPoints = !snap.name || (await nameStillPointsTo(snap.name, snap.to, snap.verified));
+  if (gen !== confirmGen) return;                    // a later Confirm owns the outcome line; this one sent nothing
+  if (review.read() !== snap) return msg(REVIEW_GONE, "err");
+  if (!stillPoints) { teardownReview(f, false); return msg(`${snap.name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
+  review.consume();                                  // a second click finds no review
+  submitting = true;
+  // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
+  let r: any;
+  try { busy("Sending…"); r = await submit(snap); }
+  catch (e: any) { return sendThrew(f, e); }         // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
+  finally { submitting = false; }
+  if (r?.ok) sentOk(f, sentText(snap), r.txid);
+  else sendRefused(f, r);                            // structured refusal: show the REAL reason (FOOT-3 teardown inside)
 }
 
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two

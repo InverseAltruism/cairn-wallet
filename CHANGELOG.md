@@ -107,7 +107,14 @@
   disarmed on the first click before anything is awaited, and a review dropped or replaced while Confirm waited sends
   nothing and says "The review was closed before it was signed. Nothing was sent." A name that re-points between
   review and Confirm now also takes the review down (the draft stays), as every other failure does. The name action
-  already consumed its review on the first click; test/popup-confirm-snapshot-dom.test.mjs pins all three.
+  already consumed its review on the first click. Also present in 0.2.99 and fixed: a token Review left while it
+  waited on the name lookup (another token's send opened) could bring up a review card for the other token, parsed
+  with the first token's decimals, whose Confirm signed it; and Back, Review and Confirm while a send was in flight
+  started a second send. A Review now primes nothing once the person has left it, and while a send is in flight no
+  review arms Confirm. Only the latest Confirm writes an outcome, so a Confirm overtaken during its re-check cannot
+  cover a later send's "Sent" or "Sending…". Post, Seal and a sealed claim's Reveal sign and pay a fee, and two clicks
+  on them signed twice; each is now held until its outcome lands. test/popup-confirm-snapshot-dom.test.mjs pins every
+  case.
 - A failed balance read no longer writes "unavailable" in the 40 px amount: with no earlier read, "Balance
   unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount
   stays, dimmed, with "Last balance read; the refresh failed." under it. The refresh button is

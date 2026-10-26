@@ -33,7 +33,15 @@ async function populateDomains() {
 }
 
 $("btn-seal-t").addEventListener("click", () => { if (openPanel("seal-form")) renderSealed(); });
-$("btn-seal").addEventListener("click", async () => {
+// One click is one signature (R3: "one Confirm is one signature"): Seal, Post and Reveal each sign and pay a fee, so the
+// button is disarmed before any await and armed again when the outcome lands.
+async function once(btn: HTMLButtonElement, run: () => Promise<unknown>) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try { await run(); } finally { btn.disabled = false; }
+}
+$("btn-seal").addEventListener("click", () => once($("btn-seal") as HTMLButtonElement, seal));
+async function seal() {
   const claim = val("seal-claim").trim(); if (!claim) return msg("Enter a claim to seal.", "err");
   const domain = val("seal-domain").trim() || "csd:sealed";
   try { busy("Sealing…"); const r = await call("sealClaim", { domain, claim });
@@ -44,7 +52,7 @@ $("btn-seal").addEventListener("click", async () => {
       msg(o.text, o.cls);
     }
   } catch (e: any) { const o = thrownCopy(e, "seal"); msg(o.text, o.cls); }
-});
+}
 export async function renderSealed() {
   const list: any[] = await call("sealedClaims");
   const el = $("seal-list");
@@ -61,15 +69,16 @@ export async function renderSealed() {
     return `<div class="tx"><div class="tx-top"><span class="tx-kind">${status}</span><span class="dim">${when}</span></div>
       <div class="tx-sub"><span class="dim">${escapeHtml(String(s.claim).slice(0, 44))}</span>${right}</div></div>`;
   }).join("");
-  el.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", async () => {
+  el.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", () => once(b as HTMLButtonElement, async () => {
     const id = (b as HTMLElement).dataset.reveal!; busy("Revealing…");
     const r = await call("revealClaim", id);
     (r && r.ok) ? msg("Revealed: now public, and provably committed earlier.", "ok") : msg("Reveal failed: " + ((r && r.error) || "?"), "err");
     renderSealed();
-  }));
+  })));
 }
 
-$("btn-post").addEventListener("click", async () => {
+$("btn-post").addEventListener("click", () => once($("btn-post") as HTMLButtonElement, post));
+async function post() {
   const sel = ($("p-domain") as HTMLSelectElement).value;
   const domain = (sel === "__custom__" ? val("p-domain-custom").trim() : sel);
   if (!/^csd:[a-z0-9:_-]+$/i.test(domain)) return msg("Pick a category or enter one like csd:tools.", "err");
@@ -89,4 +98,4 @@ $("btn-post").addEventListener("click", async () => {
       msg(o.text, o.cls);
     }
   } catch (e: any) { const o = thrownCopy(e, "post"); msg(o.text, o.cls); }
-});
+}

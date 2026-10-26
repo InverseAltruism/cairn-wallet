@@ -16,7 +16,13 @@ export const reviewState: {
   reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean; signer?: string | null } | null;
   reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number; signer?: string | null } | null;
 } = { reviewed: null, reviewedSend: null, reviewedNameAct: null };
-export function dropReviews() { reviewState.reviewed = null; reviewState.reviewedSend = null; reviewState.reviewedNameAct = null; }
+export function dropReviews() { reviewGen++; reviewState.reviewed = null; reviewState.reviewedSend = null; reviewState.reviewedNameAct = null; }
+// A send Review awaits the name lookup and the balance before it primes its snapshot. It takes a generation when it starts
+// and primes only if it is still current: every drop (Back, a sheet switch, a lock, an account switch) and every newer
+// Review moves the generation, so a Review the user left cannot put a card, or a snapshot Confirm would sign, back up.
+let reviewGen = 0;
+export const beginReview = (): number => ++reviewGen;
+export const reviewCurrent = (gen: number): boolean => gen === reviewGen;
 
 export let curAddr = "";
 

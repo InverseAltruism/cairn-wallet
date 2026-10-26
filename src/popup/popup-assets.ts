@@ -62,11 +62,12 @@ export function invalidateAccountViews() {
 }
 export async function renderAssets() {
   const seq = ++assetsSeq;
-  const forAddr = curAddr;   // the account this read is for; its answer files under it, or nowhere
   const el = $("assets") as HTMLElement;
   const a = await call("cairnxAssets").catch(() => ({ ok: false }));
-  if (seq !== assetsSeq || forAddr !== curAddr) return;
-  if (a?.ok) knownNames.set(forAddr.toLowerCase(), typeof a.primaryName === "string" && a.primaryName ? a.primaryName : null);
+  // render() moves assetsSeq (invalidateAccountViews) in the same step as it changes curAddr, so a read still current
+  // here is for curAddr, and its name files under it
+  if (seq !== assetsSeq) return;
+  if (a?.ok) knownNames.set(curAddr.toLowerCase(), typeof a.primaryName === "string" && a.primaryName ? a.primaryName : null);
   setIdentity(a?.ok ? a.primaryName : null);
   if (!a?.ok) {
     el.hidden = false;

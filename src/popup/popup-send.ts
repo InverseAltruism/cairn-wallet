@@ -2,11 +2,11 @@
 import { parseUnits } from "../core/cairnx.js";
 import { nameCheck, escapeHtml, fmtCsd, fmtBalance, balanceShortNote, groupedAddr } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
-import { $, busy, msg, val } from "./popup-dom.js";
-import { balanceState, curAddr, reviewState } from "./popup-state.js";
+import { $, msg, val } from "./popup-dom.js";
+import { balanceState, beginReview, curAddr, reviewCurrent, reviewState } from "./popup-state.js";
 import { openPanel } from "./popup-panels.js";
-import { resolveRecipient, nameStillPointsTo, setNameRow, recipientChecks } from "./popup-recipient.js";
-import { CSD_FLOW, REVIEW_GONE, teardownReview, armReview, composeSendWarning, setWarn, sendThrew, sendRefused, sentOk } from "./popup-sendflow.js";
+import { resolveRecipient, setNameRow, recipientChecks } from "./popup-recipient.js";
+import { CSD_FLOW, teardownReview, armReview, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
 
 $("btn-send-t").addEventListener("click", () => { openPanel("send-form"); updateSendEstimate(); });
 
@@ -38,6 +38,7 @@ balanceState.onChange = updateSendEstimate;
 // never-seen-before recipient, and hard-flags a poisoning lookalike.
 export const SEND_FEE = 1_000_000; // 0.01 CSD
 $("btn-send").addEventListener("click", async () => {
+  const gen = beginReview();   // a Review the user leaves during its reads below primes nothing (popup-state reviewCurrent)
   const raw = val("s-to").trim();
   // Strict base-unit parse (audit AMT-1): the lax Math.round(parseFloat()) accepted "1e3" (→1000 CSD),
   // "1,000" (→1), "1abc", "+1", ".5" and half-sat rounding; so the signed amount could differ from what
@@ -48,10 +49,12 @@ $("btn-send").addEventListener("click", async () => {
   const amt = Number(amtStr);
   if (!Number.isSafeInteger(amt) || amt <= 0) return msg("Amount out of range.", "err");
   const rr = await resolveRecipient(raw);   // 0x… as-is, or alice.csd → resolved address (refuse lapsed)
+  if (!reviewCurrent(gen)) return;
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
   setNameRow("c-name-row", "c-name", rr.label);
   const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
+  if (!reviewCurrent(gen)) return;          // left, or the account changed: `curAddr` below must be the reviewed signer
   const { firstTime, lookalike } = checks;
   const after = b ? fmtBalance(b.confirmed - amt - SEND_FEE) + " CSD" : "";
   $("c-to").innerHTML = groupedAddr(to);           // FULL address, not truncated
@@ -72,25 +75,8 @@ $("btn-send").addEventListener("click", async () => {
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
-// Confirm signs the frozen review and nothing else: the click disarms Confirm before any await (one Confirm is one
-// signature), the call reads only the snapshot, and a review dropped or replaced during the name re-check (Back, a
-// sheet switch, a lock, an account switch, a new Review) sends nothing.
-$("btn-send-confirm").addEventListener("click", async () => {
-  const snap = reviewState.reviewedSend;
-  const btn = $("btn-send-confirm") as HTMLButtonElement;
-  if (!snap || btn.disabled) return;
-  btn.disabled = true;
-  const { to, amt, name, verified, signer } = snap;
-  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
-  // chain-verification regressed since review (L7); fail-closed to a re-review either way.
-  const stillPoints = !name || (await nameStillPointsTo(name, to, verified));
-  if (reviewState.reviewedSend !== snap) return msg(REVIEW_GONE, "err");
-  if (!stillPoints) { teardownReview(CSD_FLOW, false); return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
-  reviewState.reviewedSend = null;                   // consumed: a second click finds no review
-  // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
-  let r: any;
-  try { busy("Sending…"); r = await call("send", to, amt, SEND_FEE, signer ?? undefined); }
-  catch (e: any) { return sendThrew(CSD_FLOW, e); }   // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
-  if (r?.ok) sentOk(CSD_FLOW, "Sent " + fmtCsd(amt), r.txid);
-  else sendRefused(CSD_FLOW, r);                     // structured refusal: show the REAL reason (FOOT-3 teardown inside)
-});
+// Confirm signs the frozen review and nothing else (popup-sendflow runConfirm).
+$("btn-send-confirm").addEventListener("click", () => runConfirm(CSD_FLOW,
+  { read: () => reviewState.reviewedSend, consume: () => { reviewState.reviewedSend = null; } },
+  ({ to, amt, signer }) => call("send", to, amt, SEND_FEE, signer ?? undefined),
+  ({ amt }) => "Sent " + fmtCsd(amt)));
