@@ -254,7 +254,12 @@
     border-radius: var(--ui-radius-pill); background: var(--ui-sunken); color: var(--ui-ink-2);
     font: 600 var(--ui-text-2xs) / 1 var(--ui-font-mono);
   }
-  .ti.ink { background: var(--ui-ink); color: var(--ui-on-ink); }
+  /* the CSD coin's logo (ui/csd-logo.jpg, a white dot on black) in the circle, edged by the avatar's hairline (8% of
+     the ink: black on light grounds, white on dark ones) so the black disc keeps its edge on the dark ground */
+  .ti.coin-csd {
+    background: var(--ui-sunken) url("ui/csd-logo.jpg") center / cover no-repeat;
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ui-ink) 8%, transparent);
+  }
   .ti svg.mark { width: 18px; height: 17px; }
   .ti svg.i { width: 16px; height: 16px; }
   .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; }

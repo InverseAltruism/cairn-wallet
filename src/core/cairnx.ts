@@ -216,6 +216,12 @@ export type TokenDisplayMeta = Record<string, { decimals?: number; deployId?: st
 export const PINNED_TOKENS: Readonly<Record<string, { deployId: string; decimals: number }>> = Object.freeze({
   CAIRN: { deployId: "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517", decimals: 8 },
 });
+/** True only when `ticker` is pinned and `deployId` is that pin's deploy id (case-insensitive hex); an absent or
+ *  different deploy id is false. */
+export function isPinnedDeploy(ticker: unknown, deployId: unknown): boolean {
+  const pin = Object.prototype.hasOwnProperty.call(PINNED_TOKENS, String(ticker)) ? PINNED_TOKENS[String(ticker)] : undefined;
+  return !!pin && typeof deployId === "string" && deployId.toLowerCase() === pin.deployId;
+}
 /** Decimals for a token's human figure: the pinned value for a pinned ticker, else the served value unchanged. */
 export function displayDecimals(ticker: unknown, served: unknown): { decimals: unknown; pinned: boolean } {
   const pin = Object.prototype.hasOwnProperty.call(PINNED_TOKENS, String(ticker)) ? PINNED_TOKENS[String(ticker)] : undefined;

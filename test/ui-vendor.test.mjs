@@ -23,7 +23,7 @@ check("PROVENANCE.json records every file the build ships", UI_SHIP.every((f) =>
 const UI_REF = /(?:(?:src|href)="|url\(["']?)ui\/([^"'#)]+)/g;
 const uiRefs = (text) => [...text.matchAll(UI_REF)].map((m) => m[1]);
 const unshipped = (text) => uiRefs(text).filter((f) => !UI_SHIP.includes(f));
-for (const file of ["popup.html", "approve.html"]) {
+for (const file of ["popup.html", "approve.html", "popup.css", "tiles.ts"]) {
   const text = readFileSync(join(import.meta.dirname, "..", "src", "popup", file), "utf8");
   const refs = uiRefs(text).length;
   const missing = unshipped(text);
