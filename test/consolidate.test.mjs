@@ -266,8 +266,10 @@ try {
     const dappLine = bg.split("\n").find((l) => l.includes("const DAPP_METHODS"));
     check("consolidate is NOT a dApp method", !!dappLine && !dappLine.includes("consolidate"));
     const popup = scriptSource("popup.ts");
-    check("CSD send ok:false routes through sendRefused (real reason, not 'in flight')", popup.includes("else sendRefused(CSD_FLOW, r)"));
-    check("token send ok:false routes through sendRefused", popup.includes("else sendRefused(TOKEN_FLOW, r)"));
+    // both sends run the one Confirm engine (popup-sendflow runConfirm), whose ok:false branch is sendRefused
+    const engine = /export async function runConfirm[\s\S]*?\n}/.exec(popup)?.[0] ?? "";
+    check("CSD send ok:false routes through sendRefused (real reason, not 'in flight')", popup.includes("runConfirm(CSD_FLOW,") && /else sendRefused\(f, r\)/.test(engine));
+    check("token send ok:false routes through sendRefused", popup.includes("runConfirm(TOKEN_FLOW,") && /else sendRefused\(f, r\)/.test(engine));
     check("no bare else sendDidntConfirm remains (in-flight copy reserved for catch/maybe-inflight)", !/else sendDidntConfirm\(/.test(popup));
     check("sendRefused reserves the in-flight copy for SUBMIT_MAYBE_INFLIGHT", /SUBMIT_MAYBE_INFLIGHT/.test(popup));
   }
