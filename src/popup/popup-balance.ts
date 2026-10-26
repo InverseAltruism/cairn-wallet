@@ -142,4 +142,4 @@ export function resetBalanceView() {
   row.textContent = ""; row.classList.remove("stale");
   ($("bal-note") as HTMLElement).hidden = true;
 }
-export function forgetBalance() { balanceState.last = null; balanceState.stale = false; }
+export function forgetBalance() { balanceState.last = null; balanceState.stale = false; balanceState.onChange?.(); }
