@@ -5,7 +5,8 @@ import { generate, fromPriv, deriveAccount, isValidMnemonic, hdPath } from "../s
 import { seal, open, importKeyRaw } from "../src/core/keystore.js";
 import { Wallet, explorerLink } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { send, selectInputs } from "../src/core/node.js";
+import { send } from "../src/core/node.js";
+import { selectInputs } from "../src/vendor/cairnx-spv.js";
 import { mkCoin, txReply } from "./_coin.js";
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex } from "@noble/hashes/utils";

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Coin selection is csd-tx's `selectInputs` from the vendored bundle; the wallet's own copy in `src/core/node.ts` is
+  removed. A coin the node lists twice, once with a `0x` txid and once without (or with `0X`), is now one coin: a
+  send no longer takes it twice and refuses with `VERIFY_TAMPER`, a send that an honest coin can cover goes through,
+  consolidate and its preview count it once, and a coin skipped as unprovable stays skipped when the node changes
+  its spelling. `spendableCoins` asks `selectInputs` about each coin, so the two apply one rule. The node serves
+  `0x` lower-case txids, so a normal send's selection is unchanged.
 - The csd-sdk bundle moves to npm window 5 (cairnx-core 0.2.3, csd-client 0.1.20, csd-light 0.1.26) and adds csd-tx
   0.1.23. With cairnx-core 0.2.3 an offer fill refuses, before signing, an offer anchored below block 29,860 and a
   name offer anchored below 29,960; the resolver ignores both, so a fill would pay and deliver nothing.
