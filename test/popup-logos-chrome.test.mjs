@@ -29,7 +29,7 @@ const readTiles = async () => {
   const src = /url\("([^"]+)"\)/.exec(cs.backgroundImage)?.[1] ?? "";
   const img = new Image();
   img.src = src;
-  await img.decode().catch(() => {});
+  await img.decode().catch(() => null); // a failed load leaves naturalWidth 0, which the check reports
   const row = (tk) => {
     const tile = document.querySelector(`#assets [data-tsend="${tk}"] .ti`);
     const use = tile?.querySelector("use");
