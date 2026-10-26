@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.1
+
+- The CSD row shows the CSD coin's logo (the owner's file, vendored from cairn-ui 0.4 as `csd-logo.jpg`) in its
+  circle with the avatar's hairline; it showed the Cairn mark. The CAIRN row shows the Cairn mark, only for the token
+  the wallet pins by deploy id: the row passes the deploy id the token list serves for its ticker, and a CAIRN from
+  another deploy, a CAIRN whose token record did not load and every other token keep the neutral glyph. No tile shows
+  part of a ticker.
+- The extension icon is the Cairn mark on an ink tile (16, 32, 48 and 128 px; the 128 px icon keeps Chrome's 16 px
+  margin), drawn from the vendored mark by `scripts/gen-icons.mjs`, which gives the same bytes for the same input. The
+  green tile with three bars and its unshipped masters (`icon.png`, `logo-white.png`) are gone. The store listing's
+  icon is `public/icons/icon-128.png` and is uploaded with this release.
+- The Cairn mark has one home, cairn-ui's `mark.svg` (vendored at 786c5fb, the merge of cairn-ui #4): the setup, lock
+  and approval pages draw it from `ui/mark.svg`, and `scripts/build-icons.mjs` no longer keeps a traced copy in the
+  sprite.
+- Under the balance, its value in USD at the CSD/USD price the Cairn API serves (`/api/market/csd`), with the venue
+  named: "≈ $79.14 · USD via SafeTrade", plus "stale, N min ago" or "sources differ" when the API says so. Display
+  only; no send, fee or check reads it. Without a price (the route answers 503 while the site's market data is off, a
+  failed read, a body with no positive price from a named venue) and while the amount shown is an earlier read after a
+  failed refresh, the line is not shown.
+- The send sheet has Max at the end of the amount field. It fills in the most one send accepts now after the 0.01 CSD
+  fee: the send engine's own coin selection and chain verification run with a target of the 512 largest coins still
+  eligible, so ghost, horizon and unrepresentable coins are left out as a send leaves them out, and both fee caps
+  apply. When the 512-coin limit or unprovable coins hold it below the balance, a line under the estimate says so. The
+  review and the confirm then run as for a typed amount; if coins change before Confirm, the send refuses as before.
+  Max computes nothing for a token send (the design has none there).
+
 ## 0.3.0
 
 - The popup and the approval window are redesigned: the popup is 360 by 600, set in Geist, light and dark with a

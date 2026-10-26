@@ -15,6 +15,8 @@ and support items on [Cairn](https://cairn-substrate.com).
 * **CairnX tokens and `.csd` names.** The popup lists your token balances (decimals-aware, with locked amounts shown) and owned names, and sends tokens through the same reviewed confirmation as a CSD send. Transfer records are built and hashed inside the wallet, never fetched from a server.
 * **CairnX clear-signing.** The approval window decodes `cairnx:v1` proposals (token transfers, deploys, mints, offers, bids, cancels, name claims/transfers/renewals) into structured fields, for wallet- and dApp-initiated requests alike. Unrecognized record shapes still show the raw payload.
 * **Multi-account**, multi-input sends, transaction history, sealed claims, and an idle auto-lock.
+* **Balance in USD.** Under the balance, its value at the CSD/USD price the Cairn API serves, with the venue named (`≈ $79.14 · USD via SafeTrade`). Display only: no send reads it, and without a price the line is not shown.
+* **Max.** The send sheet's Max fills in the most one transaction can send after the fee, worked out by the same coin selection and chain verification the send uses, and says when the 512-coin limit or coins the node cannot prove hold it below the balance.
 * **Coin consolidation.** Merge up to 512 of your smallest coins into one from Settings → Coins; every input is chain-verified before signing, for a flat 0.01 CSD fee.
 * **Open source**, with a reproducible build you can verify yourself.
 
@@ -140,7 +142,7 @@ service. Details are in [SECURITY.md](SECURITY.md).
 
 * **Node RPC.** Switch in Settings › Network. Choose the Cairn proxy (`https://cairn-substrate.com/api/rpc`) or a node on your own computer: `http://127.0.0.1:8789`, or another `http://127.0.0.1` or `localhost` port added in the menu. A saved remote RPC from an older version is moved to the Cairn proxy, and the wallet says so once.
 * Remote RPC servers are not supported; they may come in a later release.
-* **Cairn API.** Set in Settings. Defaults to `https://cairn-substrate.com`.
+* **Cairn API.** Set in Settings. Defaults to `https://cairn-substrate.com`. It also serves the CSD/USD price behind the balance's USD line (`/api/market/csd`); while the site has no market data the line is not shown.
 * **CairnX API.** Set in Settings. The read-only endpoint for token balances and `.csd` names; defaults to `https://cairn-substrate.com/trade/api`. If it's unreachable the wallet shows no assets (with a retry) and the CSD balance and sends to a `0x` address are unaffected. Name lookups fall back to the second name source; offer fills need it.
 
 The derivation path `m/44'/7779'/0'/0/i` is public metadata. It describes which keys are

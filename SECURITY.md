@@ -49,6 +49,10 @@ the header source (a header source that serves a false header with valid proof o
 same mismatch, so the message does not blame the node); an offer-id fill refuses as
 `VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified.
 
+The USD figure under the balance is the CSD/USD price the configured Cairn API serves (`/api/market/csd`), multiplied
+on the device. It is display only: no amount, fee, check or signature reads it, so a wrong price can mislead a reader
+of that line and nothing else. Without a price from the API the line is not shown.
+
 The Activity markers for a transaction not yet seen as included come from that same RPC (its tip,
 whether it reports the transaction mined, and its mined coin set), so a lying RPC can show a transaction
 that was mined as "not included: its coins were spent by another transaction". The wallet signs and sends
