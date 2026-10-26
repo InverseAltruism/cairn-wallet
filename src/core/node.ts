@@ -820,16 +820,34 @@ export async function consolidatePreview(rpc: string, addr: string, fee: number)
 // starts from what the first attempt cached, goes through (test/maxsendable.test.mjs). Popup-only (not in
 // DAPP_METHODS).
 // `eligible`: the spendable coins after the checks; `skipped`: the spendable coins the checks left out (unprovable).
+/** Max's words when every spendable coin was skipped: each class with what is true about retrying it
+ *  (WALLET-ERROR-CODES.md). A coin the caches no longer name (a cleared map) is "could not be proved". */
+function allSkippedText(by: { ghost: number; horizon: number; unrep: number }, skipped: number): string {
+  const n = (k: number) => `${k} coin${k === 1 ? "" : "s"}`;
+  const other = skipped - by.ghost - by.horizon - by.unrep;
+  const parts = [
+    by.ghost ? `the node cannot find the source of ${n(by.ghost)} on its chain, and retrying changes nothing until it can` : "",
+    by.horizon ? `the node cannot look back far enough to prove ${n(by.horizon)}; ${by.horizon === 1 ? "it becomes" : "they become"} spendable once its index catches up or it is upgraded` : "",
+    by.unrep ? `${n(by.unrep)} ${by.unrep === 1 ? "carries" : "carry"} a number this wallet cannot represent exactly, so it cannot spend ${by.unrep === 1 ? "it" : "them"}` : "",
+    other > 0 ? `${n(other)} could not be proved against the chain` : "",
+  ].filter(Boolean);
+  return `none of your coins can be checked against the chain: ${parts.join("; ")}. Nothing was signed`;
+}
 export type MaxSend = { ok: true; amount: number; fee: number; inputs: number; eligible: number; skipped: number; capped: boolean } | { ok: false; error: string; code: string };
 export async function maxSendable(rpc: string, addr: string, fee: number): Promise<MaxSend> {
   if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", code: "BAD_FEE" };
   if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, code: "FEE_CAP" };
   let eligible = 0, skipped = 0, target = 0;
+  const skippedBy = { ghost: 0, horizon: 0, unrep: 0 };
   const verified = new Map<string, number>();
   const found = await selectVerified(rpc, addr, (utxos, exclude) => {
     const coins = spendableCoins(utxos, exclude).sort((a, b) => b.value - a.value);
     eligible = coins.length;
-    skipped = spendableCoins(utxos).length - eligible;
+    const left = spendableCoins(utxos).filter((c) => exclude.has(opKey(c.txid, c.vout)));
+    skipped = left.length;
+    skippedBy.ghost = left.filter((c) => ghostSeen.has(opKey(c.txid, c.vout))).length;
+    skippedBy.horizon = left.filter((c) => horizonSeen.has(opKey(c.txid, c.vout))).length;
+    skippedBy.unrep = left.filter((c) => unrepSeen.has(opKey(c.txid, c.vout))).length;
     target = coins.slice(0, MAX_TX_INPUTS).reduce((s, c) => s + c.value, 0);
     // nothing eligible: a positive target makes the selection fail cleanly (INSUFFICIENT, or the skip reason)
     return target > 0 ? target : 1;
@@ -837,13 +855,17 @@ export async function maxSendable(rpc: string, addr: string, fee: number): Promi
   // Max's own words: the engine's copy for a failed round names the round's internal target as "this spend"
   if ("error" in found) {
     if (eligible === 0 && skipped === 0 && found.code === "INSUFFICIENT") return { ok: true, amount: 0, fee, inputs: 0, eligible: 0, skipped: 0, capped: false };
-    if (eligible === 0) return { ok: false, error: `none of your coins can be checked against the chain yet: the node could not prove ${skipped} coin${skipped === 1 ? "" : "s"}. Nothing was signed; try again shortly`, code: found.code };
+    if (eligible === 0 && skipped > 0) return { ok: false, error: allSkippedText(skippedBy, skipped), code: found.code };
     if (found.code === "INSUFFICIENT") return { ok: false, error: "your coins are worth less on the chain than the node reports, so no amount can be worked out. Nothing was signed", code: "INSUFFICIENT" };
     return { ok: false, error: found.error, code: found.code };
   }
   if (target <= fee) return { ok: true, amount: 0, fee, inputs: 0, eligible, skipped, capped: false };
   const sv = await selectVerified(rpc, addr, target, verified);
-  if ("error" in sv) return { ok: false, error: "the most one transaction can send could not be confirmed against the chain just now. Nothing was signed; try again shortly", code: sv.code };
+  if ("error" in sv) {
+    if (sv.code === "VERIFY_TAMPER") return { ok: false, error: sv.error, code: sv.code };
+    const next = sv.code === "VERIFY_UNAVAILABLE" ? "try again shortly" : "press Max again to work it out from your coins as they are now";
+    return { ok: false, error: `the most one transaction can send could not be confirmed against the chain just now. Nothing was signed; ${next}`, code: sv.code };
+  }
   if (fee > proportionalFeeCap(sv.total)) return { ok: false, error: `fee exceeds ${fmtCsd(proportionalFeeCap(sv.total))} (10% of the coins this spend uses); refusing`, code: "FEE_CAP" };
   return { ok: true, amount: target - fee, fee, inputs: sv.inputs.length, eligible, skipped, capped: eligible > MAX_TX_INPUTS };
 }

@@ -12,7 +12,8 @@
 // node lists twice counted twice); stop caching unrepresentable verdicts (`rememberSkip(unrepSeen, ...)` in
 // selectVerified) and case 11 fails (the review's three-layer layout, test/unrepresentable-coin.test.mjs case 5 for a
 // send alone); answer from the first pass without the send's numeric pass and case 14 fails; give the engine's copy
-// for an all-unprovable wallet and case 13 fails.
+// for an all-unprovable wallet and case 13 fails; take Max's all-skipped branch without `skipped > 0` and cases 15 and
+// 16 fail (a node that cannot be read is not a wallet of unprovable coins).
 // Run: npx tsx test/maxsendable.test.mjs   (offline)
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -205,7 +206,30 @@ try {
     const g = mkCoin(5_00000013); g.coin.txid = "0x" + "4d".repeat(32);
     stub({ coins: [g], served: [] });
     const max = await (await wallet()).maxSendable(FEE);
-    check(`(13) every coin unprovable: "${max.error}"`, max.ok === false && max.code === "GHOST_INPUTS_SKIPPED" && max.error.startsWith("none of your coins can be checked against the chain yet") && !/spend \(amount plus fee\)|0\.00000001/.test(max.error));
+    check(`(13) every coin unprovable: "${max.error}"`, max.ok === false && max.code === "GHOST_INPUTS_SKIPPED" && max.error === "none of your coins can be checked against the chain: the node cannot find the source of 1 coin on its chain, and retrying changes nothing until it can. Nothing was signed");
+  }
+  // 13b-c. every coin unrepresentable, or beyond the node's scan horizon: each says what is true about retrying
+  {
+    const id = "0x" + "4e".repeat(32);
+    const raw = { [id]: JSON.stringify({ version: 1, locktime: 0, txid: id, app: { type: "Propose", domain: "spam:v1", payload_hash: "0x" + "0e".repeat(32), uri: "spam", expires_epoch: "__P__" },
+      inputs: [{ prev_txid: "0x" + "11".repeat(32), vout: 0, script_sig: "0x" }], outputs: [{ value: 7_00000013, script_pubkey: "0x" + "cd".repeat(20) }] }).replace('"__P__"', "9007199254740993") };
+    stub({ coins: [{ coin: { txid: id, vout: 0, value: 7_00000013, confirmations: 9 } }], served: [], raw });
+    const u = await (await wallet()).maxSendable(FEE);
+    check(`(13b) every coin unrepresentable: "${u.error}"`, u.ok === false && u.code === "VERIFY_UNREPRESENTABLE" && u.error === "none of your coins can be checked against the chain: 1 coin carries a number this wallet cannot represent exactly, so it cannot spend it. Nothing was signed");
+    const h = mkCoin(8_00000013);
+    stub({ coins: [h], served: [h], overrides: { [h.coin.txid.toLowerCase()]: () => ({ ok: false, status: 503, json: async () => ({ ok: false, code: "SCAN_HORIZON" }) }) } });
+    const hz = await (await wallet()).maxSendable(FEE);
+    check(`(13c) every coin beyond the scan horizon: "${hz.error}"`, hz.ok === false && hz.code === "VERIFY_HORIZON" && hz.error.includes("cannot look back far enough to prove 1 coin; it becomes spendable"));
+  }
+  // 15-16. the coins cannot be read at all: the engine's own refusal, not a count of 0 unprovable coins
+  {
+    const w = await wallet();
+    globalThis.fetch = async () => ({ ok: false, status: 502, json: async () => ({}) });
+    const down = await w.maxSendable(FEE);
+    check(`(15) the node is down: "${down.error}"`, down.ok === false && down.code === "VERIFY_UNAVAILABLE" && down.error.startsWith("couldn't fetch your coins (node unreachable or erroring)"));
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ confirmed_balance: 5 }) });
+    const shapeless = await w.maxSendable(FEE);
+    check(`(16) a /utxos body without a utxos array: "${shapeless.error}"`, shapeless.ok === false && shapeless.code === "VERIFY_UNAVAILABLE" && shapeless.error.startsWith("couldn't fetch your coins"));
   }
   // 14. the coins change between Max's two passes (the largest is spent): no figure, since the send's own selection
   // no longer accepts it

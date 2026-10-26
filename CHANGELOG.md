@@ -26,11 +26,15 @@
   review and the confirm then run as for a typed amount; if coins change before Confirm, the send refuses as before.
   Max computes nothing for a token send (the design has none there). Max ends with the send's own selection for that
   figure and answers only if it succeeds, so the figure is one a send accepts at that moment; when it cannot work one
-  out it says why in its own words (for example that none of the coins can be checked against the chain yet).
+  out it says why in its own words: when every coin was left out, what is true about each kind (a coin the node cannot
+  find stays out until it can, one beyond its scan horizon becomes spendable once the node catches up, an
+  unrepresentable one never does), and when the coins cannot be read at all, the engine's "couldn't fetch your coins".
 - A coin whose source transaction carries a number the wallet cannot represent exactly is remembered for the session
   (two minutes), like a coin the node cannot find. Before, a send met such coins one largest-first layer per round, and
   with three layers every attempt spent its three rounds and refused with `VERIFY_UNAVAILABLE`; now the retry starts
-  without them and goes through.
+  without them and goes through. A send (a dApp's `send` too) that the remaining provable coins cannot cover now
+  refuses with `VERIFY_UNREPRESENTABLE` while such a coin is remembered, where it said `INSUFFICIENT`; both codes
+  existed, and the new one names the coins it left out.
 - Known limits: once the two-minute memory of skipped coins has expired, a send of exactly Max can refuse once with
   `VERIFY_UNAVAILABLE` (nothing signed) while it finds those coins again; its retry goes through. Max reads every coin
   it may spend from the node, as the send then does: on a wallet with more than 512 coins, Max and the send make 1,028
