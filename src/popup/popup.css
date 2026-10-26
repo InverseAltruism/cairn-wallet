@@ -808,8 +808,9 @@
   /* One dense scale for the request: every element with weight sits above the buttons at the window's real size, for
      every request type (test/approve-layout-chrome.test.mjs), so rows, check rows and boxes take snug line heights and
      the smallest paddings on the scale. */
+  /* the request scrolls inside itself: anything positioned in it stays in it, never in the window's own document */
   .ap-body {
-    flex: 1; min-height: 0; overflow-y: auto; padding: var(--ui-space-2) var(--ui-space-4);
+    position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: var(--ui-space-2) var(--ui-space-4);
     font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); overflow-wrap: anywhere;
   }
   .ap-body > * + * { margin-top: var(--ui-space-2); }
@@ -838,9 +839,10 @@
   /* the amount ends the address's last line when it fits there, kept whole */
   .page-approve .out-amt { display: inline-block; margin-left: var(--ui-space-2); white-space: nowrap; }
   /* a flagged recipient row (approve.ts, clearsign.marksRows): its tier's tint and a bar at its start, which add no
-     height, so marking rows never moves the fold; the mark's words are for assistive technology */
+     height; the mark's words are for assistive technology, positioned inside the row so they take no room in the
+     request or the window (test/approve-layout-chrome.test.mjs: the window's own document never scrolls) */
   .page-approve .kv > div.flag {
-    margin-inline: calc(var(--ui-space-2) * -1); padding-inline: var(--ui-space-2);
+    position: relative; margin-inline: calc(var(--ui-space-2) * -1); padding-inline: var(--ui-space-2);
   }
   .page-approve .kv > div.flag.danger { background: var(--ui-down-tint); box-shadow: inset 3px 0 0 var(--ui-down); }
   .page-approve .kv > div.flag.caution { background: var(--ui-warn-tint); box-shadow: inset 3px 0 0 var(--ui-warn); }

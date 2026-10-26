@@ -63,9 +63,9 @@ const CASES = [
   ["connect", [req("c", "connect", O, {})], {}, ["origin", "cost"]],
   ["signin", [req("s", "signinWithCsd", O, { nonce: "n0nce-7f3a9c21e5b84d10", statement: "Sign in to Cairn", expirationSecs: 600, uri: `${O}/trade` })], {}, ["origin", "cost"]],
   ["signin-mismatch", [req("s2", "signinWithCsd", D, { nonce: "abc123", domain: "cairn-substrate.com" })], {}, ["This page asked to sign in as", "cost"]],
-  ["send", [req("s1", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })], {}, ["First time sending to", "to:1", "cost"]],
-  ["send-poison", [req("sp", "send", D, { to: LOOK, amount: 150_000_000, fee: 1_000_000 })], seen, ["Possible address-poisoning", "to:1", "cost"]],
-  ["send-2", [req("s2r", "send", D, sendTo([[RCPT, 100_000_000], [R2, 200_000_000]]))], {}, ["warn:2", "to:2", "cost"]],
+  ["send", [req("s1", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })], {}, ["First time sending to", "named:1", "to:1", "cost"]],
+  ["send-poison", [req("sp", "send", D, { to: LOOK, amount: 150_000_000, fee: 1_000_000 })], seen, ["Possible address-poisoning", "named:1", "to:1", "cost"]],
+  ["send-2", [req("s2r", "send", D, sendTo([[RCPT, 100_000_000], [R2, 200_000_000]]))], {}, ["warn:2", "named:2", "to:2", "cost"]],
   ["send-3", [req("s3", "send", D, sendTo([[RCPT, 100_000_000], [R2, 200_000_000], [R3, 300_000_000]]))], {}, ["warn:3", "to:3", "cost"]],
   // the worst send: three recipients, one a look-alike, a fee past the warning line, and a balance that does not cover it
   ["send-3-worst", [req("s3w", "send", D, sendTo([[LOOK, 100_000_000], [R2, 200_000_000], [R3, 300_000_000]], 600_000_000))], { ...seen, balance: { confirmed: 50_000_000 } }, ["Possible address-poisoning", "warn:3", "to:3", "unusually large fee", "spendable balance does not cover", "cost"]],
@@ -77,12 +77,12 @@ const CASES = [
   ["fill-csd", [req("f1", "fillOffer", O, fill([[RCPT, 250_000_000], [T, 3_750_000]]))], { fillOfferView: view }, ["#fill-view", "First time sending to", "to:2", "cost"]],
   ["fill-partial-reserved", [req("f2", "fillOffer", O, fill([[RCPT, 50_000_000], [T, 750_000]]))], { fillOfferView: viewReserved }, ["#fill-view", "the wallet will refuse this fill", "to:2", "cost"]],
   // a two-recipient CSD fill whose listing does not load: both first-time warnings and the listing failure
-  ["fill-2-nolisting", [req("f3", "fillOffer", O, fill([[RCPT, 500_000_000], ["0x" + "34".repeat(20), 7_500_000]], { fee: 5_000_000 }))], {}, ["Could not load this listing", "warn:2", "to:2", "cost"]],
+  ["fill-2-nolisting", [req("f3", "fillOffer", O, fill([[RCPT, 500_000_000], ["0x" + "34".repeat(20), 7_500_000]], { fee: 5_000_000 }))], {}, ["Could not load this listing", "warn:2", "named:2", "to:2", "cost"]],
   ["fill-token", [req("ft", "fillOffer", O, fill([], { confidence: cx.CONF_TOKEN_FILL }))], { tokenFillQuote: quote }, ["Token-priced fill", "#token-sim", "cost"]],
   ["fill-token-noquote", [req("ft2", "fillOffer", O, fill([], { confidence: cx.CONF_TOKEN_FILL }))], {}, ["Token-priced fill", "Could not compute the token debit", "cost"]],
   ["fill-unconfirmed", [req("fu", "fillOffer", O, fill([[RCPT, 250_000_000], [T, 3_750_000]]))], { fillOfferView: view, ...unconfirmed }, ["second source has no record", "#fill-view", "to:2", "cost"], "approve"],
   ["attest-token", [req("at", "attest", O, { proposalId: PID, score: 100, confidence: cx.CONF_TOKEN_FILL, fee: 1_000_000 })], { tokenFillQuote: quote }, ["Token-priced fill", "#token-sim", "cost"]],
-  ["propose-outputs", [req("po", "propose", D, { domain: "csd:apps", payloadHash: "0x" + "77".repeat(32), uri: `${D}/p/42`, fee: 25_000_000, outputs: [{ to: RCPT, value: 100_000_000 }, { to: R2, value: 200_000_000 }] })], {}, ["transfers funds out of your wallet", "warn:2", "to:2", "cost"]],
+  ["propose-outputs", [req("po", "propose", D, { domain: "csd:apps", payloadHash: "0x" + "77".repeat(32), uri: `${D}/p/42`, fee: 25_000_000, outputs: [{ to: RCPT, value: 100_000_000 }, { to: R2, value: 200_000_000 }] })], {}, ["transfers funds out of your wallet", "warn:2", "named:2", "to:2", "cost"]],
   ["propose-deploy", [req("pd", "propose", O, prop(v.deploy({ ticker: "TKN", decimals: 8, supply: "2100000000000000", mint: "open", mintLimit: "100000000" }), { outputs: [{ to: T, value: Number(v.DEPLOY_FEE) }] }))], {}, ["transfers funds out of your wallet", "to:1", "cost"]],
   ["propose-raw", [req("pr", "propose", D, { domain: "csd:apps", payloadHash: "0x" + "77".repeat(32), uri: `${D}/p/42`, fee: 25_000_000 })], {}, ["origin", "cost"]],
   ["offer-payto", [req("of", "propose", O, prop(v.offer({ give: { name: "alice" }, want: { value: "500000000", payto: R2 } })))], {}, ["First time using this payout address", "cost"]],
@@ -171,6 +171,8 @@ function measure([expect, origin]) {
     if (label.startsWith("to:")) return [...reqEl.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === "To");
     // the recipients #send-warn names (a look-alike line also names what it resembles, which is not a recipient), or,
     // when the box only counts them, the recipient rows that carry a mark
+    // the recipients the box names by head and tail (a look-alike line also names what it resembles, not a recipient)
+    if (label.startsWith("named:")) return [...new Set([...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent))];
     if (label.startsWith("warn:")) {
       const marked = [...new Set([...reqEl.querySelectorAll(".kv > div[data-to].flag")].map((r) => r.dataset.to))];
       return marked.length ? marked : [...new Set([...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent))];
@@ -184,7 +186,7 @@ function measure([expect, origin]) {
   const missing = [];
   for (const label of expect) {
     const els = find(label);
-    const want = /^(to|warn):(\d+)$/.exec(label);
+    const want = /^(to|warn|named):(\d+)$/.exec(label);
     if (want) { if (els.length !== Number(want[2])) missing.push(`${label} (found ${els.length})`); continue; }
     if (!els.length || !els.every((el) => shown(el))) missing.push(label);
   }
@@ -256,6 +258,20 @@ const settle = (page) => page.evaluate(() => new Promise((done) => {
   tick();
 }));
 
+// The window's own document never scrolls: only the request does. Its scroll height is the window's, and a scroll of the
+// document or a wheel over the header moves neither the origin nor the buttons (an absolutely positioned element with
+// no positioned ancestor inside the request once made the document 11,200 px tall at 500 flagged rows).
+async function windowFixed(page) {
+  const at = () => page.evaluate(() => [document.getElementById("ap-origin").getBoundingClientRect().top, document.getElementById("btn-approve").getBoundingClientRect().top]);
+  const before = await at();
+  const doc = await page.evaluate(() => { const se = document.scrollingElement; const h = se.scrollHeight; window.scrollTo(0, 1e6); return { h, inner: innerHeight, y: window.scrollY }; });
+  const box = await page.evaluate(() => { const r = document.querySelector(".ap-top").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  await page.mouse.move(box.x, box.y); await page.mouse.wheel(0, 2000); await page.waitForTimeout(150);
+  const after = await at();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  return { ok: doc.h <= doc.inner && doc.y === 0 && after.join() === before.join(), doc, before, after };
+}
+
 // The line's words, written out here so a change to them fails this file (security copy: listed for the owner's sign-off).
 const STATE = { arming: "Arming: both buttons wait 700 ms", ready: "Ready.", readyUnconfirmed: "Ready. Read the warning above before you sign.",
   held: "Approve is off: see the warning above.", tokenWait: "Approve waits for the token amount." };
@@ -311,6 +327,8 @@ try {
       t.check(`${name}: each warning row has its tier, danger for a look-alike, caution for a first send (${r.tiers.map((x) => x.tier).join(",") || "none"})`, r.tiers.every((x) => x.ok));
       t.check(`${name}: the line under the buttons matches the latch and what is below the fold ("${r.cue.text}", ${r.cue.hiddenRcpt} recipient rows hidden) and covers nothing`, r.cue.text === cueText(r.cue) && r.cue.clear);
       t.check(`${name}: no <br> in the request is hidden (${r.hiddenBr}) and the text breaks at every one (${r.lost.join("; ") || "all kept"})`, r.hiddenBr === 0 && r.lost.length === 0);
+      const fx = await windowFixed(page);
+      t.check(`${name}: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px; origin and Approve at ${fx.before.join(",")} then ${fx.after.join(",")})`, fx.ok);
       const d = await page.evaluate(densityOf);
       if (theme === "light") table.at(-1).push(d.density);
       // the confirm step is a second paint after a click, which decides again
@@ -350,6 +368,8 @@ try {
       t.check(`full height ${name}: the whole request in view, the approved sizes (amount ${d.amount}, row ${d.row}, one-line row ${d.rowH} px, check ${d.check})`,
         d.whole && d.amount === "36px 500" && d.row === "13.5px 9px" && d.rowH === 40 && (d.check === null || d.check === "12.5px 10px 12px"));
       t.check(`full height ${name}: everything with weight above the buttons (below: ${r.below.join(", ") || "none"})`, r.below.length === 0 && r.scrollTop === 0);
+      const fx = await windowFixed(page);
+      t.check(`full height ${name}: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px)`, fx.ok);
       t.check(`full height ${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();
@@ -430,6 +450,8 @@ try {
       t.check(`row marks: one look-alike among four rows is named in the box and its row alone is marked danger (${JSON.stringify(m)})`,
         m.rows === 4 && m.named && m.flagged.length === 1 && m.flagged[0][0] && m.flagged[0][1] && m.flagged[0][2] === "Look-alike");
       t.check(`row marks: the marked row is as tall as the others (${m.heights.join(",")} px)`, m.heights.length === 1);
+      const fx = await windowFixed(page);
+      t.check(`row marks: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px)`, fx.ok);
       t.check(`row marks: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();
@@ -453,6 +475,8 @@ try {
       t.check(`${name}: the warning rows count, danger then caution, and name no recipient`, m.tiers.map((x) => x.tier).join() === "danger,caution" && m.tiers.every((x) => x.ok)
         && await page.evaluate(() => document.getElementById("send-warn").querySelectorAll("code").length === 0));
       t.check(`${name}: the line names the recipient rows below ("${m.cue.text}", ${m.cue.hiddenRcpt} rows not in view)`, m.cue.open && m.cue.hiddenRcpt > 0 && m.cue.text === cueText(m.cue) && m.cue.clear);
+      const fx = await windowFixed(page);
+      t.check(`${name}: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px; origin and Approve at ${fx.before.join(",")} then ${fx.after.join(",")})`, fx.ok);
       t.check(`${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();
