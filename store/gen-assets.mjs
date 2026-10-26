@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launchOrSkip, openWalletPage } from "../test/helpers/walletpage.mjs";
 import { APPROVE_WINDOW } from "../src/approve-window.ts";
+import { readMark } from "../scripts/mark.mjs";
 // the approval window's page at the size the wallet opens it: Linux draws no frame inside those bounds (measured);
 // test/approve-layout-chrome.test.mjs measures the fold at the largest frame seen, the store shows the window as shipped
 const APPROVE_PAGE = { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height };
@@ -62,9 +63,9 @@ const fontFaces = ["Geist", "Geist Mono"].map((family) => {
   return `@font-face{font-family:"${family}";src:url(data:font/woff2;base64,${b64(join(UI, "fonts", file))}) format("woff2");font-weight:100 900;font-style:normal}`;
 }).join("");
 const tokens = readFileSync(join(UI, "tokens.css"), "utf8");
-const MARK = readFileSync(join(ROOT, "src", "popup", "icons.svg"), "utf8").match(/<symbol id="mark" viewBox="([^"]+)"[^>]*>([\s\S]*?)<\/symbol>/);
-if (!MARK) throw new Error("icons.svg has no #mark symbol");
-const mark = (cls) => `<svg class="${cls}" viewBox="${MARK[1]}" fill="currentColor" aria-hidden="true">${MARK[2]}</svg>`;
+const MARK = readMark();
+// the mark sets no paint, so the drawing <svg> sets fill
+const mark = (cls) => `<svg class="${cls}" viewBox="${MARK.viewBox}" fill="currentColor" aria-hidden="true">${MARK.parts.join("")}</svg>`;
 
 const page = (theme, w, h, css, body) => `<!doctype html><html data-theme="${theme}"><meta charset="utf-8"><style>${fontFaces}${tokens}
 *{margin:0;padding:0;box-sizing:border-box}

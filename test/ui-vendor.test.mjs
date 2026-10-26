@@ -18,14 +18,20 @@ check(`the committed copy matches PROVENANCE.json (${honest.join("; ") || "no pr
 const prov = JSON.parse(readFileSync(join(UI_VENDOR_DIR, "PROVENANCE.json"), "utf8"));
 check("PROVENANCE.json records every file the build ships", UI_SHIP.every((f) => f in prov.files));
 
-const unshipped = (html) => [...html.matchAll(/(?:src|href)="ui\/([^"]+)"/g)].map((m) => m[1]).filter((f) => !UI_SHIP.includes(f));
-for (const page of ["popup.html", "approve.html"]) {
-  const html = readFileSync(join(import.meta.dirname, "..", "src", "popup", page), "utf8");
-  const refs = [...html.matchAll(/(?:src|href)="ui\/([^"]+)"/g)].length;
-  const missing = unshipped(html);
-  check(`${page}: each of its ${refs} ui/ files is shipped (${missing.join(", ") || "none missing"})`, refs > 0 && missing.length === 0);
+// a ui/ file named by an attribute (src, href, a <use> href with its #fragment) or a CSS url(); the fragment is not
+// part of the file
+const UI_REF = /(?:(?:src|href)="|url\(["']?)ui\/([^"'#)]+)/g;
+const uiRefs = (text) => [...text.matchAll(UI_REF)].map((m) => m[1]);
+const unshipped = (text) => uiRefs(text).filter((f) => !UI_SHIP.includes(f));
+for (const file of ["popup.html", "approve.html"]) {
+  const text = readFileSync(join(import.meta.dirname, "..", "src", "popup", file), "utf8");
+  const refs = uiRefs(text).length;
+  const missing = unshipped(text);
+  check(`${file}: each of its ${refs} ui/ references names a shipped file (${missing.join(", ") || "none missing"})`, refs > 0 && missing.length === 0);
 }
 check("a page loading an unshipped ui/ file is caught", unshipped('<link rel="stylesheet" href="ui/override.css" />').join() === "override.css");
+check("a <use> of an unshipped ui/ file is caught, fragment dropped", unshipped('<use href="ui/stamp.svg#stamp"/>').join() === "stamp.svg");
+check("a CSS url() of an unshipped ui/ file is caught", unshipped('.x{background:url("ui/logo.png")}').join() === "logo.png");
 
 const work = mkdtempSync(join(tmpdir(), "ui-vendor-test-"));
 try {
