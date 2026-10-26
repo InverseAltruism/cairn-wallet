@@ -3,7 +3,8 @@
 // ui/mark.svg); a CAIRN from another deploy, a CAIRN whose token record failed to load and an unpinned token draw the
 // neutral glyph. test/asset-tiles.test.mjs pins the same rules offline.
 // RED-FIRST: drop the `.ti.coin-csd` rule from popup.css and the CSD tile checks fail; drop "mark.svg" from UI_SHIP
-// (scripts/check-ui-vendor.mjs) and the mark renders nothing and its check fails.
+// (scripts/check-ui-vendor.mjs) and the mark renders nothing and its check fails; drop `fill: currentColor` from
+// popup.css's `svg.mark` rule and the fill checks fail.
 // HONEST PATH: the pinned CAIRN with the deploy id the resolver serves.
 // Needs playwright-core (PLAYWRIGHT_CORE) and a Chromium (PLAYWRIGHT_CHROMIUM); prints SKIP without them.
 import { PINNED_TOKENS } from "../src/core/cairnx.ts";
@@ -64,6 +65,40 @@ const other = await tiles("light", tokens("0x" + "ab".repeat(32)));
 t.check("a CAIRN from another deploy draws the neutral glyph", other.cairn.href === "icons.svg#i-coins");
 const failed = await tiles("light", { ok: false });
 t.check("a CAIRN whose token record failed to load draws the neutral glyph", failed.cairn.href === "icons.svg#i-coins");
+
+// The mark sets no paint (cairn-ui's mark.svg), so every <svg> that draws it must set fill. Each one, on every page
+// that draws it, must fill with its own colour, and that colour must be one of the theme's ink tokens, so the mark is
+// never the default black on the dark ground. Pages: the popup's setup, locked and main views (the CAIRN tile), and
+// the approval window locked and with a request (its header tile).
+const readMarks = () => {
+  const probe = (v) => { const d = document.createElement("div"); d.style.color = `var(${v})`; document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c; };
+  const inks = [probe("--ui-ink"), probe("--ui-ink-2")];
+  return [...document.querySelectorAll("svg")].filter((el) => el.querySelector('use[href="ui/mark.svg#mark"]')).filter((el) => el.checkVisibility())
+    .map((el) => { const cs = getComputedStyle(el); return { cls: el.getAttribute("class"), where: el.parentElement?.className || el.parentElement?.id || "", fill: cs.fill, color: cs.color, ink: inks.includes(cs.color) }; });
+};
+const signed = { ...base.status, unlocked: false };
+const pages = [
+  ["popup setup", "popup", { ...base, status: { hasVault: false, unlocked: false, accounts: [] } }, "#view-setup:not([hidden])"],
+  ["popup locked", "popup", { ...base, status: signed }, "#view-locked:not([hidden])"],
+  ["popup main", "popup", { ...base, cairnxTokens: tokens(PINNED_TOKENS.CAIRN.deployId) }, '#assets [data-tsend="CAIRN"]'],
+  ["approval locked", "approve", { status: signed, pending: [] }, "#view-locked:not([hidden])"],
+  ["approval request", "approve", { status: { ...base.status, tradeApi: "https://x.invalid" }, balance: { confirmed: 128_473_500_000 }, history: [], tip: 128_000, epoch: 4_000, tipFloor: 0, sealedClaims: [], tokenDisplayMeta: {},
+    pending: [{ id: "r1", method: "send", origin: "https://cairn-substrate.com", params: { to: "0x" + "42".repeat(20), amount: 150_000_000, fee: 1_000_000 } }] }, "#view-req:not([hidden])"],
+];
+for (const theme of ["light", "dark"]) {
+  let drawn = 0;
+  for (const [name, which, answers, ready] of pages) {
+    const { page, ctx, errors } = await openWalletPage(browser, which, answers, { viewport: which === "approve" ? { width: 460, height: 716 } : { width: 360, height: 600 }, colorScheme: theme });
+    await page.waitForSelector(ready);
+    await page.waitForTimeout(300);
+    const marks = await page.evaluate(readMarks);
+    drawn += marks.length;
+    const bad = marks.filter((m) => m.fill !== m.color || !m.ink);
+    t.check(`${theme}, ${name}: ${marks.length} mark(s), each filled with its own ink colour (${marks.map((m) => `${m.cls}@${m.where} ${m.fill}`).join("; ")})`, marks.length > 0 && bad.length === 0 && errors.length === 0);
+    await ctx.close();
+  }
+  t.check(`${theme}: the five pages draw the mark ${drawn} times`, drawn >= 6);
+}
 
 await browser.close();
 t.done("popup-logos-chrome");
