@@ -39,7 +39,7 @@ async function bundle(entry) {
   return bundles.get(entry);
 }
 
-const TYPES = { html: "text/html", css: "text/css", js: "text/javascript", svg: "image/svg+xml", woff2: "font/woff2", txt: "text/plain" };
+const TYPES = { html: "text/html", css: "text/css", js: "text/javascript", svg: "image/svg+xml", woff2: "font/woff2", txt: "text/plain", jpg: "image/jpeg" };
 function file(path) {
   if (path === "/popup.css" || path === "/icons.svg" || path === "/popup.html" || path === "/approve.html") return readFileSync(join(ROOT, "src", "popup", path.slice(1)));
   const ui = path.startsWith("/ui/") ? path.slice(4) : null;

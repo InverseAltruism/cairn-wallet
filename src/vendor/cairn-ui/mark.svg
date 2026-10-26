@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="300 330 590 530">
+  <!-- The Cairn mark: a prompt, a cursor and four stones (0 lowest). It sets no paint: the consumer sets
+       fill: currentColor (or a colour) on the <svg> that draws it. Consumers address it by id: #mark is the whole mark
+       (draw it through <use> in a viewBox of 300 330 590 530), and #mark-prompt, #mark-cursor and #mark-stone-0 to
+       #mark-stone-3 are its parts. -->
+  <g id="mark">
+    <path id="mark-prompt" d="M323 417 L391 474 L323 531 L323 509 L365 474 L323 439 Z"/>
+    <rect id="mark-cursor" x="395" y="517" width="78" height="24"/>
+    <polygon id="mark-stone-3" points="586,378 643,345 692,380 712,455 677,466 596,430 570,460 566,452"/>
+    <polygon id="mark-stone-2" points="578,479 710,490 757,566 666,598 548,556 548,600 528,550"/>
+    <polygon id="mark-stone-1" points="513,626 600,634 777,624 830,733 725,785 820,766 870,830 810,840 680,800 457,708"/>
+    <polygon id="mark-stone-0" points="465,746 536,840 408,834"/>
+  </g>
+</svg>
