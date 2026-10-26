@@ -1,5 +1,5 @@
 // Sending CSD: recipient and amount, the review, the signature.
-import { parseUnits } from "../core/cairnx.js";
+import { formatUnits, parseUnits } from "../core/cairnx.js";
 import { nameCheck, escapeHtml, fmtCsd, fmtBalance, balanceShortNote, groupedAddr } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 import { $, msg, val } from "./popup-dom.js";
@@ -8,9 +8,41 @@ import { openPanel } from "./popup-panels.js";
 import { resolveRecipient, setNameRow, recipientChecks } from "./popup-recipient.js";
 import { CSD_FLOW, teardownReview, armReview, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
 
-$("btn-send-t").addEventListener("click", () => { openPanel("send-form"); updateSendEstimate(); });
+$("btn-send-t").addEventListener("click", () => { openPanel("send-form"); resetMax(); updateSendEstimate(); });
 
-$("csd-row").addEventListener("click", () => { openPanel("send-form"); updateSendEstimate(); });
+$("csd-row").addEventListener("click", () => { openPanel("send-form"); resetMax(); updateSendEstimate(); });
+
+// Max: the most one send accepts now, worked out by the send engine itself (background maxSendable: it verifies the
+// coins a send would spend and signs nothing). It fills the amount; the review and the confirm then run as for a typed
+// amount. An answer that arrives after the sheet closed, the account changed, the amount was typed or Max was pressed
+// again is dropped.
+let maxSeq = 0;
+function maxNote(text: string | null) {
+  const el = $("s-max-note") as HTMLElement;
+  el.textContent = text ?? "";
+  el.hidden = text === null;
+}
+function resetMax() { maxSeq++; maxNote(null); ($("s-max") as HTMLButtonElement).disabled = false; }
+$("s-max").addEventListener("click", async () => {
+  const amt = $("s-amt") as HTMLInputElement, btn = $("s-max") as HTMLButtonElement;
+  if (amt.disabled) return;
+  const seq = ++maxSeq, who = curAddr;
+  btn.disabled = true;
+  maxNote("Working out the most one transaction can send…");
+  const r = await call("maxSendable", SEND_FEE).catch((e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+  if (seq !== maxSeq || who !== curAddr || ($("send-form") as HTMLElement).hidden) return;
+  btn.disabled = false;
+  if (amt.disabled) return maxNote(null);
+  if (!r?.ok) return maxNote(`Max is not available: ${String(r?.error ?? "the coins could not be read")}`);
+  if (!(r.amount > 0)) return maxNote(`Nothing to send: the confirmed coins do not cover the ${fmtCsd(SEND_FEE)} fee.`);
+  amt.value = formatUnits(String(r.amount), 8);
+  updateSendEstimate();
+  const notes = [
+    r.capped ? `The most one transaction can send: it spends ${r.inputs} of your ${r.eligible} coins, the limit per transaction. Merge coins in Settings to send more at once.` : "",
+    r.skipped > 0 ? `${r.skipped} coin${r.skipped === 1 ? "" : "s"} the node could not prove ${r.skipped === 1 ? "is" : "are"} left out.` : "",
+  ].filter(Boolean);
+  maxNote(notes.length ? notes.join(" ") : null);
+});
 
 // While the amount is typed: the network fee and the balance after it, from SEND_FEE and the balance the hero shows (no
 // read of its own). Display only: the review reads the balance again, and a negative result there keeps Confirm down.
@@ -24,7 +56,7 @@ function updateSendEstimate() {
   after.textContent = fmtBalance(left) + " CSD";
   after.className = left < 0 ? "err" : "dim";
 }
-$("s-amt").addEventListener("input", updateSendEstimate);
+$("s-amt").addEventListener("input", () => { maxSeq++; maxNote(null); ($("s-max") as HTMLButtonElement).disabled = false; updateSendEstimate(); });
 balanceState.onChange = updateSendEstimate;
 
 // Address-poisoning lookalike: attackers seed your history with an address that

@@ -648,6 +648,19 @@
     position: absolute; right: var(--ui-space-3); top: 50%; transform: translateY(-50%); pointer-events: none;
     font: 500 var(--ui-text-sm) / 1 var(--ui-font-mono); color: var(--ui-muted);
   }
+  /* the amount field with Max at its end, after the unit (as the approved design draws it); Max goes with the form's
+     inputs while the review holds them */
+  .field-unit.has-max > input { padding-right: calc(var(--ui-space-7) + 52px); }
+  .field-unit.has-max > .unit { right: calc(var(--ui-space-3) + 52px); }
+  .field-unit > .unit-max {
+    position: absolute; right: var(--ui-space-1); top: 50%; transform: translateY(-50%);
+    width: auto; min-height: 30px; padding: 0 var(--ui-space-3);
+    border: 0; border-radius: var(--ui-radius-pill); background: transparent; color: var(--ui-ink-2);
+    font-size: var(--ui-text-xs); font-weight: 500;
+  }
+  .field-unit > .unit-max:hover:not(:disabled) { background: var(--ui-sunken); color: var(--ui-ink); }
+  .field-unit > .unit-max:active:not(:disabled) { transform: translateY(-50%); }
+  .field-unit > input:disabled ~ .unit-max { visibility: hidden; }
   /* the sheet's title names its step: the form, then the review, while the review card is shown */
   .panel-title > .step-review,
   :is(#send-form:has(> #send-confirm:not([hidden])), #tsend-form:has(> #tsend-confirm:not([hidden]))) .panel-title > .step-form { display: none; }

@@ -189,12 +189,14 @@
       <div id="send-form" class="settings sheet" role="dialog" aria-modal="true" aria-labelledby="send-form-title" hidden>
         <div class="panel-head"><span class="panel-title" id="send-form-title"><span class="step-form">Send CSD</span><span class="step-review">Review send</span></span><button class="panel-back" aria-label="Close"><svg class="i" aria-hidden="true"><use href="icons.svg#i-x"/></svg></button></div>
         <label>Recipient <input id="s-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
-        <label>Amount <span class="field-unit"><input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" autocomplete="off" /><span class="unit" aria-hidden="true">CSD</span></span></label>
+        <label>Amount <span class="field-unit has-max"><input id="s-amt" type="number" step="0.01" min="0" placeholder="0.0" autocomplete="off" /><span class="unit" aria-hidden="true">CSD</span><button id="s-max" class="unit-max" type="button" aria-label="Send the most one transaction can">Max</button></span></label>
         <!-- what the typed amount leaves, from the fee constant and the balance already read (popup-send.ts) -->
         <div id="s-est" class="confirm-box est-box">
           <div class="crow"><span class="label">Network fee</span><span id="s-fee"></span></div>
           <div class="crow"><span class="label">Balance after</span><span id="s-after" class="dim"></span></div>
         </div>
+        <!-- what Max worked out, when it is less than the balance or it could not be worked out (popup-send.ts) -->
+        <p id="s-max-note" class="note" aria-live="polite" hidden></p>
         <div class="row sheet-actions step-actions">
           <button class="panel-back" type="button">Cancel</button>
           <button id="btn-send" class="primary">Review send</button>

@@ -340,7 +340,11 @@ const horizonSeen = new Map<string, number>(); // outpoint -> expiry
 function roundsExhausted(count: number, value: number): { error: string; code: string } {
   return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_UNAVAILABLE" };
 }
-async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
+// `needOf` is what the spend must cover (amount plus fee), or for maxSendable a function of the utxo set and the coins
+// excluded so far, evaluated at the start of every round so the target follows the exclusions this loop makes. With a
+// number every round uses that number, exactly as a send passes it.
+type NeedOf = (utxos: any[], exclude: ReadonlySet<string>) => number;
+async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
   // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch —
@@ -363,7 +367,9 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   for (const k of ghostSeen.keys()) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
   for (const k of horizonSeen.keys()) if (reportedVal.has(k)) { horizonCount++; horizonValue += reportedVal.get(k)!; }
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
+  let need = typeof needOf === "number" ? needOf : 0;
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
+    if (typeof needOf === "function") need = needOf(utxos, exclude);
     const sel = selectInputs(utxos, need, exclude);
     if (!sel) { selExhausted = true; break; } // remaining verifiable coins can't cover `need` — or can't within the input cap (diagnosed below)
     const ver = await verifyInputValues(rpc, sel.inputs, verified);
@@ -472,6 +478,9 @@ const MAX_TX_INPUTS = 512; // consensus cap (params/mod.rs) — refuse locally w
 // chokepoint every value tx routes through, so a compromised UI can't steer a user PAST the visible warning
 // into burning a huge fee. 100 CSD is ~100× any real fee — no legitimate flow approaches it.
 const MAX_FEE = 100 * 1e8; // base units (100 CSD)
+// The proportional fee bound on a spend's chain-verified input total, max(1 CSD, 10% of it): KEEP-IN-SYNC with csd-tx
+// feeCap (packages/tx/src/index.ts). assembleValueTx, consolidate and maxSendable apply it.
+const proportionalFeeCap = (verifiedTotal: number): number => Math.max(100_000_000, Math.floor(verifiedTotal * 0.10));
 // ★ KEEP-IN-SYNC: DELIBERATE supply-chain-isolated fork of csd-tx selectInputs
 // (csd-sdk/packages/tx/src/index.ts — which upstreamed this fork's `exclude` param as 0.1.16 on
 // 2026-07-06, so the two bodies are line-for-line equivalent again). The fork exists so the wallet's
@@ -658,7 +667,7 @@ async function assembleValueTx(
   // than either alone: the flat cap alone let a hostile dApp fee of e.g. 400 CSD through on whale
   // coins (>1000 CSD selected). Every legitimate flow's explicit fee is ≤ 0.25 CSD (name fees are
   // OUTPUTS, never this fee param), 4x under the 1 CSD floor — no honest tx can trip this.
-  const propCap = Math.max(100_000_000, Math.floor(sv.total * 0.10));
+  const propCap = proportionalFeeCap(sv.total);
   if (fee > propCap)
     return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this spend uses); refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
   const outs = [...outputs];
@@ -816,7 +825,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     // through assembleValueTx, so it MUST re-assert the single-fee-chokepoint invariant itself: a
     // compromised UI must not be able to steer this into burning a huge fee past the 0.01 CSD the
     // preview shows. No honest merge approaches it (the popup hardcodes 0.01 CSD).
-    const propCap = Math.max(100_000_000, Math.floor(ver.total * 0.10));
+    const propCap = proportionalFeeCap(ver.total);
     if (fee > propCap) return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this merge uses); refusing`, sighashMatch: false, code: "FEE_CAP" };
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
@@ -842,6 +851,35 @@ export async function consolidatePreview(rpc: string, addr: string, fee: number)
     for (const c of pool.slice(0, merge)) { total += c.value; if (!Number.isSafeInteger(total)) return { ok: false, error: "coin values out of range" }; }
     return { ok: true, coins: pool.length, merge, total, out: Math.max(0, total - Number(fee)) };
   } catch { return { ok: false, error: "node unreachable" }; }
+}
+
+// The largest amount one send (`send`, through assembleValueTx) accepts right now with `fee`: the engine's own
+// selectVerified, run with a target that each round is the reported total of the MAX_TX_INPUTS largest coins still
+// eligible (spendableCoins minus the coins that round's checks excluded), the most selectInputs can cover in one
+// transaction. Every selected coin is chain-verified as a send verifies it, so the figure is the verified selection's
+// target minus the fee and never a coin the engine would skip. The same fee checks as a send apply. Signs nothing.
+// A later send of exactly this amount re-runs the whole engine; coins spent, arriving or turning unprovable in
+// between change what it accepts, and it refuses rather than sign a different spend. Popup-only (not in DAPP_METHODS).
+// `eligible`: the spendable coins after the checks; `skipped`: the spendable coins the checks left out (unprovable).
+export type MaxSend = { ok: true; amount: number; fee: number; inputs: number; eligible: number; skipped: number; capped: boolean } | { ok: false; error: string; code: string };
+export async function maxSendable(rpc: string, addr: string, fee: number): Promise<MaxSend> {
+  if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", code: "BAD_FEE" };
+  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, code: "FEE_CAP" };
+  let eligible = 0, skipped = 0, target = 0;
+  const sv = await selectVerified(rpc, addr, (utxos, exclude) => {
+    const coins = spendableCoins(utxos, exclude).sort((a, b) => b.value - a.value);
+    eligible = coins.length;
+    skipped = spendableCoins(utxos).length - eligible;
+    target = coins.slice(0, MAX_TX_INPUTS).reduce((s, c) => s + c.value, 0);
+    // nothing eligible: a positive target makes the selection fail cleanly (INSUFFICIENT, or the skip reason)
+    return target > 0 ? target : 1;
+  });
+  if ("error" in sv) {
+    if (eligible === 0 && sv.code === "INSUFFICIENT") return { ok: true, amount: 0, fee, inputs: 0, eligible: 0, skipped, capped: false };
+    return { ok: false, error: sv.error, code: sv.code };
+  }
+  if (fee > proportionalFeeCap(sv.total)) return { ok: false, error: `fee exceeds ${fmtCsd(proportionalFeeCap(sv.total))} (10% of the coins this spend uses); refusing`, code: "FEE_CAP" };
+  return { ok: true, amount: Math.max(0, target - fee), fee, inputs: sv.inputs.length, eligible, skipped, capped: eligible > MAX_TX_INPUTS };
 }
 
 // Fill an on-chain offer: ONE transaction

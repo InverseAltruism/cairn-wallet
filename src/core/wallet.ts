@@ -772,6 +772,8 @@ export class Wallet {
     return r;
   }
   consolidatePreview(fee = 1_000_000) { return node.consolidatePreview(this.rpc, this.addr(), fee); }
+  // The send sheet's Max: the most one send with `fee` accepts now, from the engine's own selection (node.maxSendable).
+  maxSendable(fee: number) { return node.maxSendable(this.rpc, this.addr(), Number(fee)); }
 
   pendingMerge(utxos?: { txid: string; vout?: number }[]): Promise<{ pending: boolean; amount: number; maybe: boolean; stuck: boolean }> { return this.hist.pendingMerge(utxos); }
 
