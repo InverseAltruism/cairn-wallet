@@ -26,6 +26,7 @@ import { TxHistory, histKey } from "./history.js";
 import { SealedClaims, sealKey } from "./claims.js";
 import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
 import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, type CairnxViewIo } from "./cairnxview.js";
+import { csdMarket } from "./market.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
@@ -561,6 +562,8 @@ export class Wallet {
   }
 
   balance() { return node.balance(this.rpc, this.addr()); }
+  // The CSD/USD rate for the balance's USD line, from the configured Cairn API; display only (market.ts).
+  csdMarket() { return csdMarket(this.api); }
   // Current epoch (= floor(tip/30), matching this wallet's own propose math); lets the approval
   // window show a dApp-supplied expiresEpoch as a real "expires in N days from now". Best-effort:
   // returns null offline so the clear-signer just shows the raw epoch.

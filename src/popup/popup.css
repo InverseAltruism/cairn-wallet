@@ -467,6 +467,7 @@
   }
   .bal.loading .bal-unit { visibility: hidden; }
   @keyframes skeleton { 50% { opacity: 0.55; } }
+  .bal-usd { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); font-variant-numeric: tabular-nums; }
   .merge-note { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); }
   /* a failed read (popup-balance.ts balanceFailed): the earlier amount dimmed with the caption under it, or, with none, the
      caption alone in the amount's place, at the caption scale; the refresh button beside it retries */

@@ -92,6 +92,8 @@
           <div id="balance" class="bal bal-xl"></div>
           <button id="btn-refresh" class="icon-btn sm" title="Refresh balance" aria-label="Refresh balance"><svg class="i" aria-hidden="true"><use href="icons.svg#i-refresh-cw"/></svg></button>
         </div>
+        <!-- the balance in USD and the venue of the rate; display only, absent without a rate (popup-balance.ts) -->
+        <p id="bal-usd" class="bal-usd" hidden></p>
         <!-- a failed read over a balance read before: says the amount above is that earlier read (popup-balance.ts) -->
         <p id="bal-note" class="bal-note" hidden></p>
         <!-- The one persistent explainer for the post-merge balance dip: a submitted merge removes its input coins

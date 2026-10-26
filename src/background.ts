@@ -110,6 +110,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "renameAccount": return wallet.renameAccount(args[0], args[1]);
     case "removeAccount": return wallet.removeAccount(args[0], args[1]); // args[1] = password (A2: imported-key removal re-auth)
     case "balance": return wallet.balance();
+    case "csdMarket": return wallet.csdMarket(); // the balance's USD line (display only; popup-only, READ_ONLY)
     // BP4/N11: prewarm the shared PoW light client off the click path (popup open), so the first fill or name
     // verify skips the O(chain) snapshot restore. Popup-only (never in DAPP_METHODS): it spends no funds and
     // reveals nothing, and a dApp has no business driving the wallet's header sync. Fire-and-forget, self-healing.
@@ -305,7 +306,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative; anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
