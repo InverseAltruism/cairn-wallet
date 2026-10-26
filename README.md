@@ -151,6 +151,6 @@ Wallet's convention for CSD.
 
 ## License
 
-MIT
+MIT, for the code. The Cairn mark and the Compute Substrate coin's logo that the wallet draws (`src/vendor/cairn-ui/mark.svg`, `src/vendor/cairn-ui/csd-logo.jpg`, and the extension icons in `public/icons/` drawn from the mark) are not covered by it; each stays with its owner (cairn-ui's README, "Licence and credits").
 
 [Terms of Use](https://cairn-substrate.com/terms.html) · [Privacy Policy](https://cairn-substrate.com/wallet-privacy.html), also linked from the wallet's Settings.
