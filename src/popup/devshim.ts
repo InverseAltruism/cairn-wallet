@@ -33,6 +33,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "renameAccount": return w.renameAccount(args[0], args[1]);
     case "removeAccount": return w.removeAccount(args[0], args[1]);
     case "balance": return w.balance();
+    case "csdMarket": return w.csdMarket();
     case "prewarmSpv": { w.prewarmSpv(); return { ok: true }; }
     case "epoch": return w.epoch();
     case "tip": return w.tip();
@@ -40,6 +41,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "send": return w.send(args[0], args[1], args[2], args[3]);
     case "consolidate": return w.consolidate(args[0]);
     case "consolidatePreview": return w.consolidatePreview(args[0]);
+    case "maxSendable": return w.maxSendable(args[0]);
     case "pendingMerge": return w.pendingMerge(args[0]);
     case "cairnPost": return w.cairnPost(args[0]);
     case "cairnxAssets": return w.cairnxAssets();

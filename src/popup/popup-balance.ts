@@ -1,5 +1,6 @@
 // The balance hero: the amount and its count-up, the identity avatar and the pending-merge line.
 import { INCLUSION_NOTICE_BLOCKS } from "../core/inclusion.js";
+import { type CsdMarket, usdLine } from "../core/market.js";
 import { escapeHtml, fmtBalance } from "./clearsign.js";
 import { avatarBackground, avatarHtml, identitySeed } from "../vendor/cairn-ui/avatar.js";
 import { flashChange, tokenEase, tokenMs } from "./motion.js";
@@ -74,12 +75,31 @@ async function updateMergePending(utxos: unknown) {
   // the reconcile may have settled history rows: repaint their markers if the list is on screen
   if (!($("activity") as HTMLElement).hidden) void renderHistory();
 }
+// The USD line under the amount (core/market.ts): display only, read again with every balance refresh. It is absent
+// without a rate (the market route off or unreachable), without a balance, and while the amount shown is an earlier
+// read after a failed refresh.
+let market: CsdMarket | null = null;
+let marketSeq = 0;
+function paintUsd() {
+  const el = $("bal-usd") as HTMLElement;
+  const text = balanceState.stale ? null : usdLine(balanceState.last, market);
+  el.textContent = text ?? "";
+  el.hidden = text === null;
+}
+async function refreshMarket() {
+  const seq = ++marketSeq;
+  const m: CsdMarket | null = await call("csdMarket").catch(() => null);
+  if (seq !== marketSeq) return;
+  market = m && m.ok ? m : null;
+  paintUsd();
+}
 // `settleIn`: ms from now before a change shows (the flash and the count-up), so a send's settle plays once the closing
 // sheet has cleared the hero; the value itself is current from the read on.
 export async function refreshBalance(settleIn = 0) {
   const el = $("balance");
   const seq = ++balSeq;
   el.classList.add("loading");                 // shimmer while we fetch
+  void refreshMarket();
   try {
     const b = await call("balance");
     if (seq !== balSeq) return;                // a newer refresh superseded this one
@@ -91,6 +111,7 @@ export async function refreshBalance(settleIn = 0) {
     balanceState.last = next; balanceState.stale = false;
     const row = $("csd-row-amt");
     row.textContent = fmtBalance(next); row.classList.remove("stale");
+    paintUsd();
     balanceState.onChange?.();
     if (from !== null && from !== next) setTimeout(() => { if (seq === balSeq) flashChange(el, next > from ? "up" : "down"); }, settleIn);
     const dur = from === null || from === next || matchMedia("(prefers-reduced-motion: reduce)").matches ? null : tokenMs("--ui-dur-4");
@@ -130,6 +151,7 @@ function balanceFailed() {
     row.textContent = "Unavailable";
     note.hidden = true;
   }
+  paintUsd();
   balanceState.onChange?.();
 }
 
@@ -141,6 +163,7 @@ export function resetBalanceView() {
   el.classList.remove("stale", "failed"); el.classList.add("loading");
   row.textContent = ""; row.classList.remove("stale");
   ($("bal-note") as HTMLElement).hidden = true;
+  ($("bal-usd") as HTMLElement).hidden = true;
 }
 // No repaint here: the send sheet computes its estimate when it opens, and no path that changes the account leaves it
 // open (a switch closes every sheet; a removal runs from the Accounts sheet, one sheet at a time).

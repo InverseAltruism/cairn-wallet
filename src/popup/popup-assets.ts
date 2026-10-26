@@ -9,16 +9,18 @@ import { dropStaleView, openPanel } from "./popup-panels.js";
 import { paintAvatar, resetBalanceView, supersedeBalance } from "./popup-balance.js";
 import { openTokenSend } from "./popup-tokensend.js";
 import { confirmNameAction } from "./popup-nameaction.js";
+import { tokenTileHtml } from "./tiles.js";
 
 // ── CairnX assets (token balances + .csd names); read-only, never blocks the CSD UI ──
 // Balances come from the public CairnX resolver API. When it's unreachable we show a
 // single quiet retry line (and nothing else); the CSD balance above is untouched.
-let tokensCache: Record<string, { decimals: number; name?: string }> | null = null; // per-popup
-async function tokenMeta(): Promise<Record<string, { decimals: number; name?: string }>> {
+type TokenMeta = Record<string, { decimals: number; name?: string; deployId?: string }>;
+let tokensCache: TokenMeta | null = null; // per-popup
+async function tokenMeta(): Promise<TokenMeta> {
   if (tokensCache) return tokensCache;
   const r = await call("cairnxTokens").catch(() => ({ ok: false }));
-  const m: Record<string, { decimals: number; name?: string }> = {};
-  if (r?.ok) for (const t of r.tokens || []) if (t && typeof t.ticker === "string") m[t.ticker] = { decimals: Number(t.decimals) || 0, name: t.name };
+  const m: TokenMeta = {};
+  if (r?.ok) for (const t of r.tokens || []) if (t && typeof t.ticker === "string") m[t.ticker] = { decimals: Number(t.decimals) || 0, name: t.name, deployId: typeof t.deployId === "string" ? t.deployId : undefined };
   if (r?.ok) tokensCache = m;
   return m;
 }
@@ -85,7 +87,7 @@ export async function renderAssets() {
   const details: any[] = Array.isArray(a.nameDetails) && a.nameDetails.length ? a.nameDetails : names.map((n) => ({ name: n }));
   const primary: string | null = a.primaryName ?? null;
   const tickers = Object.keys(balances).sort();
-  const meta: Record<string, { decimals: number; name?: string }> = tickers.length ? await tokenMeta() : {};
+  const meta: TokenMeta = tickers.length ? await tokenMeta() : {};
   if (seq !== assetsSeq) return;
   // Decimals build the base units a token send signs, so a pinned token uses its pinned decimals, never served ones.
   const decOf = (t: string): number => { const d = displayDecimals(t, meta[t]?.decimals).decimals; return isTokenDecimals(d) ? d : 0; };
@@ -98,8 +100,7 @@ export async function renderAssets() {
       b.locked && b.locked !== "0" ? `${groupDigits(formatUnits(b.locked, dec))} locked in offers` : "",
       displayDecimals(t, meta[t]?.decimals).pinned ? "" : "Unverified",
     ].filter(Boolean).join(" · ");
-    // the tile is a neutral glyph: part of a ticker would be a look-alike, and the full ticker is the title
-    return `<button class="w-row" type="button" data-tsend="${escapeHtml(t)}"><span class="ti"><svg class="i" aria-hidden="true"><use href="icons.svg#i-coins"/></svg></span>`
+    return `<button class="w-row" type="button" data-tsend="${escapeHtml(t)}">${tokenTileHtml(t, meta[t]?.deployId)}`
       + `<span class="nm"><b>${escapeHtml(t)}</b>${sub ? `<small>${escapeHtml(sub)}</small>` : ""}</span>`
       + `<span class="vl">${escapeHtml(groupDigits(formatUnits(b.available, dec)))}</span></button>`;
   }).join("");

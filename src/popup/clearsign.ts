@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window and the popup's review: no DOM and no chrome, so they are
 // unit-testable (the "what am I signing?" layer). approve.ts and popup.ts import these and own only the DOM glue.
-import { decodeCairnxRecord, type TokenDisplayMeta, PINNED_TOKENS, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { offerFillTooLate } from "../core/fillpreflight.js";
 import type { NameFetchResult } from "../core/namegate.js";
@@ -126,14 +126,13 @@ export function tokenQuoteHtml(q: any, tip?: unknown): string {
 
 // 0.2.71 (CX-16 item 3): the same look-alike rule as the site's verified-tokens.json. A warning, never a block.
 const WELL_KNOWN = new Set(["BTC", "ETH", "USDT", "USDC", "SOL", "BNB", "XRP", "DOGE", "ADA", "TRX", "TON", "AVAX", "LINK", "DOT", "MATIC", "SHIB", "LTC", "BCH", "USD", "EUR", "ZEC", "CAD"]);
-const CAIRN_DEPLOY_ID = PINNED_TOKENS.CAIRN!.deployId;
 export function tickerWarning(ticker: unknown, deployId?: unknown): string {
   const t = String(ticker || "").toUpperCase();
   if (!t) return "";
   if (t === "CAIRN") {
     // Review D-1: an absent deploy id (the token read failed) must not read as verified.
     if (!deployId) return "Could not confirm this CAIRN is Cairn's token (its record did not load). Check the deployer before approving.";
-    return String(deployId).toLowerCase() !== CAIRN_DEPLOY_ID ? "This CAIRN is not Cairn's token (different deploy). Check the deployer." : "";
+    return isPinnedDeploy("CAIRN", deployId) ? "" : "This CAIRN is not Cairn's token (different deploy). Check the deployer.";
   }
   if (WELL_KNOWN.has(t) || t.startsWith("CX") || t.includes("CAIRN")) return `${escapeHtml(t)} is a well-known or Cairn-like ticker that Cairn has not verified. Anyone can deploy any ticker. Check the deployer.`;
   return "";

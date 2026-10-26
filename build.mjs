@@ -122,8 +122,7 @@ cpSync("src/popup/icons.LICENSE.txt", "dist/icons.LICENSE.txt");
   console.log(`✓ cairn-ui: ${UI_SHIP.length} files match PROVENANCE.json, copied to dist/ui/`);
 }
 import { existsSync, mkdirSync as _mkdirSync } from "node:fs";
-// Ship ONLY the icons the extension actually references (the sized action icons), not the source
-// master `icon.png` (62KB, unreferenced) that gen-icons.mjs derives from.
+// The icons the manifest names, written by scripts/gen-icons.mjs from the vendored mark (test/extension-icons.test.mjs).
 const SHIP_ICONS = ["icon-16.png", "icon-32.png", "icon-48.png", "icon-128.png"];
 if (existsSync("public/icons")) {
   _mkdirSync("dist/icons", { recursive: true });

@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launchOrSkip, openWalletPage } from "../test/helpers/walletpage.mjs";
 import { APPROVE_WINDOW } from "../src/approve-window.ts";
+import { readMark } from "../scripts/mark.mjs";
 // the approval window's page at the size the wallet opens it: Linux draws no frame inside those bounds (measured);
 // test/approve-layout-chrome.test.mjs measures the fold at the largest frame seen, the store shows the window as shipped
 const APPROVE_PAGE = { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height };
@@ -26,7 +27,8 @@ const popupAnswers = {
   status, balance: { confirmed: 128_473_500_000, utxos: [] }, pendingMerge: { pending: false, amount: 0, maybe: false, stuck: false }, prewarmSpv: { ok: true }, pending: [],
   cairnxAssets: { ok: true, primaryName: "alice", tipHeight: 120_000, balances: { CAIRN: { available: "1250000000000", locked: "0" }, SUNRISE: { available: "4200000", locked: "500000" } }, names: ["alice", "studio"],
     nameDetails: [{ name: "alice", leased: true, epochsLeft: 6000 }, { name: "studio", leased: true, epochsLeft: 400 }] },
-  cairnxTokens: { ok: true, tokens: [{ ticker: "CAIRN", decimals: 8 }, { ticker: "SUNRISE", decimals: 2 }] },
+  // CAIRN carries the deploy id the wallet pins, so its row shows the Cairn mark (src/popup/tiles.ts)
+  cairnxTokens: { ok: true, tokens: [{ ticker: "CAIRN", decimals: 8, deployId: "0xdf7113afc41319b700c26f26ba657c8267533a3dd511cc59776601a9aba03517" }, { ticker: "SUNRISE", decimals: 2 }] },
   history: [
     { type: "send", to: PAID, amount: 150_000_000, fee: 1_000_000, txid: "0x" + "a1".repeat(32), ts: T0 },
     { type: "fillOffer", to: PAID, amount: 250_000_000, txid: "0x" + "a3".repeat(32), ts: T0 - 7_200_000 },
@@ -62,9 +64,9 @@ const fontFaces = ["Geist", "Geist Mono"].map((family) => {
   return `@font-face{font-family:"${family}";src:url(data:font/woff2;base64,${b64(join(UI, "fonts", file))}) format("woff2");font-weight:100 900;font-style:normal}`;
 }).join("");
 const tokens = readFileSync(join(UI, "tokens.css"), "utf8");
-const MARK = readFileSync(join(ROOT, "src", "popup", "icons.svg"), "utf8").match(/<symbol id="mark" viewBox="([^"]+)"[^>]*>([\s\S]*?)<\/symbol>/);
-if (!MARK) throw new Error("icons.svg has no #mark symbol");
-const mark = (cls) => `<svg class="${cls}" viewBox="${MARK[1]}" fill="currentColor" aria-hidden="true">${MARK[2]}</svg>`;
+const MARK = readMark();
+// the mark sets no paint, so the drawing <svg> sets fill
+const mark = (cls) => `<svg class="${cls}" viewBox="${MARK.viewBox}" fill="currentColor" aria-hidden="true">${MARK.parts.join("")}</svg>`;
 
 const page = (theme, w, h, css, body) => `<!doctype html><html data-theme="${theme}"><meta charset="utf-8"><style>${fontFaces}${tokens}
 *{margin:0;padding:0;box-sizing:border-box}

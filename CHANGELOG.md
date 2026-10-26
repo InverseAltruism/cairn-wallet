@@ -1,7 +1,46 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
+- The CSD row shows the CSD coin's logo (the owner's file, vendored from cairn-ui 0.4 as `csd-logo.jpg`) in its
+  circle with the avatar's hairline; it showed the Cairn mark. The CAIRN row shows the Cairn mark, only for the token
+  the wallet pins by deploy id: the row passes the deploy id the token list serves for its ticker, and a CAIRN from
+  another deploy, a CAIRN whose token record did not load and every other token keep the neutral glyph. No tile shows
+  part of a ticker.
+- The extension icon is the Cairn mark on an ink tile (16, 32, 48 and 128 px; the 128 px icon keeps Chrome's 16 px
+  margin), drawn from the vendored mark by `scripts/gen-icons.mjs`, which gives the same bytes for the same input. The
+  green tile with three bars and its unshipped masters (`icon.png`, `logo-white.png`) are gone. The store listing's
+  icon is `public/icons/icon-128.png` and is uploaded with this release.
+- The Cairn mark has one home, cairn-ui's `mark.svg` (vendored at 786c5fb, the merge of cairn-ui #4): the setup, lock
+  and approval pages draw it from `ui/mark.svg`, and `scripts/build-icons.mjs` no longer keeps a traced copy in the
+  sprite.
+- Under the balance, its value in USD at the CSD/USD price the Cairn API serves (`/api/market/csd`), with the venue
+  named: "≈ $79.14 · USD via SafeTrade", plus "stale, N min ago" or "sources differ" when the API says so. Display
+  only; no send, fee or check reads it. Without a price (the route answers 503 while the site's market data is off, a
+  failed read, a body with no positive price from a named venue) and while the amount shown is an earlier read after a
+  failed refresh, the line is not shown.
+- The send sheet has Max at the end of the amount field. It fills in the most one send accepts now after the 0.01 CSD
+  fee: the send engine's own coin selection and chain verification run with a target of the 512 largest coins still
+  eligible, so ghost, horizon and unrepresentable coins are left out as a send leaves them out, and both fee caps
+  apply. When the 512-coin limit or unprovable coins hold it below the balance, a line under the estimate says so. The
+  review and the confirm then run as for a typed amount; if coins change before Confirm, the send refuses as before.
+  Max computes nothing for a token send (the design has none there). Max ends with the send's own selection for that
+  figure and answers only if it succeeds, so the figure is one a send accepts at that moment; when it cannot work one
+  out it says why in its own words: when every coin was left out, what is true about each kind (a coin the node cannot
+  find stays out until it can, one beyond its scan horizon becomes spendable once the node catches up, an
+  unrepresentable one never does), and when the coins cannot be read at all, the engine's "couldn't fetch your coins".
+- A coin whose source transaction carries a number the wallet cannot represent exactly is remembered for the session
+  (two minutes), like a coin the node cannot find. Before, a send met such coins one largest-first layer per round, and
+  with three layers every attempt spent its three rounds and refused with `VERIFY_UNAVAILABLE`; now the retry starts
+  without them and goes through. A send (a dApp's `send` too) that the remaining provable coins cannot cover now
+  refuses with `VERIFY_UNREPRESENTABLE` while such a coin is remembered, where it said `INSUFFICIENT`; both codes
+  existed, and the new one names the coins it left out.
+- Known limits: once the two-minute memory of skipped coins has expired, a send of exactly Max can refuse once with
+  `VERIFY_UNAVAILABLE` (nothing signed) while it finds those coins again; its retry goes through. Max reads every coin
+  it may spend from the node, as the send then does: on a wallet with more than 512 coins, Max and the send make 1,028
+  requests (measured offline), and pressing Max twice before sending makes 1,542, above the 1,500 a minute the Cairn
+  RPC proxy allows each IP address; the send then refuses with `VERIFY_UNAVAILABLE` (nothing signed) until the minute
+  has passed.
 - Coin selection is csd-tx's `selectInputs` from the vendored bundle; the wallet's own copy in `src/core/node.ts` is
   removed. A coin the node lists twice, once with a `0x` txid and once without (or with `0X`), is now one coin: a
   send no longer takes it twice and refuses with `VERIFY_TAMPER`, a send that an honest coin can cover goes through,

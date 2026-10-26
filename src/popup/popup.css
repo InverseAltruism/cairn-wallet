@@ -254,7 +254,12 @@
     border-radius: var(--ui-radius-pill); background: var(--ui-sunken); color: var(--ui-ink-2);
     font: 600 var(--ui-text-2xs) / 1 var(--ui-font-mono);
   }
-  .ti.ink { background: var(--ui-ink); color: var(--ui-on-ink); }
+  /* the CSD coin's logo (ui/csd-logo.jpg, a white dot on black) in the circle, edged by the avatar's hairline (8% of
+     the ink: black on light grounds, white on dark ones) so the black disc keeps its edge on the dark ground */
+  .ti.coin-csd {
+    background: var(--ui-sunken) url("ui/csd-logo.jpg") center / cover no-repeat;
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ui-ink) 8%, transparent);
+  }
   .ti svg.mark { width: 18px; height: 17px; }
   .ti svg.i { width: 16px; height: 16px; }
   .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -462,6 +467,7 @@
   }
   .bal.loading .bal-unit { visibility: hidden; }
   @keyframes skeleton { 50% { opacity: 0.55; } }
+  .bal-usd { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); font-variant-numeric: tabular-nums; }
   .merge-note { margin-top: var(--ui-space-2); font-size: var(--ui-text-xs); color: var(--ui-muted); }
   /* a failed read (popup-balance.ts balanceFailed): the earlier amount dimmed with the caption under it, or, with none, the
      caption alone in the amount's place, at the caption scale; the refresh button beside it retries */
@@ -642,6 +648,19 @@
     position: absolute; right: var(--ui-space-3); top: 50%; transform: translateY(-50%); pointer-events: none;
     font: 500 var(--ui-text-sm) / 1 var(--ui-font-mono); color: var(--ui-muted);
   }
+  /* the amount field with Max at its end, after the unit (as the approved design draws it); Max goes with the form's
+     inputs while the review holds them */
+  .field-unit.has-max > input { padding-right: calc(var(--ui-space-7) + 52px); }
+  .field-unit.has-max > .unit { right: calc(var(--ui-space-3) + 52px); }
+  .field-unit > .unit-max {
+    position: absolute; right: var(--ui-space-1); top: 50%; transform: translateY(-50%);
+    width: auto; min-height: 30px; padding: 0 var(--ui-space-3);
+    border: 0; border-radius: var(--ui-radius-pill); background: transparent; color: var(--ui-ink-2);
+    font-size: var(--ui-text-xs); font-weight: 500;
+  }
+  .field-unit > .unit-max:hover:not(:disabled) { background: var(--ui-sunken); color: var(--ui-ink); }
+  .field-unit > .unit-max:active:not(:disabled) { transform: translateY(-50%); }
+  .field-unit > input:disabled ~ .unit-max { visibility: hidden; }
   /* the sheet's title names its step: the form, then the review, while the review card is shown */
   .panel-title > .step-review,
   :is(#send-form:has(> #send-confirm:not([hidden])), #tsend-form:has(> #tsend-confirm:not([hidden]))) .panel-title > .step-form { display: none; }

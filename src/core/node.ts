@@ -340,10 +340,35 @@ const ghostSeen = new Map<string, number>(); // outpoint -> expiry
 // never that the coin "could not be verified". An outpoint lives in exactly ONE of the two caches
 // (each classification event moves it), so the honest counts below cannot double-book a coin.
 const horizonSeen = new Map<string, number>(); // outpoint -> expiry
+// Unrepresentable outpoints (W6, see verifyInputValues) are cached the same way, in their own map for their own
+// copy, and an outpoint lives in exactly one of the three. Without the cache each selection round rediscovers them
+// one largest-first layer at a time, so three layers spend all MAX_SELECT_ROUNDS and every retry refuses
+// VERIFY_UNAVAILABLE (test/maxsendable.test.mjs case 11). The verdict is a property of the served body; a node
+// that serves another body for the txid is the same class as one that answers not-found, which ghostSeen already
+// caches.
+const unrepSeen = new Map<string, number>(); // outpoint -> expiry
+const SKIP_CACHE_MAX = 2048; // per map: a hostile RPC cannot grow one unboundedly
+/** Drops expired entries and returns every outpoint a cache still excludes. */
+function sessionExclusions(now: number): Set<string> {
+  for (const m of [ghostSeen, horizonSeen, unrepSeen]) for (const [k, exp] of m) if (exp <= now) m.delete(k);
+  return new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys(), ...unrepSeen.keys()]);
+}
+/** Files `k` under `into` (one of the three caches) and out of the other two. */
+function rememberSkip(into: Map<string, number>, k: string, now: number): void {
+  for (const m of [ghostSeen, horizonSeen, unrepSeen]) if (m !== into) m.delete(k);
+  into.set(k, now + GHOST_TTL_MS);
+  if (into.size > SKIP_CACHE_MAX) into.clear();
+}
 function roundsExhausted(count: number, value: number): { error: string; code: string } {
   return { error: `this node could not prove ${count} coin(s) totalling ${fmtCsd(value)} yet, and the wallet stopped after ${MAX_SELECT_ROUNDS} rounds of checks before reaching coins it can prove. The node may still be rebuilding its transaction index, for example after a restart. Nothing was signed; try again shortly`, code: "VERIFY_UNAVAILABLE" };
 }
-async function selectVerified(rpc: string, addr: string, need: number): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
+// `needOf` is what the spend must cover (amount plus fee), or for maxSendable a function of the utxo set and the coins
+// excluded so far, evaluated at the start of every round so the target follows the exclusions this loop makes. With a
+// number every round uses that number, exactly as a send passes it.
+type NeedOf = (utxos: any[], exclude: ReadonlySet<string>) => number;
+// `verified` lets maxSendable's final pass reuse the verdicts its first pass fetched (a txid commits to its output
+// values, so a verified value cannot change); a send passes none and fetches every coin it selects.
+async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf, verified: Map<string, number> = new Map()): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
   // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch:
@@ -352,10 +377,7 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   try { ({ utxos } = await balance(rpc, addr)); }
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
-  for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
-  for (const [k, exp] of horizonSeen) if (exp <= now) horizonSeen.delete(k);
-  const exclude = new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys()]);
-  const verified = new Map<string, number>();
+  const exclude = sessionExclusions(now);
   const reportedVal = new Map<string, number>(utxos.map((u: any) => [opKey(u.txid, u.vout), Number(u.value) || 0]));
   // ghosts already known from the session cache that are present in THIS utxo set count toward the
   // honest error (they are why the reported balance overstates what is spendable); BN0w counts the
@@ -365,8 +387,11 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
   let unrepCount = 0, unrepValue = 0;   // W6 (ND-1): booked separately so the final copy stays honest
   for (const k of ghostSeen.keys()) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
   for (const k of horizonSeen.keys()) if (reportedVal.has(k)) { horizonCount++; horizonValue += reportedVal.get(k)!; }
+  for (const k of unrepSeen.keys()) if (reportedVal.has(k)) { unrepCount++; unrepValue += reportedVal.get(k)!; }
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
+  let need = typeof needOf === "number" ? needOf : 0;
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
+    if (typeof needOf === "function") need = needOf(utxos, exclude);
     const sel = selectInputs(utxos, need, exclude);
     if (!sel) { selExhausted = true; break; } // remaining verifiable coins can't cover `need`, or can't within the input cap (diagnosed below)
     const ver = await verifyInputValues(rpc, sel.inputs, verified);
@@ -384,27 +409,23 @@ async function selectVerified(rpc: string, addr: string, need: number): Promise<
       for (const h of ver.horizons) {
         const k = opKey(h.txid, h.vout);
         if (!exclude.has(k)) { horizonCount++; horizonValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k);
+        exclude.add(k); rememberSkip(horizonSeen, k, now);
       }
     }
     // W6 (ND-1): unrepresentable coins exclude-and-retry per coin exactly like ghosts and horizons (an
-    // unproved coin is NEVER spent). No session cache: the classification costs nothing beyond the /tx
-    // read this loop already makes, and the bounded round budget re-derives it, so a third unbounded map
-    // would buy one saved round at the cost of the memory class this file already caps twice.
+    // unproved coin is NEVER spent), and are cached like them (unrepSeen).
     if (ver.kind === "unrepresentable") {
       for (const u of ver.unrepresentables) {
         const k = opKey(u.txid, u.vout);
         if (!exclude.has(k)) { unrepCount++; unrepValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k);
+        exclude.add(k); rememberSkip(unrepSeen, k, now);
       }
     }
     for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
       const k = opKey(g.txid, g.vout);
       if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
-      exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); horizonSeen.delete(k);
+      exclude.add(k); rememberSkip(ghostSeen, k, now);
     }
-    if (ghostSeen.size > 2048) ghostSeen.clear(); // hard cap: a hostile RPC can't grow this unboundedly
-    if (horizonSeen.size > 2048) horizonSeen.clear();
   }
   // TOO_MANY_INPUTS vs INSUFFICIENT (2026-07-09): selectInputs returns null BOTH when the balance
   // genuinely can't cover `need` AND when it could but not within the MAX_TX_INPUTS cap; a
@@ -466,6 +487,9 @@ interface SelectedInput { txid: string; vout: number; value: number }
 // chokepoint every value tx routes through, so a compromised UI can't steer a user PAST the visible warning
 // into burning a huge fee. 100 CSD is ~100× any real fee; no legitimate flow approaches it.
 const MAX_FEE = 100 * 1e8; // base units (100 CSD)
+// The proportional fee bound on a spend's chain-verified input total, max(1 CSD, 10% of it): KEEP-IN-SYNC with csd-tx
+// feeCap (packages/tx/src/index.ts). assembleValueTx, consolidate and maxSendable apply it.
+const proportionalFeeCap = (verifiedTotal: number): number => Math.max(100_000_000, Math.floor(verifiedTotal * 0.10));
 
 // The coins csd-tx selectInputs would accept, each once (opKey is its dedupe key), in the reported order:
 // selectInputs answering a one-coin pool is the spendability predicate, so the rule is csd-tx's own.
@@ -601,7 +625,7 @@ async function assembleValueTx(
   // than either alone: the flat cap alone let a hostile dApp fee of e.g. 400 CSD through on whale
   // coins (>1000 CSD selected). Every legitimate flow's explicit fee is ≤ 0.25 CSD (name fees are
   // OUTPUTS, never this fee param), 4x under the 1 CSD floor; no honest tx can trip this.
-  const propCap = Math.max(100_000_000, Math.floor(sv.total * 0.10));
+  const propCap = proportionalFeeCap(sv.total);
   if (fee > propCap)
     return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this spend uses); refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
   const outs = [...outputs];
@@ -729,9 +753,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   // ghosts exclude-and-retry within the same bounded round budget, and no coin is EVER spent
   // unverified. tamper/transient verdicts refuse exactly as a send would.
   const now = Date.now();
-  for (const [k, exp] of ghostSeen) if (exp <= now) ghostSeen.delete(k);
-  for (const [k, exp] of horizonSeen) if (exp <= now) horizonSeen.delete(k);
-  const exclude = new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys()]);
+  const exclude = sessionExclusions(now);
   const verified = new Map<string, number>();
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
@@ -742,14 +764,12 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
       if (ver.kind === "transient") return { ok: false, error: "couldn't fetch source transactions to verify coin values (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
       // BN0w: both skip classes (ghost + horizon) exclude-and-retry alike here; consolidate simply
       // merges what THIS node can prove today (the send path owns the distinct honest refusal copy).
-      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); horizonSeen.set(k, now + GHOST_TTL_MS); ghostSeen.delete(k); }
+      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); rememberSkip(horizonSeen, k, now); }
       // W6 (ND-1): the same exclude-and-retry, and THIS is the line that unbricks consolidate() against a
       // single dust coin from a stranger. The pool is smallest-first, so the poison coin was in every
       // round and its "tamper" verdict refused the whole merge, permanently.
-      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) exclude.add(opKey(u.txid, u.vout));
-      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); ghostSeen.set(k, now + GHOST_TTL_MS); horizonSeen.delete(k); }
-      if (ghostSeen.size > 2048) ghostSeen.clear();
-      if (horizonSeen.size > 2048) horizonSeen.clear();
+      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) { const k = opKey(u.txid, u.vout); exclude.add(k); rememberSkip(unrepSeen, k, now); }
+      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); rememberSkip(ghostSeen, k, now); }
       continue;
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
@@ -759,7 +779,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     // through assembleValueTx, so it MUST re-assert the single-fee-chokepoint invariant itself: a
     // compromised UI must not be able to steer this into burning a huge fee past the 0.01 CSD the
     // preview shows. No honest merge approaches it (the popup hardcodes 0.01 CSD).
-    const propCap = Math.max(100_000_000, Math.floor(ver.total * 0.10));
+    const propCap = proportionalFeeCap(ver.total);
     if (fee > propCap) return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this merge uses); refusing`, sighashMatch: false, code: "FEE_CAP" };
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
@@ -785,6 +805,69 @@ export async function consolidatePreview(rpc: string, addr: string, fee: number)
     for (const c of pool.slice(0, merge)) { total += c.value; if (!Number.isSafeInteger(total)) return { ok: false, error: "coin values out of range" }; }
     return { ok: true, coins: pool.length, merge, total, out: Math.max(0, total - Number(fee)) };
   } catch { return { ok: false, error: "node unreachable" }; }
+}
+
+// The largest amount one send (`send`, through assembleValueTx) accepts right now with `fee`, in two passes over the
+// engine's own selectVerified. The first finds the figure: each round's target is the reported total of the
+// MAX_TX_INPUTS largest coins still eligible (spendableCoins minus the coins that round's checks excluded), the most
+// selectInputs can cover in one transaction, and every coin it selects is chain-verified as a send verifies it. The
+// second is the send's own call, selectVerified with the number need = figure (amount plus fee), starting from the
+// session caches the first pass filled; Max answers only when that pass succeeds, so the figure is one the send's
+// selection accepted, not one derived to be acceptable. The same fee checks as a send apply. Signs nothing.
+// A send of exactly this amount repeats that numeric pass. It accepts while the state is the same: coins spent,
+// arriving or turning unprovable change what it accepts, and once the session caches expire (GHOST_TTL_MS) a send can
+// spend its rounds rediscovering skipped coins and refuse VERIFY_UNAVAILABLE, nothing signed, before its retry, which
+// starts from what the first attempt cached, goes through (test/maxsendable.test.mjs). Popup-only (not in
+// DAPP_METHODS).
+// `eligible`: the spendable coins after the checks; `skipped`: the spendable coins the checks left out (unprovable).
+/** Max's words when every spendable coin was skipped: each class with what is true about retrying it
+ *  (WALLET-ERROR-CODES.md). A coin the caches no longer name (a cleared map) is "could not be proved". */
+function allSkippedText(by: { ghost: number; horizon: number; unrep: number }, skipped: number): string {
+  const n = (k: number) => `${k} coin${k === 1 ? "" : "s"}`;
+  const other = skipped - by.ghost - by.horizon - by.unrep;
+  const parts = [
+    by.ghost ? `the node cannot find the source of ${n(by.ghost)} on its chain, and retrying changes nothing until it can` : "",
+    by.horizon ? `the node cannot look back far enough to prove ${n(by.horizon)}; ${by.horizon === 1 ? "it becomes" : "they become"} spendable once its index catches up or it is upgraded` : "",
+    by.unrep ? `${n(by.unrep)} ${by.unrep === 1 ? "carries" : "carry"} a number this wallet cannot represent exactly, so it cannot spend ${by.unrep === 1 ? "it" : "them"}` : "",
+    other > 0 ? `${n(other)} could not be proved against the chain` : "",
+  ].filter(Boolean);
+  return `none of your coins can be checked against the chain: ${parts.join("; ")}. Nothing was signed`;
+}
+export type MaxSend = { ok: true; amount: number; fee: number; inputs: number; eligible: number; skipped: number; capped: boolean } | { ok: false; error: string; code: string };
+export async function maxSendable(rpc: string, addr: string, fee: number): Promise<MaxSend> {
+  if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", code: "BAD_FEE" };
+  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, code: "FEE_CAP" };
+  let eligible = 0, skipped = 0, target = 0;
+  const skippedBy = { ghost: 0, horizon: 0, unrep: 0 };
+  const verified = new Map<string, number>();
+  const found = await selectVerified(rpc, addr, (utxos, exclude) => {
+    const coins = spendableCoins(utxos, exclude).sort((a, b) => b.value - a.value);
+    eligible = coins.length;
+    const left = spendableCoins(utxos).filter((c) => exclude.has(opKey(c.txid, c.vout)));
+    skipped = left.length;
+    skippedBy.ghost = left.filter((c) => ghostSeen.has(opKey(c.txid, c.vout))).length;
+    skippedBy.horizon = left.filter((c) => horizonSeen.has(opKey(c.txid, c.vout))).length;
+    skippedBy.unrep = left.filter((c) => unrepSeen.has(opKey(c.txid, c.vout))).length;
+    target = coins.slice(0, MAX_TX_INPUTS).reduce((s, c) => s + c.value, 0);
+    // nothing eligible: a positive target makes the selection fail cleanly (INSUFFICIENT, or the skip reason)
+    return target > 0 ? target : 1;
+  }, verified);
+  // Max's own words: the engine's copy for a failed round names the round's internal target as "this spend"
+  if ("error" in found) {
+    if (eligible === 0 && skipped === 0 && found.code === "INSUFFICIENT") return { ok: true, amount: 0, fee, inputs: 0, eligible: 0, skipped: 0, capped: false };
+    if (eligible === 0 && skipped > 0) return { ok: false, error: allSkippedText(skippedBy, skipped), code: found.code };
+    if (found.code === "INSUFFICIENT") return { ok: false, error: "your coins are worth less on the chain than the node reports, so no amount can be worked out. Nothing was signed", code: "INSUFFICIENT" };
+    return { ok: false, error: found.error, code: found.code };
+  }
+  if (target <= fee) return { ok: true, amount: 0, fee, inputs: 0, eligible, skipped, capped: false };
+  const sv = await selectVerified(rpc, addr, target, verified);
+  if ("error" in sv) {
+    if (sv.code === "VERIFY_TAMPER") return { ok: false, error: sv.error, code: sv.code };
+    const next = sv.code === "VERIFY_UNAVAILABLE" ? "try again shortly" : "press Max again to work it out from your coins as they are now";
+    return { ok: false, error: `the most one transaction can send could not be confirmed against the chain just now. Nothing was signed; ${next}`, code: sv.code };
+  }
+  if (fee > proportionalFeeCap(sv.total)) return { ok: false, error: `fee exceeds ${fmtCsd(proportionalFeeCap(sv.total))} (10% of the coins this spend uses); refusing`, code: "FEE_CAP" };
+  return { ok: true, amount: target - fee, fee, inputs: sv.inputs.length, eligible, skipped, capped: eligible > MAX_TX_INPUTS };
 }
 
 // Fill an on-chain offer: ONE transaction

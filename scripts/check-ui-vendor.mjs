@@ -16,8 +16,9 @@ import { fileURLToPath } from "node:url";
 export const UI_VENDOR_DIR = join(import.meta.dirname, "..", "src", "vendor", "cairn-ui");
 const PROVENANCE = "PROVENANCE.json";
 /** The vendored files the extension ships, under dist/ui/ (types and provenance records stay in the repo; avatar.js
- *  reaches dist/ inside the popup bundle, through esbuild). */
-export const UI_SHIP = ["tokens.css", "fonts.css", "theme.css", "avatar.css", "theme-init.js", "theme.js", "fonts/Geist-Latin.woff2", "fonts/GeistMono-Latin.woff2", "fonts/OFL.txt"];
+ *  reaches dist/ inside the popup bundle, through esbuild). mark.svg is the Cairn mark the pages draw through <use>;
+ *  csd-logo.jpg is the CSD coin's tile. */
+export const UI_SHIP = ["tokens.css", "fonts.css", "theme.css", "avatar.css", "theme-init.js", "theme.js", "mark.svg", "csd-logo.jpg", "fonts/Geist-Latin.woff2", "fonts/GeistMono-Latin.woff2", "fonts/OFL.txt"];
 
 const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 

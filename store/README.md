@@ -13,7 +13,7 @@ Everything needed to list and update Cairn Wallet on the Chrome Web Store. For a
 | `assets/1..5-*.png` | The popup and approval-window captures the screenshots frame (2x, from the real pages of this checkout). |
 | `gen-assets.mjs` | Renders every image above in headless Chromium from the built pages and a fixed demo wallet (offline); needs `PLAYWRIGHT_CORE` and `PLAYWRIGHT_CHROMIUM`. |
 
-The store **icon** is the existing `../public/icons/icon-128.png`.
+The store **icon** is `../public/icons/icon-128.png`, the one the package carries: the Cairn mark on an ink tile with Chrome's 16 px margin, written with the toolbar sizes by `../scripts/gen-icons.mjs` from the vendored cairn-ui `mark.svg` (`node scripts/gen-icons.mjs`; `test/extension-icons.test.mjs` checks the committed pixels).
 
 Upload artifact: `npm run package` (reproducible zip), but the Web Store needs
 `manifest.json` at the zip root, so for the store, zip the **contents** of `dist/`
