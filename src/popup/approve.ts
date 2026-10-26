@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, warningsCounted, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
@@ -146,7 +146,8 @@ async function render() {
     // buttons (#ap-state), reporting only what is below, would not mention.
     $("req").scrollTop = 0;
     // The density for this paint, decided before the first frame and kept (approve-density.ts); then the entrance.
-    $("app").dataset.density = chooseDensity($("app"), $("req"), reservesFor(current, String(st.addr || "")));
+    const forReq = current, me = String(st.addr || "");
+    $("app").dataset.density = chooseDensity($("app"), $("req"), () => reservesFor(forReq, me));
     enterBody();
     msg(""); // clear any stale "approved"/"rejected" from a previous request
     holdOutcome = false;
@@ -469,12 +470,15 @@ async function fillSendWarning(r: any) {
     const flags = recipientFlags(outs, sentTo, (st.accounts || []).map((a: any) => String(a.addr)));
     const el = document.getElementById("send-warn");
     if (!el || !flags.length) return;
-    // a look-alike is a danger row, a first send a caution row; past NAMED_WARNINGS the rows count and each flagged
-    // recipient row carries its mark
+    // a look-alike is a danger row, a first send a caution row (past NAMED_WARNINGS the rows count); with more than one
+    // recipient row each flagged row carries its mark, a tint and a bar that add no height
     el.innerHTML = warningChecks(flags).map(checkRow).join(""); (el as HTMLElement).hidden = false;
-    if (warningsCounted(flags)) {
-      const rows = [...$("req").querySelectorAll<HTMLElement>(".kv > div[data-to]")];
-      for (const f of flags) for (const row of rows) if (row.dataset.to === recipientKey(f.to)) row.querySelector("dd")?.insertAdjacentHTML("beforeend", rowFlagHtml(f.tier));
+    const rows = [...$("req").querySelectorAll<HTMLElement>(".kv > div[data-to]")];
+    if (marksRows(rows.length)) {
+      for (const f of flags) for (const row of rows) if (row.dataset.to === recipientKey(f.to)) {
+        row.classList.add("flag", f.tier);
+        row.querySelector("dd")?.insertAdjacentHTML("beforeend", rowFlagHtml(f.tier));
+      }
     }
   } catch { /* no history → no warning */ }
 }

@@ -837,13 +837,17 @@
   .page-approve .kv dd code { font-size: var(--ui-text-caption); }
   /* the amount ends the address's last line when it fits there, kept whole */
   .page-approve .out-amt { display: inline-block; margin-left: var(--ui-space-2); white-space: nowrap; }
-  /* a flagged recipient when the warning box only counts (clearsign.rowFlagHtml): the tier's tint, like its check row */
-  .row-flag {
-    display: inline-block; margin-left: var(--ui-space-2); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-pill);
-    font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-sans); white-space: nowrap;
+  /* a flagged recipient row (approve.ts, clearsign.marksRows): its tier's tint and a bar at its start, which add no
+     height, so marking rows never moves the fold; the mark's words are for assistive technology */
+  .page-approve .kv > div.flag {
+    margin-inline: calc(var(--ui-space-2) * -1); padding-inline: var(--ui-space-2);
   }
-  .row-flag.danger { background: var(--ui-down-tint); color: var(--ui-down); }
-  .row-flag.caution { background: var(--ui-warn-tint); color: var(--ui-warn); }
+  .page-approve .kv > div.flag.danger { background: var(--ui-down-tint); box-shadow: inset 3px 0 0 var(--ui-down); }
+  .page-approve .kv > div.flag.caution { background: var(--ui-warn-tint); box-shadow: inset 3px 0 0 var(--ui-warn); }
+  .row-flag {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
   .page-approve .checks { display: flex; flex-direction: column; gap: var(--ui-space-2); }
   .page-approve .check { grid-template-columns: 16px minmax(0, 1fr); padding: var(--ui-space-1) var(--ui-space-2); line-height: var(--ui-leading-snug); }
   .page-approve .check > svg.i { width: 16px; height: 16px; margin-top: 0; }

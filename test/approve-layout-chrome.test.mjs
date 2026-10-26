@@ -171,8 +171,10 @@ function measure([expect, origin]) {
     if (label.startsWith("to:")) return [...reqEl.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === "To");
     // the recipients #send-warn names (a look-alike line also names what it resembles, which is not a recipient), or,
     // when the box only counts them, the recipient rows that carry a mark
-    if (label.startsWith("warn:")) return [...new Set([...[...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent),
-      ...[...reqEl.querySelectorAll(".kv > div[data-to]")].filter((r) => r.querySelector(".row-flag")).map((r) => r.dataset.to)])];
+    if (label.startsWith("warn:")) {
+      const marked = [...new Set([...reqEl.querySelectorAll(".kv > div[data-to].flag")].map((r) => r.dataset.to))];
+      return marked.length ? marked : [...new Set([...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent))];
+    }
     if (label === "Resolves to") return [...reqEl.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === label);
     const words = label.replace(/[<>]/g, "");
     const walker = document.createTreeWalker(reqEl, NodeFilter.SHOW_ELEMENT);
@@ -255,7 +257,7 @@ const settle = (page) => page.evaluate(() => new Promise((done) => {
 }));
 
 // The line's words, written out here so a change to them fails this file (security copy: listed for the owner's sign-off).
-const STATE = { arming: "Arming: both buttons wait 700 ms", ready: "Ready. Approve signs exactly what is shown.", readyUnconfirmed: "Ready. Read the warning above before you sign.",
+const STATE = { arming: "Arming: both buttons wait 700 ms", ready: "Ready.", readyUnconfirmed: "Ready. Read the warning above before you sign.",
   held: "Approve is off: see the warning above.", tokenWait: "Approve waits for the token amount." };
 const cueText = ({ open, hiddenRcpt, live, latched, confirmStep, tokenWait }) => latched ? STATE.arming
   : open ? (hiddenRcpt === 1 ? "1 more recipient below: scroll to see it" : hiddenRcpt > 1 ? `${hiddenRcpt} more recipients below: scroll to see them` : "More below: scroll to read the whole request")
@@ -361,9 +363,9 @@ try {
   // where the buttons are and where the request area ends: neither moves when the line comes or goes
   const buttonsAt = (page) => page.evaluate(() => [document.getElementById("btn-reject").getBoundingClientRect().top, document.getElementById("btn-approve").getBoundingClientRect().top, document.getElementById("req").getBoundingClientRect().bottom]);
   let ordinary = null;
-  // five recipients fit at this size; eight from a look-alike origin long enough to wrap the header do not
+  // five recipients fit at this size; twelve from a look-alike origin long enough to wrap the header do not
   for (const [name, queue] of [["send-1", [req("m1", "send", D, { to: RCPT, amount: 150_000_000, fee: 1_000_000 })]], ["send-5", [req("m5", "send", D, many(5))]],
-    ["send-8-long-origin", [req("m8o", "send", LONG, many(8))]], ["send-13", [req("m13", "send", D, many(13))]]]) {
+    ["send-12-long-origin", [req("m12o", "send", LONG, many(12))]], ["send-13", [req("m13", "send", D, many(13))]]]) {
     const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue }, { viewport: { width: WIDTH, height: INNER_H } });
     try {
       await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
@@ -408,6 +410,32 @@ try {
   // buttons, and the line names the recipient rows below. The first recipient is a look-alike of one paid before.
   // RED-FIRST: name every flagged recipient in the box (no NAMED_WARNINGS bound) and the 13, 20 and 500 cases fail the
   // fold; put the listing after the recipient rows and fill-100 fails it.
+  // S5: whenever a request has more than one recipient row, each flagged row carries its mark (a tint and a bar), also
+  // when the box names the flagged recipient by head and tail, and the mark adds no height.
+  // RED-FIRST: mark rows only when the box counts (more than NAMED_WARNINGS flagged) and these checks fail.
+  console.log("row marks:");
+  {
+    const r = req("mk", "send", D, sendTo([[RCPT, 10_000_000], [LOOK, 10_000_000], [RCPT, 20_000_000], [RCPT, 30_000_000]]));
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, ...seen, pending: [r] }, { viewport: { width: WIDTH, height: INNER_H } });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      const m = await page.evaluate(([look]) => {
+        const rows = [...document.querySelectorAll("#req .kv > div[data-to]")];
+        const flagged = rows.filter((x) => x.classList.contains("flag"));
+        const h = (x) => Math.round(x.getBoundingClientRect().height);
+        return { rows: rows.length, flagged: flagged.map((x) => [x.dataset.to === look, x.classList.contains("danger"), x.querySelector(".row-flag")?.textContent]), heights: [...new Set(rows.map(h))],
+          named: !!document.getElementById("send-warn")?.querySelector("code") };
+      }, [LOOK]);
+      t.check(`row marks: one look-alike among four rows is named in the box and its row alone is marked danger (${JSON.stringify(m)})`,
+        m.rows === 4 && m.named && m.flagged.length === 1 && m.flagged[0][0] && m.flagged[0][1] && m.flagged[0][2] === "Look-alike");
+      t.check(`row marks: the marked row is as tall as the others (${m.heights.join(",")} px)`, m.heights.length === 1);
+      t.check(`row marks: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
+
   console.log("many recipients:");
   const addrN = (i) => "0x" + (0x5000 + i).toString(16).padStart(40, "0");
   const crowd = (n) => [[LOOK, 10_000_000], ...Array.from({ length: n - 1 }, (_, i) => [addrN(i), 10_000_000])];

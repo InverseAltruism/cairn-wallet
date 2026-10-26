@@ -555,7 +555,7 @@ export const UNCONFIRMED_LABELS = { approve: "Sign anyway", reject: "Cancel" } a
 // Approve is live. Approve held down after the latch has its reason on screen above, except a token quote still loading.
 export const APPROVE_STATE = {
   arming: "Arming: both buttons wait 700 ms",
-  ready: "Ready. Approve signs exactly what is shown.",
+  ready: "Ready.",
   readyUnconfirmed: "Ready. Read the warning above before you sign.",
   held: "Approve is off: see the warning above.",
   tokenWait: "Approve waits for the token amount.",
@@ -685,9 +685,10 @@ export function recipientFlags(recipients: Recipient[], sentTo: string[], ownAdd
   }
   return flags;
 }
-// Up to this many flagged recipients are each named in the warning box. Past it, each tier states how many and the
-// approval window marks every flagged row (rowFlagHtml), so the box keeps a few lines above the buttons however many
-// recipients a request carries (W-8: a site can send to hundreds).
+// Up to this many flagged recipients are each named in the warning box. Past it, each tier states how many, so the box
+// keeps a few lines above the buttons however many recipients a request carries (W-8: a site can send to hundreds).
+// Whenever a request has more than one recipient row, the approval window also marks every flagged row (rowFlagHtml):
+// the box names an address by its head and tail, the part a look-alike copies.
 export const NAMED_WARNINGS = 2;
 const addrTag = (a: string) => `<code>${escapeHtml(a.slice(0, 10))}…${escapeHtml(a.slice(-6))}</code>`;
 const tailsOf = (fs: RecipientFlag[]) => [...new Set(fs.map((f) => WARN_TAIL[f.kind]))].join(" ");
@@ -713,10 +714,10 @@ export function warningChecks(flags: RecipientFlag[]): Check[] {
   }
   return out;
 }
-/** Whether the warning box only counts these flags, so the flagged rows carry the marks. */
-export const warningsCounted = (flags: RecipientFlag[]): boolean => flags.length > NAMED_WARNINGS;
-/** The mark on a flagged recipient row when the box only counts. */
-export const rowFlagHtml = (tier: "danger" | "caution"): string => `<span class="row-flag ${tier}">${tier === "danger" ? "Look-alike" : "New"}</span>`;
+/** Whether a request's flagged recipient rows carry a mark: whenever it has more than one recipient row. */
+export const marksRows = (recipientRows: number): boolean => recipientRows > 1;
+/** The mark's words on a flagged row, for assistive technology; the row's tint and bar show it (popup.css .flag). */
+export const rowFlagHtml = (tier: "danger" | "caution"): string => `<span class="row-flag">${tier === "danger" ? "Look-alike" : "New"}</span>`;
 export function sendWarnings(recipients: Recipient[], sentTo: string[], ownAddrs: string[]): Check[] {
   return warningChecks(recipientFlags(recipients, sentTo, ownAddrs));
 }

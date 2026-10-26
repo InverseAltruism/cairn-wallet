@@ -24,8 +24,10 @@
   warnings. A look-alike of an address used before (address poisoning) is a red row and a first send to an address an
   amber row, in the popup's send review and in the approval window alike (0.2.99 showed the first send red too). Up
   to two flagged recipients are named, each on its own line; past two, the red row says how many recipients are
-  look-alikes and the amber row how many are new, and each flagged recipient row carries a "Look-alike" or "New"
-  mark, so the warnings stay a few lines above the buttons however many recipients a request carries.
+  look-alikes and the amber row how many are new. Whenever a request has more than one recipient row, each flagged
+  row is marked with its tier's tint and a bar at its start (and the words "Look-alike" or "New" for assistive
+  technology), which add no height, so the warnings stay a few lines above the buttons however many recipients a
+  request carries and a flagged row is found by its whole address, not only by the head and tail the box names.
 - The approval window lists every recipient of a request, each whole and in groups of four with its amount, and keeps
   the count and the total in the amount line. It showed the first 12 and summarised the rest in a red line. A CSD
   fill shows what it buys before its recipients. test/approve-layout-chrome.test.mjs pins the fold at 13, 20 and 500
@@ -44,7 +46,7 @@
 - A line under the buttons says what the window is doing: "Arming: both buttons wait 700 ms" while the latch holds
   both buttons, then "2 more recipients below: scroll to see them" (or "1 more recipient below: scroll to see it")
   while a recipient row is not fully shown and "More below: scroll to read the whole request" while anything else is,
-  and otherwise "Ready. Approve signs exactly what is shown." ("Ready. Read the warning above before you sign." on a
+  and otherwise "Ready." ("Ready. Read the warning above before you sign." on a
   reservation's confirm step), "Approve waits for the token amount." while a token quote loads, or "Approve is off: see
   the warning above." when a refusal holds Approve down. Its line is always reserved, so it never moves the buttons,
   never covers the request and never holds back Approve. A request painted into the open window enters as in the
