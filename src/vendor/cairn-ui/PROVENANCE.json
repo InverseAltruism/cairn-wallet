@@ -1,7 +1,7 @@
 {
   "note": "cairn-ui files vendored byte for byte from the commit below: each is `git show <commit>:<path>` of the file listed in that commit's package.json `files`. Verified by scripts/check-ui-vendor.mjs (also run by build.mjs). To update: copy the files from a new commit, then run `node scripts/check-ui-vendor.mjs --write <commit>`.",
   "repository": "https://github.com/InverseAltruism/cairn-ui",
-  "commit": "bc493a5d87cf30a12e37252165aa192de0d6ccf7",
+  "commit": "786c5fbe69953db4c345815fc7bde1bd8bd24e7d",
   "files": {
     "avatar.css": "fc26d8d352e896f82b17435d40850d00752fd38f858a14eac67506e4cad9f44d",
     "avatar.d.ts": "51006c3971835a6eda60d2c537f99cde5be0c9e2c08b6604fda53444534d2ed3",
