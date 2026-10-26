@@ -5,12 +5,16 @@
 // real Wallet.send (the call the popup makes) and one base unit more: the first is signed and submitted, the second
 // is refused with the engine's own code, and nothing is submitted for it.
 // Harness note (ghostcoin.test.mjs): node.ts keeps a session ghost cache, so every case uses distinct coin values.
-// RED-FIRST: drop `.slice(0, MAX_TX_INPUTS)` from maxSendable's target and case 2 fails (Max over the input cap);
-// count every reported coin, the round's exclusions ignored (`spendableCoins(utxos)`), and cases 3 and 4 fail; evaluate the
-// target once instead of per round (`if (typeof needOf === "function" && round === 0)` in selectVerified) and the ghost
-// and unrepresentable cases fail; count coins with a raw filter instead of spendableCoins (no csd-tx dedupe) and case 10
-// fails (a coin the node lists twice counted twice).
+// RED-FIRST: drop `.slice(0, MAX_TX_INPUTS)` from maxSendable's target and cases 2, 11 and 12 fail; count every reported
+// coin, the round's exclusions ignored (`spendableCoins(utxos)`), and cases 3, 4, 11, 12 and 13 fail; evaluate the
+// target once instead of per round (`if (typeof needOf === "function" && round === 0)` in selectVerified) and the same
+// cases fail; count coins with a raw filter instead of spendableCoins (no csd-tx dedupe) and case 10 fails (a coin the
+// node lists twice counted twice); stop caching unrepresentable verdicts (`rememberSkip(unrepSeen, ...)` in
+// selectVerified) and case 11 fails (the review's three-layer layout, test/unrepresentable-coin.test.mjs case 5 for a
+// send alone); answer from the first pass without the send's numeric pass and case 14 fails; give the engine's copy
+// for an all-unprovable wallet and case 13 fails.
 // Run: npx tsx test/maxsendable.test.mjs   (offline)
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
@@ -23,12 +27,15 @@ const FEE = 1_000_000; // the popup's SEND_FEE, 0.01 CSD
 const hexOf = (bytes) => "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 const inputsOf = (sub) => (sub?.tx?.inputs ?? []).map((i) => hexOf(i.prevout.txid).toLowerCase());
 
-function stub({ coins, served, raw = {}, overrides = {} }) {
-  const stats = { submits: [], tx: 0 };
+function stub({ coins, served, raw = {}, overrides = {}, coinsAfter = null }) {
+  const stats = { submits: [], tx: 0, utxos: 0 };
   globalThis.fetch = async (url, init) => {
     const u = String(url);
     if (u.includes("/tx/submit")) { stats.submits.push(JSON.parse(init?.body ?? "{}")); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
-    if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coins.reduce((s, c) => s + c.coin.value, 0), utxos: coins.map((c) => c.coin) }) };
+    if (u.includes("/utxos/")) {
+      const now = coinsAfter && stats.utxos++ > 0 ? coinsAfter : coins;
+      return { ok: true, status: 200, json: async () => ({ confirmed_balance: now.reduce((s, c) => s + c.coin.value, 0), utxos: now.map((c) => c.coin) }) };
+    }
     const m = u.match(/\/tx\/(0x[0-9a-fA-F]{64})\b/);
     if (m) {
       stats.tx++;
@@ -149,6 +156,64 @@ try {
     const { max, sub } = await engineAccepts("(10) a coin listed twice", await wallet(), s, "INSUFFICIENT");
     check(`(10) Max counts the twice-listed coin once (${max.amount})`, max.amount === 8_00000020 - FEE && max.eligible === 2);
     check("(10) the send spends two coins", inputsOf(sub).length === 2);
+  }
+  // 11-12. three layers of unprovable coins (the review's layout): A1 and A2 above 511 ordinary coins, Y just under
+  // them and Z the smallest. Max's first pass finds every layer at once; the send's need is lower, so its largest-first
+  // prefix is shorter and meets one layer per round. With every class cached the send starts from the coins Max
+  // skipped, and the numeric pass Max ends with is that same selection.
+  const layered = (tag, bad) => {
+    const base = 10 * 1e8 + tag * 10_000;
+    const ordinary = Array.from({ length: 511 }, (_, i) => mkCoin(base + 1000 + i));
+    const Z = mkCoin(base + 100);
+    const unprovable = [bad(6000 * 1e8 + tag), bad(30 * 1e8 + tag), bad(base + 500)];
+    return { ordinary, Z, unprovable, provable: ordinary.reduce((s, c) => s + c.coin.value, 0) + Z.coin.value };
+  };
+  {
+    const raw = {};
+    const unrepCoin = (value) => {
+      const id = "0x" + createHash("sha256").update(`unrep-${value}`).digest("hex");
+      raw[id] = JSON.stringify({ version: 1, locktime: 0, txid: id, app: { type: "Propose", domain: "spam:v1", payload_hash: "0x" + "0e".repeat(32), uri: "spam", expires_epoch: "__P__" },
+        inputs: [{ prev_txid: "0x" + "11".repeat(32), vout: 0, script_sig: "0x" }], outputs: [{ value, script_pubkey: "0x" + "cd".repeat(20) }] }).replace('"__P__"', "9007199254740993");
+      return { coin: { txid: id, vout: 0, value, confirmations: 9 } };
+    };
+    const L = layered(1, unrepCoin);
+    const s = stub({ coins: [...L.unprovable, ...L.ordinary, L.Z], served: [...L.ordinary, L.Z], raw });
+    const { max, sub } = await engineAccepts("(11) three layers of unrepresentable coins", await wallet(), s, "VERIFY_UNREPRESENTABLE");
+    check(`(11) Max = the 512 provable coins minus the fee, three skipped (${max.skipped})`, max.amount === L.provable - FEE && max.skipped === 3 && max.inputs === 512);
+    check("(11) the send spends none of the three", L.unprovable.every((u) => !inputsOf(sub).includes(u.coin.txid)));
+  }
+  {
+    const L = layered(2, (value) => { const g = mkCoin(value); g.coin.txid = "0x" + createHash("sha256").update(`ghost-${value}`).digest("hex"); return g; });
+    const s = stub({ coins: [...L.unprovable, ...L.ordinary, L.Z], served: [...L.ordinary, L.Z] });
+    const w = await wallet();
+    const max = await w.maxSendable(FEE);
+    check(`(12) three layers of ghost coins: Max = the provable coins minus the fee (${max.error ?? max.amount})`, max.ok === true && max.amount === L.provable - FEE);
+    const over = await w.send(RCPT, max.amount + 1, FEE);
+    const within = await w.send(RCPT, max.amount, FEE);
+    check(`(12) within the cache window one base unit more is refused (${over.code}) and exactly Max is signed (${within.error ?? "ok"})`, over.ok === false && within.ok === true && s.submits.length === 1);
+    const realNow = Date.now;
+    Date.now = () => realNow() + 121_000; // the 120 s session caches have expired by the time the user confirms
+    try {
+      const first = await w.send(RCPT, max.amount, FEE);
+      check(`(12) after the caches expired, the first send refuses retryably and signs nothing (${first.code})`, first.ok === false && first.code === "VERIFY_UNAVAILABLE" && s.submits.length === 1);
+      const again = await w.send(RCPT, max.amount, FEE);
+      check(`(12) its retry, from what the first attempt cached, signs exactly Max (${again.error ?? "ok"})`, again.ok === true && s.submits.length === 2);
+    } finally { Date.now = realNow; }
+  }
+  // 13. every coin unprovable: Max says so in its own words, never the round's internal target
+  {
+    const g = mkCoin(5_00000013); g.coin.txid = "0x" + "4d".repeat(32);
+    stub({ coins: [g], served: [] });
+    const max = await (await wallet()).maxSendable(FEE);
+    check(`(13) every coin unprovable: "${max.error}"`, max.ok === false && max.code === "GHOST_INPUTS_SKIPPED" && max.error.startsWith("none of your coins can be checked against the chain yet") && !/spend \(amount plus fee\)|0\.00000001/.test(max.error));
+  }
+  // 14. the coins change between Max's two passes (the largest is spent): no figure, since the send's own selection
+  // no longer accepts it
+  {
+    const big = mkCoin(40_00000014), c = [big, mkCoin(3_00000014)];
+    const s = stub({ coins: c, served: c, coinsAfter: [c[1]] });
+    const max = await (await wallet()).maxSendable(FEE);
+    check(`(14) coins changed under Max: no figure (${max.code}): ${max.error}`, max.ok === false && max.code === "INSUFFICIENT" && max.error.includes("could not be confirmed against the chain") && s.submits.length === 0);
   }
 } finally { globalThis.fetch = origFetch; }
 

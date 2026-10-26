@@ -24,11 +24,19 @@
   eligible, so ghost, horizon and unrepresentable coins are left out as a send leaves them out, and both fee caps
   apply. When the 512-coin limit or unprovable coins hold it below the balance, a line under the estimate says so. The
   review and the confirm then run as for a typed amount; if coins change before Confirm, the send refuses as before.
-  Max computes nothing for a token send (the design has none there).
+  Max computes nothing for a token send (the design has none there). Max ends with the send's own selection for that
+  figure and answers only if it succeeds, so the figure is one a send accepts at that moment; when it cannot work one
+  out it says why in its own words (for example that none of the coins can be checked against the chain yet).
 - A coin whose source transaction carries a number the wallet cannot represent exactly is remembered for the session
   (two minutes), like a coin the node cannot find. Before, a send met such coins one largest-first layer per round, and
   with three layers every attempt spent its three rounds and refused with `VERIFY_UNAVAILABLE`; now the retry starts
   without them and goes through.
+- Known limits: once the two-minute memory of skipped coins has expired, a send of exactly Max can refuse once with
+  `VERIFY_UNAVAILABLE` (nothing signed) while it finds those coins again; its retry goes through. Max reads every coin
+  it may spend from the node, as the send then does: on a wallet with more than 512 coins, Max and the send make 1,028
+  requests (measured offline), and pressing Max twice before sending makes 1,542, above the 1,500 a minute the Cairn
+  RPC proxy allows each IP address; the send then refuses with `VERIFY_UNAVAILABLE` (nothing signed) until the minute
+  has passed.
 - Coin selection is csd-tx's `selectInputs` from the vendored bundle; the wallet's own copy in `src/core/node.ts` is
   removed. A coin the node lists twice, once with a `0x` txid and once without (or with `0X`), is now one coin: a
   send no longer takes it twice and refuses with `VERIFY_TAMPER`, a send that an honest coin can cover goes through,

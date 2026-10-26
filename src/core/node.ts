@@ -366,7 +366,9 @@ function roundsExhausted(count: number, value: number): { error: string; code: s
 // excluded so far, evaluated at the start of every round so the target follows the exclusions this loop makes. With a
 // number every round uses that number, exactly as a send passes it.
 type NeedOf = (utxos: any[], exclude: ReadonlySet<string>) => number;
-async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
+// `verified` lets maxSendable's final pass reuse the verdicts its first pass fetched (a txid commits to its output
+// values, so a verified value cannot change); a send passes none and fetches every coin it selects.
+async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf, verified: Map<string, number> = new Map()): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
   // The utxo read itself can fail (node down / timeout). Catch it HERE so the failure surfaces as
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
   // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch:
@@ -376,7 +378,6 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
   const exclude = sessionExclusions(now);
-  const verified = new Map<string, number>();
   const reportedVal = new Map<string, number>(utxos.map((u: any) => [opKey(u.txid, u.vout), Number(u.value) || 0]));
   // ghosts already known from the session cache that are present in THIS utxo set count toward the
   // honest error (they are why the reported balance overstates what is spendable); BN0w counts the
@@ -806,33 +807,45 @@ export async function consolidatePreview(rpc: string, addr: string, fee: number)
   } catch { return { ok: false, error: "node unreachable" }; }
 }
 
-// The largest amount one send (`send`, through assembleValueTx) accepts right now with `fee`: the engine's own
-// selectVerified, run with a target that each round is the reported total of the MAX_TX_INPUTS largest coins still
-// eligible (spendableCoins minus the coins that round's checks excluded), the most selectInputs can cover in one
-// transaction. Every selected coin is chain-verified as a send verifies it, so the figure is the verified selection's
-// target minus the fee and never a coin the engine would skip. The same fee checks as a send apply. Signs nothing.
-// A later send of exactly this amount re-runs the whole engine; coins spent, arriving or turning unprovable in
-// between change what it accepts, and it refuses rather than sign a different spend. Popup-only (not in DAPP_METHODS).
+// The largest amount one send (`send`, through assembleValueTx) accepts right now with `fee`, in two passes over the
+// engine's own selectVerified. The first finds the figure: each round's target is the reported total of the
+// MAX_TX_INPUTS largest coins still eligible (spendableCoins minus the coins that round's checks excluded), the most
+// selectInputs can cover in one transaction, and every coin it selects is chain-verified as a send verifies it. The
+// second is the send's own call, selectVerified with the number need = figure (amount plus fee), starting from the
+// session caches the first pass filled; Max answers only when that pass succeeds, so the figure is one the send's
+// selection accepted, not one derived to be acceptable. The same fee checks as a send apply. Signs nothing.
+// A send of exactly this amount repeats that numeric pass. It accepts while the state is the same: coins spent,
+// arriving or turning unprovable change what it accepts, and once the session caches expire (GHOST_TTL_MS) a send can
+// spend its rounds rediscovering skipped coins and refuse VERIFY_UNAVAILABLE, nothing signed, before its retry, which
+// starts from what the first attempt cached, goes through (test/maxsendable.test.mjs). Popup-only (not in
+// DAPP_METHODS).
 // `eligible`: the spendable coins after the checks; `skipped`: the spendable coins the checks left out (unprovable).
 export type MaxSend = { ok: true; amount: number; fee: number; inputs: number; eligible: number; skipped: number; capped: boolean } | { ok: false; error: string; code: string };
 export async function maxSendable(rpc: string, addr: string, fee: number): Promise<MaxSend> {
   if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", code: "BAD_FEE" };
   if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, code: "FEE_CAP" };
   let eligible = 0, skipped = 0, target = 0;
-  const sv = await selectVerified(rpc, addr, (utxos, exclude) => {
+  const verified = new Map<string, number>();
+  const found = await selectVerified(rpc, addr, (utxos, exclude) => {
     const coins = spendableCoins(utxos, exclude).sort((a, b) => b.value - a.value);
     eligible = coins.length;
     skipped = spendableCoins(utxos).length - eligible;
     target = coins.slice(0, MAX_TX_INPUTS).reduce((s, c) => s + c.value, 0);
     // nothing eligible: a positive target makes the selection fail cleanly (INSUFFICIENT, or the skip reason)
     return target > 0 ? target : 1;
-  });
-  if ("error" in sv) {
-    if (eligible === 0 && sv.code === "INSUFFICIENT") return { ok: true, amount: 0, fee, inputs: 0, eligible: 0, skipped, capped: false };
-    return { ok: false, error: sv.error, code: sv.code };
+  }, verified);
+  // Max's own words: the engine's copy for a failed round names the round's internal target as "this spend"
+  if ("error" in found) {
+    if (eligible === 0 && skipped === 0 && found.code === "INSUFFICIENT") return { ok: true, amount: 0, fee, inputs: 0, eligible: 0, skipped: 0, capped: false };
+    if (eligible === 0) return { ok: false, error: `none of your coins can be checked against the chain yet: the node could not prove ${skipped} coin${skipped === 1 ? "" : "s"}. Nothing was signed; try again shortly`, code: found.code };
+    if (found.code === "INSUFFICIENT") return { ok: false, error: "your coins are worth less on the chain than the node reports, so no amount can be worked out. Nothing was signed", code: "INSUFFICIENT" };
+    return { ok: false, error: found.error, code: found.code };
   }
+  if (target <= fee) return { ok: true, amount: 0, fee, inputs: 0, eligible, skipped, capped: false };
+  const sv = await selectVerified(rpc, addr, target, verified);
+  if ("error" in sv) return { ok: false, error: "the most one transaction can send could not be confirmed against the chain just now. Nothing was signed; try again shortly", code: sv.code };
   if (fee > proportionalFeeCap(sv.total)) return { ok: false, error: `fee exceeds ${fmtCsd(proportionalFeeCap(sv.total))} (10% of the coins this spend uses); refusing`, code: "FEE_CAP" };
-  return { ok: true, amount: Math.max(0, target - fee), fee, inputs: sv.inputs.length, eligible, skipped, capped: eligible > MAX_TX_INPUTS };
+  return { ok: true, amount: target - fee, fee, inputs: sv.inputs.length, eligible, skipped, capped: eligible > MAX_TX_INPUTS };
 }
 
 // Fill an on-chain offer: ONE transaction
