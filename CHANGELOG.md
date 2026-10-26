@@ -2,6 +2,9 @@
 
 ## 0.3.1
 
+- README: the MIT licence covers the code, not the two logos the wallet draws (the Cairn mark and the CSD coin's logo)
+  or the extension icons drawn from the mark; each stays with its owner (owner decision, 2026-10-26).
+
 - The CSD row shows the CSD coin's logo (the owner's file, vendored from cairn-ui 0.4 as `csd-logo.jpg`) in its
   circle with the avatar's hairline; it showed the Cairn mark. The CAIRN row shows the Cairn mark, only for the token
   the wallet pins by deploy id: the row passes the deploy id the token list serves for its ticker, and a CAIRN from
