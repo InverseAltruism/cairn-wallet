@@ -8,7 +8,8 @@
 // RED-FIRST: drop `.slice(0, MAX_TX_INPUTS)` from maxSendable's target and case 2 fails (Max over the input cap);
 // count every reported coin, the round's exclusions ignored (`spendableCoins(utxos)`), and cases 3 and 4 fail; evaluate the
 // target once instead of per round (`if (typeof needOf === "function" && round === 0)` in selectVerified) and the ghost
-// and unrepresentable cases fail.
+// and unrepresentable cases fail; count coins with a raw filter instead of spendableCoins (no csd-tx dedupe) and case 10
+// fails (a coin the node lists twice counted twice).
 // Run: npx tsx test/maxsendable.test.mjs   (offline)
 import { readFileSync } from "node:fs";
 import { Wallet } from "../src/core/wallet.js";
@@ -139,6 +140,15 @@ try {
     stub({ coins: c, served: c, overrides: { [c[0].coin.txid.toLowerCase()]: () => ({ ok: true, status: 200, json: async () => ({ ok: true, tx: other.body }) }) } });
     const max = await (await wallet()).maxSendable(FEE);
     check(`(9) a forged source tx: no Max (${max.code})`, max.ok === false && max.code === "VERIFY_TAMPER");
+  }
+  // 10. one coin the node lists in two txid spellings is one coin for Max, as for the send (csd-tx selectInputs' dedupe)
+  {
+    const a = mkCoin(7_00000010), b = mkCoin(1_00000010);
+    const twin = { coin: { ...a.coin, txid: a.coin.txid.slice(2).toUpperCase() }, body: a.body };
+    const s = stub({ coins: [a, twin, b], served: [a, b] });
+    const { max, sub } = await engineAccepts("(10) a coin listed twice", await wallet(), s, "INSUFFICIENT");
+    check(`(10) Max counts the twice-listed coin once (${max.amount})`, max.amount === 8_00000020 - FEE && max.eligible === 2);
+    check("(10) the send spends two coins", inputsOf(sub).length === 2);
   }
 } finally { globalThis.fetch = origFetch; }
 
