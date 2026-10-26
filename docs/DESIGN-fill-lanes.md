@@ -35,8 +35,9 @@ Every lane returns a refusal or null and signs nothing. An unprovable or transie
   (60,044), where a legacy claim from before V28 could still count, and a count that cannot be computed both refuse
   as `VERIFY_UNAVAILABLE`.
 - The proven offer must be one the resolver admits: cairnx-core `provenOfferRefusal` over the offer's own bound tx
-  (the cairnx settlement domain, a payee that is not the treasury, and the record rules resolve() applies at the
-  offer's creation). The scan exempts the offer from its domain filter, so this is the check that reads its domain.
+  (the cairnx settlement domain, an anchor at or above the activation height 29,860, a payee that is not the
+  treasury, and the record rules resolve() applies at the offer's creation, among them no name offer below 29,960).
+  The scan exempts the offer from its domain filter, so this is the check that reads its domain.
   A refusal is `FILL_UNSAFE` (test/fill-fclaim-preflight.test.mjs, "admission").
 - A block body that contradicts its verified header refuses as `RPC_BLOCK_MISMATCH`, naming the block, the RPC and
   the header source without blaming either.

@@ -11,7 +11,7 @@
 // txids) except the final case, where the carryover IS the assertion.
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { selectInputs } from "../src/core/node.js";
+import { selectInputs } from "../src/vendor/cairnx-spv.js";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;

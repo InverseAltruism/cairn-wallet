@@ -3,7 +3,9 @@ export { LightClient, CsdClient, verifyLinkedRecords, bindBlockBody } from "@inv
 export type { VerifiedHeader, BlockBind, BoundTx } from "@inversealtruism/csd-light";
 export { rpcTxToTx, parseJsonExact } from "@inversealtruism/csd-client";
 export type { RpcTxJson } from "@inversealtruism/csd-client";
-export { txid, sighash, merkleRoot, verifyMerkleProof, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW } from "@inversealtruism/csd-codec";
+export { txid, sighash, merkleRoot, verifyMerkleProof, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, strip0x, MAX_TX_INPUTS } from "@inversealtruism/csd-codec";
 export type { Tx, BlockHeader } from "@inversealtruism/csd-codec";
 export { addrFromPub, verifyDigest, recoverSigner, authorOf, addrFromScriptPubkey } from "@inversealtruism/csd-crypto";
+export { selectInputs } from "@inversealtruism/csd-tx";
+export type { Selection, Utxo } from "@inversealtruism/csd-tx";
 export * from "@inversealtruism/cairnx-core";
