@@ -899,6 +899,39 @@ check(`MUTATION[denied-fclaim guard removed]: the forgery now SUBMITS (proves th
   globalThis.fetch = origFetch;
 }
 
+// The two activation gates of the admission check (register row 110): an offer anchored below 29,860, where
+// resolve() skips every event, and a name-give offer below 29,960 are refused; each boundary height is admitted.
+{
+  const SD = addrFromPriv(sellerKeyD).toLowerCase();
+  const want = { value: String(V), payto: SD };
+  const tokenGive = { ticker: "AAA", amount: "10" }, nameGive = { name: "gatename" };
+  const cases = [
+    ["a token offer at 29,859", tokenGive, 29_859, /anchored before CairnX activation \(block 29860\)/],
+    ["a token offer at 29,860", tokenGive, 29_860, null],
+    ["a name offer at 29,959", nameGive, 29_959, /name offers need v1\.1/],
+    ["a name offer at 29,960", nameGive, 29_960, null],
+  ];
+  for (const [label, give, h, refusal] of cases) {
+    const tx = proposeTx({ ...pick(offer({ give, want })), priv: sellerKeyD, expiresEpoch: 9e9 });
+    const oid = ctxid(rpcTxToTx(tx)).toLowerCase();
+    const got = await provenOfferPayto({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(worldOf([{ height: h, tx }]), h + 10), offerId: oid, offerHeight: h });
+    if (refusal === null) check(`admission gates: ${label} is admitted (${got?.refused ?? got?.seller})`, got !== null && !("refused" in got) && got.seller === SD && got.height === h);
+    else check(`admission gates: ${label} is refused (${got?.refused})`, got !== null && "refused" in got && refusal.test(got.refused));
+  }
+  // through the wallet's offer-id lane: the refused name offer is not signed
+  const { w, addr } = await freshWallet("pw-admission-gate");
+  const taker = String(addr).toLowerCase();
+  const tx = proposeTx({ ...pick(offer({ give: nameGive, want, taker })), priv: sellerKeyD, expiresEpoch: 9e9 });
+  const oid = ctxid(rpcTxToTx(tx)).toLowerCase();
+  w.nameSpvForTest = fillSource(worldOf([{ height: 29_959, tx }]), 29_969);
+  const served = { id: oid, seller: SD, give: nameGive, want, taker, status: "open", height: 29_959, feeBps: feeBpsAt(29_959) };
+  const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 29_969 });
+  const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+  const r = await w.fillOffer({ proposalId: oid, outputs: outs });
+  check(`admission gates, offer-id lane: a name offer at 29,959 is REFUSED before signing (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /name offers need v1\.1/.test(r?.error ?? "") && s.submits.length === 0);
+  globalThis.fetch = origFetch;
+}
+
 globalThis.fetch = origFetch;
 console.log(`\nfill-fclaim-preflight: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

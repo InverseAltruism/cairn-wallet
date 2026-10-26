@@ -37,9 +37,11 @@ ENTRY='export { LightClient, CsdClient, verifyLinkedRecords, bindBlockBody } fro
 export type { VerifiedHeader, BlockBind, BoundTx } from "@inversealtruism/csd-light";
 export { rpcTxToTx, parseJsonExact } from "@inversealtruism/csd-client";
 export type { RpcTxJson } from "@inversealtruism/csd-client";
-export { txid, sighash, merkleRoot, verifyMerkleProof, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW } from "@inversealtruism/csd-codec";
+export { txid, sighash, merkleRoot, verifyMerkleProof, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, strip0x, MAX_TX_INPUTS } from "@inversealtruism/csd-codec";
 export type { Tx, BlockHeader } from "@inversealtruism/csd-codec";
 export { addrFromPub, verifyDigest, recoverSigner, authorOf, addrFromScriptPubkey } from "@inversealtruism/csd-crypto";
+export { selectInputs } from "@inversealtruism/csd-tx";
+export type { Selection, Utxo } from "@inversealtruism/csd-tx";
 export * from "@inversealtruism/cairnx-core";
 '
 
@@ -54,4 +56,4 @@ printf '%s' "$ENTRY" | "$ESBUILD" --loader=ts --bundle --format=esm --platform=b
 } > "$OUT_DTS"
 
 echo "built $OUT_JS ($(du -h "$OUT_JS" | cut -f1)) and $OUT_DTS"
-node --input-type=module -e "import('$OUT_JS').then(m=>{const k=Object.keys(m);const need=['LightClient','CsdClient','verifyLinkedRecords','bindBlockBody','parseJsonExact','serializeHeader','deserializeHeader','HEADER_BYTES','LWMA_WINDOW','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','authorOf','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','provenOfferRefusal','countOtherHoldsAtGrant','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"
+node --input-type=module -e "import('$OUT_JS').then(m=>{const k=Object.keys(m);const need=['selectInputs','strip0x','MAX_TX_INPUTS','LightClient','CsdClient','verifyLinkedRecords','bindBlockBody','parseJsonExact','serializeHeader','deserializeHeader','HEADER_BYTES','LWMA_WINDOW','rpcTxToTx','txid','sighash','merkleRoot','addrFromPub','verifyDigest','recoverSigner','authorOf','resolve','canonicalState','parseRecord','canonicalJson','payloadHash','tradeFee','makerRebate','nameRegFee','previewFill','fillIsSafe','finalizeWinnerCheck','isOpenClaimLane','hasLiveClaim','verifyFillSpv','bindOfferTerms','feeBpsAt','provenOfferTerms','provenOfferRefusal','countOtherHoldsAtGrant','bindProvenOffer','replayLiveHold','fclaimHoldEnd','FILL_TIP_MARGIN','MAX_ACTIVE_CLAIMS','GAP_NEEDED','MAX_SCAN','V28_HEIGHT','NAME_RE','PKEY','RESERVED_NAMES','OFFER_KEYS','BID_KEYS','NAME_KEYS','FEE_BPS','FEE_BPS_V16','REBATE_BPS','REBATE_FLAT','V16_HEIGHT','V18_HEIGHT','MAX_AMOUNT','MAX_RECORD_BYTES','PROFILE_MAX_KEYS','PROFILE_MAX_VALUE_BYTES','TREASURY_ADDR','TICKER_RE','ADDR_RE','AMOUNT_RE','HASH_RE'];const miss=need.filter(x=>!k.includes(x));if(miss.length)throw new Error('missing exports: '+miss.join(','));console.log('exports ok ('+k.length+' symbols)')})"

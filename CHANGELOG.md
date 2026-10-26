@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The csd-sdk bundle moves to npm window 5 (cairnx-core 0.2.3, csd-client 0.1.20, csd-light 0.1.26) and adds csd-tx
+  0.1.23. With cairnx-core 0.2.3 an offer fill refuses, before signing, an offer anchored below block 29,860 and a
+  name offer anchored below 29,960; the resolver ignores both, so a fill would pay and deliver nothing.
+
 ## 0.3.0
 
 - The popup and the approval window are redesigned: the popup is 360 by 600, set in Geist, light and dark with a

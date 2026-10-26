@@ -2,12 +2,12 @@
   "note": "Provenance for src/vendor/cairnx-spv.js and cairnx-spv.d.ts. Built by scripts/build-spv-vendor.sh from the csd-sdk packages below; regenerate with `node scripts/check-vendor-fresh.mjs --write`; verified by scripts/check-vendor-fresh.mjs.",
   "packages": {
     "@inversealtruism/cairnx-core": {
-      "version": "0.2.2",
-      "integrity": "sha512-WKft7TPYYR+hQ1DFA1tV44SjAPff1Dmi4GBWJaCWVk+hGwIssCMqJKrG/VTbbGA9Eo3vA7avFBfgaDdQrVZ7Ww=="
+      "version": "0.2.3",
+      "integrity": "sha512-BzIE82Ab1RnnxNoZ7S9mRgamnt6C//vfSSp4/JvBocfEtoiXzFIj3i5zTdCRAv2/PCqHIvgT5K3kcO2DCa26Ww=="
     },
     "@inversealtruism/csd-client": {
-      "version": "0.1.19",
-      "integrity": "sha512-8nF5PPTvK3cUH2VERjs9fJ5EqF7AdtlvVY37BFKdW5AdTTOZy4vaAFZb0bTi+EYNXpZVTAGeVqrmZdx5tuVozA=="
+      "version": "0.1.20",
+      "integrity": "sha512-AhbKDwDsnXW+UlgMOn9yTUDgeky31hoW8mdNGDGx9nIyJeAfA2fDMZa95i9J26VTKWbolClMrj0GDBGkKsWDvw=="
     },
     "@inversealtruism/csd-codec": {
       "version": "0.1.18",
@@ -18,13 +18,17 @@
       "integrity": "sha512-W3ZUaeyODbw9/z4xtdG82ASM4LRMdS1dqNDAbV8PMc7HSYfN/aR1veVuMYRz/aqkObqJrEWIz3ELnVr9M92Xlg=="
     },
     "@inversealtruism/csd-light": {
-      "version": "0.1.25",
-      "integrity": "sha512-g+InolYaPKHcYZ2DVRjB2++7eeMCb8Un6wR++J2+/prLBTsXMoPK3hX7jGehw/ZZJ1/Th0gi0x980aHPonyUGw=="
+      "version": "0.1.26",
+      "integrity": "sha512-7frTqIYGsbtXiykYa0tmvieBQt3oe8nWOztbxopzhNrfJHMy0eeMIDSaqU85jmj1qEdlKBT8chSAer28mc2ugw=="
+    },
+    "@inversealtruism/csd-tx": {
+      "version": "0.1.23",
+      "integrity": "sha512-pDstjeL81LpQ6npNh/g5qUklH2Stm1TjU3+b9ZNDrLeFdmQfxTujySvrUD7uhTYSO2b8Dbl26ddQxrwvkWNpug=="
     }
   },
   "sha256": {
-    "cairnx-spv.js": "5bddcdc45b8e909279573a447f700f2a08b3fd14433d8f6093517b6a3ec91b82",
-    "cairnx-spv.d.ts": "621a267171f4b46f5192f51b0676d650fe9d616aa15e128f4923383b9fa41d17"
+    "cairnx-spv.js": "208a149dc3753d2fd178bb258666f356a67180cd6e2c95c65e18111407c72f8f",
+    "cairnx-spv.d.ts": "314a798ca69e5092600234f9fadba9c59a3b8a3129224c3cab56488810558818"
   },
   "noble": {
     "@noble/curves": "1.9.7",
