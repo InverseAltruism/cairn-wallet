@@ -31,6 +31,8 @@ export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js"
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
+// An account label is display text in the popup and the approval window's signer line; one line of it is enough.
+export const MAX_LABEL = 40;
 export interface WalletStatus { hasVault: boolean; unlocked: boolean; addr: string | null; accounts: PubAcct[]; active: number; rpc: string; api: string; tradeApi: string; explorer: string; hasMnemonic: boolean; rpcMovedFrom: string | null }
 
 // An in-memory account: its key + label, plus how it was created; `index` is its
@@ -425,21 +427,26 @@ export class Wallet {
   // ── account management (require unlocked) ──────────────────────────────────
   private mustUnlocked(): Acct[] { if (!this.accts || !this.vaultKey) throw new Error("locked"); return this.accts; }
   accounts(): PubAcct[] { return (this.accts ?? []).map((a) => ({ addr: a.addr, label: a.label, imported: a.imported })); }
+  /** An account label as stored: trimmed, at most MAX_LABEL characters (code points), else `fallback`. */
+  static label(label: string | undefined, fallback: string): string {
+    const t = String(label ?? "").trim();
+    return t ? Array.from(t).slice(0, MAX_LABEL).join("") : fallback;
+  }
 
   // Add an account. On an HD wallet, derive the next index from the seed phrase (so it
   // is recoverable from the phrase alone); otherwise fall back to a fresh random key.
   async addAccount(label?: string): Promise<{ addr: string; index: number }> {
     const accts = this.mustUnlocked();
     const a = this.mnemonic
-      ? { ...deriveAccount(this.mnemonic, this.nextIndex), label: (label && label.trim()) || `Account ${accts.length + 1}`, index: this.nextIndex } as Acct
-      : this.acct(generate().privkey, (label && label.trim()) || `Account ${accts.length + 1}`, { imported: true });
+      ? { ...deriveAccount(this.mnemonic, this.nextIndex), label: Wallet.label(label, `Account ${accts.length + 1}`), index: this.nextIndex } as Acct
+      : this.acct(generate().privkey, Wallet.label(label, `Account ${accts.length + 1}`), { imported: true });
     if (this.mnemonic) this.nextIndex += 1;
     accts.push(a); this.active = accts.length - 1; await this.persistVault();
     return { addr: a.addr, index: this.active };
   }
   async importAccount(priv: string, label?: string): Promise<{ addr: string; index: number }> {
     const accts = this.mustUnlocked();
-    const a = this.acct(priv, (label && label.trim()) || `Account ${accts.length + 1}`, { imported: true }); // fromPriv validates; raw key ⇒ not seed-recoverable
+    const a = this.acct(priv, Wallet.label(label, `Account ${accts.length + 1}`), { imported: true }); // fromPriv validates; raw key ⇒ not seed-recoverable
     if (accts.some((x) => x.addr.toLowerCase() === a.addr.toLowerCase())) throw new Error("that account is already in this wallet");
     accts.push(a); this.active = accts.length - 1; await this.persistVault();
     return { addr: a.addr, index: this.active };
@@ -457,7 +464,7 @@ export class Wallet {
     const accts = this.mustUnlocked();
     const a = accts.find((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
     if (!a) throw new Error("no such account");
-    a.label = label.trim() || a.label; await this.persistVault();
+    a.label = Wallet.label(label, a.label); await this.persistVault();
   }
   async removeAccount(addr: string, password?: string): Promise<void> {
     const accts = this.mustUnlocked();

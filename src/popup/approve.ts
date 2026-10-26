@@ -138,7 +138,7 @@ async function render() {
     // 1.2s tick would refetch balance and history twice a second per open approval window.
     balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
-    $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b>${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
+    $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b title="${escapeHtml(acct.label)}">${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
     $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
     // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm

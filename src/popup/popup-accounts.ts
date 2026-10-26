@@ -50,7 +50,7 @@ export async function renderAccts() {
     let actions = "";
     if (editing && acctEdit!.mode === "rename") {
       actions = `<span class="row acct-actions">
-          <input class="acct-rename-input" data-addr="${escapeHtml(addr)}" value="${escapeHtml(a.label)}" />
+          <input class="acct-rename-input" data-addr="${escapeHtml(addr)}" value="${escapeHtml(a.label)}" maxlength="40" />
           <button class="mini" data-save="${escapeHtml(addr)}">Save</button>
           <button class="mini" data-cancel="1">Cancel</button></span>`;
     } else if (editing && a.imported) {

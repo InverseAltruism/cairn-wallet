@@ -802,7 +802,8 @@
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--ui-space-2);
     color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-snug);
   }
-  .ap-signer b { color: var(--ui-ink-2); font-weight: 600; }
+  /* the label on one line (a label stored before the 40-character cap can be any length; the title holds it whole) */
+  .ap-signer b { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-ink-2); font-weight: 600; }
   .ap-signer code { overflow-wrap: anywhere; }
   .page-approve #view-req { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   /* One dense scale for the request: every element with weight sits above the buttons at the window's real size, for

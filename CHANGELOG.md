@@ -116,6 +116,9 @@
   a fee, and two clicks on them signed twice; each is now held until its outcome lands, and so is a sealed claim's
   Reveal (an off-chain publication of the sealed text, no fee). test/popup-confirm-snapshot-dom.test.mjs pins every
   case.
+- An account label is stored as at most 40 characters (new, renamed and imported accounts; the popup's label fields
+  take 40), and the approval window's "Signing as" line shows the label on one line with an ellipsis and the whole
+  label as its title, so a long label stored before the cap cannot push the window into scrolling.
 - A failed balance read no longer writes "unavailable" in the 40 px amount: with no earlier read, "Balance
   unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount
   stays, dimmed, with "Last balance read; the refresh failed." under it. The refresh button is

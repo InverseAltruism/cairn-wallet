@@ -169,10 +169,9 @@ function measure([expect, origin]) {
     if (label === "cost") return [document.getElementById("cost")];
     if (label.startsWith("#")) return [document.getElementById(label.slice(1))];
     if (label.startsWith("to:")) return [...reqEl.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === "To");
-    // the recipients #send-warn names (a look-alike line also names what it resembles, which is not a recipient), or,
-    // when the box only counts them, the recipient rows that carry a mark
     // the recipients the box names by head and tail (a look-alike line also names what it resembles, not a recipient)
     if (label.startsWith("named:")) return [...new Set([...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent))];
+    // the recipients flagged: the marked rows once a request has more than one recipient row, else the one the box names
     if (label.startsWith("warn:")) {
       const marked = [...new Set([...reqEl.querySelectorAll(".kv > div[data-to].flag")].map((r) => r.dataset.to))];
       return marked.length ? marked : [...new Set([...(document.getElementById("send-warn")?.querySelectorAll("code") ?? [])].filter((c) => !/resembles\s*$/.test(c.previousSibling?.textContent ?? "")).map((c) => c.textContent))];
@@ -453,6 +452,30 @@ try {
       const fx = await windowFixed(page);
       t.check(`row marks: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px)`, fx.ok);
       t.check(`row marks: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  // A label stored before the 40-character cap (core Wallet.label) can be any length: the signer line shows it on one
+  // line with an ellipsis and the whole label in its title, and the window still does not scroll, with the worst send
+  // from an origin long enough to wrap the header. RED-FIRST: drop the one-line rule on .ap-signer b and the window
+  // scrolls (the document grows past the window).
+  console.log("long label:");
+  for (const theme of ["light", "dark"]) {
+    const label = "word ".repeat(400).trim();
+    const r = req("ll", "send", LONG, sendTo([[LOOK, 100_000_000], [R2, 200_000_000], [R3, 300_000_000]], 600_000_000));
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, ...seen, status: { ...base.status, accounts: [{ addr: ME, label }] }, pending: [r] }, { viewport: { width: WIDTH, height: INNER_H }, colorScheme: theme });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      const m = await page.evaluate(measure, [["Possible address-poisoning", "cost"], r.origin]);
+      const b = await page.evaluate(() => { const el = document.querySelector("#ap-signer b"); const cs = getComputedStyle(el); return { lines: Math.round(el.getBoundingClientRect().height / parseFloat(cs.lineHeight)), title: el.title, text: el.textContent }; });
+      const fx = await windowFixed(page);
+      t.check(`${theme} long label: the label sits on one line, whole in its title (${b.lines} line, title ${b.title.length} characters)`, b.lines === 1 && b.title === label && b.text === label);
+      t.check(`${theme} long label: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px)`, fx.ok);
+      t.check(`${theme} long label: the cost and the warnings stay above the buttons (below, besides recipient rows: ${m.below.filter((w) => !/^row To /.test(w)).join(", ") || "none"})`, m.below.filter((w) => !/^row To /.test(w)).length === 0 && m.missing.length === 0);
+      t.check(`${theme} long label: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();
     }
