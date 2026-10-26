@@ -6,7 +6,7 @@ import { $, busy, msg, val } from "./popup-dom.js";
 import { balanceState, curAddr, reviewState } from "./popup-state.js";
 import { openPanel } from "./popup-panels.js";
 import { resolveRecipient, nameStillPointsTo, setNameRow, recipientChecks } from "./popup-recipient.js";
-import { CSD_FLOW, teardownReview, armReview, composeSendWarning, setWarn, sendThrew, sendRefused, sentOk } from "./popup-sendflow.js";
+import { CSD_FLOW, REVIEW_GONE, teardownReview, armReview, composeSendWarning, setWarn, sendThrew, sendRefused, sentOk } from "./popup-sendflow.js";
 
 $("btn-send-t").addEventListener("click", () => { openPanel("send-form"); updateSendEstimate(); });
 
@@ -65,24 +65,32 @@ $("btn-send").addEventListener("click", async () => {
   const short = !!b && Number(b.confirmed) - amt - SEND_FEE < 0;
   const warn = composeSendWarning(lookalike, firstTime, nameCheck(rr), CSD_FLOW.noun);
   setWarn($("c-warn") as HTMLElement, short ? [{ tier: "danger", html: escapeHtml(balanceShortNote("Go back")) }, ...warn] : warn);
-  ($("btn-send-confirm") as HTMLButtonElement).disabled = short;
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
   reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
-  armReview(CSD_FLOW);
+  armReview(CSD_FLOW, short);
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
+// Confirm signs the frozen review and nothing else: the click disarms Confirm before any await (one Confirm is one
+// signature), the call reads only the snapshot, and a review dropped or replaced during the name re-check (Back, a
+// sheet switch, a lock, an account switch, a new Review) sends nothing.
 $("btn-send-confirm").addEventListener("click", async () => {
-  if (!reviewState.reviewedSend || ($("btn-send-confirm") as HTMLButtonElement).disabled) return;
-  const { to, amt, name, verified, signer } = reviewState.reviewedSend;
+  const snap = reviewState.reviewedSend;
+  const btn = $("btn-send-confirm") as HTMLButtonElement;
+  if (!snap || btn.disabled) return;
+  btn.disabled = true;
+  const { to, amt, name, verified, signer } = snap;
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7); fail-closed to a re-review either way.
-  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err");
+  const stillPoints = !name || (await nameStillPointsTo(name, to, verified));
+  if (reviewState.reviewedSend !== snap) return msg(REVIEW_GONE, "err");
+  if (!stillPoints) { teardownReview(CSD_FLOW, false); return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
+  reviewState.reviewedSend = null;                   // consumed: a second click finds no review
   // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
   let r: any;
   try { busy("Sending…"); r = await call("send", to, amt, SEND_FEE, signer ?? undefined); }
   catch (e: any) { return sendThrew(CSD_FLOW, e); }   // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
-  if (r?.ok) sentOk(CSD_FLOW, "Sent " + fmtCsd(amt));
+  if (r?.ok) sentOk(CSD_FLOW, "Sent " + fmtCsd(amt), r.txid);
   else sendRefused(CSD_FLOW, r);                     // structured refusal: show the REAL reason (FOOT-3 teardown inside)
 });

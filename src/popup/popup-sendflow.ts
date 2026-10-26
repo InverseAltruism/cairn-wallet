@@ -18,11 +18,14 @@ import { openConsolidatePanel } from "./popup-coins.js";
 //   • snapshot shape: reviewState.reviewed (token, base-unit string) vs .reviewedSend (CSD, number).
 // Only the SUCCESS path clears the typed recipient/amount (fail/catch keep the draft for a re-Review);
 // Back clears nothing and never refreshes. `sent` is the sent toast's second line.
-type SendFlow = { ids: { confirm: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: string };
-export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
-  sent: "Waiting for inclusion in a block. The token balance updates once it is mined." };
-export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
-  sent: "Waiting for inclusion in a block." };
+type SendFlow = { ids: { confirm: string; button: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: (txid: string) => string };
+const pending = (txid: string) => `Transaction ${String(txid).slice(0, 12)}… is waiting for inclusion in a block.`;
+export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", button: "btn-tsend-confirm", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
+  sent: (txid) => `${pending(txid)} The token balance updates once it is mined.` };
+export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn-send-confirm", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
+  sent: pending };
+// A Confirm whose review was dropped (Back, a sheet switch, a lock, an account switch) or replaced while it waited.
+export const REVIEW_GONE = "The review was closed before it was signed. Nothing was sent.";
 // Hide the confirm card, drop every frozen snapshot, re-enable the inputs. Success alone clears the
 // typed values; every other exit (Back / fail / catch) keeps the draft.
 export function teardownReview(f: SendFlow, clearValues: boolean) {
@@ -31,10 +34,12 @@ export function teardownReview(f: SendFlow, clearValues: boolean) {
   for (const id of [f.ids.to, f.ids.amt]) { const el = $(id) as HTMLInputElement; el.disabled = false; if (clearValues) el.value = ""; }
 }
 // Arm the review: disable the inputs the snapshot was read from and show the confirm card (editing
-// the form after "Review" must not let displayed values diverge from signed ones).
-export function armReview(f: SendFlow) {
+// the form after "Review" must not let displayed values diverge from signed ones). Confirm is live unless `hold`
+// (a balance that does not cover the send); a Confirm click disarms it until the next review.
+export function armReview(f: SendFlow, hold = false) {
   ($(f.ids.to) as HTMLInputElement).disabled = true;
   ($(f.ids.amt) as HTMLInputElement).disabled = true;
+  ($(f.ids.button) as HTMLButtonElement).disabled = hold;
   ($(f.ids.confirm) as HTMLElement).hidden = false;
   msg("");
 }
@@ -86,13 +91,13 @@ export function sendRefused(f: SendFlow, r: any) {
   }
   msg(text, "err");
 }
-// Success: the one clear-the-draft path, then the sheet closes (only a confirmed submission closes it; a refusal or an
-// ambiguous outcome keeps the sheet and the draft, sendOutcome and sendRefused above), the sent toast shows, and the
-// balance settles in the hero once the closing sheet has cleared it.
-export function sentOk(f: SendFlow, text: string) {
+// Success: the sent toast with its txid first, then the one clear-the-draft path, then the sheet closes (only a confirmed
+// submission closes it; a refusal or an ambiguous outcome keeps the sheet and the draft, sendOutcome and sendRefused
+// above), and the balance settles in the hero once the closing sheet has cleared it.
+export function sentOk(f: SendFlow, text: string, txid: string) {
+  msg(text, "ok sent", f.sent(txid));   // the outcome first: nothing after it can leave "Sending…" on screen
   teardownReview(f, true);
   closeAllPanels(); syncNav();
-  msg(text, "ok sent", f.sent);
   const settleIn = tokenMs("--ui-dur-2") ?? 0;
   celebrateSend(settleIn);
   f.refresh(settleIn);

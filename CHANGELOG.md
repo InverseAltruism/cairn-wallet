@@ -93,11 +93,19 @@
   titled "Review send" (the token send's too), its button says "Confirm send" (was "Confirm & send"), the fee row is
   "Network fee" (was "Fee"), and the "Amount" caption over the amount is gone.
 - After a confirmed send the sheet closes, the sent toast shows at the bottom of the popup ("Sent 1.5 CSD", and under
-  it "Waiting for inclusion in a block."; a token send adds "The token balance updates once it is mined."; the toast
-  no longer prints the txid, which Activity lists), and the balance counts down in the view once the sheet has
-  cleared it. A refused or ambiguous send keeps the sheet, the draft and its copy as before. The send handlers read
+  it "Transaction 0x1234abcd56… is waiting for inclusion in a block."; a token send adds "The token balance updates
+  once it is mined."), and the balance counts down in the view once the sheet has cleared it. A refused or ambiguous send keeps the sheet, the draft and its copy as before. The send handlers read
   only the call's own outcome: a failure in the success path's display can no longer be reported as a submit
   outcome.
+- Fixed (present in 0.2.99): a popup Confirm signs the frozen review, once, and only while that review stands. A token
+  Confirm read the token and its decimals from the open sheet after the confirm-time name re-check, so closing the
+  review during that re-check and opening another token's send could sign the other token at the reviewed base-unit
+  amount; both sends kept Confirm armed while the submit was in flight, so two clicks sent twice; and Back during the
+  re-check still sent. Now the review carries every field the call signs (the token and its decimals too), Confirm is
+  disarmed on the first click before anything is awaited, and a review dropped or replaced while Confirm waited sends
+  nothing and says "The review was closed before it was signed. Nothing was sent." A name that re-points between
+  review and Confirm now also takes the review down (the draft stays), as every other failure does. The name action
+  already consumed its review on the first click; test/popup-confirm-snapshot-dom.test.mjs pins all three.
 - A failed balance read no longer writes "unavailable" in the 40 px amount: with no earlier read, "Balance
   unavailable. Refresh to try again." takes the amount's place at the caption size; over an earlier read, that amount
   stays, dimmed, with "Last balance read; the refresh failed." under it. The refresh button is

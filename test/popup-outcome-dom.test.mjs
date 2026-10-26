@@ -240,7 +240,7 @@ console.log("10. W-1: a confirmed send closes its sheet; a refused or ambiguous 
   const ok = await sendIn(() => ({ ok: true, txid: TXID }));
   t("10a a confirmed send closes the sheet, clears the draft and shows the sent toast with what happens next", () => {
     assert.equal(ok.open, false); assert.equal(ok.to, ""); assert.equal(ok.amt, "");
-    assert.match(ok.msg, /^Sent 1 CSD/); assert.match(ok.msg, /Waiting for inclusion in a block\./); assert.equal(ok.cls, "msg ok sent");
+    assert.match(ok.msg, /^Sent 1 CSD/); assert.ok(ok.msg.includes(`Transaction ${TXID.slice(0, 12)}… is waiting for inclusion in a block.`)); assert.equal(ok.cls, "msg ok sent");
   });
   const refused = await sendIn(() => ({ ok: false, code: "INSUFFICIENT", error: "insufficient confirmed balance" }));
   t("10b a refused send keeps the sheet open with the draft and its copy", () => {
@@ -261,8 +261,8 @@ console.log("10. W-1: a confirmed send closes its sheet; a refused or ambiguous 
   globalThis.getComputedStyle = () => { throw new Error("display failed"); };
   const shown = await sendIn(() => ({ ok: true, txid: TXID })).catch(() => ({ msg: text() }));
   globalThis.getComputedStyle = real;
-  t("10e a display throw after a confirmed send never reads as 'may already be in flight' or 'Nothing was sent'", () => {
-    assert.doesNotMatch(shown.msg, IN_FLIGHT); assert.doesNotMatch(shown.msg, /Nothing was sent/);
+  t("10e a display throw after a confirmed send shows 'Sent 1 CSD', never 'may already be in flight' or 'Nothing was sent'", () => {
+    assert.match(shown.msg, /^Sent 1 CSD/); assert.doesNotMatch(shown.msg, IN_FLIGHT); assert.doesNotMatch(shown.msg, /Nothing was sent/);
   });
 }
 

@@ -6,7 +6,7 @@ import { $, busy, msg, val } from "./popup-dom.js";
 import { curAddr, reviewState, type ViewBind, bindView, viewCurrent } from "./popup-state.js";
 import { dropStaleView, openPanel } from "./popup-panels.js";
 import { resolveRecipient, nameStillPointsTo, setNameRow, recipientChecks } from "./popup-recipient.js";
-import { TOKEN_FLOW, teardownReview, armReview, composeSendWarning, setWarn, sendThrew, sendRefused, sentOk } from "./popup-sendflow.js";
+import { TOKEN_FLOW, REVIEW_GONE, teardownReview, armReview, composeSendWarning, setWarn, sendThrew, sendRefused, sentOk } from "./popup-sendflow.js";
 
 // ── send a CairnX token: recipient + amount → review (ticker/amount/to/fee) → sign ──
 // The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
@@ -65,25 +65,34 @@ $("btn-tsend").addEventListener("click", async () => {
   // signer snapshot (A1/POPUP-SEND-RACE-2): the confirm's nameStillPointsTo await can park across an
   // account switch; expectSigner makes the background refuse at the sign tick instead of signing from
   // the switched-to account (the recipient stays correct but the WRONG account would pay).
-  reviewState.reviewed = { to, base, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
+  // The token and its decimals ride in the snapshot: the sheet's live `tsend` can be another token by the time Confirm signs.
+  reviewState.reviewed = { to, base, ticker: tsend.ticker, decimals: tsend.decimals, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
   armReview(TOKEN_FLOW);
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-tsend-back").addEventListener("click", () => teardownReview(TOKEN_FLOW, false));
+// Confirm signs the frozen review and nothing else (the CSD send's rule): disarmed before any await, every field of the
+// call from the snapshot, and a review dropped or replaced during the name re-check sends nothing.
 $("btn-tsend-confirm").addEventListener("click", async () => {
-  if (!tsend || !reviewState.reviewed) return;
-  const { to, base, name, verified, signer } = reviewState.reviewed;
+  const snap = reviewState.reviewed;
+  const btn = $("btn-tsend-confirm") as HTMLButtonElement;
+  if (!snap || btn.disabled) return;
+  btn.disabled = true;
+  const { to, base, ticker, decimals, name, verified, signer } = snap;
   // re-resolve the name at sign-time and refuse if it now points somewhere else (XREPO-1) or its
   // chain-verification regressed since review (L7).
-  if (name && !(await nameStillPointsTo(name, to, verified))) return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err");
+  const stillPoints = !name || (await nameStillPointsTo(name, to, verified));
+  if (reviewState.reviewed !== snap) return msg(REVIEW_GONE, "err");
+  if (!stillPoints) { teardownReview(TOKEN_FLOW, false); return msg(`${name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
+  reviewState.reviewed = null;                       // consumed: a second click finds no review
   // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
   let r: any;
   try {
     busy("Sending…");
-    r = await call("cairnxTransfer", { ticker: tsend.ticker, amount: base, to, decimals: tsend.decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
+    r = await call("cairnxTransfer", { ticker, amount: base, to, decimals, fee: CAIRNX_FEE, expectSigner: signer ?? undefined });
   } catch (e: any) {
     return sendThrew(TOKEN_FLOW, e);       // a wallet-answered throw submitted nothing; only a broken channel is ambiguous
   }
-  if (r?.ok) sentOk(TOKEN_FLOW, `Sent ${tokenAmountBothScales(base, tsend.decimals, tsend.ticker)}`); // W8: both scales here too
+  if (r?.ok) sentOk(TOKEN_FLOW, `Sent ${tokenAmountBothScales(base, decimals, ticker)}`, r.txid); // W8: both scales here too
   else sendRefused(TOKEN_FLOW, r);                  // structured refusal: show the REAL reason (token parity with the CSD path)
 });

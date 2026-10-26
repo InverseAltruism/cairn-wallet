@@ -262,7 +262,7 @@ try {
       s.review.title === "Review send" && s.review.confirm === "Confirm send" && s.review.labels.includes("Network fee") && !s.review.labels.includes("Amount") && !s.review.labels.includes("Fee") && s.review.estHidden);
     t.check(`${theme}: a confirmed send closes the sheet and the scrim (${s.sent.sheet}, scrim ${s.sent.scrim})`, s.sent.sheet === true && s.sent.scrim === "0");
     t.check(`${theme}: the sent toast sits at the bottom and says what happens next (${JSON.stringify({ cls: s.sent.cls, text: s.sent.text, bottom: s.sent.bottom })})`,
-      /\bsent\b/.test(s.sent.cls) && s.sent.bottom >= 0 && s.sent.bottom <= 16 && s.sent.top > 300 && /^Sent 1\.5 CSD/.test(s.sent.text) && /Waiting for inclusion in a block\./.test(s.sent.text));
+      /\bsent\b/.test(s.sent.cls) && s.sent.bottom >= 0 && s.sent.bottom <= 16 && s.sent.top > 300 && /^Sent 1\.5 CSD/.test(s.sent.text) && /Transaction 0xeeeeeeeeee… is waiting for inclusion in a block\./.test(s.sent.text));
     t.check(`${theme}: the balance counts down to the new amount in the hero (${s.sent.seen.length} values, ends ${s.sent.seen.at(-1)})`, s.sent.seen.length > 3 && s.sent.seen.at(-1) === "1,283.225CSD");
     t.check(`${theme}: send sheet: no page error (${s.errors.join(" | ") || "none"})`, s.errors.length === 0);
   }
