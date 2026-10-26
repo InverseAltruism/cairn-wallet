@@ -53,7 +53,7 @@ Source & verification: https://github.com/InverseAltruism/cairn-wallet
 **Screenshots**: `store/assets/screenshot-*.png` (1280×800). Provide 3–5.
 **Small promo tile**: `store/assets/promo-440x280.png`.
 **Marquee promo tile** (optional): `store/assets/marquee-1400x560.png`.
-**Store icon**: `public/icons/icon-128.png` (128×128) ✓ already in the package.
+**Store icon**: `public/icons/icon-128.png` (128×128, the Cairn mark on an ink tile, from `scripts/gen-icons.mjs`) ✓ already in the package. From 0.3.1 it replaces the green tile; upload it as the listing icon with that release.
 
 ---
 
