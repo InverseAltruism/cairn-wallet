@@ -7,9 +7,10 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launchOrSkip, openWalletPage } from "../test/helpers/walletpage.mjs";
-import { APPROVE_FRAME_PX, APPROVE_WINDOW } from "../src/approve-window.ts";
-// the approval window's page at its real size: the window less the frame the layout test allows for
-const APPROVE_PAGE = { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height - APPROVE_FRAME_PX };
+import { APPROVE_WINDOW } from "../src/approve-window.ts";
+// the approval window's page at the size the wallet opens it: Linux draws no frame inside those bounds (measured);
+// test/approve-layout-chrome.test.mjs measures the fold at the largest frame seen, the store shows the window as shipped
+const APPROVE_PAGE = { width: APPROVE_WINDOW.width, height: APPROVE_WINDOW.height };
 
 const ROOT = join(import.meta.dirname, "..");
 const OUT = join(ROOT, "store", "assets");
