@@ -145,7 +145,7 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
    - `release`, which needs the other two: it downloads the artifact, runs `sha256sum -c` on both zips, writes the SLSA attestation and runs the idempotent gh release create. Only `release` holds `contents: write`, `id-token: write` and `attestations: write`, and it checks nothing out and installs nothing, so tests and dev dependencies never run with the attestation token in reach (`test/release-workflow-permissions.test.mjs`).
    - release.yml also runs on pull requests that touch the table, scripts/update-spv-anchors.mjs or the vendored bundle; there only `anchors` runs, the publish jobs are gated to tag pushes. The table is regenerated per store/PUBLISH-RUNBOOK.md step 2. Both workflows default to `permissions: {}` with per-job grants and check out with `persist-credentials: false`.
 4. Chrome Web Store: manual, per store/PUBLISH-RUNBOOK.md (upload the local `cairn-wallet-store-X.Y.Z.zip` to the [Developer Dashboard](https://chrome.google.com/webstore/devconsole) after its sha256 matches the release, then the post-publish CRX check). Never automate it.
-5. The website's download links follow releases/latest automatically; the site updates its displayed wallet-version signal once the Chrome Web Store approves the new build.
+5. The website links the Chrome Web Store and releases/latest and restates no version or sha256 (cairn 0.5.43), so a release needs no site change.
 
 ## Contributor guidance (standing project rules)
 

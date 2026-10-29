@@ -113,8 +113,8 @@ name makes a stale local file self-evident.
    ```
    Any other difference means the store serves something that is not the attested build: follow "If a
    credential is suspected leaked" below.
-9. **Publish the version + sha256** (GitHub release + the website) so users can verify the build they installed
-   is the reviewed one.
+9. **Publish the version + sha256** on the GitHub release, so users can verify the build they installed is the
+   reviewed one. The website links the release and restates neither (cairn 0.5.43).
 
 ## If a credential is suspected leaked
 Immediately: unpublish/withdraw the listing, rotate the CWS account credentials + any API keys, audit recent
