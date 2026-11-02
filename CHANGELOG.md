@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A record whose 64 signature bytes are a valid compact signature that also reads as DER (the node accepts it) now
+  binds to its author in the name check and the fill checks; the bundled csd-crypto verifyDigest read such bytes as
+  DER first and refused them, so one crafted record could stop the open-lane fill check for every buyer (csd-crypto
+  0.1.21, vendored). The codec twin's own verifySig, which only tests called, is gone; the tests use the bundle's
+  verifyDigest. test/sig-vectors.test.mjs runs csd-vectors' signature vectors through every signature check.
+
 ## 0.3.1
 
 - README: the MIT licence covers the code, not the two logos the wallet draws (the Cairn mark and the CSD coin's logo)

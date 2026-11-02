@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { siwcDigest } from "../src/core/siwc.js";
-import { verifySig } from "../src/core/csdtx.js";
+import { verifyDigest } from "../src/vendor/cairnx-spv.js";
 
 const ORIGIN = "https://casino.example";
 const NONCE = "abc123def456";
@@ -28,7 +28,7 @@ console.log("  ok");
 console.log("(2) paired: statements up to 256 characters, and none at all, still sign");
 for (const statement of ["z".repeat(256), "Sign in to CSD Casino.", undefined]) {
   const r = await w.signInWithCsd({ nonce: NONCE, statement }, ORIGIN);
-  assert.ok(verifySig(r.sig64, r.pub33, siwcDigest(r.message)), "the credential verifies");
+  assert.ok(verifyDigest(r.sig64, r.pub33, siwcDigest(r.message)), "the credential verifies");
   if (statement) assert.ok(r.message.includes("\n\n" + statement + "\n\n"), "the full statement is signed, untruncated");
 }
 console.log("  ok");

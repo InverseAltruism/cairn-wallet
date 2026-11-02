@@ -1,0 +1,101 @@
+{
+  "note": "Copied from csd-sdk packages/vectors/src/signatures.ts (csd-vectors 0.1.17, SIG_VECTORS) at commit 541517ad9d043a33fa7229663328108b3e830f80 (branch p4/sdk2-cairnx); nodeAccepts is the node secp256k1 crate verify_sig verdict recorded there. Do not edit: regenerate from that package.",
+  "vectors": [
+    {
+      "name": "A1",
+      "tx": {
+        "version": 1,
+        "inputs": [
+          {
+            "prevTxid": "0xabababababababababababababababababababababababababababababababab",
+            "vout": 0,
+            "scriptSig": "0x40303e02147bf05397ac95dc9ab603c7896caf09c686c0b65b02263504e050e16252f13603d35a2051522a50f14f572a922ad0eedee26eb2398009eb62bcad669b21028eb8a2807c2905b0520fa36656def108b69ee5d20547d669130c18c4f1ee57d9"
+          }
+        ],
+        "outputs": [
+          {
+            "value": 25000000,
+            "scriptPubkey": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+          }
+        ],
+        "locktime": 0,
+        "app": {
+          "type": "Propose",
+          "domain": "cairnx:v1",
+          "payloadHash": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "uri": "u",
+          "expiresEpoch": 5000
+        }
+      },
+      "expectedSighash": "0x388d3773d75bede6c1f89ca79e3a593fd8556e3dd38a95a93a0c256e56f53338",
+      "sig64": "0x303e02147bf05397ac95dc9ab603c7896caf09c686c0b65b02263504e050e16252f13603d35a2051522a50f14f572a922ad0eedee26eb2398009eb62bcad669b",
+      "pub33": "0x028eb8a2807c2905b0520fa36656def108b69ee5d20547d669130c18c4f1ee57d9",
+      "owner": "0x8bf866f3335bdf3e0c9ef90742043686d86fdcad",
+      "nodeAccepts": true
+    },
+    {
+      "name": "A2",
+      "tx": {
+        "version": 1,
+        "inputs": [
+          {
+            "prevTxid": "0xabababababababababababababababababababababababababababababababab",
+            "vout": 0,
+            "scriptSig": "0x40303e0220210a5337f8df3171a6c06c7e5b78915f1c2e62ac732ed16ef081a25401da0a04021a079244ee8095b0ce396bd6b456148b6c7ad05fb7098c8cfd3b922102e12d0185bc0518bd203d50fe266085cbf12dea388f54a4f74ca7a064d9a67c79"
+          }
+        ],
+        "outputs": [
+          {
+            "value": 25000000,
+            "scriptPubkey": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+          }
+        ],
+        "locktime": 0,
+        "app": {
+          "type": "Propose",
+          "domain": "cairnx:v1",
+          "payloadHash": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "uri": "u",
+          "expiresEpoch": 5000
+        }
+      },
+      "expectedSighash": "0x388d3773d75bede6c1f89ca79e3a593fd8556e3dd38a95a93a0c256e56f53338",
+      "sig64": "0x303e0220210a5337f8df3171a6c06c7e5b78915f1c2e62ac732ed16ef081a25401da0a04021a079244ee8095b0ce396bd6b456148b6c7ad05fb7098c8cfd3b92",
+      "pub33": "0x02e12d0185bc0518bd203d50fe266085cbf12dea388f54a4f74ca7a064d9a67c79",
+      "owner": "0x611ee0b4575a026f20934e3412cd085e584daa35",
+      "nodeAccepts": true
+    },
+    {
+      "name": "B",
+      "tx": {
+        "version": 1,
+        "inputs": [
+          {
+            "prevTxid": "0xabababababababababababababababababababababababababababababababab",
+            "vout": 0,
+            "scriptSig": "0x40303e02202c0e65d00bb81ca65be239b50a9741b987c5c77078ae5e2910938df83a7f9d05021a1fdf47c2a27bf6607ebf8a6a7e5bf00c158f860bc35e1215ade22102962d3549a3b73677e8fe9831f24141b84948d116927b85a96b483cf8563993fa"
+          }
+        ],
+        "outputs": [
+          {
+            "value": 25000000,
+            "scriptPubkey": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+          }
+        ],
+        "locktime": 0,
+        "app": {
+          "type": "Propose",
+          "domain": "cairnx:v1",
+          "payloadHash": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "uri": "u",
+          "expiresEpoch": 5000
+        }
+      },
+      "expectedSighash": "0x388d3773d75bede6c1f89ca79e3a593fd8556e3dd38a95a93a0c256e56f53338",
+      "sig64": "0x303e02202c0e65d00bb81ca65be239b50a9741b987c5c77078ae5e2910938df83a7f9d05021a1fdf47c2a27bf6607ebf8a6a7e5bf00c158f860bc35e1215ade2",
+      "pub33": "0x02962d3549a3b73677e8fe9831f24141b84948d116927b85a96b483cf8563993fa",
+      "owner": "0x41d9c3cd30ea9e5567c003f5f9328786f3108012",
+      "nodeAccepts": false
+    }
+  ]
+}

@@ -288,7 +288,8 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // scriptSig (the txid strips it, so the merkle check still passes) to make a prior HOLD / CANCEL / consuming
   // FILL vanish from the replay -> a denied-fclaim / cancelled-offer false-accept -> BURN. Fail CLOSED here (the
   // wallet retries as VERIFY_UNAVAILABLE), mirroring namespv's fail-closed-on-unbindable. An honestly-mined tx
-  // always binds (L0 required the owner's valid signature to mine it), so an honest read never trips this. A
+  // binds: L0 mined it with the owner's compact low-S signature, and csd-crypto verifyDigest reads the 64 bytes the
+  // same way (test/sig-vectors.test.mjs), so an honest read does not trip this. A
   // genuinely-ADDED fake id (a lying resolver hint, absent from every block) is NOT here -- scannedIds holds
   // ONLY events THIS independent scan proved in a merkle-bound block, so it correctly cannot be a suppression.
   const scanned = [...scannedIds];

@@ -61,17 +61,12 @@ export function pubFromPriv(priv: string): string { return "0x" + bytesToHex(sec
 export function addrFromPriv(priv: string): string { return hash160(secp256k1.getPublicKey(hb(priv), true)); }
 export function addrFromPub(pub: string): string { return hash160(hb(pub)); }
 export function signSighash(sighashHex: string, priv: string): { sig64: string; pub33: string } {
-  // L11 (SIGLEN): enforce a 32-byte digest (parity with verifyDigest/verifySig's length checks). All callers
+  // L11 (SIGLEN): enforce a 32-byte digest (parity with csd-crypto verifyDigest's length check). All callers
   // already pass a 32-byte tx sighash / login / SIWC digest; this guarantees the signer can never be handed a
   // truncated or over-long value to sign over (a latent footgun if a future caller drifts).
   if (!/^0x[0-9a-fA-F]{64}$/.test(sighashHex)) throw new Error("sighash must be a 32-byte 0x-hex digest");
   const sig = secp256k1.sign(hb(sighashHex), hb(priv), { lowS: true });
   return { sig64: "0x" + bytesToHex(sig.toCompactRawBytes()), pub33: pubFromPriv(priv) };
-}
-export function verifySig(sig64: string, pub33: string, sighashHex: string): boolean {
-  const s = hb(sig64), p = hb(pub33);
-  if (s.length !== 64 || p.length !== 33) return false;
-  try { if (secp256k1.Signature.fromCompact(s).hasHighS()) return false; return secp256k1.verify(s, hb(sighashHex), p, { lowS: true }); } catch { return false; }
 }
 export function buildScriptSig(sig64: string, pub33: string): string { return "0x40" + strip(sig64) + "21" + strip(pub33); }
 export function bytesArr(hex: string): number[] { return Array.from(hb(hex)); }

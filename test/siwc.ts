@@ -3,7 +3,8 @@
 // round-trips, (3) the digest is disjoint from the tx sighash + legacy login digest, and
 // (4) wallet.signInWithCsd() binds the attested origin and enforces domain/uri/nonce.
 import { buildSiwcMessage, siwcDigest, CSD_CHAIN_MAINNET, originToDomain, type SiwcFields } from "../src/core/siwc.js";
-import { signSighash, verifySig, loginDigest, serialize, sighash as txSighash, type Tx } from "../src/core/csdtx.js";
+import { signSighash, loginDigest, serialize, sighash as txSighash, type Tx } from "../src/core/csdtx.js";
+import { verifyDigest } from "../src/vendor/cairnx-spv.js";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { describe, costBlock, debitOf } from "../src/popup/clearsign.js";
@@ -39,7 +40,7 @@ async function main() {
   console.log("=== sign / verify + digest domain-separation ===");
   const PRIV = "0x" + "42".repeat(32);
   const { sig64, pub33 } = signSighash(siwcDigest(PIN_MSG), PRIV);
-  check("a wallet-signed SIWC digest verifies", verifySig(sig64, pub33, siwcDigest(PIN_MSG)));
+  check("a wallet-signed SIWC digest verifies", verifyDigest(sig64, pub33, siwcDigest(PIN_MSG)));
   const txStyle = "0x" + bytesToHex(sha256d(taggedHash("CSD_SIG_V1", utf8ToBytes(PIN_MSG))));
   check("SIWC digest != tx-sighash-tag digest over the same bytes", siwcDigest(PIN_MSG) !== txStyle);
   check("SIWC digest != legacy login digest", siwcDigest(PIN_MSG) !== loginDigest(PIN_FIELDS.nonce));
@@ -54,7 +55,7 @@ async function main() {
   const addr = (await w.status()).addr!;
   const r = await w.signInWithCsd({ nonce: "abc123def456", statement: "Sign in to CSD Casino." }, "https://casino.example");
   check("returns the active account", r.account === addr);
-  check("signature verifies over the returned message digest", verifySig(r.sig64, r.pub33, siwcDigest(r.message)));
+  check("signature verifies over the returned message digest", verifyDigest(r.sig64, r.pub33, siwcDigest(r.message)));
   check("message binds the requesting site's domain (from origin)", r.message.startsWith("casino.example wants you to sign in with your Compute Substrate account:\n"));
   check("message carries the server nonce + mainnet chain id", r.message.includes("\nNonce: abc123def456\n") && r.message.includes("\nChain ID: " + PIN_CHAIN + "\n"));
   check("default uri is the origin root", r.message.includes("\nURI: https://casino.example/\n"));
