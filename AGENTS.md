@@ -113,7 +113,7 @@ Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runt
 - Build tripwires are load-bearing; adding a fetch host requires manifest CSP and host_permissions or the build fails.
 - Privileged methods (export, mnemonic, account management, settings, reset, consolidate) are popup-only, refused on the dApp channel even if approved. `reset` exists only as a background method; no screen offers it.
 - export/exportMnemonic deliberately work while locked (password-gated direct vault decrypt); correct behaviour, do not "fix".
-- Offer fills: every lane merkle-proves the offer and binds the served terms to it before signing; the remaining resolver trust (give-backing, the running state of a partial offer on the offer-id lanes) and the second-source reads with their gaps are in `docs/DESIGN-fill-lanes.md`. Name sends stay on trustless SPV (`namespv`).
+- Offer fills: every lane merkle-proves the offer and binds the served terms to it before signing; the remaining resolver trust (give-backing, the completeness of a partial offer's fill list on the offer-id lane) and the second-source reads with their gaps are in `docs/DESIGN-fill-lanes.md`. Name sends stay on trustless SPV (`namespv`).
 - Known accepted residuals: tx history and labels in chrome.storage.local are not additionally encrypted (sealed-claim preimages are vault-key-encrypted at rest, pinned by test/seal-encrypt.test.mjs; an OS-level compromise of the browser profile can read the remaining history, local-disk privacy only, never key material); PBKDF2-600k, with Argon2id on the roadmap; keys are hot in the service worker while unlocked (hardware-wallet support is on the roadmap); no external professional audit yet.
 
 ## Runtime footprint

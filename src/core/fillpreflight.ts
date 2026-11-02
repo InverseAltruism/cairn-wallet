@@ -2,10 +2,10 @@
 // token-fill confidence). It reads the offer and the chain through the wallet (FillPreflightIo) and returns a
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
-import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
+import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
-import type { MintedProvenOfferTerms } from "./fillspv.js";
+import type { MintedProvenOfferTerms, OfferProgress } from "./fillspv.js";
 import { refuse } from "./refuse.js";
 import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { CLARVIS_TRADE_API } from "./endpoints.js";
@@ -79,7 +79,7 @@ export type FillNotes = { secondSource?: "pending" | "failed" };
 // What the SPV seams return to the fill preflight: the fclaim lane's proof source with the computed cap
 // over-count, the proven terms and whether the tip was floor-clamped; the legacy lane's proven offer author.
 export type FillSpvIoExt = FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms; tipFloored?: boolean };
-export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number };
+export type ProvenOfferPayto = { payto: string; seller: string; terms: MintedProvenOfferTerms; expiresEpoch: number; height: number; progress?: OfferProgress };
 // The proven offer Propose is not an offer the resolver admits; `refused` is cairnx-core provenOfferRefusal's reason.
 export type ProvenOfferRefused = { refused: string };
 // The reads the fill preflight makes through the wallet: the CairnX read API, the node tip and its PoW-backed
@@ -88,7 +88,10 @@ export interface FillPreflightIo {
   tradeGet(path: string): Promise<Response>;
   tip(): Promise<number | null>;
   tipFloor(): Promise<number>;
-  makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
+  /** With `fills`, also the running state those listed fills prove (`progress`). */
+  makeProvenOfferPayto(offerId: string, offerHeight: number, fills?: readonly { txid: string; height: number }[]): Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
+  /** The txids of `me`'s own fills of `offerId` recorded in the last OWN_FILL_INDEX_WAIT_MS (local history, no read). */
+  recentOwnFills(offerId: string, me: string): Promise<string[]>;
   makeFillSpvIo(offerId: string, fclaimTxid: string, me: string, offerHeight: number): Promise<FillSpvIoExt>;
 }
 
@@ -199,7 +202,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
       return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     const verdict = fillIsSafe(offer, me, pay, tip);
     if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
-    return isCsdWant ? await csdLanePreflight(wallet, offer, sums, payto, pay, tip) : await tokenLanePreflight(wallet, offer, sums, tip, reviewedQuote);
+    return isCsdWant ? await csdLanePreflight(wallet, offer, sums, payto, pay, tip, me) : await tokenLanePreflight(wallet, offer, sums, tip, reviewedQuote);
   } else if (fetchFailed) {
     // GENUINE unreachability (5xx / timeout; NOT a 404). We cannot tell the lane without the offer, and
     // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
@@ -218,21 +221,24 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
 }
 
 // The offer-id CSD lane (the legacy and dApp fill, no SPV scan): the served payto, seller and fee terms are bound
-// to the merkle-proven offer, then every leg of the resolver's need-map must be paid.
+// to the merkle-proven offer, then every leg of the resolver's need-map must be paid. A partial offer is sized against
+// the running state its listed fills prove, and its legs must be paid exactly.
 // The resolver's value gate is a per-address SUM need-map (whole fill: payto ≥ want, TREASURY ≥
 // fee, seller ≥ rebate, SUMMED when recipients coincide; partial: clamped pay + fee). A fill that
 // underpays any leg is rejected on-chain AFTER the payment moved (the pay-without-delivery burn
 // class). The map itself is the VENDORED requiredFillOutputs (cairnx-core 0.1.35); the same
 // resolver-locked function the cairnx service and the trade UI size fills with; until 2026-07-06
 // this block hand-mirrored it. Pure local math over data already in hand; no added I/O.
-async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums: Map<string, bigint>, payto: string, pay: bigint, tip: number): Promise<FillRefusal | null> {
+async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums: Map<string, bigint>, payto: string, pay: bigint, tip: number, me: string): Promise<FillRefusal | null> {
   // F2-legacy: this SPV-less LEGACY / dApp lane (window.cairn.fillOffer, no swapguard in the loop) sizes the
   // payment against the resolver-served want.payto and the rebate against the served seller, so a lying read-
   // path redirects the payment (theft) or mis-sizes the rebate so resolve() rejects the fill (burn). Bind both
   // to the MERKLE-PROVEN offer author (prevout-owner, txid-committed). Fail CLOSED-RETRYABLE on an unprovable /
   // transient read (never a hard decline on an honest fill), FILL_UNSAFE on a proven mismatch. Honest offers
   // default payto/seller to the author, so no honest fill declines.
-  const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height));
+  const partial = offer.min !== undefined;
+  const listed = partial ? (Array.isArray(offer.fills) ? offer.fills : []).map((f) => ({ txid: String(f?.txid ?? ""), height: Number(f?.height) })) : undefined;
+  const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height), listed);
   if (proven && "refused" in proven) return offerNotAdmitted(proven.refused);
   if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
     return { ok: false, error: "couldn't prove this offer's on-chain payment recipient yet; try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
@@ -250,12 +256,34 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
   // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer (same as the fclaim lane).
   if (provenTermsMismatch(offer, proven.terms))
     return { ok: false, error: "refusing to sign: the offer's fee/rebate terms do not match its on-chain record (a lying resolver could under-size the fee, and the chain would reject the fill after your payment moved)", sighashMatch: false, code: "FILL_UNSAFE" };
-  const need = requiredFillOutputs(offer, pay);
+  // A partial offer's `paid` and `delivered` decide how much of a payment the resolver applies; it clamps a payment past
+  // what is left and keeps the surplus. Only the taker fills a taker-bound offer, so a fill the service has not
+  // indexed yet is this account's own: one recorded here and missing from the list refuses retryably. The listed fills
+  // are proven (makeProvenOfferPayto's progress) and the fill is sized against what they give.
+  let sized: OfferState = offer;
+  if (partial) {
+    const listedIds = new Set((listed ?? []).map((f) => f.txid.toLowerCase()));
+    const unindexed = (await wallet.recentOwnFills(String(offer.id), me)).find((t) => !listedIds.has(t));
+    if (unindexed)
+      return refuse("VERIFY_UNAVAILABLE", `refusing to sign for now: your earlier fill of this offer (${unindexed.slice(0, 12)}…) is not indexed by the offer service yet, so the amount it lists as left may be too high and the surplus would go to the seller; try again in a minute or two`);
+    const progress = proven.progress;
+    if (!progress) return refuse("VERIFY_UNAVAILABLE", "couldn't prove this offer's earlier fills yet; try again in a moment");
+    if ("unproven" in progress)
+      return refuse("FILL_UNSAFE", `refusing to sign: the offer service's fill list for this offer does not match the chain (${progress.unproven}), so the amount left cannot be trusted`);
+    if (progress.paid !== String(offer.paid ?? "0") || progress.delivered !== String(offer.delivered ?? "0"))
+      return refuse("FILL_UNSAFE", "refusing to sign: the amount this offer has left, as the offer service lists it, does not match its proven fills; the resolver would clamp the payment and keep the surplus");
+    sized = { ...offer, paid: progress.paid, delivered: progress.delivered };
+  }
+  const need = requiredFillOutputs(sized, pay);
   if (need === null)
-    return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
-  for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
+    return { ok: false, error: "refusing to sign: this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
+  for (const { to, value } of need) {
+    const got = sums.get(to) ?? 0n;
     const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
-    return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
+    if (got < value)
+      return { ok: false, error: `refusing to sign: the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
+    if (partial && got > value)
+      return refuse("FILL_UNSAFE", `refusing to sign: the ${what} is more than this offer has left (the resolver takes ${fmtCsd(value)}) and the resolver would keep the surplus. Rebuild the fill for the amount left.`);
   }
   // a positively-parsed OPEN offer that cleared every check above → proceed to sign
   return null;

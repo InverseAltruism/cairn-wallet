@@ -22,7 +22,7 @@ import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNo
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
-import { TxHistory, histKey } from "./history.js";
+import { TxHistory, histKey, OWN_FILL_INDEX_WAIT_MS } from "./history.js";
 import { SealedClaims, sealKey } from "./claims.js";
 import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
 import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, type CairnxViewIo } from "./cairnxview.js";
@@ -643,7 +643,8 @@ export class Wallet {
     tradeGet: (path) => this.tradeGet(path),
     tip: () => this.tip(),
     tipFloor: () => this.tipFloor(),
-    makeProvenOfferPayto: (offerId, offerHeight) => this.makeProvenOfferPayto(offerId, offerHeight),
+    makeProvenOfferPayto: (offerId, offerHeight, fills) => this.makeProvenOfferPayto(offerId, offerHeight, fills),
+    recentOwnFills: (offerId, me) => this.hist.recentFillsOf(me, offerId, Date.now() - OWN_FILL_INDEX_WAIT_MS),
     makeFillSpvIo: (offerId, fclaimTxid, me, offerHeight) => this.makeFillSpvIo(offerId, fclaimTxid, me, offerHeight),
   };
   private fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
@@ -676,13 +677,13 @@ export class Wallet {
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
-  provenPaytoForTest?: (offerId: string, offerHeight: number) => (ProvenOfferPayto | ProvenOfferRefused | null) | Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
-  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | ProvenOfferRefused | null> {
-    if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
+  provenPaytoForTest?: (offerId: string, offerHeight: number, fills?: readonly { txid: string; height: number }[]) => (ProvenOfferPayto | ProvenOfferRefused | null) | Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number, fills?: readonly { txid: string; height: number }[]): Promise<ProvenOfferPayto | ProvenOfferRefused | null> {
+    if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight, fills);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({
       ...this.spvOpts(),
-      offerId, offerHeight, spvSource: await this.spvSource(),
+      offerId, offerHeight, fills, spvSource: await this.spvSource(),
     });
   }
 

@@ -69,6 +69,17 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   refuses).
 - The fee, rebate, value, taker, bid and `min` fields are bound with the same `bindOfferTerms` call as the fclaim lane.
 - Every leg of the vendored `requiredFillOutputs` need-map must be paid by the outputs, compared in `bigint`.
+- A partial offer (one with `min`) is sized against a running state the wallet proves, not the served `paid` and
+  `delivered`: `provenOfferPayto` also merkle-proves each fill the offer service lists, at its listed height, binds
+  each to the coin its signer spent, and replays them through the vendored `resolve()` over the proven offer (with the
+  synthesized give-backing). A listed fill that is not this offer's mined, bound fill refuses with `FILL_UNSAFE`, as
+  does a served `paid` or `delivered` that differs from the proven one. Every need-map leg must then be paid exactly:
+  a payment past what is left refuses, because the resolver clamps it and keeps the surplus. Only the taker fills a
+  taker-bound offer, so a fill the service has not indexed yet is the buyer's own: a fill of the offer in this
+  account's history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) that the service does not list refuses with
+  the retryable `VERIFY_UNAVAILABLE` (the owner's ruling of 2026-11-02: a short retryable refusal over an
+  unrecoverable overpayment). Cost: the first fill of an offer reads nothing more; the k-th reads the blocks of the
+  k-1 listed fills, in parallel (test/fill-offer-progress.test.mjs, test/fill-taker-partial.test.mjs).
 - Offer expiry (both offer-id lanes), strand avoidance: the node refuses an attest after its proposal's expiry
   epoch, in mempool admission and in block apply, so a fill that is not mined by the offer's last live block (the
   vendored `offerExpiryHeightOf` minus one) sits unconfirmed and is dropped; no payment moves. For offers anchored at
@@ -104,8 +115,10 @@ The fill is an Attest with no CSD outputs (`attest` with `CONF_TOKEN_FILL` rerou
 
 - The offer's give-backing (a token's deploy and mint, a name's ownership) is synthesized from the proven offer record
   and never affects the grant, denial, holder or cancel verdict.
-- On the offer-id lanes the running state of a partial offer (`paid`, `delivered`) is served by the resolver: the
-  creation-block proof cannot bind it. A full fill-replay proof on those lanes is not built.
+- On the offer-id CSD lane the completeness of a partial offer's served fill list: a listed fill is proven, but an
+  unlisted one is seen only when it is this account's own and recent (the 30-minute history check). Past that window,
+  or for a fill made from another device, a resolver that withholds the taker's earlier fill can still have the
+  wallet sign a payment the resolver clamps (host-only: an honest resolver lists every fill it has indexed).
 - On the offer-id lanes the offer's open status is served by the resolver too: these lanes run no block scan and no
   second-source read, and only the expiry is checked against the proven record. A stale "open" (an offer already
   filled or cancelled) would sign a fill that L0 mines and resolve() rejects, so the payment moves without delivery.

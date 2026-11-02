@@ -42,6 +42,14 @@
 - Switching accounts clears the primary-name line at once, so the previous account's name no longer sits over the new
   address until the new account's names load; the Receive card takes its name line from the same place, so it
   follows the switch too, open or not (test/popup-stale-switch-dom.test.mjs).
+- A partial fill of a taker-bound offer (the offer-id lane) is sized against the offer's running state as its listed
+  fills prove it on chain, and must pay exactly what is left: the wallet signed a payment sized from the offer
+  service's `paid`, and when that lagged its own earlier fill the resolver clamped the payment and kept the surplus
+  (30,450,000 base units in the reviewers' case). A fill of the offer in this account's history from the last 30
+  minutes that the service does not list yet refuses with the retryable `VERIFY_UNAVAILABLE` ("not indexed by the
+  offer service yet ... try again in a minute or two"); a fill list that does not prove, or a served amount left that
+  differs from the proven one, refuses with `FILL_UNSAFE`. The first fill of an offer reads nothing more; each later
+  one reads the blocks of the earlier listed fills (test/fill-taker-partial.test.mjs, test/fill-offer-progress.test.mjs).
 
 ## 0.3.1
 

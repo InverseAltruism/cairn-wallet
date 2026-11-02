@@ -6,6 +6,10 @@ import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, IN
 
 // Per-account storage namespaces; keep each account's activity + secrets separate.
 export const histKey = (addr: string) => "txHistory:" + addr;
+// How long an account's own fill of an offer, recorded here, counts as possibly not indexed by the offer service yet
+// (recentFillsOf). The service reads a block within a minute of it being mined; past this an unlisted fill no longer
+// refuses the next one, so a fill that never landed cannot block the offer for good.
+export const OWN_FILL_INDEX_WAIT_MS = 30 * 60_000;
 // A merge whose output is not yet seen and that is not known to be gone.
 const isMergeCandidate = (x: any): boolean => x?.type === "consolidate" && !x.confirmed && !x.gone;
 // A row pendingMerge still evaluates; `gone` stays here so a later reading can undo it.
@@ -150,7 +154,10 @@ export class TxHistory {
   }
   history(): Promise<any[]> {
     if (!this.w.unlocked()) return Promise.resolve([]);
-    const k = histKey(this.w.addr());
+    return this.historyOf(this.w.addr());
+  }
+  private historyOf(addr: string): Promise<any[]> {
+    const k = histKey(addr);
     return this.store.get(k).then((h: any[]) => {
       const stored = h || [];
       const parked = this.pendingHist
@@ -158,6 +165,13 @@ export class TxHistory {
         .map((p) => p.entry);
       return parked.length ? [...parked, ...stored] : stored;
     });
+  }
+  /** The txids (lowercase) of `addr`'s fills of `offerId` recorded at or after `since` (ms) and not known to be gone. */
+  async recentFillsOf(addr: string, offerId: string, since: number): Promise<string[]> {
+    const id = String(offerId).toLowerCase();
+    const rows = await this.historyOf(addr);
+    return rows.filter((e: any) => e?.type === "fillOffer" && String(e.target ?? "").toLowerCase() === id && Number(e.ts) >= since && !e.gone)
+      .map((e: any) => String(e.txid).toLowerCase());
   }
 
   // Pending-merge line and inclusion reconcile (popup-only; test/inclusion-chain.test.mjs). Each open row is
