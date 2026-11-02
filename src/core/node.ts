@@ -891,7 +891,7 @@ export async function fillOffer(
   if (!("sumOut" in chk)) return chk;
   if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
-  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs — add a payment or leave change");
+  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs: add a payment or leave change");
 }
 
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:
