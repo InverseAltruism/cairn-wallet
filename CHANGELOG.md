@@ -73,6 +73,9 @@
 - The package carries `THIRD-PARTY-LICENSES.txt` with the MIT notices of the code it bundles (@noble/curves,
   @noble/hashes, @scure/base, @scure/bip32, @scure/bip39 and the vendored QR generator), which the build used to drop
   (test/third-party-notices.test.mjs).
+- README no longer says you "never have to trust the binary": the release sha256 covers the load-unpacked zip, and a
+  store install is checked by comparing the CRX the store serves (store/PUBLISH-RUNBOOK.md step 8); the attestation
+  line names gh 2.49 or later and pins the release workflow and tag. SECURITY.md points at runbook step 8, not 7.
 
 ## 0.3.1
 

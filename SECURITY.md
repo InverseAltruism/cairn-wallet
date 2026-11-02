@@ -230,7 +230,7 @@ What exists instead: the CWS upload is a **manual step, deliberately off CI** (a
 exactly what supply-chain worms scrape), behind hardware-2FA; the uploaded zip must have the same sha256 as
 the zip CI built and attested from the tag; and after publication the CRX the store serves is downloaded
 and compared with that attested zip. Anyone can run that comparison for the version the store serves
-(step 7 of the runbook). The full procedure is in `store/PUBLISH-RUNBOOK.md`.
+(step 8 of the runbook). The full procedure is in `store/PUBLISH-RUNBOOK.md`.
 
 ## Verification
 

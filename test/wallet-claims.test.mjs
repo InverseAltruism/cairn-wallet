@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { checker } from "./helpers/check.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
-const BANNED = /\batomic(ally)?\b|delivery[- ]versus[- ]payment|\bDvP\b|\btrustless(ly)?\b|\bguarantee[ds]?\b|\brisk[- ]free\b/i;
+const BANNED = /\batomic(ally)?\b|delivery[- ]versus[- ]payment|\bDvP\b|\btrustless(ly)?\b|\bguarantee[ds]?\b|\brisk[- ]free\b|never have to trust/i;
 // Text that uses a word of the class to say less, not more.
 const ALLOWED = [/a weaker guarantee/];
 const t = checker("wallet claims");
