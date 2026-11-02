@@ -10,6 +10,11 @@
 - The fclaim scan window's hold span and the offer-id lanes' "too late to be mined" rule come from the bundled
   cairnx-core (`FCLAIM_MAX_HOLD_SPAN`, `offerFillTooLate`) instead of local copies; the values are unchanged
   (test/fill-bounds-vendored.test.mjs).
+- A `.csd` name's two-source check replays only the records of that name. A name source that added the owner's
+  real reservations of other names, without their finalizes, made the owner's own registration fail the resolver's
+  per-address reservation limit, so a later rival registration was shown as chain-backed (with a "sources disagree"
+  warning) and was the send target. Honest sources serve no such records (none dropped over 172 names at tip
+  130,077), so an honest name verifies as before (test/namespv-union-scope.test.mjs).
 
 ## 0.3.1
 

@@ -317,7 +317,11 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 
 - After the header checks: a full-block merkle bind, signer auth and the prevout-ownership bind, then the two-source
   union (`verifyNameUnion`: primary and clarvis, union by txid, every event SPV-proven, the audited resolver replayed
-  over the proven union).
+  over the proven union minus every record about another name, `nameScopedEvents`). Another name's records reach this
+  name's replay only through the resolver's per-address limits (a reveal is refused while its proposer holds
+  MAX_PENDING_REG other reservations), and an honest source serves none of them (0 dropped over the 606 hints cairnx
+  959fa25's selector serves for the 172 names of the 130,077 capture); when they decide a name, the honest source's
+  `scopedReplaySufficient: false` refuses it (test/namespv-union-scope.test.mjs).
 - A green badge needs a successful replay. A disagreeing source is a warning, not a refusal: the send goes to the
   proven winner with `disagree` or `soleSource` set. When nothing can be proven, `resolveName` returns the served
   address with `verified: false` and the popup lets the user send after a caution.

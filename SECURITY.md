@@ -113,14 +113,19 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   to re-attribute a name's owner;
 * it fetches name history from **two sources**, the configured CairnX API (default
   `https://cairn-substrate.com/trade/api`) and `https://clarvis.cairn-substrate.com/trade/api`, unions the
-  records, and **re-runs the audited CairnX resolver** over only the merkle-verified ones. The send target is
-  the address that replay proves, not an address a service states. A service that claims an address it has
-  no signed, mined records for does not change where the funds go.
+  records, and **re-runs the audited CairnX resolver** over the merkle-verified records of that name alone. The
+  send target is the address that replay proves, not an address a service states. A service that claims an
+  address it has no signed, mined records for does not change where the funds go.
 
 The two default sources are run by **one operator under one registrable domain** (`cairn-substrate.com`).
-They are not independent. The union covers one source being stale, lagging or broken; it does not cover
-that operator hiding a later transfer or a competing claim from both. The wallet's own badge says the name
-servers share one operator.
+They are not independent. The union covers one source being stale, lagging, broken or hostile while the other
+answers honestly: a source can add only real, signed, mined records, and a record about another name is dropped
+before the replay. (Before wallet 0.3.2 it was replayed too, and a source that added the owner's reservations of
+other names without their finalizes could make the owner's own registration fail the resolver's per-address
+reservation limit, so a later rival registration was shown as the owner with a "sources disagree" warning.) When
+records about other names do decide a name, the resolver says so (`scopedReplaySufficient: false`) and the wallet
+shows the name as not chain-verified. The union does not cover that operator hiding a later transfer or a
+competing claim from both. The wallet's own badge says the name servers share one operator.
 
 **What happens when the sources disagree.** There is no hard refusal on a disagreeing source. The wallet
 warns and lets you decide:

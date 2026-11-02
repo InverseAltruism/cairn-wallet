@@ -32,7 +32,7 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason; never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader } from "../vendor/cairnx-spv.js";
+import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, parseRecord, isNameGive, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type CairnXRecord } from "../vendor/cairnx-spv.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
@@ -174,6 +174,33 @@ type Replay =
 // (H3), so an unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a
 // handful of records; 256 is far above any honest history and bounds a hostile source's fetch amplification.
 const MAX_HINTS = 256;
+
+// The .csd name a cairnx record is about; null for a record about no name (a commit, a token record, a bare or
+// ticker ocancel, an fclaim).
+function recordName(rec: CairnXRecord): string | null {
+  switch (rec.t) {
+    case "name": case "nfinalize": case "nxfer": case "nset": case "nrenew": case "nprofile": return rec.name;
+    case "ocancel": return rec.name ?? null;
+    case "offer": return isNameGive(rec.give) ? rec.give.name : null;
+    case "bid": return "name" in rec.want ? rec.want.name : null;
+    default: return null;
+  }
+}
+
+/** A name's replay set: the proven events minus every Propose whose record is about a different name. Those reach
+ *  this name's replay only through the resolver's per-address limits (a reveal is refused while its proposer holds
+ *  MAX_PENDING_REG other reservations), so a source adding the owner's other reveals without their finalizes could
+ *  make the owner's own reveal refuse and a later rival win. An honest source serves none of them. When state outside
+ *  the name does decide it, the honest source says so (scopedReplaySufficient false) and verifyNameUnion refuses. */
+export function nameScopedEvents(name: string, events: ChainEvent[]): ChainEvent[] {
+  return events.filter((ev) => {
+    if (ev.kind !== "propose") return true;
+    const rec = parseRecord(ev.uri, ev.payloadHash);
+    const about = rec ? recordName(rec) : null;
+    return about === null || about === name;
+  });
+}
+
 async function replayName(name: string, hints: NameHint[], src: SpvSource): Promise<Replay> {
   if (!Array.isArray(hints) || hints.length === 0) return { ok: false, reason: "no on-chain records were offered for this name" };
   if (hints.length > MAX_HINTS) return { ok: false, reason: `too many record hints for one name (>${MAX_HINTS}) — refusing` };
@@ -214,9 +241,10 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
       events.push(ev);
     }
   }
-  // Replay the AUDITED resolver over ONLY the verified events. `lapseTip` (≥ the node-reported chain tip,
-  // monotonic-floored) drives the lease-lapse epoch fail-closed.
-  const state = resolve(events, lapseTip);
+  // Replay the AUDITED resolver over ONLY the verified events of this name. `lapseTip` (≥ the node-reported chain
+  // tip, monotonic-floored) drives the lease-lapse epoch fail-closed.
+  const scoped = nameScopedEvents(name, events);
+  const state = resolve(scoped, lapseTip);
   const rec = state.names[name];
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
   if (rec.expired) {
@@ -226,7 +254,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     // is confident. If it is expired ONLY at the current (claimed) nodeTip, the caller degrades it to caution
     // unless a second source corroborates; so an inflated fresh-install tip can't assert a false lapse.
     const floor = Number.isFinite(floorTip as number) ? Number(floorTip) : 0;
-    const floorCorroborated = floor > 0 && resolve(events, floor).names[name]?.expired === true;
+    const floorCorroborated = floor > 0 && resolve(scoped, floor).names[name]?.expired === true;
     return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
   }
   // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized:
@@ -261,11 +289,12 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
 /**
  * NSPV-COMPLETE-1 cure (doc 36 Part B): verify `name → addr` against ≥2 name-history sources
  * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com, which share one operator). Each source's hints are fetched, UNIONed by
- * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and replayed by the
- * audited resolver to the true winner. Because every unioned event is SPV-authenticated, a source can only
- * ADD real events (filling another's omission); never fabricate; so the union defeats a WITHHOLDING
- * resolver as long as ONE source is honest (an attacker must make BOTH hosts withhold the SAME event, which
- * their common operator, or whoever controls both, can). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
+ * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and the name's own records
+ * (nameScopedEvents) are replayed by the audited resolver. Every unioned event is SPV-authenticated, so a source can
+ * only ADD real events, never fabricate; and since a real record of another name is dropped before the replay, an
+ * added record can only fill another source's omission. So the union defeats a WITHHOLDING resolver as long as ONE
+ * source is honest (an attacker must make BOTH hosts withhold the SAME event, which their common operator, or
+ * whoever controls both, can). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
  * it is flagged. Fail-soft: 1 usable source → single-source (caution); ≥2 agree → strong; a disagreement is
  * flagged but the send still goes to the proven winner (the disagreeing source was lying/stale, not trusted).
  */

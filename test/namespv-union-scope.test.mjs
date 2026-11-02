@@ -1,0 +1,93 @@
+// The two-source name union replays only the records of the name itself. Every unioned record is merkle-proven and
+// signer-bound, so a source can only add real records, but a real record of ANOTHER name can still move this
+// name's replay: the resolver refuses a reveal while its proposer holds MAX_PENDING_REG other reservations, so a
+// source that adds the owner's other reveals and withholds their finalizes makes the owner's own reveal refuse and a
+// later rival registration win. Real signed txs in synthetic PoW-verified blocks (test/_spvrig.ts), the production
+// verifyNameUnion and the vendored resolver.
+// Run: npx tsx test/namespv-union-scope.test.mjs   (offline)
+import { checker } from "./helpers/check.mjs";
+import { verifyNameUnion } from "../src/core/namespv.js";
+import { toChainEvent } from "../src/core/spvbind.js";
+import { proposeTx, world, source, feeOut, pick, mkFetch, addrFromPriv, buildNameClaim, ctxid, rpcTxToTx, resolve } from "./_spvrig.ts";
+import { nameCommit, nameCommitRecord, nameFinalize, V26_HEIGHT, MAX_PENDING_REG } from "../src/vendor/cairnx-spv.js";
+
+const { check, done } = checker("name union: only the name's own records are replayed:");
+
+const keyH = "0x" + "11".repeat(32), keyM = "0x" + "22".repeat(32);
+const H = addrFromPriv(keyH).toLowerCase(), M = addrFromPriv(keyM).toLowerCase();
+const who = (a) => (a === H ? "H" : a === M ? "M" : String(a));
+const salt = (k) => String(k + 1).repeat(16);
+const PRIMARY = "https://primary.example/trade/api", CLARVIS = "https://clarvis.example/trade/api";
+const SOURCES = [{ label: "primary", base: PRIMARY }, { label: "clarvis", base: CLARVIS }];
+const claim = (a) => ({ addr: a, owner: a, via: "owner" });
+const body = (c, events, scopedReplaySufficient = true) => ({ ok: true, resolve: c, events, ...(scopedReplaySufficient === undefined ? {} : { scopedReplaySufficient }) });
+const commit = (name, s, owner, priv) => proposeTx({ ...pick(nameCommitRecord({ commit: nameCommit(name, s, owner) })), priv });
+const reveal = (name, s, priv) => proposeTx({ ...pick(buildNameClaim({ name, salt: s })), priv });
+const finalize = (name, s, priv) => proposeTx({ ...pick(nameFinalize({ name, salt: s })), priv, outputs: feeOut() });
+
+// ── 1. H registers three other names, then the victim name V (all four finalized); M's rival commit, reveal and
+// finalize on V land 500 blocks after H's finalize, so the chain refuses them. ──
+{
+  const V = "zzvictim", h0 = V26_HEIGHT + 1000;
+  const others = [], otherFin = [];
+  for (let k = 0; k < MAX_PENDING_REG; k++) {
+    const n = "zzother" + k;
+    others.push({ height: h0 + k, tx: commit(n, salt(k), H, keyH) }, { height: h0 + k + 1, tx: reveal(n, salt(k), keyH) });
+    otherFin.push({ height: h0 + k + 9, tx: finalize(n, salt(k), keyH) });
+  }
+  const sH = "9".repeat(16), sM = "8".repeat(16);
+  const mine = [{ height: h0 + 12, tx: commit(V, sH, H, keyH) }, { height: h0 + 13, tx: reveal(V, sH, keyH) }, { height: h0 + 21, tx: finalize(V, sH, keyH) }];
+  const rc = h0 + 521;
+  const rival = [{ height: rc, tx: commit(V, sM, M, keyM) }, { height: rc + 1, tx: reveal(V, sM, keyM) }, { height: rc + 10, tx: finalize(V, sM, keyM) }];
+  const placed = [...others, ...otherFin, ...mine, ...rival];
+  const all = world(placed);
+  const hintOf = (pl) => all.hints[placed.indexOf(pl)];
+  const honest = [...mine, ...rival].map(hintOf);              // what an honest source serves for V
+  const hostile = [...others, ...mine, ...rival].map(hintOf);  // real records; the other names' finalizes withheld
+  const spv = source(all.blocks, rc + 40);
+  const union = (p, c) => verifyNameUnion(V, SOURCES, spv, mkFetch({ [PRIMARY]: p, [CLARVIS]: c }));
+
+  const both = await union(body(claim(H), honest), body(claim(H), honest));
+  check(`both sources honest: verified, owner H, no disagreement (${who(both.owner)}, disagree ${both.disagree})`, both.verified === true && both.owner === H && both.addr === H && both.disagree === false);
+  const withheld = await union(body(claim(H), honest), body(claim(M), rival.map(hintOf)));
+  check(`clarvis withholds H's records: still H, flagged (${who(withheld.owner)}, disagree ${withheld.disagree})`, withheld.verified === true && withheld.owner === H && withheld.disagree === true);
+  const added = await union(body(claim(H), honest), body(claim(M), hostile));
+  check(`clarvis adds H's other reservations without their finalizes: owner H, flagged (${who(added.owner)}, disagree ${added.disagree})`, added.verified === true && added.owner === H && added.addr === H && added.disagree === true);
+  const addedP = await union(body(claim(M), hostile), body(claim(H), honest));
+  check(`the configured source adds them: owner H, flagged (${who(addedP.owner)}, disagree ${addedP.disagree})`, addedP.verified === true && addedP.owner === H && addedP.disagree === true);
+  const quiet = await union(body(claim(H), honest), body(claim(H), hostile, undefined));
+  check(`clarvis adds them and claims H with no scope flag: owner H (${who(quiet.owner)})`, quiet.verified === true && quiet.owner === H);
+}
+
+// ── 2. The chain refused H's reveal of V: H held MAX_PENDING_REG other reservations then. A replay of V's records
+// alone accepts it, so the honest source flags V scopedReplaySufficient:false; that flag keeps the union closed. ──
+{
+  const V = "zzcapped", h0 = V26_HEIGHT + 3000;
+  const others = [];
+  for (let k = 0; k < MAX_PENDING_REG; k++) {
+    const n = "zzheld" + k;
+    others.push({ height: h0 + k, tx: commit(n, salt(k), H, keyH) }, { height: h0 + k + 1, tx: reveal(n, salt(k), keyH) });
+  }
+  const sH = "7".repeat(16), sM = "6".repeat(16);
+  const hV = [{ height: h0 + 4, tx: commit(V, sH, H, keyH) }, { height: h0 + 5, tx: reveal(V, sH, keyH) }, { height: h0 + 13, tx: finalize(V, sH, keyH) }];
+  const mV = [{ height: h0 + 40, tx: commit(V, sM, M, keyM) }, { height: h0 + 41, tx: reveal(V, sM, keyM) }, { height: h0 + 50, tx: finalize(V, sM, keyM) }];
+  const placed = [...others, ...hV, ...mV];
+  const all = world(placed);
+  const TIP = h0 + 90;
+  // The resolver's verdicts, over the same signed txs as chain events (each signed by its own coin's owner).
+  const signerOf = (pl) => (others.includes(pl) || hV.includes(pl) ? H : M);
+  const evs = placed.map((pl, i) => { const t = rpcTxToTx(pl.tx); return toChainEvent(t, ctxid(t), pl.height, all.hints[i].pos, signerOf(pl)); });
+  const vOnly = evs.filter((_, i) => hV.includes(placed[i]) || mV.includes(placed[i]));
+  check(`the chain makes M the owner of V, a replay of V's records alone makes H (${who(resolve(evs, TIP).names[V]?.owner)} vs ${who(resolve(vOnly, TIP).names[V]?.owner)})`,
+    resolve(evs, TIP).names[V]?.owner === M && resolve(vOnly, TIP).names[V]?.owner === H);
+  const vHints = [...hV, ...mV].map((pl) => all.hints[placed.indexOf(pl)]);
+  const spv = source(all.blocks, TIP);
+  const r = await verifyNameUnion(V, SOURCES, spv, mkFetch({ [PRIMARY]: body(claim(M), vHints, false), [CLARVIS]: body(claim(H), vHints, true) }));
+  check(`the honest source's scopedReplaySufficient:false keeps it unverified (${r.verified}: ${r.reason})`, r.verified === false && /cannot be name-scope-proven/.test(String(r.reason)));
+  const rSwap = await verifyNameUnion(V, SOURCES, spv, mkFetch({ [PRIMARY]: body(claim(H), vHints, true), [CLARVIS]: body(claim(M), vHints, false) }));
+  check(`...whichever source carries the flag (${rSwap.verified})`, rSwap.verified === false);
+  const noFlag = await verifyNameUnion(V, SOURCES, spv, mkFetch({ [PRIMARY]: body(claim(M), vHints, undefined), [CLARVIS]: body(claim(H), vHints, undefined) }));
+  check(`the flag is what refuses: without it the name-scoped replay names H (${who(noFlag.owner)})`, noFlag.verified === true && noFlag.owner === H);
+}
+
+done("namespv-union-scope");

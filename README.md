@@ -125,8 +125,9 @@ Sending to a `.csd` name never trusts a resolver's word. The wallet:
 2. **unions** them and **SPV-verifies every event** against a PoW header chain the wallet builds itself
    (`src/core/namespv.ts` → vendored `LightClient`): full-block merkle-bind + per-record signer-auth, so a
    resolver can only ever *add* real mined events, **never fabricate** one;
-3. replays the audited CairnX resolver over the verified union and **sends to the chain-proven winner**, not
-   to any resolver's bare claim, and flags any source whose stated answer disagrees.
+3. replays the audited CairnX resolver over the verified records of that name (a record about another name is
+   dropped first) and **sends to the chain-proven winner**, not to any resolver's bare claim, and flags any
+   source whose stated answer disagrees.
 
 The two default sources are run by one operator under one registrable domain, so they are not independent:
 the union covers one source being stale or broken, not that operator hiding a transfer from both.

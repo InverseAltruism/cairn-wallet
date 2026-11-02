@@ -3,6 +3,7 @@
 // live chain: a correct mapping verifies, a FORGED address is refused, a TAMPERED block is refused, a
 // LAPSED lease is refused, and the replay equals the audited resolver. Run: tsx test/namespv.test.mjs
 import { verifyNameUnion } from "../src/core/namespv.ts";
+import { toChainEvent } from "../src/core/spvbind.ts";
 import { checker } from "./_check.ts";
 // The SPV rig (proposeTx / world / source / mkFetch / prevout registry) + the cairnx/csdtx/vendor building
 // blocks are shared with the name2/name4/name5 PoCs via _spvrig.ts (extracted 2026-07-06 from 4 hand copies).
@@ -233,6 +234,8 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
 //      nothing and A keeps the name. A replay of only cove's own records cannot see the other holds, grants the
 //      fclaim and delivers cove to B with viaFill set. No source sends a scopedReplaySufficient flag here (an
 //      older or hostile server), so only the wallet's own gate stands between the scoped result and "verified".
+//      The wallet replays a name's own records whatever a source serves (nameScopedEvents drops the pier offers),
+//      so a source serving every record gets the same caution, never a verified B.
 //      The token sale pins the event mapping's confidence: resolve() applies a token fill only with the
 //      CONF_TOKEN_FILL marker, so a mapping that dropped it would replay that name to the seller as verified.
 {
@@ -250,8 +253,11 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   const own = new Set([reg[0], offs[0], fcs[0], fill].map(id));
   const scoped = full.hints.filter((h) => own.has(h.txid.toLowerCase()));
   const src = source(full.blocks, H + 30);
+  const placed = [...reg, ...offs, ...fcs.slice(1), fcs[0], fill];
+  const evs = full.hints.map((h, i) => { const t = rpcTxToTx(placed[i]); return toChainEvent(t, ctxid(t), h.height, h.pos, fcs.includes(placed[i]) || placed[i] === fill ? B : A); });
+  ok(`viaFill gate: on the chain the cap denies B's fclaim and cove stays with the seller (${resolve(evs, H + 30).names.cove?.owner === A})`, resolve(evs, H + 30).names.cove?.owner === A);
   const rFull = await unionOne("cove", { addr: A, owner: A, via: "owner" }, full.hints, src);
-  ok(`viaFill gate: with every record the cap denies B's fclaim and cove stays with the seller (${rFull.reason ?? "verified"})`, rFull.verified === true && rFull.owner === A && rFull.addr === A);
+  ok(`viaFill gate: a source serving every record gets the name-scoped answer, a caution, never a verified B (${rFull.reason ?? "verified"})`, rFull.verified === false && rFull.viaFill === true);
   const rScoped = await unionOne("cove", { addr: B, owner: B, via: "owner" }, scoped, src);
   ok(`viaFill gate: cove's own records alone deliver it to B, and the wallet does NOT call that verified (${rScoped.reason ?? "verified"})`, rScoped.verified === false && rScoped.viaFill === true);
 
