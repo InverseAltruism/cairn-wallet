@@ -317,9 +317,9 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     const g = nameActApproveGate("nset", { record: { name: "gm", owner: ME } }, ME);
     return g.block === false && g.note === null;
   })());
-  ok("NACT: nrenew of someone ELSE'S live name passes (anyone may renew a live lease)", (() => {
+  ok("NACT: nrenew of someone ELSE'S live name WARNS and does not block (the resolver applies it: the user would pay that owner's renewal)", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: OTHER } }, ME);
-    return g.block === false && g.note === null;
+    return g.block === false && /owned by a different address/.test(String(g.note));
   })());
   ok("NACT: nrenew of a LAPSED name WARNS but does not block (grace boundary is the resolver's call)", (() => {
     const g = nameActApproveGate("nrenew", { record: { name: "gm", owner: ME, expired: true } }, ME);

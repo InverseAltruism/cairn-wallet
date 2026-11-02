@@ -23,9 +23,11 @@ export async function readNameRecord(get: (path: string) => Promise<Response>, n
 }
 
 // Both records ride a fee (nrenew the treasury renewal fee, nset the 0.25 CSD anchor) that is spent when the resolver
-// ignores the record. Block only on a definitive no-op: a clean 404, and for nset an owner mismatch. A pending
-// reservation and a lapsed name only warn here, because the record may be stale (warn over block); the resolver's
-// nrenew and nset both reject them, and the service marks a name `expired` only once its grace period is over. A
+// ignores the record. Block only on a definitive no-op: a clean 404, for nset an owner mismatch, and for nrenew an
+// owner mismatch while the served lease is in its grace period (the resolver lets only the owner renew then). A
+// pending reservation and a lapsed name only warn here, because the record may be stale (warn over block); the
+// resolver's nrenew and nset both reject them, and the service marks a name `expired` only once its grace period is
+// over. Another address's live lease warns: the resolver applies the renewal, so it pays that owner's lease. A
 // transport failure warns and never blocks.
 const CATCHING_UP = "If it was registered in the last few minutes, the name service may still be catching up: try again later.";
 export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchResult, me: string): { block: boolean; note: string | null } {
@@ -50,6 +52,10 @@ export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchRe
     return { block: false, note: kind === "nrenew"
       ? "This name has lapsed: its lease and grace period are over, and a lapsed name is claimed again, not renewed, so the renewal fee would be burned. Verify on the site before approving."
       : "This name has lapsed: its lease and grace period are over, so the record would be ignored on-chain and the anchor fee spent for nothing. Claim the name again on the site first." };
+  }
+  if (kind === "nrenew" && typeof rec.owner === "string" && rec.owner.toLowerCase() !== me.toLowerCase()) {
+    if (rec.lease?.inGrace === true) return { block: true, note: "Refusing to sign: this name is in its grace period and owned by a different address. Only the owner can renew it now, so the renewal fee would be burned." };
+    return { block: false, note: "This name is owned by a different address: approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the purchase to settle." };
   }
   return { block: false, note: null };
 }

@@ -30,6 +30,11 @@
   closed; nothing was signed." instead of "Approved.". Other refusals keep "Failed: ...". The window's copy of the
   channel call is gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the
   Wallet (test/approve-outcome-dom.test.mjs).
+- A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
+  approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the
+  purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only
+  the owner may renew and the fee would be burned. The wallet's own Renew refuses both (retryable right after a
+  purchase, while the name service still names the seller) (test/name-action-gate.test.mjs).
 
 ## 0.3.1
 
