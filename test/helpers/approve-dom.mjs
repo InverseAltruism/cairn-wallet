@@ -11,7 +11,7 @@
 
 const TAG_WITH_ID = /<[a-zA-Z][^>]*\sid="([^"]+)"[^>]*>/g;
 /** The ids approve.html holds outside the request, which approve.ts reads at load and on every paint. */
-export const APPROVE_IDS = ["app", "view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw", "ap-origin", "ap-ask", "ap-signer", "ap-state"];
+export const APPROVE_IDS = ["app", "view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw", "ap-tile", "ap-origin", "ap-ask", "ap-signer", "ap-state"];
 
 export function mountApproveWindow(handlers) {
   const registry = new Map();

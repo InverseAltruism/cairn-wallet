@@ -67,6 +67,9 @@
 - Removing an account created from the recovery phrase shows how its coins are reached again: "New account will not
   bring this address back. Its coins stay on chain; to reach them again, restore your recovery phrase and add accounts
   until this one reappears (export any imported keys first)." (test/account-remove-warn-dom.test.mjs).
+- The approval window's requester tile shows the requesting site's initial ("e" for https://evil.example), not the
+  Cairn mark, so a look-alike site no longer sits under the product's mark where you decide; the locked view keeps the
+  mark (test/approve-tile-dom.test.mjs, test/popup-logos-chrome.test.mjs).
 
 ## 0.3.1
 

@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
@@ -69,6 +69,7 @@ async function render() {
   current = pend[0];
   // The requesting origin, in full however long (a look-alike keeps its tail), set from the browser's sender origin.
   $("ap-origin").textContent = String(current.origin);
+  $("ap-tile").textContent = originInitial(current.origin);
   $("ap-ask").textContent = asks(current);
   void refreshNfinalize(current.id);   // runs while locked too, so the unlock repaint shows a current verdict
   const reqView = $("view-req") as HTMLElement;

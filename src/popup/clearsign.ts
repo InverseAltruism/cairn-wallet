@@ -568,6 +568,14 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
     + (reserved ? rows([["Listing", `<code>${escapeHtml(view.offerId!)}</code>`]]) + lede(`<span class="dim">The offer id below is your reservation of this listing.</span>`) : "");
 }
 
+/** The requesting site's initial for the approval window's requester tile: the first character of the origin's host
+ *  without "www.", or "?" when the origin does not parse. Never Cairn's own mark. */
+export function originInitial(origin: unknown): string {
+  let host = "";
+  try { host = new URL(String(origin)).hostname.toLowerCase(); } catch { return "?"; }
+  return host.replace(/^www\./, "").charAt(0) || "?";
+}
+
 // The line above the approval window's buttons while the request scrolls: how many recipient rows are not fully in
 // view, or that something else is.
 export function moreBelowText(recipients: number): string {
