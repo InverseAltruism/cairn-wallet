@@ -90,4 +90,42 @@ const finalize = (name, s, priv) => proposeTx({ ...pick(nameFinalize({ name, sal
   check(`the flag is what refuses: without it the name-scoped replay names H (${who(noFlag.owner)})`, noFlag.verified === true && noFlag.owner === H);
 }
 
+// ── 3. The same flag holds when the union replay fails and each source is replayed alone. A source padding its hints
+// past MAX_HINTS (V's records plus real filler commits) makes the union refuse; the per-source recovery must not then
+// drop the honest source for its own false flag and let the padding source alone verify. Paired: with both sources
+// sufficient the recovery still verifies as before. ──
+{
+  const keyF = "0x" + "33".repeat(32), F = addrFromPriv(keyF).toLowerCase();
+  const V = "zzpadded", h0 = V26_HEIGHT + 5000;
+  const others = [];
+  for (let k = 0; k < MAX_PENDING_REG; k++) {
+    const n = "zzpend" + k;
+    others.push({ height: h0 + k, tx: commit(n, salt(k), H, keyH) }, { height: h0 + k + 1, tx: reveal(n, salt(k), keyH) });
+  }
+  const sH = "5".repeat(16), sM = "4".repeat(16);
+  const hV = [{ height: h0 + 4, tx: commit(V, sH, H, keyH) }, { height: h0 + 5, tx: reveal(V, sH, keyH) }, { height: h0 + 13, tx: finalize(V, sH, keyH) }];
+  const mV = [{ height: h0 + 40, tx: commit(V, sM, M, keyM) }, { height: h0 + 41, tx: reveal(V, sM, keyM) }, { height: h0 + 50, tx: finalize(V, sM, keyM) }];
+  const filler = [];
+  for (let k = 0; k < 253; k++) filler.push({ height: h0 + 60, tx: commit("zzfill" + k, salt(k % 9), F, keyF) });
+  const placed = [...others, ...hV, ...mV, ...filler];
+  const all = world(placed);
+  const hint = (pl) => all.hints[placed.indexOf(pl)];
+  const spv = source(all.blocks, h0 + 90);
+  const honestV = [...hV, ...mV].map(hint), padded = [...hV, ...filler].map(hint);
+  check(`setup: the padding source serves 256 hints, the union ${honestV.length + 253} (over MAX_HINTS)`, padded.length === 256 && new Set([...honestV, ...padded].map((x) => x.txid)).size > 256);
+  const r = await verifyNameUnion(V, SOURCES, spv, mkFetch({ [PRIMARY]: body(claim(M), honestV, false), [CLARVIS]: body(claim(H), padded, true) }));
+  check(`a union over the cap with the honest source's scopedReplaySufficient:false stays unverified (${r.verified}: ${r.reason})`,
+    r.verified === false && /cannot be name-scope-proven/.test(String(r.reason)));
+  // honest pair: a name the chain gives H (no other reservations of H in its history), both sources sufficient
+  const W = "zzplain", w0 = h0 + 200;
+  const hW = [{ height: w0, tx: commit(W, sH, H, keyH) }, { height: w0 + 1, tx: reveal(W, sH, keyH) }, { height: w0 + 9, tx: finalize(W, sH, keyH) }];
+  const extra = [0, 1].map((k) => ({ height: w0 + 21, tx: commit("zzextra" + k, salt(k), F, keyF) }));
+  const placed2 = [...hW, ...filler.map((f) => ({ ...f, height: w0 + 20 })), ...extra];
+  const all2 = world(placed2);
+  const hW2 = all2.hints.slice(0, 3), pad2 = all2.hints.slice(3, 256), extra2 = all2.hints.slice(256);
+  // each source alone is within the cap (5 and 256 hints), their union is not (258)
+  const r2 = await verifyNameUnion(W, SOURCES, source(all2.blocks, w0 + 60), mkFetch({ [PRIMARY]: body(claim(H), [...hW2, ...extra2], true), [CLARVIS]: body(claim(H), [...hW2, ...pad2], true) }));
+  check(`honest: both sources sufficient, a union over the cap still recovers H from each source alone (${who(r2.owner)}, recovered ${r2.recovered}, soleSource ${r2.soleSource})`, r2.verified === true && r2.owner === H && r2.recovered === true && r2.soleSource === false);
+}
+
 done("namespv-union-scope");

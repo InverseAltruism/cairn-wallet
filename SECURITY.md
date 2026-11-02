@@ -124,7 +124,8 @@ before the replay. (Before wallet 0.3.2 it was replayed too, and a source that a
 other names without their finalizes could make the owner's own registration fail the resolver's per-address
 reservation limit, so a later rival registration was shown as the owner with a "sources disagree" warning.) When
 records about other names do decide a name, the resolver says so (`scopedReplaySufficient: false`) and the wallet
-shows the name as not chain-verified. The union does not cover that operator hiding a later transfer or a
+shows the name as not chain-verified, whether the combined replay succeeds or the wallet falls back to replaying each
+source alone. The union does not cover that operator hiding a later transfer or a
 competing claim from both. The wallet's own badge says the name servers share one operator.
 
 **What happens when the sources disagree.** There is no hard refusal on a disagreeing source. The wallet
@@ -134,7 +135,8 @@ warns and lets you decide:
   wallet uses the proven address and shows a "sources disagree" warning.
 * The combined replay fails: the wallet replays each source's records alone. If the sources that replay
   agree on one address, that address is used with the same warning, and when only one source could prove
-  it the warning says it is not corroborated.
+  it the warning says it is not corroborated. When a source reports the name not provable from its own records,
+  there is no such fallback: the name is shown as not chain-verified.
 * Nothing can be proven, or the sources prove different addresses: the name is shown as **not
   chain-verified**, the address the name service served is the one shown, and the warning asks you to
   confirm it out-of-band. The send is not blocked.

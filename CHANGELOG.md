@@ -14,7 +14,9 @@
   real reservations of other names, without their finalizes, made the owner's own registration fail the resolver's
   per-address reservation limit, so a later rival registration was shown as chain-backed (with a "sources disagree"
   warning) and was the send target. Honest sources serve no such records (none dropped over 172 names at tip
-  130,077), so an honest name verifies as before (test/namespv-union-scope.test.mjs).
+  130,077), so an honest name verifies as before (test/namespv-union-scope.test.mjs). A source's report that a name
+  is not provable from its own records refuses the name before the per-source fallback too, so another source cannot
+  pad the union past the 256-record cap and have the fallback verify the name from its records alone.
 - The name check and the fill scan count only `cairnx:v1` records. A Propose in another application domain whose
   text parses as a cairnx record was replayed as one, so a name source could serve another domain's earlier
   registration of a name and have it verify as the owner; the resolver never reads those records. Such a record
