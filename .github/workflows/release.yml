@@ -123,7 +123,7 @@ jobs:
               '**Verify (optional):**' \
               '```' \
               "sha256sum -c cairn-wallet-store.zip.sha256   # expected: $(cat cairn-wallet-store.zip.sha256)" \
-              'gh attestation verify cairn-wallet-store.zip --repo ${{ github.repository }}' \
+              "gh attestation verify cairn-wallet-store.zip --repo ${{ github.repository }} --cert-identity https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}   # gh 2.49 or later" \
               '```' \
               '' \
               'Reproducible: `npm ci && npm run package` rebuilds byte-identical zips.')"

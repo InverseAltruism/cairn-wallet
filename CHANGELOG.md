@@ -76,6 +76,9 @@
 - README no longer says you "never have to trust the binary": the release sha256 covers the load-unpacked zip, and a
   store install is checked by comparing the CRX the store serves (store/PUBLISH-RUNBOOK.md step 8); the attestation
   line names gh 2.49 or later and pins the release workflow and tag. SECURITY.md points at runbook step 8, not 7.
+- The runbook's post-publish check (step 8) and every release's notes verify the attestation with the identity of
+  this repo's release workflow at the release tag (gh 2.49 or later, with a negative control on another tag), and the
+  CRX comparison sets aside only the root `manifest.json` and `_metadata/` (test/publish-verify-step.test.mjs).
 
 ## 0.3.1
 
