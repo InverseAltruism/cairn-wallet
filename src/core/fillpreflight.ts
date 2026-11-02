@@ -238,6 +238,16 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
   // default payto/seller to the author, so no honest fill declines.
   const partial = offer.min !== undefined;
   const listed = partial ? (Array.isArray(offer.fills) ? offer.fills : []).map((f) => ({ txid: String(f?.txid ?? ""), height: Number(f?.height) })) : undefined;
+  // A partial offer's `paid` and `delivered` decide how much of a payment the resolver applies; it clamps a payment past
+  // what is left and keeps the surplus. Only the taker fills a taker-bound offer, so a fill the service has not listed
+  // yet is this account's own: one recorded here and missing from the list refuses retryably, from local history and
+  // before the listed fills are proven (no block read for a fill that refuses anyway).
+  if (partial) {
+    const listedIds = new Set((listed ?? []).map((f) => f.txid.toLowerCase()));
+    const unindexed = (await wallet.recentOwnFills(String(offer.id), me)).find((t) => !listedIds.has(t));
+    if (unindexed)
+      return refuse("VERIFY_UNAVAILABLE", `refusing to sign for now: your earlier fill of this offer (${unindexed.slice(0, 12)}…) is not indexed by the offer service yet, so the amount it lists as left may be too high and the surplus would go to the seller; try again in a minute or two`);
+  }
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height), listed);
   if (proven && "refused" in proven) return offerNotAdmitted(proven.refused);
   if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
@@ -256,16 +266,9 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
   // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer (same as the fclaim lane).
   if (provenTermsMismatch(offer, proven.terms))
     return { ok: false, error: "refusing to sign: the offer's fee/rebate terms do not match its on-chain record (a lying resolver could under-size the fee, and the chain would reject the fill after your payment moved)", sighashMatch: false, code: "FILL_UNSAFE" };
-  // A partial offer's `paid` and `delivered` decide how much of a payment the resolver applies; it clamps a payment past
-  // what is left and keeps the surplus. Only the taker fills a taker-bound offer, so a fill the service has not
-  // indexed yet is this account's own: one recorded here and missing from the list refuses retryably. The listed fills
-  // are proven (makeProvenOfferPayto's progress) and the fill is sized against what they give.
+  // The listed fills are proven (makeProvenOfferPayto's progress) and the fill is sized against what they give.
   let sized: OfferState = offer;
   if (partial) {
-    const listedIds = new Set((listed ?? []).map((f) => f.txid.toLowerCase()));
-    const unindexed = (await wallet.recentOwnFills(String(offer.id), me)).find((t) => !listedIds.has(t));
-    if (unindexed)
-      return refuse("VERIFY_UNAVAILABLE", `refusing to sign for now: your earlier fill of this offer (${unindexed.slice(0, 12)}…) is not indexed by the offer service yet, so the amount it lists as left may be too high and the surplus would go to the seller; try again in a minute or two`);
     const progress = proven.progress;
     if (!progress) return refuse("VERIFY_UNAVAILABLE", "couldn't prove this offer's earlier fills yet; try again in a moment");
     if ("unproven" in progress)

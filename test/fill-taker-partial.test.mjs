@@ -82,8 +82,10 @@ const honest = stateOf(off, [fill1]);       // indexed
 check("setup: fill 1 is on chain (paid 30,000,000), the stale served state says 0", honest.paid === "30000000" && stale.paid === "0" && /^0x[0-9a-f]{64}$/.test(t1));
 
 served = stale;
+let proofs = seen.length;
 ({ r, submitted } = await fillWith(off, outsOf(stale, W)));
 check(`A. own fill not indexed yet: a retryable refusal, nothing sent (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && /not indexed by the offer service yet/.test(String(r?.error)) && submitted === 0);
+check(`A. ...decided from the local history before any proof read (${seen.length - proofs} proof calls)`, seen.length === proofs);
 
 served = honest;
 ({ r, submitted } = await fillWith(off, outsOf(stale, W)));
@@ -104,6 +106,10 @@ check(`E. a served paid its proven fills do not reach refuses (${r?.code}: ${r?.
 served = honest;
 ({ r, submitted } = await fillWith(off, outsOf(honest, W - 30_000_000n)));
 check(`B. indexed: exactly what is left signs (${r?.ok}, ${submitted} submit), the proof asked for the one listed fill (${JSON.stringify(seen.at(-1))})`, r?.ok === true && submitted === 1 && JSON.stringify(seen.at(-1)) === JSON.stringify([t1]));
+// The fill B signed is not listed yet; with fill 1 listed, refusing must not first bind fill 1's block (k-1 reads).
+proofs = seen.length;
+({ r, submitted } = await fillWith(off, outsOf(honest, 10_000_000n)));
+check(`A. a later own fill not yet listed beside a listed one refuses before the listed fill is proven (${r?.code}, ${seen.length - proofs} proof calls)`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && seen.length === proofs && submitted === 0);
 
 served = stateOf(whole);
 ({ r, submitted } = await fillWith(whole, outsOf(served, W)));
