@@ -236,7 +236,7 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
   // to the MERKLE-PROVEN offer author (prevout-owner, txid-committed). Fail CLOSED-RETRYABLE on an unprovable /
   // transient read (never a hard decline on an honest fill), FILL_UNSAFE on a proven mismatch. Honest offers
   // default payto/seller to the author, so no honest fill declines.
-  const partial = offer.min !== undefined;
+  const partial = offer.min != null;   // an absent or null min: a whole offer
   const listed = partial ? (Array.isArray(offer.fills) ? offer.fills : []).map((f) => ({ txid: String(f?.txid ?? ""), height: Number(f?.height) })) : undefined;
   // A partial offer's `paid` and `delivered` decide how much of a payment the resolver applies; it clamps a payment past
   // what is left and keeps the surplus. Only the taker fills a taker-bound offer, so a fill the service has not listed

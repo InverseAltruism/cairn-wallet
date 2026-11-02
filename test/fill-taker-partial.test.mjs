@@ -121,6 +121,15 @@ check(`A. a later own fill not yet listed beside a listed one refuses before the
 served = stateOf(whole);
 ({ r, submitted } = await fillWith(whole, outsOf(served, W)));
 check(`G. a whole taker-bound offer signs as before and asks for no fills (${r?.ok}, ${JSON.stringify(seen.at(-1))})`, r?.ok === true && submitted === 1 && seen.at(-1) === null);
+// A served `min: null` (no resolver serves it; JSON drops an absent min) never reaches the lane: fillIsSafe's previewFill
+// throws on it and the call fails with nothing signed and nothing proven. The lane reads `min != null` all the same.
+served = { ...stateOf(whole), min: null };
+{
+  const before = submits.length, proofs0 = seen.length;
+  let threw = null;
+  try { await w.fillOffer({ proposalId: whole.id, outputs: outsOf(stateOf(whole), W) }); } catch (e) { threw = String(e?.message ?? e); }
+  check(`G. a served min of null fails closed: nothing signed, nothing proven (${threw})`, threw !== null && submits.length === before && seen.length === proofs0);
+}
 
 // A, last (it signs a fill of its own): past OWN_FILL_INDEX_WAIT_MS an unlisted own fill no longer refuses, so a fill
 // that never landed cannot block the offer for good; the served state then sizes the fill, as before this check.
