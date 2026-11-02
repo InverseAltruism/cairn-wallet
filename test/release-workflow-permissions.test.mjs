@@ -16,7 +16,7 @@ let n = 0;
 const test = (name, fn) => { fn(); n++; console.log("  ok " + name); };
 const wf = (f) => readFileSync(new URL(`../.github/workflows/${f}`, import.meta.url), "utf8");
 
-/** jobs: { name: { permissions: {key: value} | "{}" | "read-all" | "write-all" | null, needs: [names], if?, steps: [{ uses?, run?, if?, with? }] } } */
+/** jobs: { name: { permissions: {key: value} | "{}" | "read-all" | "write-all" | null, needs: [names], if?, steps: [{ uses?, run?, if?, with?, env? }] } } */
 export function scanWorkflow(text) {
   const lines = text.split("\n");
   const jobs = {};
@@ -47,7 +47,7 @@ export function scanWorkflow(text) {
     }
     if (indent === 10 && inWith) {
       const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim());
-      if (kv) step.with[kv[1]] = kv[2];
+      if (kv) inWith[kv[1]] = kv[2];
       continue;
     }
     inWith = false;
@@ -55,7 +55,8 @@ export function scanWorkflow(text) {
     if (step && (indent === 6 || indent === 8)) {
       const kv = /^(?:- )?([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim());
       if (!kv) continue;
-      if (kv[1] === "with" && kv[2] === "") { step.with = {}; inWith = true; }
+      if (kv[1] === "with" && kv[2] === "") { step.with = {}; inWith = step.with; }
+      if (kv[1] === "env" && kv[2] === "") { step.env = {}; inWith = step.env; }
       if (kv[1] === "uses") step.uses = kv[2];
       if (kv[1] === "if") step.if = kv[2];
       if (kv[1] === "run") { if (kv[2] === "|") { step.run = ""; runBlock = { step, indent: indent + 2 }; } else step.run = kv[2]; }
@@ -92,6 +93,19 @@ export function releaseScriptOffence(run) {
 }
 const checksOutOrInstalls = (j) => j.steps.some((s) => (s.uses ?? "").includes("actions/checkout") || (s.uses ?? "").includes("setup-node"));
 
+// The suite runs with its in-Chrome tests required (a SKIP is a failure) after a step that installs playwright-core
+// from the registry tarball checked against its sha512 and its Chromium; CI and the release build both.
+const PW_TARBALL = "https://registry.npmjs.org/playwright-core/-/playwright-core-1.60.0.tgz";
+function checkChromeSuite(steps, where) {
+  const i = steps.findIndex((s) => (s.run ?? "").startsWith("npm test"));
+  assert.ok(i >= 0, `${where} runs npm test`);
+  assert.equal(steps[i].env?.CAIRN_E2E_REQUIRED, '"1"', `${where}: npm test runs with CAIRN_E2E_REQUIRED=1, so a skipped in-Chrome test fails`);
+  assert.equal(steps[i].env?.PLAYWRIGHT_CORE, "${{ runner.temp }}/pw/package", `${where}: npm test finds the installed playwright-core`);
+  const pw = steps.slice(0, i).find((s) => (s.run ?? "").includes(PW_TARBALL));
+  assert.ok(pw, `${where}: a step before npm test fetches playwright-core 1.60.0`);
+  assert.ok(/createHash\("sha512"\)[\s\S]*"sha512-[A-Za-z0-9+/=]{88}"/.test(pw.run) && /node package\/cli\.js install --with-deps chromium/.test(pw.run), `${where}: it checks the tarball's sha512 and installs its Chromium`);
+}
+
 /** The release workflow's rule; throws with the first violated clause. */
 export function checkRelease(jobs) {
   for (const name of ["anchors", "build", "release"]) assert.ok(jobs[name], `job ${name} found`);
@@ -108,6 +122,7 @@ export function checkRelease(jobs) {
   const build = jobs.build.steps.map((s) => s.run ?? s.uses ?? "");
   for (const want of ["npm ci --ignore-scripts", "npm run typecheck", "npm test", "npm run verify:vendor", "npm run package"]) assert.ok(build.some((s) => s.startsWith(want)), `build runs ${want}`);
   assert.ok(jobs.build.steps.some((s) => (s.uses ?? "").startsWith("actions/upload-artifact@")), "build uploads the artifact");
+  checkChromeSuite(jobs.build.steps, "the release build");
   const rel = jobs.release.steps;
   assert.ok((rel[0].uses ?? "").startsWith("actions/download-artifact@"), "the release job starts by downloading the artifact");
   assert.ok(rel.some((s) => (s.run ?? "").startsWith("sha256sum -c cairn-wallet-store.zip.sha256 cairn-wallet.zip.sha256")), "the release job checks both zips against their .sha256 files");
@@ -128,6 +143,7 @@ export function topLevelPermissions(text) {
 export function checkCi(jobs) {
   assert.ok(jobs.test, "the test job found");
   assert.ok(jobs.test.steps.some((s) => s.run === "npm run verify:vendor"), "the test job runs the vendor rebuild gate");
+  checkChromeSuite(jobs.test.steps, "ci.yml's test job");
   assert.deepEqual(writers(jobs), []);
   for (const j of Object.values(jobs)) assert.deepEqual(j.permissions, { contents: "read" });
   assert.equal(jobs.test.if, undefined);
@@ -214,6 +230,13 @@ test("a top-level permissions: write-all fails the check", () => {
 test("a ci.yml step with an if: skip fails the check", () => {
   const mutated = mutate("ci.yml", "      - run: npm run verify:vendor\n", "      - if: ${{ env.HAS_TOKEN == 'true' }}\n        run: npm run verify:vendor\n");
   assert.throws(() => checkCi(scanWorkflow(mutated)), /no step-level skip/);
+});
+test("a suite that may skip its in-Chrome tests, or an unchecked playwright-core, fails the check", () => {
+  for (const f of ["ci.yml", "release.yml"]) {
+    const check = f === "ci.yml" ? checkCi : checkRelease;
+    assert.throws(() => check(scanWorkflow(mutate(f, '          CAIRN_E2E_REQUIRED: "1"\n', ""))), /CAIRN_E2E_REQUIRED=1/, f);
+    assert.throws(() => check(scanWorkflow(mutate(f, "if(h!==process.argv[1])", "if(false)").replace(/ "sha512-[A-Za-z0-9+/=]{88}"/, ""))), /checks the tarball's sha512/, f);
+  }
 });
 test("a ci.yml without the vendor gate step fails the check", () => {
   const mutated = mutate("ci.yml", "      - run: npm run verify:vendor\n", "");

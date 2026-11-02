@@ -57,7 +57,20 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts   # no dependency lifecycle scripts run in CI (supply-chain hardening)
       - run: npm run typecheck
+      # The in-Chrome tests (the approval window's fold gate, the header store on IndexedDB and the rest) run and may
+      # not skip: playwright-core 1.60.0, the exact version and registry integrity cairn's lockfile pins, unpacked
+      # outside the repo (package.json and the lockfile are unchanged), with its Chromium.
+      - name: playwright-core 1.60.0 and its Chromium
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          curl -sSfL -o pw.tgz https://registry.npmjs.org/playwright-core/-/playwright-core-1.60.0.tgz
+          node -e 'const h="sha512-"+require("crypto").createHash("sha512").update(require("fs").readFileSync("pw.tgz")).digest("base64");if(h!==process.argv[1]){console.error("playwright-core integrity "+h);process.exit(1)}' "sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA=="
+          tar -xzf pw.tgz
+          node package/cli.js install --with-deps chromium
       - run: npm test            # full gate: a broken/failed build never ships
+        env:
+          PLAYWRIGHT_CORE: ${{ runner.temp }}/pw/package
+          CAIRN_E2E_REQUIRED: "1"
       # Vendor-freshness gate on the publish path: the SPV bundle and its .d.ts rebuilt from the installed, pinned
       # csd-sdk packages must be byte-identical to the committed files, so a hand-edited or stale bundle is not
       # packaged.

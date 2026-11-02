@@ -87,6 +87,10 @@
 - The secret scan (pre-commit hook and CI) also catches a 64-hex key assigned to a name containing priv, secret or
   seed (csd-sdk's `named-hex-private-key` rule, copied byte for byte); the full history scans clean with it
   (test/gitleaks-rule.test.mjs).
+- CI and the release build run the 11 in-Chrome tests (the approval window's fold gate among them) with
+  `CAIRN_E2E_REQUIRED=1`, so they fail rather than skip; they skipped on both before (the release log read "131/142
+  files passed, 11 SKIPPED"). playwright-core 1.60.0 is fetched as its registry tarball, checked against the sha512
+  cairn's lockfile records, and unpacked outside the repo with its Chromium (test/release-workflow-permissions.test.mjs).
 
 ## 0.3.1
 
