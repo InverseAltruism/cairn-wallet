@@ -34,7 +34,7 @@ English (United States)
 Cairn Wallet is a non-custodial wallet for the Compute Substrate (CSD) network. Your keys are generated and stored only on your device and are never uploaded to any server.
 
 KEY FEATURES
-• Self-custody by design: a 12-word recovery phrase (BIP-39) is generated on your device; all accounts derive from it (BIP-32/BIP-44 HD). You can also import a single private key.
+• Self-custody by design: a 12-word recovery phrase (BIP-39) is generated on your device; the accounts you create derive from it (BIP-32/BIP-44 HD). You can also import a single private key, which the phrase does not back up.
 • Encrypted at rest: your phrase and keys are sealed with AES-256-GCM under your password (PBKDF2-SHA256, 600,000 iterations). A 15-minute idle auto-lock protects an unattended session.
 • Local signing: transactions are built and signed on your device; only the signed transaction is sent to the node. The key never leaves the wallet.
 • Send & receive CSD, with a clear two-step send review that shows the full recipient address, the fee, your balance after, a first-time-recipient warning, and an address-poisoning lookalike warning.
@@ -45,7 +45,7 @@ SECURITY
 • Open source and reproducibly built: every release ships a SHA-256 and a build-provenance attestation, so you can verify the published extension was built from the exact source.
 • No remotely-hosted code, no analytics, no trackers. Minimal permissions.
 
-Cairn Wallet is self-custodial: you alone control your keys and recovery phrase. We cannot access, freeze, or recover your funds. Back up your recovery phrase; it is the only way to restore your wallet.
+Cairn Wallet is self-custodial: you alone control your keys and recovery phrase. We cannot access, freeze, or recover your funds. Back up your recovery phrase, and the private key of any account you imported; they are the only way to restore your wallet.
 
 Source & verification: https://github.com/InverseAltruism/cairn-wallet
 ```

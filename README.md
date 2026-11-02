@@ -10,7 +10,7 @@ and support items on [Cairn](https://cairn-substrate.com).
 ## Features
 
 * **Non-custodial.** Keys are generated and stored only on your device, encrypted with your password.
-* **Standard recovery.** A 12-word BIP-39 phrase backs up every account.
+* **Standard recovery.** A 12-word BIP-39 phrase backs up every account created from it; an imported key needs its own backup.
 * **Local signing.** Transactions are built and signed on your device. Only the signed transaction is sent to the node.
 * **CairnX tokens and `.csd` names.** The popup lists your token balances (decimals-aware, with locked amounts shown) and owned names, and sends tokens through the same reviewed confirmation as a CSD send. Transfer records are built and hashed inside the wallet, never fetched from a server.
 * **CairnX clear-signing.** The approval window decodes `cairnx:v1` proposals (token transfers, deploys, mints, offers, bids, cancels, name claims/transfers/renewals) into structured fields, for wallet- and dApp-initiated requests alike. Unrecognized record shapes still show the raw payload.
@@ -51,7 +51,7 @@ zip was built by this repo's CI from the tagged source.
 
 You can back up in two ways.
 
-* **Recovery phrase (12 words).** Your primary backup. It restores every account in Cairn Wallet, or in any CSD wallet that uses the same derivation path (`m/44'/7779'/0'/0/i`).
+* **Recovery phrase (12 words).** Your primary backup. It restores every account created from it in Cairn Wallet, or in any CSD wallet that uses the same derivation path (`m/44'/7779'/0'/0/i`).
 * **Account private key** (*Reveal key*). A plain CSD private key for a single account. It imports into the `csd` CLI (`csd wallet recover`) and any CSD tool, so you can move one account elsewhere.
 
 Your keys stay portable and are never locked to this wallet.

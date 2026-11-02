@@ -55,6 +55,10 @@
   (as listed by the offer service)" for any payment. The figure comes from the vendored previewFill over the listing
   the card already reads (no added read); a payment the listing would not take reads "receives nothing". A whole
   listing and a name keep their line (test/fill-card-receive.test.mjs).
+- The recovery phrase copy says what the phrase covers: the accounts created from it. The backup screen, the key and
+  phrase panels said it restores or controls "all" your accounts, which an imported key is not; they now say an
+  imported key needs its own backup, and so do the README and the store listing text (the listing is updated on the
+  store dashboard with the upload) (test/recovery-copy.test.mjs).
 
 ## 0.3.1
 
