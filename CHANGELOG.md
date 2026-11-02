@@ -79,6 +79,11 @@
 - The runbook's post-publish check (step 8) and every release's notes verify the attestation with the identity of
   this repo's release workflow at the release tag (gh 2.49 or later, with a negative control on another tag), and the
   CRX comparison sets aside only the root `manifest.json` and `_metadata/` (test/publish-verify-step.test.mjs).
+- The store listing text and the privacy policy say what the wallet sends: reads of public chain data for your
+  addresses, the transactions and sign-ins you approve, and a published post's off-chain content; the listing
+  justifies the `clarvis.cairn-substrate.com` host permission the manifest declares, and the policy explains the
+  content script. Whether a dashboard data category applies to a post's content is the owner's call at the upload
+  (test/store-listing-hosts.test.mjs). The site's copy of the policy (cairn `wallet-privacy.html`) is cairn's.
 
 ## 0.3.1
 

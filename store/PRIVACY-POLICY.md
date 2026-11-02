@@ -1,6 +1,6 @@
 # Cairn Wallet: Privacy Policy
 
-_Last updated: 2026-10-11_
+_Last updated: 2026-11-02_
 
 Cairn Wallet ("the extension") is a non-custodial browser wallet for the Compute Substrate (CSD) network. The
 short version: **the extension does not collect, transmit, sell, or share your personal data, and your keys never
@@ -28,7 +28,9 @@ data, and there are no analytics, telemetry, or tracking of any kind.
 ## What the extension sends, and to whom
 
 - To the node proxy and Cairn API at `cairn-substrate.com` (or a local node you run): requests for public chain
-  data (balances, unspent outputs, blocks, names, offers) and the signed transactions you explicitly approve.
+  data (balances, unspent outputs, blocks, names, offers) and the signed transactions you explicitly approve, and,
+  when you publish a post, its off-chain content (title, body, links), registered at
+  `cairn-substrate.com/api/content` after the transaction is mined.
 - To `clarvis.cairn-substrate.com`, a second copy of the same public chain data, on its own server and run by
   the same operator: read-only lookups of the name or offer you are about to use, so the wallet can compare two sources
   before you sign. Nothing about you is sent beyond the lookup itself.
@@ -57,6 +59,8 @@ the server that receives them.
 - **Host access**: `cairn-substrate.com` and `clarvis.cairn-substrate.com` (above), and a local node at
   `127.0.0.1:8789` if you run one. Other local addresses (`localhost` or `127.0.0.1` on another port) are requested
   only when you set one in Settings.
+- **Content script** on https pages and on `localhost` and `127.0.0.1`: lets a website request a connection or a
+  signature (`window.cairn`); it reads no page content, and nothing happens until you approve in the wallet.
 
 ## Data retention and deletion
 
