@@ -7,6 +7,7 @@ import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cair
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
+import { extensionCall, refusedCopy, thrownCopy } from "./popup-outcome.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
@@ -21,12 +22,7 @@ const fontsLoaded: Promise<unknown> = Promise.race([
   new Promise((res) => setTimeout(res, 1000)),
 ]);
 
-function call(method: string, ...args: any[]): Promise<any> {
-  return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
-    if (chrome.runtime.lastError) return rej(new Error(chrome.runtime.lastError.message));
-    r?.ok ? res(r.result) : rej(new Error(r?.error || "error"));
-  }));
-}
+const call = (method: string, ...args: any[]): Promise<any> => extensionCall(chrome, method, ...args);
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
 // What each request type asks for, under the requesting origin in the header.
 function asks(r: any): string {
@@ -541,20 +537,31 @@ async function resolve(approve: boolean) {
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
   let r: any;
+  let thrown: unknown = null;
   inFlight++;
   const ack = u ? { requestId: id, fclaimTxid: u.fclaimTxid } : undefined;
-  try { r = await call("resolve", id, true, signer, displayedQuote, ...(ack ? [ack] : [])); } catch (e: any) { r = { ok: false, error: e?.message }; }
+  try { r = await call("resolve", id, true, signer, displayedQuote, ...(ack ? [ack] : [])); } catch (e: unknown) { thrown = e; }
   finally { inFlight--; }
   renderSeq++; renderedId = null;   // a poll that read the queue before this outcome must not paint; repaint and re-arm
-  if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
+  // The popup's reading of an outcome (popup-outcome.ts): an ambiguous or duplicate submit and a broken channel may be in
+  // flight, so they never read "Failed"; any other refusal keeps "Failed: <error> (<code>)".
+  if (thrown) {
+    const o = thrownCopy(thrown, "transaction");
+    msg(o.maybe ? o.text : "Failed: " + ((thrown as Error)?.message || "?"), o.maybe ? o.cls : "err"); holdOutcome = true;
+  } else if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
-  } else if (r && r.ok === false) { msg("Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdOutcome = true; }
+  } else if (r && r.ok === false) {
+    const o = refusedCopy(r, "transaction");
+    msg(o.maybe ? o.text : "Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), o.maybe ? o.cls : "err"); holdOutcome = true;
+  }
   else if (r && r.txid) {
     msg("Sent " + String(r.txid).slice(0, 10) + "…", "ok");
     const note = secondSourceNote(r.secondSource);
     if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); holdOutcome = true; }
   }
+  // The request left the queue before this window resolved it (rejected from the toolbar, or answered elsewhere).
+  else if (r && r.done === false) { msg("This request was already closed; nothing was signed.", "info"); holdOutcome = true; }
   else msg("Approved.", "ok");
   render();
 }

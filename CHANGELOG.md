@@ -23,6 +23,13 @@
   it: an integer number or a string of decimal digits. "1e8", " 100000000", "0x5f5e100", `[100000000]` or `true`
   signed in full while the window's amount said "invalid amount"; they are now refused with `BAD_OUTPUTS` before
   anything is read, and the window's total counts them as 0 (test/output-value-parse.test.mjs).
+- The approval window reads a submit outcome as the popup does. "The transaction didn't confirm; it may already be
+  in flight. Check your history before trying again." replaces "Failed: ... (SUBMIT_MAYBE_INFLIGHT)" and a broken
+  channel's "Failed: The message port closed ...", so the window no longer invites a site's retry that could pay
+  twice; a duplicate submit shows its own text; a request already closed elsewhere says "This request was already
+  closed; nothing was signed." instead of "Approved.". Other refusals keep "Failed: ...". The window's copy of the
+  channel call is gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the
+  Wallet (test/approve-outcome-dom.test.mjs).
 
 ## 0.3.1
 

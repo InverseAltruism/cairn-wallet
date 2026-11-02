@@ -102,7 +102,14 @@ await esbuild.build({ ...common, entryPoints: { content: "src/content.ts", inpag
     console.error("✗ build aborted: Wallet/devshim chunk missing (expected endpoint-URL string in a split chunk, not popup.js)");
     process.exit(1);
   }
-  console.log(`✓ popup isolation: ${NEEDLE} ×0 in popup.js, ×${chunkHits} in ${chunks.join(", ") || "(chunks)"}`);
+  // approve.js is built without splitting, so a dynamic import there would inline the Wallet (approve.ts takes the
+  // channel from popup-outcome.ts, which has none).
+  const approveHits = (_read("dist/approve.js", "utf8").match(new RegExp(NEEDLE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+  if (approveHits !== 0) {
+    console.error(`✗ build aborted: Wallet class leaked into dist/approve.js (found ${NEEDLE} ×${approveHits}); the approval window must not import popup-bridge.ts or devshim.ts.`);
+    process.exit(1);
+  }
+  console.log(`✓ popup isolation: ${NEEDLE} ×0 in popup.js and approve.js, ×${chunkHits} in ${chunks.join(", ") || "(chunks)"}`);
 }
 
 writeFileSync("dist/manifest.json", JSON.stringify({ ...JSON.parse(readFileSync("public/manifest.json", "utf8")), version: PKG_VERSION }, null, 2) + "\n");
