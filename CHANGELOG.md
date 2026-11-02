@@ -19,6 +19,10 @@
   text parses as a cairnx record was replayed as one, so a name source could serve another domain's earlier
   registration of a name and have it verify as the owner; the resolver never reads those records. Such a record
   is now skipped (test/name-domain.test.mjs).
+- A dApp's output value (`send({ outputs })`, a `propose` payout, a fill) is read the way the approval window prints
+  it: an integer number or a string of decimal digits. "1e8", " 100000000", "0x5f5e100", `[100000000]` or `true`
+  signed in full while the window's amount said "invalid amount"; they are now refused with `BAD_OUTPUTS` before
+  anything is read, and the window's total counts them as 0 (test/output-value-parse.test.mjs).
 
 ## 0.3.1
 

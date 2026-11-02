@@ -64,9 +64,9 @@ const FEE_WARN = 5n * 100_000_000n;
 // The signer screens format CSD through core/cairnx.ts fmtCsd (exact, "invalid amount" on garbage) and
 // balances through fmtBalance; both are re-exported here for the popup and the approval window.
 export { fmtCsd, fmtBalance };
-// Finite base-unit number for sums / balance-after math (garbage → 0; the tx won't build anyway:
-// node.send/sendMany hard-reject non-numeric amounts, so this only keeps the DISPLAY sane).
-export function baseVal(raw: any): number { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
+// A base-unit number for the window's sums and balance-after math, read with csdBase like the rows (fmtCsd) and the
+// engine (node.ts validateOutputs): a value the rows print as "invalid amount" counts 0, and the engine refuses it.
+export function baseVal(raw: unknown): number { const b = csdBase(raw); return b !== null && b <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(b) : 0; }
 // The zero address is the un-spendable burn sink (and, on an nset, the V23 "un-point" sentinel).
 // 0x-OPTIONAL by design: resolver/record fields can carry bare-hex, and the stricter 0x-required
 // variant that lived in popup.ts silently missed those. One test, one threat model (3 former sites).
