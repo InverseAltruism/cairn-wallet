@@ -84,6 +84,9 @@
   justifies the `clarvis.cairn-substrate.com` host permission the manifest declares, and the policy explains the
   content script. Whether a dashboard data category applies to a post's content is the owner's call at the upload
   (test/store-listing-hosts.test.mjs). The site's copy of the policy (cairn `wallet-privacy.html`) is cairn's.
+- The secret scan (pre-commit hook and CI) also catches a 64-hex key assigned to a name containing priv, secret or
+  seed (csd-sdk's `named-hex-private-key` rule, copied byte for byte); the full history scans clean with it
+  (test/gitleaks-rule.test.mjs).
 
 ## 0.3.1
 
