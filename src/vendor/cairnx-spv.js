@@ -3482,7 +3482,7 @@ function verifyDigest(sig64, pub33, digestHex) {
     const s = hb(sig64), p = hb(pub33), d = hb(digestHex);
     if (s.length !== 64 || p.length !== 33 || d.length !== 32) return false;
     if (secp256k1.Signature.fromCompact(s).hasHighS()) return false;
-    return secp256k1.verify(s, d, p, { lowS: true });
+    return secp256k1.verify(s, d, p, { lowS: true, format: "compact" });
   } catch {
     return false;
   }
@@ -3664,6 +3664,7 @@ var offerExpiryHeightOf = (expiresEpoch, anchorHeight) => {
   const capped = (epochOf(anchorHeight) + MAX_OFFER_EPOCHS + 1) * EPOCH_LEN;
   return Math.min(raw, Math.max(V21_HEIGHT, capped));
 };
+var offerFillTooLate = (expiresAt, tip) => expiresAt - 1 < tip + FILL_TIP_MARGIN;
 var isNameGive = (g) => typeof g.name === "string";
 var isTokenWant = (w) => typeof w.ticker === "string";
 function parseAmount(s, opts = {}) {
@@ -5231,7 +5232,8 @@ function pickPrimaryName(names, a) {
   }
   return best ? best.name : null;
 }
-var GAP_NEEDED = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1 + CLAIM_COOLDOWN_BLOCKS;
+var FCLAIM_MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;
+var GAP_NEEDED = FCLAIM_MAX_HOLD_SPAN + CLAIM_COOLDOWN_BLOCKS;
 var SCAN_MARGIN = EPOCH_LEN;
 var MAX_SCAN = GAP_NEEDED + SCAN_MARGIN;
 function bindRecord(ev) {
@@ -5488,6 +5490,7 @@ export {
   EPOCH_LEN,
   FCLAIM_KEYS,
   FCLAIM_MAX_EPOCH_AHEAD,
+  FCLAIM_MAX_HOLD_SPAN,
   FCLAIM_WINDOW_MIN,
   FEE_BPS,
   FEE_BPS_V16,
@@ -5616,6 +5619,7 @@ export {
   offer,
   offerCancelAll,
   offerExpiryHeightOf,
+  offerFillTooLate,
   paidToFromOutputs,
   parseAmount,
   parseJsonExact,
