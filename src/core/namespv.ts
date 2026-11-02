@@ -237,6 +237,9 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
         return { ok: false, reason: `record ${hint.txid} ${why}` };
       }
       const ev = toChainEvent(tx, id, height, pos, author.signer);
+      // A Propose maps to no event only in another application domain: the resolver never sees it, so it is
+      // skipped like the noise it is and the other records still replay.
+      if (!ev && tx.app?.type === "Propose") continue;
       if (!ev) return { ok: false, reason: `record ${hint.txid} is not a cairnx app record` };
       events.push(ev);
     }

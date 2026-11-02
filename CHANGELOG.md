@@ -15,6 +15,10 @@
   per-address reservation limit, so a later rival registration was shown as chain-backed (with a "sources disagree"
   warning) and was the send target. Honest sources serve no such records (none dropped over 172 names at tip
   130,077), so an honest name verifies as before (test/namespv-union-scope.test.mjs).
+- The name check and the fill scan count only `cairnx:v1` records. A Propose in another application domain whose
+  text parses as a cairnx record was replayed as one, so a name source could serve another domain's earlier
+  registration of a name and have it verify as the owner; the resolver never reads those records. Such a record
+  is now skipped (test/name-domain.test.mjs).
 
 ## 0.3.1
 

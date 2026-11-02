@@ -145,6 +145,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   }
 
   const proven = new Map<string, ProvenEvent | null>();   // memoize per id; blockMemo binds each block once
+  const boundSigner = new Map<string, string>();         // id -> its prevout-bound author, event or not
   async function proveEventAt(id: string, height: number): Promise<ProvenEvent | null> {
     const k = id.toLowerCase();
     if (proven.has(k)) return proven.get(k) ?? null;
@@ -157,6 +158,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       if (!tx || bid === undefined) throw new Error(`block ${height}: no rebuilt body for ${k}`);
       // NSPV-SIGSUB-1: the signer must own the coin the record spends; an unbindable record proves no event.
       const author = await bindSigner(tx, spv);
+      if (author.ok) boundSigner.set(k, author.signer);
       const base = author.ok ? toChainEvent(tx, bid, height, pos, author.signer) : null;
       if (base) ev = { ...base, depth: verifiedTip - height + 1 };   // verifyFillSpv reads the PoW burial depth
     }
@@ -187,11 +189,10 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
       if (app.type === "Propose") {
         if (id === offerId) { markScanned(id, h); continue; }   // the offer, if it anchored in-window
         // F8 (wallet-vs-site parity): only cairnx-domain Proposes bind the resolver's replay, mirroring the site
-        // swapguard.js:704 (`tx.app.domain !== DOMAIN && idl !== offerId`). Without this the scan is domain-blind:
-        // a SELLER-signed foreign-domain Propose whose uri parses as a cairnx ocancel/fclaim would be fed to
-        // resolve() and cancel/deny the offer in the WALLET's replay only (a hard FILL_UNSAFE the authoritative
-        // resolver and the /trade site ignore) = a wallet-vs-site false-refuse fork on an honest, open offer. The
-        // offer itself is exempt (handled by the id === offerId continue above), exactly as the site exempts it.
+        // swapguard.js:704 (`tx.app.domain !== DOMAIN && idl !== offerId`). toChainEvent maps a foreign-domain
+        // Propose to no event, so collecting a SELLER-signed one whose uri parses as a cairnx ocancel/fclaim would
+        // fail the eager authorship check below and refuse an honest, open offer the resolver and the /trade site
+        // fill. The offer itself is exempt (the id === offerId continue above), exactly as the site exempts it.
         if (app.domain !== DOMAIN) continue;
         const rec = parseRecord(app.uri, String(app.payloadHash)) as { t?: string; offer?: string } | null;
         if (!rec) continue;
@@ -288,10 +289,15 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // same way (test/sig-vectors.test.mjs), so an honest read does not trip this. A
   // genuinely-ADDED fake id (a lying resolver hint, absent from every block) is NOT here -- scannedIds holds
   // ONLY events THIS independent scan proved in a merkle-bound block, so it correctly cannot be a suppression.
+  // The offer is the one scanned id that may be a foreign-domain Propose (the scan exempts it from its domain
+  // filter, and toChainEvent maps it to no event): its authorship is what this checks, and the admission check
+  // below refuses it by domain.
   const scanned = [...scannedIds];
   await mapPool(scanned, SCAN_POOL, async (wid) => {
     const h = heightOf.get(wid);
-    if (h !== undefined && (await proveEventAt(wid, h)) === null)
+    if (h === undefined) return;
+    const ev = await proveEventAt(wid, h);
+    if (ev === null && !(wid === offerId && boundSigner.has(wid)))
       throw new Error("fill-SPV: a lane event could not be authorship-bound (possible scriptSig suppression) - refusing");
   });
 
@@ -304,17 +310,21 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // grant/denial/holder/cancel VERDICT rides the PROVEN lane events above and NEVER the synthesized backing (the
   // synthetic ids are never in scannedIds, so they are neither eager-authed nor cap-counted). A forged give (a
   // seller who never owned it) is the same N1 residual the pre-V28 wallet already carries, no worse.
-  const offerEv = await proveEventAt(offerId, heightOf.get(offerId)!);
-  if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
-  const offerRec = parseRecord(offerEv.uri, offerEv.payloadHash) as OfferRecord | null;
-  // The scan exempts the offer from its domain filter, so the admission check reads the domain from the offer's
-  // own bound tx (proveEventAt bound its block into blockMemo).
-  const offerApp = blockMemo.get(offerEv.height)?.rebuilt[offerEv.pos]?.app;
-  if (!offerApp || offerApp.type !== "Propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
+  // The admission check reads the offer's own bound tx (proveEventAt bound its block into blockMemo): its domain is
+  // not on the event, and a foreign-domain offer maps to no event at all, so it is refused here by name.
+  const offerHeight0 = heightOf.get(offerId)!;
+  const offerEv = await proveEventAt(offerId, offerHeight0);
+  const ob = blockMemo.get(offerHeight0);
+  const opos = ob ? ob.ids.findIndex((x) => x.toLowerCase() === offerId) : -1;
+  const offerApp = opos >= 0 ? ob!.rebuilt[opos]?.app : undefined;
+  const offerSeller = boundSigner.get(offerId);
+  if (!offerApp || offerApp.type !== "Propose" || !offerSeller) throw new Error("fill-SPV: the offer could not be merkle-proven");
+  const offerRec = parseRecord(offerApp.uri, String(offerApp.payloadHash)) as OfferRecord | null;
   const notAdmitted = offerRec && offerRec.t === "offer"
-    ? provenOfferRefusal(offerRec, { domain: offerApp.domain, height: offerEv.height, expiresEpoch: offerApp.expiresEpoch, seller: offerEv.proposer })
+    ? provenOfferRefusal(offerRec, { domain: offerApp.domain, height: offerHeight0, expiresEpoch: offerApp.expiresEpoch, seller: offerSeller })
     : null;
   if (notAdmitted) throw new OfferNotAdmittedError(notAdmitted);
+  if (!offerEv || offerEv.kind !== "propose") throw new Error("fill-SPV: the offer could not be merkle-proven");
   // The payment recipients are bound by verifyFillSpv's sums option (the caller's planned per-address legs must
   // equal the need-map of the replayed proven offer), so this source carries no separate payto or seller field.
   // F2 (amount leg): the fee/rebate-relevant fields from the merkle-proven offer, via the ONE vendored
