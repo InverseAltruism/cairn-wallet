@@ -12,7 +12,7 @@ const ROOT = join(import.meta.dirname, "..");
 const text = (f) => readFileSync(join(ROOT, f), "utf8").replace(/<[^>]+>/g, "");
 // "all"/"every" account(s) as what the phrase backs up, restores or controls, unless the sentence narrows it to the
 // accounts created from it.
-const OVERCLAIM = /\b(all|every)\b (of )?(your )?accounts?\b(?! (created|you create) from (it|them))|all accounts derive|it is the only way to restore your wallet/i;
+const OVERCLAIM = /\b(all|every)\b (of )?(your )?accounts?\b(?! (created|you create) from (it|them))|all accounts derive|it is the only way to restore your wallet|backs up everything/i;
 const sources = ["src/popup/popup.html", "README.md", "store/STORE-LISTING.md"];
 for (const f of sources) {
   const bad = text(f).split("\n").map((l, i) => [i + 1, l]).filter(([, l]) => /phrase|12 words|backs? up|restore/i.test(l) && OVERCLAIM.test(l));
