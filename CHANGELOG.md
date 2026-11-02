@@ -39,6 +39,9 @@
   expiring in that epoch reads "expires at the end of this epoch, in about N blocks" (it was "already past: this
   record would be a no-op", while the node admits it and a token transfer applies), and one expiring earlier reads
   "already past: the node will refuse it; nothing is spent" (test/expiry-row.test.mjs).
+- Switching accounts clears the primary-name line at once, so the previous account's name no longer sits over the new
+  address until the new account's names load; the Receive card takes its name line from the same place, so it
+  follows the switch too, open or not (test/popup-stale-switch-dom.test.mjs).
 
 ## 0.3.1
 

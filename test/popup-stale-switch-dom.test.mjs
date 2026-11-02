@@ -12,7 +12,10 @@
 //   - re-review on FEE_CHANGED without the binding check: 6a fails (the review reopens under B for A's name and
 //     Confirm signs cairnxNameRenew("alice", fee, B));
 //   - drop clearSendDrafts() from render()'s new-address branch: 7a fails (a send primed under A is dispatched).
+//   - drop setIdentity(null) from invalidateAccountViews, or copy the Receive card's name from the header again:
+//     8a fails (A's name over B's address, in the header and on the open Receive card).
 //   HONEST PATH: 2c (B's own name signs set-primary as B), 4c (an unchanged refresh keeps the detail actionable),
+//   8 and 8b (an account's own name shows in the header and on the Receive card),
 //   6b (FEE_CHANGED with no switch re-reviews the same name for the same account and signs the new fee).
 // Run: node --import tsx test/popup-stale-switch-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
@@ -189,6 +192,26 @@ console.log("7. render() sees a new address with a send review primed");
   await byId("btn-save-settings").click(); await flush();              // a path that re-renders without a switch
   await byId("btn-send-confirm").click(); await flush();
   check(`7a the primed review is gone and nothing was sent (${JSON.stringify(dispatched)})`, primed && dispatched.length === 0 && byId("send-confirm").hidden === true);
+}
+
+console.log("8. the identity line follows the account, in the header and on the open Receive card");
+{
+  ASSETS[A].primaryName = "alice";
+  await switchTo(0);
+  await byId("nav-home").click(); await byId("btn-refresh").click(); await flush();
+  const shown = (id) => (byId(id).hidden ? "" : byId(id).textContent);
+  check(`8 honest: A's name is in the header (${shown("primary-name")})`, shown("primary-name") === "alice.csd");
+  await byId("btn-receive").click(); await flush();
+  check(`8 honest: and on the Receive card (${shown("receive-name")})`, byId("receive-panel").hidden === false && shown("receive-name") === "alice.csd");
+  holdNext.add("assets");
+  await switchTo(1);
+  check(`8a while B's read is in flight, the header shows no name over B's address (${shown("primary-name") || "none"})`, shown("primary-name") === "");
+  check(`8a ...and the Receive card's name line holds none either (${shown("receive-name") || "none"})`, shown("receive-name") === "");
+  await byId("btn-receive").click(); await flush();
+  check(`8a ...also when Receive is opened during the read (${shown("receive-name") || "none"})`, byId("receive-panel").hidden === false && shown("receive-name") === "");
+  await release("assets", { ...ASSETS[B], primaryName: "carol" });
+  check(`8b B's read lands: the header and the open Receive card show B's name (${shown("primary-name")}, ${shown("receive-name")})`, shown("primary-name") === "carol.csd" && byId("receive-panel").hidden === false && shown("receive-name") === "carol.csd");
+  ASSETS[A].primaryName = null;
 }
 
 done("popup-stale-switch-dom");

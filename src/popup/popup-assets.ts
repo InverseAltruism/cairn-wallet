@@ -24,12 +24,15 @@ async function tokenMeta(): Promise<TokenMeta> {
   if (r?.ok) tokensCache = m;
   return m;
 }
-// Show the primary .csd name as the account identity (server round-trip-verified; owner===addr===you).
+// Show the primary .csd name as the account identity (server round-trip-verified; owner===addr===you). The one writer of
+// the identity line: the header and the Receive card both take it from here, so an account switch clears both.
 function setIdentity(name: string | null | undefined) {
-  const el = document.getElementById("primary-name");
-  if (!el) return;
-  if (name) { el.textContent = `${name}.csd`; (el as HTMLElement).hidden = false; }
-  else { el.textContent = ""; (el as HTMLElement).hidden = true; }
+  for (const id of ["primary-name", "receive-name"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (name) { el.textContent = `${name}.csd`; (el as HTMLElement).hidden = false; }
+    else { el.textContent = ""; (el as HTMLElement).hidden = true; }
+  }
   paintAvatar(name || null, curAddr); // the avatar follows the resolved identity (a name seeds the same avatar as its names page)
 }
 // epochs ≈ hours → a short remaining-time label for a lease
@@ -55,6 +58,7 @@ const LIST_LOADING = `<div class="skeleton-row"></div><div class="skeleton-row">
 // At the start of a switch: nothing drawn for the old account stays clickable, and its in-flight reads do not paint.
 export function invalidateAccountViews() {
   nextAccountGen(); assetsSeq++; supersedeBalance();
+  setIdentity(null);   // the previous account's name must not sit over the new address while its read is in flight
   nameDetails = new Map(); ndOpen = null;
   const el = $("assets") as HTMLElement;
   el.hidden = false; el.setAttribute("aria-busy", "true"); el.innerHTML = LIST_LOADING;
