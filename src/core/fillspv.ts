@@ -15,7 +15,7 @@
 // prior hold), NOT a resolver hint list. Any gap/mismatch/error THROWS → the preflight fails CLOSED.
 import {
   parseRecord,
-  fclaimHoldEnd, MAX_SCAN, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
+  fclaimHoldEnd, MAX_SCAN, FCLAIM_MAX_HOLD_SPAN,
   deploy, mint, nameClaim, isNameGive, MAX_AMOUNT, DEPLOY_FEE, TREASURY_ADDR, DOMAIN, V11_HEIGHT, ACTIVATION_HEIGHT,
   provenOfferTerms, provenOfferRefusal, MAX_ACTIVE_CLAIMS, myProvenFillClosedOffer, countOtherHoldsAtGrant,
   type Tx, type FillSpvIo, type ProvenEvent, type ProvenPropose, type MintedProvenOfferTerms, type OfferRecord, type HoldCandidate,
@@ -32,11 +32,6 @@ import { OfferNotAdmittedError } from "./fillpreflight.js";
 // (test/proven-terms-corpus.test.mjs pins it forever). Re-exported so tests and fillpreflight.ts keep one
 // import site; the re-export is a POINTER, never a re-declaration.
 export { feeBpsAt, type ProvenOfferTerms, type MintedProvenOfferTerms } from "../vendor/cairnx-spv.js";
-
-// A fclaim hold lasts at most MAX_HOLD_SPAN blocks past its grant (a grant at an epoch's first block with
-// ee = epochOf(h)+2 holds through h+89). A FILLABLE fclaim is within its hold (verifyFillSpv's deadline guard),
-// so its grant height is at most MAX_HOLD_SPAN below the tip.
-const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;   // 89
 
 // The fill boundary's bind contract: a body that fails the shared bind throws, so every read here fails closed;
 // a merkle mismatch throws BodyMismatchError so fillpreflight.ts can name the RPC and the header source.
@@ -67,8 +62,9 @@ export interface FillSpvHints { offerId: string; fclaimTxid: string; me: string;
  * upper bound of their holds live at the grant, in consensus order; a grant outside its domain throws.
  *
  * Fund-safety scan design (all hint-independent, so a hostile resolver cannot narrow the evidence):
- *  - The window is TIP-ANCHORED [tip - (MAX_SCAN + MAX_HOLD_SPAN), tip]; a fillable fclaim is within
- *    MAX_HOLD_SPAN of the tip, so this always covers [true-grant - MAX_SCAN, tip] no matter what height the
+ *  - The window is TIP-ANCHORED [tip - (MAX_SCAN + FCLAIM_MAX_HOLD_SPAN), tip]: a fclaim hold lasts at most
+ *    FCLAIM_MAX_HOLD_SPAN blocks past its grant and a fillable fclaim is within its hold (verifyFillSpv's deadline
+ *    guard), so this always covers [true-grant - MAX_SCAN, tip] no matter what height the
  *    resolver asserts. (Anchoring on the served height would let an inflated hint push a prior hold out.)
  *  - The fclaim's grant height is its PROVEN mined height from the scan, never the served hint; the source
  *    fails CLOSED if the fclaim is not merkle-proven in-window.
@@ -171,7 +167,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   // TIP-ANCHORED scan (FUND-SAFETY, not latency): surface every fclaim / offer / fill / cancel / legacy-claim
   // bearing on this offer (or on the buyer's cap) from PoW-verified BLOCK BODIES, so neither a withheld prior
   // hold nor an inflated served height can slip past the replay or the cap count.
-  const from = Math.max(0, verifiedTip - (MAX_SCAN + MAX_HOLD_SPAN));
+  const from = Math.max(0, verifiedTip - (MAX_SCAN + FCLAIM_MAX_HOLD_SPAN));
   const heights: number[] = [];
   for (let h = from; h <= verifiedTip; h++) heights.push(h);
   // TRANSPORT ONLY (BP4/N11): fetch + merkle-verify the whole window with a bounded worker pool (the sequential

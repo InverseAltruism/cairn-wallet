@@ -3,7 +3,7 @@
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
-import { fclaimHoldEnd, offerExpiryHeightOf, FILL_TIP_MARGIN, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -36,14 +36,6 @@ export function tipDependentFillReason(reason: string): boolean {
 // want, a served want.ticker or want.amount that differs from the record (on the CSD lane the value leg shadows it).
 function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean {
   return bindOfferTerms(offer, t, { give: true, wantType: true });
-}
-
-// Whether a fill submitted at `tip` would strand: the node refuses an attest after its proposal's expiry, in
-// mempool admission and in block apply, so a fill that cannot be mined by the offer's last live block
-// (offerExpiryHeightOf - 1) sits unconfirmed and is dropped. FILL_TIP_MARGIN is the bundle's margin for the same
-// strand on the fclaim lane's hold deadline, applied the same way (holdEnd < tip + FILL_TIP_MARGIN).
-export function offerFillTooLate(expiresAt: number, tip: number): boolean {
-  return expiresAt - 1 < tip + FILL_TIP_MARGIN;
 }
 
 // The offer-id lanes' expiry check, on the merkle-proven expiry and anchor height. The tip is clamped up by the

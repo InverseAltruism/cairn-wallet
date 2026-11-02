@@ -7,6 +7,9 @@
   DER first and refused them, so one crafted record could stop the open-lane fill check for every buyer (csd-crypto
   0.1.21, vendored). The codec twin's own verifySig, which only tests called, is gone; the tests use the bundle's
   verifyDigest. test/sig-vectors.test.mjs runs csd-vectors' signature vectors through every signature check.
+- The fclaim scan window's hold span and the offer-id lanes' "too late to be mined" rule come from the bundled
+  cairnx-core (`FCLAIM_MAX_HOLD_SPAN`, `offerFillTooLate`) instead of local copies; the values are unchanged
+  (test/fill-bounds-vendored.test.mjs).
 
 ## 0.3.1
 
