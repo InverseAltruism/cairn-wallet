@@ -373,8 +373,10 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   };
 }
 
-/** A partial offer's running state from its proven listed fills, or why the list does not prove. */
-export type OfferProgress = { paid: string; delivered: string } | { unproven: string };
+/** A partial offer's running state from its proven listed fills, or why the list does not prove: "missing" (a listed
+ *  fill is not in the block it is listed at, which an honest reorg before the service re-reads also produces),
+ *  "unbound" (its signature is not the spent coin's owner's), "not-this-offer", or "unresolved". */
+export type OfferProgress = { paid: string; delivered: string } | { unproven: string; kind: "missing" | "unbound" | "not-this-offer" | "unresolved" };
 
 // F2-legacy: prove an offer's PAYMENT recipients (want.payto + the seller/rebate address) for the LEGACY /
 // dApp fill lane (fillOfferPreflight), which has no fclaim SPV io to source them from. Merkle-proves the offer
@@ -433,15 +435,15 @@ export async function provenOfferPayto(
       const b = bound.get(f.height)!;
       const at = b.ids.findIndex((x) => x.toLowerCase() === f.txid);
       const ftx = b.rebuilt[at];
-      if (at < 0 || !ftx) return { ...base, progress: { unproven: `listed fill ${f.txid.slice(0, 12)}… is not in block ${f.height}` } };
+      if (at < 0 || !ftx) return { ...base, progress: { kind: "missing", unproven: `listed fill ${f.txid.slice(0, 12)}… is not in block ${f.height}` } };
       const author = await bindSigner(ftx, spv);
-      if (!author.ok) return { ...base, progress: { unproven: `listed fill ${f.txid.slice(0, 12)}… could not be bound to the coin it spends` } };
+      if (!author.ok) return { ...base, progress: { kind: "unbound", unproven: `listed fill ${f.txid.slice(0, 12)}… could not be bound to the coin it spends` } };
       const ev = toChainEvent(ftx, f.txid, f.height, at, author.signer);
-      if (!ev || ev.kind !== "attest" || ev.proposalId !== offerId) return { ...base, progress: { unproven: `listed fill ${f.txid.slice(0, 12)}… is not a fill of this offer` } };
+      if (!ev || ev.kind !== "attest" || ev.proposalId !== offerId) return { ...base, progress: { kind: "not-this-offer", unproven: `listed fill ${f.txid.slice(0, 12)}… is not a fill of this offer` } };
       events.push({ ...ev, depth: verifiedTip - f.height + 1 } as ProvenEvent);
     }
     const st = resolve(events, verifiedTip).offers[offerId];
-    if (!st) return { ...base, progress: { unproven: "the offer does not resolve from its proven record" } };
+    if (!st) return { ...base, progress: { kind: "unresolved", unproven: "the offer does not resolve from its proven record" } };
     return { ...base, progress: { paid: String(st.paid ?? "0"), delivered: String(st.delivered ?? "0") } };
   } catch { return null; }
 }

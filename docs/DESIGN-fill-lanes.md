@@ -72,8 +72,10 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
 - A partial offer (one with `min`) is sized against a running state the wallet proves, not the served `paid` and
   `delivered`: `provenOfferPayto` also merkle-proves each fill the offer service lists, at its listed height, binds
   each to the coin its signer spent, and replays them through the vendored `resolve()` over the proven offer (with the
-  synthesized give-backing). A listed fill that is not this offer's mined, bound fill refuses with `FILL_UNSAFE`, as
-  does a served `paid` or `delivered` that differs from the proven one. Every need-map leg must then be paid exactly:
+  synthesized give-backing). A listed fill that is not in the block it is listed at refuses with the retryable
+  `VERIFY_UNAVAILABLE` (an honest reorg before the service re-reads looks the same); one that is another offer's or
+  does not bind to its coin refuses with `FILL_UNSAFE`, as does a served `paid` or `delivered` that differs from the
+  proven one. Every need-map leg must then be paid exactly:
   a payment past what is left refuses, because the resolver clamps it and keeps the surplus. Only the taker fills a
   taker-bound offer, so a fill the service has not indexed yet is the buyer's own: a fill of the offer in this
   account's history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) that the service does not list refuses with

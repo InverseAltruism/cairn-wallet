@@ -4,7 +4,8 @@
 // (test/_spvrig.ts). Cost: one block bind per listed fill's block beside the offer's, counted here.
 //   - no listed fill: paid 0, and no read beyond the offer's block;
 //   - one or two listed fills: their paid and delivered, one more block read each;
-//   - a listed fill that is not in its block, is another offer's, or does not bind to its coin: unproven;
+//   - a listed fill that is not in its block (kind "missing": an honest reorg can do that), is another offer's
+//     ("not-this-offer") or does not bind to its coin ("unbound"): unproven;
 //   - without `fills` (a whole offer) nothing changes: no progress, the offer's block only.
 // Run: npx tsx test/fill-offer-progress.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
@@ -47,10 +48,10 @@ check(`one listed fill: paid 30,000,000, delivered 30, one more block read (${JS
 ({ r, reads } = await run(w.blocks, [entry(f1, h0 + 2), entry(f2, h0 + 4)]));
 check(`two listed fills: paid 50,000,000, delivered 50, two more block reads (${JSON.stringify(r?.progress)}, ${reads})`, r?.progress?.paid === "50000000" && r?.progress?.delivered === "50" && reads === 3);
 ({ r } = await run(w.blocks, [entry(f1, h0 + 4)]));   // block h0+4 holds f2, not f1
-check(`a listed fill not in the block it is listed at: unproven (${JSON.stringify(r?.progress)})`, typeof r?.progress?.unproven === "string" && /not in block/.test(r.progress.unproven));
+check(`a listed fill not in the block it is listed at: unproven (${JSON.stringify(r?.progress)})`, r?.progress?.kind === "missing" && typeof r?.progress?.unproven === "string" && /not in block/.test(r.progress.unproven));
 ({ r } = await run(w.blocks, [entry(fOther, h0 + 5)]));
-check(`a listed fill of another offer: unproven (${JSON.stringify(r?.progress)})`, typeof r?.progress?.unproven === "string" && /not a fill of this offer/.test(r.progress.unproven));
+check(`a listed fill of another offer: unproven (${JSON.stringify(r?.progress)})`, r?.progress?.kind === "not-this-offer" && typeof r?.progress?.unproven === "string" && /not a fill of this offer/.test(r.progress.unproven));
 ({ r } = await run(swappedWorld.blocks, [entry(f1, h0 + 2), entry(swapped, h0 + 4)]));
-check(`a listed fill whose signature is not the coin owner's: unproven (${JSON.stringify(r?.progress)})`, typeof r?.progress?.unproven === "string" && /could not be bound/.test(r.progress.unproven));
+check(`a listed fill whose signature is not the coin owner's: unproven (${JSON.stringify(r?.progress)})`, r?.progress?.kind === "unbound" && typeof r?.progress?.unproven === "string" && /could not be bound/.test(r.progress.unproven));
 
 done("fill-offer-progress");

@@ -50,7 +50,8 @@ w.provenPaytoForTest = (offerId, offerHeight, fills) => {
   const evs = [];
   for (const f of fills) {
     const ev = chain.find((e) => e.kind === "attest" && e.txid === String(f.txid).toLowerCase());
-    if (!ev) return { ...base, progress: { unproven: `listed fill ${f.txid} is not in block ${f.height}` } };
+    if (!ev) return { ...base, progress: { kind: "missing", unproven: `listed fill ${f.txid.slice(0, 12)}… is not in block ${f.height}` } };
+    if (ev.proposalId !== o.id) return { ...base, progress: { kind: "not-this-offer", unproven: `listed fill ${f.txid.slice(0, 12)}… is not a fill of this offer` } };
     evs.push(ev);
   }
   const st = stateOf(o, evs);
@@ -97,7 +98,13 @@ check(`D. a fee leg one unit short refuses (${r?.code})`, r?.ok === false && r?.
 const ghost = "0x" + "9e".repeat(32);
 served = { ...honest, paid: "60000000", delivered: "60", fills: [...honest.fills, { buyer: A, txid: ghost, height: h0 + 5, paid: "30000000", fee: "450000" }] };
 ({ r, submitted } = await fillWith(off, outsOf(served, W - 60_000_000n)));
-check(`E. a listed fill that does not prove refuses (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fill list for this offer does not match the chain/.test(String(r?.error)) && submitted === 0);
+check(`E. a listed fill not in the block it is listed at refuses retryably: an honest reorg can move it before the service re-reads (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && /couldn't find this offer's earlier fill/.test(String(r?.error)) && submitted === 0);
+const foreignFill = att(A, whole.id, h0 + 5, { [S]: "30000000", [T]: "450000" });
+chain = [fill1, foreignFill];
+served = { ...honest, paid: "60000000", delivered: "60", fills: [...honest.fills, { buyer: A, txid: foreignFill.txid, height: h0 + 5, paid: "30000000", fee: "450000" }] };
+({ r, submitted } = await fillWith(off, outsOf(served, W - 60_000_000n)));
+check(`E. a listed fill that is another offer's refuses as unsafe (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fill list for this offer does not match the chain/.test(String(r?.error)) && submitted === 0);
+chain = [fill1];
 served = { ...honest, paid: "60000000", delivered: "60" };
 ({ r, submitted } = await fillWith(off, outsOf(served, W - 60_000_000n)));
 check(`E. a served paid its proven fills do not reach refuses (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /does not match its proven fills/.test(String(r?.error)) && submitted === 0);
