@@ -62,6 +62,8 @@
 - SECURITY.md and AGENTS.md no longer call a CairnX fill "atomic delivery-versus-payment" or the name check
   "trustless": a fill is one transaction that pays and records it, CairnX then decides delivery, and a refused fill
   keeps the payment. test/wallet-claims.test.mjs now also reads README.md, SECURITY.md and AGENTS.md.
+- The finalize card no longer says "a lost race is never charged": a finalize the chain does not credit still pays
+  its fee, so the card says to approve only at the site's finalize step (test/nfinalize-lede.test.mjs).
 
 ## 0.3.1
 

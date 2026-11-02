@@ -305,7 +305,7 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
         + lede(`<span class="dim">At the v2.5 upgrade this reveal is free (it reserves the name). The registration fee is charged at the final step, and only if you win, so a lost race never charges the fee.</span>`));
     case "nfinalize":
       return parts(".csd registration, step 3 of 3 (finalize and pay)", rows([nameRow]),
-        lede("Completes your reservation and pays the fee shown above (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner of the name pays, and only once; a lost race is never charged."));
+        lede("Completes your reservation and pays the fee shown above (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner's finalize registers the name; a finalize the chain does not credit still pays the fee, so approve only at the site's finalize step."));
     case "nxfer":
       return parts(".csd name transfer", rows([nameRow, ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`, String(r.to)]]));
     case "nset": {
