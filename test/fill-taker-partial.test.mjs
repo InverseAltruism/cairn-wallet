@@ -84,7 +84,7 @@ check("setup: fill 1 is on chain (paid 30,000,000), the stale served state says 
 served = stale;
 let proofs = seen.length;
 ({ r, submitted } = await fillWith(off, outsOf(stale, W)));
-check(`A. own fill not indexed yet: a retryable refusal, nothing sent (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && /not indexed by the offer service yet/.test(String(r?.error)) && submitted === 0);
+check(`A. own fill not indexed yet: a retryable refusal, nothing sent (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && /is not listed as applied by the offer service yet/.test(String(r?.error)) && submitted === 0);
 check(`A. ...decided from the local history before any proof read (${seen.length - proofs} proof calls)`, seen.length === proofs);
 
 served = honest;

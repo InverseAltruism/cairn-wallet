@@ -6,7 +6,7 @@ import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, IN
 
 // Per-account storage namespaces; keep each account's activity + secrets separate.
 export const histKey = (addr: string) => "txHistory:" + addr;
-// How long an account's own fill of an offer, recorded here, counts as possibly not indexed by the offer service yet
+// How long an account's own fill of an offer, recorded here, counts as possibly not listed by the offer service yet
 // (recentFillsOf). The service reads a block within a minute of it being mined; past this an unlisted fill no longer
 // refuses the next one, so a fill that never landed cannot block the offer for good.
 export const OWN_FILL_INDEX_WAIT_MS = 30 * 60_000;
