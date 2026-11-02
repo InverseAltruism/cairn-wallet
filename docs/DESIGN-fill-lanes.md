@@ -96,6 +96,9 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   The fill cards show the listed offer's expiry block and the blocks left after the floor-clamped tip, from the
   offer service's listing (display only), and name a refusal only when `offerFillTooLate` says the preflight will
   make it (test/approve-card-honesty.test.mjs).
+  For a partial listing the card's "You receive" is what the request's payment to the listing's payee buys, from the
+  vendored `previewFill` over the same listing, labelled as computed from it, with the whole listing on its own row
+  (display only; test/fill-card-receive.test.mjs).
 
 ## The token lane
 

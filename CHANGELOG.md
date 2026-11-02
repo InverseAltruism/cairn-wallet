@@ -50,6 +50,11 @@
   offer service yet ... try again in a minute or two"); a fill list that does not prove, or a served amount left that
   differs from the proven one, refuses with `FILL_UNSAFE`. The first fill of an offer reads nothing more; each later
   one reads the blocks of the earlier listed fills (test/fill-taker-partial.test.mjs, test/fill-offer-progress.test.mjs).
+- A partial fill's approval card shows what the payment buys: "You receive about 10 NEWF (computed from the offer
+  service's listing)" and a "Whole listing" row with the listing's give and price, where it said "You receive 100 NEWF
+  (as listed by the offer service)" for any payment. The figure comes from the vendored previewFill over the listing
+  the card already reads (no added read); a payment the listing would not take reads "receives nothing". A whole
+  listing and a name keep their line (test/fill-card-receive.test.mjs).
 
 ## 0.3.1
 

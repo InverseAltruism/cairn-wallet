@@ -442,7 +442,7 @@ async function fillFillView(r: any) {
   const id = String((r.params || {}).proposalId || "");
   const [view, tip] = await Promise.all([bounded(call("fillOfferView", id)), cardTip()]);
   if (renderedId !== r.id) return;
-  el.innerHTML = fillViewHtml(view as any, id, tip);
+  el.innerHTML = fillViewHtml(view as any, id, tip, (r.params || {}).outputs);
   (el as HTMLElement).hidden = false;
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning

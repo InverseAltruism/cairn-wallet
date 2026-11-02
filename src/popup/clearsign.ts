@@ -1,7 +1,8 @@
 // Pure clear-signing formatters for the approval window and the popup's review: no DOM and no chrome, so they are
 // unit-testable (the "what am I signing?" layer). approve.ts and popup.ts import these and own only the DOM glue.
 import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
-import { EPOCH_LEN, offerFillTooLate } from "../vendor/cairnx-spv.js";
+import { EPOCH_LEN, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
+import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts; take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
@@ -534,7 +535,26 @@ export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
 // #fill-view for a CSD-paid fill: the asset the offer service lists as received and the offer's expiry, then the listing
 // id when the attested id is a reservation of it (the claim lane), which has no weight and goes last. Resolver-served,
 // so attributed; a failed read says so.
-export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number } | null | undefined, proposalId: string, tip?: unknown): string {
+// A partial listing (one with a minimum) delivers pro rata, so its "You receive" is what the payment the request makes
+// to the listing's payee buys, computed with the vendored previewFill over the listing the card already read; the
+// whole listing gets its own row. Display only: the fill preflight binds what is signed.
+function partialReceive(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number; listing?: FillListing }, outputs: unknown): string | null {
+  const l = view.listing;
+  if (!l || l.min === undefined || "name" in l.give || view.giveTicker === undefined || view.giveAmount === undefined) return null;
+  let pay = 0n;
+  for (const o of Array.isArray(outputs) ? outputs : []) if (String(o?.to ?? "").toLowerCase() === l.want.payto) pay += csdBase(o?.value) ?? 0n;
+  const dec = displayDecimals(view.giveTicker, view.giveDecimals).decimals;
+  const listingRow = rows([["Whole listing", `${escapeHtml(tokenAmountBothScales(view.giveAmount, dec, view.giveTicker))} for ${escapeHtml(fmtCsd(l.want.value))}`]]);
+  let p: ReturnType<typeof previewFill>;
+  try { p = previewFill(l as unknown as OfferState, pay); } catch { return null; }
+  if (!p.deliverable) {
+    const why = p.reason === "below-min" ? "the payment is below what the listing accepts" : p.reason === "zero-delivery" ? "the payment rounds to no tokens at the listing's price" : "the listing cannot take this payment";
+    return danger(`By the offer service's listing this payment receives nothing: ${why}. Check the listing on the site before approving.`) + listingRow;
+  }
+  return rows([["You receive", `about <b>${escapeHtml(tokenAmountBothScales(String(p.got), dec, view.giveTicker))}</b> <span class="dim">(computed from the offer service's listing)</span>`]]) + listingRow;
+}
+
+export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; listing?: FillListing } | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown): string {
   if (!view || !view.ok) return danger(`Could not load this listing from the offer service, so what you receive is not shown here. Check the listing on the site before approving.`);
   const reserved = !!view.offerId && view.offerId.toLowerCase() !== String(proposalId).toLowerCase();
   const gets = view.giveName !== undefined ? `<b>${escapeHtml(view.giveName)}.csd</b>`
@@ -542,7 +562,8 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
       ? `<b>${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))}</b>`
       : "";
   const exp = offerExpiryLine(view.expiresAt, tip);
-  return (gets ? rows([["You receive", `${gets} <span class="dim">(as listed by the offer service)</span>`]]) : danger(`The offer service did not say what this listing gives. Check the listing on the site before approving.`))
+  const partial = partialReceive(view, outputs);
+  return (partial ?? (gets ? rows([["You receive", `${gets} <span class="dim">(as listed by the offer service)</span>`]]) : danger(`The offer service did not say what this listing gives. Check the listing on the site before approving.`)))
     + (exp ? lede(exp) : "")
     + (reserved ? rows([["Listing", `<code>${escapeHtml(view.offerId!)}</code>`]]) + lede(`<span class="dim">The offer id below is your reservation of this listing.</span>`) : "");
 }
