@@ -70,6 +70,9 @@
 - The approval window's requester tile shows the requesting site's initial ("e" for https://evil.example), not the
   Cairn mark, so a look-alike site no longer sits under the product's mark where you decide; the locked view keeps the
   mark (test/approve-tile-dom.test.mjs, test/popup-logos-chrome.test.mjs).
+- The package carries `THIRD-PARTY-LICENSES.txt` with the MIT notices of the code it bundles (@noble/curves,
+  @noble/hashes, @scure/base, @scure/bip32, @scure/bip39 and the vendored QR generator), which the build used to drop
+  (test/third-party-notices.test.mjs).
 
 ## 0.3.1
 
