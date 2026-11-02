@@ -18,7 +18,7 @@ are happy to credit you once it is resolved.
 * **Local signing.** The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node. The wallet never signs a digest handed to it by a server, so a malicious or intercepted RPC cannot redirect funds or change what you approved. The "sign in with CSD" digest is structurally distinct from a transaction sighash, so a hostile site cannot turn a sign-in into a spend.
 * **Deterministic, non-malleable signatures.** secp256k1 with RFC 6979 nonces and low-S enforcement.
 
-The wallet also declares the `unlimitedStorage` permission. Its trustless `.csd` name
+The wallet also declares the `unlimitedStorage` permission. Its chain-checked `.csd` name
 verification keeps block headers in the extension's own IndexedDB database (84 bytes per header,
 in 4,096-header chunks), which grows with the chain; without the permission the header store
 would eventually hit the quota and degrade verification. Everything stays local to the device and
@@ -164,8 +164,9 @@ on all sites (like MetaMask) so any dApp can request a connection, but injection
 **not** the security boundary: the content script only relays requests, exposes no keys, and
 `host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
-sealed claims, **send** (a plain CSD transfer), and **fillOffer** (an atomic CairnX
-delivery-versus-payment fill, preflighted against the resolver before anything is signed).
+sealed claims, **send** (a plain CSD transfer), and **fillOffer** (a CairnX offer fill: one transaction pays
+the recipients and records the fill, and CairnX then decides delivery; if it refuses the fill, the payment is not
+returned. The wallet checks the fill against the offer's proven record before anything is signed).
 
 **Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
 the first time an origin connects the user approves it, and the origin is recorded as a

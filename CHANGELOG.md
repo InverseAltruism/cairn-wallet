@@ -59,6 +59,9 @@
   phrase panels said it restores or controls "all" your accounts, which an imported key is not; they now say an
   imported key needs its own backup, and so do the README and the store listing text (the listing is updated on the
   store dashboard with the upload) (test/recovery-copy.test.mjs).
+- SECURITY.md and AGENTS.md no longer call a CairnX fill "atomic delivery-versus-payment" or the name check
+  "trustless": a fill is one transaction that pays and records it, CairnX then decides delivery, and a refused fill
+  keeps the payment. test/wallet-claims.test.mjs now also reads README.md, SECURITY.md and AGENTS.md.
 
 ## 0.3.1
 
