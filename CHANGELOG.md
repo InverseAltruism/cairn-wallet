@@ -64,6 +64,9 @@
   keeps the payment. test/wallet-claims.test.mjs now also reads README.md, SECURITY.md and AGENTS.md.
 - The finalize card no longer says "a lost race is never charged": a finalize the chain does not credit still pays
   its fee, so the card says to approve only at the site's finalize step (test/nfinalize-lede.test.mjs).
+- Removing an account created from the recovery phrase shows how its coins are reached again: "New account will not
+  bring this address back. Its coins stay on chain; to reach them again, restore your recovery phrase and add accounts
+  until this one reappears (export any imported keys first)." (test/account-remove-warn-dom.test.mjs).
 
 ## 0.3.1
 

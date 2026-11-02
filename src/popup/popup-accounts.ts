@@ -70,9 +70,11 @@ export async function renderAccts() {
           <button class="mini" data-rename="${escapeHtml(addr)}">Rename</button>
           ${many ? `<button class="mini" data-remove="${escapeHtml(addr)}">Remove</button>` : ""}</span>`;
     }
-    const removeWarn = editing && acctEdit!.mode === "remove" && a.imported
-      ? checkRow({ tier: "danger", html: "This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
-      : "";
+    // An HD account is not lost with its row, but New account never derives it again (the index only moves forward).
+    const removeWarn = !(editing && acctEdit!.mode === "remove") ? ""
+      : a.imported
+        ? checkRow({ tier: "danger", html: "This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
+        : checkRow({ tier: "caution", html: "New account will not bring this address back. Its coins stay on chain; to reach them again, restore your recovery phrase and add accounts until this one reappears (export any imported keys first)." });
     return `<div class="tx acct-row${open ? " open" : ""}">
       <button class="acct-hit" type="button" data-open="${escapeHtml(addr)}" aria-expanded="${open}">
         <span class="tx-top"><span class="tx-kind">${escapeHtml(a.label)}${tag}</span><svg class="i acct-chev" aria-hidden="true"><use href="icons.svg#i-chevron-down"/></svg></span>
