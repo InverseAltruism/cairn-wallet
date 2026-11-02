@@ -35,6 +35,10 @@
   purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only
   the owner may renew and the fee would be burned. The wallet's own Renew refuses both (retryable right after a
   purchase, while the name service still names the seller) (test/name-action-gate.test.mjs).
+- The approval window's Expires row follows the node's admission rule, the epoch of the next block: a record
+  expiring in that epoch reads "expires at the end of this epoch, in about N blocks" (it was "already past: this
+  record would be a no-op", while the node admits it and a token transfer applies), and one expiring earlier reads
+  "already past: the node will refuse it; nothing is spent" (test/expiry-row.test.mjs).
 
 ## 0.3.1
 

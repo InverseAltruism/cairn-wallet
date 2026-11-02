@@ -124,7 +124,7 @@ ok("describe(token-fill attest conf1e6) STILL warns SPENDS TOKENS (claim branch 
   ok("expiryValue humanizes the remaining window from the current epoch", /in ~1 day/.test(near) && near.includes("current epoch 100"));
   ok("expiryValue WARNs on an unusually long claim window (mirrors FEE_WARN)", /unusually long/.test(expiryValue(100 + 100001, 100)));
   ok("expiryValue does NOT warn on a normal horizon", !/unusually long/.test(expiryValue(100 + 24, 100)));
-  ok("expiryValue flags an already-past expiry as a no-op", /already past/.test(expiryValue(50, 100)));
+  ok("expiryValue flags an already-past expiry as one the node refuses", /already past: the node will refuse it/.test(expiryValue(50, 100)));
   // the warn flows through describe() when approve.ts supplies r.currentEpoch
   const warned = describe({ method: "propose", params: { domain: "d", fee: 1, expiresEpoch: 100 + 200000 }, currentEpoch: 100 });
   ok("describe(propose) surfaces the long-window WARN when current epoch is known", /unusually long/.test(warned));

@@ -188,19 +188,28 @@ function humanBlocks(blocks: number): string {
   return `~${(days / 365).toFixed(1)} year(s)`;
 }
 const humanEpochs = (epochs: number): string => humanBlocks(epochs * EPOCH_LEN);
-/** The expiry as a row value; "" when the request carries none. */
-export function expiryValue(expiresEpoch: unknown, currentEpoch?: unknown): string {
+/** The expiry as a row value; "" when the request carries none. Decided by the node's admission rule: a Propose
+ *  whose expiry is below the epoch of the next block (tip + 1) is refused, and one expiring in that epoch is live to
+ *  its end. Without a tip the current epoch decides what it can. */
+export function expiryValue(expiresEpoch: unknown, currentEpoch?: unknown, currentTip?: unknown): string {
   if (expiresEpoch === undefined || expiresEpoch === null) return "";
   const e = Number(expiresEpoch);
   if (!Number.isFinite(e) || !Number.isInteger(e) || e < 0) return `<span class="err">invalid epoch</span>`;
-  const cur = Number(currentEpoch);
-  if (Number.isFinite(cur) && Number.isInteger(cur) && cur >= 0) {
-    const left = e - cur;
-    const warn = left > EXPIRY_WARN_EPOCHS ? ` <span class="err">⚠ unusually long claim window</span>` : "";
-    if (left <= 0) return `epoch ${e} <span class="err">(already past: this record would be a no-op)</span>`;
-    return `epoch ${e} (in ${humanEpochs(left)}, current epoch ${cur})${warn}`;
+  const tip = Number(currentTip);
+  const hasTip = Number.isSafeInteger(tip) && tip >= 0;
+  const c = Number(currentEpoch);
+  const cur = Number.isFinite(c) && Number.isInteger(c) && c >= 0 ? c : hasTip ? Math.floor(tip / EPOCH_LEN) : null;
+  if (cur === null) return `epoch ${e}`;
+  const next = hasTip ? Math.floor((tip + 1) / EPOCH_LEN) : cur;
+  if (e < next) return `epoch ${e} <span class="err">(already past: the node will refuse it; nothing is spent)</span>`;
+  if (e === next) {
+    if (!hasTip) return `epoch ${e} (expires at the end of this epoch)`;
+    const n = EPOCH_LEN * (e + 1) - (tip + 1);
+    return `epoch ${e} (expires at the end of this epoch, in about ${n} block${n === 1 ? "" : "s"})`;
   }
-  return `epoch ${e}`;
+  const left = e - cur;
+  const warn = left > EXPIRY_WARN_EPOCHS ? ` <span class="err">⚠ unusually long claim window</span>` : "";
+  return `epoch ${e} (in ${humanEpochs(left)}, current epoch ${cur})${warn}`;
 }
 
 // ── CairnX clear-signing: structured rendering of cairnx:v1 records ──────────
@@ -386,7 +395,7 @@ export function describe(r: any): string {
     const xfer = outs.length ? caution(`This proposal also transfers funds out of your wallet: <b>${fmtCsd(total)}</b> in total.`) : "";
     const outRows = rows(outputRows(outs));
     // The dApp-supplied expiry is part of the signed bytes: shown humanized in both branches.
-    const exp: Row[] = p.expiresEpoch !== undefined ? [["Expires", expiryValue(p.expiresEpoch, r.currentEpoch)]] : [];
+    const exp: Row[] = p.expiresEpoch !== undefined ? [["Expires", expiryValue(p.expiresEpoch, r.currentEpoch, r.currentTip)]] : [];
     if (String(p.domain) === CAIRNX_DOMAIN) {
       const cx = cairnxParts(p.uri, p.payloadHash, r.tokenMeta);
       if (cx) {
