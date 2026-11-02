@@ -626,10 +626,11 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   {
     const served = taker({ min: "50000000" });
     const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
-    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: Number(served.height), terms: termsFor(served) });   // proven min == served min
+    // proven min == served min; no fill listed, so the proven running state is the served one (paid 0)
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: Number(served.height), terms: termsFor(served), progress: { paid: String(served.paid ?? "0"), delivered: String(served.delivered ?? "0") } });
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
     const r = await w.fillOffer({ proposalId: OID, outputs: outs });
-    check(`F2-legacy: an honest partial offer (min matches on-chain) is NOT refused for a terms mismatch (${r?.code ?? "ok"})`, !(r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? "")));
+    check(`F2-legacy: an honest partial offer (min matches on-chain) signs, one submit (${r?.code ?? "ok"})`, r?.ok === true && s.submits.length === 1);
   }
   // (b) UNPROVABLE author (null) -> retryable VERIFY_UNAVAILABLE, NOT a hard decline (the transient valve)
   {

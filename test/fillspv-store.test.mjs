@@ -200,10 +200,13 @@ await test("a chunk that cannot be fetched stays the retryable VERIFY_UNAVAILABL
   assert.equal(submits.length, 0);
 });
 
-await test("honest path: the canonical body gets past the SPV io to the grant replay (no RPC or availability refusal)", async () => {
-  const { r } = await walletFill(LOCAL);
-  assert.ok(r.code !== "RPC_BLOCK_MISMATCH" && r.code !== "VERIFY_UNAVAILABLE", `${r.code}: ${r.error}`);
-  console.log(`    (the replay refuses on the offer itself: ${r.code}: ${String(r.error).slice(0, 90)})`);
+await test("honest path: the canonical body gets past the SPV io to the grant replay, whose own verdict is the answer", async () => {
+  const { r, submits } = await walletFill(LOCAL);
+  // This fixture's fclaim is not the offer's live granted hold, so the replay itself refuses; any earlier stage
+  // (an RPC mismatch, an availability refusal) answering instead would be an over-refusal of a canonical body.
+  assert.equal(r.code, "FILL_UNSAFE", `${r.code}: ${r.error}`);
+  assert.match(String(r.error), /this fclaim is not the live granted hold/);
+  assert.equal(submits.length, 0);
 });
 
 console.log("the wallet's SPV source follows the RPC and API settings in the same session:");
