@@ -439,7 +439,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
       if (!Number.isSafeInteger(spendable)) { spendable = 0; break; } // beyond-supply garbage: fall through to INSUFFICIENT
     }
     if (spendable >= need)
-      return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows — send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
+      return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows: send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
   }
   if (!ghostCount && !horizonCount && !unrepCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
   // The round budget ran out while selection still had untried coins, so nothing is known about
@@ -572,7 +572,7 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // kept only as a FREE CROSS-CHECK on the deliberately forked codec: a mismatch logs loudly, is never
   // trusted.
   if (sub.txid && String(sub.txid).toLowerCase() !== localTxid.toLowerCase())
-    console.warn(`[node] submit echoed txid ${sub.txid} != locally computed ${localTxid} — using local (codec cross-check)`);
+    console.warn(`[node] submit echoed txid ${sub.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
   return {
     ok: !!sub.ok,
     // LOCAL txid whenever a tx may exist on the network (ok / ambiguous / duplicate). Definitive
@@ -613,7 +613,7 @@ async function assembleValueTx(
   // bypass that form, so the universal backstop lives here (audit M1 / V23 nset-clear burn class). The
   // node accepts a zero-address output, so this MUST be caught client-side. Change is always to self.
   for (const o of outputs) {
-    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0) — these funds would be unrecoverable", sighashMatch: false, code: "ZERO_ADDR_REFUSED" };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
+    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0): these funds would be unrecoverable", sighashMatch: false, code: "ZERO_ADDR_REFUSED" };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
   }
   const addr = addrFromPriv(priv);
   const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
@@ -761,7 +761,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   const verified = new Map<string, number>();
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
-    if (pool.length < 2) return { ok: false, error: "nothing to consolidate — fewer than two spendable coins", sighashMatch: false, code: "NOTHING_TO_CONSOLIDATE" };
+    if (pool.length < 2) return { ok: false, error: "nothing to consolidate: fewer than two spendable coins", sighashMatch: false, code: "NOTHING_TO_CONSOLIDATE" };
     const ver = await verifyInputValues(rpc, pool, verified);
     if (!ver.ok) {
       if (ver.kind === "tamper") return { ok: false, error: "could not verify selected coins against the chain (refusing to risk a burned fee)", sighashMatch: false, code: "VERIFY_TAMPER" };
@@ -777,7 +777,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
       continue;
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
-    if (!(outValue > 0)) return { ok: false, error: "these coins are too small to cover the fee — nothing to gain by merging them", sighashMatch: false, code: "INSUFFICIENT" };
+    if (!(outValue > 0)) return { ok: false, error: "these coins are too small to cover the fee: nothing to gain by merging them", sighashMatch: false, code: "INSUFFICIENT" };
     // Same proportional fee cap assembleValueTx applies to every other value tx (min(100 CSD,
     // max(1 CSD, 10% of the CHAIN-VERIFIED inputs)); consolidate builds its tx directly rather than
     // through assembleValueTx, so it MUST re-assert the single-fee-chokepoint invariant itself: a

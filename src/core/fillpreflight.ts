@@ -130,14 +130,14 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
     else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
   } catch { fetchFailed = true; }
   if (offer && typeof offer.status === "string") {
-    if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status} — refusing to pay into a no-op fill (review again)`, sighashMatch: false, code: "FILL_UNSAFE" };
+    if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status}: refusing to pay into a no-op fill (review again)`, sighashMatch: false, code: "FILL_UNSAFE" };
     // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
     // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
     // instead of letting BigInt() throw raw out of the preflight.
     const sums = new Map<string, bigint>();
     for (const o of outputs ?? []) {
       if (typeof o.value !== "number" || !Number.isSafeInteger(o.value) || o.value <= 0)
-        return { ok: false, error: "each output value must be a positive integer amount in base units — refusing to sign", sighashMatch: false, code: "BAD_OUTPUTS" };
+        return { ok: false, error: "each output value must be a positive integer amount in base units: refusing to sign", sighashMatch: false, code: "BAD_OUTPUTS" };
       const k = String(o.to).toLowerCase();
       sums.set(k, (sums.get(k) ?? 0n) + BigInt(o.value));
     }
@@ -180,7 +180,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
     // makes hasLiveClaim MORE likely true (fires -> refuse), so it fails safe. A pre-V28 hold honored in the
     // sunset has claimTxid undefined -> legacy path (correct, no false-refuse).
     if (offer.claimTxid !== undefined && hasLiveClaim(offer, me, tip))
-      return { ok: false, error: "this offer has a live reservation — fill its reservation (fclaim) target, not the offer id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_WRONG_TARGET" };
+      return { ok: false, error: "this offer has a live reservation: fill its reservation (fclaim) target, not the offer id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_WRONG_TARGET" };
     // W5 (B5b): LEGACY-SUNSET arithmetic refuse. Placed AFTER the Correction-1 mirror deliberately: a
     // served live-hold offer gets the more SPECIFIC actionable refusal (FILL_WRONG_TARGET) first, and the
     // W5 forgery (claimTxid OMITTED) never fires the mirror, so this guard still closes it.
@@ -197,16 +197,16 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
     // token lane now binds its give/want CONTENT (B7e-FIX, tokenLanePreflight), so the token exemption
     // is not claiming an unbound residual - a token-priced offer simply is not an open-CSD claim-lane fill.
     if (offer.taker === undefined && isCsdWant && Math.max(tip, await wallet.tipFloor()) >= V28_HEIGHT + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS)
-      return { ok: false, error: "past the V28 sunset an open offer can only be filled through its reservation (fclaim) target — ask the marketplace for the reservation id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_LEGACY_SUNSET" };
+      return { ok: false, error: "past the V28 sunset an open offer can only be filled through its reservation (fclaim) target: ask the marketplace for the reservation id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_LEGACY_SUNSET" };
     if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))
-      return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+      return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer: try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     const verdict = fillIsSafe(offer, me, pay, tip);
-    if (!verdict.safe) return { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
+    if (!verdict.safe) return { ok: false, error: `refusing to sign: ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
     return isCsdWant ? await csdLanePreflight(wallet, offer, sums, payto, pay, tip, me) : await tokenLanePreflight(wallet, offer, sums, tip, reviewedQuote);
   } else if (fetchFailed) {
     // GENUINE unreachability (5xx / timeout; NOT a 404). We cannot tell the lane without the offer, and
     // an open-CSD claim-lane fill by a non-claimant loses the WHOLE payment (C2/C4), so fail closed here.
-    return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    return { ok: false, error: "couldn't confirm this offer is still fillable by you (resolver unreachable): try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   } else {
     // B1 (Plans/68 M-MKT-5 + N-1; the Plan 63 B2 flip, operator-approved): fail CLOSED unless the
     // resolver POSITIVELY answered with a parseable CairnX offer. A clean 404 (a valid, unexpired L1
@@ -339,7 +339,7 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, su
   if (reviewedQuote && reviewedQuote.ticker !== undefined) {
     const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
     if (qT !== String(proven.terms.wantTicker ?? "") || qA !== String(proven.terms.wantAmount ?? ""))
-      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing — the card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.terms.wantAmount ?? "?"} ${proven.terms.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
+      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing. The card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.terms.wantAmount ?? "?"} ${proven.terms.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
   }
   // 0.2.71 (CX-15): bind the reviewed fee and total. The fee follows from the proven amount and the
   // offer's proven inclusion height (1.5% from V16, 1% before), not from the served feeBps, so a
@@ -358,7 +358,7 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, su
     if (String(reviewedQuote.giveTicker ?? "") !== String(proven.terms.giveTicker ?? "")
       || String(reviewedQuote.giveAmount ?? "") !== String(proven.terms.giveAmount ?? "")
       || String(reviewedQuote.giveName ?? "") !== String(proven.terms.giveName ?? ""))
-      return refuse("FILL_UNSAFE", "refusing to sign: the asset you would receive changed between review and signing — the card showed a different give than the offer's on-chain record. Retry from the site's Buy button.");
+      return refuse("FILL_UNSAFE", "refusing to sign: the asset you would receive changed between review and signing. The card showed a different give than the offer's on-chain record. Retry from the site's Buy button.");
   }
   // a positively-parsed OPEN offer that cleared every check above → proceed to sign
   return null;
@@ -374,7 +374,7 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, su
 async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTxid: string, me: string, sums: Map<string, bigint>, payto: string, pay: bigint, second: { offer: SecondSourceRead; record: SecondSourceRead }, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
   const offerId = String(offer?.id ?? "").toLowerCase();
   if (!/^0x[0-9a-f]{64}$/.test(offerId))
-    return { ok: false, error: "refusing to sign — the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
+    return { ok: false, error: "refusing to sign: the resolver did not link this reservation to a well-formed offer", sighashMatch: false, code: "FILL_UNSAFE" };
   // Build the fail-closed SPV seam (PoW-verified tip + merkle-proven offer/fclaim/hold events + the computed
   // cross-offer hold count). Any unverifiable read throws → refuse retryably (never proceed on an unproven grant).
   let io: FillSpvIo & { myLiveHoldsAtGrant?: number; provenTerms?: MintedProvenOfferTerms };
@@ -388,7 +388,7 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
     if (e instanceof OfferNotAdmittedError) return offerNotAdmitted(e.reason);
     if (e instanceof BodyMismatchError && e.bodySource)
       return { ok: false, error: `refusing to sign: block ${e.height} from ${e.bodySource} does not match the block header the wallet verified${e.headerSource ? ` from ${e.headerSource}` : ""}. One of them is wrong: the RPC may follow another chain, or the header source may have served a false header. If that RPC is your own node and it follows the main chain, the header source may be at fault; otherwise try again in a moment.`, sighashMatch: false, code: "RPC_BLOCK_MISMATCH" };
-    return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable) — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    return { ok: false, error: "couldn't verify this reservation against the chain yet (SPV source unavailable): try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   }
   // myLiveHoldsAtGrant is COMPUTED by the SPV source: a CONSERVATIVE OVER-count of my OTHER-offer fclaim holds
   // live at this fclaim's grant height, from the same PoW-verified [fclaimHeight - MAX_SCAN, tip] scan. It is
@@ -398,7 +398,7 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
   // NEVER assumed; if the source could not compute the count, fail CLOSED here. The DEADLINE guard likewise
   // rides INSIDE verifyFillSpv from the fclaim's OWN confirmed expiry epoch (fclaimHoldEnd), never epochOf(tip+45).
   if (!Number.isInteger(io.myLiveHoldsAtGrant))
-    return { ok: false, error: "couldn't count your other open reservations to verify this one against the claim cap — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    return { ok: false, error: "couldn't count your other open reservations to verify this one against the claim cap: try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   // W3 (B7e): the OPT-IN payment bind. verifyFillSpv re-runs requiredFillOutputs over the merkle-proven,
   // REPLAYED offer (the chain's OWN paid/delivered, never a served lie) and requires our PLANNED per-address
   // CSD sums to match it EXACTLY, closing the whole->partial overpay (a resolver serving paid:"0" for a
@@ -417,7 +417,7 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
       sums: Object.fromEntries(sums), // MUTATE_FCLAIM_SUMS_BIND
     });
   } catch {
-    return { ok: false, error: "couldn't verify this reservation against the chain yet — try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
+    return { ok: false, error: "couldn't verify this reservation against the chain yet: try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
   }
   // FILLSPV-01: when the reported tip had to be floor-clamped UP (a deep reorg OR an active served-tip
   // deflation), the wallet genuinely could not confirm burial-to-true-tip this call, so the vendor's
@@ -425,7 +425,7 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
   // branches REFUSE (fail-closed either way); this only fixes which reason the user sees. `tipFloored` is
   // undefined/falsy under the fillSpvIoForTest synthetic io, so every existing denial keeps FILL_UNSAFE.
   // Only a reason the tip decides is remapped; a permanent denial keeps FILL_UNSAFE under a floored tip.
-  if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored && tipDependentFillReason(verdict.reason) ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign — ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
+  if (!verdict.safe) return (io as { tipFloored?: boolean }).tipFloored && tipDependentFillReason(verdict.reason) ? { ok: false, error: "we could not confirm this reservation against the current chain tip (the chain may be reorganizing). Wait a moment and try again.", sighashMatch: false, code: "VERIFY_UNAVAILABLE" } : { ok: false, error: `refusing to sign: ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" }; // MUTATE_FCLAIM_GUARD
   // F2 (amount leg): bind the fee/rebate/value fields to the merkle-proven offer so a deflated feeBps/height/
   // value/taker cannot under-size a leg (which resolve() would reject AFTER payment = pay-without-delivery burn).
   const terms = (io as { provenTerms?: MintedProvenOfferTerms }).provenTerms;
@@ -437,10 +437,10 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
   // resolver need-map (payto >= want, treasury >= fee, seller >= rebate), identical to the legacy lane.
   const need = requiredFillOutputs(offer, pay);
   if (need === null)
-    return { ok: false, error: "refusing to sign — this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
+    return { ok: false, error: "refusing to sign: this payment would not be accepted by the resolver (undeliverable fill)", sighashMatch: false, code: "FILL_UNSAFE" };
   for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
     const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
-    return { ok: false, error: `refusing to sign — the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
+    return { ok: false, error: `refusing to sign: the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
   }
   // Pre-window withholding: the scan cannot see a cancel or fill older than its window, so ask the second
   // source about the offer. Its answer counts only if it has already arrived; pending or unusable proceeds.

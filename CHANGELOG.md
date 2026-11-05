@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The offer-fill, send and consolidate refusals (`fillpreflight.ts`, `node.ts`) no longer contain em dashes; a colon
+  or a full stop takes their place, the wording is otherwise the same and the error codes are unchanged.
 - A record whose 64 signature bytes are a valid compact signature that also reads as DER (the node accepts it) now
   binds to its author in the name check and the fill checks; the bundled csd-crypto verifyDigest read such bytes as
   DER first and refused them, so one crafted record could stop the open-lane fill check for every buyer (csd-crypto
