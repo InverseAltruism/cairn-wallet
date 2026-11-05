@@ -28,8 +28,11 @@ How the wallet turns it into a permanent caution:
 - `replayName` replays the audited resolver over the merkle-proven records and returns the winning record's
   `viaFill` (`src/core/namespv.ts:237`).
 - `verifyNameUnion` refuses to call such a name verified (`src/core/namespv.ts:337-351`), and also refuses when any
-  source served `scopedReplaySufficient: false` (line 344). The per-source recovery skips a viaFill result (line
-  318), so no path reaches verified. Case 16b of test/namespv.test.mjs pins the gate with the attack below.
+  source served `scopedReplaySufficient: false` (line 344). The per-source recovery skipped a viaFill result (line
+  318), so a source that padded the union past `MAX_HINTS` and withheld the sale had the seller verified from its
+  records alone; since 2026-11-05 the recovery refuses a viaFill result with the same reason
+  (test/namespv-union-scope.test.mjs case 4), so no path reaches verified. Case 16b of test/namespv.test.mjs pins
+  the gate with the attack below.
 - `resolveName` then returns the served address, not the replayed one: `{ ...base, verified: false, ... viaFill }`
   (`src/core/names.ts:92`, where `base.addr` is the resolver's `addr`, line 74). The confirm-time hint-set skip
   does not cache the name (`src/core/names.ts:137-138`), so every send repeats the full verification.

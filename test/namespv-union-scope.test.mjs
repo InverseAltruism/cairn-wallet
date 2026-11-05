@@ -8,8 +8,8 @@
 import { checker } from "./helpers/check.mjs";
 import { verifyNameUnion } from "../src/core/namespv.js";
 import { toChainEvent } from "../src/core/spvbind.js";
-import { proposeTx, world, source, feeOut, pick, mkFetch, addrFromPriv, buildNameClaim, ctxid, rpcTxToTx, resolve } from "./_spvrig.ts";
-import { nameCommit, nameCommitRecord, nameFinalize, V26_HEIGHT, MAX_PENDING_REG } from "../src/vendor/cairnx-spv.js";
+import { proposeTx, attestTx, world, source, feeOut, pick, mkFetch, addrFromPriv, buildNameClaim, ctxid, rpcTxToTx, resolve, TREASURY_ADDR } from "./_spvrig.ts";
+import { nameCommit, nameCommitRecord, nameFinalize, V26_HEIGHT, MAX_PENDING_REG, offer, tradeFee, makerRebate, epochOf, SCORE_FILL } from "../src/vendor/cairnx-spv.js";
 
 const { check, done } = checker("name union: only the name's own records are replayed:");
 
@@ -126,6 +126,48 @@ const finalize = (name, s, priv) => proposeTx({ ...pick(nameFinalize({ name, sal
   // each source alone is within the cap (5 and 256 hints), their union is not (258)
   const r2 = await verifyNameUnion(W, SOURCES, source(all2.blocks, w0 + 60), mkFetch({ [PRIMARY]: body(claim(H), [...hW2, ...extra2], true), [CLARVIS]: body(claim(H), [...hW2, ...pad2], true) }));
   check(`honest: both sources sufficient, a union over the cap still recovers H from each source alone (${who(r2.owner)}, recovered ${r2.recovered}, soleSource ${r2.soleSource})`, r2.verified === true && r2.owner === H && r2.recovered === true && r2.soleSource === false);
+}
+
+// ── 4. The same holds for a name sold through a fill. H sells V to M through a taker-bound CSD offer, so the chain
+// owner is M and the replay marks the name viaFill, which the success path refuses. A source that serves H's
+// registration, withholds the offer and the fill and pads with real filler commits makes the union refuse at
+// MAX_HINTS; the per-source recovery must refuse as the success path does instead of dropping the honest source for
+// its viaFill replay and letting the padding source alone verify H. ──
+{
+  const keyF = "0x" + "33".repeat(32), F = addrFromPriv(keyF).toLowerCase();
+  const V = "zzsold", price = 50_000_000n, h0 = 35_000;
+  const reg = { height: 33_700, tx: proposeTx({ ...pick(buildNameClaim({ name: V })), priv: keyH, outputs: feeOut() }) };
+  const off = { height: h0, tx: proposeTx({ ...pick(offer({ give: { name: V }, want: { value: String(price), payto: H }, taker: M })), priv: keyH, expiresEpoch: epochOf(h0) + 50 }) };
+  const fill = { height: h0 + 10, tx: attestTx({ proposalId: ctxid(rpcTxToTx(off.tx)).toLowerCase(), score: SCORE_FILL, confidence: 100, priv: keyM,
+    outputs: [{ to: H, value: Number(price + makerRebate(price)) }, { to: TREASURY_ADDR, value: Number(tradeFee(price, 150)) }] }) };
+  const filler = [];
+  for (let k = 0; k < 255; k++) filler.push({ height: h0 + 30, tx: commit("zzpad" + k, salt(k % 9), F, keyF) });
+  const core = [reg, off, fill];
+  const placed = [...core, ...filler];
+  const all = world(placed);
+  const TIP = h0 + 60;
+  const hint = (pl) => all.hints[placed.indexOf(pl)];
+  const evs = core.map((pl) => { const t = rpcTxToTx(pl.tx); return toChainEvent(t, ctxid(t), pl.height, hint(pl).pos, pl === fill ? M : H); });
+  const chainRec = resolve(evs, TIP).names[V];
+  check(`the chain makes M the owner of V through a fill (${who(chainRec?.owner)}, viaFill ${chainRec?.viaFill})`, chainRec?.owner === M && chainRec?.viaFill === true);
+  const honest = core.map(hint), padded = [hint(reg), ...filler.map(hint)];
+  check(`setup: the padding source serves 256 hints, the union ${new Set([...honest, ...padded].map((x) => x.txid)).size} (over MAX_HINTS)`,
+    padded.length === 256 && new Set([...honest, ...padded].map((x) => x.txid)).size > 256);
+  const spv = source(all.blocks, TIP);
+  const union = (p, c) => verifyNameUnion(V, SOURCES, spv, mkFetch({ [PRIMARY]: p, [CLARVIS]: c }));
+  const both = await union(body(claim(M), honest), body(claim(M), honest));
+  check(`both sources honest: not verified, the viaFill caution (${both.verified}, viaFill ${both.viaFill})`, both.verified === false && both.viaFill === true);
+  const noPad = await union(body(claim(M), honest), body(claim(H), [hint(reg)]));
+  check(`clarvis withholds the sale without padding: not verified, viaFill (${noPad.verified}, ${who(noPad.addr)}, viaFill ${noPad.viaFill})`, noPad.verified === false && noPad.viaFill === true);
+  const r = await union(body(claim(M), honest), body(claim(H), padded));
+  check(`clarvis pads past the cap and withholds the sale: the success path's viaFill refusal (${r.verified}, ${who(r.addr)}, viaFill ${r.viaFill}, recovered ${r.recovered})`,
+    r.verified === false && r.viaFill === true && r.reason === both.reason);
+  const rSwap = await union(body(claim(H), padded), body(claim(M), honest));
+  check(`...whichever source pads (${rSwap.verified}, viaFill ${rSwap.viaFill})`, rSwap.verified === false && rSwap.viaFill === true);
+  // honest sources over the cap together (each within it): the same caution as the success path, not a hint-count error
+  const over = await union(body(claim(M), [...honest, ...filler.slice(0, 200).map(hint)]), body(claim(M), [...honest, ...filler.slice(200).map(hint)]));
+  check(`honest: both sources over the cap together get the success path's viaFill caution (${over.verified}, viaFill ${over.viaFill})`,
+    over.verified === false && over.viaFill === true && over.reason === both.reason);
 }
 
 done("namespv-union-scope");

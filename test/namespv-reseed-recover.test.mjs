@@ -84,6 +84,6 @@ const union = src.slice(src.indexOf("export async function verifyNameUnion"));
 check("M12: per-source recovery only runs after the unioned replay failed (usable.length > 1 branch)", /if \(usable\.length > 1\) \{[\s\S]*replayName\(name, r\.hints, src\)/.test(union));
 check("M12: recovery honors ONLY an agreed single winner (addrs.size === 1)", /addrs\.size === 1/.test(union));
 check("M12: a recovery ALWAYS flags disagree (poisoner surfaced, never a silent green)", /disagree: recovered\.length < usable\.length \|\| agreed < usable\.length/.test(union));
-check("M12: viaFill / scope-insufficient recoveries are excluded (keep their own fail-closed handling)", /!solo\.viaFill && r\.scopedReplaySufficient !== false/.test(union));
+check("M12: a viaFill solo replay refuses the recovery as the success path does, never drops its source (behaviour: namespv-union-scope case 4)", /if \(solo\.viaFill\) return \{ \.\.\.fail\(viaFillReason\(name\)\)/.test(union));
 
 t.done("namespv-reseed-recover");

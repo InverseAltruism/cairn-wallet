@@ -273,6 +273,10 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
 // drifted from the union's behavior, and its existence let the test suite certify a function production
 // never ran. The shared machinery (replayName, fail, toChainEvent) stays; the union uses it.
 
+// The refusal for a name whose replay shows it changed hands through a fill (viaFill), on either verify path.
+const viaFillReason = (name: string): string =>
+  `${name}.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't confirm the new owner from the name's own records: confirm the address out-of-band before sending`;
+
 // The refusal for a name a source reports as not provable from its own records (scopedReplaySufficient false).
 const scopeInsufficientReason = (name: string): string =>
   `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain) — confirm the address out-of-band before sending`;
@@ -343,12 +347,11 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       // ONLY on the already-failed path, so it slows nothing that was working): a poisoned source still
       // fails on its own junk and drops out, while an honest source's own complete history replays to the
       // true winner. Honor it ONLY if every recovered source AGREES on the address (a genuine two-source
-      // disagreement stays fail-closed) and none is a lapse/viaFill/scope-insufficient result (those keep
-      // their own fail-closed handling). This cannot re-open the withholding gap: a source serving a
-      // stale-but-clean subset that replays to a WRONG winner produces a disagreement and is refused.
-      // A source that reports the name not name-scope-provable refuses here as on the success path below: dropping
-      // that source from the per-source recovery would let the other source alone (one that padded the union past
-      // MAX_HINTS, say) verify the scoped replay the flag warns about.
+      // disagreement stays fail-closed). A stale-but-clean subset that replays to a WRONG winner is refused only
+      // because it disagrees with the honest source's own replay, so a source the success path below refuses is
+      // refused here too, never dropped: one flagged scopedReplaySufficient:false, or one whose own replay is
+      // viaFill. Dropping it would let a source that padded the union past MAX_HINTS and withheld the sale verify
+      // a winner the chain does not have.
       if (usable.some((r) => r.scopedReplaySufficient === false))
         return { ...fail(scopeInsufficientReason(name)), sources: usable.length, disagree: false, viaFill: false };
       if (usable.length > 1) {
@@ -356,7 +359,9 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
         const recovered: { label: string; rep: OkReplay; claim?: NameClaim }[] = [];
         for (const r of usable) {
           const solo = await replayName(name, r.hints, src).catch(() => ({ ok: false as const, reason: "solo replay threw" }));
-          if (solo.ok && !solo.viaFill && r.scopedReplaySufficient !== false) recovered.push({ label: r.label, rep: solo, claim: r.claim });
+          if (!solo.ok) continue;
+          if (solo.viaFill) return { ...fail(viaFillReason(name)), sources: usable.length, disagree: false, viaFill: true };
+          recovered.push({ label: r.label, rep: solo, claim: r.claim });
         }
         const addrs = new Set(recovered.map((p) => p.rep.addr));
         const first = recovered[0];
@@ -386,9 +391,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     if (rep.viaFill || servedInsufficient) {
       // Distinct, accurate reasons for the two triggers (QA-3): a self-computed viaFill winner vs a source
       // that explicitly reported its answer is not name-scope-provable. Both are fail-closed to caution.
-      const reason = rep.viaFill
-        ? `${name}.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't confirm the new owner from the name's own records: confirm the address out-of-band before sending`
-        : scopeInsufficientReason(name);
+      const reason = rep.viaFill ? viaFillReason(name) : scopeInsufficientReason(name);
       return { ...fail(reason), sources: usable.length, disagree: false, viaFill: !!rep.viaFill };
     }
     // Cross-check: each usable source's STATED claim.addr against the SPV-proven union winner.

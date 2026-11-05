@@ -136,7 +136,8 @@ warns and lets you decide:
 * The combined replay fails: the wallet replays each source's records alone. If the sources that replay
   agree on one address, that address is used with the same warning, and when only one source could prove
   it the warning says it is not corroborated. When a source reports the name not provable from its own records,
-  there is no such fallback: the name is shown as not chain-verified.
+  or a source's records alone show the name was sold through an offer fill, there is no such fallback: the name is
+  shown as not chain-verified.
 * Nothing can be proven, or the sources prove different addresses: the name is shown as **not
   chain-verified**, the address the name service served is the one shown, and the warning asks you to
   confirm it out-of-band. The send is not blocked.

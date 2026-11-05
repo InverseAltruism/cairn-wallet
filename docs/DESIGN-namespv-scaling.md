@@ -321,9 +321,10 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   name's replay only through the resolver's per-address limits (a reveal is refused while its proposer holds
   MAX_PENDING_REG other reservations), and an honest source serves none of them (0 dropped over the 606 hints cairnx
   959fa25's selector serves for the 172 names of the 130,077 capture); when they decide a name, the honest source's
-  `scopedReplaySufficient: false` refuses it, on the union replay and before the per-source recovery alike, so a
-  source that pads the union past `MAX_HINTS` cannot have the recovery drop the flagging source and verify alone
-  (test/namespv-union-scope.test.mjs).
+  `scopedReplaySufficient: false` refuses it, on the union replay and before the per-source recovery alike, and a
+  source whose own replay is `viaFill` refuses the recovery as a `viaFill` union replay does, so a source that pads
+  the union past `MAX_HINTS` cannot have the recovery drop the honest source and verify alone
+  (test/namespv-union-scope.test.mjs cases 3 and 4).
 - A green badge needs a successful replay. A disagreeing source is a warning, not a refusal: the send goes to the
   proven winner with `disagree` or `soleSource` set. When nothing can be proven, `resolveName` returns the served
   address with `verified: false` and the popup lets the user send after a caution.
