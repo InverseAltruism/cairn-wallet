@@ -279,7 +279,7 @@ const viaFillReason = (name: string): string =>
 
 // The refusal for a name a source reports as not provable from its own records (scopedReplaySufficient false).
 const scopeInsufficientReason = (name: string): string =>
-  `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain) — confirm the address out-of-band before sending`;
+  `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain): confirm the address out-of-band before sending`;
 
 // Fetch one resolver's /cairnx/name-history. Fail-soft: any error → ok:false (the union tolerates a down source).
 async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: typeof fetch): Promise<SourceResult> {
