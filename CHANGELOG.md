@@ -19,9 +19,9 @@
   130,077), so an honest name verifies as before (test/namespv-union-scope.test.mjs). A source's report that a name
   is not provable from its own records refuses the name before the per-source fallback too, so another source cannot
   pad the union past the 256-record cap and have the fallback verify the name from its records alone. The fallback
-  also refuses a name whose records from one source show it was sold through an offer fill, as the combined replay
-  does; it skipped that source, so a source that padded the union and withheld the sale had the seller verified as
-  the owner (test/namespv-union-scope.test.mjs case 4).
+  also refuses a name whose records from one source show it was sold through an offer fill or re-claimed after its
+  lease lapsed, as the combined replay does; it skipped that source, so a source that padded the union and withheld
+  the sale had the seller verified as the owner (test/namespv-union-scope.test.mjs case 4).
 - The name check and the fill scan count only `cairnx:v1` records. A Propose in another application domain whose
   text parses as a cairnx record was replayed as one, so a name source could serve another domain's earlier
   registration of a name and have it verify as the owner; the resolver never reads those records. Such a record
