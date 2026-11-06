@@ -16,7 +16,7 @@ const { check, done } = checker("two approval views of one request:");
 const PW = "correct horse battery staple";
 const ORIGIN = "https://dapp.example", TO = "0x" + "77".repeat(20);
 const SENDER = { id: "cairnwallettestid", url: "chrome-extension://x/approve.html", tab: { id: 1 } };
-let listener = () => {};
+let listener = () => undefined;
 const popup = (method, ...args) => new Promise((res) => listener({ kind: "popup", method, args }, SENDER, res));
 const dapp = (method, params) => new Promise((res) => listener({ kind: "dapp", method, params }, { origin: ORIGIN }, res));
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -25,12 +25,12 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const handlers = new Proxy({}, { get: (_, method) => async (...args) => { const r = await popup(method, ...args); if (!r?.ok) throw new Error(r?.error ?? "error"); return r.result; } });
 const { registry } = mountApproveWindow(handlers);
 const mem = new Map();
-Object.assign(globalThis.chrome.runtime, { id: SENDER.id, getURL: (p) => "chrome-extension://x/" + p, onMessage: { addListener: (fn) => { listener = fn; } }, onConnect: { addListener: () => {} } });
+Object.assign(globalThis.chrome.runtime, { id: SENDER.id, getURL: (p) => "chrome-extension://x/" + p, onMessage: { addListener: (fn) => { listener = fn; } }, onConnect: { addListener: () => undefined } });
 Object.assign(globalThis.chrome, {
   storage: { local: { get: async (k) => ({ [k]: structuredClone(mem.get(k)) }), set: async (o) => { for (const k of Object.keys(o)) mem.set(k, structuredClone(o[k])); }, remove: async (k) => { mem.delete(k); } } },
-  alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
-  action: { setBadgeText: () => {} },
-  windows: { create: () => {} },
+  alarms: { create: () => undefined, onAlarm: { addListener: () => undefined } },
+  action: { setBadgeText: () => undefined },
+  windows: { create: () => undefined },
 });
 const coin = mkCoin(10_00000000);
 const submits = [];
