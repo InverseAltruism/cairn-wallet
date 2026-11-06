@@ -5,7 +5,7 @@
 import { Wallet, AUTO_LOCK_MS } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
-import { APPROVE_WINDOW } from "./approve-window.js";
+import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
 import { fillTargetOf } from "./core/fillpreflight.js";
 
 const chrome: any = (globalThis as any).chrome;
@@ -317,10 +317,24 @@ let approveWinId: number | null = null; // track the approval popup so we can ra
 // first arrives and when the user clicks "Review" in the toolbar popup; so EVERY approval
 // goes through the full recipient/amount/fee/warnings disclosure, never a blind approve.
 let openingApproval: Promise<{ opened: boolean }> | null = null;
-// Raise the open approval window, if any; never creates one.
+// Raise the open approval window, if any; never creates one. The window is asked to re-arm the request it shows first
+// (approve.ts: the 700 ms floor before Approve or Reject takes a click) and is raised only once it answers, so a raise
+// cannot bring a live Approve under a click meant for the page the user was on; a message sent beside the raise can
+// reach the window after it. With no window listening it is raised at once; a page that never answers, after
+// REARM_WAIT_MS.
+const REARM_WAIT_MS = 250;
 function focusApprovalWindow(): void {
   if (approveWinId == null) return;
-  try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
+  let raised = false;
+  const raise = () => {
+    if (raised) return;
+    raised = true;
+    clearTimeout(timer);
+    if (approveWinId == null) return;
+    try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
+  };
+  const timer = setTimeout(raise, REARM_WAIT_MS);
+  try { chrome.runtime.sendMessage({ kind: APPROVE_REARM }).then(raise, raise); } catch { raise(); }
 }
 function openApprovalWindow(): Promise<{ opened: boolean }> {
   if (!pending.size) return Promise.resolve({ opened: false });

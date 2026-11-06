@@ -72,6 +72,14 @@
   to its page. The queue took a second request for the same offer from another tab, another site or the same page
   after a reload, and the approval window offered both, so approving both paid twice; the resolver refuses the second
   fill of a whole offer and keeps its payment (test/fill-one-request-per-offer.test.mjs).
+- When the wallet raises the approval window (a request queued while it is open, a refused second fill of an offer,
+  the toolbar popup's Review), the request on screen re-arms first: Approve and Reject take no click for 700 ms, as
+  when a request is first shown, and the line under the buttons reads "Arming: both buttons wait 700 ms". The worker
+  asks the window to re-arm and raises it once the window answers, or after 250 ms when it cannot; a message sent
+  beside the raise can reach the window after it. A raise used to leave Approve live, so a site whose request was on
+  screen could ask the user to double-click on its page, make the wallet raise the window with the first click and
+  land the second on Approve. A focus the user gives the window re-arms nothing, so their own click lands at once
+  (test/approve-raise-rearm.test.mjs; test/approve-raise-chrome.test.mjs in Chromium with the extension loaded).
 - A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
   approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the
   purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only

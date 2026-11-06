@@ -8,6 +8,7 @@ import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
 import { extensionCall, HANDLED_ELSEWHERE, refusedCopy, rejectCopy, thrownCopy } from "./popup-outcome.js";
+import { APPROVE_REARM } from "../approve-window.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
@@ -502,7 +503,9 @@ function disableButtons() {
 // an unpainted poisoning warning.
 let warnPainted: Promise<unknown> = Promise.resolve();
 let tokenPainted: Promise<unknown> = Promise.resolve();
-let approveArmedGen = -1;   // the paintGen whose re-enable floor has run; a later verdict may re-enable Approve only then
+let approveArmedGen = -1;   // the paintGen whose latest floor has run; a later verdict may re-enable Approve only then
+let armSeq = 0;             // bumped by every armButtons call: only the latest call's floor re-enables the buttons
+let armedPaintGen = -1;     // the paintGen whose paint has called armButtons; a raise re-arms only such a paint
 function armButtons() {
   disableButtons();  // AW-1: same immediate disable; the 700ms RE-ENABLE timer stays here, after the paint
   // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
@@ -510,12 +513,15 @@ function armButtons() {
   // preview for THIS request is ready (0.2.71). Reject is always re-enabled.
   const armedId = current?.id;
   const armedGen = paintGen;   // a same-id repaint re-arms with its own floor and its own quote
+  const seq = ++armSeq;
+  armedPaintGen = paintGen;
+  approveArmedGen = -1;
   const minWait = new Promise((r) => setTimeout(r, 700));
   const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => { /* the send warnings are advisory: a failed paint must not leave both buttons disabled */ })]);
   // Reject never waits for the token preview: a hanging quote must not lock the user out of rejecting.
-  base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
+  base.then(() => { if (seq === armSeq && current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
   Promise.all([base, Promise.resolve(tokenPainted).catch(() => { /* a failed preview is not "ready", so tokenNotReady keeps Approve disabled; Reject re-enables */ })]).then(() => {
-    if (current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the current paint arms itself
+    if (seq !== armSeq || current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the latest arm re-enables
     approveArmedGen = armedGen;
     ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
@@ -626,6 +632,15 @@ function enterBody() {
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("Unlocked.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-approve").addEventListener("click", () => { if (!($("btn-approve") as HTMLButtonElement).disabled) resolve(true); });
 $("btn-reject").addEventListener("click", () => { if (!($("btn-reject") as HTMLButtonElement).disabled) resolve(false); });
+// The background raises this window only after this answer (background.ts focusApprovalWindow), so the painted request
+// re-arms before the raise can put Approve under a click meant for another window. A request still being painted arms
+// when its paint ends. A focus the user gives the window is not a raise and re-arms nothing. Only the extension's own
+// tabless contexts are heard; a content script's sender carries its tab.
+chrome.runtime.onMessage.addListener((m: any, sender: any, reply: (v: unknown) => void) => {
+  if (m?.kind !== APPROVE_REARM || sender?.id !== chrome.runtime.id || sender?.tab) return;
+  if (current && renderedId === current.id && armedPaintGen === paintGen) armButtons();
+  reply({ ok: true });
+});
 // Follow a theme chosen in the popup's Settings while this window is open (theme.js, loaded by approve.html).
 (globalThis as { CairnTheme?: CairnThemeApi }).CairnTheme?.startSync();
 render();

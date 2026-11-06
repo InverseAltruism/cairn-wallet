@@ -7,3 +7,6 @@ export const APPROVE_WINDOW = { width: 460, height: 716 } as const;
 // since an extension's own popup window has no location bar, and as 56 with the info bar of Chrome for Testing. Windows
 // and macOS are expected to draw a title bar inside the bounds (not measured here); 56 is the largest frame seen.
 export const APPROVE_FRAME_PX = 56;
+// The message background.ts sends the approval window before it raises the window: approve.ts re-arms the request it
+// shows, then answers.
+export const APPROVE_REARM = "approve-rearm";

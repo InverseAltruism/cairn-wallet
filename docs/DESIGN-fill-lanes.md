@@ -29,10 +29,11 @@ it, from any site or from the same page after a reload, is refused `FILL_IN_PROG
 signed and no window is created for it. The refusal brings forward the approval window that holds the first request,
 since the usual honest reason to click Buy again is that the window is behind another window or on another display:
 while the first is queued, that window is focused, or opened again if it never opened; once the first is in flight,
-an open window is focused and none is created. The hold ends when the first request's answer goes to its page, or when a worker restart
-empties the queue. Without it, approving both requests paid twice: the resolver refuses a second fill of a whole offer
-and keeps its payment, a second partial fill is sized on what was left before the first applied, and a second token
-fill pays its network fee for nothing (test/fill-one-request-per-offer.test.mjs).
+an open window is focused and none is created. A window brought forward re-arms first, as every raise the wallet makes
+does (SECURITY.md, dApp boundary). The hold ends when the first request's answer goes to its page, or when a worker
+restart empties the queue. Without it, approving both requests paid twice: the resolver refuses a second fill of a
+whole offer and keeps its payment, a second partial fill is sized on what was left before the first applied, and a
+second token fill pays its network fee for nothing (test/fill-one-request-per-offer.test.mjs).
 
 What the hold leaves to other rules:
 
@@ -45,7 +46,9 @@ What the hold leaves to other rules:
   target by queueing a fill of it. Both need the site open in the user's browser; a miss and a hold are each a fill
   request the user sees in the approval window and can reject (at most 5 per site). Accepted, 2026-11-06. A hit
   raises the approval window, and a site that names a held target can raise it once per refused request, without the
-  per-site cap; nothing is queued or signed, and rejecting the held request or closing the window ends it.
+  per-site cap; nothing is queued or signed, and rejecting the held request or closing the window ends it. Each raise
+  re-arms the window before it rises (Approve and Reject wait 700 ms), so a raise timed to a double click on the site's
+  page does not land the second click on Approve (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
 
 ## The fclaim lane
 

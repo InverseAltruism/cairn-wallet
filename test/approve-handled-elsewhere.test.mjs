@@ -54,6 +54,9 @@ globalThis.chrome.runtime.sendMessage = (m, cb) => {
   });
 };
 const mem = new Map();
+// The background and the window are separate contexts, each with its own onMessage: the background's listener is
+// captured here, and the window's own is put back once the background has loaded.
+const windowOnMessage = globalThis.chrome.runtime.onMessage;
 Object.assign(globalThis.chrome.runtime, { id: SENDER.id, getURL: (p) => "chrome-extension://x/" + p, onMessage: { addListener: (fn) => { listener = fn; } }, onConnect: { addListener: () => undefined } });
 Object.assign(globalThis.chrome, {
   storage: { local: { get: async (k) => ({ [k]: structuredClone(mem.get(k)) }), set: async (o) => { for (const k of Object.keys(o)) mem.set(k, structuredClone(o[k])); }, remove: async (k) => { mem.delete(k); } } },
@@ -78,6 +81,7 @@ globalThis.fetch = async (url, init) => {
 };
 
 await import("../src/background.js");
+globalThis.chrome.runtime.onMessage = windowOnMessage;
 await tick();
 check("setup: the popup channel creates a wallet", (await popup("create", PW)).ok === true);
 me = (await popup("status")).result.addr;

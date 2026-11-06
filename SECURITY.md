@@ -168,6 +168,13 @@ A web page interacts with the wallet only through the injected `window.cairn` pr
 relayed to the background service worker over same-origin messages. Those page-side messages are
 not authenticated: any script running on the page can read and forge them. The boundary is the
 wallet's own approval window, bound to the requesting site's origin, and the key never reaches the page.
+The window takes no click on Approve or Reject for 700 ms after it shows a request, so a click already in motion or a
+double click cannot approve a request the user has not seen. The same floor follows every raise the wallet makes (a
+request queued while the window is open, a refused second fill of an offer, the toolbar popup's Review): the worker
+asks the window to re-arm and raises it once the window has answered, so a site cannot have the user double-click on
+its page, raise the window with the first click and land the second on Approve. A window that has not answered within
+250 ms (a hung page) is raised anyway. A focus the user gives the window re-arms nothing, so their own click lands at
+once (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
 The provider is injected
 on all sites (like MetaMask) so any dApp can request a connection, but injection scope is
 **not** the security boundary: the content script only relays requests, exposes no keys, and
