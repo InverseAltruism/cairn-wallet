@@ -56,7 +56,7 @@ let renderSeq = 0;
 let warnedFor: string | null = null;
 // Approve and Reject both show this when the request left the queue before this window resolved it (resolvePending
 // answers { done: false }): rejected from the toolbar, answered in another approval view (which may have signed it), or
-// dropped by the background's 24-hour cleanup or a worker restart. This window signed nothing, and cannot tell which.
+// dropped when a worker restart emptied the queue. This window signed nothing, and cannot tell which.
 const HANDLED_ELSEWHERE = "This request was already handled or closed (possibly in another window), and may have been approved and sent. Check your history before sending again.";
 async function render() {
   const seq = renderSeq;

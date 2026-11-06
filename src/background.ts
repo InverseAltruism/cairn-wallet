@@ -374,8 +374,9 @@ try { chrome.windows?.onRemoved?.addListener((wid: number) => {
   if (wid !== approveWinId) return;
   approveWinId = null;
   // POPUP-DISMISS-REJECT: the user closed the approval window with requests still queued. Settle those dApp
-  // promises as REJECTED (MetaMask parity) instead of leaving them hanging until the 24h GC (which stranded the
-  // page on an optimistic "waiting…" state; e.g. the phantom "commitment placed" card). An APPROVED request is
+  // promises as REJECTED (MetaMask parity) instead of leaving them queued, with the page waiting until a worker
+  // restart empties the queue (which stranded the page on an optimistic "waiting…" state; e.g. the phantom
+  // "commitment placed" card). An APPROVED request is
   // already removed from `pending` by resolvePending before the window closes, and approve.ts only auto-closes
   // the window once the queue is EMPTY, so this rejects exactly the genuinely un-actioned requests.
   if (pending.size) {
