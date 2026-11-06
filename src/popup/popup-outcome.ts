@@ -29,3 +29,16 @@ export function thrownCopy(e: any, what: string): Outcome {
   if (e.message === "locked") return { text: "The wallet locked before anything was signed. Nothing was sent. Unlock and try again.", cls: "err", maybe: false };
   return { text: `${clause(e.message)}. Nothing was sent.`, cls: "err", maybe: false };
 }
+// A view's Approve or Reject gets { done: false } when the request left the queue before that view resolved it:
+// rejected in another view, answered in another approval view (which may have signed it), or dropped when a worker
+// restart emptied the queue. The view signed nothing, and cannot tell which.
+export const HANDLED_ELSEWHERE = "This request was already handled or closed (possibly in another window), and may have been approved and sent. Check your history before sending again.";
+// The reading of a Reject's answer, for the approval window and the toolbar popup; `r` is null when the call threw.
+// Nothing was signed only when the background confirms it took the request off the queue as a rejection
+// (resolvePending's reject path: done true, USER_REJECTED). A request already off the queue may be signing in another
+// view, and a lost reply leaves the rejection unknown: both are `maybe`.
+export function rejectCopy(r: any): Outcome {
+  if (r?.done === true && r.code === "USER_REJECTED") return { text: "Rejected. Nothing was signed.", cls: "info", maybe: false };
+  if (r?.done === false) return { text: HANDLED_ELSEWHERE, cls: "info", maybe: true };
+  return { text: "The rejection could not be confirmed. Check your history before sending again.", cls: "err", maybe: true };
+}

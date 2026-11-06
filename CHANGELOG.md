@@ -48,9 +48,14 @@
   signed." only when the background confirms the rejection; a request another view already took shows the text above
   and keeps the window open (it used to say "Rejected. Nothing was signed." and close while the other view signed),
   and a Reject whose reply never arrives says "The rejection could not be confirmed. Check your history before sending
-  again." (test/approve-handled-elsewhere.test.mjs sections a to c). Other refusals keep "Failed: ...". The window's
-  copy of the channel call is gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever
-  bundles the Wallet (test/approve-outcome-dom.test.mjs).
+  again." (test/approve-handled-elsewhere.test.mjs sections a to c). The toolbar popup's Reject reads the answer with
+  the same three texts (`rejectCopy`, one home in `src/popup/popup-outcome.ts`): the approval window's Approve on a
+  name renewal waits for the name read before the request leaves the queue, so the approval can take a request the
+  popup lists before its Reject arrives. It used to say "Rejected. Nothing was signed." whatever the answer, and left
+  the line unchanged when the reply was lost; a double click now sends one rejection (sections d to g). Other
+  refusals keep "Failed: ...". The window's copy of the channel call is gone (one home,
+  `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the Wallet
+  (test/approve-outcome-dom.test.mjs).
 - A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
   approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the
   purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only

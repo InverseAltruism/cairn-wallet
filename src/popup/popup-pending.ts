@@ -1,6 +1,6 @@
 // The band that lists the dApp requests waiting for the approval window.
 import { escapeHtml } from "./clearsign.js";
-import { EXT, call } from "./popup-bridge.js";
+import { EXT, call, rejectCopy } from "./popup-bridge.js";
 import { $, msg } from "./popup-dom.js";
 
 // The queue the card last showed: the 1.5 s poll rewrites the card only when it changed, so a poll does not replay
@@ -26,6 +26,9 @@ export async function renderPending() {
     `</div>`;
   const reviewBtn = el.querySelector<HTMLElement>("[data-review]");
   if (reviewBtn) reviewBtn.onclick = async () => { await call("openApproval"); window.close(); };
-  el.querySelectorAll<HTMLElement>("[data-rj]").forEach((b) => b.onclick = () => resolve(b.dataset.rj!, false));
+  el.querySelectorAll<HTMLButtonElement>("[data-rj]").forEach((b) => b.onclick = () => { b.disabled = true; reject(b.dataset.rj!); });
 }
-async function resolve(id: string, ap: boolean) { await call("resolve", id, ap); msg(ap ? "Approved." : "Rejected. Nothing was signed."); renderPending(); }
+// The approval window's reading of the answer (popup-outcome.ts): an approval under way in the window can take a listed
+// request before this Reject arrives. The button disables at the click, so a second click cannot reach the background
+// and get { done: false } for a request the first one rejected.
+async function reject(id: string) { const o = rejectCopy(await call("resolve", id, false).catch(() => null)); msg(o.text, o.cls); renderPending(); }

@@ -7,7 +7,7 @@ import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cair
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
-import { extensionCall, refusedCopy, thrownCopy } from "./popup-outcome.js";
+import { extensionCall, HANDLED_ELSEWHERE, refusedCopy, rejectCopy, thrownCopy } from "./popup-outcome.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
@@ -54,10 +54,6 @@ let holdOutcome = false;
 let renderSeq = 0;
 // The request id whose current paint is the warning state; only a click on that paint sends the acknowledgement.
 let warnedFor: string | null = null;
-// Approve and Reject both show this when the request left the queue before this window resolved it (resolvePending
-// answers { done: false }): rejected from the toolbar, answered in another approval view (which may have signed it), or
-// dropped when a worker restart emptied the queue. This window signed nothing, and cannot tell which.
-const HANDLED_ELSEWHERE = "This request was already handled or closed (possibly in another window), and may have been approved and sent. Check your history before sending again.";
 async function render() {
   const seq = renderSeq;
   const st = await call("status");
@@ -537,14 +533,12 @@ async function resolve(approve: boolean) {
   const u = warnedFor === id ? rs(id).unconfirmed : undefined;
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
   current = null; renderedId = null; renderedSigner = null; warnedFor = null; renderSeq++;
-  // Reject says nothing was signed only when the background confirms it took this request off the queue as a rejection
-  // (resolvePending's reject path: done true, USER_REJECTED). A request already off the queue may be signing in another
-  // view, and a call that threw leaves the rejection unknown; both hold the window, as Approve's outcomes do.
+  // Reject reads the answer as the toolbar popup does (popup-outcome.ts); an outcome that may hide a send holds the
+  // window, as Approve's outcomes do.
   if (!approve) {
-    const r: any = await call("resolve", id, false, signer).catch(() => null);
-    if (r?.done === true && r.code === "USER_REJECTED") msg("Rejected. Nothing was signed.");
-    else if (r?.done === false) { msg(HANDLED_ELSEWHERE, "info"); holdOutcome = true; }
-    else { msg("The rejection could not be confirmed. Check your history before sending again.", "err"); holdOutcome = true; }
+    const o = rejectCopy(await call("resolve", id, false, signer).catch(() => null));
+    msg(o.text, o.cls);
+    if (o.maybe) holdOutcome = true;
     render(); return;
   }
   msg("Approving…");

@@ -1,7 +1,7 @@
 // The popup's channel to the background (popup-outcome.ts, plus the dev path), and the one reading of a submit outcome
 // for every flow, re-exported from popup-outcome.ts.
 import { AnsweredError, extensionCall } from "./popup-outcome.js";
-export { refusedCopy, thrownCopy, type Outcome } from "./popup-outcome.js";
+export { refusedCopy, rejectCopy, thrownCopy, type Outcome } from "./popup-outcome.js";
 export const chrome: any = (globalThis as any).chrome;
 export const EXT = !!(chrome?.runtime?.sendMessage);
 
