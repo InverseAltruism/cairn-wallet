@@ -1,9 +1,9 @@
 {
-  "note": "PROVISIONAL: built by scripts/build-spv-vendor.sh from unpublished csd-sdk worktree builds (see provisional); the release round re-vendors from the published packages with `node scripts/check-vendor-fresh.mjs --write`, which rewrites this file. Until then verify:vendor fails on the three packages below by design.",
+  "note": "Provenance for src/vendor/cairnx-spv.js and cairnx-spv.d.ts. Built by scripts/build-spv-vendor.sh from the csd-sdk packages below; regenerate with `node scripts/check-vendor-fresh.mjs --write`; verified by scripts/check-vendor-fresh.mjs.",
   "packages": {
     "@inversealtruism/cairnx-core": {
       "version": "0.2.4",
-      "integrity": null
+      "integrity": "sha512-h2oFhcQu3mc4Ln3qxJvuHVvI1lHSfi/d2I1q372tTOHcUCvzfQwz7+MPs7K38BWUoLT4guHSneE4nLKJJWQJrQ=="
     },
     "@inversealtruism/csd-client": {
       "version": "0.1.20",
@@ -15,7 +15,7 @@
     },
     "@inversealtruism/csd-crypto": {
       "version": "0.1.21",
-      "integrity": null
+      "integrity": "sha512-mTOG2QA4mF4IpHhiSw8hA5TrBz5sJ9lK2oEvsNC7xBUqHCqpAyqYGj9ZnEECUfPFrHsCMMt/7J/XUDP3sJNaVA=="
     },
     "@inversealtruism/csd-light": {
       "version": "0.1.26",
@@ -23,7 +23,7 @@
     },
     "@inversealtruism/csd-tx": {
       "version": "0.1.24",
-      "integrity": null
+      "integrity": "sha512-taDnULuYsna52CCK2Bz55+Cu5pxmQjCcEeFPDCN+7G/IsdYAzktxmO3QdJ1TbWhpDg7tTtfaTU1kGzEtkeMDFQ=="
     }
   },
   "sha256": {
@@ -33,11 +33,5 @@
   "noble": {
     "@noble/curves": "1.9.7",
     "@noble/hashes": "1.8.0"
-  },
-  "provisional": {
-    "csdSdkBranch": "p4/sdk2-cairnx",
-    "csdSdkCommit": "541517ad9d043a33fa7229663328108b3e830f80",
-    "from": "package.json and dist/ of packages/cairnx, packages/crypto and packages/tx copied into node_modules over the lockfile install; csd-client 0.1.20, csd-codec 0.1.18 and csd-light 0.1.26 are the published packages (their dist is byte-identical to that commit)",
-    "date": "2026-11-02"
   }
 }

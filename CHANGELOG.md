@@ -150,6 +150,11 @@
   `CAIRN_E2E_REQUIRED=1`, so they fail rather than skip; they skipped on both before (the release log read "131/142
   files passed, 11 SKIPPED"). playwright-core 1.60.0 is fetched as its registry tarball, checked against the sha512
   cairn's lockfile records, and unpacked outside the repo with its Chromium (test/release-workflow-permissions.test.mjs).
+- The csd-sdk bundle moves to the packages published on 2026-11-06 from csd-sdk 1a5a372: cairnx-core 0.2.4,
+  csd-crypto 0.1.21 and csd-tx 0.1.24 (csd-client 0.1.20, csd-codec 0.1.18 and csd-light 0.1.26 unchanged). The
+  bundle's code differs from 0.3.1's only in the compact-only `verifyDigest`, `offerFillTooLate` and
+  `FCLAIM_MAX_HOLD_SPAN` (the entries above); csd-tx 0.1.24 only pins the new csd-crypto, and cairnx-core 0.2.4's other
+  changes are comments and docs. The bundle and its types are byte-identical to a rebuild from that commit.
 
 ## 0.3.1
 
