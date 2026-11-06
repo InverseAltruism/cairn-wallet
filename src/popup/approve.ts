@@ -561,9 +561,10 @@ async function resolve(approve: boolean) {
     const note = secondSourceNote(r.secondSource);
     if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); holdOutcome = true; }
   }
-  // The request left the queue before this window resolved it: rejected from the toolbar, or answered in another
-  // approval view, which may have signed it. This window signed nothing, and cannot tell what the other view did.
-  else if (r && r.done === false) { msg("This request was already handled or closed in another window, and may have been approved and sent there. Check your history before sending again.", "info"); holdOutcome = true; }
+  // The request left the queue before this window resolved it: rejected from the toolbar, answered in another
+  // approval view (which may have signed it), or dropped by the background's 24-hour cleanup or a worker restart.
+  // This window signed nothing, and cannot tell which.
+  else if (r && r.done === false) { msg("This request was already handled or closed (possibly in another window), and may have been approved and sent. Check your history before sending again.", "info"); holdOutcome = true; }
   else msg("Approved.", "ok");
   render();
 }

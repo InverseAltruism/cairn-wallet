@@ -100,7 +100,10 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   make it (test/approve-card-honesty.test.mjs).
   For a partial listing the card's "You receive" is what the request's payment to the listing's payee buys, from the
   vendored `previewFill` over the same listing, labelled as computed from it, with the whole listing on its own row
-  (display only; test/fill-card-receive.test.mjs).
+  (display only; test/fill-card-receive.test.mjs). A served listing without its minimum reads as a whole listing, so
+  an offer service that leaves the minimum out of the card's read gets the whole give shown as received, attributed
+  to the service; what is signed is still bound to the on-chain offer's terms (minimum and fee rate included), and
+  closing the display gap would need a chain read on the card.
 
 ## The token lane
 
