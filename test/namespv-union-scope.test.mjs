@@ -3,10 +3,14 @@
 // name's replay: the resolver refuses a reveal while its proposer holds MAX_PENDING_REG other reservations, so a
 // source that adds the owner's other reveals and withholds their finalizes makes the owner's own reveal refuse and a
 // later rival registration win. Real signed txs in synthetic PoW-verified blocks (test/_spvrig.ts), the production
-// verifyNameUnion and the vendored resolver.
+// verifyNameUnion and the vendored resolver; section 5 drives the Wallet's own resolveName and confirmName.
 // Run: npx tsx test/namespv-union-scope.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { verifyNameUnion } from "../src/core/namespv.js";
+import { Wallet } from "../src/core/wallet.ts";
+import { memoryStore } from "../src/core/storage.ts";
+import { DEFAULT_RPC, DEFAULT_TRADE_API, CLARVIS_TRADE_API } from "../src/core/endpoints.ts";
+import { reresolveUnchanged } from "../src/popup/clearsign.ts";
 import { toChainEvent } from "../src/core/spvbind.js";
 import { proposeTx, attestTx, world, source, feeOut, pick, mkFetch, addrFromPriv, buildNameClaim, ctxid, rpcTxToTx, resolve, TREASURY_ADDR } from "./_spvrig.ts";
 import { nameCommit, nameCommitRecord, nameFinalize, V26_HEIGHT, MAX_PENDING_REG, offer, tradeFee, makerRebate, epochOf, SCORE_FILL } from "../src/vendor/cairnx-spv.js";
@@ -59,21 +63,27 @@ const finalize = (name, s, priv) => proposeTx({ ...pick(nameFinalize({ name, sal
   check(`clarvis adds them and claims H with no scope flag: owner H (${who(quiet.owner)})`, quiet.verified === true && quiet.owner === H);
 }
 
-// ── 2. The chain refused H's reveal of V: H held MAX_PENDING_REG other reservations then. A replay of V's records
-// alone accepts it, so the honest source flags V scopedReplaySufficient:false; that flag keeps the union closed. ──
-{
-  const V = "zzcapped", h0 = V26_HEIGHT + 3000;
+// The reservation-cap world of sections 2 and 5: H holds MAX_PENDING_REG other reservations when it reveals V, so the
+// chain refuses that reveal and M's later registration of V wins; a replay of V's records alone makes H the owner.
+// `extra` places further records in the same blocks' world.
+function capWorld(V, h0, heldPrefix, extra = []) {
   const others = [];
   for (let k = 0; k < MAX_PENDING_REG; k++) {
-    const n = "zzheld" + k;
+    const n = heldPrefix + k;
     others.push({ height: h0 + k, tx: commit(n, salt(k), H, keyH) }, { height: h0 + k + 1, tx: reveal(n, salt(k), keyH) });
   }
   const sH = "7".repeat(16), sM = "6".repeat(16);
   const hV = [{ height: h0 + 4, tx: commit(V, sH, H, keyH) }, { height: h0 + 5, tx: reveal(V, sH, keyH) }, { height: h0 + 13, tx: finalize(V, sH, keyH) }];
   const mV = [{ height: h0 + 40, tx: commit(V, sM, M, keyM) }, { height: h0 + 41, tx: reveal(V, sM, keyM) }, { height: h0 + 50, tx: finalize(V, sM, keyM) }];
-  const placed = [...others, ...hV, ...mV];
-  const all = world(placed);
-  const TIP = h0 + 90;
+  const placed = [...others, ...hV, ...mV, ...extra];
+  return { others, hV, mV, placed, all: world(placed), TIP: h0 + 90 };
+}
+
+// ── 2. The chain refused H's reveal of V: H held MAX_PENDING_REG other reservations then. A replay of V's records
+// alone accepts it, so the honest source flags V scopedReplaySufficient:false; that flag keeps the union closed. ──
+{
+  const V = "zzcapped";
+  const { others, hV, mV, placed, all, TIP } = capWorld(V, V26_HEIGHT + 3000, "zzheld");
   // The resolver's verdicts, over the same signed txs as chain events (each signed by its own coin's owner).
   const signerOf = (pl) => (others.includes(pl) || hV.includes(pl) ? H : M);
   const evs = placed.map((pl, i) => { const t = rpcTxToTx(pl.tx); return toChainEvent(t, ctxid(t), pl.height, all.hints[i].pos, signerOf(pl)); });
@@ -168,6 +178,53 @@ const finalize = (name, s, priv) => proposeTx({ ...pick(nameFinalize({ name, sal
   const over = await union(body(claim(M), [...honest, ...filler.slice(0, 200).map(hint)]), body(claim(M), [...honest, ...filler.slice(200).map(hint)]));
   check(`honest: both sources over the cap together get the success path's viaFill caution (${over.verified}, viaFill ${over.viaFill})`,
     over.verified === false && over.viaFill === true && over.reason === both.reason);
+}
+
+// ── 5. Confirm time. The review verified V from one source while the other was down, and cached that clean
+// single-source success; at confirmation the returning source serves the same records with scopedReplaySufficient
+// false. The success path refuses on that flag, so the confirm-time cache must not answer from the review instead.
+// Through the Wallet's real resolveName and confirmName and the popup's re-resolve guard. Paired: an unchanged honest
+// success still confirms from the cache with no block read. ──
+{
+  const V = "zzcache", keyG = "0x" + "44".repeat(32), G = addrFromPriv(keyG).toLowerCase();
+  const h0 = V26_HEIGHT + 7000, W = "zzhonest", w0 = h0 + 60, sG = "3".repeat(16);
+  const gW = [{ height: w0, tx: commit(W, sG, G, keyG) }, { height: w0 + 1, tx: reveal(W, sG, keyG) }, { height: w0 + 9, tx: finalize(W, sG, keyG) }];
+  const { hV, mV, placed, all, TIP } = capWorld(V, h0, "zzhold", gW);
+  const hint = (pl) => all.hints[placed.indexOf(pl)];
+  const vHints = [...hV, ...mV].map(hint), wHints = gW.map(hint);
+  const reads = { n: 0 };
+  const spv = source(all.blocks, TIP);
+  const hashOf = (h) => "0x" + h.toString(16).padStart(64, "0");
+  const w = new Wallet(memoryStore());
+  await w.create("pw-union-scope-confirm");
+  w.nameSpvForTest = { ...spv, hashAt: async (h) => hashOf(h), async blockAt(h) { reads.n++; return spv.blockAt(h); } };
+  const PRI = DEFAULT_TRADE_API, CLA = CLARVIS_TRADE_API;
+  // The resolvers' /cairnx/resolve answers (the untrusted address to verify), their name histories, and the tip.
+  const serve = (pri, cla) => mkFetch({ [`${PRI}/cairnx/resolve/`]: pri?.resolve ?? { __status: 503 }, [PRI]: pri ?? { __status: 503 },
+    [`${CLA}/cairnx/resolve/`]: cla?.resolve ?? { __status: 503 }, [CLA]: cla ?? { __status: 503 }, [DEFAULT_RPC]: { height: TIP } });
+  const origFetch = globalThis.fetch;
+  try {
+    // review: the primary (honest) is down; clarvis serves V's own records, claims H and sets no false flag
+    globalThis.fetch = serve(null, body(claim(H), vHints, true));
+    const rev = await w.resolveName(V);
+    check(`setup: the review verifies H from clarvis alone and caches it (${who(rev.addr)}, verified ${rev.verified}, sources ${rev.sources}, cached ${w.nameHintCacheForTest().has(V)})`,
+      rev.ok === true && rev.verified === true && rev.addr === H && rev.sources === 1 && w.nameHintCacheForTest().has(V));
+    // confirm: the primary is back, serves the same records, owner M and scopedReplaySufficient:false
+    globalThis.fetch = serve(body(claim(M), vHints, false), body(claim(H), vHints, true));
+    const conf = await w.confirmName(V);
+    check(`a returning source's scopedReplaySufficient:false is not answered from the review's cache (verified ${conf.verified}, ${who(conf.addr)}: ${conf.verifyReason ?? conf.error ?? ""})`,
+      conf.ok === true && conf.verified === false && /cannot be name-scope-proven/.test(String(conf.verifyReason)));
+    check(`...so the popup's re-resolve guard refuses the send (${reresolveUnchanged(H, conf, rev.verified)})`, reresolveUnchanged(H, conf, rev.verified) === false);
+    // paired honest path: both sources answer W the same at review and at confirm
+    const both = body(claim(G), wHints, true);
+    globalThis.fetch = serve(both, both);
+    const revW = await w.resolveName(W);
+    check(`honest: W verifies to G from both sources and is cached (${who(revW.addr)}, sources ${revW.sources})`, revW.verified === true && revW.addr === G && revW.sources === 2 && w.nameHintCacheForTest().has(W));
+    const before = reads.n;
+    const confW = await w.confirmName(W);
+    check(`honest: the unchanged success confirms from the cache with no block read (${who(confW.addr)}, verified ${confW.verified}, reads ${reads.n - before})`,
+      confW.ok === true && confW.verified === true && confW.addr === G && reads.n === before && reresolveUnchanged(G, confW, true) === true);
+  } finally { globalThis.fetch = origFetch; }
 }
 
 done("namespv-union-scope");

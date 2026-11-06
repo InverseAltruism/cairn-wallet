@@ -115,8 +115,9 @@ export async function verifyName(wallet: NameIo, name: string): Promise<NameVeri
 }
 
 // Confirm-time cheap path (0.2.70): skip merkle/prevout only when a clean (non-M12) review
-// cache exists AND the freshly fetched hint pairs + header hashes + TTL/epoch still match.
-// Else fall through to resolveName (full SPV). Re-point still refuses via reresolveUnchanged.
+// cache exists AND the freshly fetched hint pairs + header hashes + TTL/epoch still match AND no
+// source now reports scopedReplaySufficient:false. Else fall through to resolveName (full SPV).
+// Re-point still refuses via reresolveUnchanged.
 export async function confirmName(wallet: NameIo, name: string): Promise<NameResolution> {
   const nm = normName(name);
   if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
@@ -168,6 +169,7 @@ async function tryConfirmHintSet(wallet: NameIo, nm: string): Promise<{ ok: true
     conflict: bundle.conflict,
     existenceDisagree: bundle.existenceDisagree,
     belowFloor: bundle.belowFloor,
+    scopeInsufficient: bundle.scopeInsufficient,
     now: Date.now(),
     epoch: tip == null ? null : Math.floor(tip / EPOCH_LEN),
     hashAt: src.hashAt ? (h) => src.hashAt!(h) : undefined,

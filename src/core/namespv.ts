@@ -94,6 +94,8 @@ export interface NameUnionFetch {
   existenceDisagree: boolean;
   /** A source served a hint below the names floor; the hint was dropped and the verdict is flagged `disagree`. */
   belowFloor: boolean;
+  /** A usable source reported scopedReplaySufficient:false. Every verify path refuses on it, the confirm-time skip too. */
+  scopeInsufficient: boolean;
 }
 
 /** Fetch + union name-history hints (no merkle). Shared by verifyNameUnion and confirm-time skip. */
@@ -121,7 +123,8 @@ export async function fetchNameUnion(name: string, sources: ResolverSource[], fe
     else byTxid.set(k, h);
   }
   const hints = [...byTxid.values()];
-  return { results, usable, pairs: sortHintPairs(hints), hints, conflict, existenceDisagree, belowFloor };
+  const scopeInsufficient = usable.some((r) => r.scopedReplaySufficient === false);
+  return { results, usable, pairs: sortHintPairs(hints), hints, conflict, existenceDisagree, belowFloor, scopeInsufficient };
 }
 
 // The SPV data seam. Production wires the real LightClient (liveSpvSource); tests inject synthetic
@@ -311,7 +314,7 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
  */
 export async function verifyNameUnion(name: string, sources: ResolverSource[], src: SpvSource, fetchImpl: typeof fetch = fetch): Promise<NameVerification> {
   try {
-    const { results, usable, pairs, hints, conflict, existenceDisagree, belowFloor } = await fetchNameUnion(name, sources, fetchImpl);
+    const { results, usable, pairs, hints, conflict, existenceDisagree, belowFloor, scopeInsufficient } = await fetchNameUnion(name, sources, fetchImpl);
     if (usable.length === 0) {
       if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, disagree: false };
       return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, disagree: false };
@@ -352,7 +355,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       // refused here too, never dropped: one flagged scopedReplaySufficient:false, or one whose own replay is
       // viaFill. Dropping it would let a source that padded the union past MAX_HINTS and withheld the sale verify
       // a winner the chain does not have.
-      if (usable.some((r) => r.scopedReplaySufficient === false))
+      if (scopeInsufficient)
         return { ...fail(scopeInsufficientReason(name)), sources: usable.length, disagree: false, viaFill: false };
       if (usable.length > 1) {
         type OkReplay = Extract<Replay, { ok: true }>;
@@ -387,8 +390,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // honest source runs the IDENTICAL scoped selector, so the union cannot fill the gap. `viaFill` is
     // COMPUTED from our own SPV-verified events (we honor a served false but never TRUST a served true).
     // Fail CLOSED to caution. (B3 will re-green legitimately taker-bound purchases via self-derived binding.)
-    const servedInsufficient = usable.some((r) => r.scopedReplaySufficient === false);
-    if (rep.viaFill || servedInsufficient) {
+    if (rep.viaFill || scopeInsufficient) {
       // Distinct, accurate reasons for the two triggers (QA-3): a self-computed viaFill winner vs a source
       // that explicitly reported its answer is not name-scope-provable. Both are fail-closed to caution.
       const reason = rep.viaFill ? viaFillReason(name) : scopeInsufficientReason(name);

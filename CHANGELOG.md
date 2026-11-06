@@ -22,6 +22,12 @@
   also refuses a name whose records from one source show it was sold through an offer fill or re-claimed after its
   lease lapsed, as the combined replay does; it skipped that source, so a source that padded the union and withheld
   the sale had the seller verified as the owner (test/namespv-union-scope.test.mjs case 4).
+- The send's confirm step no longer reuses the review's verified name answer when a name source now reports the
+  name not provable from its own records (`scopedReplaySufficient: false`). A review made while that source was down
+  verified the name from the other source alone and cached it, and the confirm returned that address as verified
+  although the full check refuses on the flag; the confirm now runs the full check, so the confirm-time re-check refuses
+  the send. An unchanged answer still confirms from the cache with no block read
+  (test/namespv-union-scope.test.mjs case 5).
 - The name check and the fill scan count only `cairnx:v1` records. A Propose in another application domain whose
   text parses as a cairnx record was replayed as one, so a name source could serve another domain's earlier
   registration of a name and have it verify as the owner; the resolver never reads those records. Such a record

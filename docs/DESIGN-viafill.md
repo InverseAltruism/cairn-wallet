@@ -38,7 +38,7 @@ How the wallet turns it into a permanent caution:
   the attack below.
 - `resolveName` then returns the served address, not the replayed one: `{ ...base, verified: false, ... viaFill }`
   (`src/core/names.ts:92`, where `base.addr` is the resolver's `addr`, line 74). The confirm-time hint-set skip
-  does not cache the name (`src/core/names.ts:137-138`), so every send repeats the full verification.
+  does not cache the name (`src/core/names.ts:138-139`), so every send repeats the full verification.
 - The popup shows "purchased name, can't be name-scope-proven, confirm the address" (`src/popup/popup.ts:587`) and
   the caution block in `nameCautionHtml` (`src/popup/clearsign.ts:583-588`). The send is not blocked.
 
