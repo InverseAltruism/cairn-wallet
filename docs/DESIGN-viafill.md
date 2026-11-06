@@ -40,8 +40,9 @@ How the wallet turns it into a permanent caution:
 - `resolveName` then returns the served address, not the replayed one: `{ ...base, verified: false, ... viaFill }`
   (`src/core/names.ts:92`, where `base.addr` is the resolver's `addr`, line 74). The confirm-time hint-set skip
   does not cache the name (`src/core/names.ts:138-139`), so every send repeats the full verification.
-- The popup shows "purchased name, can't be name-scope-proven, confirm the address" (`src/popup/popup.ts:587`) and
-  the caution block in `nameCautionHtml` (`src/popup/clearsign.ts:583-588`). The send is not blocked.
+- The popup shows "Purchased name: it can't be name-scope-proven, so confirm the address." (`resolveRecipient` in
+  `src/popup/popup-recipient.ts`) and the approval window the `viaFill` caution block of `nameCautionHtml`
+  (`src/popup/clearsign.ts`). The send is not blocked.
 
 Why the wallet fails closed: the cairnx name-history selector (cairnx `src/namehist.ts`, header comment and lines
 150-188) serves the records that decide one name. For two fill classes that set is not enough to reproduce the
