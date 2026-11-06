@@ -31,10 +31,11 @@ How the wallet turns it into a permanent caution:
   `scopedReplaySufficient: false`. The per-source recovery skipped a viaFill result, so a source that padded the union
   past `MAX_HINTS` and withheld the sale had the seller verified from its records alone; since 2026-11-05 the recovery
   refuses a viaFill result with the same reason (`viaFillReason`; test/namespv-union-scope.test.mjs case 4), so a
-  source whose own records show the sale is never dropped. When the honest source's own replay cannot run (its list
-  over `MAX_HINTS`, or a block the SPV source does not serve), a lone source that withholds the sale still verifies
-  the seller, with `soleSource` and `disagree` set: the recorded residual of the per-source recovery (the popup shows
-  the "not corroborated" caution and the name is not cached). Case 16b of test/namespv.test.mjs pins the gate with
+  source whose own records show the sale is never dropped. When the honest source's own replay fails for any reason
+  (its list over `MAX_HINTS`, a block the SPV source does not serve, a record that does not bind: the recovery skips
+  every unsuccessful solo replay), a lone source that withholds the sale still verifies the seller, with `soleSource`
+  and `disagree` set: the recorded residual of the per-source recovery (the popup shows the "not corroborated"
+  caution and the name is not cached). Case 16b of test/namespv.test.mjs pins the gate with
   the attack below.
 - `resolveName` then returns the served address, not the replayed one: `{ ...base, verified: false, ... viaFill }`
   (`src/core/names.ts:92`, where `base.addr` is the resolver's `addr`, line 74). The confirm-time hint-set skip

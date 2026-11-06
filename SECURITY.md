@@ -119,14 +119,15 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
 
 The two default sources are run by **one operator under one registrable domain** (`cairn-substrate.com`).
 They are not independent. The union covers one source being stale, lagging, broken or hostile while the other
-answers honestly: a source can add only real, signed, mined records, and a record about another name is dropped
-before the replay. (Before wallet 0.3.2 it was replayed too, and a source that added the owner's reservations of
+answers honestly and the wallet can replay that honest source's records: a source can add only real, signed, mined
+records, and a record about another name is dropped before the replay. (Before wallet 0.3.2 it was replayed too, and a source that added the owner's reservations of
 other names without their finalizes could make the owner's own registration fail the resolver's per-address
 reservation limit, so a later rival registration was shown as the owner with a "sources disagree" warning.) When
 records about other names do decide a name, the resolver says so (`scopedReplaySufficient: false`) and the wallet
 shows the name as not chain-verified, whether the combined replay succeeds or the wallet falls back to replaying each
-source alone. The union does not cover that operator hiding a later transfer or a
-competing claim from both. The wallet's own badge says the name servers share one operator.
+source alone, and the send's confirm step runs the full check again rather than reuse the review's answer. The union
+does not cover that operator hiding a later transfer or a competing claim from both, nor the stale-seller case below.
+The wallet's own badge says the name servers share one operator.
 
 **What happens when the sources disagree.** There is no hard refusal on a disagreeing source. The wallet
 warns and lets you decide:
@@ -136,14 +137,19 @@ warns and lets you decide:
 * The combined replay fails: the wallet replays each source's records alone. If the sources that replay
   agree on one address, that address is used with the same warning, and when only one source could prove
   it the warning says it is not corroborated. When a source reports the name not provable from its own records,
-  or a source's records alone show the name was sold through an offer fill or re-claimed after its lease lapsed,
-  there is no such fallback: the name is shown as not chain-verified.
+  or a source's records alone replay and show the name was sold through an offer fill or re-claimed after its lease
+  lapsed, there is no such fallback: the name is shown as not chain-verified. A source whose own replay fails for any
+  reason (more than 256 records, a block the wallet's node does not serve, a record that does not bind) drops out of
+  the fallback. That leaves a stale-seller residual: a hostile source that withholds a later sale and makes the
+  combined replay fail, while the honest source's records cannot be replayed, has the seller proven from its records
+  alone, shown with the "not corroborated" warning and never cached for the confirm step.
 * Nothing can be proven, or the sources prove different addresses: the name is shown as **not
   chain-verified**, the address the name service served is the one shown, and the warning asks you to
   confirm it out-of-band. The send is not blocked.
-* A name whose ownership was decided by an on-chain **offer fill** (an open-lane claim or a name-for-token
-  sale) is never shown as verified, because that ownership depends on state outside the name's own
-  history; it gets an explicit caution.
+* A name whose current ownership came through an on-chain **offer fill** or a re-claim after its lease lapsed is
+  not shown as verified when the replay shows it (`viaFill`), because for an open-lane claim or a name-for-token sale
+  that ownership depends on state outside the name's own history; it gets an explicit caution. The replay shows it
+  only when the records it replays include the sale: the stale-seller residual above is the case where they do not.
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
 refuse: a lease the chain shows has lapsed (or that a resolver reports lapsed and the chain cannot show

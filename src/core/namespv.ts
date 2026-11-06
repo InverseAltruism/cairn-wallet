@@ -173,9 +173,10 @@ type Replay =
   // WALLET-LAPSE-TIP-1: a lease-lapse failure carries `lapsed` + whether the persisted floor corroborated it,
   // so the caller can present a confident lapse vs a single-source caution. Other failures leave both unset.
   | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean };
-// Cap the hinted records a verify will SPV-prove (L8 / HINTDOS): each hint now also costs a prevout fetch
-// (H3), so an unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a
-// handful of records; 256 is far above any honest history and bounds a hostile source's fetch amplification.
+// Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
+// unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
+// is far above any honest history. The cap is per replay: verifyNameUnion's per-source recovery replays each source's
+// own list after the union replay, so one verification proves at most the cap per source plus the union's.
 const MAX_HINTS = 256;
 
 // The .csd name a cairnx record is about; null for a record about no name (a commit, a token record, a bare or

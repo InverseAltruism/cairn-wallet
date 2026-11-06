@@ -21,12 +21,14 @@
   pad the union past the 256-record cap and have the fallback verify the name from its records alone. The fallback
   also refuses a name whose records from one source show it was sold through an offer fill or re-claimed after its
   lease lapsed, as the combined replay does; it skipped that source, so a source that padded the union and withheld
-  the sale had the seller verified as the owner (test/namespv-union-scope.test.mjs case 4).
+  the sale had the seller verified as the owner (test/namespv-union-scope.test.mjs case 4). A source whose own records
+  cannot be replayed at all still drops out of the fallback, so when the honest source's cannot, a lone source that
+  withholds the sale decides, shown as not corroborated and not cached (the stale-seller residual in SECURITY.md).
 - The send's confirm step no longer reuses the review's verified name answer when a name source now reports the
   name not provable from its own records (`scopedReplaySufficient: false`). A review made while that source was down
   verified the name from the other source alone and cached it, and the confirm returned that address as verified
-  although the full check refuses on the flag; the confirm now runs the full check, so the confirm-time re-check refuses
-  the send. An unchanged answer still confirms from the cache with no block read
+  although the full check refuses on the flag; the confirm now runs the full check, so the confirm-time re-check
+  refuses the send. An unchanged answer still confirms from the cache with no block read
   (test/namespv-union-scope.test.mjs case 5).
 - The name check and the fill scan count only `cairnx:v1` records. A Propose in another application domain whose
   text parses as a cairnx record was replayed as one, so a name source could serve another domain's earlier
@@ -67,8 +69,9 @@
   by the offer service yet ... try again in a minute or two"), before any listed fill is proven. A listed fill not in
   the block it is listed at (a reorg the service has not re-read), or whose spent coin cannot be read (a timeout, a
   node without the old transaction), refuses retryably too; one that is another offer's or is not signed by its
-  coin's owner, or a served amount left that differs from the proven one, refuses with `FILL_UNSAFE`. The first fill of an offer reads nothing more; each later
-  one reads the blocks of the earlier listed fills (test/fill-taker-partial.test.mjs, test/fill-offer-progress.test.mjs).
+  coin's owner, or a served amount left that differs from the proven one, refuses with `FILL_UNSAFE`. The first fill
+  of an offer reads nothing more; each later one reads the blocks of the earlier listed fills
+  (test/fill-taker-partial.test.mjs, test/fill-offer-progress.test.mjs).
 - A partial fill's approval card shows what the payment buys: "You receive about 10 NEWF (computed from the offer
   service's listing)" and a "Whole listing" row with the listing's give and price, where it said "You receive 100 NEWF
   (as listed by the offer service)" for any payment. The figure comes from the vendored previewFill over the listing
