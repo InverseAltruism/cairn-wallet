@@ -53,8 +53,11 @@
   name renewal waits for the name read before the request leaves the queue, so the approval can take a request the
   popup lists before its Reject arrives. It used to say "Rejected. Nothing was signed." whatever the answer, and left
   the line unchanged when the reply was lost; a double click now sends one rejection (sections d to g). Other
-  refusals keep "Failed: ...". The window's copy of the channel call is gone (one home,
-  `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the Wallet
+  refusals keep "Failed: ...". An outcome the window keeps on screen (each of the above except the confirmed
+  rejection, a failure, a fill's second-source notice) used to be erased the moment a request queued behind it
+  painted; it now stays above that request as "Previous request: ..." until another request paints, and the line
+  under the buttons belongs to the request on screen (sections h and i). The window's copy of the channel call is
+  gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the Wallet
   (test/approve-outcome-dom.test.mjs).
 - A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
   approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the

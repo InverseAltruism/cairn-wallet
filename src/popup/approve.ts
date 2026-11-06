@@ -48,7 +48,14 @@ let paintGen = 0;
 // does not mean the window is done: it stays open while a result is in flight, and after a failure or a
 // sent fill's second-source notice until the user closes it or a new request is painted.
 let inFlight = 0;
-let holdOutcome = false;
+// The outcome line the window holds, as hold() read it when the outcome was shown: a later write to the line (an unlock)
+// does not change what is held. When the next request paints, the held line moves above that request, marked as the
+// previous request's, since the line under the buttons is the request on screen's (`carried`); it stays on that
+// request's repaints and goes when another request paints.
+type HeldLine = { html: string; cls: string };
+let held: HeldLine | null = null;
+let carried: (HeldLine & { forId: string }) | null = null;
+function hold() { const m = $("msg"); held = { html: m.innerHTML, cls: m.className.replace(/^msg\s*/, "") }; }
 // Bumped by resolve() when it sends and when its outcome lands: a render whose status/pending reads started before
 // that is stale (its queue snapshot predates the outcome) and paints nothing.
 let renderSeq = 0;
@@ -63,7 +70,7 @@ async function render() {
   const pend = await call("pending");
   if (seq !== renderSeq) return;
   if (!pend.length) {
-    if (inFlight || holdOutcome) { ($("view-req") as HTMLElement).hidden = true; return; }
+    if (inFlight || held) { ($("view-req") as HTMLElement).hidden = true; return; }
     window.close(); return;
   }
   current = pend[0];
@@ -117,6 +124,9 @@ async function render() {
   if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
+  if (held) carried = { ...held, forId: current.id };
+  else if (carried?.forId !== current.id) carried = null;
+  const prior = carried ? `<div class="req dim prior ${carried.cls}">Previous request: ${carried.html}</div>` : "";
   const queued = pend.length > 1 ? `<div class="req dim">Request 1 of ${pend.length}: review each separately.</div>` : "";
   // For a connection request, tell the user exactly what approving grants: address
   // visibility until they disconnect the site; NOT permission to move funds (every
@@ -136,7 +146,7 @@ async function render() {
     balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
     $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b title="${escapeHtml(acct.label)}">${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
-    $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
+    $("req").innerHTML = `${prior}${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
     // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm
     // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which the line under the
@@ -147,7 +157,7 @@ async function render() {
     $("app").dataset.density = chooseDensity($("app"), $("req"), () => reservesFor(forReq, me));
     enterBody();
     msg(""); // clear any stale "approved"/"rejected" from a previous request
-    holdOutcome = false;
+    held = null;
     warnPainted = fillSendWarning(current);
     tokenPainted = fillTokenSim(current);   // 0.2.71: Approve waits for the token preview of THIS request
     armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
@@ -538,7 +548,7 @@ async function resolve(approve: boolean) {
   if (!approve) {
     const o = rejectCopy(await call("resolve", id, false, signer).catch(() => null));
     msg(o.text, o.cls);
-    if (o.maybe) holdOutcome = true;
+    if (o.maybe) hold();
     render(); return;
   }
   msg("Approving…");
@@ -555,20 +565,20 @@ async function resolve(approve: boolean) {
   // flight, so they never read "Failed"; any other refusal keeps "Failed: <error> (<code>)".
   if (thrown) {
     const o = thrownCopy(thrown, "transaction");
-    msg(o.maybe ? o.text : "Failed: " + ((thrown as Error)?.message || "?"), o.maybe ? o.cls : "err"); holdOutcome = true;
+    msg(o.maybe ? o.text : "Failed: " + ((thrown as Error)?.message || "?"), o.maybe ? o.cls : "err"); hold();
   } else if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
   } else if (r && r.ok === false) {
     const o = refusedCopy(r, "transaction");
-    msg(o.maybe ? o.text : "Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), o.maybe ? o.cls : "err"); holdOutcome = true;
+    msg(o.maybe ? o.text : "Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), o.maybe ? o.cls : "err"); hold();
   }
   else if (r && r.txid) {
     msg("Sent " + String(r.txid).slice(0, 10) + "…", "ok");
     const note = secondSourceNote(r.secondSource);
-    if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); holdOutcome = true; }
+    if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); hold(); }
   }
-  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "info"); holdOutcome = true; }
+  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "info"); hold(); }
   else msg("Approved.", "ok");
   render();
 }

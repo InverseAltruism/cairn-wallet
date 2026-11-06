@@ -12,10 +12,13 @@
 //   red before (toolbar Reject, sections d, e and g): the window's Approve on an owned-name renewal waited for its name
 //   read; the toolbar popup, opened meanwhile, listed the renewal; the read landed and the approval took it and signed;
 //   the popup's Reject then read "Rejected. Nothing was signed." while the renewal was submitted (d); a toolbar Reject
-//   whose reply was lost read the same (e); a double click sent two rejections (g).
+//   whose reply was lost wrote nothing and left an unhandled rejection (e); a double click sent two rejections (g).
+//   red before (queued requests, sections h and i): the held outcome of a resolved request was erased the moment the
+//   request queued behind it painted.
 //   paired honest path: the first view's approval signs and submits once, and the page receives its txid; a Reject in a
 //   single view sends resolve(id, false, signer), reads "Rejected. Nothing was signed." and closes the window (c); the
-//   toolbar Reject sends resolve(id, false) and reads "Rejected. Nothing was signed." (f), also on a double click (g).
+//   toolbar Reject sends resolve(id, false) and reads "Rejected. Nothing was signed." (f), also on a double click (g); a
+//   confirmed Reject carries nothing to the next request, whose line is empty as before (h).
 // Run: npx tsx test/approve-handled-elsewhere.test.mjs   (offline)
 import vm from "node:vm";
 import { build } from "esbuild";
@@ -299,5 +302,65 @@ await flush(20);
 const bandG = band.msg.textContent;
 check(`(g) a double click sends one rejection (${bandRejects(sentG).length})`, sameCall(bandRejects(sentG), [g.r.id, false]));
 check(`(g) the popup says "Rejected. Nothing was signed." (${bandG})`, bandG === "Rejected. Nothing was signed." && (await g.pageP)?.code === "USER_REJECTED");
+
+// (h) Requests queued behind the one resolved: an outcome the window holds stays above the next request, marked as the
+// previous request's, until the user resolves that one; the line under the buttons is the request on screen's. Four
+// sends: the first is approved in view 1 while view 2 rejects it, the second's Reject loses its reply, the third's is
+// confirmed (the paired honest path: nothing carried to the fourth).
+const reqHtml = () => registry.get("req").innerHTML;
+const hA = await request("send", { to: TO, amount: 1_10000000, fee: 1_000_000 });
+const hB = await request("send", { to: TO, amount: 1_20000000, fee: 1_000_000 });
+const hC = await request("send", { to: TO, amount: 1_30000000, fee: 1_000_000 });
+const hD = await request("send", { to: TO, amount: 1_40000000, fee: 1_000_000 });
+await pollTick(); await flush(); await sleep(760); await pollTick(); await flush();
+check("(h) setup: view 2 shows the first of four sends with Reject live", reqHtml().includes("Request 1 of 4") && registry.get("btn-reject")?.disabled === false);
+const view1h = popup("resolve", hA.r.id, true, me);
+for (let i = 0; i < 50 && (await popup("pending")).result.some((p) => p.id === hA.r.id); i++) await tick();
+const sentH = sent.length;
+registry.get("btn-reject")._listeners.click();
+await view1h; await flush(20); await sleep(760); await pollTick(); await flush();
+check("(h) view 2 rejected the first while view 1 signed it", sameCall(rejectsSent(sentH), [hA.r.id, false, me]) && /^0x[0-9a-f]{64}$/.test(String((await hA.pageP).result?.txid)));
+check("(h) the second send is on screen", reqHtml().includes("Request 1 of 3") && reqHtml().includes(">1.2 CSD<"));
+check(`(h) the handled-elsewhere text stays above it as the previous request's (${reqHtml().slice(0, 220)})`, reqHtml().includes(`Previous request: ${text}`));
+check(`(h) the line under the buttons is the second send's, empty (${registry.get("msg").textContent})`, registry.get("msg").textContent === "");
+await pollTick(); await flush(); await pollTick(); await flush();
+check("(h) two polls later it is still there", reqHtml().includes(`Previous request: ${text}`));
+const sentHB = sent.length;
+dropReplyTo = "resolve";
+registry.get("btn-reject")._listeners.click();
+await flush(20); await sleep(760); await pollTick(); await flush();
+check("(h) the user rejected the second; its reply was lost", sameCall(rejectsSent(sentHB), [hB.r.id, false, me]) && (await hB.pageP)?.code === "USER_REJECTED");
+check("(h) the third send is on screen", reqHtml().includes("Request 1 of 2") && reqHtml().includes(">1.3 CSD<"));
+check(`(h) above it, the second's could-not-be-confirmed text, in the error colour, and no longer the first's (${reqHtml().slice(0, 220)})`, reqHtml().includes(`Previous request: ${textB}`) && /class="req dim prior err"/.test(reqHtml()) && !reqHtml().includes(text));
+const sentHC = sent.length, closesH = closes();
+registry.get("btn-reject")._listeners.click();
+await flush(20); await sleep(760); await pollTick(); await flush();
+check("(h) the user rejected the third, confirmed", sameCall(rejectsSent(sentHC), [hC.r.id, false, me]) && (await hC.pageP)?.code === "USER_REJECTED");
+check(`(h) the fourth send is on screen with nothing carried and an empty line, as before (${registry.get("msg").textContent})`, reqHtml().includes(">1.4 CSD<") && !reqHtml().includes("Request 1 of") && !reqHtml().includes("Previous request") && registry.get("msg").textContent === "");
+registry.get("btn-reject")._listeners.click();
+await flush(20);
+check(`(h) rejecting the fourth closes the window, as before (${closes() - closesH} closes)`, (await hD.pageP)?.code === "USER_REJECTED" && closes() === closesH + 1);
+
+// (i) The held line is the outcome as shown, not whatever the line says later: the window holds the handled-elsewhere
+// text over an empty queue, the wallet locks, a new request arrives and the user unlocks in the window, which writes
+// "Unlocked." to the line before the request paints.
+const iA = await queueSend(1_50000000);
+const view1i = popup("resolve", iA.r.id, true, me);
+for (let i = 0; i < 50 && (await popup("pending")).result.some((p) => p.id === iA.r.id); i++) await tick();
+registry.get("btn-reject")._listeners.click();
+await view1i; await flush(20);
+check(`(i) setup: the window holds the handled-elsewhere text over an empty queue (${registry.get("msg").textContent})`, registry.get("msg").textContent === text && registry.get("view-req").hidden === true);
+await popup("lock");
+const iB = await request("send", { to: TO, amount: 1_60000000, fee: 1_000_000 });
+await pollTick(); await flush();
+check("(i) setup: locked, the window asks to unlock", registry.get("view-locked").hidden === false);
+registry.get("unlock-pw").value = PW;
+registry.get("btn-unlock")._listeners.click();
+// the unlock derives the vault key first, so wait for the paint and its arming rather than a fixed time
+for (const end = Date.now() + 15_000; Date.now() < end && !(registry.get("btn-reject").disabled === false && reqHtml().includes(">1.6 CSD<"));) await sleep(25);
+check(`(i) after the unlock the new send is on screen with the held text above it, not "Unlocked." (${reqHtml().slice(0, 220)})`, reqHtml().includes(">1.6 CSD<") && reqHtml().includes(`Previous request: ${text}`) && !reqHtml().includes("Previous request: Unlocked"));
+registry.get("btn-reject")._listeners.click();
+await flush(20);
+check("(i) the new send is rejected as usual", (await iB.pageP)?.code === "USER_REJECTED");
 
 done("approve-handled-elsewhere");

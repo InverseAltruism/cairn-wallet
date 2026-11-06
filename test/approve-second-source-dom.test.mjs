@@ -6,7 +6,7 @@
 //   (2) failed: the same with the failed wording.
 //   (3) honest path: an outcome without the field shows "sent" alone and the window closes as before.
 //   (4) a new request clears the line and the hold.
-// RED-FIRST: drop the secondSourceNote paint in approve.ts resolve() and (1) and (2) fail; drop `holdOutcome = true`
+// RED-FIRST: drop the secondSourceNote paint in approve.ts resolve() and (1) and (2) fail; drop `hold()`
 // there and (1) fails on the window closing.
 // Run: npx tsx test/approve-second-source-dom.test.mjs   (offline)
 import assert from "node:assert/strict";
