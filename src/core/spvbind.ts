@@ -40,7 +40,9 @@ export interface PrevoutReader {
   prevoutScriptPubkey(prevTxid: string, vout: number): Promise<string | null>;
 }
 
-export type SignerBind = { ok: true; signer: string } | { ok: false; kind: "unsigned" | "no-input" | "not-owner" };
+/** "no-prevout": the spent coin could not be read or bound to its txid (missing evidence, not a mismatch);
+ *  "not-owner": the coin was read and the signature is not its owner's. */
+export type SignerBind = { ok: true; signer: string } | { ok: false; kind: "unsigned" | "no-input" | "no-prevout" | "not-owner" };
 
 /**
  * The tx's author: csd-crypto `authorOf`, the owner of the coin input 0 spends when input 0's scriptSig is that
@@ -55,7 +57,9 @@ export async function bindSigner(tx: Tx, src: PrevoutReader): Promise<SignerBind
   if (!signer) return { ok: false, kind: "unsigned" };
   const in0 = tx.inputs?.[0];
   if (!in0 || isCoinbaseInput(in0)) return { ok: false, kind: "no-input" };
-  signer = authorOf(tx, await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout))); // MUTATE_SPV_PREVOUT_BIND
+  const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
+  if (spk == null) return { ok: false, kind: "no-prevout" };
+  signer = authorOf(tx, spk); // MUTATE_SPV_PREVOUT_BIND
   if (!signer) return { ok: false, kind: "not-owner" };
   return { ok: true, signer };
 }

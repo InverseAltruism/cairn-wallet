@@ -6,11 +6,17 @@
 //   - one or two listed fills: their paid and delivered, one more block read each;
 //   - a listed fill that is not in its block (kind "missing": an honest reorg can do that), is another offer's
 //     ("not-this-offer") or does not bind to its coin ("unbound"): unproven;
-//   - without `fills` (a whole offer) nothing changes: no progress, the offer's block only.
+//   - without `fills` (a whole offer) nothing changes: no progress, the offer's block only;
+//   - through the real Wallet.fillOffer: a listed fill whose spent coin cannot be read is missing evidence, a
+//     retryable VERIFY_UNAVAILABLE, and the retry signs; a listed fill not signed by its coin's owner is FILL_UNSAFE.
 // Run: npx tsx test/fill-offer-progress.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { provenOfferPayto } from "../src/core/fillspv.js";
-import { offer, tradeFee, feeBpsAt, V29_HEIGHT, TREASURY_ADDR } from "../src/vendor/cairnx-spv.js";
+import { toChainEvent } from "../src/core/spvbind.js";
+import { Wallet } from "../src/core/wallet.js";
+import { memoryStore } from "../src/core/storage.js";
+import { mkCoin, txReply } from "./_coin.js";
+import { offer, deploy, mint, resolve, requiredFillOutputs, tradeFee, feeBpsAt, epochOf, V29_HEIGHT, TREASURY_ADDR, DEPLOY_FEE } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, world, source, pick, addrFromPriv, ctxid, rpcTxToTx, signSighash, buildScriptSig, vSighash } from "./_spvrig.ts";
 
 const { check, done } = checker("offer-id lane: a partial offer's running state from its proven fills:");
@@ -53,5 +59,62 @@ check(`a listed fill not in the block it is listed at: unproven (${JSON.stringif
 check(`a listed fill of another offer: unproven (${JSON.stringify(r?.progress)})`, r?.progress?.kind === "not-this-offer" && typeof r?.progress?.unproven === "string" && /not a fill of this offer/.test(r.progress.unproven));
 ({ r } = await run(swappedWorld.blocks, [entry(f1, h0 + 2), entry(swapped, h0 + 4)]));
 check(`a listed fill whose signature is not the coin owner's: unproven (${JSON.stringify(r?.progress)})`, r?.progress?.kind === "unbound" && typeof r?.progress?.unproven === "string" && /could not be bound/.test(r.progress.unproven));
+
+// ── Through the real Wallet.fillOffer and provenOfferPayto, the account being A (the offer's taker). The offer service
+// lists A's earlier fill f1 honestly; the wallet buys what is left. ──
+{
+  const T = TREASURY_ADDR.toLowerCase();
+  const synth = (rec, h, paidTo = {}) => ({ kind: "propose", id: "0x" + (0xd0000 + h).toString(16).padStart(64, "0"), proposer: S, uri: rec.uri, payloadHash: rec.payloadHash, height: h, pos: 0, expiresEpoch: epochOf(h) + 50_000, paidTo });
+  const backing = [synth(deploy({ ticker: "NEWF", decimals: 0, supply: "100", mint: "issuer" }), h0 - 2, { [T]: String(DEPLOY_FEE) }), synth(mint({ ticker: "NEWF", amount: "100" }), h0 - 1)];
+  // The offer service's state: the resolver over the backing and the placed records, as its scanner reads them.
+  const servedOf = (wd, pl, signers) => {
+    const evs = pl.map((p, i) => { const t = rpcTxToTx(p.tx); return toChainEvent(t, ctxid(t), p.height, wd.hints[i].pos, signers[i]); });
+    return resolve([...backing, ...evs], TIP).offers[oid];
+  };
+  const coin = mkCoin(500_000_000);
+  let served = null;
+  const submits = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes("/tx/submit")) { submits.push(JSON.parse(init?.body ?? "{}")); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + "aa".repeat(32) }) }; }
+    if (u.includes("/utxos/")) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
+    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: TIP }) };
+    if (u.includes("/cairnx/offer/")) return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(served)) };
+    return txReply(u, [coin]) ?? { ok: false, status: 404, json: async () => ({}) };
+  };
+  const walletA = async (blocks, failOnce) => {
+    const wal = new Wallet(memoryStore());
+    const { addr } = await wal.importKey(keyA, "fill-progress-pw-123");
+    const base = source(blocks, TIP);
+    // the read of each coin in `failOnce` fails the first time (a timeout, a node without the old tx), as the live
+    // reader's null does
+    wal.nameSpvForTest = { ...base, async prevoutScriptPubkey(t, v) { return failOnce.delete(String(t).toLowerCase()) ? null : base.prevoutScriptPubkey(t, v); } };
+    return { wal, addr: String(addr).toLowerCase() };
+  };
+  const buyRest = async (wal) => {
+    const before = submits.length;
+    const outputs = requiredFillOutputs(served, W - BigInt(served.paid)).map(({ to, value }) => ({ to, value: Number(value) }));
+    const r = await wal.fillOffer({ proposalId: oid, outputs });
+    return { r, submitted: submits.length - before };
+  };
+  try {
+    const pl = [{ height: h0, tx: off }, { height: h0 + 2, tx: f1 }];
+    const wd = world(pl);
+    served = servedOf(wd, pl, [S, A]);
+    const { wal, addr } = await walletA(wd.blocks, new Set([String(f1.inputs[0].prev_txid).toLowerCase()]));
+    check(`setup: the account is the taker, the service lists f1 and 70,000,000 left (${addr === A}, ${served?.fills?.length}, paid ${served?.paid})`, addr === A && served?.fills?.length === 1 && served?.paid === "30000000");
+    let { r, submitted } = await buyRest(wal);
+    check(`the coin an authentic listed fill spends cannot be read: retryable, nothing sent (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && submitted === 0);
+    ({ r, submitted } = await buyRest(wal));
+    check(`the retry with the read working signs what is left (${r?.ok} ${r?.code ?? ""}, ${submitted} submit)`, r?.ok === true && submitted === 1);
+    const plX = [{ height: h0, tx: off }, { height: h0 + 2, tx: f1 }, { height: h0 + 4, tx: swapped }];
+    const wdX = world(plX);
+    served = servedOf(wdX, plX, [S, A, A]);
+    const { wal: walX } = await walletA(wdX.blocks, new Set());
+    ({ r, submitted } = await buyRest(walX));
+    check(`a listed fill not signed by its coin's owner still refuses as unsafe (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fill list for this offer does not match the chain/.test(String(r?.error)) && submitted === 0);
+  } finally { globalThis.fetch = origFetch; }
+}
 
 done("fill-offer-progress");

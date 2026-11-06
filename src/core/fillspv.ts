@@ -375,8 +375,9 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 
 /** A partial offer's running state from its proven listed fills, or why the list does not prove: "missing" (a listed
  *  fill is not in the block it is listed at, which an honest reorg before the service re-reads also produces),
+ *  "unavailable" (the coin a listed fill spends could not be read, so its author is unknown, not disproven),
  *  "unbound" (its signature is not the spent coin's owner's), "not-this-offer", or "unresolved". */
-export type OfferProgress = { paid: string; delivered: string } | { unproven: string; kind: "missing" | "unbound" | "not-this-offer" | "unresolved" };
+export type OfferProgress = { paid: string; delivered: string } | { unproven: string; kind: "missing" | "unavailable" | "unbound" | "not-this-offer" | "unresolved" };
 
 // F2-legacy: prove an offer's PAYMENT recipients (want.payto + the seller/rebate address) for the LEGACY /
 // dApp fill lane (fillOfferPreflight), which has no fclaim SPV io to source them from. Merkle-proves the offer
@@ -437,6 +438,7 @@ export async function provenOfferPayto(
       const ftx = b.rebuilt[at];
       if (at < 0 || !ftx) return { ...base, progress: { kind: "missing", unproven: `listed fill ${f.txid.slice(0, 12)}… is not in block ${f.height}` } };
       const author = await bindSigner(ftx, spv);
+      if (!author.ok && author.kind === "no-prevout") return { ...base, progress: { kind: "unavailable", unproven: `the coin listed fill ${f.txid.slice(0, 12)}… spends could not be read` } };
       if (!author.ok) return { ...base, progress: { kind: "unbound", unproven: `listed fill ${f.txid.slice(0, 12)}… could not be bound to the coin it spends` } };
       const ev = toChainEvent(ftx, f.txid, f.height, at, author.signer);
       if (!ev || ev.kind !== "attest" || ev.proposalId !== offerId) return { ...base, progress: { kind: "not-this-offer", unproven: `listed fill ${f.txid.slice(0, 12)}… is not a fill of this offer` } };

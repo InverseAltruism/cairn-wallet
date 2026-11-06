@@ -272,10 +272,13 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
   if (partial) {
     const progress = proven.progress;
     if (!progress) return refuse("VERIFY_UNAVAILABLE", "couldn't prove this offer's earlier fills yet; try again in a moment");
-    // A listed fill missing from its block can be an honest reorg the service has not re-read yet: retryable. A fill
-    // that is another offer's, or does not bind to its coin, is a list the chain contradicts.
+    // A listed fill missing from its block can be an honest reorg the service has not re-read yet, and one whose spent
+    // coin could not be read is unproven, not disproven: both retryable. A fill that is another offer's, or whose
+    // signature is not its coin owner's, is a list the chain contradicts.
     if ("unproven" in progress && progress.kind === "missing")
       return refuse("VERIFY_UNAVAILABLE", `couldn't find this offer's earlier fill where the offer service lists it (${progress.unproven}); the chain may have changed since the service read it, so try again in a moment`);
+    if ("unproven" in progress && progress.kind === "unavailable")
+      return refuse("VERIFY_UNAVAILABLE", `couldn't check this offer's earlier fill yet (${progress.unproven}); try again in a moment`);
     if ("unproven" in progress)
       return refuse("FILL_UNSAFE", `refusing to sign: the offer service's fill list for this offer does not match the chain (${progress.unproven}), so the amount left cannot be trusted`);
     if (progress.paid !== String(offer.paid ?? "0") || progress.delivered !== String(offer.delivered ?? "0"))
