@@ -70,9 +70,10 @@
   service's `paid`, and when that lagged its own earlier fill the resolver clamped the payment and kept the surplus
   (30,450,000 base units in the reviewers' case). A fill of the offer in this account's history from the last 30
   minutes that the service does not list yet refuses with the retryable `VERIFY_UNAVAILABLE` ("not listed as applied
-  by the offer service yet ... try again in a minute or two"), before any listed fill is proven. A listed fill not in
-  the block it is listed at (a reorg the service has not re-read), or whose spent coin cannot be read (a timeout, a
-  node without the old transaction), refuses retryably too; one that is another offer's or is not signed by its
+  by the offer service yet ... try again in a few minutes (if the service rejected that fill, this lasts up to 30
+  minutes)"), before any listed fill is proven. A listed fill not in the block it is listed at (a reorg the service
+  has not re-read), or whose spent coin cannot be read (a timeout, a node without the old transaction), refuses
+  retryably too; one that is another offer's or is not signed by its
   coin's owner, or a served amount left that differs from the proven one, refuses with `FILL_UNSAFE`. The first fill
   of an offer reads nothing more; each later one reads the blocks of the earlier listed fills
   (test/fill-taker-partial.test.mjs, test/fill-offer-progress.test.mjs).

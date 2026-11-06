@@ -87,6 +87,10 @@ let proofs = seen.length;
 ({ r, submitted } = await fillWith(off, outsOf(stale, W)));
 check(`A. own fill not indexed yet: a retryable refusal, nothing sent (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && /is not listed as applied by the offer service yet/.test(String(r?.error)) && submitted === 0);
 check(`A. ...decided from the local history before any proof read (${seen.length - proofs} proof calls)`, seen.length === proofs);
+// The refusal lasts up to OWN_FILL_INDEX_WAIT_MS when the service read the fill and rejected it, so the copy names that
+// wait from the constant instead of promising "a minute or two".
+const waitMin = OWN_FILL_INDEX_WAIT_MS / 60_000;
+check(`A. ...the copy names the real wait: a few minutes, up to ${waitMin} minutes if the service rejected the fill`, /try again in a few minutes/.test(String(r?.error)) && String(r?.error).includes(`if the service rejected that fill, this lasts up to ${waitMin} minutes`) && !/a minute or two/.test(String(r?.error)));
 
 served = honest;
 ({ r, submitted } = await fillWith(off, outsOf(stale, W)));
