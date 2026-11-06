@@ -10,7 +10,7 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CONF_TOKEN_FILL, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
@@ -18,7 +18,7 @@ import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
 import { readNameRecord, nameActSignVerdict, CONFIRM_OTHER_OWNER, NAME_READ_TIMEOUT_MS } from "./namegate.js";
-import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
+import { fillOfferPreflight, isTokenFillAttest, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
@@ -598,7 +598,7 @@ export class Wallet {
     // pay arbitrary CSD to any address via the attest method, whose clear-sign window renders NO outputs
     // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
-    if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
+    if (isTokenFillAttest(p.confidence))
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
     // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory

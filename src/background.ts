@@ -6,6 +6,7 @@ import { Wallet, AUTO_LOCK_MS } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
 import { APPROVE_WINDOW } from "./approve-window.js";
+import { fillTargetOf } from "./core/fillpreflight.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -352,14 +353,27 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
 // and reject the excess with a clear {ok:false} (never queue it); the page is told to clear its backlog.
 const MAX_PENDING_GLOBAL = 32;
 const MAX_PENDING_PER_ORIGIN = 5;
+// One fill request per fill target (fillTargetOf) at a time, across sites and page reloads: another is refused while
+// the first is queued, back in the queue for its reservation confirm step, or approved and still signing or sending.
+// The hold ends when the first request's answer goes to its page. Two approved fills of one offer pay twice, and the
+// resolver can keep the second payment.
+const fillHolds = new Map<string, string>(); // fill target -> id of the request holding it
+const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
+  const fillTarget = fillTargetOf(method, params);
+  if (fillTarget && fillHolds.has(fillTarget)) return Promise.resolve({ ok: false, code: "FILL_IN_PROGRESS", error: FILL_IN_PROGRESS_TEXT });
   if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests; approve or reject the queued ones first" });
   let perOrigin = 0; for (const p of pending.values()) if (p.origin === origin) perOrigin++;
   if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site; approve or reject the queued ones first" });
   return new Promise((resolve) => {
     const id = `${Date.now()}-${reqSeq++}`;
-    pending.set(id, { origin, method, params, resolve });
+    let answer: (v: any) => void = resolve;
+    if (fillTarget) {
+      fillHolds.set(fillTarget, id);
+      answer = (v) => { if (fillHolds.get(fillTarget) === id) fillHolds.delete(fillTarget); resolve(v); };
+    }
+    pending.set(id, { origin, method, params, resolve: answer });
     showQueueBadge();
     // Raise the clear-signing window. If it can't open (rare), the request still sits in the
     // queue + badge; the user opens the toolbar popup and clicks "Review", which calls

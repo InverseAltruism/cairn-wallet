@@ -2,7 +2,7 @@
 // token-fill confidence). It reads the offer and the chain through the wallet (FillPreflightIo) and returns a
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
-import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
+import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL } from "./cairnx.js";
 import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms, OfferProgress } from "./fillspv.js";
@@ -73,6 +73,20 @@ const SECOND_SOURCE_TIMEOUT_MS = 12000;
 
 // A fill refusal; RESERVATION_UNCONFIRMED also carries the facts the approval window shows.
 export type FillRefusal = node.SubmitResult & { unconfirmed?: ReservationUnconfirmed };
+// The shape of a fill target (an offer id or a reservation txid); the preflight refuses anything else before any read.
+const FILL_TARGET_RE = /^0x[0-9a-fA-F]{64}$/;
+// An attest at the token-fill confidence is a token fill: on chain it equals a fillOffer with no outputs, so
+// Wallet.attest signs it through fillOffer.
+export const isTokenFillAttest = (confidence: unknown): boolean => (Number(confidence ?? 100) >>> 0) === CONF_TOKEN_FILL;
+/** The target a dApp request would fill, lowercased as the preflight compares it, or null when the request is not a
+ *  fill or names a malformed target (which the preflight refuses with BAD_REQUEST before any read). */
+export function fillTargetOf(method: string, params: unknown): string | null {
+  const p = (params ?? {}) as { proposalId?: unknown; confidence?: unknown };
+  if (method !== "fillOffer" && !(method === "attest" && isTokenFillAttest(p.confidence))) return null;
+  const id = String(p.proposalId);
+  return FILL_TARGET_RE.test(id) ? id.toLowerCase() : null;
+}
+
 // Set by a passing fclaim-lane preflight when clarvis's record read had not answered (or failed) at its verdict; a
 // signed fill carries it to the approval window as `secondSource` (background.ts keeps it off the page's result).
 export type FillNotes = { secondSource?: "pending" | "failed" };
@@ -122,7 +136,7 @@ export type TokenFillQuote = {
 // `reservationAck` is the fclaim txid the user confirmed in the approval window after an "unknown" reservation
 // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
 export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
+  if (!FILL_TARGET_RE.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
   let offer: OfferState | null = null;
   let fetchFailed = false;
   try {

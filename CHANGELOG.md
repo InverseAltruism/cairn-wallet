@@ -59,6 +59,16 @@
   under the buttons belongs to the request on screen (sections h and i). The window's copy of the channel call is
   gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the Wallet
   (test/approve-outcome-dom.test.mjs).
+- The wallet holds one fill request per offer at a time. A `fillOffer`, or an `attest` at the token-fill confidence,
+  whose target (`proposalId`, the offer id or the reservation txid) another fill request holds is refused when it
+  arrives with the new code `FILL_IN_PROGRESS`: "A payment request for this offer is already in your wallet, waiting
+  for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of
+  sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed."
+  It is not queued, opens no approval window and signs nothing. The first holds the target while it is queued, back
+  in the queue for its reservation confirm step, or approved and still signing or sending, and until its answer goes
+  to its page. The queue took a second request for the same offer from another tab, another site or the same page
+  after a reload, and the approval window offered both, so approving both paid twice; the resolver refuses the second
+  fill of a whole offer and keeps its payment (test/fill-one-request-per-offer.test.mjs).
 - A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
   approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the
   purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only

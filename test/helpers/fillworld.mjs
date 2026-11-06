@@ -31,8 +31,10 @@ export function eventMaker(start) {
   return { PE, AT, token };
 }
 
-export function world(me, withheldKind) {
-  const { PE, AT, token } = eventMaker(withheldKind === "partial" ? 1000 : withheldKind === "cancel" ? 2000 : withheldKind === "hidden-hold" ? 4000 : 3000);
+// `base` numbers the world's record ids (by default from its kind), so two worlds of one kind can name different
+// reservations: the background holds one fill request per target.
+export function world(me, withheldKind, base) {
+  const { PE, AT, token } = eventMaker(base ?? (withheldKind === "partial" ? 1000 : withheldKind === "cancel" ? 2000 : withheldKind === "hidden-hold" ? 4000 : 3000));
   const ev = token();
   const offerEv = PE(S, offer({ give: { ticker: "TOKA", amount: "1000" }, want: { value: String(1000e8) }, ...(withheldKind === "partial" ? { min: String(100e8) } : {}) }), 115010, epochOf(115010) + 200);
   ev.push(offerEv);

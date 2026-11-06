@@ -50,9 +50,10 @@ const call = async (method, ...args) => { const r = await popup(method, ...args)
 const imported = await call("import", PRIV, "pw-confirm");
 const ME = String(imported.addr).toLowerCase();
 
-// One fill request from a page. `clarvis` is swappable so a re-run can see a different answer.
-async function request(kind, clarvisFor, { scanMs = 0, params = {} } = {}) {
-  const w = world(ME, kind);
+// One fill request from a page. `clarvis` is swappable so a re-run can see a different answer. A request made while
+// another of the same reservation is queued names its own (`base`): the background refuses a second fill of one target.
+async function request(kind, clarvisFor, { scanMs = 0, params = {}, base } = {}) {
+  const w = world(ME, kind, base);
   let clarvis = clarvisFor(w);
   bg.fillSpvIoForTest = () => w.io(scanMs);
   const st = stub(w, (init, u) => clarvis(init, u));
@@ -101,13 +102,13 @@ await test("2. an acknowledgement for another request id or another fclaim is ig
 
 await test("3. an acknowledgement from the page (in the request params) or a page-sent resolve is ignored", async () => {
   // The page names its own fclaim, which is exactly what an honest acknowledgement carries.
-  const C = await request(null, unknown, { params: { reservationAck: "__FCLAIM__" } });
+  const C = await request(null, unknown, { params: { reservationAck: "__FCLAIM__" }, base: 5000 });
   const q = await call("pending");
   assert.equal(q.find((x) => x.id === C.id).params.reservationAck, "__FCLAIM__");
   const C2 = await (async () => {
     await resolveAs(C, false);
-    const w = world(ME, null);
-    return request(null, unknown, { params: { reservationAck: w.fc.id, ack: { requestId: "any", fclaimTxid: w.fc.id } } });
+    const w = world(ME, null, 5000);
+    return request(null, unknown, { params: { reservationAck: w.fc.id, ack: { requestId: "any", fclaimTxid: w.fc.id } }, base: 5000 });
   })();
   assert.equal((await call("pending")).find((x) => x.id === C2.id).params.reservationAck, C2.w.fc.id, "the page sent the right fclaim");
   const r = await resolveAs(C2, true, ME);
@@ -123,7 +124,7 @@ await test("3. an acknowledgement from the page (in the request params) or a pag
 });
 
 await test("4. Cancel rejects the request as a user rejection", async () => {
-  const B = await request(null, unknown);
+  const B = await request(null, unknown, { base: 6000 });
   assert.equal((await resolveAs(B, true, ME)).code, "RESERVATION_UNCONFIRMED");
   const r = await resolveAs(B, false);
   assert.equal(r.done, true);

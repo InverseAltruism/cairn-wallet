@@ -175,7 +175,9 @@ on all sites (like MetaMask) so any dApp can request a connection, but injection
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
 sealed claims, **send** (a plain CSD transfer), and **fillOffer** (a CairnX offer fill: one transaction pays
 the recipients and records the fill, and CairnX then decides delivery; if it refuses the fill, the payment is not
-returned. The wallet checks the fill against the offer's proven record before anything is signed).
+returned. The wallet checks the fill against the offer's proven record before anything is signed, and holds one
+fill request per offer target at a time: a second one, from any site, is refused `FILL_IN_PROGRESS` before it is
+queued; docs/DESIGN-fill-lanes.md).
 
 **Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
 the first time an origin connects the user approves it, and the origin is recorded as a

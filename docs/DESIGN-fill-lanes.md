@@ -19,6 +19,29 @@ Then it routes on the request alone, never on a served field:
 Every lane returns a refusal or null and signs nothing. An unprovable or transient read refuses as retryable
 (`VERIFY_UNAVAILABLE`); a proven mismatch refuses as `FILL_UNSAFE`.
 
+## One request per fill target
+
+Before any lane, the background (`queueDappRequest` in `src/background.ts`) holds one fill request per target at a
+time. `fillTargetOf` (fillpreflight.ts) reads the target as the preflight does: `proposalId` in lower case, for a
+`fillOffer` in any lane and for an `attest` at the token-fill confidence. While a request holds a target (queued, back
+in the queue for its reservation confirm step, or approved and still signing or sending), another fill request naming
+it, from any site or from the same page after a reload, is refused `FILL_IN_PROGRESS` before it is queued: no window
+opens and nothing is signed. The hold ends when the first request's answer goes to its page, or when a worker restart
+empties the queue. Without it, approving both requests paid twice: the resolver refuses a second fill of a whole offer
+and keeps its payment, a second partial fill is sized on what was left before the first applied, and a second token
+fill pays its network fee for nothing (test/fill-one-request-per-offer.test.mjs).
+
+What the hold leaves to other rules:
+
+- Two targets of one offer (its offer id and a reservation txid) are two keys. The lanes decide between them: an
+  offer-id fill of an open CSD offer during a live hold refuses `FILL_WRONG_TARGET`, and the fclaim lane signs only for
+  the live granted hold.
+- A fill after the first was sent: the site tracks that purchase, and on the offer-id CSD lane the 30-minute own-fill
+  history check applies.
+- The hold is global, so a site learns whether another site's fill of a target it names is held, and a site can hold a
+  target by queueing a fill of it. Both need the site open in the user's browser; a miss and a hold are each a fill
+  request the user sees in the approval window and can reject (at most 5 per site). Accepted, 2026-11-06.
+
 ## The fclaim lane
 
 - `verifyFillSpv` replays the offer's lane events, each merkle-proven against the verified header chain and bound
