@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 - The offer-fill, send and consolidate refusals (`fillpreflight.ts`, `node.ts`) no longer contain em dashes; a colon
   or a full stop takes their place, the wording is otherwise the same and the error codes are unchanged.
