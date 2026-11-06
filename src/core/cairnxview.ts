@@ -87,7 +87,8 @@ export type FillListing = { status: "open"; give: { ticker: string; amount: stri
 // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
 // attested id on the reservation lane), the asset the offer service lists as received, whether the listing sells in
 // parts (a token listing with a minimum), and the listing's fields for the card's own delivery figure (clearsign.ts
-// fillViewHtml); `partial` holds when those fields are missing, so the card never shows the whole give as received.
+// fillViewHtml); `partial` holds when those fields are missing, so such a listing's card does not show the whole give as
+// received. A served answer without its minimum reads as a whole listing, attributed to the service.
 // Display only.
 const digits = (v: unknown): string | undefined => (typeof v === "string" && /^\d+$/.test(v)) || (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ? String(v) : undefined;
 // The served listing as previewFill reads it, or undefined when a field it needs is missing or malformed.

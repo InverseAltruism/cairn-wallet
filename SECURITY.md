@@ -142,7 +142,7 @@ warns and lets you decide:
   reason (more than 256 records, a block the wallet's node does not serve, a record that does not bind) drops out of
   the fallback. That leaves a stale-seller residual: a hostile source that withholds a later sale and makes the
   combined replay fail, while the honest source's records cannot be replayed, has the seller proven from its records
-  alone, shown with the "not corroborated" warning and never cached for the confirm step.
+  alone, shown with the "not corroborated" warning and not cached for the confirm step.
 * Nothing can be proven, or the sources prove different addresses: the name is shown as **not
   chain-verified**, the address the name service served is the one shown, and the warning asks you to
   confirm it out-of-band. The send is not blocked.
