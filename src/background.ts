@@ -317,6 +317,11 @@ let approveWinId: number | null = null; // track the approval popup so we can ra
 // first arrives and when the user clicks "Review" in the toolbar popup; so EVERY approval
 // goes through the full recipient/amount/fee/warnings disclosure, never a blind approve.
 let openingApproval: Promise<{ opened: boolean }> | null = null;
+// Raise the open approval window, if any; never creates one.
+function focusApprovalWindow(): void {
+  if (approveWinId == null) return;
+  try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
+}
 function openApprovalWindow(): Promise<{ opened: boolean }> {
   if (!pending.size) return Promise.resolve({ opened: false });
   if (openingApproval) return openingApproval; // 0.2.70: same-turn arrivals share one create/focus
@@ -325,7 +330,7 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
   openingApproval = Promise.resolve().then(() => {
     try {
       if (approveWinId != null) {
-        try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
+        focusApprovalWindow();
         return { opened: true };
       }
       // 0.2.71 (CX-15 item 4): two requests in different turns before the first create's callback can
@@ -336,7 +341,7 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
         if (id == null) return;
         if (approveWinId != null && approveWinId !== id) {
           try { chrome.windows.remove?.(id); } catch { /* best-effort */ }
-          try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* best-effort */ }
+          focusApprovalWindow();
           return;
         }
         approveWinId = id;
@@ -356,13 +361,20 @@ const MAX_PENDING_PER_ORIGIN = 5;
 // One fill request per fill target (fillTargetOf) at a time, across sites and page reloads: another is refused while
 // the first is queued, back in the queue for its reservation confirm step, or approved and still signing or sending.
 // The hold ends when the first request's answer goes to its page. Two approved fills of one offer pay twice, and the
-// resolver can keep the second payment.
+// resolver can keep the second payment. A refused request brings forward the window that holds the first: while the
+// first is queued, that window is opened or focused; once it is in flight, an open window is focused (normally the one
+// that approved it, showing its outcome) and none is created, since a new window could only show other requests.
 const fillHolds = new Map<string, string>(); // fill target -> id of the request holding it
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
   const fillTarget = fillTargetOf(method, params);
-  if (fillTarget && fillHolds.has(fillTarget)) return Promise.resolve({ ok: false, code: "FILL_IN_PROGRESS", error: FILL_IN_PROGRESS_TEXT });
+  const holder = fillTarget ? fillHolds.get(fillTarget) : undefined;
+  if (holder) {
+    if (pending.has(holder)) openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
+    else focusApprovalWindow();
+    return Promise.resolve({ ok: false, code: "FILL_IN_PROGRESS", error: FILL_IN_PROGRESS_TEXT });
+  }
   if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests; approve or reject the queued ones first" });
   let perOrigin = 0; for (const p of pending.values()) if (p.origin === origin) perOrigin++;
   if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site; approve or reject the queued ones first" });

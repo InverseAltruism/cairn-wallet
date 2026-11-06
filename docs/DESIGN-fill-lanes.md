@@ -25,8 +25,11 @@ Before any lane, the background (`queueDappRequest` in `src/background.ts`) hold
 time. `fillTargetOf` (fillpreflight.ts) reads the target as the preflight does: `proposalId` in lower case, for a
 `fillOffer` in any lane and for an `attest` at the token-fill confidence. While a request holds a target (queued, back
 in the queue for its reservation confirm step, or approved and still signing or sending), another fill request naming
-it, from any site or from the same page after a reload, is refused `FILL_IN_PROGRESS` before it is queued: no window
-opens and nothing is signed. The hold ends when the first request's answer goes to its page, or when a worker restart
+it, from any site or from the same page after a reload, is refused `FILL_IN_PROGRESS` before it is queued: nothing is
+signed and no window is created for it. The refusal brings forward the approval window that holds the first request,
+since the usual honest reason to click Buy again is that the window is behind another window or on another display:
+while the first is queued, that window is focused, or opened again if it never opened; once the first is in flight,
+an open window is focused and none is created. The hold ends when the first request's answer goes to its page, or when a worker restart
 empties the queue. Without it, approving both requests paid twice: the resolver refuses a second fill of a whole offer
 and keeps its payment, a second partial fill is sized on what was left before the first applied, and a second token
 fill pays its network fee for nothing (test/fill-one-request-per-offer.test.mjs).
@@ -40,7 +43,9 @@ What the hold leaves to other rules:
   history check applies.
 - The hold is global, so a site learns whether another site's fill of a target it names is held, and a site can hold a
   target by queueing a fill of it. Both need the site open in the user's browser; a miss and a hold are each a fill
-  request the user sees in the approval window and can reject (at most 5 per site). Accepted, 2026-11-06.
+  request the user sees in the approval window and can reject (at most 5 per site). Accepted, 2026-11-06. A hit
+  raises the approval window, and a site that names a held target can raise it once per refused request, without the
+  per-site cap; nothing is queued or signed, and rejecting the held request or closing the window ends it.
 
 ## The fclaim lane
 

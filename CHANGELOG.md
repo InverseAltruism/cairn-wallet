@@ -64,7 +64,10 @@
   arrives with the new code `FILL_IN_PROGRESS`: "A payment request for this offer is already in your wallet, waiting
   for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of
   sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed."
-  It is not queued, opens no approval window and signs nothing. The first holds the target while it is queued, back
+  It is not queued and signs nothing, and no window is created for it; the approval window that holds the first
+  request comes forward instead (focused, or opened again if it never opened; while the first is signing or sending,
+  an open window is focused and none is created), since the usual reason to click Buy again is that the window is
+  behind another one. The first holds the target while it is queued, back
   in the queue for its reservation confirm step, or approved and still signing or sending, and until its answer goes
   to its page. The queue took a second request for the same offer from another tab, another site or the same page
   after a reload, and the approval window offered both, so approving both paid twice; the resolver refuses the second

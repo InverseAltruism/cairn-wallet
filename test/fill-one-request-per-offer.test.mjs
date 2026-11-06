@@ -3,10 +3,13 @@
 // approved fill runs the whole preflight and signs. While a fill request naming a target is queued, back in the queue
 // for its reservation confirm step, or approved and still signing or sending, another fill request naming the same
 // target (fillOffer in the site's whole, partial and token-priced shapes, or an attest at the token-fill confidence) is
-// refused at queue time with FILL_IN_PROGRESS: it is not queued, raises no window and signs nothing.
+// refused at queue time with FILL_IN_PROGRESS: it is not queued and signs nothing, and no window is created for it.
+// The refusal brings forward the window that holds the first request: it focuses the open window, or opens the
+// window again while the first is queued and has none (10); while the first is in flight it creates none (5).
 //
 // RED-FIRST: drop the hold check in background.ts queueDappRequest and sections 1, 2, 3, 5 and 8 fail: the second
-// request queues and raises the approval window, and approving both signs two fills of one reservation.
+// request queues and raises the approval window, and approving both signs two fills of one reservation. Drop the
+// window call at the refusal and sections 1, 2, 5 and 10 fail; create a window for an in-flight holder and 5 fails.
 // PAIRED HONEST PATHS: one fill queues and signs as before (1, 5); a fill of another offer, a claim attest of the same
 // id and a send queue beside a held fill (4); after the first fill was sent (6), rejected (7), cancelled at its
 // confirm step (8) or settled by closing the window (9), the next fill of the same offer queues, and in 7 signs.
@@ -23,6 +26,7 @@ const WIN = 77;
 const mem = new Map();
 let onRemoved = null;
 const windowCalls = []; // every create and focus of the approval window, in order
+let createFails = false; // a create whose window never reports in (chrome gives no window)
 const ignore = () => undefined;
 const chrome = {
   runtime: {
@@ -40,7 +44,7 @@ const chrome = {
   alarms: { create: ignore, onAlarm: { addListener: ignore } },
   action: { setBadgeText: ignore },
   windows: {
-    create: (opts, cb) => { windowCalls.push("create"); cb?.({ id: WIN }); },
+    create: (opts, cb) => { windowCalls.push("create"); cb?.(createFails ? undefined : { id: WIN }); },
     update: () => { windowCalls.push("focus"); },
     onRemoved: { addListener: (fn) => { onRemoved = fn; } },
   },
@@ -110,7 +114,7 @@ const { check, done } = checker("one fill request per offer through the worker c
   const b = dapp(OTHER, "fillOffer", whole()); await settle();
   check("1. the other site's request for the same reservation is refused FILL_IN_PROGRESS", refused(b.reply));
   check("1. it is not queued", isDeepStrictEqual(await ids(), [aId]));
-  check("1. no window is raised or focused for it", windowCalls.length === 1);
+  check("1. the approval window that holds the first request is focused, and no window is created for the refused one", isDeepStrictEqual(windowCalls, ["create", "focus"]));
   for (const id of await ids()) await approve(id);
   check("1. approving every queued request signs one fill", st.submits.length - n0 === 1);
   check("1. honest path: the first page gets its txid", a.reply?.ok === true && typeof a.reply?.result?.txid === "string");
@@ -124,7 +128,7 @@ const { check, done } = checker("one fill request per offer through the worker c
   const w0 = windowCalls.length;
   const b = dapp(SITE, "fillOffer", whole()); await settle();
   check("2. after a reload, the same site's new request is refused FILL_IN_PROGRESS", refused(b.reply));
-  check("2. only the first is queued, and no window is raised for the second", isDeepStrictEqual(await ids(), [aId]) && windowCalls.length === w0);
+  check("2. only the first is queued; its window is focused and none is created for the second", isDeepStrictEqual(await ids(), [aId]) && isDeepStrictEqual(windowCalls.slice(w0), ["focus"]));
   for (const [name, method, params] of [
     ["the target in upper case", "fillOffer", whole("0x" + X.slice(2).toUpperCase())],
     ["a partial fill's shape", "fillOffer", partial()],
@@ -172,7 +176,15 @@ const { check, done } = checker("one fill request per offer through the worker c
   const w0 = windowCalls.length;
   const b = dapp(OTHER, "fillOffer", whole()); await settle();
   check("5. a request while the first is signing and sending is refused FILL_IN_PROGRESS", refused(b.reply));
-  check("5. it is not queued and raises no window", (await ids()).length === 0 && windowCalls.length === w0);
+  check("5. it is not queued; the open window that shows the first is focused and none is created", (await ids()).length === 0 && isDeepStrictEqual(windowCalls.slice(w0), ["focus"]));
+  // The user closes the window while the first is in flight; another site's request queues but gets no window.
+  onRemoved(WIN); await settle();
+  createFails = true;
+  const s = dapp(OTHER, "send", { to: "0x" + "11".repeat(20), amount: 1e7, fee: 1e6 }); await settle();
+  createFails = false;
+  const w1 = windowCalls.length;
+  const c = dapp(SITE, "fillOffer", whole()); await settle();
+  check("5. with the first in flight and no window open, a refused request creates no window, though another request is queued", refused(c.reply) && (await ids()).length === 1 && s.reply === undefined && windowCalls.length === w1);
   submitGate = null; open();
   const o = await outcome;
   check("5. honest path: the first fill signs once and its page gets the txid", o.done === true && o.ok === true && st.submits.length - n0 === 1 && a.reply?.ok === true && typeof a.reply?.result?.txid === "string");
@@ -223,6 +235,22 @@ const { check, done } = checker("one fill request per offer through the worker c
   check("9. closing the window settles the first APPROVAL_CLOSED", a.reply?.code === "APPROVAL_CLOSED");
   const b = dapp(SITE, "fillOffer", whole()); await settle();
   check("9. honest path: the next request queues and opens the window again", b.reply === undefined && (await ids()).length === 1 && windowCalls.at(-1) === "create");
+  await clear();
+}
+
+// 10. The first is queued but its window never opened (chrome gave none): the refused retry opens it.
+{
+  onRemoved(WIN); await settle();
+  createFails = true;
+  const a = dapp(SITE, "fillOffer", whole()); await settle();
+  createFails = false;
+  const aId = await lastId();
+  const w0 = windowCalls.length;
+  const b = dapp(OTHER, "fillOffer", whole()); await settle();
+  check("10. a refused retry opens the window that holds the queued first request, and is not queued itself", refused(b.reply) && isDeepStrictEqual(await ids(), [aId]) && isDeepStrictEqual(windowCalls.slice(w0), ["create"]));
+  const n0 = st.submits.length;
+  await approve(aId);
+  check("10. honest path: the first fill then signs once", st.submits.length - n0 === 1 && a.reply?.ok === true);
   await clear();
 }
 
