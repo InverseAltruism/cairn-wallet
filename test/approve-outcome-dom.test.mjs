@@ -3,7 +3,7 @@
 //   (1) SUBMIT_MAYBE_INFLIGHT says the transaction may already be in flight and names the history row, not "Failed";
 //   (2) SUBMIT_DUPLICATE shows its own text, info style;
 //   (3) a broken channel (the worker died mid-call) reads as possibly in flight, not as an answered refusal;
-//   (4) a request already closed ({ done: false }) says nothing was signed, not "Approved.";
+//   (4) a request already handled in another view: test/approve-handled-elsewhere.test.mjs drives two real views;
 //   (5) honest paths unchanged: a txid shows "Sent", an answer with neither (a connect or sign-in) shows "Approved.",
 //       and any other refusal, an answered throw included, keeps "Failed: ...".
 // A "Failed" on an ambiguous submit invites the site's retry, which pays twice when the first transaction lands.
@@ -51,8 +51,6 @@ o = await outcome({ done: true, ok: false, code: "SUBMIT_DUPLICATE", error: "thi
 check(`(2) duplicate: its own text, info style (${o.text})`, o.text === "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again." && o.cls === "msg info");
 o = await outcome(null, { brokenChannel: true });
 check(`(3) broken channel: possibly in flight, not a refusal (${o.text})`, o.text === "The message port closed before a response was received. The transaction didn't confirm; it may already be in flight. Check your history before trying again." && o.cls === "msg err");
-o = await outcome({ done: false });
-check(`(4) a request already closed: nothing was signed (${o.text})`, o.text === "This request was already closed; nothing was signed." && o.cls === "msg info");
 
 o = await outcome({ done: true, ok: true, txid: TXID });
 check(`(5) a txid: Sent (${o.text})`, /^Sent 0xc4c4c4c4/.test(o.text) && o.cls === "msg ok");
