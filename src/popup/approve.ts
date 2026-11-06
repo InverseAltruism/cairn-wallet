@@ -54,6 +54,10 @@ let holdOutcome = false;
 let renderSeq = 0;
 // The request id whose current paint is the warning state; only a click on that paint sends the acknowledgement.
 let warnedFor: string | null = null;
+// Approve and Reject both show this when the request left the queue before this window resolved it (resolvePending
+// answers { done: false }): rejected from the toolbar, answered in another approval view (which may have signed it), or
+// dropped by the background's 24-hour cleanup or a worker restart. This window signed nothing, and cannot tell which.
+const HANDLED_ELSEWHERE = "This request was already handled or closed (possibly in another window), and may have been approved and sent. Check your history before sending again.";
 async function render() {
   const seq = renderSeq;
   const st = await call("status");
@@ -533,7 +537,16 @@ async function resolve(approve: boolean) {
   const u = warnedFor === id ? rs(id).unconfirmed : undefined;
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
   current = null; renderedId = null; renderedSigner = null; warnedFor = null; renderSeq++;
-  if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("Rejected. Nothing was signed."); render(); return; }
+  // Reject says nothing was signed only when the background confirms it took this request off the queue as a rejection
+  // (resolvePending's reject path: done true, USER_REJECTED). A request already off the queue may be signing in another
+  // view, and a call that threw leaves the rejection unknown; both hold the window, as Approve's outcomes do.
+  if (!approve) {
+    const r: any = await call("resolve", id, false, signer).catch(() => null);
+    if (r?.done === true && r.code === "USER_REJECTED") msg("Rejected. Nothing was signed.");
+    else if (r?.done === false) { msg(HANDLED_ELSEWHERE, "info"); holdOutcome = true; }
+    else { msg("The rejection could not be confirmed. Check your history before sending again.", "err"); holdOutcome = true; }
+    render(); return;
+  }
   msg("Approving…");
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
@@ -561,10 +574,7 @@ async function resolve(approve: boolean) {
     const note = secondSourceNote(r.secondSource);
     if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); holdOutcome = true; }
   }
-  // The request left the queue before this window resolved it: rejected from the toolbar, answered in another
-  // approval view (which may have signed it), or dropped by the background's 24-hour cleanup or a worker restart.
-  // This window signed nothing, and cannot tell which.
-  else if (r && r.done === false) { msg("This request was already handled or closed (possibly in another window), and may have been approved and sent. Check your history before sending again.", "info"); holdOutcome = true; }
+  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "info"); holdOutcome = true; }
   else msg("Approved.", "ok");
   render();
 }

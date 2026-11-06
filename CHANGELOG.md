@@ -42,11 +42,15 @@
   in flight. Check your history before trying again." replaces "Failed: ... (SUBMIT_MAYBE_INFLIGHT)" and a broken
   channel's "Failed: The message port closed ...", so the window no longer invites a site's retry that could pay
   twice; a duplicate submit shows its own text; a request already handled or closed elsewhere says "This request was
-  already handled or closed in another window, and may have been approved and sent there. Check your history before
-  sending again." instead of "Approved.": another approval view of the same request may have signed it
-  (test/approve-handled-elsewhere.test.mjs). Other refusals keep "Failed: ...". The window's copy of the channel call
-  is gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the Wallet
-  (test/approve-outcome-dom.test.mjs).
+  already handled or closed (possibly in another window), and may have been approved and sent. Check your history
+  before sending again." instead of "Approved.": another approval view of the same request may have signed it
+  (test/approve-handled-elsewhere.test.mjs). Reject reads the background's answer the same way: "Rejected. Nothing was
+  signed." only when the background confirms the rejection; a request another view already took shows the text above
+  and keeps the window open (it used to say "Rejected. Nothing was signed." and close while the other view signed),
+  and a Reject whose reply never arrives says "The rejection could not be confirmed. Check your history before sending
+  again." (test/approve-handled-elsewhere.test.mjs sections a to c). Other refusals keep "Failed: ...". The window's
+  copy of the channel call is gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever
+  bundles the Wallet (test/approve-outcome-dom.test.mjs).
 - A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
   approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the
   purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only
