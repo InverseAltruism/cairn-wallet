@@ -48,8 +48,10 @@
 - A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
   approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the
   purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only
-  the owner may renew and the fee would be burned. The wallet's own Renew refuses both (retryable right after a
-  purchase, while the name service still names the seller) (test/name-action-gate.test.mjs).
+  the owner may renew and the fee would be burned. The wallet's own Renew does the same: on a live lease its first
+  Confirm signs nothing and the review shows that warning with a "Renew anyway" button, which signs (right after a
+  purchase the name service may still name the seller); in the grace period it refuses, acknowledged or not
+  (test/name-action-gate.test.mjs).
 - The approval window's Expires row follows the node's admission rule, the epoch of the next block: a record
   expiring in that epoch reads "expires at the end of this epoch, in about N blocks" (it was "already past: this
   record would be a no-op", while the node admits it and a token transfer applies), and one expiring earlier reads

@@ -134,7 +134,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
     case "fillOfferView": return wallet.fillOfferView(args[0]); // listing id + listed asset for a CSD-paid fill card (display only)
-    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2]); // args[2] = expectSigner (A1)
+    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2], args[3] === true); // args[2] = expectSigner (A1), args[3] = the other-owner acknowledgement
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
     case "setTradeApi": return wallet.setTradeApi(args[0]);

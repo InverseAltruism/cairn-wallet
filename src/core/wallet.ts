@@ -17,7 +17,7 @@ import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
-import { readNameRecord, nameActSignRefusal, NAME_READ_TIMEOUT_MS } from "./namegate.js";
+import { readNameRecord, nameActSignVerdict, CONFIRM_OTHER_OWNER, NAME_READ_TIMEOUT_MS } from "./namegate.js";
 import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
@@ -897,8 +897,9 @@ export class Wallet {
   // The name's state at the sign, read the way the approval window reads it (namegate.ts), so a renew or set primary
   // reviewed before the name turned pending, lapsed or changed owner is refused instead of paying a fee for a no-op.
   private readNameForAct(name: string) { return readNameRecord((path) => this.tradeGet(path, NAME_READ_TIMEOUT_MS), name); }
-  // Renew a .csd lease (+1 year); built on-device, pays the registration fee to the treasury.
-  async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string) {
+  // Renew a .csd lease (+1 year); built on-device, pays the registration fee to the treasury. `ackOtherOwner` is the
+  // popup's acknowledgement of the warning that another address holds the live lease (thrown as CONFIRM_OTHER_OWNER).
+  async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string, ackOtherOwner?: boolean) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
@@ -920,8 +921,8 @@ export class Wallet {
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
-    const refusal = nameActSignRefusal("nrenew", await nameRead, me);
-    if (refusal) throw new Error(refusal);
+    const verdict = nameActSignVerdict("nrenew", await nameRead, me, ackOtherOwner === true);
+    if (verdict) throw new Error("refuse" in verdict ? verdict.refuse : CONFIRM_OTHER_OWNER + verdict.confirm);
     const expiresEpoch = Math.floor(tip / EPOCH_LEN) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
     await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
@@ -936,8 +937,8 @@ export class Wallet {
     const nameRead = this.readNameForAct(name);   // in flight beside the tip read below
     const built = buildNameSet({ name, addr: me });
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + SET_PRIMARY_EXPIRY_EPOCHS;
-    const refusal = nameActSignRefusal("nset", await nameRead, me);
-    if (refusal) throw new Error(refusal);
+    const verdict = nameActSignVerdict("nset", await nameRead, me);
+    if (verdict) throw new Error("refuse" in verdict ? verdict.refuse : verdict.confirm);
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
     await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;

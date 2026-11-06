@@ -29,8 +29,9 @@ export async function readNameRecord(get: (path: string) => Promise<Response>, n
 // resolver's nrenew and nset both reject them, and the service marks a name `expired` only once its grace period is
 // over. Another address's live lease warns: the resolver applies the renewal, so it pays that owner's lease. A
 // transport failure warns and never blocks.
+// `ackable` marks that warning, the one the wallet's own Renew signs after an acknowledgement (nameActSignVerdict).
 const CATCHING_UP = "If it was registered in the last few minutes, the name service may still be catching up: try again later.";
-export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchResult, me: string): { block: boolean; note: string | null } {
+export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchResult, me: string): { block: boolean; note: string | null; ackable?: true } {
   if (fetched.failed) {
     return { block: false, note: `Could not verify this ${kind === "nrenew" ? "renewal" : "name record"} against the name service (unreachable). A no-op ${kind === "nrenew" ? "renewal burns the renewal fee" : "record burns the anchor fee"}. Approve only if the site shows the action as available.` };
   }
@@ -55,15 +56,23 @@ export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchRe
   }
   if (kind === "nrenew" && typeof rec.owner === "string" && rec.owner.toLowerCase() !== me.toLowerCase()) {
     if (rec.lease?.inGrace === true) return { block: true, note: "Refusing to sign: this name is in its grace period and owned by a different address. Only the owner can renew it now, so the renewal fee would be burned." };
-    return { block: false, note: "This name is owned by a different address: approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the purchase to settle." };
+    return { block: false, note: "This name is owned by a different address: approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the purchase to settle.", ackable: true };
   }
   return { block: false, note: null };
 }
 
-/** The wallet's own renew and set primary, at the sign: the refusal text, or null to sign. Nobody reads a warning
- *  here, so an answered read refuses on a block and on a warning (a pending or lapsed name, which the resolver's
- *  nrenew and nset reject); a read with no answer signs, as the approval window lets Approve through. */
-export function nameActSignRefusal(kind: "nrenew" | "nset", fetched: NameFetchResult, me: string): string | null {
+/** The wallet's own renew and set primary, at the sign: null to sign, `refuse` with the text, or `confirm` with the
+ *  warning the popup shows before it signs. An answered read refuses on a block and on a warning nobody reads at the
+ *  sign (a pending or lapsed name, which the resolver's nrenew and nset reject); the renewal of another address's
+ *  live lease is the approval window's warning, so it asks to confirm and signs once `acknowledged`. A read with no
+ *  answer signs, as the approval window lets Approve through. */
+export type NameActSignVerdict = null | { refuse: string } | { confirm: string };
+export function nameActSignVerdict(kind: "nrenew" | "nset", fetched: NameFetchResult, me: string, acknowledged = false): NameActSignVerdict {
   if (fetched.failed) return null;
-  return nameActApproveGate(kind, fetched, me).note;
+  const g = nameActApproveGate(kind, fetched, me);
+  if (g.note === null) return null;
+  if (g.ackable) return acknowledged ? null : { confirm: g.note };
+  return { refuse: g.note };
 }
+/** The prefix of the error the wallet's Renew throws to ask for the acknowledgement; the warning text follows it. */
+export const CONFIRM_OTHER_OWNER = "CONFIRM_OTHER_OWNER:";

@@ -7,6 +7,7 @@ import { dropStaleView, openPanel } from "./popup-panels.js";
 import { refreshBalance } from "./popup-balance.js";
 import { nameDetails, renderAssets } from "./popup-assets.js";
 import { CAIRNX_FEE } from "./popup-tokensend.js";
+import { CONFIRM_OTHER_OWNER } from "../core/namegate.js";
 
 // One click opens a review panel (parity with the send-confirm flow); signing happens only on Confirm.
 // A name renew / set-primary spends real CSD, so it must be reviewable and declinable like every other
@@ -50,12 +51,14 @@ export async function confirmNameAction(kind: "renew" | "primary", name: string)
     // QA #5: the wallet's set-primary is a single nset→self; it makes the name primary only if it's your
     // OLDEST self-pointing name. Switching from an older name needs the multi-step flow on the website.
     : "Points this name at you (its reverse record). If it's your oldest such name it becomes your primary; to switch from an older name, use cairn-substrate.com/names.";
+  $("nc-note").className = "note";
+  $("btn-name-confirm").textContent = "Confirm";
   reviewState.reviewedNameAct = { kind, name, total, fee: renewFee, signer: curAddr };   // freeze the reviewed fee + signer; doNameAction signs EXACTLY this
   msg("");
 }
 async function doNameAction() {
   if (!reviewState.reviewedNameAct) return;
-  const { kind, name, fee, signer } = reviewState.reviewedNameAct;
+  const { kind, name, fee, signer, ackOtherOwner } = reviewState.reviewedNameAct;
   const bound = bindView();                                 // the account this review belongs to
   dropReviews();                                            // consume the snapshot: one Confirm = one signature
   try {
@@ -63,7 +66,7 @@ async function doNameAction() {
     // WL-FEE-FREEZE-1: a renew signs EXACTLY the reviewed fee; the background throws FEE_CHANGED (without
     // signing) if the tip crossed a fee-gate since review, so the user never signs a different amount.
     // A1: the reviewed signer rides along; a mid-flight account switch refuses instead of signing.
-    const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee, signer ?? undefined] : [signer ?? undefined]));
+    const r = await call(kind === "renew" ? "cairnxNameRenew" : "cairnxSetPrimary", name, ...(kind === "renew" ? [fee, signer ?? undefined, ...(ackOtherOwner ? [true] : [])] : [signer ?? undefined]));
     const what = kind === "renew" ? "renewal" : "set-primary";
     if (r.ok) { ($("name-action-form") as HTMLElement).hidden = true; msg(`${kind === "renew" ? "Renewed" : "Set primary"}: ${name}.csd · ${String(r.txid).slice(0, 12)}… (takes effect once it is mined).`, "ok"); refreshBalance(); renderAssets(); }
     else {
@@ -83,6 +86,20 @@ async function doNameAction() {
       }
       await confirmNameAction("renew", name);               // re-price + re-show the review first (it resets the status line)…
       msg(`The renewal fee changed to ${fmtCsd(newFee)} since you reviewed. Check it and confirm again.`, "err");  // …then explain
+      return;
+    }
+    // Another address holds the live lease (right after an honest purchase the name service may still name the
+    // seller): nothing was signed; the review comes back with the warning, and Renew anyway signs it.
+    if (m.startsWith(CONFIRM_OTHER_OWNER)) {
+      const note = m.slice(CONFIRM_OTHER_OWNER.length);
+      if (!viewCurrent(bound) || !nameDetails.has(name)) { dropStaleView(); msg(`${note} Nothing was signed; open the name again to review it.`, "err"); return; }
+      await confirmNameAction("renew", name);
+      const re = reviewState.reviewedNameAct;
+      if (!re || re.kind !== "renew" || re.name !== name) return;   // superseded while the review re-read
+      re.ackOtherOwner = true;
+      $("nc-note").textContent = note;
+      $("nc-note").className = "note callout caution";
+      $("btn-name-confirm").textContent = "Renew anyway";
       return;
     }
     const o = thrownCopy(e, kind === "renew" ? "renewal" : "set-primary");
