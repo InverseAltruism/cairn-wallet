@@ -85,8 +85,10 @@ async function servedOpenOffer(wallet: CairnxViewIo, proposalId: string): Promis
 /** The served listing's fields previewFill reads, so a fill card can compute what a payment receives. */
 export type FillListing = { status: "open"; give: { ticker: string; amount: string } | { name: string }; want: { value: string; payto: string }; min?: string; paid?: string; delivered?: string; feeBps: number; taker?: string; bid?: string; height: number };
 // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
-// attested id on the reservation lane), the asset the offer service lists as received, and the listing's fields for
-// the card's own delivery figure (clearsign.ts fillViewHtml). Display only.
+// attested id on the reservation lane), the asset the offer service lists as received, whether the listing sells in
+// parts (a token listing with a minimum), and the listing's fields for the card's own delivery figure (clearsign.ts
+// fillViewHtml); `partial` holds when those fields are missing, so the card never shows the whole give as received.
+// Display only.
 const digits = (v: unknown): string | undefined => (typeof v === "string" && /^\d+$/.test(v)) || (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ? String(v) : undefined;
 // The served listing as previewFill reads it, or undefined when a field it needs is missing or malformed.
 function listingOf(o: any, giveTicker?: string, giveAmount?: string, giveName?: string): FillListing | undefined {
@@ -99,7 +101,7 @@ function listingOf(o: any, giveTicker?: string, giveAmount?: string, giveName?: 
   if (extra.some((x) => x === null)) return undefined;
   return { status: "open", give, want: { value, payto }, feeBps, height, ...Object.assign({}, ...extra), ...(typeof o?.taker === "string" ? { taker: o.taker } : {}), ...(typeof o?.bid === "string" ? { bid: o.bid } : {}) };
 }
-export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; listing?: FillListing }> {
+export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; partial?: boolean; listing?: FillListing }> {
   try {
     const so = await servedOpenOffer(wallet, proposalId);
     if (!so.ok) return so;
@@ -111,7 +113,8 @@ export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): P
     const giveAmount = g?.amount != null ? String(g.amount) : undefined;
     const giveName = typeof g?.name === "string" ? g.name : undefined;
     const meta = giveTicker ? await tokenDisplayMeta(wallet, [giveTicker]) : {};
-    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, expiresAt: servedExpiryHeight(o), listing: listingOf(o, giveTicker, giveAmount, giveName) };
+    const partial = o.min != null && giveName === undefined;
+    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, expiresAt: servedExpiryHeight(o), partial, listing: listingOf(o, giveTicker, giveAmount, giveName) };
   } catch { return { ok: false, error: "offer unavailable" }; }
 }
 

@@ -3,7 +3,9 @@
 // vendored previewFill over it, labelled as computed from the listing, with the whole listing on its own row. No read
 // beyond the one the card already makes; the signed bind is the preflight's. Through fillViewHtml, fillOfferView over
 // a stubbed read, and the REAL approve.ts on helpers/approve-dom.mjs (the production call shape).
-//   red before: the card said "You receive 100 NEWF (as listed by the offer service)" for a 0.1 CSD payment.
+//   red before: the card said "You receive 100 NEWF (as listed by the offer service)" for a 0.1 CSD payment, and still
+//   did when the partial listing's answer lacked a field the figure needs (feeBps); it now says the figure could not
+//   be calculated.
 //   honest: a whole listing and a name listing keep their line.
 // Run: npx tsx test/fill-card-receive.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
@@ -28,6 +30,14 @@ html = fillViewHtml(partial, OID, undefined, outs(1_000_000));
 check(`a payment below the listing's minimum shows that it receives nothing (${html.replace(/<[^>]+>/g, "")})`, /receives nothing: the payment is below what the listing accepts/.test(html));
 html = fillViewHtml(partial, OID, undefined, outs(70_000_000));
 check("the rest of the listing (0.7 CSD) shows the 70 NEWF it buys", /about <b>70 NEWF/.test(html));
+
+// The same partial listing, fresh (100 NEWF for 1 CSD, minimum 0.1 CSD), served without feeBps: no estimate, and the
+// whole give is not presented as what the 0.1 CSD payment receives.
+const { feeBps: _fee, ...noFee } = served({ min: "10000000" });
+const partialNoFee = await view(noFee);
+html = fillViewHtml(partialNoFee, OID, undefined, outs(10_000_000));
+check(`a partial listing served without feeBps says the receipt could not be calculated (${html.replace(/<[^>]+>/g, "")})`,
+  partialNoFee.ok === true && partialNoFee.listing === undefined && /Could not calculate what this payment receives/.test(html) && !/You receive/.test(html) && /Whole listing/.test(html));
 
 const whole = await view(served());
 html = fillViewHtml(whole, OID, undefined, outs(100_000_000));

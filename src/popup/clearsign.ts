@@ -537,24 +537,32 @@ export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
 // so attributed; a failed read says so.
 // A partial listing (one with a minimum) delivers pro rata, so its "You receive" is what the payment the request makes
 // to the listing's payee buys, computed with the vendored previewFill over the listing the card already read; the
-// whole listing gets its own row. Display only: the fill preflight binds what is signed.
-function partialReceive(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number; listing?: FillListing }, outputs: unknown): string | null {
+// whole listing gets its own row. When the figure cannot be computed (a field it needs is missing or malformed) the
+// card says so instead of showing the whole give as received. Display only: the fill preflight binds what is signed.
+function partialReceive(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number; partial?: boolean; listing?: FillListing }, outputs: unknown): string | null {
   const l = view.listing;
-  if (!l || l.min === undefined || "name" in l.give || view.giveTicker === undefined || view.giveAmount === undefined) return null;
+  if (!view.partial) return null;
+  if (!l || l.min === undefined || "name" in l.give || view.giveTicker === undefined || view.giveAmount === undefined) return noPartialEstimate(view);
   let pay = 0n;
   for (const o of Array.isArray(outputs) ? outputs : []) if (String(o?.to ?? "").toLowerCase() === l.want.payto) pay += csdBase(o?.value) ?? 0n;
   const dec = displayDecimals(view.giveTicker, view.giveDecimals).decimals;
   const listingRow = rows([["Whole listing", `${escapeHtml(tokenAmountBothScales(view.giveAmount, dec, view.giveTicker))} for ${escapeHtml(fmtCsd(l.want.value))}`]]);
   let p: ReturnType<typeof previewFill>;
-  try { p = previewFill(l as unknown as OfferState, pay); } catch { return null; }
+  try { p = previewFill(l as unknown as OfferState, pay); } catch { return noPartialEstimate(view); }
   if (!p.deliverable) {
     const why = p.reason === "below-min" ? "the payment is below what the listing accepts" : p.reason === "zero-delivery" ? "the payment rounds to no tokens at the listing's price" : "the listing cannot take this payment";
     return danger(`By the offer service's listing this payment receives nothing: ${why}. Check the listing on the site before approving.`) + listingRow;
   }
   return rows([["You receive", `about <b>${escapeHtml(tokenAmountBothScales(String(p.got), dec, view.giveTicker))}</b> <span class="dim">(computed from the offer service's listing)</span>`]]) + listingRow;
 }
+function noPartialEstimate(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number }): string {
+  const whole = view.giveTicker !== undefined && view.giveAmount !== undefined
+    ? rows([["Whole listing", `${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))} <span class="dim">(as listed by the offer service)</span>`]])
+    : "";
+  return danger(`Could not calculate what this payment receives from the offer service's listing, so it is not shown here. Check the listing on the site before approving.`) + whole;
+}
 
-export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; listing?: FillListing } | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown): string {
+export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; partial?: boolean; listing?: FillListing } | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown): string {
   if (!view || !view.ok) return danger(`Could not load this listing from the offer service, so what you receive is not shown here. Check the listing on the site before approving.`);
   const reserved = !!view.offerId && view.offerId.toLowerCase() !== String(proposalId).toLowerCase();
   const gets = view.giveName !== undefined ? `<b>${escapeHtml(view.giveName)}.csd</b>`

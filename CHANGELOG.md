@@ -68,8 +68,11 @@
 - A partial fill's approval card shows what the payment buys: "You receive about 10 NEWF (computed from the offer
   service's listing)" and a "Whole listing" row with the listing's give and price, where it said "You receive 100 NEWF
   (as listed by the offer service)" for any payment. The figure comes from the vendored previewFill over the listing
-  the card already reads (no added read); a payment the listing would not take reads "receives nothing". A whole
-  listing and a name keep their line (test/fill-card-receive.test.mjs).
+  the card already reads (no added read); a payment the listing would not take reads "receives nothing". When the
+  service's answer for a partial listing lacks a field the figure needs (its fee rate, say), the card reads "Could not
+  calculate what this payment receives from the offer service's listing, so it is not shown here." with the whole
+  listing on its own row, where it showed the whole give as received. A whole listing and a name keep their line
+  (test/fill-card-receive.test.mjs).
 - The recovery phrase copy says what the phrase covers: the accounts created from it. The backup screen, the key and
   phrase panels said it restores or controls "all" your accounts, which an imported key is not; they now say an
   imported key needs its own backup, and so do the README and the store listing text (the listing is updated on the
