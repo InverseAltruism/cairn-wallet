@@ -1,5 +1,5 @@
 {
-  "note": "Copied from csd-sdk packages/vectors/src/signatures.ts (csd-vectors 0.1.17, SIG_VECTORS) at commit 541517ad9d043a33fa7229663328108b3e830f80 (branch p4/sdk2-cairnx); nodeAccepts is the node secp256k1 crate verify_sig verdict recorded there. Do not edit: regenerate from that package.",
+  "note": "Copied from csd-sdk packages/vectors/src/signatures.ts (csd-vectors 0.1.17, SIG_VECTORS) as published from commit 1a5a3727083c13637ffdc68c45afe06e0651a3fe (tag csd-vectors-0.1.17); nodeAccepts is the node secp256k1 crate verify_sig verdict recorded there. Do not edit: regenerate from that package.",
   "vectors": [
     {
       "name": "A1",
