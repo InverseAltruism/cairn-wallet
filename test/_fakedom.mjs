@@ -106,6 +106,7 @@ export function installBridge(handlers) {
           try { cb({ ok: true, result: await h(...(m.args || [])) }); } catch (e) { cb({ ok: false, error: String(e?.message || e) }); }
         });
       },
+      onMessage: { addListener() { /* the approval window registers one; no other context messages the page here */ } },
     },
   };
   return { breakChannel, calls };

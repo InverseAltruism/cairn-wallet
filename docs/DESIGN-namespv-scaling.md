@@ -317,14 +317,29 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 
 - After the header checks: a full-block merkle bind, signer auth and the prevout-ownership bind, then the two-source
   union (`verifyNameUnion`: primary and clarvis, union by txid, every event SPV-proven, the audited resolver replayed
-  over the proven union).
+  over the proven union minus every record about another name, `nameScopedEvents`). Another name's records reach this
+  name's replay only through the resolver's per-address limits (a reveal is refused while its proposer holds
+  MAX_PENDING_REG other reservations), and an honest source serves none of them (0 dropped over the 606 hints cairnx
+  959fa25's selector serves for the 172 names of the 130,077 capture); when they decide a name, the honest source's
+  `scopedReplaySufficient: false` refuses it, on the union replay and before the per-source recovery alike, and a
+  source whose own replay is `viaFill` refuses the recovery as a `viaFill` union replay does, so a source that pads
+  the union past `MAX_HINTS` cannot have the recovery drop an honest source whose own records replay and verify alone
+  (test/namespv-union-scope.test.mjs cases 3 and 4). The recovery skips a source whose own replay fails for any
+  reason, so when the honest source's records cannot be replayed a lone source still decides, with `soleSource` and
+  `disagree` set (the residual in `docs/DESIGN-viafill.md`). The confirm-time skip also refuses on a fresh
+  `scopedReplaySufficient: false` (case 5).
+- `MAX_HINTS` (256) bounds one replay: a union over it is refused before any block read, but the per-source recovery
+  then replays each source's own list, each within the cap, so one verification can prove up to the cap per source
+  besides the union replay.
 - A green badge needs a successful replay. A disagreeing source is a warning, not a refusal: the send goes to the
   proven winner with `disagree` or `soleSource` set. When nothing can be proven, `resolveName` returns the served
   address with `verified: false` and the popup lets the user send after a caution.
 - A lapse refuses when it is corroborated (a second source or the persisted tip floor is also past expiry), and when
   a resolver reports the lease lapsed and the chain cannot show it current (`src/core/names.ts`). A lapse seen only
   against one source's tip is a caution (`verified: false`, "may have lapsed"), so an inflated node tip cannot
-  block a send (test/resolve-lapse-corroborate.test.mjs). A name decided by an offer fill (`viaFill`) is never shown green.
+  block a send (test/resolve-lapse-corroborate.test.mjs). A name the replay shows decided by an offer fill or a
+  re-claim after a lapse (`viaFill`) is not shown green; the stale-seller residual above is the case the replay
+  cannot see.
 - A long sync persists its verified progress every `SYNC_PERSIST_WINDOW` (8,192) headers, so an interrupted sync
   resumes (`syncWithPartialPersist`). The persisted tip floor advances only after the whole sync succeeded
   (`floorAdvance`); test/namespv-partial-persist.test.mjs pins both.

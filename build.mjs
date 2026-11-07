@@ -1,9 +1,10 @@
-// Bundle the extension with esbuild (no external imports at runtime — everything,
+// Bundle the extension with esbuild (no external imports at runtime: everything,
 // incl. @noble, is inlined). background + popup are ES modules; content + inpage
 // run as classic scripts (IIFE).
 import * as esbuild from "esbuild";
 import { assertStampedVersion, assertVersionLockstep, manifestVersionInDist } from "./scripts/package.mjs";
 import { UI_SHIP, UI_VENDOR_DIR, verifyUiVendor } from "./scripts/check-ui-vendor.mjs";
+import { thirdPartyNotices } from "./scripts/third-party-notices.mjs";
 import { cpSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 // F12 tripwire: the popup-isolation argument rests on the extension having NO external message
@@ -26,19 +27,19 @@ for (const dir of ["src", "public"]) {
 // (v0.2.21 once shipped a manifest/inpage left at the previous version).
 const PKG_VERSION = JSON.parse(readFileSync("package.json", "utf8")).version;
 
-// Source-host tripwire (NSPV-CLARVIS-MANIFEST-1 / H2): every hardcoded remote host the wallet FETCHES from —
-// name-history resolver sources + the SPV RPC/header origins (the `*_RPC` / `*_API` constants in wallet.ts) —
+// Source-host tripwire (NSPV-CLARVIS-MANIFEST-1 / H2): every hardcoded remote host the wallet FETCHES from
+// (name-history resolver sources + the SPV RPC/header origins, the `*_RPC` / `*_API` constants in wallet.ts)
 // MUST appear in BOTH the CSP `connect-src` and `host_permissions`, or the packaged MV3 worker silently
 // CSP-blocks it and the verify fail-softs (clarvis was dead-on-arrival exactly this way). This makes adding a
 // future source-without-permission a hard build failure. Navigation-only constants (e.g. EXPLORER) are
-// intentionally NOT matched — they are opened in a tab, never fetched.
+// intentionally NOT matched: they are opened in a tab, never fetched.
 {
   const manifest = JSON.parse(readFileSync("public/manifest.json", "utf8"));
   const csp = manifest.content_security_policy?.extension_pages ?? "";
   const connectSrc = (csp.match(/connect-src([^;]*)/)?.[1] ?? "").trim().split(/\s+/);
   const hostPerms = manifest.host_permissions ?? [];
   // Scan the wallet's OWN source (NOT the vendored bundle, which takes its base URL as a parameter) for EVERY
-  // hardcoded https:// host literal — so a future fetch host added in ANY form or file (not just a *_RPC/*_API
+  // hardcoded https:// host literal, so a future fetch host added in ANY form or file (not just a *_RPC/*_API
   // const in wallet.ts) is still required to be in the manifest (H2-TRIPWIRE-EVASION-1). Navigation-only hosts
   // (opened in a tab, never fetched) are explicitly allowlisted.
   const NAV_ALLOWLIST = new Set(["explorer.computesubstrate.org"]);
@@ -102,7 +103,14 @@ await esbuild.build({ ...common, entryPoints: { content: "src/content.ts", inpag
     console.error("✗ build aborted: Wallet/devshim chunk missing (expected endpoint-URL string in a split chunk, not popup.js)");
     process.exit(1);
   }
-  console.log(`✓ popup isolation: ${NEEDLE} ×0 in popup.js, ×${chunkHits} in ${chunks.join(", ") || "(chunks)"}`);
+  // approve.js is built without splitting, so a dynamic import there would inline the Wallet (approve.ts takes the
+  // channel from popup-outcome.ts, which has none).
+  const approveHits = (_read("dist/approve.js", "utf8").match(new RegExp(NEEDLE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+  if (approveHits !== 0) {
+    console.error(`✗ build aborted: Wallet class leaked into dist/approve.js (found ${NEEDLE} ×${approveHits}); the approval window must not import popup-bridge.ts or devshim.ts.`);
+    process.exit(1);
+  }
+  console.log(`✓ popup isolation: ${NEEDLE} ×0 in popup.js and approve.js, ×${chunkHits} in ${chunks.join(", ") || "(chunks)"}`);
 }
 
 writeFileSync("dist/manifest.json", JSON.stringify({ ...JSON.parse(readFileSync("public/manifest.json", "utf8")), version: PKG_VERSION }, null, 2) + "\n");
@@ -111,6 +119,8 @@ cpSync("src/popup/approve.html", "dist/approve.html");
 cpSync("src/popup/popup.css", "dist/popup.css");
 cpSync("src/popup/icons.svg", "dist/icons.svg");
 cpSync("src/popup/icons.LICENSE.txt", "dist/icons.LICENSE.txt");
+// esbuild drops comments (legalComments "none"), so the bundled MIT code's notices ship as their own file.
+writeFileSync("dist/THIRD-PARTY-LICENSES.txt", thirdPartyNotices());
 // cairn-ui (tokens, fonts, theme scripts, the avatar's stylesheet): shipped only when every vendored byte matches its PROVENANCE.json.
 {
   const problems = verifyUiVendor();
@@ -128,7 +138,7 @@ if (existsSync("public/icons")) {
   _mkdirSync("dist/icons", { recursive: true });
   for (const f of SHIP_ICONS) if (existsSync(`public/icons/${f}`)) cpSync(`public/icons/${f}`, `dist/icons/${f}`);
 }
-console.log("✓ built dist/ — load it unpacked in chrome://extensions (Developer mode → Load unpacked → dist/)");
+console.log("✓ built dist/: load it unpacked in chrome://extensions (Developer mode → Load unpacked → dist/)");
 
 // Output check: the stamp must have landed in every bundle and the manifest.
 assertStampedVersion("dist", PKG_VERSION);

@@ -11,7 +11,7 @@
 
 const TAG_WITH_ID = /<[a-zA-Z][^>]*\sid="([^"]+)"[^>]*>/g;
 /** The ids approve.html holds outside the request, which approve.ts reads at load and on every paint. */
-export const APPROVE_IDS = ["app", "view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw", "ap-origin", "ap-ask", "ap-signer", "ap-state"];
+export const APPROVE_IDS = ["app", "view-locked", "view-req", "req", "msg", "btn-approve", "btn-reject", "btn-unlock", "unlock-pw", "ap-tile", "ap-origin", "ap-ask", "ap-signer", "ap-state"];
 
 export function mountApproveWindow(handlers) {
   const registry = new Map();
@@ -81,9 +81,13 @@ export function mountApproveWindow(handlers) {
   globalThis.ResizeObserver = Unobserved;
   let closes = 0;
   globalThis.window = { close: () => { closes++; } };
+  const windowListeners = [];
   globalThis.chrome = {
     runtime: {
+      id: "cairnwallettestid",
       lastError: undefined,
+      // The window's own listeners (approve.ts registers one at load); `deliver` reaches them.
+      onMessage: { addListener: (fn) => { windowListeners.push(fn); } },
       sendMessage(m, cb) {
         // async delivery, like the real port: every reply lands on a later turn
         Promise.resolve().then(async () => {
@@ -94,7 +98,14 @@ export function mountApproveWindow(handlers) {
       },
     },
   };
-  return { registry, closes: () => closes };
+  // A message from another extension context to the window, as chrome.runtime.sendMessage delivers it: every listener
+  // runs now, and the result is the first answer given synchronously ({ value }), or undefined when none answered.
+  const deliver = (msg, sender) => {
+    let answer;
+    for (const fn of windowListeners) fn(msg, sender, (v) => { answer ??= { value: v }; });
+    return answer;
+  };
+  return { registry, closes: () => closes, deliver };
 }
 
 // Import approve.ts (which fires the first render) and return its 1.2 s poll callback, captured instead of

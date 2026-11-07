@@ -1,12 +1,14 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
+import { extensionCall, HANDLED_ELSEWHERE, refusedCopy, rejectCopy, thrownCopy } from "./popup-outcome.js";
+import { APPROVE_REARM } from "../approve-window.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
 // Bound a background call at 2.5s: node.get() carries no timeout, and a hung (not refused) RPC must
@@ -21,12 +23,7 @@ const fontsLoaded: Promise<unknown> = Promise.race([
   new Promise((res) => setTimeout(res, 1000)),
 ]);
 
-function call(method: string, ...args: any[]): Promise<any> {
-  return new Promise((res, rej) => chrome.runtime.sendMessage({ kind: "popup", method, args }, (r: any) => {
-    if (chrome.runtime.lastError) return rej(new Error(chrome.runtime.lastError.message));
-    r?.ok ? res(r.result) : rej(new Error(r?.error || "error"));
-  }));
-}
+const call = (method: string, ...args: any[]): Promise<any> => extensionCall(chrome, method, ...args);
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
 // What each request type asks for, under the requesting origin in the header.
 function asks(r: any): string {
@@ -52,7 +49,14 @@ let paintGen = 0;
 // does not mean the window is done: it stays open while a result is in flight, and after a failure or a
 // sent fill's second-source notice until the user closes it or a new request is painted.
 let inFlight = 0;
-let holdOutcome = false;
+// The outcome line the window holds, as hold() read it when the outcome was shown: a later write to the line (an unlock)
+// does not change what is held. When the next request paints, the held line moves above that request, marked as the
+// previous request's, since the line under the buttons is the request on screen's (`carried`); it stays on that
+// request's repaints and goes when another request paints.
+type HeldLine = { html: string; cls: string };
+let held: HeldLine | null = null;
+let carried: (HeldLine & { forId: string }) | null = null;
+function hold() { const m = $("msg"); held = { html: m.innerHTML, cls: m.className.replace(/^msg\s*/, "") }; }
 // Bumped by resolve() when it sends and when its outcome lands: a render whose status/pending reads started before
 // that is stale (its queue snapshot predates the outcome) and paints nothing.
 let renderSeq = 0;
@@ -67,12 +71,13 @@ async function render() {
   const pend = await call("pending");
   if (seq !== renderSeq) return;
   if (!pend.length) {
-    if (inFlight || holdOutcome) { ($("view-req") as HTMLElement).hidden = true; return; }
+    if (inFlight || held) { ($("view-req") as HTMLElement).hidden = true; return; }
     window.close(); return;
   }
   current = pend[0];
   // The requesting origin, in full however long (a look-alike keeps its tail), set from the browser's sender origin.
   $("ap-origin").textContent = String(current.origin);
+  $("ap-tile").textContent = originInitial(current.origin);
   $("ap-ask").textContent = asks(current);
   void refreshNfinalize(current.id);   // runs while locked too, so the unlock repaint shows a current verdict
   const reqView = $("view-req") as HTMLElement;
@@ -120,6 +125,9 @@ async function render() {
   if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
   const acct = (st.accounts || [])[st.active || 0];
   renderedSigner = String(st.addr || ""); // M5: bind the resolve to the account the user is about to SEE
+  if (held) carried = { ...held, forId: current.id };
+  else if (carried?.forId !== current.id) carried = null;
+  const prior = carried ? `<div class="req dim prior ${carried.cls}">Previous request: ${carried.html}</div>` : "";
   const queued = pend.length > 1 ? `<div class="req dim">Request 1 of ${pend.length}: review each separately.</div>` : "";
   // For a connection request, tell the user exactly what approving grants: address
   // visibility until they disconnect the site; NOT permission to move funds (every
@@ -139,7 +147,7 @@ async function render() {
     balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
     $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b title="${escapeHtml(acct.label)}">${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
-    $("req").innerHTML = `${queued}<div class="req">${describe(current)}</div>${connectNote}`;
+    $("req").innerHTML = `${prior}${queued}<div class="req">${describe(current)}</div>${connectNote}`;
     paintUnconfirmed(current.id);
     // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm
     // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which the line under the
@@ -150,7 +158,7 @@ async function render() {
     $("app").dataset.density = chooseDensity($("app"), $("req"), () => reservesFor(forReq, me));
     enterBody();
     msg(""); // clear any stale "approved"/"rejected" from a previous request
-    holdOutcome = false;
+    held = null;
     warnPainted = fillSendWarning(current);
     tokenPainted = fillTokenSim(current);   // 0.2.71: Approve waits for the token preview of THIS request
     armButtons();         // briefly disable Approve/Reject so a stale click can't land on a freshly-swapped request
@@ -446,7 +454,7 @@ async function fillFillView(r: any) {
   const id = String((r.params || {}).proposalId || "");
   const [view, tip] = await Promise.all([bounded(call("fillOfferView", id)), cardTip()]);
   if (renderedId !== r.id) return;
-  el.innerHTML = fillViewHtml(view as any, id, tip);
+  el.innerHTML = fillViewHtml(view as any, id, tip, (r.params || {}).outputs);
   (el as HTMLElement).hidden = false;
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning
@@ -495,7 +503,9 @@ function disableButtons() {
 // an unpainted poisoning warning.
 let warnPainted: Promise<unknown> = Promise.resolve();
 let tokenPainted: Promise<unknown> = Promise.resolve();
-let approveArmedGen = -1;   // the paintGen whose re-enable floor has run; a later verdict may re-enable Approve only then
+let approveArmedGen = -1;   // the paintGen whose latest floor has run; a later verdict may re-enable Approve only then
+let armSeq = 0;             // bumped by every armButtons call: only the latest call's floor re-enables the buttons
+let armedPaintGen = -1;     // the paintGen whose paint has called armButtons; a raise re-arms only such a paint
 function armButtons() {
   disableButtons();  // AW-1: same immediate disable; the 700ms RE-ENABLE timer stays here, after the paint
   // Approve stays disabled when the nfinalize gate already blocked this request (a verdict landing
@@ -503,12 +513,15 @@ function armButtons() {
   // preview for THIS request is ready (0.2.71). Reject is always re-enabled.
   const armedId = current?.id;
   const armedGen = paintGen;   // a same-id repaint re-arms with its own floor and its own quote
+  const seq = ++armSeq;
+  armedPaintGen = paintGen;
+  approveArmedGen = -1;
   const minWait = new Promise((r) => setTimeout(r, 700));
   const base = Promise.all([minWait, Promise.resolve(warnPainted).catch(() => { /* the send warnings are advisory: a failed paint must not leave both buttons disabled */ })]);
   // Reject never waits for the token preview: a hanging quote must not lock the user out of rejecting.
-  base.then(() => { if (current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
+  base.then(() => { if (seq === armSeq && current?.id === armedId) ($("btn-reject") as HTMLButtonElement).disabled = false; });
   Promise.all([base, Promise.resolve(tokenPainted).catch(() => { /* a failed preview is not "ready", so tokenNotReady keeps Approve disabled; Reject re-enables */ })]).then(() => {
-    if (current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the current paint arms itself
+    if (seq !== armSeq || current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the latest arm re-enables
     approveArmedGen = armedGen;
     ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
@@ -536,25 +549,42 @@ async function resolve(approve: boolean) {
   const u = warnedFor === id ? rs(id).unconfirmed : undefined;
   // Force the NEXT request (if any) to fully re-render + re-arm before it can be resolved.
   current = null; renderedId = null; renderedSigner = null; warnedFor = null; renderSeq++;
-  if (!approve) { try { await call("resolve", id, false, signer); } catch { /* no-op */ } msg("Rejected. Nothing was signed."); render(); return; }
+  // Reject reads the answer as the toolbar popup does (popup-outcome.ts); an outcome that may hide a send holds the
+  // window, as Approve's outcomes do.
+  if (!approve) {
+    const o = rejectCopy(await call("resolve", id, false, signer).catch(() => null));
+    msg(o.text, o.cls);
+    if (o.maybe) hold();
+    render(); return;
+  }
   msg("Approving…");
   // POPUP-OUTCOME-1: show the TRUE result of the signed action (sent/failed), not a blanket "approved".
   // background refuses if the active account changed since render; a failed broadcast/guard returns ok:false.
   let r: any;
+  let thrown: unknown = null;
   inFlight++;
   const ack = u ? { requestId: id, fclaimTxid: u.fclaimTxid } : undefined;
-  try { r = await call("resolve", id, true, signer, displayedQuote, ...(ack ? [ack] : [])); } catch (e: any) { r = { ok: false, error: e?.message }; }
+  try { r = await call("resolve", id, true, signer, displayedQuote, ...(ack ? [ack] : [])); } catch (e: unknown) { thrown = e; }
   finally { inFlight--; }
   renderSeq++; renderedId = null;   // a poll that read the queue before this outcome must not paint; repaint and re-arm
-  if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
+  // The popup's reading of an outcome (popup-outcome.ts): an ambiguous or duplicate submit and a broken channel may be in
+  // flight, so they never read "Failed"; any other refusal keeps "Failed: <error> (<code>)".
+  if (thrown) {
+    const o = thrownCopy(thrown, "transaction");
+    msg(o.maybe ? o.text : "Failed: " + ((thrown as Error)?.message || "?"), o.maybe ? o.cls : "err"); hold();
+  } else if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
-  } else if (r && r.ok === false) { msg("Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err"); holdOutcome = true; }
+  } else if (r && r.ok === false) {
+    const o = refusedCopy(r, "transaction");
+    msg(o.maybe ? o.text : "Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), o.maybe ? o.cls : "err"); hold();
+  }
   else if (r && r.txid) {
     msg("Sent " + String(r.txid).slice(0, 10) + "…", "ok");
     const note = secondSourceNote(r.secondSource);
-    if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); holdOutcome = true; }
+    if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); hold(); }
   }
+  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "info"); hold(); }
   else msg("Approved.", "ok");
   render();
 }
@@ -602,6 +632,15 @@ function enterBody() {
 $("btn-unlock").addEventListener("click", async () => { try { await call("unlock", ($("unlock-pw") as HTMLInputElement).value); msg("Unlocked.", "ok"); render(); } catch (e: any) { msg(e.message, "err"); } });
 $("btn-approve").addEventListener("click", () => { if (!($("btn-approve") as HTMLButtonElement).disabled) resolve(true); });
 $("btn-reject").addEventListener("click", () => { if (!($("btn-reject") as HTMLButtonElement).disabled) resolve(false); });
+// The background raises this window only after this answer (background.ts focusApprovalWindow), so the painted request
+// re-arms before the raise can put Approve under a click meant for another window. A request still being painted arms
+// when its paint ends. A focus the user gives the window is not a raise and re-arms nothing. Only the extension's own
+// tabless contexts are heard; a content script's sender carries its tab.
+chrome.runtime.onMessage.addListener((m: any, sender: any, reply: (v: unknown) => void) => {
+  if (m?.kind !== APPROVE_REARM || sender?.id !== chrome.runtime.id || sender?.tab) return;
+  if (current && renderedId === current.id && armedPaintGen === paintGen) armButtons();
+  reply({ ok: true });
+});
 // Follow a theme chosen in the popup's Settings while this window is open (theme.js, loaded by approve.html).
 (globalThis as { CairnTheme?: CairnThemeApi }).CairnTheme?.startSync();
 render();

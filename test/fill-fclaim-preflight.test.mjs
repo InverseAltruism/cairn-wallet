@@ -22,7 +22,7 @@ import { liveFillSpvSource, provenOfferPayto, feeBpsAt } from "../src/core/fills
 import { OfferNotAdmittedError } from "../src/core/fillpreflight.js";
 import {
   deploy, mint, offer, fclaim, offerCancelAll, resolve, verifyFillSpv, V28_HEIGHT, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS,
-  SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD,
+  SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, FCLAIM_MAX_HOLD_SPAN,
   countOtherHoldsAtGrant, LEGACY_HOLD_SUNSET_HEIGHT,
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
@@ -424,8 +424,7 @@ const fcTxFor = (offerId = LOID, priv = meKey) => proposeTx({ ...pick(fclaim({ o
   check("D1: the prevout seam DID fire for the real lane events (the instrumentation is wired)", prevoutCalls.length > 0);
 
   // …and past the old gate (tip 60,134) the same holds; one fixture, both tips.
-  const MAX_HOLD_SPAN = EPOCH_LEN * (FCLAIM_MAX_EPOCH_AHEAD + 1) - 1;
-  const POST_GATE = V28_HEIGHT + LEGACY_HOLD + MAX_HOLD_SPAN;   // == the old 60,134 crossing
+  const POST_GATE = V28_HEIGHT + LEGACY_HOLD + FCLAIM_MAX_HOLD_SPAN;   // == the old 60,134 crossing
   const io2 = await liveFillSpvSource({ rpcBase: "http://x", headersBase: "http://x", spvSource: fillSource(blocks, POST_GATE), hints: { offerId: LOID, fclaimTxid: ctxid(rpcTxToTx(fill)), me: ME, offerHeight: H0 + 2 } });
   check("D1: same answer past the old gate (tip 60,134)", io2.myLiveHoldsAtGrant === 0);
 }
@@ -627,10 +626,11 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   {
     const served = taker({ min: "50000000" });
     const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
-    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: Number(served.height), terms: termsFor(served) });   // proven min == served min
+    // proven min == served min; no fill listed, so the proven running state is the served one (paid 0)
+    w.provenPaytoForTest = () => ({ payto: S.toLowerCase(), seller: S.toLowerCase(), expiresEpoch: 9e15, height: Number(served.height), terms: termsFor(served), progress: { paid: String(served.paid ?? "0"), delivered: String(served.delivered ?? "0") } });
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
     const r = await w.fillOffer({ proposalId: OID, outputs: outs });
-    check(`F2-legacy: an honest partial offer (min matches on-chain) is NOT refused for a terms mismatch (${r?.code ?? "ok"})`, !(r?.code === "FILL_UNSAFE" && /fee\/rebate terms/.test(r?.error ?? "")));
+    check(`F2-legacy: an honest partial offer (min matches on-chain) signs, one submit (${r?.code ?? "ok"})`, r?.ok === true && s.submits.length === 1);
   }
   // (b) UNPROVABLE author (null) -> retryable VERIFY_UNAVAILABLE, NOT a hard decline (the transient valve)
   {

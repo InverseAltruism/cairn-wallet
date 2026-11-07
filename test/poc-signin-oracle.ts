@@ -13,7 +13,8 @@
 //                 AND a legitimate login still verifies.
 import { signIn } from "../src/core/node.js";
 import { generate } from "../src/core/account.js";
-import { sighash as codecSighash, verifySig, pubFromPriv, type Tx } from "../src/core/csdtx.js";
+import { sighash as codecSighash, pubFromPriv, type Tx } from "../src/core/csdtx.js";
+import { verifyDigest } from "../src/vendor/cairnx-spv.js";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 
@@ -55,10 +56,10 @@ await signIn("https://malicious.example", victim.privkey);
 const pub = pubFromPriv(victim.privkey);
 
 console.log("PoC: malicious API returns a drain-tx sighash as the 'login digest'\n");
-const drainSigValid = !!emittedSig && verifySig(emittedSig, pub, drainSighash);
+const drainSigValid = !!emittedSig && verifyDigest(emittedSig, pub, drainSighash);
 check("wallet does NOT emit a signature that authorizes the attacker's drain tx", !drainSigValid);
 check("the emitted signature is a VALID login (matches locally-derived login digest)",
-  !!emittedSig && verifySig(emittedSig, pub, loginDigest(NONCE)));
+  !!emittedSig && verifyDigest(emittedSig, pub, loginDigest(NONCE)));
 
 if (drainSigValid) console.log("\n  ⚠️  VULNERABLE: emitted signature spends the victim's coins to the attacker.");
 console.log(`\n${fail === 0 ? "SAFE" : "VULNERABLE"}: ${pass} passed, ${fail} failed`);

@@ -14,7 +14,7 @@ export let siteApi = "";   // the Cairn site base (for the /trade deep-link in t
 export const reviewState: {
   reviewed: { to: string; base: string; ticker: string; decimals: number; name?: string | null; verified?: boolean; signer?: string | null } | null;
   reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean; signer?: string | null } | null;
-  reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number; signer?: string | null } | null;
+  reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number; signer?: string | null; ackOtherOwner?: boolean } | null;
 } = { reviewed: null, reviewedSend: null, reviewedNameAct: null };
 export function dropReviews() { reviewGen++; reviewState.reviewed = null; reviewState.reviewedSend = null; reviewState.reviewedNameAct = null; }
 // A send Review awaits the name lookup and the balance before it primes its snapshot. It takes a generation when it starts

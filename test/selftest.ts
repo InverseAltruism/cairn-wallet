@@ -1,6 +1,7 @@
 // Cairn Wallet core self-tests; oracle-based (consensus golden vectors + a real
 // on-chain signature), plus keystore/account adversarial cases. No mocks of our own.
-import { serialize, txid, sighash, verifySig, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
+import { serialize, txid, sighash, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
+import { verifyDigest } from "../src/vendor/cairnx-spv.js";
 import { generate, fromPriv, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";
 import { seal, open, importKeyRaw } from "../src/core/keystore.js";
 import { Wallet, explorerLink } from "../src/core/wallet.js";
@@ -34,7 +35,7 @@ const onchain: Tx = {
   app: { type: "Attest", proposalId: "0xd46770cdef6fc5d0c7b0680ed58d1af04be939f3739b9d34c174e5071341048b", score: 100, confidence: 90 },
 };
 const oSig = "0x" + ss.slice(4, 132), oPub = "0x" + ss.slice(134);
-check("real on-chain sig verifies vs recomputed sighash", verifySig(oSig, oPub, sighash(onchain)));
+check("real on-chain sig verifies vs recomputed sighash", verifyDigest(oSig, oPub, sighash(onchain)));
 check("hash160(on-chain pub) == signer addr", hash160(Uint8Array.from(oPub.slice(2).match(/../g)!.map((x) => parseInt(x, 16)))) === "0x6eda635deaa2f710213942cc97c19b7e008fc694");
 
 // 2b) Cairn content hash (must match the board/server item.ts: sorted keys, single sha256)
@@ -64,8 +65,8 @@ async function main() {
   const PRIV = "0x" + "11".repeat(32);
   const dg = "0x" + "ab".repeat(32);
   const sg = signSighash(dg, PRIV);
-  check("sign→verify roundtrip", verifySig(sg.sig64, sg.pub33, dg));
-  check("verify rejects tampered sig", !verifySig("0x00" + sg.sig64.slice(4), sg.pub33, dg));
+  check("sign→verify roundtrip", verifyDigest(sg.sig64, sg.pub33, dg));
+  check("verify rejects tampered sig", !verifyDigest("0x00" + sg.sig64.slice(4), sg.pub33, dg));
 
   // 5) Wallet brain (memory store); lifecycle + locked-op guards
   const w = new Wallet(memoryStore());
@@ -116,12 +117,12 @@ async function main() {
   const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: [{ prevTxid: "0x" + "ab".repeat(32), vout: 0, scriptSig: "0x" }], outputs: [{ value: 100, scriptPubkey: "0x" + "cc".repeat(20) }] };
   const sh = sighash(tx);
   const sgx = signSighash(sh, TPRIV);
-  check("sig verifies for the intended tx", verifySig(sgx.sig64, sgx.pub33, sh));
+  check("sig verifies for the intended tx", verifyDigest(sgx.sig64, sgx.pub33, sh));
   const tamperTo: Tx = { ...tx, outputs: [{ value: 100, scriptPubkey: "0x" + "dd".repeat(20) }] };       // attacker swaps recipient
   const tamperAmt: Tx = { ...tx, outputs: [{ value: 9_999_999, scriptPubkey: "0x" + "cc".repeat(20) }] }; // attacker inflates amount
   check("tamper: changing recipient changes sighash", sighash(tamperTo) !== sh);
-  check("tamper: original sig is INVALID for altered recipient", !verifySig(sgx.sig64, sgx.pub33, sighash(tamperTo)));
-  check("tamper: original sig is INVALID for altered amount", !verifySig(sgx.sig64, sgx.pub33, sighash(tamperAmt)));
+  check("tamper: original sig is INVALID for altered recipient", !verifyDigest(sgx.sig64, sgx.pub33, sighash(tamperTo)));
+  check("tamper: original sig is INVALID for altered amount", !verifyDigest(sgx.sig64, sgx.pub33, sighash(tamperAmt)));
 
   // (d) signatures: deterministic (RFC6979) + always LOW-S canonical
   check("sig deterministic (same key+msg → same sig)", signSighash(sh, TPRIV).sig64 === sgx.sig64);

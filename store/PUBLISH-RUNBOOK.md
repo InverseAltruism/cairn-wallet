@@ -43,7 +43,8 @@ The version-stamped `cairn-wallet-store-X.Y.Z.zip` is **not** on the release. It
 name makes a stale local file self-evident.
 
 ## Release procedure (every version)
-1. **Bump the version** in `package.json` only; `build.mjs` stamps it into `dist/manifest.json` and
+1. **Bump the version** with `npm version X.Y.Z --no-git-tag-version`, which writes `package.json` and the root
+   version in `package-lock.json` (AGENTS.md "Release and deploy"); `build.mjs` stamps it into `dist/manifest.json` and
    `window.cairn` (provider `version` and `getCapabilities().version`).
 2. **SPV anchor table.** `src/core/spvanchors.ts` is generated, not edited by hand (`test/spvanchors.test.mjs` fails a file the generator would not write). Regenerate it for every
    release so its newest entry is the newest chunk top (height 4096k + 4095) at least 1,000 blocks below the tip.
@@ -102,19 +103,30 @@ name makes a stale local file self-evident.
    curl -fsSL -o store.crx "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=130.0&acceptformat=crx2,crx3&x=id%3D${ID}%26uc"
    gh release download "v$V" -R InverseAltruism/cairn-wallet -p 'cairn-wallet-store.zip*'
    sha256sum -c cairn-wallet-store.zip.sha256
-   gh attestation verify cairn-wallet-store.zip --repo InverseAltruism/cairn-wallet
+   # gh 2.49 or later: this checks the attestation's signature, its signer (this repo's release workflow) and the tag
+   # it ran on. This host's gh 2.45 has no `attestation` command, and `gh api .../attestations/sha256:<digest>` only
+   # shows that a bundle exists: it checks no signature. The second command is the negative control: another tag's
+   # identity must fail.
+   gh attestation verify cairn-wallet-store.zip --repo InverseAltruism/cairn-wallet \
+     --cert-identity "https://github.com/InverseAltruism/cairn-wallet/.github/workflows/release.yml@refs/tags/v$V"
+   ! gh attestation verify cairn-wallet-store.zip --repo InverseAltruism/cairn-wallet \
+     --cert-identity "https://github.com/InverseAltruism/cairn-wallet/.github/workflows/release.yml@refs/tags/v0.0.0"
    # A CRX3 file is a "Cr24" header followed by the zip: strip the header.
    node -e 'const fs=require("fs");const b=fs.readFileSync("store.crx");if(b.toString("latin1",0,4)!=="Cr24"||b.readUInt32LE(4)!==3)throw new Error("not a CRX3 file");fs.writeFileSync("from-store.zip",b.subarray(12+b.readUInt32LE(8)))'
    mkdir served attested
    unzip -q from-store.zip -d served && unzip -q cairn-wallet-store.zip -d attested
    node -p 'require("./served/manifest.json").version'      # must print $V; an older version means the store has not switched yet
-   diff -r -x _metadata -x manifest.json served attested && echo "files identical"
-   node -e 'const r=(f)=>JSON.parse(require("fs").readFileSync(f,"utf8"));const s=r("served/manifest.json");delete s.update_url;process.exit(JSON.stringify(s)===JSON.stringify(r("attested/manifest.json"))?0:1)' && echo "manifest identical apart from update_url"
+   # Set aside only the ROOT manifest.json and the root _metadata/ the store adds (diff -x would skip those names at
+   # any depth), then compare everything else.
+   mv served/manifest.json served.manifest.json && mv attested/manifest.json attested.manifest.json && rm -rf served/_metadata
+   diff -r served attested && echo "files identical"
+   node -e 'const r=(f)=>JSON.parse(require("fs").readFileSync(f,"utf8"));const s=r("served.manifest.json");delete s.update_url;process.exit(JSON.stringify(s)===JSON.stringify(r("attested.manifest.json"))?0:1)' && echo "manifest identical apart from update_url"
    ```
    Any other difference means the store serves something that is not the attested build: follow "If a
    credential is suspected leaked" below.
-9. **Publish the version + sha256** on the GitHub release, so users can verify the build they installed is the
-   reviewed one. The website links the release and restates neither (cairn 0.5.43).
+9. **Publish the version + sha256** on the GitHub release. The sha256 lets anyone rebuild and match the zips; a store
+   install differs from them by `update_url` and `_metadata/`, so a user checks the store build with step 8's CRX
+   comparison, not with the sha256 alone. The website links the release and restates neither (cairn 0.5.43).
 
 ## If a credential is suspected leaked
 Immediately: unpublish/withdraw the listing, rotate the CWS account credentials + any API keys, audit recent

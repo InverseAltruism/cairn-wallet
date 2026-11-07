@@ -813,7 +813,8 @@
     width: 30px; height: 30px; flex: none; display: grid; place-items: center;
     border-radius: var(--ui-radius-md); background: var(--ui-sunken); color: var(--ui-ink-2);
   }
-  .ap-tile svg.mark { width: 18px; height: 17px; }
+  /* the requesting site's initial (approve.ts), never Cairn's mark */
+  .ap-tile { font-weight: 600; font-size: var(--ui-text-sm); line-height: 1; }
   .ap-who { display: flex; flex-direction: column; min-width: 0; }
   .ap-origin { font-weight: 600; font-size: var(--ui-text-sm); line-height: var(--ui-leading-body); overflow-wrap: anywhere; }
   .ap-ask { color: var(--ui-muted); font-size: var(--ui-text-caption); line-height: var(--ui-leading-body); }
@@ -835,6 +836,9 @@
   }
   .ap-body > * + * { margin-top: var(--ui-space-2); }
   .ap-body > .req.dim { color: var(--ui-muted); font-size: var(--ui-text-caption); }
+  /* the previous request's held outcome above the next one (approve.ts `carried`), in the colours of the line under the buttons */
+  .ap-body > .req.prior.ok { color: var(--ui-up); }
+  .ap-body > .req.prior.err { color: var(--ui-down); }
   /* describe(): the title, the amount, label and value rows, check rows, the cost rows */
   .ap-body > .req:not(.dim) { display: flex; flex-direction: column; gap: var(--ui-space-2); color: var(--ui-ink); }
   .ap-title { color: var(--ui-muted); font-size: var(--ui-text-xs); line-height: var(--ui-leading-body); }

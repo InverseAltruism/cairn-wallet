@@ -5,7 +5,10 @@
 // The name service flips between Review and Confirm, which is the window the popup review leaves open.
 // RED-FIRST: drop the two `if (refusal) throw` lines in wallet.ts and the refusal cases sign (submits grow).
 // HONEST PATH: an owned live name renews and sets primary, an own name in grace renews; a name service that does not
-// answer still signs.
+// answer still signs. Renew of a live lease another address holds warns as the approval window does (right after an
+// honest purchase the service may still name the seller): the first Confirm signs nothing and shows the warning with
+// "Renew anyway", which signs. In its grace period it refuses, acknowledged or not: the resolver ignores a renewal by
+// anyone but the owner and the fee burns.
 // Run: node --import tsx test/name-action-gate.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -13,6 +16,7 @@ import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { nameRegFee, buildFeeHeight, TREASURY_ADDR } from "../src/core/cairnx.ts";
 import { mkCoin, txReply } from "./_coin.ts";
+import { nameActApproveGate } from "../src/core/namegate.ts";
 
 const t = checker("name actions re-read the name before they sign");
 const { byId } = installFakeDom({ autoCreate: true });
@@ -34,7 +38,8 @@ globalThis.fetch = async (url, init) => {
     const rec = {
       owned: { name: NAME, owner: ME }, pending: { name: NAME, owner: OTHER, pending: true }, lapsed: { name: NAME, owner: ME, expired: true }, other: { name: NAME, owner: OTHER },
       // the service's record of an own name in its grace period: paid through an epoch before the tip's, not expired
-      grace: { name: NAME, owner: ME, paidThroughEpoch: 2_000 }, minePending: { name: NAME, owner: ME, pending: true },
+      grace: { name: NAME, owner: ME, paidThroughEpoch: 2_000, lease: { leased: true, inGrace: true, lapsed: false } }, minePending: { name: NAME, owner: ME, pending: true },
+      otherGrace: { name: NAME, owner: OTHER, paidThroughEpoch: 2_000, lease: { leased: true, inGrace: true, lapsed: false } },
     }[nameState];
     if (nameState === "throw") throw new TypeError("Failed to fetch");
     if (nameState === "down") return { ok: false, status: 503, json: async () => ({}) };
@@ -47,7 +52,7 @@ globalThis.fetch = async (url, init) => {
   return txReply(u, coins) ?? { ok: false, status: 404, json: async () => ({}) };
 };
 
-// background.ts runPopupMethod: cairnxNameRenew(args[0], args[1], args[2]), cairnxSetPrimary(args[0], args[1]).
+// background.ts runPopupMethod: cairnxNameRenew(args[0], args[1], args[2], args[3]), cairnxSetPrimary(args[0], args[1]).
 installBridge({
   status: () => w.status(),
   balance: () => ({ confirmed: 1_000_00000000, utxos: [] }),
@@ -59,7 +64,7 @@ installBridge({
   history: () => [],
   sealedClaims: () => [],
   cairnxNameRenewFee: (...a) => w.cairnxNameRenewFee(a[0]),
-  cairnxNameRenew: (...a) => w.cairnxNameRenew(a[0], a[1], a[2]),
+  cairnxNameRenew: (...a) => w.cairnxNameRenew(a[0], a[1], a[2], a[3]),
   cairnxSetPrimary: (...a) => w.cairnxSetPrimary(a[0], a[1]),
 });
 globalThis.setInterval = () => 0;
@@ -113,12 +118,49 @@ console.log("renew");
   t.check(`fail-open: a name service that cannot be reached does not block the renewal (${status()})`, m === 1 && /^Renewed/.test(status()));
 }
 {
+  // The resolver applies a renewal of another address's live lease, so it pays that owner's renewal; right after an
+  // honest purchase the service may still name the seller. A warning, acknowledged in the review panel.
   const n = await act(RENEW, "owned", "other");
-  t.check(`honest: anyone may renew a live lease, so a live name now owned elsewhere still renews (${status()})`, n === 1);
+  const note = String(byId("nc-note").textContent || "");
+  t.check(`a live name another address holds: the first Confirm signs nothing and warns in the panel (${note})`,
+    n === 0 && /owned by a different address/.test(note) && /extends their lease, not yours/.test(note) && byId("btn-name-confirm").textContent === "Renew anyway" && byId("name-action-form").hidden === false);
+  const before = submits.length;
+  await byId("btn-name-confirm").click(); await flush(60);
+  t.check(`...acknowledged with Renew anyway, it renews (${status()})`, submits.length - before === 1 && /^Renewed: alice\.csd/.test(status()) && toTreasury(submits.at(-1)) === fee);
+  await act(RENEW, "owned", "owned");
+  t.check(`honest: the next review starts without the acknowledgement (${byId("btn-name-confirm").textContent})`, byId("btn-name-confirm").textContent === "Confirm" && /^Renewed/.test(status()));
+}
+{
+  // an acknowledgement does not pass the grace-period refusal: warned on the live lease, the name enters its grace
+  // period before Renew anyway
+  const n = await act(RENEW, "owned", "other");
+  nameState = "otherGrace";
+  const before = submits.length;
+  await byId("btn-name-confirm").click(); await flush(60);
+  t.check(`warned, then in grace before the acknowledgement: refused (${status()})`, n === 0 && submits.length === before && /^Refusing to sign: this name is in its grace period/.test(status()));
+}
+{
+  const n = await act(RENEW, "owned", "otherGrace");
+  t.check(`a name in its grace period owned by another address is not renewed: the resolver ignores it and the fee burns (${status()})`, n === 0 && /^Refusing to sign: this name is in its grace period and owned by a different address/.test(status()));
 }
 {
   const n = await act(RENEW, "owned", "grace");
   t.check(`honest: an own name in its grace period still renews (${status()})`, n === 1 && /^Renewed/.test(status()));
+}
+
+console.log("the approval window's verdict on a website's renewal (nameActApproveGate)");
+{
+  const g = (record) => nameActApproveGate("nrenew", { record }, ME);
+  const live = g({ name: NAME, owner: OTHER, lease: { leased: true, inGrace: false, lapsed: false } });
+  t.check(`another address's live lease: a warning, Approve stays (${live.note})`, live.block === false && /owned by a different address: approving pays that owner's renewal and extends their lease, not yours/.test(String(live.note)));
+  const grace = g({ name: NAME, owner: OTHER, lease: { leased: true, inGrace: true, lapsed: false } });
+  t.check(`another address's name in grace: blocked (${grace.note})`, grace.block === true && /grace period and owned by a different address/.test(String(grace.note)) && /fee would be burned/.test(String(grace.note)));
+  const mine = g({ name: NAME, owner: ME.toUpperCase().replace("0X", "0x"), lease: { leased: true, inGrace: true, lapsed: false } });
+  t.check(`honest: an own name in grace (any address case): no note (${mine.note})`, mine.block === false && mine.note === null);
+  const mineLive = g({ name: NAME, owner: ME });
+  t.check("honest: an own live name: no note", mineLive.block === false && mineLive.note === null);
+  const noOwner = g({ name: NAME });
+  t.check("a record without an owner (an older service): no note, as before", noOwner.block === false && noOwner.note === null);
 }
 
 console.log("set primary");

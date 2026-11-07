@@ -19,9 +19,7 @@ export async function renderReceive() {
     // Groups of four for comparing by eye; the spans hold no spaces, so textContent (what Copy copies) is the address.
     const addr = String(st.addr || "");
     $("receive-addr").innerHTML = groupedAddr(addr);
-    const pn = $("primary-name"), rn = $("receive-name") as HTMLElement;
-    if (!(pn as HTMLElement).hidden && pn.textContent) { rn.textContent = pn.textContent; rn.hidden = false; }
-    else { rn.textContent = ""; rn.hidden = true; }
+    // The name line under the address is written by setIdentity (popup-assets.ts), never copied from the header.
     if (!st.addr || !canvas) throw new Error("no address");
     drawQr(canvas, st.addr);
     if (card) card.hidden = false;

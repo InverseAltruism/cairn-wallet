@@ -1,6 +1,7 @@
 // Confirm-time hint-set cache helpers. The first review always runs full SPV (verifyNameUnion).
 // Confirm may skip merkle/prevout IFF a CLEAN union (never M12 sole-recovery) was cached AND the
-// freshly fetched sorted (txid, height) pairs match AND no source served lapsed:true AND the local
+// freshly fetched sorted (txid, height) pairs match AND no source served lapsed:true or
+// scopedReplaySufficient:false (the full verify refuses on that flag, whatever the review saw) AND the local
 // header hash at each hinted height is unchanged AND the short TTL / tip-epoch bound still holds.
 // Re-point still refuses: a new nset/nxfer changes the pair set, so we fall through to full verify.
 
@@ -65,6 +66,8 @@ export async function evaluateHintSetSkip(opts: {
   existenceDisagree: boolean;
   /** fetchNameUnion's belowFloor: a source served a hint below the names floor (flags disagree, as the full verify does). */
   belowFloor: boolean;
+  /** fetchNameUnion's scopeInsufficient: a source now reports the name not name-scope-provable. */
+  scopeInsufficient: boolean;
   now: number;
   epoch: number | null;
   hashAt?: (height: number) => Promise<string | null>;
@@ -74,6 +77,7 @@ export async function evaluateHintSetSkip(opts: {
   if (opts.epoch == null || !Number.isFinite(opts.epoch)) return { skip: false, reason: "no tip epoch" };
   if (opts.now - cache.ts > HINTSET_TTL_MS) return { skip: false, reason: "ttl" };
   if (opts.epoch !== cache.epoch) return { skip: false, reason: "epoch" };
+  if (opts.scopeInsufficient) return { skip: false, reason: "scope" };
   if (!hintPairsEqual(cache.pairs, opts.pairs)) return { skip: false, reason: "hint-set" };
   const meta = claimsMeta(opts.claims, cache.addr, opts.conflict, opts.existenceDisagree, opts.belowFloor);
   if (meta.anyLapsed) return { skip: false, reason: "lapsed" };

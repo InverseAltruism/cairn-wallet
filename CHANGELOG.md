@@ -1,5 +1,165 @@
 # Changelog
 
+## 0.3.2
+
+- CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where
+  playwright-core 1.60.0 refuses to install the Chromium the in-Chrome tests and the release build job need, so this
+  PR's CI failed at that step on 2026-11-07 and a tag would have failed the same way. `test/ci-runner-image.test.mjs`
+  refuses a job on a `-latest` image.
+- The offer-fill, send and consolidate refusals (`fillpreflight.ts`, `node.ts`) no longer contain em dashes; a colon
+  or a full stop takes their place, the wording is otherwise the same and the error codes are unchanged.
+- A record whose 64 signature bytes are a valid compact signature that also reads as DER (the node accepts it) now
+  binds to its author in the name check and the fill checks; the bundled csd-crypto verifyDigest read such bytes as
+  DER first and refused them, so one crafted record could stop the open-lane fill check for every buyer (csd-crypto
+  0.1.21, vendored). The codec twin's own verifySig, which only tests called, is gone; the tests use the bundle's
+  verifyDigest. test/sig-vectors.test.mjs runs csd-vectors' signature vectors through every signature check.
+- The fclaim scan window's hold span and the offer-id lanes' "too late to be mined" rule come from the bundled
+  cairnx-core (`FCLAIM_MAX_HOLD_SPAN`, `offerFillTooLate`) instead of local copies; the values are unchanged
+  (test/fill-bounds-vendored.test.mjs).
+- A `.csd` name's two-source check replays only the records of that name. A name source that added the owner's
+  real reservations of other names, without their finalizes, made the owner's own registration fail the resolver's
+  per-address reservation limit, so a later rival registration was shown as chain-backed (with a "sources disagree"
+  warning) and was the send target. Honest sources serve no such records (none dropped over 172 names at tip
+  130,077), so an honest name verifies as before (test/namespv-union-scope.test.mjs). A source's report that a name
+  is not provable from its own records refuses the name before the per-source fallback too, so another source cannot
+  pad the union past the 256-record cap and have the fallback verify the name from its records alone. The fallback
+  also refuses a name whose records from one source show it was sold through an offer fill or re-claimed after its
+  lease lapsed, as the combined replay does; it skipped that source, so a source that padded the union and withheld
+  the sale had the seller verified as the owner (test/namespv-union-scope.test.mjs case 4). A source whose own records
+  cannot be replayed at all still drops out of the fallback, so when the honest source's cannot, a lone source that
+  withholds the sale decides, shown as not corroborated and not cached (the stale-seller residual in SECURITY.md).
+- The send's confirm step no longer reuses the review's verified name answer when a name source now reports the
+  name not provable from its own records (`scopedReplaySufficient: false`). A review made while that source was down
+  verified the name from the other source alone and cached it, and the confirm returned that address as verified
+  although the full check refuses on the flag; the confirm now runs the full check, so the confirm-time re-check
+  refuses the send. An unchanged answer still confirms from the cache with no block read
+  (test/namespv-union-scope.test.mjs case 5).
+- The name check and the fill scan count only `cairnx:v1` records. A Propose in another application domain whose
+  text parses as a cairnx record was replayed as one, so a name source could serve another domain's earlier
+  registration of a name and have it verify as the owner; the resolver never reads those records. Such a record
+  is now skipped (test/name-domain.test.mjs).
+- A dApp's output value (`send({ outputs })`, a `propose` payout, a fill) is read the way the approval window prints
+  it: an integer number or a string of decimal digits. "1e8", " 100000000", "0x5f5e100", `[100000000]` or `true`
+  signed in full while the window's amount said "invalid amount"; they are now refused with `BAD_OUTPUTS` before
+  anything is read, and the window's total counts them as 0 (test/output-value-parse.test.mjs).
+- The approval window reads a submit outcome as the popup does. "The transaction didn't confirm; it may already be
+  in flight. Check your history before trying again." replaces "Failed: ... (SUBMIT_MAYBE_INFLIGHT)" and a broken
+  channel's "Failed: The message port closed ...", so the window no longer invites a site's retry that could pay
+  twice; a duplicate submit shows its own text; a request already handled or closed elsewhere says "This request was
+  already handled or closed (possibly in another window), and may have been approved and sent. Check your history
+  before sending again." instead of "Approved.": another approval view of the same request may have signed it
+  (test/approve-handled-elsewhere.test.mjs). Reject reads the background's answer the same way: "Rejected. Nothing was
+  signed." only when the background confirms the rejection; a request another view already took shows the text above
+  and keeps the window open (it used to say "Rejected. Nothing was signed." and close while the other view signed),
+  and a Reject whose reply never arrives says "The rejection could not be confirmed. Check your history before sending
+  again." (test/approve-handled-elsewhere.test.mjs sections a to c). The toolbar popup's Reject reads the answer with
+  the same three texts (`rejectCopy`, one home in `src/popup/popup-outcome.ts`): the approval window's Approve on a
+  name renewal waits for the name read before the request leaves the queue, so the approval can take a request the
+  popup lists before its Reject arrives. It used to say "Rejected. Nothing was signed." whatever the answer, and left
+  the line unchanged when the reply was lost; a double click now sends one rejection (sections d to g). Other
+  refusals keep "Failed: ...". An outcome the window keeps on screen (a failure, a fill's second-source notice, and
+  each of the above except the confirmed rejection) used to be erased the moment a request queued behind it
+  painted; it now stays above that request as "Previous request: ..." until another request paints, and the line
+  under the buttons belongs to the request on screen (sections h and i). The window's copy of the channel call is
+  gone (one home, `src/popup/popup-outcome.ts`), and the build fails if approve.js ever bundles the Wallet
+  (test/approve-outcome-dom.test.mjs).
+- The wallet holds one fill request per offer at a time. A `fillOffer`, or an `attest` at the token-fill confidence,
+  whose target (`proposalId`, the offer id or the reservation txid) another fill request holds is refused when it
+  arrives with the new code `FILL_IN_PROGRESS`: "A payment request for this offer is already in your wallet, waiting
+  for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of
+  sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed."
+  It is not queued and signs nothing, and no window is created for it; the approval window that holds the first
+  request comes forward instead (focused, or opened again if it never opened; while the first is signing or sending,
+  an open window is focused and none is created), since the usual reason to click Buy again is that the window is
+  behind another one. The first holds the target while it is queued, back
+  in the queue for its reservation confirm step, or approved and still signing or sending, and until its answer goes
+  to its page. The queue took a second request for the same offer from another tab, another site or the same page
+  after a reload, and the approval window offered both, so approving both paid twice; the resolver refuses the second
+  fill of a whole offer and keeps its payment (test/fill-one-request-per-offer.test.mjs).
+- When the wallet raises the approval window (a request queued while it is open, a refused second fill of an offer,
+  the toolbar popup's Review), the request on screen re-arms first: Approve and Reject take no click for 700 ms, as
+  when a request is first shown, and the line under the buttons reads "Arming: both buttons wait 700 ms". The worker
+  asks the window to re-arm and raises it once the window answers, or after 250 ms when it cannot; a message sent
+  beside the raise can reach the window after it. A raise used to leave Approve live, so a site whose request was on
+  screen could ask the user to double-click on its page, make the wallet raise the window with the first click and
+  land the second on Approve. A focus the user gives the window re-arms nothing, so their own click lands at once
+  (test/approve-raise-rearm.test.mjs; test/approve-raise-chrome.test.mjs in Chromium with the extension loaded).
+- A renewal of a name another address owns: the approval window warns "This name is owned by a different address:
+  approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the
+  purchase to settle." on a live lease, and refuses to sign while the served lease is in its grace period, when only
+  the owner may renew and the fee would be burned. The wallet's own Renew does the same: on a live lease its first
+  Confirm signs nothing and the review shows that warning with a "Renew anyway" button, which signs (right after a
+  purchase the name service may still name the seller); in the grace period it refuses, acknowledged or not
+  (test/name-action-gate.test.mjs).
+- The approval window's Expires row follows the node's admission rule, the epoch of the next block: a record
+  expiring in that epoch reads "expires at the end of this epoch, in about N blocks" (it was "already past: this
+  record would be a no-op", while the node admits it and a token transfer applies), and one expiring earlier reads
+  "already past: the node will refuse it; nothing is spent" (test/expiry-row.test.mjs).
+- Switching accounts clears the primary-name line at once, so the previous account's name no longer sits over the new
+  address until the new account's names load; the Receive card takes its name line from the same place, so it
+  follows the switch too, open or not (test/popup-stale-switch-dom.test.mjs).
+- A partial fill of a taker-bound offer (the offer-id lane) is sized against the offer's running state as its listed
+  fills prove it on chain, and must pay exactly what is left: the wallet signed a payment sized from the offer
+  service's `paid`, and when that lagged its own earlier fill the resolver clamped the payment and kept the surplus
+  (30,450,000 base units in the reviewers' case). A fill of the offer in this account's history from the last 30
+  minutes that the service does not list yet refuses with the retryable `VERIFY_UNAVAILABLE` ("not listed as applied
+  by the offer service yet ... try again in a few minutes (if the service rejected that fill, this lasts up to 30
+  minutes)"), before any listed fill is proven. A listed fill not in the block it is listed at (a reorg the service
+  has not re-read), or whose spent coin cannot be read (a timeout, a node without the old transaction), refuses
+  retryably too; one that is another offer's or is not signed by its
+  coin's owner, or a served amount left that differs from the proven one, refuses with `FILL_UNSAFE`. The first fill
+  of an offer reads nothing more; each later one reads the blocks of the earlier listed fills
+  (test/fill-taker-partial.test.mjs, test/fill-offer-progress.test.mjs).
+- A partial fill's approval card shows what the payment buys: "You receive about 10 NEWF (computed from the offer
+  service's listing)" and a "Whole listing" row with the listing's give and price, where it said "You receive 100 NEWF
+  (as listed by the offer service)" for any payment. The figure comes from the vendored previewFill over the listing
+  the card already reads (no added read); a payment the listing would not take reads "receives nothing". When the
+  service's answer for a partial listing lacks a field the figure needs (its fee rate, say), the card reads "Could not
+  calculate what this payment receives from the offer service's listing, so it is not shown here." with the whole
+  listing on its own row, where it showed the whole give as received. A whole listing and a name keep their line
+  (test/fill-card-receive.test.mjs).
+- The recovery phrase copy says what the phrase covers: the accounts created from it. The backup screen, the key and
+  phrase panels said it restores or controls "all" your accounts, which an imported key is not; they now say an
+  imported key needs its own backup, and so do the README and the store listing text (the listing is updated on the
+  store dashboard with the upload) (test/recovery-copy.test.mjs).
+- SECURITY.md and AGENTS.md no longer call a CairnX fill "atomic delivery-versus-payment" or the name check
+  "trustless": a fill is one transaction that pays and records it, CairnX then decides delivery, and a refused fill
+  keeps the payment. test/wallet-claims.test.mjs now also reads README.md, SECURITY.md and AGENTS.md.
+- The finalize card no longer says "a lost race is never charged": a finalize the chain does not credit still pays
+  its fee, so the card says to approve only at the site's finalize step (test/nfinalize-lede.test.mjs).
+- Removing an account created from the recovery phrase shows how its coins are reached again: "New account will not
+  bring this address back. Its coins stay on chain; to reach them again, restore your recovery phrase and add accounts
+  until this one reappears (export any imported keys first)." (test/account-remove-warn-dom.test.mjs).
+- The approval window's requester tile shows the requesting site's initial ("e" for https://evil.example), not the
+  Cairn mark, so a look-alike site no longer sits under the product's mark where you decide; the locked view keeps the
+  mark (test/approve-tile-dom.test.mjs, test/popup-logos-chrome.test.mjs).
+- The package carries `THIRD-PARTY-LICENSES.txt` with the MIT notices of the code it bundles (@noble/curves,
+  @noble/hashes, @scure/base, @scure/bip32, @scure/bip39 and the vendored QR generator), which the build used to drop
+  (test/third-party-notices.test.mjs).
+- README no longer says you "never have to trust the binary": the release sha256 covers the load-unpacked zip, and a
+  store install is checked by comparing the CRX the store serves (store/PUBLISH-RUNBOOK.md step 8); the attestation
+  line names gh 2.49 or later and pins the release workflow and tag. SECURITY.md points at runbook step 8, not 7.
+- The runbook's post-publish check (step 8) and every release's notes verify the attestation with the identity of
+  this repo's release workflow at the release tag (gh 2.49 or later, with a negative control on another tag), and the
+  CRX comparison sets aside only the root `manifest.json` and `_metadata/` (test/publish-verify-step.test.mjs).
+- The store listing text and the privacy policy say what the wallet sends: reads of public chain data for your
+  addresses, the transactions and sign-ins you approve, and a published post's off-chain content; the listing
+  justifies the `clarvis.cairn-substrate.com` host permission the manifest declares, and the policy explains the
+  content script. Whether a dashboard data category applies to a post's content is the owner's call at the upload
+  (test/store-listing-hosts.test.mjs). The site's copy of the policy (cairn `wallet-privacy.html`) is cairn's.
+- The secret scan (pre-commit hook and CI) also catches a 64-hex key assigned to a name containing priv, secret or
+  seed (csd-sdk's `named-hex-private-key` rule, copied byte for byte); the full history scans clean with it
+  (test/gitleaks-rule.test.mjs).
+- CI and the release build run the 11 in-Chrome tests (the approval window's fold gate among them) with
+  `CAIRN_E2E_REQUIRED=1`, so they fail rather than skip; they skipped on both before (the release log read "131/142
+  files passed, 11 SKIPPED"). playwright-core 1.60.0 is fetched as its registry tarball, checked against the sha512
+  cairn's lockfile records, and unpacked outside the repo with its Chromium (test/release-workflow-permissions.test.mjs).
+- The csd-sdk bundle moves to the packages published on 2026-11-06 from csd-sdk 1a5a372: cairnx-core 0.2.4,
+  csd-crypto 0.1.21 and csd-tx 0.1.24 (csd-client 0.1.20, csd-codec 0.1.18 and csd-light 0.1.26 unchanged). The
+  bundle's code differs from 0.3.1's only in the compact-only `verifyDigest`, `offerFillTooLate` and
+  `FCLAIM_MAX_HOLD_SPAN` (the entries above); csd-tx 0.1.24 only pins the new csd-crypto, and cairnx-core 0.2.4's other
+  changes are comments and docs. The bundle and its types are byte-identical to a rebuild from that commit.
+
 ## 0.3.1
 
 - README: the MIT licence covers the code, not the two logos the wallet draws (the Cairn mark and the CSD coin's logo)

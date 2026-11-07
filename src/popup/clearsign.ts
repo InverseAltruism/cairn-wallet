@@ -1,8 +1,8 @@
 // Pure clear-signing formatters for the approval window and the popup's review: no DOM and no chrome, so they are
 // unit-testable (the "what am I signing?" layer). approve.ts and popup.ts import these and own only the DOM glue.
 import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
-import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
-import { offerFillTooLate } from "../core/fillpreflight.js";
+import { EPOCH_LEN, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
+import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts; take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
@@ -65,9 +65,9 @@ const FEE_WARN = 5n * 100_000_000n;
 // The signer screens format CSD through core/cairnx.ts fmtCsd (exact, "invalid amount" on garbage) and
 // balances through fmtBalance; both are re-exported here for the popup and the approval window.
 export { fmtCsd, fmtBalance };
-// Finite base-unit number for sums / balance-after math (garbage → 0; the tx won't build anyway:
-// node.send/sendMany hard-reject non-numeric amounts, so this only keeps the DISPLAY sane).
-export function baseVal(raw: any): number { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
+// A base-unit number for the window's sums and balance-after math, read with csdBase like the rows (fmtCsd) and the
+// engine (node.ts validateOutputs): a value the rows print as "invalid amount" counts 0, and the engine refuses it.
+export function baseVal(raw: unknown): number { const b = csdBase(raw); return b !== null && b <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(b) : 0; }
 // The zero address is the un-spendable burn sink (and, on an nset, the V23 "un-point" sentinel).
 // 0x-OPTIONAL by design: resolver/record fields can carry bare-hex, and the stricter 0x-required
 // variant that lived in popup.ts silently missed those. One test, one threat model (3 former sites).
@@ -189,19 +189,28 @@ function humanBlocks(blocks: number): string {
   return `~${(days / 365).toFixed(1)} year(s)`;
 }
 const humanEpochs = (epochs: number): string => humanBlocks(epochs * EPOCH_LEN);
-/** The expiry as a row value; "" when the request carries none. */
-export function expiryValue(expiresEpoch: unknown, currentEpoch?: unknown): string {
+/** The expiry as a row value; "" when the request carries none. Decided by the node's admission rule: a Propose
+ *  whose expiry is below the epoch of the next block (tip + 1) is refused, and one expiring in that epoch is live to
+ *  its end. Without a tip the current epoch decides what it can. */
+export function expiryValue(expiresEpoch: unknown, currentEpoch?: unknown, currentTip?: unknown): string {
   if (expiresEpoch === undefined || expiresEpoch === null) return "";
   const e = Number(expiresEpoch);
   if (!Number.isFinite(e) || !Number.isInteger(e) || e < 0) return `<span class="err">invalid epoch</span>`;
-  const cur = Number(currentEpoch);
-  if (Number.isFinite(cur) && Number.isInteger(cur) && cur >= 0) {
-    const left = e - cur;
-    const warn = left > EXPIRY_WARN_EPOCHS ? ` <span class="err">⚠ unusually long claim window</span>` : "";
-    if (left <= 0) return `epoch ${e} <span class="err">(already past: this record would be a no-op)</span>`;
-    return `epoch ${e} (in ${humanEpochs(left)}, current epoch ${cur})${warn}`;
+  const tip = Number(currentTip);
+  const hasTip = Number.isSafeInteger(tip) && tip >= 0;
+  const c = Number(currentEpoch);
+  const cur = Number.isFinite(c) && Number.isInteger(c) && c >= 0 ? c : hasTip ? Math.floor(tip / EPOCH_LEN) : null;
+  if (cur === null) return `epoch ${e}`;
+  const next = hasTip ? Math.floor((tip + 1) / EPOCH_LEN) : cur;
+  if (e < next) return `epoch ${e} <span class="err">(already past: the node will refuse it; nothing is spent)</span>`;
+  if (e === next) {
+    if (!hasTip) return `epoch ${e} (expires at the end of this epoch)`;
+    const n = EPOCH_LEN * (e + 1) - (tip + 1);
+    return `epoch ${e} (expires at the end of this epoch, in about ${n} block${n === 1 ? "" : "s"})`;
   }
-  return `epoch ${e}`;
+  const left = e - cur;
+  const warn = left > EXPIRY_WARN_EPOCHS ? ` <span class="err">⚠ unusually long claim window</span>` : "";
+  return `epoch ${e} (in ${humanEpochs(left)}, current epoch ${cur})${warn}`;
 }
 
 // ── CairnX clear-signing: structured rendering of cairnx:v1 records ──────────
@@ -296,7 +305,7 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
         + lede(`<span class="dim">At the v2.5 upgrade this reveal is free (it reserves the name). The registration fee is charged at the final step, and only if you win, so a lost race never charges the fee.</span>`));
     case "nfinalize":
       return parts(".csd registration, step 3 of 3 (finalize and pay)", rows([nameRow]),
-        lede("Completes your reservation and pays the fee shown above (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner of the name pays, and only once; a lost race is never charged."));
+        lede("Completes your reservation and pays the fee shown above (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner's finalize registers the name; a finalize the chain does not credit still pays the fee, so approve only at the site's finalize step."));
     case "nxfer":
       return parts(".csd name transfer", rows([nameRow, ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`, String(r.to)]]));
     case "nset": {
@@ -387,7 +396,7 @@ export function describe(r: any): string {
     const xfer = outs.length ? caution(`This proposal also transfers funds out of your wallet: <b>${fmtCsd(total)}</b> in total.`) : "";
     const outRows = rows(outputRows(outs));
     // The dApp-supplied expiry is part of the signed bytes: shown humanized in both branches.
-    const exp: Row[] = p.expiresEpoch !== undefined ? [["Expires", expiryValue(p.expiresEpoch, r.currentEpoch)]] : [];
+    const exp: Row[] = p.expiresEpoch !== undefined ? [["Expires", expiryValue(p.expiresEpoch, r.currentEpoch, r.currentTip)]] : [];
     if (String(p.domain) === CAIRNX_DOMAIN) {
       const cx = cairnxParts(p.uri, p.payloadHash, r.tokenMeta);
       if (cx) {
@@ -526,7 +535,34 @@ export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
 // #fill-view for a CSD-paid fill: the asset the offer service lists as received and the offer's expiry, then the listing
 // id when the attested id is a reservation of it (the claim lane), which has no weight and goes last. Resolver-served,
 // so attributed; a failed read says so.
-export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number } | null | undefined, proposalId: string, tip?: unknown): string {
+// A partial listing (one with a minimum) delivers pro rata, so its "You receive" is what the payment the request makes
+// to the listing's payee buys, computed with the vendored previewFill over the listing the card already read; the
+// whole listing gets its own row. When the figure cannot be computed (a field it needs is missing or malformed) the
+// card says so instead of showing the whole give as received. Display only: the fill preflight binds what is signed.
+function partialReceive(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number; partial?: boolean; listing?: FillListing }, outputs: unknown): string | null {
+  const l = view.listing;
+  if (!view.partial) return null;
+  if (!l || l.min === undefined || "name" in l.give || view.giveTicker === undefined || view.giveAmount === undefined) return noPartialEstimate(view);
+  let pay = 0n;
+  for (const o of Array.isArray(outputs) ? outputs : []) if (String(o?.to ?? "").toLowerCase() === l.want.payto) pay += csdBase(o?.value) ?? 0n;
+  const dec = displayDecimals(view.giveTicker, view.giveDecimals).decimals;
+  const listingRow = rows([["Whole listing", `${escapeHtml(tokenAmountBothScales(view.giveAmount, dec, view.giveTicker))} for ${escapeHtml(fmtCsd(l.want.value))}`]]);
+  let p: ReturnType<typeof previewFill>;
+  try { p = previewFill(l as unknown as OfferState, pay); } catch { return noPartialEstimate(view); }
+  if (!p.deliverable) {
+    const why = p.reason === "below-min" ? "the payment is below what the listing accepts" : p.reason === "zero-delivery" ? "the payment rounds to no tokens at the listing's price" : "the listing cannot take this payment";
+    return danger(`By the offer service's listing this payment receives nothing: ${why}. Check the listing on the site before approving.`) + listingRow;
+  }
+  return rows([["You receive", `about <b>${escapeHtml(tokenAmountBothScales(String(p.got), dec, view.giveTicker))}</b> <span class="dim">(computed from the offer service's listing)</span>`]]) + listingRow;
+}
+function noPartialEstimate(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number }): string {
+  const whole = view.giveTicker !== undefined && view.giveAmount !== undefined
+    ? rows([["Whole listing", `${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))} <span class="dim">(as listed by the offer service)</span>`]])
+    : "";
+  return danger(`Could not calculate what this payment receives from the offer service's listing, so it is not shown here. Check the listing on the site before approving.`) + whole;
+}
+
+export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; partial?: boolean; listing?: FillListing } | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown): string {
   if (!view || !view.ok) return danger(`Could not load this listing from the offer service, so what you receive is not shown here. Check the listing on the site before approving.`);
   const reserved = !!view.offerId && view.offerId.toLowerCase() !== String(proposalId).toLowerCase();
   const gets = view.giveName !== undefined ? `<b>${escapeHtml(view.giveName)}.csd</b>`
@@ -534,9 +570,18 @@ export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?
       ? `<b>${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))}</b>`
       : "";
   const exp = offerExpiryLine(view.expiresAt, tip);
-  return (gets ? rows([["You receive", `${gets} <span class="dim">(as listed by the offer service)</span>`]]) : danger(`The offer service did not say what this listing gives. Check the listing on the site before approving.`))
+  const partial = partialReceive(view, outputs);
+  return (partial ?? (gets ? rows([["You receive", `${gets} <span class="dim">(as listed by the offer service)</span>`]]) : danger(`The offer service did not say what this listing gives. Check the listing on the site before approving.`)))
     + (exp ? lede(exp) : "")
     + (reserved ? rows([["Listing", `<code>${escapeHtml(view.offerId!)}</code>`]]) + lede(`<span class="dim">The offer id below is your reservation of this listing.</span>`) : "");
+}
+
+/** The requesting site's initial for the approval window's requester tile: the first character of the origin's host
+ *  without "www.", or "?" when the origin does not parse. Never Cairn's own mark. */
+export function originInitial(origin: unknown): string {
+  let host = "";
+  try { host = new URL(String(origin)).hostname.toLowerCase(); } catch { return "?"; }
+  return host.replace(/^www\./, "").charAt(0) || "?";
 }
 
 // The line above the approval window's buttons while the request scrolls: how many recipient rows are not fully in

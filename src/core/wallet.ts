@@ -10,19 +10,19 @@ import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CONF_TOKEN_FILL, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
-import { readNameRecord, nameActSignRefusal, NAME_READ_TIMEOUT_MS } from "./namegate.js";
-import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
+import { readNameRecord, nameActSignVerdict, CONFIRM_OTHER_OWNER, NAME_READ_TIMEOUT_MS } from "./namegate.js";
+import { fillOfferPreflight, isTokenFillAttest, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
-import { TxHistory, histKey } from "./history.js";
+import { TxHistory, histKey, OWN_FILL_INDEX_WAIT_MS } from "./history.js";
 import { SealedClaims, sealKey } from "./claims.js";
 import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
 import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, type CairnxViewIo } from "./cairnxview.js";
@@ -598,7 +598,7 @@ export class Wallet {
     // pay arbitrary CSD to any address via the attest method, whose clear-sign window renders NO outputs
     // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
-    if ((Number(p.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL)
+    if (isTokenFillAttest(p.confidence))
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
     // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
@@ -643,7 +643,8 @@ export class Wallet {
     tradeGet: (path) => this.tradeGet(path),
     tip: () => this.tip(),
     tipFloor: () => this.tipFloor(),
-    makeProvenOfferPayto: (offerId, offerHeight) => this.makeProvenOfferPayto(offerId, offerHeight),
+    makeProvenOfferPayto: (offerId, offerHeight, fills) => this.makeProvenOfferPayto(offerId, offerHeight, fills),
+    recentOwnFills: (offerId, me) => this.hist.recentFillsOf(me, offerId, Date.now() - OWN_FILL_INDEX_WAIT_MS),
     makeFillSpvIo: (offerId, fclaimTxid, me, offerHeight) => this.makeFillSpvIo(offerId, fclaimTxid, me, offerHeight),
   };
   private fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
@@ -676,13 +677,13 @@ export class Wallet {
   // Test seam (F2-legacy payment-recipient bind): production leaves this undefined and merkle-proves the offer
   // author over the LIVE light client; tests inject the proven { payto, seller } (or null to exercise the
   // fail-closed-retryable path) so the legacy-lane bind is exercised without a chain.
-  provenPaytoForTest?: (offerId: string, offerHeight: number) => (ProvenOfferPayto | ProvenOfferRefused | null) | Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
-  private async makeProvenOfferPayto(offerId: string, offerHeight: number): Promise<ProvenOfferPayto | ProvenOfferRefused | null> {
-    if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight);
+  provenPaytoForTest?: (offerId: string, offerHeight: number, fills?: readonly { txid: string; height: number }[]) => (ProvenOfferPayto | ProvenOfferRefused | null) | Promise<ProvenOfferPayto | ProvenOfferRefused | null>;
+  private async makeProvenOfferPayto(offerId: string, offerHeight: number, fills?: readonly { txid: string; height: number }[]): Promise<ProvenOfferPayto | ProvenOfferRefused | null> {
+    if (this.provenPaytoForTest) return await this.provenPaytoForTest(offerId, offerHeight, fills);
     // BP4/N11: reuse the shared light client (see makeFillSpvIo). Transport only.
     return await provenOfferPayto({
       ...this.spvOpts(),
-      offerId, offerHeight, spvSource: await this.spvSource(),
+      offerId, offerHeight, fills, spvSource: await this.spvSource(),
     });
   }
 
@@ -896,8 +897,9 @@ export class Wallet {
   // The name's state at the sign, read the way the approval window reads it (namegate.ts), so a renew or set primary
   // reviewed before the name turned pending, lapsed or changed owner is refused instead of paying a fee for a no-op.
   private readNameForAct(name: string) { return readNameRecord((path) => this.tradeGet(path, NAME_READ_TIMEOUT_MS), name); }
-  // Renew a .csd lease (+1 year); built on-device, pays the registration fee to the treasury.
-  async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string) {
+  // Renew a .csd lease (+1 year); built on-device, pays the registration fee to the treasury. `ackOtherOwner` is the
+  // popup's acknowledgement of the warning that another address holds the live lease (thrown as CONFIRM_OTHER_OWNER).
+  async cairnxNameRenew(name: string, reviewedFee?: number, expectSigner?: string, ackOtherOwner?: boolean) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     // A1 backstop: this method throws on refusal (FEE_CHANGED precedent), so the mismatch throws too.
@@ -919,8 +921,8 @@ export class Wallet {
     // Never sign more than was displayed, never sign a now-underpaying fee (which the resolver would no-op).
     if (reviewedFee !== undefined && BigInt(reviewedFee) !== liveFee) throw new Error(`FEE_CHANGED:${Number(liveFee)}`);
     const fee = reviewedFee !== undefined ? BigInt(reviewedFee) : liveFee;
-    const refusal = nameActSignRefusal("nrenew", await nameRead, me);
-    if (refusal) throw new Error(refusal);
+    const verdict = nameActSignVerdict("nrenew", await nameRead, me, ackOtherOwner === true);
+    if (verdict) throw new Error("refuse" in verdict ? verdict.refuse : CONFIRM_OTHER_OWNER + verdict.confirm);
     const expiresEpoch = Math.floor(tip / EPOCH_LEN) + NAME_RENEW_EXPIRY_EPOCHS;
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE, outputs: [{ to: TREASURY_ADDR, value: Number(fee) }] }, priv);
     await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `renew ${name}.csd` });
@@ -935,8 +937,8 @@ export class Wallet {
     const nameRead = this.readNameForAct(name);   // in flight beside the tip read below
     const built = buildNameSet({ name, addr: me });
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + SET_PRIMARY_EXPIRY_EPOCHS;
-    const refusal = nameActSignRefusal("nset", await nameRead, me);
-    if (refusal) throw new Error(refusal);
+    const verdict = nameActSignVerdict("nset", await nameRead, me);
+    if (verdict) throw new Error("refuse" in verdict ? verdict.refuse : verdict.confirm);
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee: CAIRNX_PROPOSE_FEE }, priv);
     await this.hist.maybeRecord(hk, r, { type: "propose", domain: CAIRNX_DOMAIN, fee: CAIRNX_PROPOSE_FEE, title: `set ${name}.csd primary` });
     return r;

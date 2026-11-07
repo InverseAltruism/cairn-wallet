@@ -18,7 +18,7 @@ are happy to credit you once it is resolved.
 * **Local signing.** The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node. The wallet never signs a digest handed to it by a server, so a malicious or intercepted RPC cannot redirect funds or change what you approved. The "sign in with CSD" digest is structurally distinct from a transaction sighash, so a hostile site cannot turn a sign-in into a spend.
 * **Deterministic, non-malleable signatures.** secp256k1 with RFC 6979 nonces and low-S enforcement.
 
-The wallet also declares the `unlimitedStorage` permission. Its trustless `.csd` name
+The wallet also declares the `unlimitedStorage` permission. Its chain-checked `.csd` name
 verification keeps block headers in the extension's own IndexedDB database (84 bytes per header,
 in 4,096-header chunks), which grows with the chain; without the permission the header store
 would eventually hit the quota and degrade verification. Everything stays local to the device and
@@ -113,14 +113,21 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   to re-attribute a name's owner;
 * it fetches name history from **two sources**, the configured CairnX API (default
   `https://cairn-substrate.com/trade/api`) and `https://clarvis.cairn-substrate.com/trade/api`, unions the
-  records, and **re-runs the audited CairnX resolver** over only the merkle-verified ones. The send target is
-  the address that replay proves, not an address a service states. A service that claims an address it has
-  no signed, mined records for does not change where the funds go.
+  records, and **re-runs the audited CairnX resolver** over the merkle-verified records of that name alone. The
+  send target is the address that replay proves, not an address a service states. A service that claims an
+  address it has no signed, mined records for does not change where the funds go.
 
 The two default sources are run by **one operator under one registrable domain** (`cairn-substrate.com`).
-They are not independent. The union covers one source being stale, lagging or broken; it does not cover
-that operator hiding a later transfer or a competing claim from both. The wallet's own badge says the name
-servers share one operator.
+They are not independent. The union covers one source being stale, lagging, broken or hostile while the other
+answers honestly and the wallet can replay that honest source's records: a source can add only real, signed, mined
+records, and a record about another name is dropped before the replay. (Before wallet 0.3.2 it was replayed too, and a source that added the owner's reservations of
+other names without their finalizes could make the owner's own registration fail the resolver's per-address
+reservation limit, so a later rival registration was shown as the owner with a "sources disagree" warning.) When
+records about other names do decide a name, the resolver says so (`scopedReplaySufficient: false`) and the wallet
+shows the name as not chain-verified, whether the combined replay succeeds or the wallet falls back to replaying each
+source alone, and the send's confirm step runs the full check again rather than reuse the review's answer. The union
+does not cover that operator hiding a later transfer or a competing claim from both, nor the stale-seller case below.
+The wallet's own badge says the name servers share one operator.
 
 **What happens when the sources disagree.** There is no hard refusal on a disagreeing source. The wallet
 warns and lets you decide:
@@ -129,13 +136,20 @@ warns and lets you decide:
   wallet uses the proven address and shows a "sources disagree" warning.
 * The combined replay fails: the wallet replays each source's records alone. If the sources that replay
   agree on one address, that address is used with the same warning, and when only one source could prove
-  it the warning says it is not corroborated.
+  it the warning says it is not corroborated. When a source reports the name not provable from its own records,
+  or a source's records alone replay and show the name was sold through an offer fill or re-claimed after its lease
+  lapsed, there is no such fallback: the name is shown as not chain-verified. A source whose own replay fails for any
+  reason (more than 256 records, a block the wallet's node does not serve, a record that does not bind) drops out of
+  the fallback. That leaves a stale-seller residual: a hostile source that withholds a later sale and makes the
+  combined replay fail, while the honest source's records cannot be replayed, has the seller proven from its records
+  alone, shown with the "not corroborated" warning and not cached for the confirm step.
 * Nothing can be proven, or the sources prove different addresses: the name is shown as **not
   chain-verified**, the address the name service served is the one shown, and the warning asks you to
   confirm it out-of-band. The send is not blocked.
-* A name whose ownership was decided by an on-chain **offer fill** (an open-lane claim or a name-for-token
-  sale) is never shown as verified, because that ownership depends on state outside the name's own
-  history; it gets an explicit caution.
+* A name whose current ownership came through an on-chain **offer fill** or a re-claim after its lease lapsed is
+  not shown as verified when the replay shows it (`viaFill`), because for an open-lane claim or a name-for-token sale
+  that ownership depends on state outside the name's own history; it gets an explicit caution. The replay shows it
+  only when the records it replays include the sale: the stale-seller residual above is the case where they do not.
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
 refuse: a lease the chain shows has lapsed (or that a resolver reports lapsed and the chain cannot show
@@ -154,13 +168,23 @@ A web page interacts with the wallet only through the injected `window.cairn` pr
 relayed to the background service worker over same-origin messages. Those page-side messages are
 not authenticated: any script running on the page can read and forge them. The boundary is the
 wallet's own approval window, bound to the requesting site's origin, and the key never reaches the page.
+The window takes no click on Approve or Reject for 700 ms after it shows a request, so a click already in motion or a
+double click cannot approve a request the user has not seen. The same floor follows every raise the wallet makes (a
+request queued while the window is open, a refused second fill of an offer, the toolbar popup's Review): the worker
+asks the window to re-arm and raises it once the window has answered, so a site cannot have the user double-click on
+its page, raise the window with the first click and land the second on Approve. A window that has not answered within
+250 ms (a hung page) is raised anyway. A focus the user gives the window re-arms nothing, so their own click lands at
+once (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
 The provider is injected
 on all sites (like MetaMask) so any dApp can request a connection, but injection scope is
 **not** the security boundary: the content script only relays requests, exposes no keys, and
 `host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
-sealed claims, **send** (a plain CSD transfer), and **fillOffer** (an atomic CairnX
-delivery-versus-payment fill, preflighted against the resolver before anything is signed).
+sealed claims, **send** (a plain CSD transfer), and **fillOffer** (a CairnX offer fill: one transaction pays
+the recipients and records the fill, and CairnX then decides delivery; if it refuses the fill, the payment is not
+returned. The wallet checks the fill against the offer's proven record before anything is signed, and holds one
+fill request per offer target at a time: a second one, from any site, is refused `FILL_IN_PROGRESS` before it is
+queued; docs/DESIGN-fill-lanes.md).
 
 **Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
 the first time an origin connects the user approves it, and the origin is recorded as a
@@ -224,7 +248,7 @@ What exists instead: the CWS upload is a **manual step, deliberately off CI** (a
 exactly what supply-chain worms scrape), behind hardware-2FA; the uploaded zip must have the same sha256 as
 the zip CI built and attested from the tag; and after publication the CRX the store serves is downloaded
 and compared with that attested zip. Anyone can run that comparison for the version the store serves
-(step 7 of the runbook). The full procedure is in `store/PUBLISH-RUNBOOK.md`.
+(step 8 of the runbook). The full procedure is in `store/PUBLISH-RUNBOOK.md`.
 
 ## Verification
 

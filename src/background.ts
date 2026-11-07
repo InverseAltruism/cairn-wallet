@@ -5,7 +5,8 @@
 import { Wallet, AUTO_LOCK_MS } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
-import { APPROVE_WINDOW } from "./approve-window.js";
+import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
+import { fillTargetOf } from "./core/fillpreflight.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -134,7 +135,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
     case "fillOfferView": return wallet.fillOfferView(args[0]); // listing id + listed asset for a CSD-paid fill card (display only)
-    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2]); // args[2] = expectSigner (A1)
+    case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2], args[3] === true); // args[2] = expectSigner (A1), args[3] = the other-owner acknowledgement
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
     case "setTradeApi": return wallet.setTradeApi(args[0]);
@@ -316,6 +317,25 @@ let approveWinId: number | null = null; // track the approval popup so we can ra
 // first arrives and when the user clicks "Review" in the toolbar popup; so EVERY approval
 // goes through the full recipient/amount/fee/warnings disclosure, never a blind approve.
 let openingApproval: Promise<{ opened: boolean }> | null = null;
+// Raise the open approval window, if any; never creates one. The window is asked to re-arm the request it shows first
+// (approve.ts: the 700 ms floor before Approve or Reject takes a click) and is raised only once it answers, so a raise
+// cannot bring a live Approve under a click meant for the page the user was on; a message sent beside the raise can
+// reach the window after it. With no window listening it is raised at once; a page that never answers, after
+// REARM_WAIT_MS.
+const REARM_WAIT_MS = 250;
+function focusApprovalWindow(): void {
+  if (approveWinId == null) return;
+  let raised = false;
+  const raise = () => {
+    if (raised) return;
+    raised = true;
+    clearTimeout(timer);
+    if (approveWinId == null) return;
+    try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
+  };
+  const timer = setTimeout(raise, REARM_WAIT_MS);
+  try { chrome.runtime.sendMessage({ kind: APPROVE_REARM }).then(raise, raise); } catch { raise(); }
+}
 function openApprovalWindow(): Promise<{ opened: boolean }> {
   if (!pending.size) return Promise.resolve({ opened: false });
   if (openingApproval) return openingApproval; // 0.2.70: same-turn arrivals share one create/focus
@@ -324,7 +344,7 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
   openingApproval = Promise.resolve().then(() => {
     try {
       if (approveWinId != null) {
-        try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* focus is best-effort */ }
+        focusApprovalWindow();
         return { opened: true };
       }
       // 0.2.71 (CX-15 item 4): two requests in different turns before the first create's callback can
@@ -335,7 +355,7 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
         if (id == null) return;
         if (approveWinId != null && approveWinId !== id) {
           try { chrome.windows.remove?.(id); } catch { /* best-effort */ }
-          try { chrome.windows.update?.(approveWinId, { focused: true, drawAttention: true }); } catch { /* best-effort */ }
+          focusApprovalWindow();
           return;
         }
         approveWinId = id;
@@ -352,14 +372,34 @@ function openApprovalWindow(): Promise<{ opened: boolean }> {
 // and reject the excess with a clear {ok:false} (never queue it); the page is told to clear its backlog.
 const MAX_PENDING_GLOBAL = 32;
 const MAX_PENDING_PER_ORIGIN = 5;
+// One fill request per fill target (fillTargetOf) at a time, across sites and page reloads: another is refused while
+// the first is queued, back in the queue for its reservation confirm step, or approved and still signing or sending.
+// The hold ends when the first request's answer goes to its page. Two approved fills of one offer pay twice, and the
+// resolver can keep the second payment. A refused request brings forward the window that holds the first: while the
+// first is queued, that window is opened or focused; once it is in flight, an open window is focused (normally the one
+// that approved it, showing its outcome) and none is created, since a new window could only show other requests.
+const fillHolds = new Map<string, string>(); // fill target -> id of the request holding it
+const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
+  const fillTarget = fillTargetOf(method, params);
+  const holder = fillTarget ? fillHolds.get(fillTarget) : undefined;
+  if (holder) {
+    if (pending.has(holder)) openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
+    else focusApprovalWindow();
+    return Promise.resolve({ ok: false, code: "FILL_IN_PROGRESS", error: FILL_IN_PROGRESS_TEXT });
+  }
   if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests; approve or reject the queued ones first" });
   let perOrigin = 0; for (const p of pending.values()) if (p.origin === origin) perOrigin++;
   if (perOrigin >= MAX_PENDING_PER_ORIGIN) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending requests from this site; approve or reject the queued ones first" });
   return new Promise((resolve) => {
     const id = `${Date.now()}-${reqSeq++}`;
-    pending.set(id, { origin, method, params, resolve });
+    let answer: (v: any) => void = resolve;
+    if (fillTarget) {
+      fillHolds.set(fillTarget, id);
+      answer = (v) => { if (fillHolds.get(fillTarget) === id) fillHolds.delete(fillTarget); resolve(v); };
+    }
+    pending.set(id, { origin, method, params, resolve: answer });
     showQueueBadge();
     // Raise the clear-signing window. If it can't open (rare), the request still sits in the
     // queue + badge; the user opens the toolbar popup and clicks "Review", which calls
@@ -374,8 +414,9 @@ try { chrome.windows?.onRemoved?.addListener((wid: number) => {
   if (wid !== approveWinId) return;
   approveWinId = null;
   // POPUP-DISMISS-REJECT: the user closed the approval window with requests still queued. Settle those dApp
-  // promises as REJECTED (MetaMask parity) instead of leaving them hanging until the 24h GC (which stranded the
-  // page on an optimistic "waiting…" state; e.g. the phantom "commitment placed" card). An APPROVED request is
+  // promises as REJECTED (MetaMask parity) instead of leaving them queued, with the page waiting until a worker
+  // restart empties the queue (which stranded the page on an optimistic "waiting…" state; e.g. the phantom
+  // "commitment placed" card). An APPROVED request is
   // already removed from `pending` by resolvePending before the window closes, and approve.ts only auto-closes
   // the window once the queue is EMPTY, so this rejects exactly the genuinely un-actioned requests.
   if (pending.size) {

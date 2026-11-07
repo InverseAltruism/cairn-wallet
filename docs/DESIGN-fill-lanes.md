@@ -19,6 +19,37 @@ Then it routes on the request alone, never on a served field:
 Every lane returns a refusal or null and signs nothing. An unprovable or transient read refuses as retryable
 (`VERIFY_UNAVAILABLE`); a proven mismatch refuses as `FILL_UNSAFE`.
 
+## One request per fill target
+
+Before any lane, the background (`queueDappRequest` in `src/background.ts`) holds one fill request per target at a
+time. `fillTargetOf` (fillpreflight.ts) reads the target as the preflight does: `proposalId` in lower case, for a
+`fillOffer` in any lane and for an `attest` at the token-fill confidence. While a request holds a target (queued, back
+in the queue for its reservation confirm step, or approved and still signing or sending), another fill request naming
+it, from any site or from the same page after a reload, is refused `FILL_IN_PROGRESS` before it is queued: nothing is
+signed and no window is created for it. The refusal brings forward the approval window that holds the first request,
+since the usual honest reason to click Buy again is that the window is behind another window or on another display:
+while the first is queued, that window is focused, or opened again if it never opened; once the first is in flight,
+an open window is focused and none is created. A window brought forward re-arms first, as every raise the wallet makes
+does (SECURITY.md, dApp boundary). The hold ends when the first request's answer goes to its page, or when a worker
+restart empties the queue. Without it, approving both requests paid twice: the resolver refuses a second fill of a
+whole offer and keeps its payment, a second partial fill is sized on what was left before the first applied, and a
+second token fill pays its network fee for nothing (test/fill-one-request-per-offer.test.mjs).
+
+What the hold leaves to other rules:
+
+- Two targets of one offer (its offer id and a reservation txid) are two keys. The lanes decide between them: an
+  offer-id fill of an open CSD offer during a live hold refuses `FILL_WRONG_TARGET`, and the fclaim lane signs only for
+  the live granted hold.
+- A fill after the first was sent: the site tracks that purchase, and on the offer-id CSD lane the 30-minute own-fill
+  history check applies.
+- The hold is global, so a site learns whether another site's fill of a target it names is held, and a site can hold a
+  target by queueing a fill of it. Both need the site open in the user's browser; a miss and a hold are each a fill
+  request the user sees in the approval window and can reject (at most 5 per site). Accepted, 2026-11-06. A hit
+  raises the approval window, and a site that names a held target can raise it once per refused request, without the
+  per-site cap; nothing is queued or signed, and rejecting the held request or closing the window ends it. Each raise
+  re-arms the window before it rises (Approve and Reject wait 700 ms), so a raise timed to a double click on the site's
+  page does not land the second click on Approve (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
+
 ## The fclaim lane
 
 - `verifyFillSpv` replays the offer's lane events, each merkle-proven against the verified header chain and bound
@@ -69,6 +100,19 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   refuses).
 - The fee, rebate, value, taker, bid and `min` fields are bound with the same `bindOfferTerms` call as the fclaim lane.
 - Every leg of the vendored `requiredFillOutputs` need-map must be paid by the outputs, compared in `bigint`.
+- A partial offer (one with `min`) is sized against a running state the wallet proves, not the served `paid` and
+  `delivered`: `provenOfferPayto` also merkle-proves each fill the offer service lists, at its listed height, binds
+  each to the coin its signer spent, and replays them through the vendored `resolve()` over the proven offer (with the
+  synthesized give-backing). A listed fill that is not in the block it is listed at refuses with the retryable
+  `VERIFY_UNAVAILABLE` (an honest reorg before the service re-reads looks the same), and so does one whose spent coin
+  cannot be read (its author is unknown, not disproven); one that is another offer's or is not signed by its coin's
+  owner refuses with `FILL_UNSAFE`, as does a served `paid` or `delivered` that differs from the proven one. Every need-map leg must then be paid exactly:
+  a payment past what is left refuses, because the resolver clamps it and keeps the surplus. Only the taker fills a
+  taker-bound offer, so a fill the service has not indexed yet is the buyer's own: a fill of the offer in this
+  account's history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) that the service does not list refuses with
+  the retryable `VERIFY_UNAVAILABLE` (the owner's ruling of 2026-11-02: a short retryable refusal over an
+  unrecoverable overpayment). Cost: the first fill of an offer reads nothing more; the k-th reads the blocks of the
+  k-1 listed fills, in parallel (test/fill-offer-progress.test.mjs, test/fill-taker-partial.test.mjs).
 - Offer expiry (both offer-id lanes), strand avoidance: the node refuses an attest after its proposal's expiry
   epoch, in mempool admission and in block apply, so a fill that is not mined by the offer's last live block (the
   vendored `offerExpiryHeightOf` minus one) sits unconfirmed and is dropped; no payment moves. For offers anchored at
@@ -85,6 +129,12 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   The fill cards show the listed offer's expiry block and the blocks left after the floor-clamped tip, from the
   offer service's listing (display only), and name a refusal only when `offerFillTooLate` says the preflight will
   make it (test/approve-card-honesty.test.mjs).
+  For a partial listing the card's "You receive" is what the request's payment to the listing's payee buys, from the
+  vendored `previewFill` over the same listing, labelled as computed from it, with the whole listing on its own row
+  (display only; test/fill-card-receive.test.mjs). A served listing without its minimum reads as a whole listing, so
+  an offer service that leaves the minimum out of the card's read gets the whole give shown as received, attributed
+  to the service; what is signed is still bound to the on-chain offer's terms (minimum and fee rate included), and
+  closing the display gap would need a chain read on the card.
 
 ## The token lane
 
@@ -104,8 +154,10 @@ The fill is an Attest with no CSD outputs (`attest` with `CONF_TOKEN_FILL` rerou
 
 - The offer's give-backing (a token's deploy and mint, a name's ownership) is synthesized from the proven offer record
   and never affects the grant, denial, holder or cancel verdict.
-- On the offer-id lanes the running state of a partial offer (`paid`, `delivered`) is served by the resolver: the
-  creation-block proof cannot bind it. A full fill-replay proof on those lanes is not built.
+- On the offer-id CSD lane the completeness of a partial offer's served fill list: a listed fill is proven, but an
+  unlisted one is seen only when it is this account's own and recent (the 30-minute history check). Past that window,
+  or for a fill made from another device, a resolver that withholds the taker's earlier fill can still have the
+  wallet sign a payment the resolver clamps (host-only: an honest resolver lists every fill it has indexed).
 - On the offer-id lanes the offer's open status is served by the resolver too: these lanes run no block scan and no
   second-source read, and only the expiry is checked against the proven record. A stale "open" (an offer already
   filled or cancelled) would sign a fill that L0 mines and resolve() rejects, so the payment moves without delivery.

@@ -26,15 +26,23 @@ How it arises, in the vendored resolver (`src/vendor/cairnx-spv.js`, built from 
 How the wallet turns it into a permanent caution:
 
 - `replayName` replays the audited resolver over the merkle-proven records and returns the winning record's
-  `viaFill` (`src/core/namespv.ts:237`).
-- `verifyNameUnion` refuses to call such a name verified (`src/core/namespv.ts:337-351`), and also refuses when any
-  source served `scopedReplaySufficient: false` (line 344). The per-source recovery skips a viaFill result (line
-  318), so no path reaches verified. Case 16b of test/namespv.test.mjs pins the gate with the attack below.
+  `viaFill` (`src/core/namespv.ts`).
+- `verifyNameUnion` refuses to call such a name verified, and also refuses when any source served
+  `scopedReplaySufficient: false`. The per-source recovery skipped a viaFill result, so a source that padded the union
+  past `MAX_HINTS` and withheld the sale had the seller verified from its records alone; since 2026-11-05 the recovery
+  refuses a viaFill result with the same reason (`viaFillReason`; test/namespv-union-scope.test.mjs case 4), so a
+  source whose own records show the sale is never dropped. When the honest source's own replay fails for any reason
+  (its list over `MAX_HINTS`, a block the SPV source does not serve, a record that does not bind: the recovery skips
+  every unsuccessful solo replay), a lone source that withholds the sale still verifies the seller, with `soleSource`
+  and `disagree` set: the recorded residual of the per-source recovery (the popup shows the "not corroborated"
+  caution and the name is not cached). Case 16b of test/namespv.test.mjs pins the gate with
+  the attack below.
 - `resolveName` then returns the served address, not the replayed one: `{ ...base, verified: false, ... viaFill }`
   (`src/core/names.ts:92`, where `base.addr` is the resolver's `addr`, line 74). The confirm-time hint-set skip
-  does not cache the name (`src/core/names.ts:137-138`), so every send repeats the full verification.
-- The popup shows "purchased name, can't be name-scope-proven, confirm the address" (`src/popup/popup.ts:587`) and
-  the caution block in `nameCautionHtml` (`src/popup/clearsign.ts:583-588`). The send is not blocked.
+  does not cache the name (`src/core/names.ts:138-139`), so every send repeats the full verification.
+- The popup shows "Purchased name: it can't be name-scope-proven, so confirm the address." (`resolveRecipient` in
+  `src/popup/popup-recipient.ts`) and the approval window the `viaFill` caution block of `nameCautionHtml`
+  (`src/popup/clearsign.ts`). The send is not blocked.
 
 Why the wallet fails closed: the cairnx name-history selector (cairnx `src/namehist.ts`, header comment and lines
 150-188) serves the records that decide one name. For two fill classes that set is not enough to reproduce the

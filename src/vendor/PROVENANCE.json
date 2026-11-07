@@ -2,8 +2,8 @@
   "note": "Provenance for src/vendor/cairnx-spv.js and cairnx-spv.d.ts. Built by scripts/build-spv-vendor.sh from the csd-sdk packages below; regenerate with `node scripts/check-vendor-fresh.mjs --write`; verified by scripts/check-vendor-fresh.mjs.",
   "packages": {
     "@inversealtruism/cairnx-core": {
-      "version": "0.2.3",
-      "integrity": "sha512-BzIE82Ab1RnnxNoZ7S9mRgamnt6C//vfSSp4/JvBocfEtoiXzFIj3i5zTdCRAv2/PCqHIvgT5K3kcO2DCa26Ww=="
+      "version": "0.2.4",
+      "integrity": "sha512-h2oFhcQu3mc4Ln3qxJvuHVvI1lHSfi/d2I1q372tTOHcUCvzfQwz7+MPs7K38BWUoLT4guHSneE4nLKJJWQJrQ=="
     },
     "@inversealtruism/csd-client": {
       "version": "0.1.20",
@@ -14,20 +14,20 @@
       "integrity": "sha512-/K0CdP9TlWPyUMlBwH6KGbQ3iSxO7RKC38+3/osAleGam8kld6p1s3VSzoJ6oyOiH2hSQa36uEDm10bvBuH3XQ=="
     },
     "@inversealtruism/csd-crypto": {
-      "version": "0.1.20",
-      "integrity": "sha512-W3ZUaeyODbw9/z4xtdG82ASM4LRMdS1dqNDAbV8PMc7HSYfN/aR1veVuMYRz/aqkObqJrEWIz3ELnVr9M92Xlg=="
+      "version": "0.1.21",
+      "integrity": "sha512-mTOG2QA4mF4IpHhiSw8hA5TrBz5sJ9lK2oEvsNC7xBUqHCqpAyqYGj9ZnEECUfPFrHsCMMt/7J/XUDP3sJNaVA=="
     },
     "@inversealtruism/csd-light": {
       "version": "0.1.26",
       "integrity": "sha512-7frTqIYGsbtXiykYa0tmvieBQt3oe8nWOztbxopzhNrfJHMy0eeMIDSaqU85jmj1qEdlKBT8chSAer28mc2ugw=="
     },
     "@inversealtruism/csd-tx": {
-      "version": "0.1.23",
-      "integrity": "sha512-pDstjeL81LpQ6npNh/g5qUklH2Stm1TjU3+b9ZNDrLeFdmQfxTujySvrUD7uhTYSO2b8Dbl26ddQxrwvkWNpug=="
+      "version": "0.1.24",
+      "integrity": "sha512-taDnULuYsna52CCK2Bz55+Cu5pxmQjCcEeFPDCN+7G/IsdYAzktxmO3QdJ1TbWhpDg7tTtfaTU1kGzEtkeMDFQ=="
     }
   },
   "sha256": {
-    "cairnx-spv.js": "208a149dc3753d2fd178bb258666f356a67180cd6e2c95c65e18111407c72f8f",
+    "cairnx-spv.js": "965c6a96e561bc50d99dfcfa0bcd15f30a2a69f61fb13aeb1a769d1493b610a7",
     "cairnx-spv.d.ts": "314a798ca69e5092600234f9fadba9c59a3b8a3129224c3cab56488810558818"
   },
   "noble": {

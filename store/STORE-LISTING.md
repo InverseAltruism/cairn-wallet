@@ -34,7 +34,7 @@ English (United States)
 Cairn Wallet is a non-custodial wallet for the Compute Substrate (CSD) network. Your keys are generated and stored only on your device and are never uploaded to any server.
 
 KEY FEATURES
-• Self-custody by design: a 12-word recovery phrase (BIP-39) is generated on your device; all accounts derive from it (BIP-32/BIP-44 HD). You can also import a single private key.
+• Self-custody by design: a 12-word recovery phrase (BIP-39) is generated on your device; the accounts you create derive from it (BIP-32/BIP-44 HD). You can also import a single private key, which the phrase does not back up.
 • Encrypted at rest: your phrase and keys are sealed with AES-256-GCM under your password (PBKDF2-SHA256, 600,000 iterations). A 15-minute idle auto-lock protects an unattended session.
 • Local signing: transactions are built and signed on your device; only the signed transaction is sent to the node. The key never leaves the wallet.
 • Send & receive CSD, with a clear two-step send review that shows the full recipient address, the fee, your balance after, a first-time-recipient warning, and an address-poisoning lookalike warning.
@@ -45,7 +45,7 @@ SECURITY
 • Open source and reproducibly built: every release ships a SHA-256 and a build-provenance attestation, so you can verify the published extension was built from the exact source.
 • No remotely-hosted code, no analytics, no trackers. Minimal permissions.
 
-Cairn Wallet is self-custodial: you alone control your keys and recovery phrase. We cannot access, freeze, or recover your funds. Back up your recovery phrase; it is the only way to restore your wallet.
+Cairn Wallet is self-custodial: you alone control your keys and recovery phrase. We cannot access, freeze, or recover your funds. Back up your recovery phrase, and the private key of any account you imported; they are the only way to restore your wallet.
 
 Source & verification: https://github.com/InverseAltruism/cairn-wallet
 ```
@@ -73,7 +73,7 @@ https://cairn-substrate.com/wallet-privacy.html   (host store/PRIVACY-POLICY.md 
 
 - `storage`
 ```
-Stores the user's encrypted key vault, public account list, local transaction history, and settings on the user's own device. Nothing is transmitted off-device.
+Stores the user's encrypted key vault, public account list, local transaction history, and settings on the user's own device. These stored items are not transmitted.
 ```
 - `unlimitedStorage`
 ```
@@ -85,7 +85,11 @@ Runs the 15-minute idle auto-lock that wipes the in-memory key, and retries regi
 ```
 - Host permission `https://cairn-substrate.com/*`
 ```
-The default Compute Substrate node proxy and Cairn API. Used to read public chain data (balance, UTXOs, proposals) and to submit transactions the user approves. No user data is sent beyond the signed transaction itself.
+The default Compute Substrate node proxy and Cairn API. Used to read public chain data for the user's addresses (balance, UTXOs, history, names, offers), to submit transactions the user approves, and to register the off-chain content (title, body, links) of a post the user publishes.
+```
+- Host permission `https://clarvis.cairn-substrate.com/*`
+```
+A second copy of the public chain data, on its own server and run by the same operator. Used for read-only lookups of the name or offer the user is about to use, so the wallet can compare two sources before the user signs.
 ```
 - Host permission `http://127.0.0.1:8789/*`
 ```
@@ -97,20 +101,21 @@ Requested only at the moment a user chooses a custom local node/API URL in Setti
 ```
 - Content scripts on `https://*/*` (broad match)
 ```
-Injects a tiny in-page provider (window.cairn) so any website the user visits can REQUEST to connect this wallet, the same model as MetaMask and other Web3 wallets. The content script only relays connection/signing REQUESTS to the extension; it reads no page content, sends no data, and exposes no keys. Nothing happens on any site until the user explicitly approves a connection in the wallet's own popup, and every transaction/signature is approved per-action in a separate clear-signing window. Connected sites are listed and revocable in Settings. NETWORK access is NOT broadened by this: host_permissions stays scoped to the node/proxy (localhost + cairn-substrate.com); the broad match is injection-only.
+Injects a tiny in-page provider (window.cairn) so any website the user visits can REQUEST to connect this wallet, the same model as MetaMask and other Web3 wallets. The content script only relays connection/signing REQUESTS to the extension; it reads no page content, sends no data, and exposes no keys. Nothing happens on any site until the user explicitly approves a connection in the wallet's own popup, and every transaction/signature is approved per-action in a separate clear-signing window. Connected sites are listed and revocable in Settings. NETWORK access is NOT broadened by this: host_permissions stays scoped to the node/proxy (localhost, cairn-substrate.com and clarvis.cairn-substrate.com); the broad match is injection-only.
 ```
 
 **Data usage: categories collected**
 ```
-NONE. The wallet collects and transmits no user data. Keys are generated and stored
-encrypted ON THE USER'S DEVICE and never leave it; the only outbound traffic is a
-chain transaction or sign-in signature the user explicitly approves. Under Chrome's
-data-disclosure definition (data "collected" = transmitted off the device), nothing is
-collected, so leave ALL data categories UNCHECKED.
+Keys are generated and stored encrypted on the user's device and never leave it. The
+wallet sends reads of public chain data for the user's own addresses, the transactions
+and sign-in signatures the user approves, and the off-chain content of posts the user
+publishes, only to the hosts listed above. No analytics or tracking. Whether any of
+Chrome's data categories applies to a published post's content is the owner's call when
+filling in the dashboard (the categories below were left unchecked until now).
 ```
-(Do NOT check ANY category: web history, personal communications, location, financial/
-payment info, health, personal info, authentication information; none are collected or
-transmitted. This matches docs/archive/store/CHROME-SUBMISSION.md.)
+(Until 0.3.2 no category was checked: web history, personal communications, location,
+financial/payment info, health, personal info, authentication information. None of those is
+collected; the open question is only the content of a post the user publishes.)
 
 **Data usage: required certifications** (check all three; they are true for this extension)
 - [x] I do not sell or transfer user data to third parties, outside of the approved use cases.

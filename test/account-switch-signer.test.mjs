@@ -119,6 +119,34 @@ console.log("A1: expectSigner backstop on send:");
   await w.switchAccount(A);
 }
 
+console.log("A1: expectSigner backstop on token transfer, renew and set primary (they throw their refusals):");
+{
+  // B holds 20 CSD here, enough for the renewal fee; the name service answers the name as B's, so the honest
+  // renew and set primary pass their own name gate.
+  const bigB = mkCoin(2_000_000_000);
+  const { fetchStub, stats } = mkStub({ coinsByAddr: { ...coinsByAddr, [B.toLowerCase()]: [bigB] }, served: [...served, bigB], offer });
+  globalThis.fetch = async (url, init) => String(url).includes("/cairnx/name/")
+    ? { ok: true, status: 200, json: async () => ({ name: "alice", owner: B }) }
+    : fetchStub(url, init);
+  await w.switchAccount(B);
+  const refusal = async (f) => { try { const r = await f(); return r?.ok === true ? null : `answered ${r?.code}: ${r?.error}`; } catch (e) { return String(e?.message ?? e); } };
+  const changed = (m) => typeof m === "string" && /active account changed since you reviewed/.test(m);
+  const calls = [
+    ["token transfer", (signer) => w.cairnxTransfer({ ticker: "TKN", amount: "5", to: "0x" + "ef".repeat(20), expectSigner: signer })],
+    ["renew", (signer) => w.cairnxNameRenew("alice", undefined, signer)],
+    ["set primary", (signer) => w.cairnxSetPrimary("alice", signer)],
+  ];
+  for (const [label, run] of calls) {
+    const before = stats.submits.length;
+    const m = await refusal(() => run(A));                       // reviewed A, active B
+    check(`${label} with expectSigner=A while B is active refuses ACCOUNT_CHANGED (${m})`, changed(m));
+    check(`...${label}: nothing was submitted`, stats.submits.length === before);
+    const ok = await refusal(() => run(B));                      // the matching signer signs
+    check(`${label} with the MATCHING expectSigner signs (${ok ?? "signed"})`, ok === null && stats.submits.length === before + 1);
+  }
+  await w.switchAccount(A);
+}
+
 globalThis.fetch = origFetch;
 console.log(`\naccount-switch-signer: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

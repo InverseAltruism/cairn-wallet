@@ -82,9 +82,27 @@ async function servedOpenOffer(wallet: CairnxViewIo, proposalId: string): Promis
   return { ok: true, offer: o };
 }
 
+/** The served listing's fields previewFill reads, so a fill card can compute what a payment receives. */
+export type FillListing = { status: "open"; give: { ticker: string; amount: string } | { name: string }; want: { value: string; payto: string }; min?: string; paid?: string; delivered?: string; feeBps: number; taker?: string; bid?: string; height: number };
 // What a CSD-paid fill card shows beside the signed outputs: the listing id (which differs from the
-// attested id on the reservation lane) and the asset the offer service lists as received. Display only.
-export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number }> {
+// attested id on the reservation lane), the asset the offer service lists as received, whether the listing sells in
+// parts (a token listing with a minimum), and the listing's fields for the card's own delivery figure (clearsign.ts
+// fillViewHtml); `partial` holds when those fields are missing, so such a listing's card does not show the whole give as
+// received. A served answer without its minimum reads as a whole listing, attributed to the service.
+// Display only.
+const digits = (v: unknown): string | undefined => (typeof v === "string" && /^\d+$/.test(v)) || (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ? String(v) : undefined;
+// The served listing as previewFill reads it, or undefined when a field it needs is missing or malformed.
+function listingOf(o: any, giveTicker?: string, giveAmount?: string, giveName?: string): FillListing | undefined {
+  const value = digits(o?.want?.value), payto = typeof o?.want?.payto === "string" ? o.want.payto.toLowerCase() : undefined;
+  const give = giveName !== undefined ? { name: giveName } : giveTicker !== undefined && digits(giveAmount) !== undefined ? { ticker: giveTicker, amount: giveAmount! } : undefined;
+  const height = Number(o?.height), feeBps = Number(o?.feeBps);
+  if (value === undefined || payto === undefined || !give || !Number.isSafeInteger(height) || !Number.isSafeInteger(feeBps)) return undefined;
+  const opt = (k: "min" | "paid" | "delivered") => (o?.[k] == null ? {} : digits(o[k]) === undefined ? null : { [k]: digits(o[k]) });
+  const extra = [opt("min"), opt("paid"), opt("delivered")];
+  if (extra.some((x) => x === null)) return undefined;
+  return { status: "open", give, want: { value, payto }, feeBps, height, ...Object.assign({}, ...extra), ...(typeof o?.taker === "string" ? { taker: o.taker } : {}), ...(typeof o?.bid === "string" ? { bid: o.bid } : {}) };
+}
+export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; partial?: boolean; listing?: FillListing }> {
   try {
     const so = await servedOpenOffer(wallet, proposalId);
     if (!so.ok) return so;
@@ -96,7 +114,8 @@ export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): P
     const giveAmount = g?.amount != null ? String(g.amount) : undefined;
     const giveName = typeof g?.name === "string" ? g.name : undefined;
     const meta = giveTicker ? await tokenDisplayMeta(wallet, [giveTicker]) : {};
-    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, expiresAt: servedExpiryHeight(o) };
+    const partial = o.min != null && giveName === undefined;
+    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, expiresAt: servedExpiryHeight(o), partial, listing: listingOf(o, giveTicker, giveAmount, giveName) };
   } catch { return { ok: false, error: "offer unavailable" }; }
 }
 

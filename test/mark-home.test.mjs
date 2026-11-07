@@ -34,7 +34,7 @@ for (const f of sources) {
   const loose = (text.match(/ui\/mark\.svg#mark/g) || []).length - [...text.matchAll(/<svg\b[^>]*>\s*<use href="ui\/mark\.svg#mark"\s*\/>/g)].length;
   check(`${f}: every mark <use> sits directly in its <svg> (${loose} loose)`, loose === 0);
 }
-check(`the pages and scripts draw the vendored mark (${uses} places)`, uses >= 5);
+check(`the pages and scripts draw the vendored mark (${uses} places; the approval window's requester tile is the site's initial, not the mark)`, uses >= 4);
 
 // no tracked file outside the vendored copy and its reader holds the mark's coordinates
 const PROBES = ["586,378", "M323 417", "457,708"];

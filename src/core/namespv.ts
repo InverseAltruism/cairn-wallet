@@ -32,7 +32,7 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason; never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader } from "../vendor/cairnx-spv.js";
+import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, parseRecord, isNameGive, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type CairnXRecord } from "../vendor/cairnx-spv.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
@@ -94,6 +94,8 @@ export interface NameUnionFetch {
   existenceDisagree: boolean;
   /** A source served a hint below the names floor; the hint was dropped and the verdict is flagged `disagree`. */
   belowFloor: boolean;
+  /** A usable source reported scopedReplaySufficient:false. Every verify path refuses on it, the confirm-time skip too. */
+  scopeInsufficient: boolean;
 }
 
 /** Fetch + union name-history hints (no merkle). Shared by verifyNameUnion and confirm-time skip. */
@@ -121,7 +123,8 @@ export async function fetchNameUnion(name: string, sources: ResolverSource[], fe
     else byTxid.set(k, h);
   }
   const hints = [...byTxid.values()];
-  return { results, usable, pairs: sortHintPairs(hints), hints, conflict, existenceDisagree, belowFloor };
+  const scopeInsufficient = usable.some((r) => r.scopedReplaySufficient === false);
+  return { results, usable, pairs: sortHintPairs(hints), hints, conflict, existenceDisagree, belowFloor, scopeInsufficient };
 }
 
 // The SPV data seam. Production wires the real LightClient (liveSpvSource); tests inject synthetic
@@ -170,10 +173,38 @@ type Replay =
   // WALLET-LAPSE-TIP-1: a lease-lapse failure carries `lapsed` + whether the persisted floor corroborated it,
   // so the caller can present a confident lapse vs a single-source caution. Other failures leave both unset.
   | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean };
-// Cap the hinted records a verify will SPV-prove (L8 / HINTDOS): each hint now also costs a prevout fetch
-// (H3), so an unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a
-// handful of records; 256 is far above any honest history and bounds a hostile source's fetch amplification.
+// Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
+// unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
+// is far above any honest history. The cap is per replay: verifyNameUnion's per-source recovery replays each source's
+// own list after the union replay, so one verification proves at most the cap per source plus the union's.
 const MAX_HINTS = 256;
+
+// The .csd name a cairnx record is about; null for a record about no name (a commit, a token record, a bare or
+// ticker ocancel, an fclaim).
+function recordName(rec: CairnXRecord): string | null {
+  switch (rec.t) {
+    case "name": case "nfinalize": case "nxfer": case "nset": case "nrenew": case "nprofile": return rec.name;
+    case "ocancel": return rec.name ?? null;
+    case "offer": return isNameGive(rec.give) ? rec.give.name : null;
+    case "bid": return "name" in rec.want ? rec.want.name : null;
+    default: return null;
+  }
+}
+
+/** A name's replay set: the proven events minus every Propose whose record is about a different name. Those reach
+ *  this name's replay only through the resolver's per-address limits (a reveal is refused while its proposer holds
+ *  MAX_PENDING_REG other reservations), so a source adding the owner's other reveals without their finalizes could
+ *  make the owner's own reveal refuse and a later rival win. An honest source serves none of them. When state outside
+ *  the name does decide it, the honest source says so (scopedReplaySufficient false) and verifyNameUnion refuses. */
+export function nameScopedEvents(name: string, events: ChainEvent[]): ChainEvent[] {
+  return events.filter((ev) => {
+    if (ev.kind !== "propose") return true;
+    const rec = parseRecord(ev.uri, ev.payloadHash);
+    const about = rec ? recordName(rec) : null;
+    return about === null || about === name;
+  });
+}
+
 async function replayName(name: string, hints: NameHint[], src: SpvSource): Promise<Replay> {
   if (!Array.isArray(hints) || hints.length === 0) return { ok: false, reason: "no on-chain records were offered for this name" };
   if (hints.length > MAX_HINTS) return { ok: false, reason: `too many record hints for one name (>${MAX_HINTS}) — refusing` };
@@ -210,13 +241,17 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
         return { ok: false, reason: `record ${hint.txid} ${why}` };
       }
       const ev = toChainEvent(tx, id, height, pos, author.signer);
+      // A Propose maps to no event only in another application domain: the resolver never sees it, so it is
+      // skipped like the noise it is and the other records still replay.
+      if (!ev && tx.app?.type === "Propose") continue;
       if (!ev) return { ok: false, reason: `record ${hint.txid} is not a cairnx app record` };
       events.push(ev);
     }
   }
-  // Replay the AUDITED resolver over ONLY the verified events. `lapseTip` (≥ the node-reported chain tip,
-  // monotonic-floored) drives the lease-lapse epoch fail-closed.
-  const state = resolve(events, lapseTip);
+  // Replay the AUDITED resolver over ONLY the verified events of this name. `lapseTip` (≥ the node-reported chain
+  // tip, monotonic-floored) drives the lease-lapse epoch fail-closed.
+  const scoped = nameScopedEvents(name, events);
+  const state = resolve(scoped, lapseTip);
   const rec = state.names[name];
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
   if (rec.expired) {
@@ -226,7 +261,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     // is confident. If it is expired ONLY at the current (claimed) nodeTip, the caller degrades it to caution
     // unless a second source corroborates; so an inflated fresh-install tip can't assert a false lapse.
     const floor = Number.isFinite(floorTip as number) ? Number(floorTip) : 0;
-    const floorCorroborated = floor > 0 && resolve(events, floor).names[name]?.expired === true;
+    const floorCorroborated = floor > 0 && resolve(scoped, floor).names[name]?.expired === true;
     return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
   }
   // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized:
@@ -241,6 +276,14 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
 // callers (names.ts verifyName and every resolve path go through verifyNameUnion below), it had already
 // drifted from the union's behavior, and its existence let the test suite certify a function production
 // never ran. The shared machinery (replayName, fail, toChainEvent) stays; the union uses it.
+
+// The refusal for a name whose replay shows it changed hands through a fill (viaFill), on either verify path.
+const viaFillReason = (name: string): string =>
+  `${name}.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't confirm the new owner from the name's own records: confirm the address out-of-band before sending`;
+
+// The refusal for a name a source reports as not provable from its own records (scopedReplaySufficient false).
+const scopeInsufficientReason = (name: string): string =>
+  `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain): confirm the address out-of-band before sending`;
 
 // Fetch one resolver's /cairnx/name-history. Fail-soft: any error → ok:false (the union tolerates a down source).
 async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: typeof fetch): Promise<SourceResult> {
@@ -261,17 +304,18 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
 /**
  * NSPV-COMPLETE-1 cure (doc 36 Part B): verify `name → addr` against ≥2 name-history sources
  * (e.g. cairn-substrate.com + clarvis.cairn-substrate.com, which share one operator). Each source's hints are fetched, UNIONed by
- * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and replayed by the
- * audited resolver to the true winner. Because every unioned event is SPV-authenticated, a source can only
- * ADD real events (filling another's omission); never fabricate; so the union defeats a WITHHOLDING
- * resolver as long as ONE source is honest (an attacker must make BOTH hosts withhold the SAME event, which
- * their common operator, or whoever controls both, can). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
+ * lowercase txid, SPV-verified together against the wallet's own PoW header chain, and the name's own records
+ * (nameScopedEvents) are replayed by the audited resolver. Every unioned event is SPV-authenticated, so a source can
+ * only ADD real events, never fabricate; and since a real record of another name is dropped before the replay, an
+ * added record can only fill another source's omission. So the union defeats a WITHHOLDING resolver as long as ONE
+ * source is honest (an attacker must make BOTH hosts withhold the SAME event, which their common operator, or
+ * whoever controls both, can). The send target is the SPV-PROVEN union winner, and any source whose stated claim disagrees with
  * it is flagged. Fail-soft: 1 usable source → single-source (caution); ≥2 agree → strong; a disagreement is
  * flagged but the send still goes to the proven winner (the disagreeing source was lying/stale, not trusted).
  */
 export async function verifyNameUnion(name: string, sources: ResolverSource[], src: SpvSource, fetchImpl: typeof fetch = fetch): Promise<NameVerification> {
   try {
-    const { results, usable, pairs, hints, conflict, existenceDisagree, belowFloor } = await fetchNameUnion(name, sources, fetchImpl);
+    const { results, usable, pairs, hints, conflict, existenceDisagree, belowFloor, scopeInsufficient } = await fetchNameUnion(name, sources, fetchImpl);
     if (usable.length === 0) {
       if (results.some((r) => r.unregistered)) return { ...fail(`${name}.csd is not registered`), sources: 0, disagree: false };
       return { ...fail("no on-chain records could be fetched for this name (name service unavailable)"), sources: 0, disagree: false };
@@ -307,15 +351,21 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       // ONLY on the already-failed path, so it slows nothing that was working): a poisoned source still
       // fails on its own junk and drops out, while an honest source's own complete history replays to the
       // true winner. Honor it ONLY if every recovered source AGREES on the address (a genuine two-source
-      // disagreement stays fail-closed) and none is a lapse/viaFill/scope-insufficient result (those keep
-      // their own fail-closed handling). This cannot re-open the withholding gap: a source serving a
-      // stale-but-clean subset that replays to a WRONG winner produces a disagreement and is refused.
+      // disagreement stays fail-closed). A stale-but-clean subset that replays to a WRONG winner is refused only
+      // because it disagrees with the honest source's own replay, so a source the success path below refuses is
+      // refused here too, never dropped: one flagged scopedReplaySufficient:false, or one whose own replay is
+      // viaFill. Dropping it would let a source that padded the union past MAX_HINTS and withheld the sale verify
+      // a winner the chain does not have.
+      if (scopeInsufficient)
+        return { ...fail(scopeInsufficientReason(name)), sources: usable.length, disagree: false, viaFill: false };
       if (usable.length > 1) {
         type OkReplay = Extract<Replay, { ok: true }>;
         const recovered: { label: string; rep: OkReplay; claim?: NameClaim }[] = [];
         for (const r of usable) {
           const solo = await replayName(name, r.hints, src).catch(() => ({ ok: false as const, reason: "solo replay threw" }));
-          if (solo.ok && !solo.viaFill && r.scopedReplaySufficient !== false) recovered.push({ label: r.label, rep: solo, claim: r.claim });
+          if (!solo.ok) continue;
+          if (solo.viaFill) return { ...fail(viaFillReason(name)), sources: usable.length, disagree: false, viaFill: true };
+          recovered.push({ label: r.label, rep: solo, claim: r.claim });
         }
         const addrs = new Set(recovered.map((p) => p.rep.addr));
         const first = recovered[0];
@@ -341,13 +391,10 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // honest source runs the IDENTICAL scoped selector, so the union cannot fill the gap. `viaFill` is
     // COMPUTED from our own SPV-verified events (we honor a served false but never TRUST a served true).
     // Fail CLOSED to caution. (B3 will re-green legitimately taker-bound purchases via self-derived binding.)
-    const servedInsufficient = usable.some((r) => r.scopedReplaySufficient === false);
-    if (rep.viaFill || servedInsufficient) {
+    if (rep.viaFill || scopeInsufficient) {
       // Distinct, accurate reasons for the two triggers (QA-3): a self-computed viaFill winner vs a source
       // that explicitly reported its answer is not name-scope-provable. Both are fail-closed to caution.
-      const reason = rep.viaFill
-        ? `${name}.csd changed hands through a market sale, or was re-claimed after its lease lapsed, and the wallet can't confirm the new owner from the name's own records: confirm the address out-of-band before sending`
-        : `a name source reported that ${name}.csd cannot be name-scope-proven (its replay may disagree with the full chain) — confirm the address out-of-band before sending`;
+      const reason = rep.viaFill ? viaFillReason(name) : scopeInsufficientReason(name);
       return { ...fail(reason), sources: usable.length, disagree: false, viaFill: !!rep.viaFill };
     }
     // Cross-check: each usable source's STATED claim.addr against the SPV-proven union winner.

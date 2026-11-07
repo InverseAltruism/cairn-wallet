@@ -422,8 +422,8 @@ async function main() {
       const r1 = await w.fillOffer({ proposalId: PID, outputs: [{ to: RCPT, value: 1e7 }], fee: 5e6 });
       check("STALE-OFFER: a cancelled offer is REFUSED before signing (no-op fill blocked)",
         r1.ok === false && /cancelled|no-op fill/i.test(r1.error ?? ""));
-      // (2) offer unknown to the wallet's resolver (404) → proceed past the recheck (fails later for an
-      // unrelated reason, NOT a false stale-offer refusal; no over-blocking of recent/cross-resolver offers)
+      // (2) offer unknown to the wallet's resolver (404) → not a stale-offer refusal: the next stage's own
+      // retryable OFFER_UNKNOWN (fail closed on "no data", retry once the resolver has read the block)
       (globalThis as any).fetch = async (url: any) => {
         const u = String(url);
         if (u.includes("/cairnx/offer/")) return { ok: false, status: 404, json: async () => ({}) };
@@ -431,8 +431,8 @@ async function main() {
         return { ok: false, status: 404, json: async () => ({}) };
       };
       const r2 = await w.fillOffer({ proposalId: PID, outputs: [{ to: RCPT, value: 1e7 }], fee: 5e6 });
-      check("STALE-OFFER: a 404 (unscanned/cross-resolver) offer is NOT false-refused for staleness",
-        r2.ok === false && !/no-op fill/i.test(r2.error ?? ""));
+      check(`STALE-OFFER: a 404 (unscanned/cross-resolver) offer is NOT false-refused for staleness: it is the retryable OFFER_UNKNOWN (${r2.code})`,
+        r2.ok === false && r2.code === "OFFER_UNKNOWN" && !/no-op fill/i.test(r2.error ?? ""));
     } finally { (globalThis as any).fetch = origFetch; }
   }
 

@@ -4,7 +4,7 @@
 // We never sign a signing_hash the node handed us, so a malicious/MITM'd RPC cannot steer a signature
 // onto a different transaction. The private key only ever lives in the wallet; nothing here sends it away.
 import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
-import { fmtCsd } from "./cairnx.js";
+import { fmtCsd, csdBase } from "./cairnx.js";
 import type { TxInclusion } from "./inclusion.js";
 import { selectInputs, strip0x, MAX_TX_INPUTS } from "../vendor/cairnx-spv.js";
 
@@ -439,7 +439,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
       if (!Number.isSafeInteger(spendable)) { spendable = 0; break; } // beyond-supply garbage: fall through to INSUFFICIENT
     }
     if (spendable >= need)
-      return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows — send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
+      return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows: send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
   }
   if (!ghostCount && !horizonCount && !unrepCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
   // The round budget ran out while selection still had untried coins, so nothing is known about
@@ -572,7 +572,7 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // kept only as a FREE CROSS-CHECK on the deliberately forked codec: a mismatch logs loudly, is never
   // trusted.
   if (sub.txid && String(sub.txid).toLowerCase() !== localTxid.toLowerCase())
-    console.warn(`[node] submit echoed txid ${sub.txid} != locally computed ${localTxid} — using local (codec cross-check)`);
+    console.warn(`[node] submit echoed txid ${sub.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
   return {
     ok: !!sub.ok,
     // LOCAL txid whenever a tx may exist on the network (ok / ambiguous / duplicate). Definitive
@@ -613,7 +613,7 @@ async function assembleValueTx(
   // bypass that form, so the universal backstop lives here (audit M1 / V23 nset-clear burn class). The
   // node accepts a zero-address output, so this MUST be caught client-side. Change is always to self.
   for (const o of outputs) {
-    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0) — these funds would be unrecoverable", sighashMatch: false, code: "ZERO_ADDR_REFUSED" };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
+    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0): these funds would be unrecoverable", sighashMatch: false, code: "ZERO_ADDR_REFUSED" };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
   }
   const addr = addrFromPriv(priv);
   const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
@@ -645,20 +645,26 @@ async function assembleValueTx(
 // mode. The per-caller deltas that are REAL stay: the caps (8/500/100) and minOne (sendMany
 // requires ≥1 output; buildSignSubmit/fillOffer deliberately allow an empty set; a token-priced
 // fill carries NO CSD outputs). The machine `code` is what unifies the class (WS5). Returns
-// {sumOut} (safe-integer-guarded); the isSafeInteger(sumOut + fee) coupling STAYS at the call site
-// (buildSignSubmit intentionally lacks one).
-function validateOutputs(outs: { to: string; value: number }[], opts: { max: number; minOne: boolean }): SubmitResult | { sumOut: number } {
+// {sumOut, outputs} (safe-integer-guarded); the isSafeInteger(sumOut + fee) coupling STAYS at the call
+// site (buildSignSubmit intentionally lacks one). Each value is read with csdBase, the parse the approval
+// window prints it through (an integer number or a decimal-digit string), and the outputs are built from that
+// parse, so the window and the signed tx read one value (test/output-value-parse.test.mjs).
+type ParsedOutputs = { sumOut: number; outputs: { value: number; scriptPubkey: string }[] };
+function validateOutputs(outs: { to: string; value: number }[], opts: { max: number; minOne: boolean }): SubmitResult | ParsedOutputs {
   if (opts.minOne && outs.length < 1) return { ok: false, error: "at least one output is required", sighashMatch: false, code: "BAD_OUTPUTS" };
   if (outs.length > opts.max) return { ok: false, error: `too many outputs (max ${opts.max})`, sighashMatch: false, code: "BAD_OUTPUTS" };
   let sumOut = 0;
+  const outputs: ParsedOutputs["outputs"] = [];
   for (const o of outs) {
     if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
-    const v = Number(o.value);
+    const b = csdBase(o.value);
+    const v = b !== null && b <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(b) : NaN;
     if (!(v > 0) || !Number.isSafeInteger(v)) return { ok: false, error: "each amount must be a positive safe integer", sighashMatch: false, code: "BAD_OUTPUTS" };
     sumOut += v;
     if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false, code: "BAD_OUTPUTS" };
+    outputs.push({ value: v, scriptPubkey: String(o.to) });
   }
-  return { sumOut };
+  return { sumOut, outputs };
 }
 
 // `payouts` are optional value outputs carried in the SAME tx as the app payload (e.g. a
@@ -671,8 +677,7 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
   // hostile dApp from flooding the clear-signing window with hundreds of disguised payments.
   const chk = validateOutputs(payouts, { max: 8, minOne: false });
   if (!("sumOut" in chk)) return chk;
-  const outputs = payouts.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  return assembleValueTx(rpc, outputs, fee, app, priv);
+  return assembleValueTx(rpc, chk.outputs, fee, app, priv);
 }
 
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
@@ -726,8 +731,7 @@ export async function sendMany(rpc: string, p: { outputs: { to: string; value: n
   if (!("sumOut" in chk)) return chk;
   if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
-  const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  return assembleValueTx(rpc, outputs, p.fee, { type: "None" }, priv);
+  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "None" }, priv);
 }
 
 // Merge many small coins into ONE output back to the wallet's own address, so a later large send
@@ -757,7 +761,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   const verified = new Map<string, number>();
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
-    if (pool.length < 2) return { ok: false, error: "nothing to consolidate — fewer than two spendable coins", sighashMatch: false, code: "NOTHING_TO_CONSOLIDATE" };
+    if (pool.length < 2) return { ok: false, error: "nothing to consolidate: fewer than two spendable coins", sighashMatch: false, code: "NOTHING_TO_CONSOLIDATE" };
     const ver = await verifyInputValues(rpc, pool, verified);
     if (!ver.ok) {
       if (ver.kind === "tamper") return { ok: false, error: "could not verify selected coins against the chain (refusing to risk a burned fee)", sighashMatch: false, code: "VERIFY_TAMPER" };
@@ -773,7 +777,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
       continue;
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
-    if (!(outValue > 0)) return { ok: false, error: "these coins are too small to cover the fee — nothing to gain by merging them", sighashMatch: false, code: "INSUFFICIENT" };
+    if (!(outValue > 0)) return { ok: false, error: "these coins are too small to cover the fee: nothing to gain by merging them", sighashMatch: false, code: "INSUFFICIENT" };
     // Same proportional fee cap assembleValueTx applies to every other value tx (min(100 CSD,
     // max(1 CSD, 10% of the CHAIN-VERIFIED inputs)); consolidate builds its tx directly rather than
     // through assembleValueTx, so it MUST re-assert the single-fee-chokepoint invariant itself: a
@@ -887,8 +891,7 @@ export async function fillOffer(
   if (!("sumOut" in chk)) return chk;
   if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
     return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
-  const outputs = outs.map((o) => ({ value: Number(o.value), scriptPubkey: String(o.to) }));
-  return assembleValueTx(rpc, outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs — add a payment or leave change");
+  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs: add a payment or leave change");
 }
 
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:

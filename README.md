@@ -10,7 +10,7 @@ and support items on [Cairn](https://cairn-substrate.com).
 ## Features
 
 * **Non-custodial.** Keys are generated and stored only on your device, encrypted with your password.
-* **Standard recovery.** A 12-word BIP-39 phrase backs up every account.
+* **Standard recovery.** A 12-word BIP-39 phrase backs up every account created from it; an imported key needs its own backup.
 * **Local signing.** Transactions are built and signed on your device. Only the signed transaction is sent to the node.
 * **CairnX tokens and `.csd` names.** The popup lists your token balances (decimals-aware, with locked amounts shown) and owned names, and sends tokens through the same reviewed confirmation as a CSD send. Transfer records are built and hashed inside the wallet, never fetched from a server.
 * **CairnX clear-signing.** The approval window decodes `cairnx:v1` proposals (token transfers, deploys, mints, offers, bids, cancels, name claims/transfers/renewals) into structured fields, for wallet- and dApp-initiated requests alike. Unrecognized record shapes still show the raw payload.
@@ -34,7 +34,7 @@ repo for source. It does not host the extension binary.
 
 ### Verify a release
 
-Cairn Wallet is open source and reproducibly built, so you never have to trust the binary:
+Cairn Wallet is open source and reproducibly built: you can rebuild the load-unpacked zip yourself.
 
 ```bash
 git clone https://github.com/InverseAltruism/cairn-wallet
@@ -43,15 +43,20 @@ npm ci && npm run package          # produces a byte-identical cairn-wallet.zip
 sha256sum cairn-wallet.zip         # must equal the release .sha256
 ```
 
-Each release also carries a **SLSA build-provenance attestation**: run
-`gh attestation verify cairn-wallet.zip --repo InverseAltruism/cairn-wallet` to confirm the published
-zip was built by this repo's CI from the tagged source.
+The release sha256 covers `cairn-wallet.zip` (load unpacked). A Chrome Web Store install differs from it by the
+`update_url` the store adds to `manifest.json` and its `_metadata/` folder; to check a store install, compare the CRX
+the store serves with the release's `cairn-wallet-store.zip` as `store/PUBLISH-RUNBOOK.md` step 8 does.
+
+Each release also carries a **SLSA build-provenance attestation**: with gh 2.49 or later, run
+`gh attestation verify cairn-wallet.zip --repo InverseAltruism/cairn-wallet --cert-identity
+https://github.com/InverseAltruism/cairn-wallet/.github/workflows/release.yml@refs/tags/vX.Y.Z` to confirm the
+published zip was built by this repo's release workflow from that tag.
 
 ## Backups
 
 You can back up in two ways.
 
-* **Recovery phrase (12 words).** Your primary backup. It restores every account in Cairn Wallet, or in any CSD wallet that uses the same derivation path (`m/44'/7779'/0'/0/i`).
+* **Recovery phrase (12 words).** Your primary backup. It restores every account created from it in Cairn Wallet, or in any CSD wallet that uses the same derivation path (`m/44'/7779'/0'/0/i`).
 * **Account private key** (*Reveal key*). A plain CSD private key for a single account. It imports into the `csd` CLI (`csd wallet recover`) and any CSD tool, so you can move one account elsewhere.
 
 Your keys stay portable and are never locked to this wallet.
@@ -75,7 +80,7 @@ npm run package
 ```
 
 `npm run package` is byte-for-byte reproducible. Rebuild from the tagged source and the
-SHA-256 matches the published release, so you never have to trust the binary.
+SHA-256 matches the published release; a store install is checked by comparing the CRX the store serves (store/PUBLISH-RUNBOOK.md step 8).
 
 ### Tests
 
@@ -125,8 +130,9 @@ Sending to a `.csd` name never trusts a resolver's word. The wallet:
 2. **unions** them and **SPV-verifies every event** against a PoW header chain the wallet builds itself
    (`src/core/namespv.ts` → vendored `LightClient`): full-block merkle-bind + per-record signer-auth, so a
    resolver can only ever *add* real mined events, **never fabricate** one;
-3. replays the audited CairnX resolver over the verified union and **sends to the chain-proven winner**, not
-   to any resolver's bare claim, and flags any source whose stated answer disagrees.
+3. replays the audited CairnX resolver over the verified records of that name (a record about another name is
+   dropped first) and **sends to the chain-proven winner**, not to any resolver's bare claim, and flags any
+   source whose stated answer disagrees.
 
 The two default sources are run by one operator under one registrable domain, so they are not independent:
 the union covers one source being stale or broken, not that operator hiding a transfer from both.

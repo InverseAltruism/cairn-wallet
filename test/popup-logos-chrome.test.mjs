@@ -69,7 +69,8 @@ t.check("a CAIRN whose token record failed to load draws the neutral glyph", fai
 // The mark sets no paint (cairn-ui's mark.svg), so every <svg> that draws it must set fill. Each one, on every page
 // that draws it, must fill with its own colour, and that colour must be one of the theme's ink tokens, so the mark is
 // never the default black on the dark ground. Pages: the popup's setup, locked and main views (the CAIRN tile), and
-// the approval window locked and with a request (its header tile).
+// the approval window locked. With a request the approval window draws no mark: its header tile is the requesting
+// site's initial (test/approve-tile-dom.test.mjs).
 const readMarks = () => {
   const probe = (v) => { const d = document.createElement("div"); d.style.color = `var(${v})`; document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c; };
   const inks = [probe("--ui-ink"), probe("--ui-ink-2")];
@@ -94,10 +95,13 @@ for (const theme of ["light", "dark"]) {
     const marks = await page.evaluate(readMarks);
     drawn += marks.length;
     const bad = marks.filter((m) => m.fill !== m.color || !m.ink);
-    t.check(`${theme}, ${name}: ${marks.length} mark(s), each filled with its own ink colour (${marks.map((m) => `${m.cls}@${m.where} ${m.fill}`).join("; ")})`, marks.length > 0 && bad.length === 0 && errors.length === 0);
+    if (name === "approval request") {
+      const tile = await page.evaluate(() => document.getElementById("ap-tile")?.textContent ?? null);
+      t.check(`${theme}, ${name}: no Cairn mark; the requester tile shows the site's initial (${marks.length} mark(s), tile "${tile}")`, marks.length === 0 && tile === "c" && errors.length === 0);
+    } else t.check(`${theme}, ${name}: ${marks.length} mark(s), each filled with its own ink colour (${marks.map((m) => `${m.cls}@${m.where} ${m.fill}`).join("; ")})`, marks.length > 0 && bad.length === 0 && errors.length === 0);
     await ctx.close();
   }
-  t.check(`${theme}: the five pages draw the mark ${drawn} times`, drawn >= 6);
+  t.check(`${theme}: the four pages that carry it draw the mark ${drawn} times, once each`, drawn === 4);
 }
 
 await browser.close();

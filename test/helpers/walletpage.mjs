@@ -55,6 +55,7 @@ function installRuntime(answers) {
       sendMessage(m, cb) {
         setTimeout(() => cb(m.method in answers ? { ok: true, result: answers[m.method] } : { ok: false, error: `no ${m.method} in this fixture` }), 5);
       },
+      onMessage: { addListener() { /* no other context messages the page in this harness */ } },
     },
     permissions: { contains: async () => true, request: async () => true },
   };

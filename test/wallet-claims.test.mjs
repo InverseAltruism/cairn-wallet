@@ -1,14 +1,15 @@
 // The wallet's user-visible text makes no claim the protocol does not back. A CSD-paid offer fill pays on chain while
 // CairnX may still refuse the delivery (the payment is then not returned), so no fill is "atomic" or
 // "delivery-versus-payment"; nothing is "trustless", "guaranteed" or "risk-free". Scans every source of shown text
-// (the popup and approval-window modules and pages, the core modules whose errors the popup shows verbatim, and the
-// store listing) with comments stripped, so a new string in the class fails here wherever it is added.
+// (the popup and approval-window modules and pages, the core modules whose errors the popup shows verbatim, the store
+// listing, and the repo's public README.md, SECURITY.md and AGENTS.md) with comments stripped, so a new string in the
+// class fails here wherever it is added.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { checker } from "./helpers/check.mjs";
 
 const ROOT = join(import.meta.dirname, "..");
-const BANNED = /\batomic(ally)?\b|delivery[- ]versus[- ]payment|\bDvP\b|\btrustless(ly)?\b|\bguarantee[ds]?\b|\brisk[- ]free\b/i;
+const BANNED = /\batomic(ally)?\b|delivery[- ]versus[- ]payment|\bDvP\b|\btrustless(ly)?\b|\bguarantee[ds]?\b|\brisk[- ]free\b|never have to trust/i;
 // Text that uses a word of the class to say less, not more.
 const ALLOWED = [/a weaker guarantee/];
 const t = checker("wallet claims");
@@ -18,7 +19,7 @@ const stripCode = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[\s;{}()
 const stripHtml = (s) => s.replace(/<!--[\s\S]*?-->/g, "");
 const files = (dir, ext) => readdirSync(join(ROOT, dir), { recursive: true }).map(String)
   .filter((f) => ext.some((e) => f.endsWith(e)) && !f.includes("vendor") && !f.includes("qr/")).map((f) => join(dir, f));
-const sources = [...files("src/popup", [".ts", ".html"]), ...files("src/core", [".ts"]), "src/background.ts", "src/inpage.ts", "store/STORE-LISTING.md"];
+const sources = [...files("src/popup", [".ts", ".html"]), ...files("src/core", [".ts"]), "src/background.ts", "src/inpage.ts", "store/STORE-LISTING.md", "README.md", "SECURITY.md", "AGENTS.md"];
 
 export function hits(path, text) {
   const shown = path.endsWith(".ts") ? stripCode(text) : path.endsWith(".html") ? stripHtml(text) : text;

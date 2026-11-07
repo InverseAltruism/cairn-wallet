@@ -3,7 +3,7 @@
 // and the mapping from a bound tx to a resolver event.
 // Each caller keeps its own failure contract (namespv returns a reason, fillspv throws), so the bind returns its
 // refusal and the caller turns it into that contract.
-import { sighash, recoverSigner as recoverSignerFromScriptSig, authorOf, bindBlockBody, paidToFromOutputs, type BlockHeader, type ProvenAttest, type ProvenPropose, type Tx } from "../vendor/cairnx-spv.js";
+import { sighash, recoverSigner as recoverSignerFromScriptSig, authorOf, bindBlockBody, paidToFromOutputs, DOMAIN, type BlockHeader, type ProvenAttest, type ProvenPropose, type Tx } from "../vendor/cairnx-spv.js";
 
 // The all-zeros coinbase outpoint (consensus): a coinbase tx is never a signed cairnx record, so a record whose
 // authenticating input looks like one has no prevout owner to bind against. Kept local because the vendored
@@ -40,7 +40,9 @@ export interface PrevoutReader {
   prevoutScriptPubkey(prevTxid: string, vout: number): Promise<string | null>;
 }
 
-export type SignerBind = { ok: true; signer: string } | { ok: false; kind: "unsigned" | "no-input" | "not-owner" };
+/** "no-prevout": the spent coin could not be read or bound to its txid (missing evidence, not a mismatch);
+ *  "not-owner": the coin was read and the signature is not its owner's. */
+export type SignerBind = { ok: true; signer: string } | { ok: false; kind: "unsigned" | "no-input" | "no-prevout" | "not-owner" };
 
 /**
  * The tx's author: csd-crypto `authorOf`, the owner of the coin input 0 spends when input 0's scriptSig is that
@@ -55,7 +57,9 @@ export async function bindSigner(tx: Tx, src: PrevoutReader): Promise<SignerBind
   if (!signer) return { ok: false, kind: "unsigned" };
   const in0 = tx.inputs?.[0];
   if (!in0 || isCoinbaseInput(in0)) return { ok: false, kind: "no-input" };
-  signer = authorOf(tx, await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout))); // MUTATE_SPV_PREVOUT_BIND
+  const spk = await src.prevoutScriptPubkey(String(in0.prevTxid), Number(in0.vout));
+  if (spk == null) return { ok: false, kind: "no-prevout" };
+  signer = authorOf(tx, spk); // MUTATE_SPV_PREVOUT_BIND
   if (!signer) return { ok: false, kind: "not-owner" };
   return { ok: true, signer };
 }
@@ -63,11 +67,14 @@ export async function bindSigner(tx: Tx, src: PrevoutReader): Promise<SignerBind
 export type ChainEvent = Omit<ProvenPropose, "depth"> | Omit<ProvenAttest, "depth">;
 
 // A resolver ChainEvent from a merkle-bound tx whose `signer` the caller has already authenticated and bound to
-// the coin it spends; null for a tx with no cairnx app payload. The field shapes mirror the cairnx scanner
-// (cairnx repo src/scan.ts) so resolve() builds the same state from either feed; test/namespv.test.mjs replays
-// them through the vendored resolver.
+// the coin it spends; null for a tx with no cairnx app payload, a Propose in another application domain included:
+// the cairnx scanner reads only DOMAIN, so such a record is no event the resolver sees, however its uri parses
+// (test/name-domain.test.mjs). An Attest carries no domain; one on a dropped Propose is a resolver no-op. The field
+// shapes mirror the cairnx scanner (cairnx repo src/scan.ts) so resolve() builds the same state from either feed;
+// test/namespv.test.mjs replays them through the vendored resolver.
 export function toChainEvent(tx: Tx, id: string, height: number, pos: number, signer: string): ChainEvent | null {
   if (!tx.app || tx.app.type === "None") return null;
+  if (tx.app.type === "Propose" && tx.app.domain !== DOMAIN) return null;
   const paidTo = outputsToPaidTo(tx.outputs);
   if (tx.app.type === "Propose") {
     return { kind: "propose", id: id.toLowerCase(), proposer: signer, uri: tx.app.uri, payloadHash: String(tx.app.payloadHash).toLowerCase(), expiresEpoch: Number(tx.app.expiresEpoch), height, pos, paidTo };
