@@ -2,6 +2,10 @@
 
 ## 0.3.2
 
+- CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where
+  playwright-core 1.60.0 refuses to install the Chromium the in-Chrome tests and the release build job need, so this
+  PR's CI failed at that step on 2026-11-07 and a tag would have failed the same way. `test/ci-runner-image.test.mjs`
+  refuses a job on a `-latest` image.
 - The offer-fill, send and consolidate refusals (`fillpreflight.ts`, `node.ts`) no longer contain em dashes; a colon
   or a full stop takes their place, the wording is otherwise the same and the error codes are unchanged.
 - A record whose 64 signature bytes are a valid compact signature that also reads as DER (the node accepts it) now

@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -58,7 +58,7 @@ jobs:
   # Full-history secret scan with the repo's .gitleaks.toml; the pre-commit hook does not run on a commit made
   # without it or with --no-verify. The release binary is checked against gitleaks_8.18.4_checksums.txt.
   secrets:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:

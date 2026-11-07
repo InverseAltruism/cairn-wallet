@@ -197,7 +197,7 @@ test("ci.yml grants no job a write permission and runs the rebuild gate uncondit
 test("ci.yml runs the full-history gitleaks scan", () => checkSecrets(scanWorkflow(wf("ci.yml"))));
 
 console.log("red-first, on copies:");
-const BUILD_HEAD = "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n";
+const BUILD_HEAD = "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n";
 const mutate = (f, from, to) => { const text = wf(f); const out = text.replace(from, to); assert.notEqual(out, text, "the mutation applied"); return out; };
 test("a build job granted id-token: write fails the check", () => {
   assert.throws(() => checkRelease(scanWorkflow(mutate("release.yml", BUILD_HEAD, BUILD_HEAD + "      id-token: write\n"))), /exactly one job holds a write permission/);
@@ -208,7 +208,7 @@ test("a build job granted actions: write or packages: write fails the check", ()
   }
 });
 test("a build job with permissions: write-all fails the check", () => {
-  const mutated = mutate("release.yml", "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n", "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-latest\n    permissions: write-all\n");
+  const mutated = mutate("release.yml", "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n", "  build:\n    if: ${{ github.event_name == 'push' }}\n    runs-on: ubuntu-24.04\n    permissions: write-all\n");
   assert.throws(() => checkRelease(scanWorkflow(mutated)), /exactly one job holds a write permission/);
 });
 test("a release job that checks out the repository fails the check", () => {
