@@ -43,7 +43,8 @@ The version-stamped `cairn-wallet-store-X.Y.Z.zip` is **not** on the release. It
 name makes a stale local file self-evident.
 
 ## Release procedure (every version)
-1. **Bump the version** in `package.json` only; `build.mjs` stamps it into `dist/manifest.json` and
+1. **Bump the version** with `npm version X.Y.Z --no-git-tag-version`, which writes `package.json` and the root
+   version in `package-lock.json` (AGENTS.md "Release and deploy"); `build.mjs` stamps it into `dist/manifest.json` and
    `window.cairn` (provider `version` and `getCapabilities().version`).
 2. **SPV anchor table.** `src/core/spvanchors.ts` is generated, not edited by hand (`test/spvanchors.test.mjs` fails a file the generator would not write). Regenerate it for every
    release so its newest entry is the newest chunk top (height 4096k + 4095) at least 1,000 blocks below the tip.
