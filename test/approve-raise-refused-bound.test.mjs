@@ -13,7 +13,6 @@
 // Run: npx tsx test/approve-raise-refused-bound.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
-import * as approveWindow from "../src/approve-window.ts";
 
 const { check, done } = checker("a refused fill raises the approval window at most once per 5 s:");
 const PW = "correct horse battery staple";
