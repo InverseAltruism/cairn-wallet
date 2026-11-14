@@ -134,7 +134,7 @@ export function buildTransfer(p: { ticker: string; amount: string; to: string })
   // refuses 0x0 before reaching here, so this adds no friction to any legit flow; it just makes the
   // builder self-protecting against a future caller that skips the UI check. `to` is already lowercased
   // 0x+40hex here, so the exact form suffices.
-  if (/^0x0{40}$/.test(to)) throw new Error("refusing to send tokens to the zero address — they would be unrecoverable");
+  if (/^0x0{40}$/.test(to)) throw new Error("refusing to send tokens to the zero address: they would be unrecoverable");
   if (parseAmount(p.amount) === null) throw new Error("amount must be a positive integer of base units");
   const record = { v: 1, t: "transfer", ticker: p.ticker, amount: p.amount, to };
   const uri = canonicalJson(record);
@@ -199,7 +199,7 @@ export function buildNameProfile(p: { name: string; profile: Record<string, stri
   const keys = Object.keys(map);
   if (keys.length > PROFILE_MAX_KEYS) throw new Error(`too many profile keys (max ${PROFILE_MAX_KEYS})`);
   for (const k of keys) {
-    if (PROFILE_RESERVED_KEYS.has(k)) throw new Error(`profile key "${k}" is not allowed — addresses live in the name record (set-address), not the cosmetic profile`);
+    if (PROFILE_RESERVED_KEYS.has(k)) throw new Error(`profile key "${k}" is not allowed: addresses live in the name record (set-address), not the cosmetic profile`);
     if (!PKEY.test(k)) throw new Error(`invalid profile key "${k}" (lowercase a-z 0-9 . - , 1-32, alnum start/end)`);
     const val = map[k];
     if (typeof val !== "string") throw new Error(`profile value for "${k}" must be a string`);

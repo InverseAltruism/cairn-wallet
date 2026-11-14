@@ -81,7 +81,7 @@ The wallet's .csd name verification keeps proof-of-work-verified block headers i
 ```
 - `alarms`
 ```
-Runs the 15-minute idle auto-lock that wipes the in-memory key, and retries registering a Cairn post's off-chain content after its transaction is mined, even if the MV3 service worker was suspended.
+Runs the 15-minute idle auto-lock that drops the in-memory key, and retries registering a Cairn post's off-chain content after its transaction is mined, even if the MV3 service worker was suspended.
 ```
 - Host permission `https://cairn-substrate.com/*`
 ```

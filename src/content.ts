@@ -13,7 +13,7 @@ window.addEventListener("message", (ev: MessageEvent) => {
   try {
     chrome.runtime.sendMessage({ kind: "dapp", method, params }, (res: any) => {
       // If this page was moved into the back/forward cache (or the SW dropped) before the reply arrived,
-      // the channel is closed — read lastError so Chrome doesn't log "Unchecked runtime.lastError", and
+      // the channel is closed: read lastError so Chrome doesn't log "Unchecked runtime.lastError", and
       // skip posting to a now-frozen page (cosmetic; the page reconnects/re-requests on resume). Harmless.
       if (chrome.runtime.lastError) {
         // 0.2.70: a dropped SW / bfcache close used to swallow the reply, leaving window.cairn
@@ -24,7 +24,7 @@ window.addEventListener("message", (ev: MessageEvent) => {
         }, window.location.origin);
         return;
       }
-      // Reply only to our own origin (not "*") — the inpage provider lives in the same page.
+      // Reply only to our own origin (not "*"): the inpage provider lives in the same page.
       window.postMessage({ target: "cairn-inpage", id, res }, window.location.origin);
     });
   } catch {
@@ -39,7 +39,7 @@ window.addEventListener("message", (ev: MessageEvent) => {
 
 // Provider events: open a long-lived port to the background and relay its pushes to the inpage provider.
 // The CONTENT SCRIPT initiates the connection, so no extra permission is needed; the background learns
-// this page's origin from the (unforgeable) port sender. On MV3 service-worker idle the port may drop —
+// this page's origin from the (unforgeable) port sender. On MV3 service-worker idle the port may drop;
 // reconnect lazily so later events still arrive. Only background-originated event messages are relayed.
 function connectEvents() {
   try {

@@ -238,7 +238,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // switched accounts in the toolbar popup after the window rendered), refuse rather than silently sign/
     // disclose with the now-active account the user did NOT review. Fail-closed → reopen + re-review.
     if (typeof displayedSigner === "string" && displayedSigner && displayedSigner.toLowerCase() !== String(st.addr).toLowerCase()) {
-      return finish({ ok: false, code: "ACCOUNT_CHANGED", error: "the active account changed since you reviewed this request — reopen it and review again before approving" });
+      return finish({ ok: false, code: "ACCOUNT_CHANGED", error: "the active account changed since you reviewed this request: reopen it and review again before approving" });
     }
     let result: any;
     if (p.method === "connect" || p.method === "getAddress") {

@@ -1,5 +1,5 @@
 // Dev/E2E popup shim: drives a local Wallet against localStorage when chrome.runtime
-// is absent. MUST NOT load in the packaged extension — a static Wallet import in
+// is absent. MUST NOT load in the packaged extension: a static Wallet import in
 // popup.ts would embed the signing class in popup.js. This module throws at load if
 // the extension message surface exists, so a mistaken static import fails closed.
 import { Wallet } from "../core/wallet.js";
@@ -7,7 +7,7 @@ import { localStore } from "../core/storage.js";
 
 const chromeRef = (globalThis as { chrome?: { runtime?: { sendMessage?: unknown } } }).chrome;
 if (chromeRef?.runtime?.sendMessage) {
-  throw new Error("devshim must not load in the extension — chrome.runtime.sendMessage is present");
+  throw new Error("devshim must not load in the extension: chrome.runtime.sendMessage is present");
 }
 
 let dev: Wallet | null = null;

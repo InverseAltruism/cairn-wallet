@@ -1,11 +1,11 @@
 // A3 (Plans/68 F-QUEUE-1/2): the pending-content queue must not lose PAID bodies.
 //
-// F-QUEUE-1: node.registerContent NEVER throws — it resolves {ok:false} on any refusal/outage. The
+// F-QUEUE-1: node.registerContent NEVER throws: it resolves {ok:false} on any refusal/outage. The
 // old flushPending only kept an entry on a THROWN error, so a mined proposal whose registration
 // answered {ok:false} silently lost its content forever (the user paid the propose fee). Now a
 // failed register keeps the entry for the next alarm tick (registration is idempotent).
 // F-QUEUE-2: flushPending is a read-modify-write with awaits between read and write, firing from
-// three triggers — an addPending landing DURING a flush was clobbered by the stale write-back. Now
+// three triggers: an addPending landing DURING a flush was clobbered by the stale write-back. Now
 // an in-flight latch collapses overlaps and the write-back re-reads + unions by txid.
 //
 // MUTATION CONTRACT: both cases FAIL on 0.2.56.
@@ -44,7 +44,7 @@ function stub({ registerOk, parkProposal = false }) {
   return s;
 }
 
-console.log("A3 — F-QUEUE-1 keep-on-failure:");
+console.log("A3: F-QUEUE-1 keep-on-failure:");
 {
   await store.set("pendingContent", [{ content: { v: 1, title: "paid body" }, txid: TX_A, ts: Date.now() }]);
   const s = stub({ registerOk: false });                       // mined, but registration ANSWERS {ok:false}
@@ -59,7 +59,7 @@ console.log("A3 — F-QUEUE-1 keep-on-failure:");
   check("a successful registration still drains the entry (no stuck queue)", !left2.some((x) => x.txid === TX_A) && s2.registers === 1);
 }
 
-console.log("A3 — F-QUEUE-2 concurrent addPending survives the write-back:");
+console.log("A3: F-QUEUE-2 concurrent addPending survives the write-back:");
 {
   await store.set("pendingContent", [{ content: { v: 1, title: "first" }, txid: TX_A, ts: Date.now() }]);
   const s = stub({ registerOk: true, parkProposal: true });

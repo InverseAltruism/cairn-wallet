@@ -62,6 +62,14 @@
   (test/siwc-prequeue.test.mjs, test/inpage-relay.test.mjs sections 8 and 9, test/approve-novault-statement-dom.test.mjs,
   test/extension-boundary.ts CQ-4). WALLET-ERROR-CODES.md lists `WALLET_RELOADED` and the outer `BAD_REQUEST`.
 
+- Copy: SECURITY.md and README said the decrypted key lives only in the background service worker; the vault key is
+  also kept in the browser's in-memory session storage while unlocked, and the popup receives the phrase and a key at
+  creation and on a password-gated reveal. Both now say so. The privacy policy and the store listing's alarms
+  justification say the key is dropped from memory on lock, not wiped (JavaScript cannot zero memory). The wallet's
+  user-facing refusal texts lose their em dashes (account removal, restore and import over an existing vault, the
+  brute-force wait, `ACCOUNT_CHANGED`, the token zero-address and profile-key refusals, the name lapse and reservation
+  refusals, the content script's `WALLET_UNAVAILABLE`); the words and the codes are unchanged.
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where

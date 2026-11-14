@@ -67,8 +67,8 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
       if (lv?.verified && lv.addr)
         return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
       return lv?.lapsed === true
-        ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed — can't send to it` }
-        : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain — refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
+        ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed: can't send to it` }
+        : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain; refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
     }
     if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
     const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };

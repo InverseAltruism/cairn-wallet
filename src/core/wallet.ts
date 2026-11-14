@@ -62,7 +62,7 @@ interface SignerCtx { active: number; addr: string; priv: string; histKey: strin
 // Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
 // pre-dispatch M5 guard copy; same machine code, WALLET-ERROR-CODES.md).
 const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => refuse("ACCOUNT_CHANGED",
-  "the active account changed since you reviewed this request — reopen it and review again before approving");
+  "the active account changed since you reviewed this request: reopen it and review again before approving");
 // XR-1/FL-1: a fill whose on-chain score is present but is not the marketplace-required SCORE_FILL (100).
 // The real cairnx resolve() silently NO-OPS any other score AFTER the payment moved (the SCORE-BURN class),
 // so we refuse (not coerce) a present-and-wrong caller score before signing. The site never passes a score
@@ -271,7 +271,7 @@ export class Wallet {
   }
   // Restore an HD wallet from an existing seed phrase (derives account 0).
   async restore(mnemonic: string, password: string): Promise<{ addr: string }> {
-    if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to restore");
+    if (await this.store.get("vault")) throw new Error("wallet already exists: reset first to restore");
     if (!isValidMnemonic(mnemonic)) throw new Error("invalid recovery phrase (check the words and order)");
     const m = normalizeMnemonic(mnemonic);
     const a = { ...deriveAccount(m, 0), label: "Account 1", index: 0 } as Acct;
@@ -280,7 +280,7 @@ export class Wallet {
   }
   // Import a single raw private key (NOT part of any seed phrase → no recovery phrase).
   async importKey(priv: string, password: string): Promise<{ addr: string }> {
-    if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to replace the key");
+    if (await this.store.get("vault")) throw new Error("wallet already exists: reset first to replace the key");
     const a = this.acct(priv, "Account 1", { imported: true }); // fromPriv validates
     await this.sealFresh(password, { mnemonic: null, nextIndex: 0, accts: [a], active: 0 });
     return { addr: a.addr };
@@ -294,7 +294,7 @@ export class Wallet {
   private async authGuardCheck(): Promise<void> {
     const g: any = (this.session ? await this.session.get("authGuard").catch(() => null) : null) || {};
     if (typeof g.until === "number" && Date.now() < g.until)
-      throw new Error(`too many failed attempts — try again in ${Math.ceil((g.until - Date.now()) / 1000)}s`);
+      throw new Error(`too many failed attempts; try again in ${Math.ceil((g.until - Date.now()) / 1000)}s`);
   }
   private async authGuardRecord(ok: boolean): Promise<void> {
     if (!this.session) return;
@@ -331,7 +331,7 @@ export class Wallet {
 
   async unlock(password: string): Promise<{ addr: string }> {
     const v: Vault | null = await this.store.get("vault");
-    if (!v) throw new Error("no wallet — create or import one first");
+    if (!v) throw new Error("no wallet: create or import one first");
     const { key, raw } = await this.openVaultDoc(v, password);
     this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
     await this.applyDoc(raw);
@@ -472,7 +472,7 @@ export class Wallet {
   }
   async removeAccount(addr: string, password?: string): Promise<void> {
     const accts = this.mustUnlocked();
-    if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
+    if (accts.length <= 1) throw new Error("cannot remove the last account: reset the wallet to start over");
     let i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
     const target = accts[i];
     if (!target) throw new Error("no such account");
@@ -493,7 +493,7 @@ export class Wallet {
       // (idempotent), and the last-account floor is re-asserted against the CURRENT list.
       i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
       if (i < 0) return;
-      if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
+      if (accts.length <= 1) throw new Error("cannot remove the last account: reset the wallet to start over");
     }
     const gone = accts[i]?.addr;
     if (gone === undefined) throw new Error("no such account");   // i is the target's current index: found with no await since

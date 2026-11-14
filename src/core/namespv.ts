@@ -207,7 +207,7 @@ export function nameScopedEvents(name: string, events: ChainEvent[]): ChainEvent
 
 async function replayName(name: string, hints: NameHint[], src: SpvSource): Promise<Replay> {
   if (!Array.isArray(hints) || hints.length === 0) return { ok: false, reason: "no on-chain records were offered for this name" };
-  if (hints.length > MAX_HINTS) return { ok: false, reason: `too many record hints for one name (>${MAX_HINTS}) — refusing` };
+  if (hints.length > MAX_HINTS) return { ok: false, reason: `too many record hints for one name (>${MAX_HINTS}); refusing` };
   // group hinted txids by block height; verify each block ONCE against its PoW-committed merkle root
   const byHeight = new Map<number, NameHint[]>();
   let maxHeight = 0;
@@ -262,13 +262,13 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     // unless a second source corroborates; so an inflated fresh-install tip can't assert a false lapse.
     const floor = Number.isFinite(floorTip as number) ? Number(floorTip) : 0;
     const floorCorroborated = floor > 0 && resolve(scoped, floor).names[name]?.expired === true;
-    return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain) — refusing to send` };
+    return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain); refusing to send` };
   }
   // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized:
   // it confers no address and is not an owned name yet. Fail CLOSED (never resolve it to the owner) so a name
   // that is only reserved, or whose promoting `nfinalize` is being withheld from the hint set, can never be a
   // send target. A finalized name is not pending (nfinalize clears the flag), so this only blocks true reserves.
-  if (rec.pending) return { ok: false, reason: `${name}.csd is a reservation that has not been finalized on-chain yet — refusing to send` };
+  if (rec.pending) return { ok: false, reason: `${name}.csd is a reservation that has not been finalized on-chain yet; refusing to send` };
   return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1), viaFill: !!rec.viaFill };
 }
 
@@ -342,7 +342,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
         const confident = usable.length >= 2 || rep.floorCorroborated === true;
         return confident
           ? { ...fail(rep.reason), sources: usable.length, disagree: false, lapsed: true }
-          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip — confirm out-of-band before sending`), sources: usable.length, disagree: false, lapsed: false };
+          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip; confirm out-of-band before sending`), sources: usable.length, disagree: false, lapsed: false };
       }
       // M12 (B5e): the UNIONED replay failed. A single hostile source can poison the combined hint set
       // with ONE junk hint (a txid not in its claimed block, an unauthenticated record), aborting the whole
