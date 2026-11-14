@@ -73,6 +73,8 @@ const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refus
 const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim; ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset; a long-lived identity record
+const CONTENT_FAST_TRIES = 15;            // queued post body: attempts on every alarm before backing off
+const CONTENT_MAX_DELAY_MS = 60 * 60_000; // ...and the longest wait between later attempts
 // Attest fee floor (0.05 CSD): the default fee for an offer fill (Attest + payment in one tx).
 // B9: single-sourced into core/cairnx.ts defaultFeeFor("attest"); the same table the clear-sign
 // display reads, so the screen and the signer can never disagree again (the local literal was the twin).
@@ -1039,6 +1041,13 @@ export class Wallet {
   // with a stale list. The in-flight latch collapses overlaps; the final RE-READ + union-by-txid
   // merge keeps any entry added while this flush was running.
   private flushInFlight = false;
+  // A queued body is tried on every alarm (1 min) for its first CONTENT_FAST_TRIES attempts, which covers a normal
+  // mine and a short outage; after that the wait doubles from 2 min to at most an hour, so an entry the server keeps
+  // refusing costs 186 attempts over its 7 days instead of one a minute (test/flushpending.test.mjs).
+  static contentRetryDelayMs(fails: number): number {
+    if (fails < CONTENT_FAST_TRIES) return 0;
+    return Math.min(CONTENT_MAX_DELAY_MS, 2 * 60_000 * 2 ** Math.min(20, fails - CONTENT_FAST_TRIES));
+  }
   async flushPending(): Promise<void> {
     if (this.flushInFlight) return;
     this.flushInFlight = true;
@@ -1054,16 +1063,20 @@ export class Wallet {
         // landed, no error (Plans/66 B8). Content is self-certifying and re-POSTable, so a long
         // retry window costs nothing; expiry still bounds the queue.
         if (Date.now() - (x.ts || 0) > 7 * 86400000) continue;
+        if (Number(x.nextAt) > Date.now()) { keep.push(x); continue; }   // backing off (contentRetryDelayMs)
+        const later = () => { const fails = (Number(x.fails) || 0) + 1; keep.push({ ...x, fails, nextAt: Date.now() + Wallet.contentRetryDelayMs(fails) }); };
         try {
           const p = await node.getProposal(this.rpc, x.txid);
-          if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later
+          if (!(p && p.payload_hash)) { later(); continue; }  // not mined yet → retry later
           // F-QUEUE-1 (Plans/68 A3): registerContent NEVER throws; it resolves {ok:false} on any
           // refusal/outage (node.ts). Dropping the entry on that path silently lost the body of a
           // tx the user PAID to anchor. Registration is idempotent and self-certifying, so a
-          // failed register keeps the entry for the next alarm tick instead.
-          const rr: { ok?: unknown } | null = await node.registerContent(this.api, x.content, x.txid);
-          if (!(rr && rr.ok)) keep.push(x);
-        } catch { keep.push(x); }                                  // transient/network error → retry later
+          // failed register keeps the entry, except on the server's lasting refusal, which a retry cannot change.
+          const rr: { ok?: unknown; status?: unknown; error?: unknown } | null = await node.registerContent(this.api, x.content, x.txid);
+          if (rr && rr.ok) continue;
+          if (node.contentRefusedForGood(rr)) { console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}: ${String(rr?.error ?? "")}); it is not retried`); continue; }
+          later();
+        } catch { later(); }                                  // transient/network error → retry later
       }
       // re-read + merge (union by txid): entries queued DURING this flush survive the write-back.
       const now: any[] = (await this.store.get("pendingContent")) || [];

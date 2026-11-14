@@ -129,6 +129,7 @@ Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runt
 - Storage: unlimitedStorage because the namespv header store (IndexedDB, 84 bytes per header, about 60 KB per chain-day) grows with the chain; chrome.storage.local holds the vault, history and settings.
 - Consensus caps: MAX_TX_INPUTS=512, MAX_TX_BYTES=100KB; an all-coinbase holder tops out around 25,600 CSD per tx. consolidate() is the wallet-side answer.
 - pendingMerge() (popup-only) settles open history rows (an unconfirmed merge, a maybe:true row) from chain state, not the clock, and submits nothing; the rules are in `docs/DESIGN-inclusion-reconcile.md` (`src/core/inclusion.ts`, test/inclusion-chain.test.mjs).
+- Pending post bodies (`pendingContent`, 7 days): `flushPending` tries each on every 1-minute alarm for 15 attempts, then doubles the wait from 2 minutes to at most an hour (186 attempts in 7 days against a server that keeps failing), and drops a body the server refuses for good (`contentRefusedForGood`: a 4xx other than 408, 425 and 429). Cairn answers its own content refusals with HTTP 200 `{ok:false}` and no code, so those back off rather than stop (test/flushpending.test.mjs).
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the result.
 
 SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):

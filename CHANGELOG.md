@@ -33,6 +33,13 @@
   10000 in all)". Sends were already right: they pick the largest coins, which a cut keeps
   (test/utxos-truncated.test.mjs, test/inclusion-chain.test.mjs case 6t).
 
+- A queued post body that cannot be registered no longer retries every minute for 7 days (up to 20,160 requests per
+  body). It is tried on every alarm for its first 15 attempts, as before, so a post mined within 15 minutes registers
+  just as fast; after that the wait doubles from 2 minutes to at most an hour (186 attempts in 7 days against a server
+  that keeps failing). A body the server refuses for good (an HTTP 4xx other than 408, 425 and 429, such as a body
+  over its size cap) is dropped after the first refusal and the reason is logged. `registerContent` returns the HTTP
+  status with a failure (test/flushpending.test.mjs).
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where

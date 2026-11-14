@@ -901,8 +901,22 @@ export async function fillOffer(
 
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:
 // a hung request would otherwise hold flushPending's in-flight latch and a revealClaim approval.
+// Never throws. A non-2xx answer resolves { ok: false, error, status } with the HTTP status, so the content queue can
+// tell the server's lasting refusal (contentRefusedForGood) from an outage.
 export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<any> {
-  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
+  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r) => {
+    let j: any;
+    try { j = await r.json(); } catch { j = undefined; }
+    if (r.ok) return j && typeof j === "object" ? j : { ok: false, error: "/api/content -> unreadable response" };
+    const body = j && typeof j === "object" && !Array.isArray(j) ? j : {};
+    return { ...body, ok: false, error: String(body.error ?? body.err ?? `/api/content -> ${r.status}`), status: r.status };
+  }).catch((e) => ({ ok: false, error: String(e) }));
+}
+/** A 4xx other than 408, 425 and 429 is the server refusing this body for good (a body over its cap, a malformed
+ *  request); a retry gets the same answer. Anything else (5xx, a timeout, a rate limit, a 200 {ok:false}) may pass later. */
+export function contentRefusedForGood(r: { status?: unknown } | null | undefined): boolean {
+  const s = Number(r?.status);
+  return Number.isInteger(s) && s >= 400 && s < 500 && s !== 408 && s !== 425 && s !== 429;
 }
 
 // Sign in with CSD against the Cairn API: fetch nonce, sign its digest locally, verify.
