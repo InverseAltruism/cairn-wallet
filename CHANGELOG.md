@@ -46,6 +46,11 @@
   still bound to the verified header's merkle root before anything is used (test/block-by-hash.test.mjs; the fixture
   server in test/helpers/spvfixture.mjs answers by hash too).
 
+- The proportional fee cap in `src/core/node.ts` (max(1 CSD, 10% of the verified inputs)) is pinned to csd-tx's
+  `feeCap` by test/feecap-parity.test.mjs over 202,163 totals (the floor's crossing, the rounding edges, powers of two
+  and 200,000 seeded totals across the safe-integer range). The copy stays because the vendored bundle exports only
+  csd-tx's `selectInputs`; the next re-vendor can add `feeCap` to the export list and import it. No behaviour change.
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where

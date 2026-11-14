@@ -490,9 +490,11 @@ interface SelectedInput { txid: string; vout: number; value: number }
 // chokepoint every value tx routes through, so a compromised UI can't steer a user PAST the visible warning
 // into burning a huge fee. 100 CSD is ~100× any real fee; no legitimate flow approaches it.
 const MAX_FEE = 100 * 1e8; // base units (100 CSD)
-// The proportional fee bound on a spend's chain-verified input total, max(1 CSD, 10% of it): KEEP-IN-SYNC with csd-tx
-// feeCap (packages/tx/src/index.ts). assembleValueTx, consolidate and maxSendable apply it.
-const proportionalFeeCap = (verifiedTotal: number): number => Math.max(100_000_000, Math.floor(verifiedTotal * 0.10));
+// The proportional fee bound on a spend's chain-verified input total, max(1 CSD, 10% of it). assembleValueTx,
+// consolidate and maxSendable apply it. csd-tx's feeCap is the same rule, but the vendored bundle does not export it, so
+// this copy stays until a re-vendor adds it to scripts/build-spv-vendor.sh; test/feecap-parity.test.mjs pins the two
+// equal against the csd-tx version package.json pins.
+export const proportionalFeeCap = (verifiedTotal: number): number => Math.max(100_000_000, Math.floor(verifiedTotal * 0.10));
 
 // The coins csd-tx selectInputs would accept, each once (opKey is its dedupe key), in the reported order:
 // selectInputs answering a one-coin pool is the spendability predicate, so the rule is csd-tx's own.
