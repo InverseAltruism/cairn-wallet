@@ -910,8 +910,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     async blockAt(height: number) {
       const vh = await headerAt(height);
       if (!vh) throw new Error(`no PoW-verified header at ${height}`);
+      // By the verified hash, not the height: a finalized /block/<hash> answer is edge-cached and the height route never
+      // is, and naming the hash means a height that moved serves no other block. bindBlock checks the body either way.
       // bodyClient's parseJson returns the raw body as { text }; RpcBlock is the parsed type the client declares.
-      const raw = (await bodyClient.blockByHeight(height)) as unknown as { text: string };
+      const raw = (await bodyClient.blockByHash(vh.hash)) as unknown as { text: string };
       return { merkle: vh.merkle, body: raw.text };
     },
     bodySource: opts.rpcBase.replace(/\/$/, ""),

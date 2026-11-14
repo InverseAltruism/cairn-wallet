@@ -159,7 +159,7 @@ async function walletFill(rpcBase, { unserved, block, switchApiTo } = {}) {
   let switched = false;
   globalThis.fetch = async (url, init) => {
     const u = String(url);
-    if (switchApiTo && !switched && u.endsWith(`/block/height/${OFFER.height}`)) { switched = true; await w.setApi(switchApiTo); }
+    if (switchApiTo && !switched && u.endsWith(`/block/${OFFER.block.hash}`)) { switched = true; await w.setApi(switchApiTo); }
     if (u.includes("/tx/submit")) { submits.push(u); return Response.json({ ok: true, txid: "0x" + "aa".repeat(32) }); }
     if (/\/cairnx\/offer\//.test(u)) return u.includes("clarvis") || !u.endsWith(FCLAIM) ? new Response("{}", { status: 404 }) : Response.json(served);
     if (/\/utxos\//.test(u)) return Response.json({ confirmed_balance: coin.coin.value, utxos: [coin.coin] });
@@ -242,7 +242,7 @@ await test("setRpc to a Local node: the next fill reads the offer block from it 
   const { out: err, urls } = await logged(() => rejects(walletFillIo(w)));
   assert.equal((await w.spvSource()).bodySource, LOCAL);
   assert.ok(err?.includes(`block ${OFFER.height} from ${LOCAL} does not match`), err ?? "no refusal");
-  assert.ok(urls.includes(`${LOCAL}/block/height/${OFFER.height}`), "the offer block is read from the Local node");
+  assert.ok(urls.includes(`${LOCAL}/block/${OFFER.block.hash}`), "the offer block is read from the Local node, by its verified hash");
   assert.ok(!urls.some((u) => u.startsWith(old)), "nothing is read from the old RPC");
 });
 

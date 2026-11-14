@@ -44,6 +44,12 @@ export function records(from, to) {
 export const has = (h) => RANGES.some((x) => h >= x.from && h <= x.to);
 export const headerOf = (h) => deserializeHeader(records(h, h));
 export const hashOf = (h) => hex(sha256d(records(h, h)));
+let byHash = null;
+/** The fixture height whose header has this hash (0x, lower case), or undefined. */
+export function heightOfHash(hash) {
+  if (!byHash) { byHash = new Map(); for (const r of RANGES) for (let h = r.from; h <= r.to; h++) byHash.set(hashOf(h), h); }
+  return byHash.get(String(hash).toLowerCase());
+}
 /** An /api/headers row, as the front door serves it. */
 export const row = (h) => ({ height: h, header: headerOf(h), hash: hashOf(h) });
 /** A v1 (pre-0.2.99) chrome.storage.local snapshot of heights from..to. */
@@ -64,8 +70,8 @@ export const FIX_ANCHORS = Object.freeze(SPV_ANCHORS.slice(0, 21));
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 /**
- * Installs globalThis.fetch serving /api/headers/:from/:count and the node RPC (/tip, /block/height/:h, /tx/:id)
- * from the fixture. `net.tip` is the node tip; `net.tamper(from, rows)` may rewrite a page; `net.down` answers 500
+ * Installs globalThis.fetch serving /api/headers/:from/:count and the node RPC (/tip, /block/height/:h, /block/:hash,
+ * /tx/:id) from the fixture; a hash outside the fixture answers as the node does (200, ok false). `net.tip` is the node tip; `net.tamper(from, rows)` may rewrite a page; `net.down` answers 500
  * to everything; `net.tipDown` answers 500 to /tip only; `net.unserved(from)` true answers 404 to that page.
  * `net.blocks` (height to node block JSON) and `net.txs` (txid to node /tx JSON) serve real bodies, `net.rawBlocks`
  * (height to /block response text) and `net.rawTxs` (txid to /tx response text) serve a body JSON.stringify cannot
@@ -93,7 +99,10 @@ export function serveFixture(net) {
       return json({ ok: true, from, count: n, headers: rows });
     }
     if (u.endsWith("/tip")) return net.tipDown ? json({ ok: false }, 500) : json({ height: net.tip, hash: has(net.tip) ? hashOf(net.tip) : undefined });
-    const b = /\/block\/height\/(\d+)$/.exec(u);
+    const bh = /\/block\/(0x[0-9a-f]{64})$/.exec(u);
+    const atHash = bh ? heightOfHash(bh[1]) : undefined;
+    if (bh && atHash === undefined) return json({ ok: false, hash: bh[1], height: null, header: { err: "not found" }, txs: [] });
+    const b = atHash !== undefined ? [u, String(atHash)] : /\/block\/height\/(\d+)$/.exec(u);
     if (b && net.rawBlocks?.has(Number(b[1]))) return new Response(net.rawBlocks.get(Number(b[1])), { status: 200, headers: { "content-type": "application/json" } });
     if (b && net.blocks?.has(Number(b[1]))) return json(net.blocks.get(Number(b[1])));
     if (b) return json({ ok: true, height: Number(b[1]), hash: hashOf(Number(b[1])), header: headerOf(Number(b[1])), txs: [] });

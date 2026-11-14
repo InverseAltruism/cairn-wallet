@@ -115,7 +115,7 @@ const sites = { blocks: 0, served: {} };
     // Both production sources (cairn-substrate.com and clarvis) answer from PRIMARY's history plus `sites.served`.
     if (u.endsWith("/cairnx/name-history/cairn")) return historyFetch({ [PRIMARY.base]: sites.served.extra ?? [] })(u.replace(/^https:\/\/(clarvis\.)?cairn-substrate\.com\/trade\/api/, PRIMARY.base));
     if (u.endsWith("/cairnx/resolve/cairn")) return Response.json(NAME.history.resolve);
-    if (/\/block\/height\/\d+$/.test(u)) sites.blocks++;
+    if (/\/block\/(height\/\d+|0x[0-9a-f]{64})$/.test(u)) sites.blocks++;
     return inner(url, init);
   };
 }

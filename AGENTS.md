@@ -126,6 +126,7 @@ Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runt
 - Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15s with Retry-After-aware 429 and 502/503 backoff.
 - CairnX read API /trade/api (12s); clarvis /trade/api (name-history union always, resolve fallback, 12s).
 - Rate limits: the front door rate-limits per IP; the wallet's fan-out is bounded (send-path input verify at 8 concurrent, the fclaim fill-scan block fetch at 12), so legitimate flows stay under the per-IP budget.
+- Block bodies (name proofs, fill scans) are read by the verified header's hash, `/block/<hash>` (`namespv.ts` `blockAt`): the front door marks a finalized one immutable for the edge and charges it no per-height budget, while `/block/height/<h>` is never cached. The merkle bind checks the body either way (test/block-by-hash.test.mjs).
 - Storage: unlimitedStorage because the namespv header store (IndexedDB, 84 bytes per header, about 60 KB per chain-day) grows with the chain; chrome.storage.local holds the vault, history and settings.
 - Consensus caps: MAX_TX_INPUTS=512, MAX_TX_BYTES=100KB; an all-coinbase holder tops out around 25,600 CSD per tx. consolidate() is the wallet-side answer.
 - pendingMerge() (popup-only) settles open history rows (an unconfirmed merge, a maybe:true row) from chain state, not the clock, and submits nothing; the rules are in `docs/DESIGN-inclusion-reconcile.md` (`src/core/inclusion.ts`, test/inclusion-chain.test.mjs).

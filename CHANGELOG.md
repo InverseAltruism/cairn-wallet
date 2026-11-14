@@ -40,6 +40,12 @@
   over its size cap) is dropped after the first refusal and the reason is logged. `registerContent` returns the HTTP
   status with a failure (test/flushpending.test.mjs).
 
+- Block bodies for name proofs and fill checks are fetched by the hash of the header the wallet verified
+  (`/api/rpc/block/<hash>`) instead of by height. The front door marks a finalized body at that route immutable, so
+  the edge can serve it, and it debits no per-height block budget; the by-height route is never cached. The body is
+  still bound to the verified header's merkle root before anything is used (test/block-by-hash.test.mjs; the fixture
+  server in test/helpers/spvfixture.mjs answers by hash too).
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where
