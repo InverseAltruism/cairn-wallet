@@ -10,6 +10,14 @@
   with the account in it can reveal them (warn, not block), and README's backup section says neither backup covers
   them (test/seal-remove-keep.test.mjs, test/account-remove-warn-dom.test.mjs).
 
+- A refused second fill (`FILL_IN_PROGRESS`) raises the approval window at most once per 5 seconds, whichever site
+  sends it. Every refusal used to raise the window, and every raise re-arms the request on screen (both buttons off for
+  700 ms), so a page repeating a fill of a target it held every 300 ms kept Approve and Reject off for as long as it ran
+  and pulled the window forward about three times a second, and a second site could do the same to another site's
+  request on screen. Nothing was signed either way. The first refusal still raises and re-arms the window as before, and
+  one after the gap does again (test/approve-raise-refused-bound.test.mjs; the Chromium case in
+  test/approve-raise-chrome.test.mjs).
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where

@@ -45,10 +45,13 @@ What the hold leaves to other rules:
 - The hold is global, so a site learns whether another site's fill of a target it names is held, and a site can hold a
   target by queueing a fill of it. Both need the site open in the user's browser; a miss and a hold are each a fill
   request the user sees in the approval window and can reject (at most 5 per site). Accepted, 2026-11-06. A hit
-  raises the approval window, and a site that names a held target can raise it once per refused request, without the
-  per-site cap; nothing is queued or signed, and rejecting the held request or closing the window ends it. Each raise
-  re-arms the window before it rises (Approve and Reject wait 700 ms), so a raise timed to a double click on the site's
-  page does not land the second click on Approve (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
+  raises the approval window, at most once per 5 seconds whichever site sends it (`REFUSED_RAISE_GAP_MS`); a refusal
+  inside that gap raises and re-arms nothing. Nothing is queued or signed, and rejecting the held request or closing the
+  window ends it. Each raise re-arms the window before it rises (Approve and Reject wait 700 ms), so a raise timed to a
+  double click on the site's page does not land the second click on Approve (test/approve-raise-rearm.test.mjs,
+  test/approve-raise-chrome.test.mjs). Before 0.3.3 every refusal raised and re-armed, so a page repeating one, or a
+  second site holding its own target, kept another site's painted request unapprovable while it ran
+  (test/approve-raise-refused-bound.test.mjs).
 
 ## The fclaim lane
 

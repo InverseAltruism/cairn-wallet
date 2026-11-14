@@ -380,14 +380,24 @@ const MAX_PENDING_PER_ORIGIN = 5;
 // first is queued, that window is opened or focused; once it is in flight, an open window is focused (normally the one
 // that approved it, showing its outcome) and none is created, since a new window could only show other requests.
 const fillHolds = new Map<string, string>(); // fill target -> id of the request holding it
+// Each raise re-arms the request on screen (focusApprovalWindow: both buttons off for 700 ms), so a page repeating a
+// refused fill could hold another site's painted request off and keep pulling the window forward. A refusal raises at
+// most once per REFUSED_RAISE_GAP_MS, whichever site sends it (a per-origin key would let several tabs multiply the
+// rate); one inside the gap only answers, re-arms nothing, and the window was raised less than the gap ago.
+const REFUSED_RAISE_GAP_MS = 5_000;
+let refusedRaiseAt = Number.NEGATIVE_INFINITY;
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
   const fillTarget = fillTargetOf(method, params);
   const holder = fillTarget ? fillHolds.get(fillTarget) : undefined;
   if (holder) {
-    if (pending.has(holder)) openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
-    else focusApprovalWindow();
+    const now = performance.now();
+    if (now - refusedRaiseAt >= REFUSED_RAISE_GAP_MS) {
+      refusedRaiseAt = now;
+      if (pending.has(holder)) openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
+      else focusApprovalWindow();
+    }
     return Promise.resolve({ ok: false, code: "FILL_IN_PROGRESS", error: FILL_IN_PROGRESS_TEXT });
   }
   if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests; approve or reject the queued ones first" });

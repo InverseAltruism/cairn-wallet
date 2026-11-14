@@ -174,7 +174,10 @@ request queued while the window is open, a refused second fill of an offer, the 
 asks the window to re-arm and raises it once the window has answered, so a site cannot have the user double-click on
 its page, raise the window with the first click and land the second on Approve. A window that has not answered within
 250 ms (a hung page) is raised anyway. A focus the user gives the window re-arms nothing, so their own click lands at
-once (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
+once (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs). A refused second fill raises the window
+at most once per 5 seconds, whichever site sends it, so a page that repeats one cannot keep Approve and Reject off or
+keep pulling the window forward; what remains is one raise and its 700 ms floor per 5 seconds while it repeats
+(test/approve-raise-refused-bound.test.mjs).
 The provider is injected
 on all sites (like MetaMask) so any dApp can request a connection, but injection scope is
 **not** the security boundary: the content script only relays requests, exposes no keys, and
