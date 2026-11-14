@@ -95,22 +95,25 @@ export async function getProposal(rpc: string, txid: string): Promise<any | null
   try { const j = await get(rpc, `/proposal/${txid}`); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
 }
 // Throws on a body without a `utxos` array, so every spend path refuses it as VERIFY_UNAVAILABLE before signing.
-export async function balance(rpc: string, addr: string): Promise<{ confirmed: number; utxos: any[] }> {
+// `truncated`: the node's bound cut the list (node 0.1.17 `--utxos-bound`, the largest coins first), so `utxos` holds
+// some of the address's coins and `confirmed` stays the whole balance. A coin missing from a cut list proves nothing.
+export async function balance(rpc: string, addr: string): Promise<{ confirmed: number; utxos: any[]; truncated: boolean }> {
   const j = await get(rpc, `/utxos/${addr}?available=true`);
   if (!j || typeof j !== "object" || !Array.isArray(j.utxos)) throw new Error(`/utxos -> malformed response`);
-  return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos };
+  return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos, truncated: j.truncated === true };
 }
 // The mined utxo set, coins held by the mempool included (balance() leaves those out). The proxy serves it
 // at /utxos-all/:addr; its /utxos/:addr is mempool-filtered, so only a bare node origin falls back to the
-// node's own /utxos/:addr. null: not readable, and no caller may conclude anything from it.
-export async function confirmedUtxos(rpc: string, addr: string): Promise<{ txid: string; vout: number }[] | null> {
+// node's own /utxos/:addr. null: not readable, and no caller may conclude anything from it. `complete` is false
+// when the node's bound cut the list: a coin in it is mined, a coin missing from it proves nothing.
+export async function confirmedUtxos(rpc: string, addr: string): Promise<{ utxos: { txid: string; vout: number }[]; complete: boolean } | null> {
   try {
     const r = await fetch(`${rpc}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
     let j: any;
     if (r.ok) j = await r.json();
     else if (r.status === 404 && new URL(rpc).pathname.replace(/\/+$/, "") === "") j = await get(rpc, `/utxos/${addr}`);
     else return null;
-    return j && typeof j === "object" && Array.isArray(j.utxos) ? j.utxos : null;
+    return j && typeof j === "object" && Array.isArray(j.utxos) ? { utxos: j.utxos, complete: j.truncated !== true } : null;
   } catch { return null; }   // unreachable or unreadable: no "gone" verdict this pass
 }
 
@@ -365,7 +368,7 @@ function roundsExhausted(count: number, value: number): { error: string; code: s
 // `needOf` is what the spend must cover (amount plus fee), or for maxSendable a function of the utxo set and the coins
 // excluded so far, evaluated at the start of every round so the target follows the exclusions this loop makes. With a
 // number every round uses that number, exactly as a send passes it.
-type NeedOf = (utxos: any[], exclude: ReadonlySet<string>) => number;
+type NeedOf = (utxos: any[], exclude: ReadonlySet<string>, truncated: boolean) => number;
 // `verified` lets maxSendable's final pass reuse the verdicts its first pass fetched (a txid commits to its output
 // values, so a verified value cannot change); a send passes none and fetches every coin it selects.
 async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf, verified: Map<string, number> = new Map()): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
@@ -373,8 +376,8 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
   // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch:
   // nothing has been signed at this point, so the outcome is definitively clean.
-  let utxos: any[];
-  try { ({ utxos } = await balance(rpc, addr)); }
+  let utxos: any[], truncated: boolean;
+  try { ({ utxos, truncated } = await balance(rpc, addr)); }
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
   const exclude = sessionExclusions(now);
@@ -391,7 +394,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
   let need = typeof needOf === "number" ? needOf : 0;
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
-    if (typeof needOf === "function") need = needOf(utxos, exclude);
+    if (typeof needOf === "function") need = needOf(utxos, exclude, truncated);
     const sel = selectInputs(utxos, need, exclude);
     if (!sel) { selExhausted = true; break; } // remaining verifiable coins can't cover `need`, or can't within the input cap (diagnosed below)
     const ver = await verifyInputValues(rpc, sel.inputs, verified);
@@ -800,14 +803,14 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
 // one run would merge, their REPORTED total and the resulting single-coin value. Display only:
 // consolidate() re-derives everything from chain-verified values before signing, so a hostile RPC
 // inflating this preview gains nothing (the signed tx uses verified totals or refuses).
-export async function consolidatePreview(rpc: string, addr: string, fee: number): Promise<{ ok: boolean; coins?: number; merge?: number; total?: number; out?: number; error?: string }> {
+export async function consolidatePreview(rpc: string, addr: string, fee: number): Promise<{ ok: boolean; coins?: number; truncated?: boolean; merge?: number; total?: number; out?: number; error?: string }> {
   try {
-    const { utxos } = await balance(rpc, addr);
+    const { utxos, truncated } = await balance(rpc, addr);
     const pool = spendableCoins(utxos).sort((a, b) => a.value - b.value);
     const merge = Math.min(pool.length, MAX_TX_INPUTS);
     let total = 0;
     for (const c of pool.slice(0, merge)) { total += c.value; if (!Number.isSafeInteger(total)) return { ok: false, error: "coin values out of range" }; }
-    return { ok: true, coins: pool.length, merge, total, out: Math.max(0, total - Number(fee)) };
+    return { ok: true, coins: pool.length, truncated, merge, total, out: Math.max(0, total - Number(fee)) };
   } catch { return { ok: false, error: "node unreachable" }; }
 }
 
@@ -837,14 +840,16 @@ function allSkippedText(by: { ghost: number; horizon: number; unrep: number }, s
   ].filter(Boolean);
   return `none of your coins can be checked against the chain: ${parts.join("; ")}. Nothing was signed`;
 }
-export type MaxSend = { ok: true; amount: number; fee: number; inputs: number; eligible: number; skipped: number; capped: boolean } | { ok: false; error: string; code: string };
+// `truncated`: the node listed only its largest coins, so `eligible` counts those and the address holds more.
+export type MaxSend = { ok: true; amount: number; fee: number; inputs: number; eligible: number; skipped: number; capped: boolean; truncated: boolean } | { ok: false; error: string; code: string };
 export async function maxSendable(rpc: string, addr: string, fee: number): Promise<MaxSend> {
   if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", code: "BAD_FEE" };
   if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, code: "FEE_CAP" };
-  let eligible = 0, skipped = 0, target = 0;
+  let eligible = 0, skipped = 0, target = 0, truncated = false;
   const skippedBy = { ghost: 0, horizon: 0, unrep: 0 };
   const verified = new Map<string, number>();
-  const found = await selectVerified(rpc, addr, (utxos, exclude) => {
+  const found = await selectVerified(rpc, addr, (utxos, exclude, cut) => {
+    truncated = cut;
     const coins = spendableCoins(utxos, exclude).sort((a, b) => b.value - a.value);
     eligible = coins.length;
     const left = spendableCoins(utxos).filter((c) => exclude.has(opKey(c.txid, c.vout)));
@@ -858,12 +863,12 @@ export async function maxSendable(rpc: string, addr: string, fee: number): Promi
   }, verified);
   // Max's own words: the engine's copy for a failed round names the round's internal target as "this spend"
   if ("error" in found) {
-    if (eligible === 0 && skipped === 0 && found.code === "INSUFFICIENT") return { ok: true, amount: 0, fee, inputs: 0, eligible: 0, skipped: 0, capped: false };
+    if (eligible === 0 && skipped === 0 && found.code === "INSUFFICIENT") return { ok: true, amount: 0, fee, inputs: 0, eligible: 0, skipped: 0, capped: false, truncated };
     if (eligible === 0 && skipped > 0) return { ok: false, error: allSkippedText(skippedBy, skipped), code: found.code };
     if (found.code === "INSUFFICIENT") return { ok: false, error: "your coins are worth less on the chain than the node reports, so no amount can be worked out. Nothing was signed", code: "INSUFFICIENT" };
     return { ok: false, error: found.error, code: found.code };
   }
-  if (target <= fee) return { ok: true, amount: 0, fee, inputs: 0, eligible, skipped, capped: false };
+  if (target <= fee) return { ok: true, amount: 0, fee, inputs: 0, eligible, skipped, capped: false, truncated };
   const sv = await selectVerified(rpc, addr, target, verified);
   if ("error" in sv) {
     if (sv.code === "VERIFY_TAMPER") return { ok: false, error: sv.error, code: sv.code };
@@ -871,7 +876,7 @@ export async function maxSendable(rpc: string, addr: string, fee: number): Promi
     return { ok: false, error: `the most one transaction can send could not be confirmed against the chain just now. Nothing was signed; ${next}`, code: sv.code };
   }
   if (fee > proportionalFeeCap(sv.total)) return { ok: false, error: `fee exceeds ${fmtCsd(proportionalFeeCap(sv.total))} (10% of the coins this spend uses); refusing`, code: "FEE_CAP" };
-  return { ok: true, amount: target - fee, fee, inputs: sv.inputs.length, eligible, skipped, capped: eligible > MAX_TX_INPUTS };
+  return { ok: true, amount: target - fee, fee, inputs: sv.inputs.length, eligible, skipped, capped: eligible > MAX_TX_INPUTS, truncated };
 }
 
 // Fill an on-chain offer: ONE transaction

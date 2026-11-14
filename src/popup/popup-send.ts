@@ -38,7 +38,7 @@ $("s-max").addEventListener("click", async () => {
   amt.value = formatUnits(String(r.amount), 8);
   updateSendEstimate();
   const notes = [
-    r.capped ? `The most one transaction can send: it spends ${r.inputs} of your ${r.eligible} coins, the limit per transaction. Merge coins in Settings to send more at once.` : "",
+    r.capped ? `The most one transaction can send: it spends ${r.inputs} of your ${r.truncated ? `coins (at least ${r.eligible} in all)` : `${r.eligible} coins`}, the limit per transaction. Merge coins in Settings to send more at once.` : "",
     r.skipped > 0 ? `${r.skipped} coin${r.skipped === 1 ? "" : "s"} the node could not prove ${r.skipped === 1 ? "is" : "are"} left out.` : "",
   ].filter(Boolean);
   maxNote(notes.length ? notes.join(" ") : null);

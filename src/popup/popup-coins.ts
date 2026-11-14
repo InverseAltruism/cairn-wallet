@@ -17,9 +17,11 @@ export async function renderCoinsInfo() {
   try {
     const p = await call("consolidatePreview", SEND_FEE);
     if (!p?.ok) { info.textContent = "Coin count unavailable (node unreachable)."; return; }
+    // A list the node cut (`truncated`) holds the largest coins only: the count is a floor.
+    const n = (p.truncated ? "at least " : "") + p.coins;
     info.textContent = p.coins < 2
-      ? `You have ${p.coins} spendable coin${p.coins === 1 ? "" : "s"}: nothing to merge.`
-      : `You have ${p.coins} spendable coins. One merge combines ${p.merge} of them (${fmtBalance(p.total)} CSD) into a single coin.`;
+      ? `You have ${n} spendable coin${p.coins === 1 ? "" : "s"}: nothing to merge.`
+      : `You have ${n} spendable coins. One merge combines ${p.merge} of them (${fmtBalance(p.total)} CSD) into a single coin.`;
     btn.hidden = p.coins < 2;
   } catch { info.textContent = "Coin count unavailable."; }
 }
@@ -45,14 +47,14 @@ export async function openConsolidatePanel(force = false) {
   try {
     const p = await call("consolidatePreview", SEND_FEE);
     if (!p?.ok || p.coins < 2) { note.textContent = p?.ok ? "Nothing to merge: fewer than two spendable coins." : "Node unreachable: try again in a moment."; return; }
-    $("cs-merge").textContent = String(p.merge) + (p.coins > p.merge ? ` of ${p.coins}` : "");
+    $("cs-merge").textContent = String(p.merge) + (p.coins > p.merge ? ` of ${p.truncated ? "at least " : ""}${p.coins}` : "");
     $("cs-total").textContent = fmtBalance(p.total) + " CSD";
     $("cs-fee").textContent = fmtCsd(SEND_FEE);
     $("cs-out").textContent = fmtBalance(p.out) + " CSD";
     // Round plan: merging 512 coins into 1 retires 511 per pass, and intermediate outputs get
     // swept into a later pass once confirmed; so ceil((coins-1)/511) covers the whole plan.
     const rounds = Math.ceil((p.coins - 1) / 511);
-    note.textContent = (p.coins > p.merge ? `A transaction fits at most ${p.merge} coins, so about ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
+    note.textContent = (p.coins > p.merge ? `A transaction fits at most ${p.merge} coins, so ${p.truncated ? "at least" : "about"} ${rounds} merges are needed in total. You can run the next one right away; only the final combining pass needs the earlier merges mined first. ` : "")
       + (consolidating ? "A merge is already in progress in this window; wait for it to finish. " : "")
       + (!consolidating && mergePendingNow.pending ? `A previous merge (${fmtBalance(mergePendingNow.amount)} CSD) is confirming; merging more coins now is safe. ` : "")
       + "This is a normal payment to yourself: your balance only changes by the fee.";

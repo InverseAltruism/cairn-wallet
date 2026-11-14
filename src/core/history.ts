@@ -208,7 +208,7 @@ export class TxHistory {
         if (!isOpenRow(e)) continue;
         const id = String(e.txid).toLowerCase();
         const st = reads.states.get(id) ?? null;
-        const verdict = present.has(id) || reads.mined?.txids.has(id) ? "included" : inclusionVerdict(st, e.inputs, reads.mined?.ops ?? null);
+        const verdict = present.has(id) || reads.mined?.txids.has(id) ? "included" : inclusionVerdict(st, e.inputs, reads.mined?.complete ? reads.mined.ops : null);
         if (verdict === "included") {
           delete e.maybe; delete e.stuck; delete e.gone; delete e.goneTip;
           if (e.type === "consolidate") e.confirmed = true;
@@ -235,7 +235,8 @@ export class TxHistory {
   }
   // The tip once, a status read for each open row not yet read at this tip (newest first, capped), and the
   // mined utxo set once if any status came back unknown. No tip: no chain-derived step this pass.
-  private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string> } | null }> {
+  // A mined set the node cut (`complete` false) still proves a listed tx included, never an input spent elsewhere.
+  private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string>; complete: boolean } | null }> {
     const states = new Map<string, TxInclusion>();
     const t = await node.tip(this.w.rpc()).catch(() => 0);
     if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
@@ -244,8 +245,8 @@ export class TxHistory {
     due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
     if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
     const list = await node.confirmedUtxos(this.w.rpc(), addr);
-    const live = (list || []).filter((u) => u && u.txid != null);
-    const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())) } : null;
+    const live = (list?.utxos || []).filter((u) => u && u.txid != null);
+    const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())), complete: list.complete } : null;
     return { tip: t, states, mined };
   }
 }

@@ -25,6 +25,14 @@
   review" and says that score 0 cancels the target if it is your open offer or bid. Another account's offer and any
   other proposal read as before (test/clearsign.ts, test/attest-target-view.test.mjs).
 
+- The wallet reads `truncated` on a `/utxos` answer (node 0.1.17 cuts the list at its bound, 10,000 by default, the
+  largest coins first; `confirmed_balance` stays whole). A cut mined set no longer marks a history row "not included:
+  its coins were spent by another transaction" because one of its inputs fell below the cut; a txid it lists still
+  counts as included. The coin counts shown from a cut list read as floors: "You have at least 10000 spendable coins",
+  "512 of at least 10000" and "at least 20 merges" in the merge sheet, and Max's note "512 of your coins (at least
+  10000 in all)". Sends were already right: they pick the largest coins, which a cut keeps
+  (test/utxos-truncated.test.mjs, test/inclusion-chain.test.mjs case 6t).
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where
