@@ -3,7 +3,7 @@
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
 import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
-import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL, SCORE_CANCEL } from "../core/cairnx.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
@@ -119,6 +119,11 @@ async function render() {
     // warning (today's behavior).
     const f = await bounded(call("tipFloor"));
     if (f != null) current.tipFloor = f;
+  } else if (current.method === "attest" && (Number((current.params || {}).score) >>> 0) === SCORE_CANCEL) {
+    // A score-0 attest cancels the target when it is the signer's own CairnX offer or bid; the node's proposal read says
+    // whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
+    const t: any = await bounded(call("attestTarget", (current.params || {}).proposalId));
+    current.attestTarget = t?.ok === true ? { kind: t.kind, mine: String(t.proposer) === String(st.addr || "").toLowerCase() } : { unknown: true };
   }
   if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
   await fontsLoaded;   // the density probe below measures text; resolved after the first paint

@@ -49,6 +49,11 @@ the header source (a header source that serves a false header with valid proof o
 same mismatch, so the message does not blame the node); an offer-id fill refuses as
 `VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified.
 
+The approval window's title for a score-0 attestation (how a site cancels a CairnX offer or bid) also comes from that
+RPC: it reads the target proposal, and says "Cancel your offer" or "Cancel your bid" only when the node reports the
+account on screen as its proposer. When the read fails, the window keeps "Support / review" and says that score 0
+cancels the target if it is your open offer or bid. The signed bytes are the same either way.
+
 The USD figure under the balance is the CSD/USD price the configured Cairn API serves (`/api/market/csd`), multiplied
 on the device. It is display only: no amount, fee, check or signature reads it, so a wrong price can mislead a reader
 of that line and nothing else. Without a price from the API the line is not shown.

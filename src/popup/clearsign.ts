@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window and the popup's review: no DOM and no chrome, so they are
 // unit-testable (the "what am I signing?" layer). approve.ts and popup.ts import these and own only the DOM glue.
-import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, SCORE_CANCEL, finalizeWinnerCheck } from "../core/cairnx.js";
 import { EPOCH_LEN, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
@@ -470,7 +470,21 @@ export function describe(r: any): string {
     const tokenFill = conf === CONF_TOKEN_FILL
       ? danger(`<b>Token-priced fill: approving spends tokens from your CairnX balance.</b> If this attests an open offer, the convention debits its asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Only approve if you intend to buy from this offer; verify its price on the site or the explorer first.`) + TOKEN_SIM
       : "";
-    return title("Support / review") + tokenFill + cost + rows([["Target", target], ["Attestation", attestation(score, conf)]]);
+    const attRows = rows([["Target", target], ["Attestation", attestation(score, conf)]]);
+    // Score 0 from the proposer of an open CairnX offer or bid cancels it; from anyone else it changes nothing there.
+    // approve.ts reads the target before the paint (`attestTarget`): mine names this paint's account as its proposer.
+    if (score === SCORE_CANCEL) {
+      const tg = r.attestTarget;
+      if (tg?.mine === true && (tg.kind === "offer" || tg.kind === "bid")) {
+        const what = tg.kind;
+        const offerNote = what === "offer" ? ", and CairnX releases what the offer holds back to you. A taker-bound offer, or one under a live reservation hold, cannot be cancelled" : "";
+        return title(`Cancel your ${what}`) + tokenFill + cost + lede(`The node reports this ${what} as listed by this account. Score 0 from its lister cancels it if it is still open${offerNote}. The network fee is paid either way.`) + attRows;
+      }
+      if (!tg || tg.unknown === true) {
+        return title("Support / review") + tokenFill + cost + lede("Score 0 cancels the target if it is your open CairnX offer or bid. The wallet could not read the target from the node, so it cannot tell whether this is a cancel.") + attRows;
+      }
+    }
+    return title("Support / review") + tokenFill + cost + attRows;
   }
   if (r.method === "sealClaim") {
     // The claim text being committed: sealClaim hashes {domain, claim, nonce} into the on-chain payloadHash, so a

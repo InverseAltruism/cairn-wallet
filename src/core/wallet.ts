@@ -25,7 +25,7 @@ import type { HintSetEntry } from "./namecache.js";
 import { TxHistory, histKey, OWN_FILL_INDEX_WAIT_MS } from "./history.js";
 import { SealedClaims, sealKey } from "./claims.js";
 import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
-import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, type CairnxViewIo } from "./cairnxview.js";
+import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, attestTargetView, type CairnxViewIo } from "./cairnxview.js";
 import { csdMarket } from "./market.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
@@ -840,6 +840,7 @@ export class Wallet {
 
   tokenFillQuote(proposalId: string) { return tokenFillQuote(this.viewIo, proposalId); }
   fillOfferView(proposalId: string) { return fillOfferView(this.viewIo, proposalId); }
+  attestTarget(proposalId: string) { return attestTargetView(this.rpc, proposalId); }
   tokenDisplayMeta(tickers: unknown) { return tokenDisplayMeta(this.viewIo, tickers); }
 
   // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates

@@ -105,6 +105,26 @@ ok("describe(ordinary attest score80) stays 'Support / review' (claim label is s
 const atok = describe({ method: "attest", params: { proposalId: "0x" + "ff".repeat(32), score: 100, confidence: 1_000_000, fee: 5_000_000 } });
 ok("describe(token-fill attest conf1e6) STILL warns SPENDS TOKENS (claim branch didn't swallow it)", /spends tokens/i.test(atok));
 
+// A score-0 attest is how a site cancels its user's own CairnX offer or bid (cairn public/trade/orders.js:
+// attest({ proposalId, score: 0, confidence: 100, fee })). approve.ts reads the target first (attestTarget); the title
+// says cancel only when that read names the account on screen as the lister of an offer or bid.
+//   RED-FIRST: drop the SCORE_CANCEL branch in describe() and the mine/unknown cases below fail (all read "Support / review"
+//   with no note). PAIRED HONEST PATHS: another account's offer and a non-CairnX target keep "Support / review" with no
+//   cancel wording; score 80 stays as before (above).
+{
+  const cancel = (attestTarget: unknown) => describe({ method: "attest", params: { proposalId: "0x" + "ab".repeat(32), score: 0, confidence: 100, fee: 5_000_000 }, attestTarget } as never);
+  const mineOffer = cancel({ kind: "offer", mine: true }), mineBid = cancel({ kind: "bid", mine: true });
+  ok("score 0 on the signer's own offer is titled 'Cancel your offer' and says what it cancels", /Cancel your offer/.test(mineOffer) && /cancels it if it is still open/.test(mineOffer) && /releases what the offer holds/.test(mineOffer) && !/Support \/ review/.test(mineOffer));
+  ok("score 0 on the signer's own bid is titled 'Cancel your bid', with no offer-only escrow wording", /Cancel your bid/.test(mineBid) && !/releases/.test(mineBid));
+  ok("both keep the attestation row (score 0) and the fee", /score 0/.test(mineOffer) && /0\.05 CSD/.test(mineOffer));
+  const unknown = cancel({ unknown: true }), unread = cancel(undefined);
+  ok("an unreadable target keeps 'Support / review' and says score 0 may cancel the user's offer or bid", /Support \/ review/.test(unknown) && /could not read the target/.test(unknown) && !/Cancel your/.test(unknown));
+  ok("no target read at all reads the same as an unreadable one", unread === unknown);
+  const theirs = cancel({ kind: "offer", mine: false }), other = cancel({ kind: "other", mine: true });
+  ok("honest path: another account's offer keeps 'Support / review' and no cancel wording", /Support \/ review/.test(theirs) && !/cancel/i.test(theirs));
+  ok("honest path: a target that is not an offer or bid keeps 'Support / review' and no cancel wording", /Support \/ review/.test(other) && !/cancel/i.test(other));
+}
+
 // F6; the dApp-supplied expiresEpoch is part of the SIGNED bytes (csdtx.ts u64) and must be shown
 // in the approval window so a site can't commit a record claimable for years past what the user expects.
 {

@@ -18,6 +18,13 @@
   one after the gap does again (test/approve-raise-refused-bound.test.mjs; the Chromium case in
   test/approve-raise-chrome.test.mjs).
 
+- A score-0 attestation that cancels the signer's own CairnX offer or bid (how the site cancels one) is titled "Cancel
+  your offer" or "Cancel your bid" in the approval window, with what that cancels; it read "Support / review" with
+  "score 0 · confidence 100". The window reads the target from the node first (`attestTarget`, popup-only) and says
+  cancel only when the node names the account on screen as its proposer; when the read fails it keeps "Support /
+  review" and says that score 0 cancels the target if it is your open offer or bid. Another account's offer and any
+  other proposal read as before (test/clearsign.ts, test/attest-target-view.test.mjs).
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where
