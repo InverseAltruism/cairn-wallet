@@ -66,7 +66,9 @@ async function render() {
   const seq = renderSeq;
   const st = await call("status");
   if (seq !== renderSeq) return;
-  ($("view-locked") as HTMLElement).hidden = st.unlocked;
+  // No vault yet (a site sent someone here before they set the wallet up): nothing to unlock, so say how to set it up.
+  ($("view-novault") as HTMLElement).hidden = st.unlocked || st.hasVault !== false;
+  ($("view-locked") as HTMLElement).hidden = st.unlocked || st.hasVault === false;
   ($("ap-signer") as HTMLElement).hidden = !st.unlocked;   // the account can change while locked; the unlock repaint writes it
   const pend = await call("pending");
   if (seq !== renderSeq) return;

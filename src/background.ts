@@ -7,6 +7,7 @@ import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
 import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
 import { fillTargetOf } from "./core/fillpreflight.js";
+import { siwcParamsRefusal } from "./core/siwcparams.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -390,6 +391,11 @@ let refusedRaiseAt = Number.NEGATIVE_INFINITY;
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
+  // A sign-in the wallet would refuse after the user approved it is refused now, before anyone is asked.
+  if (method === "signinWithCsd") {
+    const bad = siwcParamsRefusal(params, origin);
+    if (bad) return Promise.resolve({ ok: false, code: "BAD_REQUEST", error: bad });
+  }
   const fillTarget = fillTargetOf(method, params);
   const holder = fillTarget ? fillHolds.get(fillTarget) : undefined;
   if (holder) {

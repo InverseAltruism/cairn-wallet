@@ -370,7 +370,8 @@ export function describe(r: any): string {
     const aud = (() => { try { return new URL(String(r.origin)).host; } catch { return String(r.origin || "this site"); } })();
     const nonce = String(p.nonce ?? "");
     const nshort = nonce.length > 16 ? nonce.slice(0, 8) + "…" + nonce.slice(-4) : nonce;
-    const stmt = p.statement != null && String(p.statement) !== "" ? lede(`“${escapeHtml(String(p.statement))}”`) : "";
+    // The statement is the site's own text, signed as written; labelled so it cannot pass for the wallet's words.
+    const stmt = p.statement != null && String(p.statement) !== "" ? lede(`<span class="dim">Text from ${escapeHtml(aud)}, not from Cairn Wallet:</span> “${escapeHtml(String(p.statement))}”`) : "";
     const expS = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600)));
     const mism = p.domain !== undefined && String(p.domain) !== aud
       ? danger(`This page asked to sign in as “${escapeHtml(String(p.domain))}”, but you are on “${escapeHtml(aud)}”: sign-in will be refused.`) : "";

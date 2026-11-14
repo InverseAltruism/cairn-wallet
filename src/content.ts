@@ -20,7 +20,7 @@ window.addEventListener("message", (ev: MessageEvent) => {
         // hung forever. Close the waiter with a coded refusal so the page can retry / refresh.
         window.postMessage({
           target: "cairn-inpage", id,
-          res: { ok: false, error: "the wallet is unavailable — it may have reloaded; refresh this page to reconnect", code: "WALLET_UNAVAILABLE" },
+          res: { ok: false, error: "the wallet is unavailable: it may have reloaded; refresh this page to reconnect", code: "WALLET_UNAVAILABLE" },
         }, window.location.origin);
         return;
       }
@@ -32,7 +32,8 @@ window.addEventListener("message", (ev: MessageEvent) => {
     // chrome.runtime is invalidated and sendMessage THROWS ("Extension context invalidated"). Without
     // this catch the dApp saw an uncaught error and its call hung forever. Resolve the call with a
     // clean, actionable error instead; the page works again after a refresh (fresh content script).
-    window.postMessage({ target: "cairn-inpage", id, res: { ok: false, error: "WALLET_RELOADED: the wallet extension was updated or reloaded - refresh this page to reconnect" } }, window.location.origin);
+    // The error keeps its "WALLET_RELOADED:" prefix for consumers that read the text (wallets before 0.3.3 sent no code).
+    window.postMessage({ target: "cairn-inpage", id, res: { ok: false, code: "WALLET_RELOADED", error: "WALLET_RELOADED: the wallet extension was updated or reloaded - refresh this page to reconnect" } }, window.location.origin);
   }
 });
 

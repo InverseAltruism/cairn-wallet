@@ -51,6 +51,17 @@
   and 200,000 seeded totals across the safe-integer range). The copy stays because the vendored bundle exports only
   csd-tx's `selectInputs`; the next re-vendor can add `feeCap` to the export list and import it. No behaviour change.
 
+- Integration (third-party sites): a `signInWithCsd` request the wallet would refuse at signing (a UUID nonce, a
+  domain or URI of another site, an over-long field) is answered `BAD_REQUEST` before it is queued; it used to open the
+  window, take the user's approval and then fail `INTERNAL`. The check and the signing run one function
+  (`src/core/siwcparams.ts`). The reply an open page gets after the extension updates carries `code:
+  "WALLET_RELOADED"` beside its unchanged `WALLET_RELOADED: ...` text. With no vault yet, the approval window says how
+  to set the wallet up and that the request waits, instead of asking for a password. A sign-in's statement is labelled
+  "Text from <site>, not from Cairn Wallet". `getCapabilities()` no longer lists `signIn`, which cannot succeed from any
+  origin (it posts to an `/auth/nonce` the Cairn API no longer serves); the method and its first-party refusal stay
+  (test/siwc-prequeue.test.mjs, test/inpage-relay.test.mjs sections 8 and 9, test/approve-novault-statement-dom.test.mjs,
+  test/extension-boundary.ts CQ-4). WALLET-ERROR-CODES.md lists `WALLET_RELOADED` and the outer `BAD_REQUEST`.
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where

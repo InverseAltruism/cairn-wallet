@@ -43,7 +43,9 @@ declare const __WALLET_VERSION__: string; // package.json version, stamped by bu
     // to removeListener. Cairn emits accountsChanged([]) on lock/account-switch/revoke (never a new addr).
     on: (event: string, handler: (d: any) => void) => { (handlers[event] ||= new Set()).add(handler); },
     removeListener: (event: string, handler: (d: any) => void) => { handlers[event]?.delete(handler); },
-    getCapabilities: () => Promise.resolve({ version: __WALLET_VERSION__, siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
+    // signIn stays callable (and refused off the first-party site) but is not advertised: it posts to the API's legacy
+    // /auth/nonce, which the Cairn API no longer serves, so it cannot succeed from any origin.
+    getCapabilities: () => Promise.resolve({ version: __WALLET_VERSION__, siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
     // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which

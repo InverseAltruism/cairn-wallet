@@ -35,6 +35,8 @@ dropping it would be a dApp-visible shape change.)
 | `FORBIDDEN` | Privileged internal message from a non-extension page. | No. | 0.2.46 |
 | `UNKNOWN_KIND` | Unknown message kind on the internal channel. | No. | 0.2.46 |
 | `INTERNAL` | Catch-all wrapper for anything thrown while executing an approved action, except the "locked" throw (`WALLET_LOCKED` since 0.2.74); `error` carries the thrown message. | Unknown from the code alone; consumers may inspect the string. | 0.2.46 |
+| `BAD_REQUEST` | A `signInWithCsd` request whose parameters the wallet would refuse at signing: a nonce that is not 8 or more ASCII letters and digits (a UUID, for one), a declared `domain` or a `uri` of another site, an opaque requesting origin, a statement over 256 characters or on more than one line, more than 10 resources, or an over-long or multi-line field. Refused before it is queued: no window opens and nothing is signed; `error` names the parameter. The same code is the nested `SubmitResult` code for a malformed propose or attest param (below). Emitted by `background.ts` `queueDappRequest` through `siwcparams.ts` `siwcParamsRefusal`. | No: fix the parameter. | 0.3.3 (outer envelope) |
+| `WALLET_RELOADED` | The extension was updated or reloaded under a live page, so the page's content script can no longer reach the wallet. Written by `src/content.ts` itself; `error` keeps the `WALLET_RELOADED: ...` prefix wallets before 0.3.3 sent without a code. | Yes, after a page refresh. | 0.3.3 (code); the string prefix since 0.2.50 |
 | `WALLET_UNAVAILABLE` | The content-script ↔ service-worker channel is closed (SW dropped, bfcache, or `wallet.init` rejected). The inpage waiter is resolved with this coded refusal instead of hanging. | Yes, after a page refresh (or once the extension is reachable again). | 0.2.70 |
 
 ## Nested SubmitResult codes (0.2.54)
@@ -76,8 +78,9 @@ The strings are unchanged from earlier releases; only the machine `code` is new.
 
 ## Code-less strings consumers must still know
 
-* `WALLET_RELOADED: ...` (string PREFIX on `error`, `src/content.ts`, since 0.2.50): the
-  extension was updated or reloaded under a live page; the page must refresh to reconnect.
+* `WALLET_RELOADED: ...` (string PREFIX on `error`, `src/content.ts`, 0.2.50 to 0.3.2): the
+  extension was updated or reloaded under a live page; the page must refresh to reconnect. Since
+  0.3.3 the same reply also carries `code: "WALLET_RELOADED"`; match the prefix only for older wallets.
 
 ## Consumption pattern (code first, string fallback)
 

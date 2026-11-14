@@ -9,7 +9,8 @@ import { sealNew, sealWith, openWith, deriveVaultKey, exportKeyRaw, importKeyRaw
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
-import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
+import { siwcDigest, CSD_CHAIN_MAINNET } from "./siwc.js";
+import { siwcMessageFor, type SiwcParams } from "./siwcparams.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
@@ -699,53 +700,11 @@ export class Wallet {
   // /auth and NEVER mints a session; the dApp's own server verifies (verifySiwc) and issues its own
   // session. `origin` is supplied by the background from sender.origin (browser-set, unforgeable).
   async signInWithCsd(
-    params: { nonce?: unknown; statement?: unknown; uri?: unknown; domain?: unknown; expirationSecs?: unknown; notBeforeSecs?: unknown; requestId?: unknown; resources?: unknown },
+    params: SiwcParams,
     origin: string,
   ): Promise<{ account: string; pub33: string; sig64: string; message: string; chainId: string }> {
     const a = this.must();
-    const domain = originToDomain(origin);
-    if (!domain) throw new Error("sign-in: unknown requesting origin");
-    const p = params || {};
-    // The page MAY pass its domain, but it is only cross-checked against the real origin; never trusted.
-    if (p.domain !== undefined && String(p.domain) !== domain) throw new Error("sign-in: declared domain does not match the requesting site");
-    // uri defaults to the origin root; if supplied it MUST be on the requesting site.
-    let uri: string;
-    if (p.uri === undefined || p.uri === null) uri = origin.replace(/\/+$/, "") + "/";
-    else { let h: string | null; try { h = new URL(String(p.uri)).host; } catch { h = null; } if (h !== domain) throw new Error("sign-in: uri must be on the requesting site"); uri = String(p.uri); }
-    const nonce = String(p.nonce ?? "");
-    if (!/^[A-Za-z0-9]{8,}$/.test(nonce)) throw new Error("sign-in: a server-issued nonce (>=8 alphanumeric chars) is required");
-    const statement = p.statement != null && String(p.statement) !== "" ? String(p.statement) : undefined;
-    if (statement !== undefined && /[\r\n]/.test(statement)) throw new Error("sign-in: statement must be a single line");
-    // Rejected, not truncated, for the same WYSIWYS reason as requestId below.
-    if (statement !== undefined && statement.length > 256) throw new Error("sign-in: statement exceeds 256 chars");
-    const expSecs = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600))); // clamp 60s..1h, default 10m
-    const now = Date.now();
-    // Cap dApp-supplied resources (audit SIWC-RESOURCES): the user now sees them in the approval popup,
-    // and we bound count + per-entry length and reject embedded newlines so a dApp can neither bloat the
-    // signed credential nor inject extra SIWC lines via a multi-line resource entry.
-    if (p.resources !== undefined && !Array.isArray(p.resources)) throw new Error("sign-in: resources must be an array");
-    if (Array.isArray(p.resources) && p.resources.length > 10) throw new Error("sign-in: too many resources (max 10)");
-    const resources = Array.isArray(p.resources) ? p.resources.map((x) => {
-      const s = String(x);
-      if (s.length > 256) throw new Error("sign-in: a resource entry exceeds 256 chars");
-      if (/[\r\n]/.test(s)) throw new Error("sign-in: resources must be single-line");
-      return s;
-    }) : undefined;
-    // Reject (don't silently truncate) an over-long/multi-line requestId: the popup shows the full value,
-    // so truncating only the SIGNED copy would break what-you-see-is-what-you-sign.
-    const requestId = p.requestId != null ? String(p.requestId) : undefined;
-    if (requestId !== undefined && (requestId.length > 256 || /[\r\n]/.test(requestId))) throw new Error("sign-in: requestId too long or multi-line");
-    const fields: SiwcFields = {
-      domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
-      nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
-      // Only emit notBefore for a POSITIVE offset; a 0/negative value is a no-op "valid from now-or-past"
-      // constraint that the clear-sign window (clearsign.ts) does NOT display, so signing it would mean
-      // committing a field the user never saw (audit SDS-1). Matching the conditions keeps WYSIWYS exact.
-      notBefore: p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
-      requestId,
-      resources,
-    };
-    const message = buildSiwcMessage(fields);
+    const message = siwcMessageFor(params, origin, a.addr, Date.now());
     const { sig64, pub33 } = signSighash(siwcDigest(message), a.privkey);
     return { account: a.addr, pub33, sig64, message, chainId: CSD_CHAIN_MAINNET };
   }

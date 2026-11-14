@@ -205,7 +205,13 @@ unconsented address. **Every signing / fund-moving action (signin, send, propose
 sealClaim, revealClaim) ALWAYS opens the clear-signing approval window, every time,
 regardless of connection state.** Being connected never pre-approves a signature (enforced by
 the fast-path guard in `background.ts` + the positive whitelist in `resolvePending`; proven by
-`test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15).
+`test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15). A sign-in request whose
+parameters the wallet would refuse at signing (a nonce that is not 8 or more letters and digits, a domain or URI of
+another site, an over-long or multi-line field) is answered `BAD_REQUEST` before it is queued, so no window asks the
+user to approve something that cannot be signed (test/siwc-prequeue.test.mjs). In the sign-in window, the site's
+statement is labelled as text from that site, not from the wallet. The legacy `signIn()` is not listed in
+`getCapabilities()`: it can succeed from no origin (the Cairn API no longer serves the `/auth/nonce` it uses), and it
+stays refused off the first-party site.
 
 `send` moves funds to a page-supplied recipient, so the approval window **clear-signs the
 full (untruncated) recipient address(es), each amount, the total, the fee, and the
