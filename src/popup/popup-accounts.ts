@@ -42,6 +42,9 @@ export async function renderAccts() {
   const st = await call("status");
   const el = $("accts-list");
   const many = (st.accounts || []).length > 1;
+  // The remove step names the account's unrevealed sealed claims; a failed read says what is known instead.
+  const removing = acctEdit?.mode === "remove" ? acctEdit.addr : null;
+  const sealsLeft = removing ? await call("unrevealedSeals", removing).then(Number, () => Number.NaN) : 0;
   el.innerHTML = (st.accounts || []).map((a: any, i: number) => {
     const addr = String(a.addr);
     const open = acctOpen === addr.toLowerCase();
@@ -75,11 +78,12 @@ export async function renderAccts() {
       : a.imported
         ? checkRow({ tier: "danger", html: "This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
         : checkRow({ tier: "caution", html: "New account will not bring this address back. Its coins stay on chain; to reach them again, restore your recovery phrase and add accounts until this one reappears (export any imported keys first)." });
+    const sealWarn = !(editing && acctEdit!.mode === "remove") ? "" : sealWarnRow(sealsLeft);
     return `<div class="tx acct-row${open ? " open" : ""}">
       <button class="acct-hit" type="button" data-open="${escapeHtml(addr)}" aria-expanded="${open}">
         <span class="tx-top"><span class="tx-kind">${escapeHtml(a.label)}${tag}</span><svg class="i acct-chev" aria-hidden="true"><use href="icons.svg#i-chevron-down"/></svg></span>
         <span class="tx-sub"><code class="addr dim">${groupedAddr(addr)}</code></span>
-      </button>${actions}${removeWarn}
+      </button>${actions}${removeWarn}${sealWarn}
     </div>`;
   }).join("");
   const edit = (addr: string | undefined, mode: "rename" | "remove") => { if (addr) { acctEdit = { addr, mode }; renderAccts(); } };
@@ -113,6 +117,14 @@ export async function renderAccts() {
   if (ri) { ri.focus(); ri.select(); ri.onkeydown = (e: any) => { if (e.key === "Enter") (el.querySelector("[data-save]") as HTMLElement)?.click(); if (e.key === "Escape") { acctEdit = null; renderAccts(); } }; }
 }
 
+// Removal keeps an account's unrevealed sealed claims (claims.ts keepUnrevealedOf), but only this wallet with that
+// address in it can reveal them, so the remove step counts them. Warn, not block.
+export function sealWarnRow(n: number): string {
+  if (n === 0) return "";
+  if (!Number.isSafeInteger(n) || n < 0) return checkRow({ tier: "caution", html: "The wallet could not count this account's sealed claims. A sealed claim not yet revealed can be revealed only while its account is in this wallet." });
+  const one = n === 1;
+  return checkRow({ tier: "caution", html: `This account has <b>${n} sealed claim${one ? "" : "s"} not yet revealed</b>. A claim can be revealed only while its account is in this wallet: reveal ${one ? "it" : "them"} first, or keep the account. If you remove it, ${one ? "it stays" : "they stay"} stored here and ${one ? "returns" : "return"} when you import this account's key again (More › Reveal key shows it); a reset loses ${one ? "it" : "them"}.` });
+}
 $("acct-select").addEventListener("click", () => { const m = $("acct-menu") as HTMLElement; m.hidden = !m.hidden; });
 $("btn-accts").addEventListener("click", () => { acctOpen = null; acctEdit = null; if (openPanel("accts-panel")) renderAccts(); });
 $("btn-add-acct").addEventListener("click", async () => {

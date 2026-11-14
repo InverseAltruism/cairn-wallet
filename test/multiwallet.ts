@@ -92,12 +92,17 @@ async function main() {
     const rmStore = memoryStore();
     const w2 = new Wallet(rmStore); const b1 = (await w2.create(PW)).addr;
     const b2 = (await w2.addAccount()).addr;
-    await w2.switchAccount(b2); await w2.sealClaim({ claim: "b2 secret" });
-    check("b2 has a sealed claim before removal", (await rmStore.get("sealedClaims:" + b2)) != null);
+    await w2.switchAccount(b2);
+    const sealB = await w2.sealClaim({ claim: "b2 secret" });
+    const sealR = await w2.sealClaim({ claim: "b2 public" });
+    await w2.revealClaim(String(sealR.txid));
+    check("b2 has two sealed claims before removal, one revealed", ((await rmStore.get("sealedClaims:" + b2)) || []).length === 2);
     await w2.switchAccount(b1);
     await w2.removeAccount(b2);
     check("removeAccount drops it from the list", (await w2.status()).accounts.length === 1);
-    check("removeAccount wipes the removed account's sealed-claim preimages", (await rmStore.get("sealedClaims:" + b2)) == null);
+    // The unrevealed record holds the only copy of a paid commit's reveal nonce (test/seal-remove-keep.test.mjs).
+    const keptB: any[] = (await rmStore.get("sealedClaims:" + b2)) || [];
+    check("removeAccount wipes the removed account's revealed sealed claims and keeps the unrevealed one", keptB.length === 1 && keptB[0].txid === sealB.txid && !keptB[0].revealed);
     let lastRefused = false; try { await w2.removeAccount(b1); } catch { lastRefused = true; }
     check("removeAccount refuses to remove the LAST account", lastRefused);
 

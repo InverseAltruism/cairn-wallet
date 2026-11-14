@@ -497,12 +497,12 @@ export class Wallet {
     accts.splice(i, 1);
     if (this.active >= accts.length) this.active = accts.length - 1;
     else if (this.active > i) this.active -= 1;
-    // wipe the removed account's isolated data so it can't resurface.
-    // P75-6: ride the chains so a parked write for this account cannot land AFTER these deletes
-    // and resurrect a removed account's history or sealed preimages; purge its parked retries too.
-    const hk2 = histKey(gone), sk2 = sealKey(gone);
+    // Wipe the removed account's history; its unrevealed sealed claims stay (keepUnrevealedOf).
+    // P75-6: ride the chains so a parked write for this account cannot land AFTER these writes
+    // and resurrect a removed account's history; purge its parked retries too.
+    const hk2 = histKey(gone);
     await this.hist.inHistChain(async () => { this.hist.pendingHist = this.hist.pendingHist.filter((p) => p.k !== hk2); await this.store.del(hk2); });
-    await this.claims.inSealChain(async () => { this.claims.pendingSeals = this.claims.pendingSeals.filter((p) => p.k !== sk2); await this.store.del(sk2); });
+    await this.claims.keepUnrevealedOf(gone);
     await this.persistVault();
   }
 
@@ -997,6 +997,8 @@ export class Wallet {
   }
   revealClaim(txid: string) { return this.claims.revealClaim(txid); }
   sealedClaims(): Promise<any[]> { return this.claims.sealedClaims(); }
+  /** The removal warning's count: unrevealed sealed claims of the account `addr` (popup-only). */
+  unrevealedSeals(addr: string): Promise<number> { return this.claims.unrevealedCount(String(addr)); }
 
   // ── transaction history; isolated per active account ──────────────────────
   // Pre-await key capture (0.2.56, review F5): every recording path must file under the account
@@ -1112,6 +1114,7 @@ export class Wallet {
   private async doReset(wallets: PubAcct[]): Promise<void> {
     this.hist.pendingHist = []; this.claims.pendingSeals = []; // belt: a park that raced lock
     for (const w of wallets) { await this.store.del(histKey(w.addr)); await this.store.del(sealKey(w.addr)); }
+    await this.claims.dropKept();
     for (const k of ["vault", "wallets", "active", "addr", "txHistory", "sealedClaims", "pendingContent"]) await this.store.del(k);
   }
 }

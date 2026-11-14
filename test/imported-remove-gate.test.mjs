@@ -48,13 +48,15 @@ console.log("A2 — imported-key removal gate:");
   check("…the auth guard incremented (brute-force protection is live on this path)", Number(guard?.failed) >= 1);
   check("…and the imported account survives", st3.accounts.some((a) => a.addr.toLowerCase() === imp.toLowerCase()));
 
-  // correct password → removed, per-account data wiped
+  // correct password → removed, its history and revealed sealed claims wiped; an unrevealed one is kept, since it holds
+  // the only copy of a paid commit's reveal nonce (test/seal-remove-keep.test.mjs)
   await store.set("txHistory:" + imp, [{ txid: "0x" + "11".repeat(32), ts: 1 }]);
-  await store.set("sealedClaims:" + imp, [{ salt: "s" }]);
+  await store.set("sealedClaims:" + imp, [{ txid: "0x" + "22".repeat(32), revealed: true }, { txid: "0x" + "33".repeat(32), revealed: false }]);
   await w.removeAccount(imp, PW);
   const st4 = await w.status();
   check("correct password removes the imported account", !st4.accounts.some((a) => a.addr.toLowerCase() === imp.toLowerCase()));
-  check("…and wipes its history + sealed-claim keys", (await store.get("txHistory:" + imp)) == null && (await store.get("sealedClaims:" + imp)) == null);
+  const keptSeals = (await store.get("sealedClaims:" + imp)) || [];
+  check("…and wipes its history and its revealed sealed claim, keeping the unrevealed one", (await store.get("txHistory:" + imp)) == null && keptSeals.length === 1 && keptSeals[0].txid === "0x" + "33".repeat(32));
 }
 
 console.log("A2 — concurrent double-remove cannot splice a stale index (fresh-eyes TOCTOU):");

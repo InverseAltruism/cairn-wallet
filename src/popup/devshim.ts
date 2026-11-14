@@ -71,6 +71,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "history": return w.history();
     case "sealClaim": return w.sealClaim(args[0]);
     case "sealedClaims": return w.sealedClaims();
+    case "unrevealedSeals": return w.unrevealedSeals(args[0]);
     case "revealClaim": return w.revealClaim(args[0]);
     case "connectedSites": return [];
     case "disconnectSite": return { ok: true };

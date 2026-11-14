@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Removing an account keeps its sealed claims that are not revealed yet; it deleted them, and with them the only copy
+  of each reveal secret (random at seal time, not derived from the phrase or the key), so a paid commit could never be
+  opened again, even after the same key was imported back. The revealed records still go. The kept records stay
+  encrypted under the vault key and list and reveal again once the same address is back in this wallet; `reset()`
+  deletes them. The remove step now says how many unrevealed sealed claims the account has and that only this wallet
+  with the account in it can reveal them (warn, not block), and README's backup section says neither backup covers
+  them (test/seal-remove-keep.test.mjs, test/account-remove-warn-dom.test.mjs).
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where

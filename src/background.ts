@@ -161,6 +161,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "sealClaim": return wallet.sealClaim(args[0]);
     case "revealClaim": return wallet.revealClaim(args[0]);
     case "sealedClaims": return wallet.sealedClaims();
+    case "unrevealedSeals": return wallet.unrevealedSeals(args[0]); // the account removal warning's count (popup-only, READ_ONLY)
     default: throw new Error("unknown method: " + method);
   }
 }
@@ -308,7 +309,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative; anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "unrevealedSeals", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

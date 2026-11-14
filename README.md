@@ -61,6 +61,10 @@ You can back up in two ways.
 
 Your keys stay portable and are never locked to this wallet.
 
+Neither backup covers a sealed claim that is not revealed yet: its reveal secret is made at random when you seal and is
+kept only in this wallet, encrypted with your vault. Removing the account keeps it (it comes back when you import that
+account's key again); resetting the wallet or removing the extension loses it, together with the claim's fee.
+
 ## Security
 
 * Keys are stored only as an AES-256-GCM vault, encrypted with a key derived from your password using PBKDF2-SHA256 (600,000 iterations). Nothing is uploaded.
