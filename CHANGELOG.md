@@ -70,6 +70,10 @@
   brute-force wait, `ACCOUNT_CHANGED`, the token zero-address and profile-key refusals, the name lapse and reservation
   refusals, the content script's `WALLET_UNAVAILABLE`); the words and the codes are unchanged.
 
+- The SPV anchor table's newest entry is 139,263 (27 entries; it was 135,167). store/PUBLISH-RUNBOOK.md step 2 now
+  has a refresh cadence: a table-only release once the public tip is more than 14,400 blocks above the newest entry,
+  with the measured cost per header of the suffix every installed wallet carries.
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where
