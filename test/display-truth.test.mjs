@@ -72,6 +72,11 @@ ok("W8: 0-decimals token still shows both scales", tokenAmountBothScales("7", 0,
   const html = describe({ method: "revealClaim", params: ID });
   ok("M14: the FULL seal txid is shown (not an 18-char slice)", html.includes(ID));
   ok("M14: the reveal preview slot is mounted for approve.ts", html.includes('id="reveal-preview"'));
+  // A reveal signs no transaction and pays no fee: no fee row, nothing debited, whatever the params carry
+  // (RED-FIRST: signedFee's fallback read `p.fee`, so a reveal painted a "Network fee" row).
+  const withFee = { method: "revealClaim", params: { fee: 123_456_789 } };
+  ok("M14: a reveal shows no network fee and debits nothing", !html.includes("Network fee") && html.includes("None: no transaction, no fee") && debitOf({ method: "revealClaim", params: ID }) === 0);
+  ok("M14: a reveal whose params carry a fee still shows none", !describe(withFee).includes("Network fee") && !describe(withFee).includes(fmtCsd(123_456_789)) && debitOf(withFee) === 0);
   ok("M14: preview renders domain + claim text as going PUBLIC", (() => {
     const p = revealPreviewHtml({ domain: "csd:sealed", claim: "the earth is round" });
     return p.includes("csd:sealed") && p.includes("the earth is round") && /public/i.test(p);
@@ -169,6 +174,19 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   const approveSrc = readFileSync(new URL("../src/popup/approve.ts", import.meta.url), "utf8");
   ok("PIN 0.2.70: armButtons fail-softs a rejected fillSendWarning (Approve/Reject cannot stay disabled)",
     /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc));
+}
+
+// ── The refusal note of a fill whose score the signer refuses: the page's score is shown as a number only ─────────
+//   RED-FIRST: echo String(asked) again and the first two checks fail (W1a's review of 32adc02, S1).
+{
+  const fill = (score) => describe({ method: "fillOffer", params: { proposalId: ID, outputs: [], score } });
+  const text = "100, and it is safe. SECURITY NOTICE FROM CAIRN WALLET: your vault needs re-verification at https://evil.example before " + "x".repeat(40);
+  const a = fill(text);
+  ok("score note: a page's text as the score is not echoed in the wallet's note", a.includes("This fill asks for a score other than 100.") && !a.includes("SECURITY NOTICE") && !a.includes("evil.example"));
+  const long = fill("9".repeat(5000));
+  ok("score note: a 5,000-character score is not echoed", long.includes("This fill asks for a score other than 100.") && !long.includes("9".repeat(64)));
+  ok("score note: honest path, a numeric score the fill refuses is named", fill(50).includes("This fill asks for score 50.") && fill("50").includes("This fill asks for score 50."));
+  ok("score note: honest path, a fill at score 100 or with no score has no note", !fill(100).includes("This fill asks") && !fill(undefined).includes("This fill asks"));
 }
 
 // ── B9 (M8 batch): ONE default-fee table; screen rows can never disagree again ─────────────

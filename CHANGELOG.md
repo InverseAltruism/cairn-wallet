@@ -6,8 +6,10 @@
   token-fill confidence with no score painted "score 0" (and, with this release's cancel title, "Cancel your offer")
   while the wallet signed it as a token fill at score 100, so a page could have the user approve a fill of their own
   offer that the window called a cancel; it now paints "Fill offer" with score 100, never a cancel, and a score the
-  fill refuses is shown as refused. A seal's domain is shown trimmed, as signed; a seal domain that is not a string is
-  shown as refused; a sign-in always shows the URI it signs, its default included. One function per request type
+  fill refuses is shown as refused (named only when it is a number, never echoed as the page's text). A reveal shows
+  no network fee and counts nothing against the balance: it signs no transaction (0.3.2 showed a network fee row, with
+  any fee a page put in its params). A seal's domain is shown trimmed, as signed; a seal domain that is not a string
+  is shown as refused; a sign-in always shows the URI it signs, its default included. One function per request type
   (`src/core/signfields.ts`; `siwcFieldsFor` for a sign-in) gives the signer its fields and the window what it shows
   and what it reads before and after the paint (the cancel read, the token quote, the fill view, the reveal preview,
   the recipient checks). test/sign-display-parity.test.mjs sends every request type through the real worker to the

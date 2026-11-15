@@ -1,6 +1,6 @@
 // Pure clear-signing formatters for the approval window and the popup's review: no DOM and no chrome, so they are
 // unit-testable (the "what am I signing?" layer). approve.ts and popup.ts import these and own only the DOM glue.
-import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, defaultFeeFor, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, SCORE_CANCEL, finalizeWinnerCheck } from "../core/cairnx.js";
+import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, SCORE_CANCEL, finalizeWinnerCheck } from "../core/cairnx.js";
 import { EPOCH_LEN, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
@@ -361,10 +361,13 @@ export const FILL_PAYS = "One transaction pays the recipients above and records 
 export const FILL_RECORDS = "One transaction records the fill.";
 
 // A fill naming a score other than 100 is refused by the signer (signfields.ts fillFields); say so above the cost rows.
+// The page's score is shown only as a u32 number, never as its text: the note is in the wallet's voice.
 function scoreRefusedNote(f: { refused?: string }, asked: unknown): string {
-  return f.refused === "score" ? danger(`This fill asks for score ${escapeHtml(String(asked))}. The wallet signs a fill only at score 100, which is the score the marketplace applies, so approving refuses it and nothing is signed.`) : "";
+  const n = Number(asked);
+  const what = Number.isSafeInteger(n) && n >= 0 && n <= 0xffffffff ? `score ${n}` : "a score other than 100";
+  return f.refused === "score" ? danger(`This fill asks for ${what}. The wallet signs a fill only at score 100, which is the score the marketplace applies, so approving refuses it and nothing is signed.`) : "";
 }
-/** The fee the signer signs for this request (signfields.ts), or the method's default fee for one without fields. */
+/** The fee the signer signs for this request (signfields.ts); 0 for a request that signs no transaction. */
 export function signedFee(r: any): unknown {
   const p = r?.params || {};
   if (r?.method === "send") return sendFields(p).fee;
@@ -372,7 +375,7 @@ export function signedFee(r: any): unknown {
   if (r?.method === "propose") return proposeFields(p).fee;
   if (r?.method === "sealClaim") return sealFields(p).fee;
   if (r?.method === "attest") { const a = attestFields(p); return a.route === "fill" ? a.fill.fee : a.fee; }
-  return p.fee ?? defaultFeeFor(r?.method);
+  return 0;   // every other request type (a reveal, a sign-in, a connect) signs no transaction
 }
 /** The value outputs the signer signs for this request (signfields.ts): a send's, a fill's, a proposal's; none else. */
 export function signedOutputs(r: any): { to: unknown; value: unknown }[] {
@@ -960,6 +963,8 @@ function costNote(r: any): string {
 export function costBlock(r: any): string {
   const balance: Row = ["Balance after", `<span id="bal-after" class="dim">checking</span>`];
   if (NO_FUNDS.has(r.method)) return `<div id="cost" class="cost">${rows([["Cost", "None: no funds move"], balance])}<p class="ap-note">This only proves your address to the site.</p></div>`;
+  // A reveal posts a stored preimage to the Cairn API: no transaction, no fee.
+  if (r.method === "revealClaim") return `<div id="cost" class="cost">${rows([["Cost", "None: no transaction, no fee"], balance])}</div>`;
   const fee = baseVal(signedFee(r));
   const out = debitOf(r) - fee;
   const list: Row[] = [
