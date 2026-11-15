@@ -202,7 +202,7 @@ console.log("5. imported-key removal");
     closed === 0 && list.querySelectorAll("[data-remove]").length === 1 && list.querySelectorAll("[data-rename]").length === 1 && list.querySelectorAll("[data-remove]")[0].dataset.remove === IMP);
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === IMP).click(); await flush();
   const html = String(list.innerHTML);
-  check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm."));
+  check("5a the warning is a danger row with its text", /<div class="check danger">/.test(html) && html.includes("This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (switch to this account; More › Reveal key then shows its key), then enter your password to confirm."));
   await list.querySelectorAll("[data-cancel]")[0].click(); await flush();
   await list.querySelectorAll("[data-open]").find((b) => b.dataset.open === HD2).click(); await flush();
   await list.querySelectorAll("[data-remove]").find((b) => b.dataset.remove === HD2).click(); await flush();

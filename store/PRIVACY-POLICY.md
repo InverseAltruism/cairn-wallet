@@ -17,8 +17,9 @@ Only in your browser's local extension storage (`chrome.storage.local`) on your 
 
 - Your **encrypted vault**: your recovery phrase and private keys, sealed with AES-256-GCM under a key derived from
   your password (PBKDF2-SHA256, 600,000 iterations). The unencrypted phrase and keys exist only in memory while the
-  wallet is unlocked (the key that opens the vault is held in the browser's in-memory session storage, which is never
-  written to disk), and are dropped from memory on lock, including the 15-minute idle auto-lock.
+  wallet is unlocked (the key that opens the vault is held in the browser's session storage, which Chrome keeps in
+  memory and does not write to its profile), and are dropped from memory on lock, including the 15-minute idle
+  auto-lock.
 - Your **public account list** (addresses and labels).
 - Your **local transaction history and sealed-claim records**, keyed by address.
 - Your **settings**, and a cache of block headers used to verify `.csd` names.

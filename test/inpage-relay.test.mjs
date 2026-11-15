@@ -158,7 +158,7 @@ console.log("(8) the replies content writes carry a code");
 }
 console.log("  ok");
 
-// (9) getCapabilities lists every method a page can use, and not the legacy signIn, which cannot succeed anywhere (it
+// (9) getCapabilities lists every method a page can use, and not the legacy signIn, which succeeds from no origin against the Cairn API (it
 // posts to an /auth/nonce the Cairn API no longer serves); window.cairn.signIn itself stays.
 console.log("(9) getCapabilities does not advertise signIn");
 {

@@ -453,7 +453,7 @@ async function main() {
   check("CQ-4: inpage getCapabilities().methods parses + is non-trivial", capMethods.length >= 10);
   const normSet = (xs: string[]) => [...new Set(xs.map((s) => s.toLowerCase()))].sort();
   // The one allowlisted method not advertised: the legacy signIn posts to the API's /auth/nonce, which the Cairn API no
-  // longer serves (it has /auth/v2/*), so it cannot succeed from any origin. It stays callable and refused off-site.
+  // longer serves (it has /auth/v2/*), so against that API it succeeds from no origin. It stays callable and refused off-site.
   const NOT_ADVERTISED = ["signin"];
   const capNorm = normSet(capMethods), dappNorm = normSet(dappMethods).filter((m) => !NOT_ADVERTISED.includes(m));
   check("CQ-4: getCapabilities().methods matches DAPP_METHODS as a set, less the legacy signIn (no inpage↔background drift)",

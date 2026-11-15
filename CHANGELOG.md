@@ -26,7 +26,8 @@
   of each reveal secret (random at seal time, not derived from the phrase or the key), so a paid commit could never be
   opened again, even after the same key was imported back. The revealed records still go. The kept records stay
   encrypted under the vault key and list and reveal again once the same address is back in this wallet; `reset()`
-  deletes them. The remove step now says how many unrevealed sealed claims the account has and that only this wallet
+  deletes them (the address is recorded before its kept list is written, so a worker stopped between the two writes
+  leaves nothing reset() misses). The remove step now says how many unrevealed sealed claims the account has and that only this wallet
   with the account in it can reveal them (warn, not block), and README's backup section says neither backup covers
   them (test/seal-remove-keep.test.mjs, test/account-remove-warn-dom.test.mjs).
 - A refused second fill (`FILL_IN_PROGRESS`) raises the approval window at most once per 5 seconds, whichever site

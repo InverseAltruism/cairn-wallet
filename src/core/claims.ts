@@ -110,10 +110,12 @@ export class SealedClaims {
       const parked = this.pendingSeals.filter((p) => p.k === k && !stored.some((x) => x?.txid === p.rec.txid)).map((p) => p.rec);
       const keep = [...parked, ...stored].filter((rec) => rec && !revealed(rec));
       if (keep.length) {
-        await this.reencryptLegacyPreimages(keep);
-        await this.store.set(k, keep);
+        // The address goes into the index before its list is written: a worker stopped between the two leaves an index
+        // entry with no list (reset deletes nothing there), never a kept list that reset() would miss.
         const kept: string[] = (await this.store.get(KEPT_SEALS)) || [];
         if (!kept.includes(addr)) await this.store.set(KEPT_SEALS, [...kept, addr]);
+        await this.reencryptLegacyPreimages(keep);
+        await this.store.set(k, keep);
       } else await this.store.del(k);
       this.pendingSeals = this.pendingSeals.filter((p) => p.k !== k);
     });

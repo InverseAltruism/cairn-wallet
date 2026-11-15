@@ -210,7 +210,8 @@ parameters the wallet would refuse at signing (a nonce that is not 8 or more let
 another site, an over-long or multi-line field) is answered `BAD_REQUEST` before it is queued, so no window asks the
 user to approve something that cannot be signed (test/siwc-prequeue.test.mjs). In the sign-in window, the site's
 statement is labelled as text from that site, not from the wallet. The legacy `signIn()` is not listed in
-`getCapabilities()`: it can succeed from no origin (the Cairn API no longer serves the `/auth/nonce` it uses), and it
+`getCapabilities()`: against the Cairn API it succeeds from no origin (that API no longer serves the `/auth/nonce` it
+uses; a self-hosted API that still serves it would work), and it
 stays refused off the first-party site.
 
 `send` moves funds to a page-supplied recipient, so the approval window **clear-signs the

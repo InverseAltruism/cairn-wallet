@@ -76,7 +76,7 @@ export async function renderAccts() {
     // An HD account is not lost with its row, but New account never derives it again (the index only moves forward).
     const removeWarn = !(editing && acctEdit!.mode === "remove") ? ""
       : a.imported
-        ? checkRow({ tier: "danger", html: "This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (More › Reveal key), then enter your password to confirm." })
+        ? checkRow({ tier: "danger", html: "This imported key is <b>not</b> in your recovery phrase: removing it without a saved backup loses its funds forever. Export it first (switch to this account; More › Reveal key then shows its key), then enter your password to confirm." })
         : checkRow({ tier: "caution", html: "New account will not bring this address back. Its coins stay on chain; to reach them again, restore your recovery phrase and add accounts until this one reappears (export any imported keys first)." });
     const sealWarn = !(editing && acctEdit!.mode === "remove") ? "" : sealWarnRow(sealsLeft);
     return `<div class="tx acct-row${open ? " open" : ""}">
@@ -123,7 +123,7 @@ export function sealWarnRow(n: number): string {
   if (n === 0) return "";
   if (!Number.isSafeInteger(n) || n < 0) return checkRow({ tier: "caution", html: "The wallet could not count this account's sealed claims. A sealed claim not yet revealed can be revealed only while its account is in this wallet." });
   const one = n === 1;
-  return checkRow({ tier: "caution", html: `This account has <b>${n} sealed claim${one ? "" : "s"} not yet revealed</b>. A claim can be revealed only while its account is in this wallet: reveal ${one ? "it" : "them"} first, or keep the account. If you remove it, ${one ? "it stays" : "they stay"} stored here and ${one ? "returns" : "return"} when you import this account's key again (More › Reveal key shows it); a reset loses ${one ? "it" : "them"}.` });
+  return checkRow({ tier: "caution", html: `This account has <b>${n} sealed claim${one ? "" : "s"} not yet revealed</b>. A claim can be revealed only while its account is in this wallet: reveal ${one ? "it" : "them"} first, or keep the account. If you remove it, ${one ? "it stays" : "they stay"} stored here and ${one ? "returns" : "return"} when you import this account's key again (switch to this account first; More › Reveal key then shows its key); a reset loses ${one ? "it" : "them"}.` });
 }
 $("acct-select").addEventListener("click", () => { const m = $("acct-menu") as HTMLElement; m.hidden = !m.hidden; });
 $("btn-accts").addEventListener("click", () => { acctOpen = null; acctEdit = null; if (openPanel("accts-panel")) renderAccts(); });

@@ -78,6 +78,22 @@ await pw.removeAccount(b2);
 const pl = (await ps.get(sealKey(b2))) || [];
 check(`4. the parked record is in the kept list after removal (${pl.length})`, pl.length === 1 && pl[0].txid === parked.txid);
 
+// 4b. The address index is written before the kept list, so a worker stopped between the two writes never leaves a
+// kept list reset() does not know (RED-FIRST: swap the two writes in keepUnrevealedOf).
+{
+  const os = memoryStore(), order = [];
+  const ostore = { ...os, async set(k, v) { order.push(k); return os.set(k, v); } };
+  const ow = new Wallet(ostore);
+  const c1 = (await ow.create(PW)).addr;
+  const c2 = (await ow.addAccount()).addr;
+  await ow.sealClaim({ claim: "ordered" });
+  await ow.switchAccount(c1);
+  order.length = 0;
+  await ow.removeAccount(c2);
+  const iIndex = order.indexOf("keptSealAddrs"), iList = order.indexOf(sealKey(c2));
+  check(`4b. on removal the address index is written before the kept list (${order.filter((k) => k === "keptSealAddrs" || k.startsWith("sealedClaims:")).join(" then ")})`, iIndex >= 0 && iList > iIndex);
+}
+
 // 5. reset() deletes the kept lists of removed accounts too.
 await pw.reset();
 check("5. reset deletes a removed account's kept list", (await ps.get(sealKey(b2))) == null && (await ps.get("keptSealAddrs")) == null);

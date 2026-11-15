@@ -36,7 +36,7 @@ check("the imported remove step keeps its own warning and no HD line", /is <b>no
 check("the HD remove step names its 2 unrevealed sealed claims and how they come back", html.length > 0 && (await (async () => {
   await list().querySelectorAll("[data-cancel]")[0].click(); await flush();
   const h = await removeStep(B);
-  return h.includes("2 sealed claims not yet revealed") && h.includes("import this account's key again") && h.includes(HD_LINE);
+  return h.includes("2 sealed claims not yet revealed") && h.includes("import this account's key again (switch to this account first; More › Reveal key then shows its key)") && h.includes(HD_LINE);
 })()));
 await list().querySelectorAll("[data-cancel]")[0].click(); await flush();
 html = await removeStep(I);
