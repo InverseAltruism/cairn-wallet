@@ -4,6 +4,7 @@
 // again once the same address is back in this wallet. reset() deletes them too.
 //   RED-FIRST: put back removeAccount's deletion of sealedClaims:<addr> (the 0.3.2 line) and sections 1, 2 and 4 fail.
 //   PAIRED HONEST PATHS: an account with no seals is removed and re-imported as before, leaving nothing behind (3);
+//   a removal refused by a failing seal store goes through once the store works (6);
 //   reset() still leaves no sealed-claim list (5); the remove step's count reads 0 for an account with none (1).
 // Run: npx tsx test/seal-remove-keep.test.mjs   (offline)
 import { Wallet } from "../src/core/wallet.js";
@@ -101,4 +102,41 @@ await w.removeAccount(a2, PW);   // re-imported, so an imported key: removal tak
 check("5. setup: removing the account again drops its list (its one claim is revealed now); the kept-address list still names it", (await store.get(sealKey(a2))) == null && ((await store.get("keptSealAddrs")) || []).includes(a2));
 await w.reset();
 check("5. honest path: after reset no sealed-claim list is left for any address", (await store.get(sealKey(a2))) == null && (await store.get(sealKey(a1))) == null && (await store.get("keptSealAddrs")) == null);
+
+// 6. The kept list is written before the account is taken out: with the seal store failing, removal throws and leaves
+// the account listed, switchable, its history in place, and removable once the store works (Q1's probe shape).
+//   RED-FIRST: keep the seals after the splice and the history delete (as e31e879 did) and the first two checks of 6 fail.
+{
+  const ps = memoryStore();
+  let failSeals = false;
+  const fstore = { ...ps, async set(k, v) { if (failSeals && k.startsWith("sealedClaims:")) throw new Error("quota"); return ps.set(k, v); } };
+  const fw = new Wallet(fstore);
+  const b1 = (await fw.create(PW)).addr;
+  const b2 = (await fw.addAccount()).addr;
+  await fstore.set("txHistory:" + b2, [{ txid: "0x" + "aa".repeat(32), ts: 1, type: "send" }]);
+  failSeals = true;
+  const parked = await fw.sealClaim({ claim: "parked secret" });
+  await fw.switchAccount(b1);
+  let threw = null;
+  try { await fw.removeAccount(b2); } catch (e) { threw = String(e?.message ?? e); }
+  const listed = (await fw.status()).accounts.map((a) => a.addr);
+  check(`6. a failed keep throws (${threw}) with the account still listed and its history in place`, parked.ok === true && threw === "quota" && listed.includes(b2) && listed.length === 2 && (await ps.get("txHistory:" + b2)) != null);
+  let sw = null; try { sw = (await fw.switchAccount(b2)).addr; } catch (e) { sw = String(e?.message ?? e); }
+  check(`6. the account is still switchable (${sw === b2 ? "switched" : sw}), with its parked claim`, sw === b2 && (await fw.unrevealedSeals(b2)) === 1);
+  await fw.switchAccount(b1);
+  failSeals = false;
+  await fw.removeAccount(b2);
+  check("6. honest path: once the store works the removal goes through and keeps the parked claim", !(await fw.status()).accounts.some((a) => a.addr === b2) && ((await ps.get(sealKey(b2))) || []).length === 1 && (await ps.get("txHistory:" + b2)) == null);
+}
+
+// 7. Removals run one at a time: two removals at once on a two-account wallet remove one account and refuse the other at
+// the last-account floor (RED-FIRST: call removeAccountNow directly and both pass the floor, leaving no account).
+{
+  const tw = new Wallet(memoryStore());
+  const c1 = (await tw.create(PW)).addr;
+  const c2 = (await tw.addAccount()).addr;
+  const [r1, r2] = await Promise.allSettled([tw.removeAccount(c2), tw.removeAccount(c1)]);
+  const left = (await tw.status()).accounts.map((a) => a.addr);
+  check(`7. one removal goes through and the other is refused at the floor (${r1.status}, ${r2.status}: ${r2.reason?.message ?? ""})`, r1.status === "fulfilled" && r2.status === "rejected" && /last account/.test(String(r2.reason?.message)) && left.length === 1 && left[0] === c1);
+}
 done("seal-remove-keep");

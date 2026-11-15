@@ -471,7 +471,15 @@ export class Wallet {
     if (!a) throw new Error("no such account");
     a.label = Wallet.label(label, a.label); await this.persistVault();
   }
-  async removeAccount(addr: string, password?: string): Promise<void> {
+  // Removals run one at a time: each awaits the sealed-claim write before it takes the account out, so two removals must
+  // not both pass the last-account floor before either splices (test/seal-remove-keep.test.mjs 7).
+  private removeChain: Promise<unknown> = Promise.resolve();
+  removeAccount(addr: string, password?: string): Promise<void> {
+    const run = this.removeChain.then(() => this.removeAccountNow(addr, password));
+    this.removeChain = run.catch(() => undefined);   // the chain only orders removals; the caller gets `run`'s rejection
+    return run;
+  }
+  private async removeAccountNow(addr: string, password?: string): Promise<void> {
     const accts = this.mustUnlocked();
     if (accts.length <= 1) throw new Error("cannot remove the last account: reset the wallet to start over");
     let i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
@@ -487,9 +495,8 @@ export class Wallet {
       if (!password) throw new Error("REMOVE_IMPORTED_REAUTH");
       const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
       await this.openVaultDoc(v, password); // throws "bad password" (and increments the guard) on failure
-      // TOCTOU (fresh-eyes 0.2.57 finding 1): the KDF await above is the ONLY await between findIndex
-      // and splice, and a concurrent removal can mutate accts while this call is parked; splicing the
-      // pre-await index then removed the WRONG account (the next imported key, silently, history wiped).
+      // TOCTOU: other account changes can run during the KDF await above; splicing a pre-await index once
+      // removed the WRONG account (the next imported key, silently, history wiped).
       // Re-derive the index after the await; a target already removed by the racing call is done
       // (idempotent), and the last-account floor is re-asserted against the CURRENT list.
       i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
@@ -497,16 +504,20 @@ export class Wallet {
       if (accts.length <= 1) throw new Error("cannot remove the last account: reset the wallet to start over");
     }
     const gone = accts[i]?.addr;
-    if (gone === undefined) throw new Error("no such account");   // i is the target's current index: found with no await since
+    if (gone === undefined) throw new Error("no such account");
+    // Its unrevealed sealed claims are kept before anything else changes: a failed write throws with the account still
+    // listed, switchable and removable (test/seal-remove-keep.test.mjs 6).
+    await this.claims.keepUnrevealedOf(gone);
+    i = accts.findIndex((x) => x.addr === gone);   // re-derived after the await, as above; already removed is done
+    if (i < 0) return;
     accts.splice(i, 1);
     if (this.active >= accts.length) this.active = accts.length - 1;
     else if (this.active > i) this.active -= 1;
-    // Wipe the removed account's history; its unrevealed sealed claims stay (keepUnrevealedOf).
+    // Wipe the removed account's history (its unrevealed sealed claims were kept above).
     // P75-6: ride the chains so a parked write for this account cannot land AFTER these writes
     // and resurrect a removed account's history; purge its parked retries too.
     const hk2 = histKey(gone);
     await this.hist.inHistChain(async () => { this.hist.pendingHist = this.hist.pendingHist.filter((p) => p.k !== hk2); await this.store.del(hk2); });
-    await this.claims.keepUnrevealedOf(gone);
     await this.persistVault();
   }
 
