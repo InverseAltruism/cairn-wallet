@@ -11,15 +11,16 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { siwcDigest, CSD_CHAIN_MAINNET } from "./siwc.js";
 import { siwcMessageFor, type SiwcParams } from "./siwcparams.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
+import { attestFields, fillFields, proposeFields, sealFields } from "./signfields.js";
 import { readNameRecord, nameActSignVerdict, CONFIRM_OTHER_OWNER, NAME_READ_TIMEOUT_MS } from "./namegate.js";
-import { fillOfferPreflight, isTokenFillAttest, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
+import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
@@ -583,8 +584,8 @@ export class Wallet {
     // B9: an omitted fee signs defaultFeeFor("propose"); the node-enforced MIN_FEE_PROPOSE floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER the user approved a screen that
     // showed a 0.01 CSD the node would have rejected anyway). An explicit sub-floor fee still refuses.
-    const fee = p.fee ?? defaultFeeFor("propose");
-    const hk = this.histKeyNow(); const r = await node.propose(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee }); return r;
+    const f = proposeFields(p);
+    const hk = this.histKeyNow(); const r = await node.propose(this.rpc, f, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "propose", domain: f.domain, fee: f.fee }); return r;
   }
   async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string; tokenQuote?: TokenFillQuote }) {
     // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
@@ -601,13 +602,13 @@ export class Wallet {
     // pay arbitrary CSD to any address via the attest method, whose clear-sign window renders NO outputs
     // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
-    if (isTokenFillAttest(p.confidence))
+    const a = attestFields(p);
+    if (a.route === "fill")
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
     // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
     // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
-    const fee = p.fee ?? defaultFeeFor("attest");
-    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
+    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId: String(a.proposalId), score: a.score, confidence: a.confidence, fee: a.fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: a.fee }); return r;
   }
   // Offer fill (Attest + payment in ONE tx; CairnX applies the delivery). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
@@ -628,8 +629,9 @@ export class Wallet {
     // `null >>> 0` is 0 != SCORE_FILL, so a caller passing an explicit `score: null` (a shape store
     // 0.2.64 accepted, since this guard has never shipped) was refused for no reason. Absent means
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
-    if (p.score != null && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
-    const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? defaultFeeFor("attest") };
+    const f = fillFields(p);
+    if (f.refused === "score") return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
+    const q = { proposalId: p.proposalId, score: f.score, confidence: f.confidence, outputs: f.outputs, fee: f.fee };
     const notes: FillNotes = {};
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck, notes);
     if (refusal) return refusal;
@@ -743,7 +745,7 @@ export class Wallet {
   // by node.sendMany; callers never supply UTXOs. History records the total + primary
   // recipient (single-output sends record identically to send()).
   async sendMany(p: { outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string }) {
-    const fee = p.fee ?? 1_000_000;
+    const fee = p.fee ?? defaultFeeFor("send");
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(p.expectSigner, ctx.addr);
     if (early) return early;
@@ -930,18 +932,19 @@ export class Wallet {
     // CSDTX-SIWC-01: a non-string claim would be hashed as-is into the on-chain commitment but
     // String()-normalized on reveal, so the paid commit could never be revealed. dApp-reachable,
     // so the .d.ts type cannot be trusted at runtime. Refuse BEFORE any fee is spent.
-    if (typeof p?.claim !== "string" || !p.claim) throw new Error("sealClaim: claim must be a non-empty string");
+    const sf = sealFields(p);
+    if (sf.refused) throw new Error(sf.refused);
     const priv = this.must().privkey;
     const hk = this.histKeyNow(), sk = sealKey(this.addr()); // captured with the signer (F5)
-    const domain = (p.domain && p.domain.trim()) || "csd:sealed";
+    const domain = sf.domain;
     const nonce = bytesToHex(randomBytes(32));
     // The reveal preimage is encrypted BEFORE the commit is broadcast (no await since must() above, so the
     // vault key is still loaded): after the broadcast nothing needs the key, and a lock there cannot lose it.
-    const enc = await this.claims.sealPreimage(p.claim, nonce);
-    const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
+    const enc = await this.claims.sealPreimage(sf.claim, nonce);
+    const content = { v: 1, sealed: 1, domain, claim: sf.claim, nonce };
     const ph = cairnPayloadHash(content);
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
-    const fee = p.fee ?? CAIRNX_PROPOSE_FEE; // propose min 0.25 CSD
+    const fee = sf.fee;
     const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
     // A maybe-inflight seal may still MINE: persist the reveal preimage (claim+nonce) on the
     // ambiguous path too, or a landed commit becomes forever unrevealable (0.2.56, same class as

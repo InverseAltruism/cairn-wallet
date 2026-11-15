@@ -4,6 +4,8 @@ import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecim
 import { EPOCH_LEN, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
+import { attestFields, fillFields, proposeFields, sealFields, sendFields, isTokenFillAttest } from "../core/signfields.js";
+import { siwcFieldsFor, ANY_ACCOUNT } from "../core/siwcparams.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts; take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -358,6 +360,20 @@ const attestation = (score: number, conf: number) => `score ${score} · confiden
 export const FILL_PAYS = "One transaction pays the recipients above and records the fill. CairnX then delivers what you buy; if it refuses the fill, the payment is not returned.";
 export const FILL_RECORDS = "One transaction records the fill.";
 
+// A fill naming a score other than 100 is refused by the signer (signfields.ts fillFields); say so above the cost rows.
+function scoreRefusedNote(f: { refused?: string }, asked: unknown): string {
+  return f.refused === "score" ? danger(`This fill asks for score ${escapeHtml(String(asked))}. The wallet signs a fill only at score 100, which is the score the marketplace applies, so approving refuses it and nothing is signed.`) : "";
+}
+/** The fee the signer signs for this request (signfields.ts), or the method's default fee for one without fields. */
+export function signedFee(r: any): unknown {
+  const p = r?.params || {};
+  if (r?.method === "send") return sendFields(p).fee;
+  if (r?.method === "fillOffer") return fillFields(p).fee;
+  if (r?.method === "propose") return proposeFields(p).fee;
+  if (r?.method === "sealClaim") return sealFields(p).fee;
+  if (r?.method === "attest") { const a = attestFields(p); return a.route === "fill" ? a.fill.fee : a.fee; }
+  return p.fee ?? defaultFeeFor(r?.method);
+}
 export function describe(r: any): string {
   const p = r.params || {};
   const cost = costBlock(r);
@@ -367,39 +383,46 @@ export function describe(r: any): string {
   // prominently so the user sees which site they authenticate to. A page that declared a different domain than its
   // origin gets a warning: the wallet will refuse it.
   if (r.method === "signinWithCsd") {
-    const aud = (() => { try { return new URL(String(r.origin)).host; } catch { return String(r.origin || "this site"); } })();
-    const nonce = String(p.nonce ?? "");
+    // The fields of the message the wallet signs (siwcparams.ts siwcFieldsFor, the function signInWithCsd signs
+    // through); params it would refuse are shown as sent, with the refusal.
+    let sf: ReturnType<typeof siwcFieldsFor> | null = null, refusal = "";
+    try { sf = siwcFieldsFor(p, String(r.origin), ANY_ACCOUNT, Date.now()); } catch (e) { refusal = e instanceof Error ? e.message : String(e); }
+    const aud = sf ? sf.fields.domain : (() => { try { return new URL(String(r.origin)).host; } catch { return String(r.origin || "this site"); } })();
+    const nonce = sf ? sf.fields.nonce : String(p.nonce ?? "");
     const nshort = nonce.length > 16 ? nonce.slice(0, 8) + "…" + nonce.slice(-4) : nonce;
+    const statement = sf ? sf.fields.statement : (p.statement != null && String(p.statement) !== "" ? String(p.statement) : undefined);
     // The statement is the site's own text, signed as written; labelled so it cannot pass for the wallet's words.
-    const stmt = p.statement != null && String(p.statement) !== "" ? lede(`<span class="dim">Text from ${escapeHtml(aud)}, not from Cairn Wallet:</span> “${escapeHtml(String(p.statement))}”`) : "";
-    const expS = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600)));
+    const stmt = statement !== undefined ? lede(`<span class="dim">Text from ${escapeHtml(aud)}, not from Cairn Wallet:</span> “${escapeHtml(statement)}”`) : "";
     const mism = p.domain !== undefined && String(p.domain) !== aud
       ? danger(`This page asked to sign in as “${escapeHtml(String(p.domain))}”, but you are on “${escapeHtml(aud)}”: sign-in will be refused.`) : "";
+    const refused = refusal && !mism ? danger(`The wallet will refuse this sign-in and sign nothing: ${escapeHtml(refusal.replace(/^(sign-in|siwc): /, ""))}.`) : "";
     // The rest of the signed message the site controls (audit SIWC-RESOURCES, SIWC-URI): a dApp can embed claims
     // (resources) the user would otherwise sign blind.
-    const extra: Row[] = [
-      ...(p.uri != null && String(p.uri) !== "" ? [["URI", escapeHtml(String(p.uri))] as Row] : []),
-      ...(Array.isArray(p.resources) && p.resources.length ? [[`Resources (${p.resources.length})`, p.resources.slice(0, 10).map((x: any) => escapeHtml(String(x).slice(0, 256))).join(" · ")] as Row] : []),
-      ...(p.requestId != null && String(p.requestId) !== "" ? [["Request id", escapeHtml(String(p.requestId))] as Row] : []),
-      ...(p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? [["Not valid before", `~${Math.floor(Number(p.notBeforeSecs))}s from now`] as Row] : []),
-    ];
-    return title(`Sign in to <code>${escapeHtml(aud)}</code>`) + lede("Prove your address to this site. <b>No transaction, no funds move.</b>") + mism + cost + stmt
-      + rows([["Audience", escapeHtml(aud)], ["Nonce", `<code>${escapeHtml(nshort)}</code>`], ["Expires", `in ~${expS}s`], ...extra]);
+    const f = sf?.fields;
+    const extra: Row[] = f ? [
+      ["URI", escapeHtml(f.uri)],
+      ...(f.resources?.length ? [[`Resources (${f.resources.length})`, f.resources.map((x) => escapeHtml(x)).join(" · ")] as Row] : []),
+      ...(f.requestId !== undefined ? [["Request id", escapeHtml(f.requestId)] as Row] : []),
+      ...(sf!.notBeforeSecs !== undefined ? [["Not valid before", `~${sf!.notBeforeSecs}s from now`] as Row] : []),
+    ] : [];
+    return title(`Sign in to <code>${escapeHtml(aud)}</code>`) + lede("Prove your address to this site. <b>No transaction, no funds move.</b>") + mism + refused + cost + stmt
+      + rows([["Audience", escapeHtml(aud)], ["Nonce", `<code>${escapeHtml(nshort)}</code>`], ...(sf ? [["Expires", `in ~${sf.expSecs}s`] as Row] : []), ...extra]);
   }
   // Clear-signing: show everything the site controls and the chain will commit, not just the domain and the fee.
   if (r.method === "propose") {
+    const q = proposeFields(p);
     // A proposal may carry value outputs (a CairnX protocol fee to its treasury, say). The wallet cannot verify that a
     // recipient is a legitimate fee, so they are shown neutrally as funds leaving the wallet, capped, with the same
     // first-time and look-alike warnings as a send (#send-warn, filled by approve.ts).
-    const outs = Array.isArray(p.outputs) ? p.outputs : [];
+    const outs = q.outputs;
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
     // NXFER-POISON-DROP: the poisoning mount renders even when a cairnx repoint (nxfer, nset) carries no CSD outputs.
     const xfer = outs.length ? caution(`This proposal also transfers funds out of your wallet: <b>${fmtCsd(total)}</b> in total.`) : "";
     const outRows = rows(outputRows(outs));
     // The dApp-supplied expiry is part of the signed bytes: shown humanized in both branches.
-    const exp: Row[] = p.expiresEpoch !== undefined ? [["Expires", expiryValue(p.expiresEpoch, r.currentEpoch, r.currentTip)]] : [];
-    if (String(p.domain) === CAIRNX_DOMAIN) {
-      const cx = cairnxParts(p.uri, p.payloadHash, r.tokenMeta);
+    const exp: Row[] = q.expiresEpoch !== undefined ? [["Expires", expiryValue(q.expiresEpoch, r.currentEpoch, r.currentTip)]] : [];
+    if (String(q.domain) === CAIRNX_DOMAIN) {
+      const cx = cairnxParts(q.uri, q.payloadHash, r.tokenMeta);
       if (cx) {
         // CLEARSIGN-FEE-1: a dApp-built .csd registration/renewal that UNDERPAYS the length-graded fee is a
         // silent fund-loss-with-no-benefit (the fee leaves the wallet, but the resolver no-ops the underpaid
@@ -418,7 +441,7 @@ export function describe(r: any): string {
         // finite but not a height (65100.5, 1e16), which previously slipped through to buildFeeHeight and
         // threw into the bare catch below, silently disarming this very warning.
         const tipNow = feePricingTip(r.currentTip, r.tipFloor);
-        const rec = decodeCairnxRecord(p.uri, p.payloadHash);
+        const rec = decodeCairnxRecord(q.uri, q.payloadHash);
         const feeBearing = !!rec && typeof rec.name === "string" && tipNow != null &&
           (rec.t === "nrenew" || rec.t === "nfinalize" || (rec.t === "name" && tipNow < V25_HEIGHT));
         let feeWarn = "";
@@ -438,7 +461,7 @@ export function describe(r: any): string {
         // action's verdict after #send-warn), the record's subject and money rows, the outputs; then the explanations,
         // the expiry and the hashes.
         return cx.title + cost + xfer + feeWarn + SEND_WARN + cx.main + outRows + cx.notes
-          + rows([...exp, ["Payload hash", `<code>${truncLoud(String(p.payloadHash || "(none)"), 80)}</code>`], ["Anchored as", "a cairnx:v1 proposal"]]);
+          + rows([...exp, ["Payload hash", `<code>${truncLoud(String(q.payloadHash || "(none)"), 80)}</code>`], ["Anchored as", "a cairnx:v1 proposal"]]);
       }
     }
     // M15 (B5i): the raw branch renders dApp-supplied free text. Money rows first (the fee and any funds leaving the
@@ -446,13 +469,21 @@ export function describe(r: any): string {
     // scroll what this costs out of view. The uri cap is 512 (the node's own on-chain cap), so no valid record's uri
     // is cut; only oversized text the chain would reject anyway gets the marker.
     return title("Post a proposal") + cost + xfer + SEND_WARN + outRows
-      + rows([...exp, ["Domain", `<code>${truncLoud(String(p.domain), DOMAIN_CAP)}</code>`], ["Payload hash", `<code>${truncLoud(String(p.payloadHash || "(none)"), 80)}</code>`], ["URI", `<code>${truncLoud(String(p.uri || "(none)"), 512)}</code>`]]);
+      + rows([...exp, ["Domain", `<code>${truncLoud(String(q.domain), DOMAIN_CAP)}</code>`], ["Payload hash", `<code>${truncLoud(String(q.payloadHash || "(none)"), 80)}</code>`], ["URI", `<code>${truncLoud(String(q.uri || "(none)"), 512)}</code>`]]);
   }
   // score and confidence are serialized as u32 (>>>0); the window shows the same value that is signed, so a negative
   // or oversized input cannot show one thing and commit another.
   if (r.method === "attest") {
-    const score = Number(p.score) >>> 0, conf = Number(p.confidence) >>> 0;
+    // The fields the signer signs (signfields.ts attestFields): at the token-fill confidence the attest is signed as a
+    // token fill, with score 100, so it is shown as one and never as a cancel or a review.
+    const af = attestFields(p);
     const target = `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`;
+    if (af.route === "fill") {
+      const tokenFill = danger(`<b>Token-priced fill: approving spends tokens from your CairnX balance.</b> If this attests an open offer, the convention debits its asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Only approve if you intend to buy from this offer; verify its price on the site or the explorer first.`) + TOKEN_SIM;
+      return title("Fill offer") + tokenFill + scoreRefusedNote(af.fill, p.score) + cost + lede(FILL_RECORDS)
+        + rows([["Offer", target], ["Attestation", attestation(af.fill.score, af.fill.confidence)]]);
+    }
+    const score = af.score, conf = af.confidence;
     // CairnX v1.7: score 50 / confidence 0 is a claim-to-fill reservation on an open CSD offer, a payment-free attest
     // that reserves the offer for the legacy claim window (CLAIM_WINDOW_BLOCKS_V20). From V28 the chain rejects every
     // new legacy SCORE_CLAIM, so when the PoW-backed floor proves the gate has passed, warn that this is an on-chain
@@ -465,12 +496,6 @@ export function describe(r: any): string {
       return title("Reserve an open offer") + cost + v28warn + lede(`v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~${CLAIM_WINDOW_BLOCKS_V20} blocks. You pay only when you complete the purchase.`)
         + rows([["Offer", target], ["Attestation", "score 50 (claim) · no payment"]]);
     }
-    // CairnX v1.2: confidence 1,000,000 is the token-priced fill marker. A bare attest carrying it is byte-identical
-    // to a fillOffer with empty outputs (the resolver cannot tell them apart), so it can debit the user's CairnX
-    // token balance with no visible output: the same warning on either path. The rate renders from FEE_BPS_V16.
-    const tokenFill = conf === CONF_TOKEN_FILL
-      ? danger(`<b>Token-priced fill: approving spends tokens from your CairnX balance.</b> If this attests an open offer, the convention debits its asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Only approve if you intend to buy from this offer; verify its price on the site or the explorer first.`) + TOKEN_SIM
-      : "";
     const attRows = rows([["Target", target], ["Attestation", attestation(score, conf)]]);
     // Score 0 from the proposer of an open CairnX offer or bid cancels it; from anyone else it changes nothing there.
     // approve.ts reads the target before the paint (`attestTarget`): mine names this paint's account as its proposer.
@@ -479,21 +504,23 @@ export function describe(r: any): string {
       if (tg?.mine === true && (tg.kind === "offer" || tg.kind === "bid")) {
         const what = tg.kind;
         const offerNote = what === "offer" ? ", and CairnX releases what the offer holds back to you. A taker-bound offer, or one under a live reservation hold, cannot be cancelled" : "";
-        return title(`Cancel your ${what}`) + tokenFill + cost + lede(`The node reports this ${what} as listed by this account. Score 0 from its lister cancels it if it is still open${offerNote}. The network fee is paid either way.`) + attRows;
+        return title(`Cancel your ${what}`) + cost + lede(`The node reports this ${what} as listed by this account. Score 0 from its lister cancels it if it is still open${offerNote}. The network fee is paid either way.`) + attRows;
       }
       if (!tg || tg.unknown === true) {
-        return title("Support / review") + tokenFill + cost + lede("Score 0 cancels the target if it is your open CairnX offer or bid. The wallet could not read the target from the node, so it cannot tell whether this is a cancel.") + attRows;
+        return title("Support / review") + cost + lede("Score 0 cancels the target if it is your open CairnX offer or bid. The wallet could not read the target from the node, so it cannot tell whether this is a cancel.") + attRows;
       }
     }
-    return title("Support / review") + tokenFill + cost + attRows;
+    return title("Support / review") + cost + attRows;
   }
   if (r.method === "sealClaim") {
     // The claim text being committed: sealClaim hashes {domain, claim, nonce} into the on-chain payloadHash, so a
     // dApp-supplied claim is what the key commits to (audit SEAL-1). The salt stays local until the reveal. M15
     // (B5i): the cost rows render above the dApp-supplied text, which is capped and loud.
-    const claim = p.claim != null ? String(p.claim) : "";
-    return title("Seal a claim") + lede("Commit a hidden claim on-chain, to reveal later. The salt stays in your wallet; the claim is published only when you reveal.") + cost
-      + rows([["Domain", `<code>${truncLoud(String(p.domain || "csd:sealed"), DOMAIN_CAP)}</code>`], ...(claim ? [["Claim", `<code>${truncLoud(claim, 200)}</code>`] as Row] : [])]);
+    const sf = sealFields(p);
+    const claim = sf.claim;
+    const refusedNote = sf.refused ? danger(`The wallet will refuse this request and sign nothing: ${escapeHtml(sf.refused.replace(/^sealClaim: /, ""))}.`) : "";
+    return title("Seal a claim") + refusedNote + lede("Commit a hidden claim on-chain, to reveal later. The salt stays in your wallet; the claim is published only when you reveal.") + cost
+      + rows([["Domain", `<code>${truncLoud(sf.domain, DOMAIN_CAP)}</code>`], ...(claim ? [["Claim", `<code>${truncLoud(claim, 200)}</code>`] as Row] : [])]);
   }
   // M14 (B5h): a reveal publishes a secret. The full seal txid shows, and approve.ts fills #reveal-preview with the
   // domain and the claim text from the wallet's own sealed claims (a local read), so the user sees which secret.
@@ -502,7 +529,7 @@ export function describe(r: any): string {
   // Send is the dApp method that moves funds to a page-chosen recipient: every recipient in full, each amount, the
   // total and the fee. #send-warn is filled by approve.ts (first-time and address-poisoning).
   if (r.method === "send") {
-    const outs = Array.isArray(p.outputs) ? p.outputs : [{ to: p.to, value: p.amount }];
+    const outs = sendFields(p).outputs;
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
     const hero = outs.length > 1 ? `${fmtCsd(total)} <span class="dim">to ${outs.length} recipients</span>` : fmtCsd(outs[0]?.value);
     return title("Send CSD") + `<div class="ap-amt">${hero}</div>` + cost + SEND_WARN + rows(outputRows(outs));
@@ -512,9 +539,10 @@ export function describe(r: any): string {
   // clear-signs like a send, plus the offer id the attest commits to. What the user receives is convention-level; a
   // CSD-paid fill paints it into #fill-view from the offer service's listing (fillViewHtml), attributed to it.
   if (r.method === "fillOffer") {
-    const outs = Array.isArray(p.outputs) ? p.outputs : [];
+    const ff = fillFields(p);
+    const outs = ff.outputs;
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    const conf = Number(p.confidence ?? 100) >>> 0;
+    const conf = ff.confidence;
     // CairnX v1.2: the token-priced fill marker lets the convention debit the user's CairnX token balance (ask plus
     // the FEE_BPS_V16 protocol fee) with no CSD output visible here; an outputs-free fill would otherwise read free.
     const tokenFill = conf === CONF_TOKEN_FILL
@@ -524,8 +552,8 @@ export function describe(r: any): string {
     // fill buys) and the recipients, so a fill to many recipients keeps what it buys above the buttons; then the
     // explanation, the offer id and the attestation.
     return title("Fill offer") + (outs.length ? `<div class="ap-amt">${fmtCsd(total)}</div>` : "")
-      + tokenFill + cost + SEND_WARN + (tokenFill ? "" : FILL_VIEW) + rows(outputRows(outs)) + lede(tokenFill ? FILL_RECORDS : FILL_PAYS)
-      + rows([["Offer", `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`], ["Attestation", attestation(Number(p.score ?? 100) >>> 0, conf)]]);
+      + tokenFill + scoreRefusedNote(ff, p.score) + cost + SEND_WARN + (tokenFill ? "" : FILL_VIEW) + rows(outputRows(outs)) + lede(tokenFill ? FILL_RECORDS : FILL_PAYS)
+      + rows([["Offer", `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`], ["Attestation", attestation(ff.score, conf)]]);
   }
   return title(escapeHtml(r.method)) + cost;
 }
@@ -652,14 +680,14 @@ export function balanceShortNote(back: "Reject this" | "Go back"): string {
 export function debitOf(r: any): number {
   const p = r.params || {};
   if (r.method === "send" || r.method === "fillOffer") {
-    const outs = Array.isArray(p.outputs) ? p.outputs : [{ value: p.amount }];
+    const outs = r.method === "send" ? sendFields(p).outputs : fillFields(p).outputs;
     const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    return total + baseVal(p.fee ?? defaultFeeFor(r.method));
+    return total + baseVal(signedFee(r));
   }
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return 0;
   // a propose may carry protocol-fee outputs (CairnX deploy / name registration) → count them
-  const outs = r.method === "propose" && Array.isArray(p.outputs) ? p.outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
-  return outs + baseVal(p.fee ?? defaultFeeFor(r.method));
+  const outs = r.method === "propose" ? proposeFields(p).outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
+  return outs + baseVal(signedFee(r));
 }
 
 // Address-poisoning lookalike: an attacker seeds your history with an address sharing the head+tail
@@ -920,22 +948,22 @@ export function nfinalizeApproveGate(fetched: NameFetchResult, me: string, tip: 
 // with a note for what the rows cannot show. approve.ts fills #bal-after from the balance read.
 const NO_FUNDS = new Set(["connect", "getAddress", "requestPermissions", "signin", "signinWithCsd"]);
 function costNote(r: any): string {
-  const tokenFill = (Number(r.params?.confidence ?? 100) >>> 0) === CONF_TOKEN_FILL;
+  const tokenFill = isTokenFillAttest(r.params?.confidence);
   if (r.method === "fillOffer") return tokenFill ? "Plus tokens debited from your CairnX balance per the offer's terms." : "";
   if (r.method === "attest") return tokenFill ? `Plus tokens debited from your CairnX balance if this attests an open offer (its ask + ${FEE_BPS_V16 / 100}%).` : "";
-  if (r.method === "propose") return Array.isArray(r.params?.outputs) && r.params.outputs.length ? "" : "The network fee is paid to miners.";
+  if (r.method === "propose") return proposeFields(r.params).outputs.length ? "" : "The network fee is paid to miners.";
   if (r.method === "send") return "";
   return "The network fee is paid to miners, plus a tiny chain fee.";
 }
 export function costBlock(r: any): string {
   const balance: Row = ["Balance after", `<span id="bal-after" class="dim">checking</span>`];
   if (NO_FUNDS.has(r.method)) return `<div id="cost" class="cost">${rows([["Cost", "None: no funds move"], balance])}<p class="ap-note">This only proves your address to the site.</p></div>`;
-  const fee = baseVal(r.params?.fee ?? defaultFeeFor(r.method));
+  const fee = baseVal(signedFee(r));
   const out = debitOf(r) - fee;
   const list: Row[] = [
     // a send and a fill show what leaves above the rows (the amount); a propose's outputs get their own row here
     ...(out > 0 && r.method === "propose" ? [["Transferred out", fmtCsd(out)] as Row] : []),
-    ["Network fee", feeValue(r.params?.fee, defaultFeeFor(r.method))],
+    ["Network fee", feeValue(signedFee(r) as number)],
     ...(out > 0 ? [["Total", fmtCsd(debitOf(r))] as Row] : []),
     balance,
   ];

@@ -3,7 +3,8 @@
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
 import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
-import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL, SCORE_CANCEL } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, SCORE_CANCEL } from "../core/cairnx.js";
+import { attestFields, isTokenFillAttest } from "../core/signfields.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
@@ -24,6 +25,8 @@ const fontsLoaded: Promise<unknown> = Promise.race([
 ]);
 
 const call = (method: string, ...args: any[]): Promise<any> => extensionCall(chrome, method, ...args);
+// An attest's signed score and confidence (signfields.ts), or null when the signer signs it as a fill.
+const attestOf = (r: any): { score: number; confidence: number } | null => { const a = attestFields(r?.params); return a.route === "attest" ? a : null; };
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
 // What each request type asks for, under the requesting origin in the header.
 function asks(r: any): string {
@@ -113,17 +116,16 @@ async function render() {
     if (e != null) current.currentEpoch = e;
     if (t != null) current.currentTip = t;
     if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
-  } else if (current.method === "attest"
-      && (Number((current.params || {}).score) >>> 0) === 50 && (Number((current.params || {}).confidence) >>> 0) === 0) {
+  } else if (current.method === "attest" && attestOf(current)?.score === 50 && attestOf(current)?.confidence === 0) {
     // B5h (score-50 V28 truth): thread the PoW-backed tip floor so describe() can warn that a legacy
     // SCORE_CLAIM past the V28 gate is a guaranteed on-chain no-op. tipFloor is a wallet-store read
     // (READ_ONLY, no network), so the attest paint gains no network dependency; a miss degrades to no
     // warning (today's behavior).
     const f = await bounded(call("tipFloor"));
     if (f != null) current.tipFloor = f;
-  } else if (current.method === "attest" && (Number((current.params || {}).score) >>> 0) === SCORE_CANCEL) {
-    // A score-0 attest cancels the target when it is the signer's own CairnX offer or bid; the node's proposal read says
-    // whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
+  } else if (current.method === "attest" && attestOf(current)?.score === SCORE_CANCEL) {
+    // A score-0 attest the signer signs as an attest (not at the token-fill confidence, which signs a fill) cancels the
+    // target when it is the signer's own CairnX offer or bid; the node's proposal read says whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
     const t: any = await bounded(call("attestTarget", (current.params || {}).proposalId));
     current.attestTarget = t?.ok === true ? { kind: t.kind, mine: String(t.proposer) === String(st.addr || "").toLowerCase() } : { unknown: true };
   }
@@ -355,13 +357,11 @@ let tokenSimForId: string | null = null;
 // 0.2.71 (CX-15): a token-debiting fill is approvable only once its preview is `ready` for this very
 // request. States: loading -> ready | error. A failed quote is retried a few times before `error`.
 function isTokenFill(r: any): boolean {
-  const conf = Number((r?.params || {}).confidence ?? 100) >>> 0;
-  return !!r && (r.method === "fillOffer" || r.method === "attest") && conf === CONF_TOKEN_FILL;
+  return !!r && (r.method === "fillOffer" || r.method === "attest") && isTokenFillAttest((r.params || {}).confidence);
 }
 function tokenNotReady(r: any): boolean { return isTokenFill(r) && rs(r.id).tokenPreview !== "ready"; }
 async function fillTokenSim(r: any) {
-  const conf = Number((r.params || {}).confidence ?? 100) >>> 0;
-  if ((r.method !== "fillOffer" && r.method !== "attest") || conf !== CONF_TOKEN_FILL || tokenSimForId === r.id) return; tokenSimForId = r.id;
+  if ((r.method !== "fillOffer" && r.method !== "attest") || !isTokenFillAttest((r.params || {}).confidence) || tokenSimForId === r.id) return; tokenSimForId = r.id;
   rs(r.id).tokenPreview = "loading";
   const el = document.getElementById("token-sim");
   if (!el) return;

@@ -8,6 +8,7 @@ import { PortRegistry } from "./core/events.js";
 import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
 import { fillTargetOf } from "./core/fillpreflight.js";
 import { siwcParamsRefusal } from "./core/siwcparams.js";
+import { sendFields } from "./core/signfields.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -273,14 +274,15 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // methods (export/restore/import/reset/settings/account mgmt) stay out of this list
     // and fall through to the throw below, so a dApp can never reach them.
     else if (p.method === "send") {
-      const x = p.params || {};
+      const s = sendFields(p.params);
       // A1: thread the DISPLAYED signer into the method so the check fires at the sign tick,
       // not only at the pre-dispatch M5 guard above (fillOffer awaits between the two). Set from
       // displayedSigner LAST so a dApp-supplied expectSigner in params can never substitute it.
       const exp = typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined;
-      result = Array.isArray(x.outputs)
-        ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee, expectSigner: exp })
-        : await wallet.send(x.to, x.amount, x.fee, exp);
+      const one = s.outputs[0];
+      result = s.many || !one
+        ? await wallet.sendMany({ outputs: s.outputs, fee: s.fee, expectSigner: exp })
+        : await wallet.send(one.to, one.value, s.fee, exp);
     }
     // Offer fill (Attest + payment in one tx; CairnX applies the delivery). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally

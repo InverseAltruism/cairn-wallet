@@ -240,10 +240,14 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   // engine must APPLY the table where it used to error on an omitted fee.
   const clearsignSrc = readFileSync(new URL("../src/popup/clearsign.ts", import.meta.url), "utf8");
   const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
-  // One fee row now (the cost rows of every request type): its one use site reads the table.
-  ok("PIN B9: the feeValue use site reads defaultFeeFor(r.method)",
-    (clearsignSrc.match(/feeValue\(r\.params\?\.fee, defaultFeeFor\(r\.method\)\)/g) || []).length === 1
+  // One fee row now (the cost rows of every request type): its one use site reads the fee the signer signs
+  // (clearsign.ts signedFee over src/core/signfields.ts, which applies the table to an omitted fee for every method).
+  const fieldsSrc = readFileSync(new URL("../src/core/signfields.ts", import.meta.url), "utf8");
+  ok("PIN B9: the feeValue use site reads signedFee(r)",
+    (clearsignSrc.match(/feeValue\(signedFee\(r\)/g) || []).length === 1
     && (clearsignSrc.match(/feeValue\(/g) || []).length === 2);   // the definition and that one call
+  ok("PIN B9: the sign fields default an omitted fee from the table for every fee-bearing dApp method",
+    ["fillOffer", "attest", "propose", "send", "sealClaim"].every((m) => fieldsSrc.includes(`defaultFeeFor("${m}")`)));
   ok("PIN B9: cost/debit fallbacks read the table, not literals", !/\|\| ?(1_000_000|5_000_000|1000000|5000000)\)/.test(clearsignSrc));
   ok("PIN B9: the engine defaults an omitted propose fee (was BAD_FEE after approval)", walletSrc.includes('defaultFeeFor("propose")'));
   ok("PIN B9: the engine defaults an omitted attest fee", walletSrc.includes('defaultFeeFor("attest")'));

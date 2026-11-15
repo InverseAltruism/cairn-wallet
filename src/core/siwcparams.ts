@@ -8,6 +8,12 @@ export type SiwcParams = { nonce?: unknown; statement?: unknown; uri?: unknown; 
 /** The message the wallet signs for these params, for `account` at `now` (ms). Throws "sign-in: ..." on a parameter it
  *  refuses. */
 export function siwcMessageFor(params: SiwcParams | null | undefined, origin: string, account: string, now: number): string {
+  return buildSiwcMessage(siwcFieldsFor(params, origin, account, now).fields);
+}
+
+/** The fields of that message, with the expiry and not-before offsets (seconds) they were built from: what the approval
+ *  window shows. Throws as siwcMessageFor does. */
+export function siwcFieldsFor(params: SiwcParams | null | undefined, origin: string, account: string, now: number): { fields: SiwcFields; expSecs: number; notBeforeSecs?: number } {
   const domain = originToDomain(origin);
   if (!domain) throw new Error("sign-in: unknown requesting origin");
   const p = params || {};
@@ -39,21 +45,24 @@ export function siwcMessageFor(params: SiwcParams | null | undefined, origin: st
   // so truncating only the SIGNED copy would break what-you-see-is-what-you-sign.
   const requestId = p.requestId != null ? String(p.requestId) : undefined;
   if (requestId !== undefined && (requestId.length > 256 || /[\r\n]/.test(requestId))) throw new Error("sign-in: requestId too long or multi-line");
+  const notBeforeSecs = p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? Math.floor(Number(p.notBeforeSecs)) : undefined;
   const fields: SiwcFields = {
     domain, account, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
     nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
     // Only emit notBefore for a POSITIVE offset; a 0/negative value is a no-op "valid from now-or-past"
     // constraint that the clear-sign window (clearsign.ts) does NOT display, so signing it would mean
     // committing a field the user never saw (audit SDS-1). Matching the conditions keeps WYSIWYS exact.
-    notBefore: p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
+    notBefore: notBeforeSecs !== undefined ? rfc3339(now + notBeforeSecs * 1000) : undefined,
     requestId,
     resources,
   };
-  return buildSiwcMessage(fields);
+  buildSiwcMessage(fields);   // the builder's own field checks refuse here too, so a returned set always builds
+  return { fields, expSecs, ...(notBeforeSecs !== undefined ? { notBeforeSecs } : {}) };
 }
 
-// An address for the pre-queue check: the account line only has to be an address there, and the signer's own replaces it.
-const ANY_ACCOUNT = "0x" + "00".repeat(20);
+// An address for the pre-queue check and the window's fields: the account line only has to be an address there, and the
+// signer's own replaces it.
+export const ANY_ACCOUNT = "0x" + "00".repeat(20);
 /** Why the wallet would refuse these params once the user approved, or null: background.ts refuses before queueing, so a
  *  page learns it before the user is asked (BAD_REQUEST). The same function runs again at the sign. */
 export function siwcParamsRefusal(params: unknown, origin: string): string | null {

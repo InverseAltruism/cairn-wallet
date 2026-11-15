@@ -2,6 +2,15 @@
 
 ## 0.3.3
 
+- The approval window shows the fields the wallet signs, for every request type it paints. An `attest` at the
+  token-fill confidence with no score painted "score 0" (and, with this release's cancel title, "Cancel your offer")
+  while the wallet signed it as a token fill at score 100, so a page could have the user approve a fill of their own
+  offer that the window called a cancel; it now paints "Fill offer" with score 100, never a cancel, and a score the
+  fill refuses is shown as refused. A seal's domain is shown trimmed, as signed; a seal domain that is not a string is
+  shown as refused; a sign-in always shows the URI it signs, its default included. One function per request type
+  (`src/core/signfields.ts`; `siwcFieldsFor` for a sign-in) gives the signer its fields and the window what it shows,
+  and test/sign-display-parity.test.mjs runs every request type through the real worker and compares the two (at
+  29034be it failed 6 of its 25 checks).
 - CI and the release workflow run on Node 26 (`node-version: "26"` in every setup-node step), the runtime of the
   release host since 2026-11-13, so the local CI-equivalent run and a maintainer's reproduce-then-publish build use the
   Node the workflows use (test/ci-node-version.test.mjs). The release zips built from v0.3.2 were byte-identical on
