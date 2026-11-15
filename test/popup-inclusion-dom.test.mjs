@@ -79,6 +79,16 @@ merge = { pending: false, amount: 0, maybe: false, stuck: false };
 await refresh();
 check("(6) the merge line hides once nothing is open", byId("merge-pending").hidden === true);
 
+// ── (6b) a post whose text the server refused for good (flushPending marks its row bodyRefused) ────────────
+//   RED-FIRST: drop the bodyRefused read in popup-history.ts and the row reads "Posted" again.
+{
+  const post = (txid, extra) => ({ txid, ts: Date.now(), type: "post", title: "hello", amount: 0, fee: 25_000_000, ...extra });
+  history = [post(id("p1"), { bodyRefused: 413 }), post(id("p2"), {})];
+  await openActivity();
+  check("(6b) a post the server refused reads Not posted, with the server's status", /<b class="tx-kind">Not posted<\/b>/.test(rowOf(id("p1"))) && rowOf(id("p1")).includes("refused its text (HTTP 413), so it was not published"));
+  check("(6b) paired: a post the server took still reads Posted", /<b class="tx-kind">Posted<\/b>/.test(rowOf(id("p2"))) && !rowOf(id("p2")).includes("not published"));
+}
+
 // ── (7) a merge accepted by the node is sent and confirming, not merged ──────────────────────────────────
 //   RED-FIRST: restore the "merged N coins into one" success copy and (7a) fails.
 const MTX = id("m7");

@@ -52,9 +52,11 @@
 - A queued post body that cannot be registered no longer retries every minute for 7 days (up to 20,160 requests per
   body). It is tried on every alarm for its first 15 attempts, as before, so a post mined within 15 minutes registers
   just as fast; after that the wait doubles from 2 minutes to at most an hour (186 attempts in 7 days against a server
-  that keeps failing). A body the server refuses for good (an HTTP 4xx other than 408, 425 and 429, such as a body
-  over its size cap) is dropped after the first refusal and the reason is logged. `registerContent` returns the HTTP
-  status with a failure (test/flushpending.test.mjs).
+  that keeps failing). A body the server refuses for good (HTTP 400, 413 or 422: a malformed request, a body over its
+  size cap) is dropped after the first refusal, and its post's history row reads "Not posted" with the server's status;
+  a 401, 403 or 404 comes from something in front of Cairn's content route or from an API setting the user can fix, so
+  it keeps the backoff. `registerContent` returns the HTTP status with a failure (test/flushpending.test.mjs,
+  test/popup-inclusion-dom.test.mjs 6b).
 - Block bodies for name proofs and fill checks are fetched by the hash of the header the wallet verified
   (`/api/rpc/block/<hash>`) instead of by height. The front door marks a finalized body at that route immutable, so
   the edge can serve it, and it debits no per-height block budget; the by-height route is never cached. The body is

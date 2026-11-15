@@ -10,14 +10,18 @@
 //
 // MUTATION CONTRACT: both cases FAIL on 0.2.56.
 //
-// A body the server refuses for good (a 4xx other than 408, 425 and 429) is dropped after one attempt, and every other
+// A body the server refuses for good (HTTP 400, 413 or 422) is dropped after one attempt, its history row says the post
+// was not published, and every other
 // failure backs off after 15 attempts on the alarm (doubling from 2 min, at most an hour): 0.3.2 retried every entry on
 // every 1-minute alarm for 7 days, 10,080 attempts of up to 2 requests each.
 //   RED-FIRST: drop the lasting-refusal stop and "a 413 refusal is dropped" fails; drop the backoff and the 7-day count is
-//   10,081 (one per alarm) instead of 186. PAIRED HONEST PATHS: a 503, a 429 and a 200 {ok:false} keep the entry; the first 15 attempts
+//   10,081 (one per alarm) instead of 186; stop on any 4xx again (the 0.3.3 first cut) and "a 403 keeps the entry" fails;
+//   drop the history mark and "the post's history row says it was not published" fails.
+//   PAIRED HONEST PATHS: a 503, a 429, a 403, a 404 and a 200 {ok:false} keep the entry; the first 15 attempts
 //   run on every alarm, so a post mined within 15 minutes registers at the next alarm as before.
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
+import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
 const check = (n, c) => { c ? pass++ : (fail++, console.error("  ✗ " + n)); if (c) console.log("  ✓ " + n); };
@@ -96,7 +100,9 @@ console.log("a lasting refusal stops the retries; other failures back off:");
   check("a 413 refusal (a body over the server's cap) is dropped after one attempt", big.tried === 1 && big.left.length === 0);
   const bad = await one(400, { ok: false, error: "request refused" });
   check("a 400 refusal is dropped after one attempt", bad.tried === 1 && bad.left.length === 0);
-  for (const [status, body, what] of [[503, { ok: false, failover: true }, "a 503 (failover)"], [429, { ok: false }, "a 429 (rate limit)"], [200, { ok: false, error: "proposal not found on-chain yet" }, "a 200 {ok:false}"]]) {
+  const un = await one(422, { ok: false, error: "unprocessable" });
+  check("a 422 refusal is dropped after one attempt", un.tried === 1 && un.left.length === 0);
+  for (const [status, body, what] of [[503, { ok: false, failover: true }, "a 503 (failover)"], [429, { ok: false }, "a 429 (rate limit)"], [200, { ok: false, error: "proposal not found on-chain yet" }, "a 200 {ok:false}"], [403, { ok: false, error: "challenge" }, "a 403 (an edge challenge, not Cairn's content route)"], [404, {}, "a 404 (a mistyped API address the user can fix)"]]) {
     const r = await one(status, body);
     check(`honest path: ${what} keeps the entry for the next alarm`, r.tried === 1 && r.left.length === 1 && r.left[0].fails === 1 && r.left[0].nextAt <= Date.now());
   }
@@ -131,6 +137,35 @@ console.log("a lasting refusal stops the retries; other failures back off:");
     await w.flushPending();
     check("honest path: a post mined after 3 minutes registers at the 4th alarm, with no wait", proposals - p0 === 4 && registers - g0 === 1 && ((await store.get("pendingContent")) || []).length === 0);
   } finally { Date.now = realNow; }
+}
+
+console.log("a post whose text the server refuses for good says so in its history row:");
+{
+  const ps = memoryStore();
+  const pw = new Wallet(ps);
+  const { addr } = await pw.create("super-secret-pw-2");
+  const cm = mkCoin(10e8), coin = cm.coin;
+  let contentStatus = 413;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: 50_000 }) };
+    if (/\/utxos\//.test(u)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.value, utxos: [coin] }) };
+    if (u.includes("/tx/submit")) return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    if (u.includes("/proposal/")) return { ok: true, status: 200, json: async () => ({ payload_hash: "0x" + "ff".repeat(32) }) };
+    if (u.includes("/api/content")) return { ok: false, status: contentStatus, json: async () => ({ ok: false, error: "request refused" }) };
+    return txReply(u, [cm]) ?? { ok: false, status: 404, json: async () => ({}) };
+  };
+  // cairnPost starts a flush itself; wait for it (a second flushPending returns at once while one runs).
+  const drained = async () => { for (let i = 0; i < 200; i++) { await new Promise((res) => setTimeout(res, 0)); await pw.flushPending(); } };
+  const r = await pw.cairnPost({ domain: "board:v1", title: "too long", body: "x", fee: 25_000_000 });
+  await drained();
+  const row = ((await ps.get("txHistory:" + addr)) || []).find((x) => x.txid === r.txid);
+  check(`the post's history row says it was not published, with the server's status (${JSON.stringify(row?.bodyRefused)})`, r.txid !== undefined && row?.type === "post" && row.bodyRefused === 413 && ((await ps.get("pendingContent")) || []).length === 0);
+  contentStatus = 503;
+  const r2 = await pw.cairnPost({ domain: "board:v1", title: "fine later", body: "y", fee: 25_000_000 });
+  await drained();
+  const row2 = ((await ps.get("txHistory:" + addr)) || []).find((x) => x.txid === r2.txid);
+  check("honest path: a post the server cannot take yet (503) keeps its row unmarked and its body queued", row2?.type === "post" && row2.bodyRefused === undefined && ((await ps.get("pendingContent")) || []).some((x) => x.txid === r2.txid));
 }
 
 globalThis.fetch = origFetch;

@@ -35,6 +35,19 @@ export class TxHistory {
   // do not write while the wallet is locked (recordTx parks its row in RAM instead, except after reset());
   // DELETE callbacks do not bail (deletes are teardown and safe while locked).
   histChain: Promise<void> = Promise.resolve();
+  /** Adds `patch` to the row of `txid` in the history `k`, stored or parked; false when there is no such row. */
+  annotate(k: string, txid: string, patch: Record<string, unknown>): Promise<boolean> {
+    const id = String(txid).toLowerCase();
+    return this.inHistChain(async () => {
+      if (this.w.wiped()) return false;
+      let hit = false;
+      for (const p of this.pendingHist) if (p.k === k && String(p.entry?.txid).toLowerCase() === id) { Object.assign(p.entry, patch); hit = true; }
+      const h: any[] = (await this.store.get(k)) || [];
+      const row = h.find((x) => String(x?.txid).toLowerCase() === id);
+      if (row) { Object.assign(row, patch); await this.store.set(k, h); hit = true; }
+      return hit;
+    });
+  }
   inHistChain<T>(work: () => Promise<T>): Promise<T> {
     const run = this.histChain.then(work, work);
     this.histChain = run.then(() => {}, () => {});

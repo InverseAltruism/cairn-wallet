@@ -914,11 +914,13 @@ export function registerContent(apiBase: string, content: any, txid: string, tim
     return { ...body, ok: false, error: String(body.error ?? body.err ?? `/api/content -> ${r.status}`), status: r.status };
   }).catch((e) => ({ ok: false, error: String(e) }));
 }
-/** A 4xx other than 408, 425 and 429 is the server refusing this body for good (a body over its cap, a malformed
- *  request); a retry gets the same answer. Anything else (5xx, a timeout, a rate limit, a 200 {ok:false}) may pass later. */
+/** 400, 413 and 422 are the server refusing this body for good (a malformed request, a body over its cap, content it
+ *  cannot take); a retry gets the same answer. Anything else may pass later: a 5xx, a rate limit, a 200 {ok:false}, and a
+ *  401, 403 or 404, which Cairn's content route never sends (they come from something in front of it, such as an edge
+ *  challenge, or from an API setting the user may still fix). */
 export function contentRefusedForGood(r: { status?: unknown } | null | undefined): boolean {
   const s = Number(r?.status);
-  return Number.isInteger(s) && s >= 400 && s < 500 && s !== 408 && s !== 425 && s !== 429;
+  return s === 400 || s === 413 || s === 422;
 }
 
 // Sign in with CSD against the Cairn API: fetch nonce, sign its digest locally, verify.

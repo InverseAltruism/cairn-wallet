@@ -773,7 +773,7 @@ export class Wallet {
       // PCD-2 class (P75-6 F5): a content-queue write failure after a PAID, broadcast propose must not
       // make cairnPost reject and skip the history record below. The propose is broadcast and recorded;
       // the body can be re-posted (registration is idempotent).
-      try { await this.addPending(content, r.txid); } catch { /* content queue write failed; propose is broadcast + recorded below */ }
+      try { await this.addPending(content, r.txid, hk); } catch { /* content queue write failed; propose is broadcast + recorded below */ }
       this.flushPending();
     } // durable, alarm-driven
     await this.hist.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
@@ -992,9 +992,10 @@ export class Wallet {
   }
 
   // ── durable off-chain content registration (account-agnostic) ──────────────
-  private async addPending(content: unknown, txid: string) {
+  // `hk`: the history the post's row is in, so a body the server refuses for good can be marked there.
+  private async addPending(content: unknown, txid: string, hk?: string) {
     const list: any[] = (await this.store.get("pendingContent")) || [];
-    if (!list.find((x) => x.txid === txid)) list.push({ content, txid, ts: Date.now() });
+    if (!list.find((x) => x.txid === txid)) list.push({ content, txid, ts: Date.now(), ...(hk ? { hk } : {}) });
     await this.store.set("pendingContent", list);
   }
   // F-QUEUE-2 (Plans/68 A3): flushPending is a read-modify-write over pendingContent with awaits in
@@ -1036,7 +1037,12 @@ export class Wallet {
           // failed register keeps the entry, except on the server's lasting refusal, which a retry cannot change.
           const rr: { ok?: unknown; status?: unknown; error?: unknown } | null = await node.registerContent(this.api, x.content, x.txid);
           if (rr && rr.ok) continue;
-          if (node.contentRefusedForGood(rr)) { console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}: ${String(rr?.error ?? "")}); it is not retried`); continue; }
+          if (node.contentRefusedForGood(rr)) {
+            // Its history row says the post was not published (popup-history.ts); a queue entry from before 0.3.3 has no hk.
+            console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}: ${String(rr?.error ?? "")}); it is not retried`);
+            if (typeof x.hk === "string") await this.hist.annotate(x.hk, x.txid, { bodyRefused: Number(rr?.status) });
+            continue;
+          }
           later();
         } catch { later(); }                                  // transient/network error → retry later
       }

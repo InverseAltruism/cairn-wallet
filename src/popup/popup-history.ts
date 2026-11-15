@@ -36,7 +36,9 @@ export async function renderHistory() {
       : t.type === "consolidate"
         ? "Fee " + fmtBalance(Number(t.fee ?? 0)) + " CSD"
         : fmtBalance(Number(t.amount ?? t.fee ?? 0)) + " CSD";
-    const kind = TX_LABEL[t.type] || t.type;
+    // A post whose text the server refused for good (flushPending): the proposal is on chain, the post is not published.
+    const refusedBody = t.type === "post" && Number(t.bodyRefused) > 0;
+    const kind = refusedBody ? "Not posted" : TX_LABEL[t.type] || t.type;
     const detail = (t.type === "send" || t.type === "fillOffer" || t.type === "tokenSend") ? `to ${escapeHtml(String(t.to || "").slice(0, 12))}…`
       : t.type === "consolidate" ? `${Number(t.merged) || "?"} coins → 1${t.amount ? ` · ${fmtBalance(Number(t.amount))} CSD` : ""}`
       : t.title ? escapeHtml(String(t.title).slice(0, 28))
@@ -51,8 +53,9 @@ export async function renderHistory() {
       : mark === "stuck" ? ` <span class="dim">· still not included after ${INCLUSION_NOTICE_BLOCKS} blocks; check the explorer before sending again</span>`
       : mark === "gone" ? ` <span class="dim">· not included: its coins were spent by another transaction; check the explorer before sending again</span>`
       : "";
+    const bodyMark = refusedBody ? ` <span class="dim">· the server refused its text (HTTP ${Number(t.bodyRefused)}), so it was not published; the fee was paid and the proposal is on chain without it</span>` : "";
     return `<div class="tx"><span class="ti"><svg class="i" aria-hidden="true"><use href="icons.svg#${TX_ICON[t.type] ?? "i-arrow-up-right"}"/></svg></span>
-      <span class="nm"><b class="tx-kind">${escapeHtml(kind)}</b><small><span class="dim">${detail}</span>${when ? ` · <span class="when">${when}</span>` : ""}${maybeMark}</small></span>
+      <span class="nm"><b class="tx-kind">${escapeHtml(kind)}</b><small><span class="dim">${detail}</span>${when ? ` · <span class="when">${when}</span>` : ""}${maybeMark}${bodyMark}</small></span>
       <span class="vl"><span class="tx-amt">${csd}</span><small><a href="${escapeHtml(explorerLink(currentExplorer, "tx", String(t.txid)))}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(t.txid).slice(0, 10))}…${EXTERNAL_ICON}</a></small></span>
     </div>`;
   }).join("");
