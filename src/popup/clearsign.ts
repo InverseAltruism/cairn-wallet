@@ -4,7 +4,7 @@ import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecim
 import { EPOCH_LEN, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
-import { attestFields, fillFields, proposeFields, sealFields, sendFields, isTokenFillAttest } from "../core/signfields.js";
+import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields, sealFields, sendFields } from "../core/signfields.js";
 import { siwcFieldsFor, ANY_ACCOUNT } from "../core/siwcparams.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts; take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
@@ -374,6 +374,13 @@ export function signedFee(r: any): unknown {
   if (r?.method === "attest") { const a = attestFields(p); return a.route === "fill" ? a.fill.fee : a.fee; }
   return p.fee ?? defaultFeeFor(r?.method);
 }
+/** The value outputs the signer signs for this request (signfields.ts): a send's, a fill's, a proposal's; none else. */
+export function signedOutputs(r: any): { to: unknown; value: unknown }[] {
+  const p = r?.params || {};
+  if (r?.method === "send") return sendFields(p).outputs;
+  if (r?.method === "propose") return proposeFields(p).outputs;
+  return fillOf(r?.method, p)?.outputs ?? [];
+}
 export function describe(r: any): string {
   const p = r.params || {};
   const cost = costBlock(r);
@@ -477,7 +484,7 @@ export function describe(r: any): string {
     // The fields the signer signs (signfields.ts attestFields): at the token-fill confidence the attest is signed as a
     // token fill, with score 100, so it is shown as one and never as a cancel or a review.
     const af = attestFields(p);
-    const target = `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`;
+    const target = `<code>${truncLoud(String((af.route === "fill" ? af.fill.proposalId : af.proposalId) || "(none)"), 80)}</code>`;
     if (af.route === "fill") {
       const tokenFill = danger(`<b>Token-priced fill: approving spends tokens from your CairnX balance.</b> If this attests an open offer, the convention debits its asking amount + ${FEE_BPS_V16 / 100}% protocol fee (computed below when available). Only approve if you intend to buy from this offer; verify its price on the site or the explorer first.`) + TOKEN_SIM;
       return title("Fill offer") + tokenFill + scoreRefusedNote(af.fill, p.score) + cost + lede(FILL_RECORDS)
@@ -525,7 +532,7 @@ export function describe(r: any): string {
   // M14 (B5h): a reveal publishes a secret. The full seal txid shows, and approve.ts fills #reveal-preview with the
   // domain and the claim text from the wallet's own sealed claims (a local read), so the user sees which secret.
   if (r.method === "revealClaim") return title("Reveal a sealed claim") + cost + REVEAL_PREVIEW + lede("Publish the sealed text; it becomes public and provably committed earlier.")
-    + rows([["Seal tx", `<code>${truncLoud(String(r.params || ""), 80)}</code>`]]);
+    + rows([["Seal tx", `<code>${truncLoud(revealFields(r.params).txid, 80)}</code>`]]);
   // Send is the dApp method that moves funds to a page-chosen recipient: every recipient in full, each amount, the
   // total and the fee. #send-warn is filled by approve.ts (first-time and address-poisoning).
   if (r.method === "send") {
@@ -553,7 +560,7 @@ export function describe(r: any): string {
     // explanation, the offer id and the attestation.
     return title("Fill offer") + (outs.length ? `<div class="ap-amt">${fmtCsd(total)}</div>` : "")
       + tokenFill + scoreRefusedNote(ff, p.score) + cost + SEND_WARN + (tokenFill ? "" : FILL_VIEW) + rows(outputRows(outs)) + lede(tokenFill ? FILL_RECORDS : FILL_PAYS)
-      + rows([["Offer", `<code>${truncLoud(String(p.proposalId || "(none)"), 80)}</code>`], ["Attestation", attestation(ff.score, conf)]]);
+      + rows([["Offer", `<code>${truncLoud(String(ff.proposalId || "(none)"), 80)}</code>`], ["Attestation", attestation(ff.score, conf)]]);
   }
   return title(escapeHtml(r.method)) + cost;
 }
@@ -678,16 +685,9 @@ export function balanceShortNote(back: "Reject this" | "Go back"): string {
 
 // Base units that will LEAVE the wallet if this request is approved (for balance-after).
 export function debitOf(r: any): number {
-  const p = r.params || {};
-  if (r.method === "send" || r.method === "fillOffer") {
-    const outs = r.method === "send" ? sendFields(p).outputs : fillFields(p).outputs;
-    const total = outs.reduce((a: number, o: any) => a + baseVal(o.value), 0);
-    return total + baseVal(signedFee(r));
-  }
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions" || r.method === "signin" || r.method === "signinWithCsd") return 0;
-  // a propose may carry protocol-fee outputs (CairnX deploy / name registration) → count them
-  const outs = r.method === "propose" ? proposeFields(p).outputs.reduce((a: number, o: any) => a + baseVal(o.value), 0) : 0;
-  return outs + baseVal(signedFee(r));
+  // a propose may carry protocol-fee outputs (CairnX deploy / name registration): they count like a send's
+  return signedOutputs(r).reduce((a: number, o: any) => a + baseVal(o.value), 0) + baseVal(signedFee(r));
 }
 
 // Address-poisoning lookalike: an attacker seeds your history with an address sharing the head+tail
@@ -727,13 +727,15 @@ const WARN_TAIL: Record<RecipientKind, string> = {
  *  neutrally as funds leaving the wallet). A cairnx record adds the address it acts on. */
 export function requestRecipients(r: any): { to: string; kind: RecipientKind }[] {
   if (r?.method !== "send" && r?.method !== "fillOffer" && r?.method !== "propose") return [];
-  const p = r.params || {};
-  const outs: { to: string; kind: RecipientKind }[] = (Array.isArray(p.outputs) ? p.outputs : (p.to ? [{ to: p.to }] : [])).map((o: any) => ({ to: String(o?.to || ""), kind: "payment" as const }));
+  // A single send that names no `to` has no recipient to check (the engine refuses it).
+  const noTo = r.method === "send" && !sendFields(r.params).many;
+  const outs: { to: string; kind: RecipientKind }[] = signedOutputs(r).filter((o) => !noTo || !!o?.to).map((o) => ({ to: String(o?.to || ""), kind: "payment" as const }));
   // A dApp-proposed CairnX token transfer carries its recipient in the decoded record's `to` (NOT a CSD
   // output), so the first-time / address-poisoning check would otherwise skip it (audit POPUP-1). Decode
   // the canonical+hash-committed record and include the token recipient in the same check.
-  if (r.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
-    const rec = decodeCairnxRecord(p.uri, p.payloadHash);
+  const pf = proposeFields(r.params);
+  if (r.method === "propose" && String(pf.domain) === CAIRNX_DOMAIN) {
+    const rec = decodeCairnxRecord(pf.uri, pf.payloadHash);
     if (rec && rec.t === "transfer" && typeof rec.to === "string") outs.push({ to: rec.to, kind: "token" });
     // NSET-POISON-1: an nset re-points where a name RESOLVES (so future sends to it land there), and an
     // nxfer hands the name to a new owner; both carry an attacker-influenceable address that deserves the
@@ -948,7 +950,7 @@ export function nfinalizeApproveGate(fetched: NameFetchResult, me: string, tip: 
 // with a note for what the rows cannot show. approve.ts fills #bal-after from the balance read.
 const NO_FUNDS = new Set(["connect", "getAddress", "requestPermissions", "signin", "signinWithCsd"]);
 function costNote(r: any): string {
-  const tokenFill = isTokenFillAttest(r.params?.confidence);
+  const tokenFill = isTokenFill(r.method, r.params);
   if (r.method === "fillOffer") return tokenFill ? "Plus tokens debited from your CairnX balance per the offer's terms." : "";
   if (r.method === "attest") return tokenFill ? `Plus tokens debited from your CairnX balance if this attests an open offer (its ask + ${FEE_BPS_V16 / 100}%).` : "";
   if (r.method === "propose") return proposeFields(r.params).outputs.length ? "" : "The network fee is paid to miners.";

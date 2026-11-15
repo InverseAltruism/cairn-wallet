@@ -1,7 +1,8 @@
 // The fields the wallet signs for a dApp request, from the request's params: the defaults, the clamps and the routes the
 // sign path applies, in one function per method. wallet.ts and background.ts build from these, and the approval window
-// (clearsign.ts describe, debitOf, costBlock) shows these, so the window and the signer cannot read one request two ways
-// (test/sign-display-parity.test.mjs). The engine (node.ts) still validates what it is given and refuses the rest.
+// (clearsign.ts and approve.ts: what it paints and what it reads before the paint) shows these, so the window and the
+// signer cannot read one request two ways (test/sign-display-parity.test.mjs). The engine (node.ts) still validates what
+// it is given and refuses the rest.
 import { defaultFeeFor, SCORE_FILL, CONF_TOKEN_FILL } from "./cairnx.js";
 
 type Out = { to: string; value: number };
@@ -9,7 +10,7 @@ type Params = Record<string, any>;
 const paramsOf = (p: unknown): Params => (p && typeof p === "object" ? (p as Params) : {});
 
 /** An attest at the token-fill confidence is signed as a fill (fillFields), never as a plain attest. */
-export const isTokenFillAttest = (confidence: unknown): boolean => (Number(confidence ?? 100) >>> 0) === CONF_TOKEN_FILL;
+const isTokenFillAttest = (confidence: unknown): boolean => (Number(confidence ?? 100) >>> 0) === CONF_TOKEN_FILL;
 
 /** A fill (fillOffer, or an attest at the token-fill confidence). The signed score is SCORE_FILL; a present score that
  *  is not SCORE_FILL is refused (`refused`), never coerced, since the resolver ignores any other score after the payment. */
@@ -33,6 +34,16 @@ export function attestFields(params: unknown): AttestFields {
   return { route: "attest", proposalId: p.proposalId, score: Number(p.score) >>> 0, confidence: Number(p.confidence) >>> 0, fee: p.fee ?? defaultFeeFor("attest") };
 }
 
+/** The fill a request signs: a fillOffer, or an attest the signer signs as a fill; null for any other request. */
+export function fillOf(method: unknown, params: unknown): FillFields | null {
+  if (method === "fillOffer") return fillFields(params);
+  if (method !== "attest") return null;
+  const a = attestFields(params);
+  return a.route === "fill" ? a.fill : null;
+}
+/** A token-priced fill: a fill (fillOf) at the token-fill confidence. */
+export const isTokenFill = (method: unknown, params: unknown): boolean => fillOf(method, params)?.confidence === CONF_TOKEN_FILL;
+
 export type ProposeFields = { domain: any; payloadHash: any; uri: any; expiresEpoch: any; fee: number; outputs: Out[] };
 export function proposeFields(params: unknown): ProposeFields {
   const p = paramsOf(params);
@@ -46,6 +57,9 @@ export function sendFields(params: unknown): SendFields {
   const many = Array.isArray(p.outputs);
   return { many, outputs: many ? p.outputs : [{ to: p.to, value: p.amount }], fee: p.fee ?? defaultFeeFor("send") };
 }
+
+/** A reveal publishes the stored preimage of the seal `txid` (the request's params) and signs no transaction. */
+export const revealFields = (params: unknown): { txid: string } => ({ txid: String(params ?? "") });
 
 /** A sealed claim's commit: the trimmed domain (default csd:sealed) and the claim it hashes; a claim that is not a
  *  non-empty string, or a domain that is not a string, is refused before any fee is spent. */

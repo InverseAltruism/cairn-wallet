@@ -8,7 +8,7 @@ import { PortRegistry } from "./core/events.js";
 import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
 import { fillTargetOf } from "./core/fillpreflight.js";
 import { siwcParamsRefusal } from "./core/siwcparams.js";
-import { sendFields } from "./core/signfields.js";
+import { sendFields, revealFields } from "./core/signfields.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -266,7 +266,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote }); // W4 (B5d): thread the reviewed signer so a token-fill-confidence attest gets the fill path's ACCOUNT_CHANGED cross-check; RT-W2: + the reviewed quote
     else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
-    else if (p.method === "revealClaim") result = await wallet.revealClaim(p.params);
+    else if (p.method === "revealClaim") result = await wallet.revealClaim(revealFields(p.params).txid);
     // Plain transfer. Reachable from a dApp ONLY through this approval path (the user
     // saw the recipient/amount/fee in the approve window). We read ONLY to/amount/fee
     // or outputs[]; never any caller-supplied inputs/UTXOs/change address; node.send*

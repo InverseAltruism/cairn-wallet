@@ -8,9 +8,12 @@
   offer that the window called a cancel; it now paints "Fill offer" with score 100, never a cancel, and a score the
   fill refuses is shown as refused. A seal's domain is shown trimmed, as signed; a seal domain that is not a string is
   shown as refused; a sign-in always shows the URI it signs, its default included. One function per request type
-  (`src/core/signfields.ts`; `siwcFieldsFor` for a sign-in) gives the signer its fields and the window what it shows,
-  and test/sign-display-parity.test.mjs runs every request type through the real worker and compares the two (at
-  29034be it failed 6 of its 25 checks).
+  (`src/core/signfields.ts`; `siwcFieldsFor` for a sign-in) gives the signer its fields and the window what it shows
+  and what it reads before and after the paint (the cancel read, the token quote, the fill view, the reveal preview,
+  the recipient checks). test/sign-display-parity.test.mjs sends every request type through the real worker to the
+  real approval window, approves it with the window's button, and compares the painted fields and the window's reads
+  with the signed transaction (at 29034be it fails 7 of its 46 checks, among them the window titling the user's own
+  token-priced offer "Cancel your offer" while the wallet signs a fill of it).
 - CI and the release workflow run on Node 26 (`node-version: "26"` in every setup-node step), the runtime of the
   release host since 2026-11-13, so the local CI-equivalent run and a maintainer's reproduce-then-publish build use the
   Node the workflows use (test/ci-node-version.test.mjs). The release zips built from v0.3.2 were byte-identical on
