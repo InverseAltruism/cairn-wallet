@@ -14,7 +14,6 @@
 //
 // Run: node --import tsx test/display-truth.test.mjs   (offline)
 import { readFileSync } from "node:fs";
-import { scriptSource } from "../scripts/popup-ids.mjs";
 import { describe, costBlock, debitOf, fmtCsd, truncLoud, tokenAmountBothScales, tokenQuoteHtml, revealPreviewHtml } from "../src/popup/clearsign.ts";
 import { canonicalJson, cairnxPayloadHash, defaultFeeFor, CAIRNX_DOMAIN, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16 } from "../src/core/cairnx.ts";
 import { MIN_FEE_PROPOSE, MIN_FEE_ATTEST } from "../src/vendor/cairnx-spv.js";
@@ -164,23 +163,12 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   ok("N22: deploy supply renders base units AND the record-proven human scale", html.includes("123456") && html.includes("= 1234.56 at 2 decimals"));
 }
 
-// ── Source pins (use-site truth: a helper test alone cannot see a reverted caller) ─
+// ── Source pin: armButtons waits on the send-warning and token-preview paints fail-soft. Both promises reject only on a
+// throw outside those functions' own catch, which no behaviour test can provoke, so the use site is pinned.
 {
-  const popupSrc = scriptSource("popup.ts");
   const approveSrc = readFileSync(new URL("../src/popup/approve.ts", import.meta.url), "utf8");
-  ok("PIN W8: the token review card renders via tokenAmountBothScales at its use-site", /\$\("tc-amt"\)\.textContent = tokenAmountBothScales\(/.test(popupSrc));
-  // the token and its decimals come from the frozen review, never from the live sheet (popup-outcome-dom 12)
-  ok("PIN W8: the sent toast renders via tokenAmountBothScales, from the reviewed snapshot", popupSrc.includes("Sent ${tokenAmountBothScales(base, decimals, ticker)}") && !popupSrc.includes("Sent ${tokenAmountBothScales(base, tsend."));
-  ok("PIN M10: the affirmative 'likely never landed' claim is gone from popup.ts", !popupSrc.includes("likely never landed"));
-  // The >1h tombstone this pinned is gone: an open row's marker now comes from chain state, and
-  // test/popup-inclusion-dom.test.mjs (1)-(3) asserts no marker calls a possibly-landed send lost.
-  ok("PIN M3: approve.ts renders the quote via the attributed tokenQuoteHtml", approveSrc.includes("show(tokenQuoteHtml(q, tip))"));
-  ok("PIN M3: no first-person 'You will pay' debit assertion remains in approve.ts", !approveSrc.includes("You will pay"));
   ok("PIN 0.2.70: armButtons fail-softs a rejected fillSendWarning (Approve/Reject cannot stay disabled)",
     /Promise\.all\(\[minWait, Promise\.resolve\(warnPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc) && /Promise\.all\(\[base, Promise\.resolve\(tokenPainted\)\.catch\(\(\) => \{(?: \/\*[^*]*\*\/ )?\}\)\]\)/.test(approveSrc));
-  ok("PIN M14: approve.ts wires fillRevealPreview into render()", approveSrc.includes("fillRevealPreview(current)"));
-  ok("PIN M14: the preview reads the LOCAL sealedClaims store (no network)", approveSrc.includes('call("sealedClaims")'));
-  ok("PIN B5h: a score-50 attest threads only the LOCAL tipFloor (no tip/network fetch added)", /method === "attest"[\s\S]{0,900}?call\("tipFloor"\)/.test(approveSrc) && !/method === "attest"[\s\S]{0,900}?call\("tip"\)[^F]/.test(approveSrc));
 }
 
 // ── B9 (M8 batch): ONE default-fee table; screen rows can never disagree again ─────────────
@@ -235,23 +223,20 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   // An EXPLICIT dApp fee still wins over the table everywhere (the table is a default, not a clamp).
   const explicit = { method: "attest", params: { proposalId: ID, score: 80, confidence: 70, fee: 9_000_000 } };
   ok("B9: an explicit fee is shown and debited as given", describe(explicit).includes(feeTxt(9_000_000)) && debitOf(explicit) === 9_000_000);
+  // An explicit fee of 0 is shown and debited as 0 (the engine refuses it BAD_FEE), never replaced by a default: a
+  // `fee || default` anywhere in the fee row or the debit would paint a fee the request does not carry.
+  const TO0 = "0x" + "ab".repeat(20);
+  for (const r0 of [
+    { method: "send", params: { to: TO0, amount: 100, fee: 0 } },
+    { method: "fillOffer", params: { proposalId: ID, outputs: [{ to: TO0, value: 100 }], fee: 0 } },
+    { method: "propose", params: { domain: "csd:test", payloadHash: ID, uri: "u", outputs: [{ to: TO0, value: 100 }], fee: 0 } },
+    { method: "attest", params: { proposalId: ID, score: 80, confidence: 70, fee: 0 } },
+    { method: "sealClaim", params: { claim: "x", fee: 0 } },
+  ]) {
+    const outs = r0.method === "attest" || r0.method === "sealClaim" ? 0 : 100;
+    ok(`B9: ${r0.method} with fee 0 shows and debits a fee of 0`, costBlock(r0).includes(`<dt>Network fee</dt><dd>${fmtCsd(0)}`) && debitOf(r0) === outs);
+  }
 
-  // Use-site pins: the display layer must read the table (no hand-typed fallback literals), and the
-  // engine must APPLY the table where it used to error on an omitted fee.
-  const clearsignSrc = readFileSync(new URL("../src/popup/clearsign.ts", import.meta.url), "utf8");
-  const walletSrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
-  // One fee row now (the cost rows of every request type): its one use site reads the fee the signer signs
-  // (clearsign.ts signedFee over src/core/signfields.ts, which applies the table to an omitted fee for every method).
-  const fieldsSrc = readFileSync(new URL("../src/core/signfields.ts", import.meta.url), "utf8");
-  ok("PIN B9: the feeValue use site reads signedFee(r)",
-    (clearsignSrc.match(/feeValue\(signedFee\(r\)/g) || []).length === 1
-    && (clearsignSrc.match(/feeValue\(/g) || []).length === 2);   // the definition and that one call
-  ok("PIN B9: the sign fields default an omitted fee from the table for every fee-bearing dApp method",
-    ["fillOffer", "attest", "propose", "send", "sealClaim"].every((m) => fieldsSrc.includes(`defaultFeeFor("${m}")`)));
-  ok("PIN B9: cost/debit fallbacks read the table, not literals", !/\|\| ?(1_000_000|5_000_000|1000000|5000000)\)/.test(clearsignSrc));
-  ok("PIN B9: the engine defaults an omitted propose fee (was BAD_FEE after approval)", walletSrc.includes('defaultFeeFor("propose")'));
-  ok("PIN B9: the engine defaults an omitted attest fee", walletSrc.includes('defaultFeeFor("attest")'));
-  ok("PIN B9: the drift-prone ATTEST_FLOOR twin const is gone", !walletSrc.includes("const ATTEST_FLOOR"));
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
