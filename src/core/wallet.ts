@@ -1089,9 +1089,10 @@ export class Wallet {
   // preimages; so a freshly-created wallet can't surface a prior owner's data.
   // RESET-RESURRECT (fund-safety red-team + P75-6): the wipe must not race ANY parked write. It is
   // serialized behind ALL THREE write chains (vault, history, seals); lock() above nulled
-  // this.accts, and every chained WRITE callback bails on !this.accts, so nothing queued after this
-  // point can land, and everything queued before it settles before the deletes run. doReset() below
-  // clears the parked arrays itself. (W4: lock() no longer clears them, because an idle auto-lock is
+  // this.accts, and every chained WRITE callback bails on !this.accts (history's `annotate`, which
+  // writes while locked, bails on `wiped`, set first below), so nothing queued after this point can
+  // land, and everything queued before it settles before the deletes run. doReset() below clears the
+  // parked arrays itself. (W4: lock() no longer clears them, because an idle auto-lock is
   // not a reset and destroying a PAID commit's only reveal nonce was the defect; the reset path's
   // clear was already independent, which is why the deletion did not touch this property.)
   async reset(): Promise<void> {

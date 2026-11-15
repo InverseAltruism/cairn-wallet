@@ -32,7 +32,9 @@ export class TxHistory {
   // returned so each caller still observes its own outcome.
   // Boundary rule: a chain callback contains STORAGE ops only, never a network await (send()
   // awaits maybeRecord, so anything inside histChain sits on the send hot path). WRITE callbacks
-  // do not write while the wallet is locked (recordTx parks its row in RAM instead, except after reset());
+  // do not write while the wallet is locked (recordTx parks its row in RAM instead, except after reset()),
+  // with one exception: `annotate` patches a row that already exists, so it writes while locked (the content
+  // flush runs on the alarm then) and bails only once reset() has started (`wiped()`), never inserting a row.
   // DELETE callbacks do not bail (deletes are teardown and safe while locked).
   histChain: Promise<void> = Promise.resolve();
   /** Adds `patch` to the row of `txid` in the history `k`, stored or parked; false when there is no such row. */

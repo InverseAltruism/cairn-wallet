@@ -19,9 +19,9 @@ This repo follows the maintainers' cross-repo engineering standard (a private do
 - Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it, and on the signer path a second reviewer re-derives it.
 - Docs: this file holds what stays true: no version tables and no "current state" snapshots (the version is in `package.json` and the tags; live state comes from a live query). History goes to `CHANGELOG.md`. Dates are absolute, no em dashes.
 
-Known deviations (checked 2026-10-22, not exhaustive):
+Known deviations (checked 2026-10-22, not exhaustive; line counts 2026-11-15):
 
-- Over 800 lines: `src/core/wallet.ts` (1,091, about a third of it comments), `src/core/namespv.ts` (977), `src/core/node.ts` (905), and the third-party `src/popup/qr/qrcodegen.ts` (1,010), which tsc does not check (`@ts-nocheck` in its local banner: `noUncheckedIndexedAccess` would need edits to upstream code).
+- Over 800 lines: `src/core/wallet.ts` (1,114, about a third of it comments), `src/core/namespv.ts` (1,025), `src/popup/clearsign.ts` (974), `src/core/node.ts` (943), and the third-party `src/popup/qr/qrcodegen.ts` (1,010), which tsc does not check (`@ts-nocheck` in its local banner: `noUncheckedIndexedAccess` would need edits to upstream code).
 - Copies kept in step by hand where the standard prefers an import: the fee cap in `src/core/node.ts` (`proportionalFeeCap`; the vendored bundle does not export csd-tx's `feeCap`, and test/feecap-parity.test.mjs compares the two over 202,163 totals against the pinned csd-tx; adding `feeCap` to scripts/build-spv-vendor.sh's export list at the next re-vendor retires it); the field checks `src/core/siwc.ts` shares with csd-siwc (KEEP-IN-SYNC comment). `src/core/csdtx.ts` calls itself the browser twin of the server codec and carries no marker; the golden vectors in `test/selftest.ts` pin it. `toChainEvent` in `src/core/spvbind.ts` mirrors the event shapes of the cairnx scanner, which lives in another repo; test/namespv.test.mjs replays them through the vendored resolver.
 - `npm run lint` (Biome, `biome.json`) reports 97 empty blocks as warnings (12 in `src/`, 85 in `test/`), so that rule does not fail CI yet.
 - Comment essays and audit IDs in `src/` are trimmed per module, not as drive-by edits.
