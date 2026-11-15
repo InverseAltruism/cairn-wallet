@@ -12,7 +12,7 @@ declare const __WALLET_VERSION__: string; // package.json version, stamped by bu
     if (w) { waiters.delete(id); w(res); }
   });
   const req = (method: string, params?: any) => new Promise((resolve) => {
-    const id = newId(); // unguessable per-request id (was a predictable sequential int — audit SEQ-INJECT)
+    const id = newId(); // unguessable per-request id (was a predictable sequential int: audit SEQ-INJECT)
     waiters.set(id, resolve);
     // Target our OWN origin, not "*", so the relay message can never be delivered to a
     // cross-origin iframe embedded in the page (defence in depth; we also check source).
@@ -43,7 +43,9 @@ declare const __WALLET_VERSION__: string; // package.json version, stamped by bu
     // to removeListener. Cairn emits accountsChanged([]) on lock/account-switch/revoke (never a new addr).
     on: (event: string, handler: (d: any) => void) => { (handlers[event] ||= new Set()).add(handler); },
     removeListener: (event: string, handler: (d: any) => void) => { handlers[event]?.delete(handler); },
-    getCapabilities: () => Promise.resolve({ version: __WALLET_VERSION__, siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signIn", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
+    // signIn stays callable (and refused off the first-party site) but is not advertised: it posts to the API's legacy
+    // /auth/nonce, which the Cairn API no longer serves, so against that API it succeeds from no origin.
+    getCapabilities: () => Promise.resolve({ version: __WALLET_VERSION__, siwc: "1", discovery: "csd", events: ["accountsChanged", "disconnect"], methods: ["connect", "getAddress", "signInWithCsd", "getPermissions", "requestPermissions", "revokePermissions", "propose", "attest", "send", "fillOffer", "sealClaim", "revealClaim"] }),
     propose: (p: any) => req("propose", p),
     attest: (p: any) => req("attest", p),
     // Plain CSD transfer. ALWAYS routes through the wallet's approval popup, which
@@ -51,16 +53,16 @@ declare const __WALLET_VERSION__: string; // package.json version, stamped by bu
     // first-time / look-alike (address-poisoning) recipients. Param is an object:
     //   { to, amount, fee? }                         single recipient
     //   { outputs: [{ to, value }, …], fee? }         1→many. The wallet always selects
-    // its own inputs and returns change to itself — a page can't pick UTXOs or redirect
+    // its own inputs and returns change to itself: a page can't pick UTXOs or redirect
     // change. (Secret-key access, account management and settings stay wallet-UI-only.)
     send: (p: any) => req("send", p),
     // commit-reveal. The claim text passes through the page, but the salt (nonce)
-    // is generated in the wallet and never leaves it — so the page can't forge the
+    // is generated in the wallet and never leaves it, so the page can't forge the
     // commitment, and reveal can only be done by the wallet that sealed it.
     sealClaim: (p: any) => req("sealClaim", p),
     revealClaim: (txid: string) => req("revealClaim", txid),
     // Offer fill: ONE tx = Attest(proposalId, score,
-    // confidence) + payment outputs. ALWAYS clear-signed like send — the approval window
+    // confidence) + payment outputs. ALWAYS clear-signed like send: the approval window
     // shows the offer id, every recipient/amount, the fee and balance-after. The wallet
     // selects its own inputs; change returns only to itself.
     //   { proposalId, outputs: [{ to, value }, …], score?, confidence?, fee? }
@@ -68,14 +70,14 @@ declare const __WALLET_VERSION__: string; // package.json version, stamped by bu
   });
   // Expose window.cairn as a NON-WRITABLE, NON-CONFIGURABLE, FROZEN provider (audit NSPV-PMR-FREEZE): a
   // co-present page script must not be able to replace a method (e.g. swap `send`) to spoof what the dApp
-  // invokes. Methods stay functional — on()/removeListener() mutate a closure-captured handler map, not the
+  // invokes. Methods stay functional: on()/removeListener() mutate a closure-captured handler map, not the
   // frozen object. Guarded so a (rare) double-injection can't throw on the non-configurable redefine.
   try {
     if (!(window as any).cairn?.isCairn) Object.defineProperty(window, "cairn", { value: provider, writable: false, configurable: false, enumerable: true });
-  } catch { try { (window as any).cairn = provider; } catch { /* already non-writable — leave the existing provider */ } }
+  } catch { try { (window as any).cairn = provider; } catch { /* already non-writable: leave the existing provider */ } }
   window.dispatchEvent(new Event("cairn#initialized"));
 
-  // Discovery (EIP-6963 analog, under our OWN `csd:` namespace — window.cairn is NOT an EIP-1193
+  // Discovery (EIP-6963 analog, under our OWN `csd:` namespace: window.cairn is NOT an EIP-1193
   // provider, so we mirror the pattern rather than reuse the `eip6963:` names). Lets a dApp enumerate
   // installed wallets without the single-global collision and coexist with other extensions. The dApp
   // dispatches `csd:requestProvider`; we (re)announce a FROZEN detail {info:{uuid,name,icon,rdns},

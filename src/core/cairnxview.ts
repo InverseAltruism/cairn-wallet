@@ -1,7 +1,8 @@
 // Display reads of the CairnX resolver for the popup and the approval cards: balances and names, the token list,
 // a token fill's quoted debit, a fill's listed asset, token decimals. Resolver-served and never bound to a
 // signature; the fill preflight makes its own reads and binds what it signs (fillpreflight.ts).
-import { cairnxTradeFee, FEE_BPS_V16, isTicker, type TokenDisplayMeta } from "./cairnx.js";
+import { cairnxTradeFee, FEE_BPS_V16, isTicker, decodeCairnxRecord, CAIRNX_DOMAIN, type TokenDisplayMeta } from "./cairnx.js";
+import { getProposal } from "./node.js";
 import { offerExpiryHeightOf } from "../vendor/cairnx-spv.js";
 
 // The block at which the served offer expires, for the fill cards. Display only: the fill preflight checks the
@@ -141,4 +142,18 @@ export async function cairnxTokens(wallet: CairnxViewIo): Promise<{ ok: boolean;
     const j = await r.json();
     return { ok: true, tokens: Array.isArray(j) ? j : [] };
   } catch { return { ok: false }; }
+}
+
+/** An attest's target as the node's /proposal read describes it: a CairnX offer or bid (by its own record) and who
+ *  proposed it, any other proposal, or not readable. Display only, for the cancel title (the node is trusted for what
+ *  the wallet displays, SECURITY.md); the attest signs the same bytes whatever this says. */
+export type AttestTarget = { ok: true; kind: "offer" | "bid" | "other"; proposer: string } | { ok: false };
+export async function attestTargetView(rpc: string, proposalId: unknown): Promise<AttestTarget> {
+  const id = String(proposalId ?? "");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(id)) return { ok: false };
+  const p = await getProposal(rpc, id);
+  const proposer = String(p?.proposer ?? "").toLowerCase();
+  if (!p?.payload_hash || !/^0x[0-9a-f]{40}$/.test(proposer)) return { ok: false };
+  const t = String(p.domain) === CAIRNX_DOMAIN ? decodeCairnxRecord(p.uri, p.payload_hash)?.t : undefined;
+  return { ok: true, kind: t === "offer" || t === "bid" ? t : "other", proposer };
 }

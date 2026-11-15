@@ -2,11 +2,12 @@
 // token-fill confidence). It reads the offer and the chain through the wallet (FillPreflightIo) and returns a
 // refusal, or null to sign. Nothing here signs or records.
 import type * as node from "./node.js";
-import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL } from "./cairnx.js";
+import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms, OfferProgress } from "./fillspv.js";
 import { refuse } from "./refuse.js";
+import { fillOf } from "./signfields.js";
 import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { CLARVIS_TRADE_API } from "./endpoints.js";
 import { OWN_FILL_INDEX_WAIT_MS } from "./history.js";
@@ -75,15 +76,12 @@ const SECOND_SOURCE_TIMEOUT_MS = 12000;
 export type FillRefusal = node.SubmitResult & { unconfirmed?: ReservationUnconfirmed };
 // The shape of a fill target (an offer id or a reservation txid); the preflight refuses anything else before any read.
 const FILL_TARGET_RE = /^0x[0-9a-fA-F]{64}$/;
-// An attest at the token-fill confidence is a token fill: on chain it equals a fillOffer with no outputs, so
-// Wallet.attest signs it through fillOffer.
-export const isTokenFillAttest = (confidence: unknown): boolean => (Number(confidence ?? 100) >>> 0) === CONF_TOKEN_FILL;
 /** The target a dApp request would fill, lowercased as the preflight compares it, or null when the request is not a
  *  fill or names a malformed target (which the preflight refuses with BAD_REQUEST before any read). */
 export function fillTargetOf(method: string, params: unknown): string | null {
-  const p = (params ?? {}) as { proposalId?: unknown; confidence?: unknown };
-  if (method !== "fillOffer" && !(method === "attest" && isTokenFillAttest(p.confidence))) return null;
-  const id = String(p.proposalId);
+  const f = fillOf(method, params);
+  if (!f) return null;
+  const id = String(f.proposalId);
   return FILL_TARGET_RE.test(id) ? id.toLowerCase() : null;
 }
 

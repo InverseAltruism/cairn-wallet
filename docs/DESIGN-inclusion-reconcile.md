@@ -16,7 +16,9 @@ bookkeeping fields on the row.
   (`/utxos-all`) while the tx is not mined, at two different tips. Any later reading that disagrees clears it. It
   also needs the RPC's status read to be `definite` (behind the Cairn proxy: both node backends' mempool reads
   complete); without it the row keeps the `stuck` notice. A `gone` row is read again once per
-  `INCLUSION_GONE_READ_INTERVAL` (100) blocks, so a later "mined" still undoes it.
+  `INCLUSION_GONE_READ_INTERVAL` (100) blocks, so a later "mined" still undoes it. A mined set the node cut at its
+  bound (node 0.1.17 `--utxos-bound`, the largest coins first, `truncated: true`) gives no `gone` step: an input below
+  the cut is missing without being spent. It still proves a listed txid included (test/inclusion-chain.test.mjs 6t).
 - `stuck`: the standing notice, set `INCLUSION_NOTICE_BLOCKS` (10) blocks past `subTip`. `subTip` is the tip at the
   row's first reconcile, not at submit: a popup send is first reconciled at the popup's balance refresh after the
   send, a dApp send when the popup next opens.

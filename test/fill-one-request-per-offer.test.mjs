@@ -26,6 +26,12 @@ const WIN = 77;
 const mem = new Map();
 let onRemoved = null;
 const windowCalls = []; // every create and focus of the approval window, in order
+// A refused request raises the window at most once per 5 s (background.ts REFUSED_RAISE_GAP_MS; the bound has its own
+// test, test/approve-raise-refused-bound.test.mjs). Sections that check a refusal's raise step this clock past the gap.
+const realNow = performance.now.bind(performance);
+let clockOffset = 0;
+performance.now = () => realNow() + clockOffset;
+const pastRaiseGap = () => { clockOffset += 5_000; };
 let createFails = false; // a create whose window never reports in (chrome gives no window)
 const ignore = () => undefined;
 const chrome = {
@@ -126,6 +132,7 @@ const { check, done } = checker("one fill request per offer through the worker c
   const a = dapp(SITE, "fillOffer", whole()); await settle();
   const aId = await lastId();
   const w0 = windowCalls.length;
+  pastRaiseGap();
   const b = dapp(SITE, "fillOffer", whole()); await settle();
   check("2. after a reload, the same site's new request is refused FILL_IN_PROGRESS", refused(b.reply));
   check("2. only the first is queued; its window is focused and none is created for the second", isDeepStrictEqual(await ids(), [aId]) && isDeepStrictEqual(windowCalls.slice(w0), ["focus"]));
@@ -174,6 +181,7 @@ const { check, done } = checker("one fill request per offer through the worker c
   await atSubmit;
   check("5. the approved fill has left the queue and its page has no answer yet", (await ids()).length === 0 && a.reply === undefined);
   const w0 = windowCalls.length;
+  pastRaiseGap();
   const b = dapp(OTHER, "fillOffer", whole()); await settle();
   check("5. a request while the first is signing and sending is refused FILL_IN_PROGRESS", refused(b.reply));
   check("5. it is not queued; the open window that shows the first is focused and none is created", (await ids()).length === 0 && isDeepStrictEqual(windowCalls.slice(w0), ["focus"]));
@@ -246,6 +254,7 @@ const { check, done } = checker("one fill request per offer through the worker c
   createFails = false;
   const aId = await lastId();
   const w0 = windowCalls.length;
+  pastRaiseGap();
   const b = dapp(OTHER, "fillOffer", whole()); await settle();
   check("10. a refused retry opens the window that holds the queued first request, and is not queued itself", refused(b.reply) && isDeepStrictEqual(await ids(), [aId]) && isDeepStrictEqual(windowCalls.slice(w0), ["create"]));
   const n0 = st.submits.length;

@@ -452,9 +452,13 @@ async function main() {
   const capMethods = capMatch ? [...(capMatch[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "") : [];
   check("CQ-4: inpage getCapabilities().methods parses + is non-trivial", capMethods.length >= 10);
   const normSet = (xs: string[]) => [...new Set(xs.map((s) => s.toLowerCase()))].sort();
-  const capNorm = normSet(capMethods), dappNorm = normSet(dappMethods);
-  check("CQ-4: getCapabilities().methods matches DAPP_METHODS as a set (no inpage↔background drift)",
+  // The one allowlisted method not advertised: the legacy signIn posts to the API's /auth/nonce, which the Cairn API no
+  // longer serves (it has /auth/v2/*), so against that API it succeeds from no origin. It stays callable and refused off-site.
+  const NOT_ADVERTISED = ["signin"];
+  const capNorm = normSet(capMethods), dappNorm = normSet(dappMethods).filter((m) => !NOT_ADVERTISED.includes(m));
+  check("CQ-4: getCapabilities().methods matches DAPP_METHODS as a set, less the legacy signIn (no inpage↔background drift)",
     capNorm.length === dappNorm.length && capNorm.every((m, i) => m === dappNorm[i]));
+  check("CQ-4: signIn is not advertised, and is still in DAPP_METHODS (callable, refused off the first-party site)", !capNorm.includes("signin") && dappMethods.includes("signin"));
 
   console.log("\n=== WL-1/R19: the approval-poll (status/pending) must NOT defeat the idle auto-lock ===");
   // Simulate a connected site that keeps a request queued and lets the approval window poll forever.

@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version: "26"
       - run: node scripts/update-spv-anchors.mjs --check --headers https://clarvis.cairn-substrate.com --rpc https://cairn-substrate.com/api/rpc
 
   # Everything that runs repository code: install, typecheck, the full suite, the vendor gate and the
@@ -53,7 +53,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version: "26"
           cache: npm
       - run: npm ci --ignore-scripts   # no dependency lifecycle scripts run in CI (supply-chain hardening)
       - run: npm run typecheck

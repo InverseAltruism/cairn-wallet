@@ -32,9 +32,24 @@ export class TxHistory {
   // returned so each caller still observes its own outcome.
   // Boundary rule: a chain callback contains STORAGE ops only, never a network await (send()
   // awaits maybeRecord, so anything inside histChain sits on the send hot path). WRITE callbacks
-  // do not write while the wallet is locked (recordTx parks its row in RAM instead, except after reset());
+  // do not write while the wallet is locked (recordTx parks its row in RAM instead, except after reset()),
+  // with one exception: `annotate` patches a row that already exists, so it writes while locked (the content
+  // flush runs on the alarm then) and bails only once reset() has started (`wiped()`), never inserting a row.
   // DELETE callbacks do not bail (deletes are teardown and safe while locked).
   histChain: Promise<void> = Promise.resolve();
+  /** Adds `patch` to the row of `txid` in the history `k`, stored or parked; false when there is no such row. */
+  annotate(k: string, txid: string, patch: Record<string, unknown>): Promise<boolean> {
+    const id = String(txid).toLowerCase();
+    return this.inHistChain(async () => {
+      if (this.w.wiped()) return false;
+      let hit = false;
+      for (const p of this.pendingHist) if (p.k === k && String(p.entry?.txid).toLowerCase() === id) { Object.assign(p.entry, patch); hit = true; }
+      const h: any[] = (await this.store.get(k)) || [];
+      const row = h.find((x) => String(x?.txid).toLowerCase() === id);
+      if (row) { Object.assign(row, patch); await this.store.set(k, h); hit = true; }
+      return hit;
+    });
+  }
   inHistChain<T>(work: () => Promise<T>): Promise<T> {
     const run = this.histChain.then(work, work);
     this.histChain = run.then(() => {}, () => {});
@@ -208,7 +223,7 @@ export class TxHistory {
         if (!isOpenRow(e)) continue;
         const id = String(e.txid).toLowerCase();
         const st = reads.states.get(id) ?? null;
-        const verdict = present.has(id) || reads.mined?.txids.has(id) ? "included" : inclusionVerdict(st, e.inputs, reads.mined?.ops ?? null);
+        const verdict = present.has(id) || reads.mined?.txids.has(id) ? "included" : inclusionVerdict(st, e.inputs, reads.mined?.complete ? reads.mined.ops : null);
         if (verdict === "included") {
           delete e.maybe; delete e.stuck; delete e.gone; delete e.goneTip;
           if (e.type === "consolidate") e.confirmed = true;
@@ -235,7 +250,8 @@ export class TxHistory {
   }
   // The tip once, a status read for each open row not yet read at this tip (newest first, capped), and the
   // mined utxo set once if any status came back unknown. No tip: no chain-derived step this pass.
-  private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string> } | null }> {
+  // A mined set the node cut (`complete` false) still proves a listed tx included, never an input spent elsewhere.
+  private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string>; complete: boolean } | null }> {
     const states = new Map<string, TxInclusion>();
     const t = await node.tip(this.w.rpc()).catch(() => 0);
     if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
@@ -244,8 +260,8 @@ export class TxHistory {
     due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
     if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
     const list = await node.confirmedUtxos(this.w.rpc(), addr);
-    const live = (list || []).filter((u) => u && u.txid != null);
-    const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())) } : null;
+    const live = (list?.utxos || []).filter((u) => u && u.txid != null);
+    const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())), complete: list.complete } : null;
     return { tip: t, states, mined };
   }
 }

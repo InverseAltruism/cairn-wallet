@@ -138,6 +138,36 @@ fire({ target: "cairn-inpage", event: "accountsChanged", data: ["0xforged"] });
 assert.deepEqual(got, [[]], "(6) a foreign-source or wrong-target event is ignored");
 console.log("  ok");
 
+// (8) a reply the content script writes itself when the background cannot be reached carries a machine code. An
+// extension update leaves the page's content script orphaned: sendMessage throws and the reply is WALLET_RELOADED
+// (since 0.3.3; it was a code-less "WALLET_RELOADED:" prefix, kept on the text for older readers). A channel closed
+// under a live script reads WALLET_UNAVAILABLE as before.
+//   RED-FIRST: drop `code: "WALLET_RELOADED"` from content.ts and the first check fails.
+console.log("(8) the replies content writes carry a code");
+{
+  const real = globalThis.chrome.runtime.sendMessage;
+  globalThis.chrome.runtime.sendMessage = () => { throw new Error("Extension context invalidated."); };
+  const reloaded = await settled(cairn.connect(), 200);
+  globalThis.chrome.runtime.sendMessage = (m, cb) => { setTimeout(() => { globalThis.chrome.runtime.lastError = { message: "The message port closed before a response was received." }; try { cb(undefined); } finally { globalThis.chrome.runtime.lastError = undefined; } }, 0); };
+  const closed = await settled(cairn.connect(), 200);
+  globalThis.chrome.runtime.sendMessage = real;
+  assert.equal(reloaded.v?.code, "WALLET_RELOADED", "(8) an orphaned content script answers code WALLET_RELOADED");
+  assert.ok(reloaded.v?.ok === false && String(reloaded.v.error).startsWith("WALLET_RELOADED: "), "(8) ...and keeps the text prefix older consumers read");
+  assert.equal(closed.v?.code, "WALLET_UNAVAILABLE", "(8) paired: a closed channel still answers WALLET_UNAVAILABLE");
+  assert.ok(!/\u2014/.test(String(closed.v.error)) && !/\u2014/.test(String(reloaded.v.error)), "(8) neither text carries an em dash");
+}
+console.log("  ok");
+
+// (9) getCapabilities lists every method a page can use, and not the legacy signIn, which succeeds from no origin against the Cairn API (it
+// posts to an /auth/nonce the Cairn API no longer serves); window.cairn.signIn itself stays.
+console.log("(9) getCapabilities does not advertise signIn");
+{
+  const caps = await cairn.getCapabilities();
+  assert.ok(!caps.methods.includes("signIn") && caps.methods.includes("signInWithCsd") && caps.methods.length === 12, `(9) the advertised methods: ${caps.methods.join(",")}`);
+  assert.equal(typeof cairn.signIn, "function", "(9) paired: the method is still on the provider");
+}
+console.log("  ok");
+
 // (7) every message either side posts (replies, requests and events) targets this page's origin, never "*"
 console.log("(7) postMessage targets window.location.origin");
 assert.ok(posted.some((m) => m.data.target === "cairn-content") && posted.some((m) => m.data.target === "cairn-inpage"), "setup: both directions were posted");

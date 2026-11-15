@@ -13,7 +13,7 @@ are happy to credit you once it is resolved.
 ## How keys are protected
 
 * **Encrypted at rest.** Keys and the recovery phrase are stored only as an AES-256-GCM vault, sealed with a key derived from your password using PBKDF2-SHA256 (600,000 iterations). A wrong password fails authenticated decryption and reveals nothing. The stored iteration count is validated on open, so a tampered vault cannot weaken the key derivation.
-* **In memory only while unlocked.** The decrypted key lives only in the background service worker and is cleared by a 15-minute idle auto-lock.
+* **In memory only while unlocked.** The decrypted keys and recovery phrase are held in the background service worker's memory. The vault key that decrypts them is also kept in the browser's in-memory session storage (`chrome.storage.session`, closed to web pages as below), so the wallet stays unlocked when Chrome stops an idle service worker. Locking, including the 15-minute idle auto-lock, drops both from memory, and closing the browser empties the session storage. The popup receives the phrase and an account's private key only to show them: when the wallet is created, and when you reveal them with your password.
 * **Storage closed to web pages.** At start the service worker restricts both `chrome.storage.local` (the vault ciphertext) and `chrome.storage.session` to the extension's own pages and worker (`TRUSTED_CONTEXTS`), so the content script that runs on web pages cannot read or write them.
 * **Local signing.** The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node. The wallet never signs a digest handed to it by a server, so a malicious or intercepted RPC cannot redirect funds or change what you approved. The "sign in with CSD" digest is structurally distinct from a transaction sighash, so a hostile site cannot turn a sign-in into a spend.
 * **Deterministic, non-malleable signatures.** secp256k1 with RFC 6979 nonces and low-S enforcement.
@@ -48,6 +48,11 @@ on its blocks: a reservation fill refuses with `RPC_BLOCK_MISMATCH`, naming the 
 the header source (a header source that serves a false header with valid proof of work gives the
 same mismatch, so the message does not blame the node); an offer-id fill refuses as
 `VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified.
+
+The approval window's title for a score-0 attestation (how a site cancels a CairnX offer or bid) also comes from that
+RPC: it reads the target proposal, and says "Cancel your offer" or "Cancel your bid" only when the node reports the
+account on screen as its proposer. When the read fails, the window keeps "Support / review" and says that score 0
+cancels the target if it is your open offer or bid. The signed bytes are the same either way.
 
 The USD figure under the balance is the CSD/USD price the configured Cairn API serves (`/api/market/csd`), multiplied
 on the device. It is display only: no amount, fee, check or signature reads it, so a wrong price can mislead a reader
@@ -174,7 +179,10 @@ request queued while the window is open, a refused second fill of an offer, the 
 asks the window to re-arm and raises it once the window has answered, so a site cannot have the user double-click on
 its page, raise the window with the first click and land the second on Approve. A window that has not answered within
 250 ms (a hung page) is raised anyway. A focus the user gives the window re-arms nothing, so their own click lands at
-once (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
+once (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs). A refused second fill raises the window
+at most once per 5 seconds, whichever site sends it, so a page that repeats one cannot keep Approve and Reject off or
+keep pulling the window forward; what remains is one raise and its 700 ms floor per 5 seconds while it repeats
+(test/approve-raise-refused-bound.test.mjs).
 The provider is injected
 on all sites (like MetaMask) so any dApp can request a connection, but injection scope is
 **not** the security boundary: the content script only relays requests, exposes no keys, and
@@ -197,7 +205,14 @@ unconsented address. **Every signing / fund-moving action (signin, send, propose
 sealClaim, revealClaim) ALWAYS opens the clear-signing approval window, every time,
 regardless of connection state.** Being connected never pre-approves a signature (enforced by
 the fast-path guard in `background.ts` + the positive whitelist in `resolvePending`; proven by
-`test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15).
+`test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15). A sign-in request whose
+parameters the wallet would refuse at signing (a nonce that is not 8 or more letters and digits, a domain or URI of
+another site, an over-long or multi-line field) is answered `BAD_REQUEST` before it is queued, so no window asks the
+user to approve something that cannot be signed (test/siwc-prequeue.test.mjs). In the sign-in window, the site's
+statement is labelled as text from that site, not from the wallet. The legacy `signIn()` is not listed in
+`getCapabilities()`: against the Cairn API it succeeds from no origin (that API no longer serves the `/auth/nonce` it
+uses; a self-hosted API that still serves it would work), and it
+stays refused off the first-party site.
 
 `send` moves funds to a page-supplied recipient, so the approval window **clear-signs the
 full (untruncated) recipient address(es), each amount, the total, the fee, and the

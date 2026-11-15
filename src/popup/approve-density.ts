@@ -8,6 +8,7 @@
 // the other, and a mount landing later fits its reserve, so nothing moves after the latch arms. Served text (a listing,
 // a quote) has no length cap; a hostile offer service can outgrow any reserve and push its own text past the fold in
 // either density, but not what comes before it: the cost and the warnings render first (test/approve-layout-chrome).
+import { fillOf, proposeFields } from "../core/signfields.js";
 import {
   balanceShortBox, checkRow, debitOf, fillViewHtml, nfinNoteBox, nfinalizeApproveGate, requestRecipients, revealPreviewHtml,
   tokenQuoteHtml, warningCandidates,
@@ -63,7 +64,7 @@ function nameNoteCandidates(t: "nfinalize" | "nrenew" | "nset", me: string): str
 
 /** The mounts request `r` fills after its paint, each with every content it can take. `me` is the signing address. */
 export function reservesFor(r: any, me: string): Reserve[] {
-  const p = r?.params || {};
+  const p = proposeFields(r?.params);
   const out: Reserve[] = [];
   const warn = warningCandidates(requestRecipients(r)).map((cs) => cs.map(checkRow).join(""));
   if (warn.length) out.push({ id: "send-warn", candidates: warn });
@@ -74,7 +75,7 @@ export function reservesFor(r: any, me: string): Reserve[] {
       out.push({ after: ["send-warn", "cost"], candidates: nameNoteCandidates(rec.t, me) });
     }
   }
-  if (document.getElementById("fill-view")) out.push({ id: "fill-view", candidates: fillViewCandidates(String(p.proposalId || "")) });
+  if (document.getElementById("fill-view")) out.push({ id: "fill-view", candidates: fillViewCandidates(String(fillOf(r?.method, r?.params)?.proposalId || "")) });
   if (document.getElementById("token-sim")) out.push({ id: "token-sim", candidates: tokenQuoteCandidates() });
   if (document.getElementById("reveal-preview")) out.push({ id: "reveal-preview", candidates: revealCandidates() });
   return out;

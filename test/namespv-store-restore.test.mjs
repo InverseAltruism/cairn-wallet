@@ -23,7 +23,7 @@ const NAME = JSON.parse(readFileSync(new URL("./fixtures/name-cairn-30224.json",
   const inner = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     const u = String(url);
-    if (u === `${RPC}/block/height/${NAME.block.height}`) return Response.json(NAME.block);
+    if (u === `${RPC}/block/${NAME.block.hash}`) return Response.json(NAME.block);
     if (u === `${RPC}/tx/${NAME.prevout.txid}`) return Response.json(NAME.prevout);
     return inner(url, init);
   };

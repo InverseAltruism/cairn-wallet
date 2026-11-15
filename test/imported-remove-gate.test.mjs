@@ -1,7 +1,7 @@
 // A2 (Plans/68 F4): imported-key removal is password-gated; HD removal stays one-click.
 //
 // An IMPORTED raw key is not derivable from the recovery phrase, so removing it without a backup is
-// PERMANENT fund loss — and pre-0.2.57 it was a single inline click. removeAccount now requires the
+// PERMANENT fund loss, and pre-0.2.57 it was a single inline click. removeAccount now requires the
 // wallet password for imported accounts only, through the same brute-guarded openVaultDoc gate as
 // export (wrong attempts increment the auth guard; the decrypted doc is discarded). The sentinel
 // REMOVE_IMPORTED_REAUTH is popup-handled (FEE_CHANGED precedent), never a dApp code: removeAccount
@@ -25,7 +25,7 @@ await w.create(PW);
 const { addr: hd } = await w.addAccount("hd-two");
 const { addr: imp } = await w.importAccount(RAW, "cold-import");
 
-console.log("A2 — imported-key removal gate:");
+console.log("A2: imported-key removal gate:");
 {
   // HD accounts stay frictionless (re-derivable from the phrase): no password required.
   await w.removeAccount(hd);
@@ -48,20 +48,22 @@ console.log("A2 — imported-key removal gate:");
   check("…the auth guard incremented (brute-force protection is live on this path)", Number(guard?.failed) >= 1);
   check("…and the imported account survives", st3.accounts.some((a) => a.addr.toLowerCase() === imp.toLowerCase()));
 
-  // correct password → removed, per-account data wiped
+  // correct password → removed, its history and revealed sealed claims wiped; an unrevealed one is kept, since it holds
+  // the only copy of a paid commit's reveal nonce (test/seal-remove-keep.test.mjs)
   await store.set("txHistory:" + imp, [{ txid: "0x" + "11".repeat(32), ts: 1 }]);
-  await store.set("sealedClaims:" + imp, [{ salt: "s" }]);
+  await store.set("sealedClaims:" + imp, [{ txid: "0x" + "22".repeat(32), revealed: true }, { txid: "0x" + "33".repeat(32), revealed: false }]);
   await w.removeAccount(imp, PW);
   const st4 = await w.status();
   check("correct password removes the imported account", !st4.accounts.some((a) => a.addr.toLowerCase() === imp.toLowerCase()));
-  check("…and wipes its history + sealed-claim keys", (await store.get("txHistory:" + imp)) == null && (await store.get("sealedClaims:" + imp)) == null);
+  const keptSeals = (await store.get("sealedClaims:" + imp)) || [];
+  check("…and wipes its history and its revealed sealed claim, keeping the unrevealed one", (await store.get("txHistory:" + imp)) == null && keptSeals.length === 1 && keptSeals[0].txid === "0x" + "33".repeat(32));
 }
 
-console.log("A2 — concurrent double-remove cannot splice a stale index (fresh-eyes TOCTOU):");
+console.log("A2: concurrent double-remove cannot splice a stale index (fresh-eyes TOCTOU):");
 {
   // The password re-auth KDF is an await BETWEEN findIndex and splice; two concurrent removals of the
   // SAME imported account both pass findIndex, both park in the KDF, and pre-fix the second spliced a
-  // STALE index — silently removing the NEXT imported account (history wiped, both calls report ok).
+  // STALE index, silently removing the NEXT imported account (history wiped, both calls report ok).
   const st0 = memoryStore(), se0 = memoryStore();
   const w2 = new Wallet(st0, se0);
   await w2.create(PW);
@@ -74,7 +76,7 @@ console.log("A2 — concurrent double-remove cannot splice a stale index (fresh-
   check("no call reported a wrong-account success (both settled without removing extra accounts)", st.accounts.length === 2 && results.every((r) => r.status === "fulfilled" || /no such|last account|bad password/i.test(String(r.reason?.message))));
 }
 
-console.log("A2 — removeAccount stays off the dApp surface:");
+console.log("A2: removeAccount stays off the dApp surface:");
 {
   const src = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
   const dappList = src.match(/const DAPP_METHODS = new Set\(\[([^\]]*)\]\)/)?.[1] ?? "";

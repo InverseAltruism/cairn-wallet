@@ -8,6 +8,10 @@ import { refuse } from "./refuse.js";
 
 // Per-account storage namespace for sealed claims (the history's is histKey in history.ts).
 export const sealKey = (addr: string) => "sealedClaims:" + addr;
+// The addresses whose list outlived their account's removal (keepUnrevealedOf); reset() deletes those lists too, since
+// the wallet's own list of accounts no longer names them.
+const KEPT_SEALS = "keptSealAddrs";
+const revealed = (rec: any): boolean => !!rec?.revealed;
 
 // SEAL-EVICT-01 (P75-6 F2): the sealed-claims cap must never evict an UNREVEALED preimage; it is the only
 // copy of the reveal nonce for a PAID commit (unrecoverable from phrase or chain). Evict oldest REVEALED
@@ -18,7 +22,7 @@ function capSeals(list: any[]): any[] {
   let over = list.length - SEAL_CAP;
   const out: any[] = [];
   for (let i = list.length - 1; i >= 0; i--) {  // walk oldest to newest (list is newest-first)
-    if (over > 0 && list[i]?.revealed) { over--; continue; }
+    if (over > 0 && revealed(list[i])) { over--; continue; }
     out.unshift(list[i]);
   }
   return out;
@@ -95,6 +99,39 @@ export class SealedClaims {
         } catch { /* SEAL-WRITE-02: stays parked and visible; the next seal write or unlock retries */ }
       }
     });
+  }
+  // Account removal: the account's revealed records go, the unrevealed ones stay (each is the only copy of a paid
+  // commit's reveal nonce, the rule capSeals keeps), parked ones included. They stay sealed under the vault key, so
+  // they list and reveal again once the same address is back in this wallet (test/seal-remove-keep.test.mjs).
+  keepUnrevealedOf(addr: string): Promise<void> {
+    const k = sealKey(addr);
+    return this.inSealChain(async () => {
+      const stored: any[] = (await this.store.get(k)) || [];
+      const parked = this.pendingSeals.filter((p) => p.k === k && !stored.some((x) => x?.txid === p.rec.txid)).map((p) => p.rec);
+      const keep = [...parked, ...stored].filter((rec) => rec && !revealed(rec));
+      if (keep.length) {
+        // The address goes into the index before its list is written: a worker stopped between the two leaves an index
+        // entry with no list (reset deletes nothing there), never a kept list that reset() would miss.
+        const kept: string[] = (await this.store.get(KEPT_SEALS)) || [];
+        if (!kept.includes(addr)) await this.store.set(KEPT_SEALS, [...kept, addr]);
+        await this.reencryptLegacyPreimages(keep);
+        await this.store.set(k, keep);
+      } else await this.store.del(k);
+      this.pendingSeals = this.pendingSeals.filter((p) => p.k !== k);
+    });
+  }
+  /** The unrevealed sealed claims stored or parked for `addr`: what removing that account leaves behind. */
+  async unrevealedCount(addr: string): Promise<number> {
+    const k = sealKey(addr);
+    const stored: any[] = (await this.store.get(k)) || [];
+    const parked = this.pendingSeals.filter((p) => p.k === k && !stored.some((x) => x?.txid === p.rec.txid)).map((p) => p.rec);
+    return [...parked, ...stored].filter((rec) => rec && !revealed(rec)).length;
+  }
+  /** reset(): the lists kept for removed accounts. The caller has settled the seal chain. */
+  async dropKept(): Promise<void> {
+    const kept: string[] = (await this.store.get(KEPT_SEALS)) || [];
+    for (const a of kept) await this.store.del(sealKey(a));
+    await this.store.del(KEPT_SEALS);
   }
   async revealClaim(txid: string) {
     const k = sealKey(this.w.addr());

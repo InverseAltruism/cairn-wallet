@@ -10,7 +10,7 @@
 //   fails. RED-FIRST (gone): judge "spent" against the available set instead of the mined one, or latch
 //   gone on one reading, and (6a)-(6c) fail; drop the two-tip rule and (6e) fails at its first tip; treat
 //   an unknown that could not look (no `definite`) as "not mined" and (6h) fails; let a read that could
-//   not look clear gone and (6i) fails.
+//   not look clear gone and (6i) fails; read a cut (`truncated`) mined list as complete and (6t) fails.
 //   PAIRED HONEST PATH: (5) a mined txid clears the row; (6e) an input spent by a different mined tx,
 //   with our txid unknown at two tips, shows gone. Calls use the popup's shape: pendingMerge(<the utxos the
 //   balance fetch got>).
@@ -32,7 +32,7 @@ const op = (c) => opKey(c.txid, c.vout);
 // /tx/:id/status by txid (default pending). `statusRoute: false` models a bare loopback node.
 function mkChain(coins) {
   const c = { tip: 1_000, mined: coins.map((x) => x.coin), held: new Set(), status: new Map(), minedTx: new Map(),
-    absent: new Set(), statusRoute: true, minedRead: true, submit: "maybe", submits: 0, statusReads: 0, minedReads: 0 };
+    absent: new Set(), statusRoute: true, minedRead: true, submit: "maybe", submits: 0, statusReads: 0, minedReads: 0, cut: false };
   c.available = () => c.mined.filter((u) => !c.held.has(op(u)));
   const utxos = (list) => ({ ok: true, status: 200, json: async () => ({ confirmed_balance: list.reduce((s, x) => s + x.value, 0), utxos: list }) });
   c.fetch = async (url) => {
@@ -45,6 +45,7 @@ function mkChain(coins) {
     if (u.includes("/utxos-all/")) {
       c.minedReads++;
       if (!c.statusRoute) return { ok: false, status: 404, json: async () => ({}) };
+      if (c.cut) return { ok: true, status: 200, json: async () => ({ confirmed_balance: 0, utxos: c.mined, truncated: true }) };
       return c.minedRead ? utxos(c.mined) : { ok: false, status: 500, json: async () => ({}) };
     }
     if (u.includes("/utxos/")) {
@@ -196,6 +197,28 @@ try {
     check("(6d) the next reading says mined: gone is cleared, the row is settled", !e.gone && e.goneTip === undefined && e.maybe === undefined && inclusionMark(e) === null);
   }
   {
+    // (6t) node 0.1.17 cuts the mined list at its bound (`truncated: true`, the largest coins first): our input below the
+    // cut is missing from the list without being spent, so no "spent elsewhere" verdict comes from it. RED-FIRST: read
+    // the cut list as complete (history.ts inclusionReads) and it is gone at the second tip. The paired honest path is
+    // (6e) below: the same reads from a complete list show gone.
+    const coins = [mkCoin(341e8), mkCoin(342e8)];
+    const chain = mkChain(coins);
+    const { w, row, refresh } = await mkWallet(chain);
+    const r = await w.send(TO, 1e8, FEE);
+    chain.mined = chain.mined.filter((u) => !r.inputs.includes(op(u)));   // left out by the cut, not spent
+    chain.cut = true;
+    chain.status.set(r.txid, { state: "unknown", definite: true });
+    await refresh();
+    await at(chain, 1_001, refresh);
+    const e = await row(r.txid);
+    check("(6t) a cut mined list missing our input at two tips: not gone, still the open marker", !e.gone && inclusionMark(e) === "sent");
+    chain.mine(r.txid, r.inputs, [1e8]);                                   // its change coin is in the cut list
+    chain.status.set(r.txid, { state: "unknown", definite: true });       // a lagging status
+    await at(chain, 1_002, refresh);
+    const f = await row(r.txid);
+    check("(6t) a cut mined list that lists our tx's output still proves it included", !f.gone && f.maybe === undefined && inclusionMark(f) === null);
+  }
+  {
     // (6e) paired honest path: a different mined tx spent our input; our txid is unknown at two tips
     const coins = [mkCoin(331e8), mkCoin(332e8)];
     const chain = mkChain(coins);
@@ -336,7 +359,7 @@ try {
     const asked = [];
     const answer = (u) => { asked.push(u); return u.includes("/utxos-all/") ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => ({ utxos: [{ txid: "0x" + "aa".repeat(32), vout: 0 }] }) }; };
     globalThis.fetch = async (u) => answer(String(u));
-    const bare = await confirmedUtxos("http://127.0.0.1:8789", TO);
+    const bare = (await confirmedUtxos("http://127.0.0.1:8789", TO))?.utxos;
     check("(7) a bare node origin falls back to its own unfiltered /utxos/:addr", Array.isArray(bare) && bare.length === 1 && asked.at(-1) === `http://127.0.0.1:8789/utxos/${TO}`);
     const proxied = await confirmedUtxos("http://127.0.0.1:7777/api/rpc", TO);
     check("(7) an RPC with a path and no /utxos-all (its /utxos is mempool-filtered) gives no mined set", proxied === null);

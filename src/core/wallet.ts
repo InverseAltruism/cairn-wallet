@@ -9,23 +9,25 @@ import { sealNew, sealWith, openWith, deriveVaultKey, exportKeyRaw, importKeyRaw
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
-import { buildSiwcMessage, siwcDigest, originToDomain, rfc3339, CSD_CHAIN_MAINNET, SIWC_VERSION, type SiwcFields } from "./siwc.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, SCORE_FILL, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
+import { siwcDigest, CSD_CHAIN_MAINNET } from "./siwc.js";
+import { siwcMessageFor, type SiwcParams } from "./siwcparams.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
+import { attestFields, fillFields, proposeFields, sealFields } from "./signfields.js";
 import { readNameRecord, nameActSignVerdict, CONFIRM_OTHER_OWNER, NAME_READ_TIMEOUT_MS } from "./namegate.js";
-import { fillOfferPreflight, isTokenFillAttest, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
+import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
 import { TxHistory, histKey, OWN_FILL_INDEX_WAIT_MS } from "./history.js";
 import { SealedClaims, sealKey } from "./claims.js";
 import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
-import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, type CairnxViewIo } from "./cairnxview.js";
+import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, attestTargetView, type CairnxViewIo } from "./cairnxview.js";
 import { csdMarket } from "./market.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
@@ -61,7 +63,7 @@ interface SignerCtx { active: number; addr: string; priv: string; histKey: strin
 // Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
 // pre-dispatch M5 guard copy; same machine code, WALLET-ERROR-CODES.md).
 const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => refuse("ACCOUNT_CHANGED",
-  "the active account changed since you reviewed this request — reopen it and review again before approving");
+  "the active account changed since you reviewed this request: reopen it and review again before approving");
 // XR-1/FL-1: a fill whose on-chain score is present but is not the marketplace-required SCORE_FILL (100).
 // The real cairnx resolve() silently NO-OPS any other score AFTER the payment moved (the SCORE-BURN class),
 // so we refuse (not coerce) a present-and-wrong caller score before signing. The site never passes a score
@@ -73,6 +75,8 @@ const SCORE_FILL_REFUSAL = (): node.SubmitResult => refuse("FILL_UNSAFE", "refus
 const PROPOSE_EXPIRY_EPOCHS = 720;        // content post / token transfer / sealed claim; ample window to mine
 const NAME_RENEW_EXPIRY_EPOCHS = 1000;    // .csd lease renewal propose
 const SET_PRIMARY_EXPIRY_EPOCHS = 100000; // set-primary nset; a long-lived identity record
+const CONTENT_FAST_TRIES = 15;            // queued post body: attempts on every alarm before backing off
+const CONTENT_MAX_DELAY_MS = 60 * 60_000; // ...and the longest wait between later attempts
 // Attest fee floor (0.05 CSD): the default fee for an offer fill (Attest + payment in one tx).
 // B9: single-sourced into core/cairnx.ts defaultFeeFor("attest"); the same table the clear-sign
 // display reads, so the screen and the signer can never disagree again (the local literal was the twin).
@@ -268,7 +272,7 @@ export class Wallet {
   }
   // Restore an HD wallet from an existing seed phrase (derives account 0).
   async restore(mnemonic: string, password: string): Promise<{ addr: string }> {
-    if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to restore");
+    if (await this.store.get("vault")) throw new Error("wallet already exists: reset first to restore");
     if (!isValidMnemonic(mnemonic)) throw new Error("invalid recovery phrase (check the words and order)");
     const m = normalizeMnemonic(mnemonic);
     const a = { ...deriveAccount(m, 0), label: "Account 1", index: 0 } as Acct;
@@ -277,7 +281,7 @@ export class Wallet {
   }
   // Import a single raw private key (NOT part of any seed phrase → no recovery phrase).
   async importKey(priv: string, password: string): Promise<{ addr: string }> {
-    if (await this.store.get("vault")) throw new Error("wallet already exists — reset first to replace the key");
+    if (await this.store.get("vault")) throw new Error("wallet already exists: reset first to replace the key");
     const a = this.acct(priv, "Account 1", { imported: true }); // fromPriv validates
     await this.sealFresh(password, { mnemonic: null, nextIndex: 0, accts: [a], active: 0 });
     return { addr: a.addr };
@@ -291,7 +295,7 @@ export class Wallet {
   private async authGuardCheck(): Promise<void> {
     const g: any = (this.session ? await this.session.get("authGuard").catch(() => null) : null) || {};
     if (typeof g.until === "number" && Date.now() < g.until)
-      throw new Error(`too many failed attempts — try again in ${Math.ceil((g.until - Date.now()) / 1000)}s`);
+      throw new Error(`too many failed attempts; try again in ${Math.ceil((g.until - Date.now()) / 1000)}s`);
   }
   private async authGuardRecord(ok: boolean): Promise<void> {
     if (!this.session) return;
@@ -328,7 +332,7 @@ export class Wallet {
 
   async unlock(password: string): Promise<{ addr: string }> {
     const v: Vault | null = await this.store.get("vault");
-    if (!v) throw new Error("no wallet — create or import one first");
+    if (!v) throw new Error("no wallet: create or import one first");
     const { key, raw } = await this.openVaultDoc(v, password);
     this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
     await this.applyDoc(raw);
@@ -467,9 +471,17 @@ export class Wallet {
     if (!a) throw new Error("no such account");
     a.label = Wallet.label(label, a.label); await this.persistVault();
   }
-  async removeAccount(addr: string, password?: string): Promise<void> {
+  // Removals run one at a time: each awaits the sealed-claim write before it takes the account out, so two removals must
+  // not both pass the last-account floor before either splices (test/seal-remove-keep.test.mjs 7).
+  private removeChain: Promise<unknown> = Promise.resolve();
+  removeAccount(addr: string, password?: string): Promise<void> {
+    const run = this.removeChain.then(() => this.removeAccountNow(addr, password));
+    this.removeChain = run.catch(() => undefined);   // the chain only orders removals; the caller gets `run`'s rejection
+    return run;
+  }
+  private async removeAccountNow(addr: string, password?: string): Promise<void> {
     const accts = this.mustUnlocked();
-    if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
+    if (accts.length <= 1) throw new Error("cannot remove the last account: reset the wallet to start over");
     let i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
     const target = accts[i];
     if (!target) throw new Error("no such account");
@@ -483,26 +495,29 @@ export class Wallet {
       if (!password) throw new Error("REMOVE_IMPORTED_REAUTH");
       const v: Vault | null = await this.store.get("vault"); if (!v) throw new Error("no wallet");
       await this.openVaultDoc(v, password); // throws "bad password" (and increments the guard) on failure
-      // TOCTOU (fresh-eyes 0.2.57 finding 1): the KDF await above is the ONLY await between findIndex
-      // and splice, and a concurrent removal can mutate accts while this call is parked; splicing the
-      // pre-await index then removed the WRONG account (the next imported key, silently, history wiped).
+      // TOCTOU: other account changes can run during the KDF await above; splicing a pre-await index once
+      // removed the WRONG account (the next imported key, silently, history wiped).
       // Re-derive the index after the await; a target already removed by the racing call is done
       // (idempotent), and the last-account floor is re-asserted against the CURRENT list.
       i = accts.findIndex((x) => x.addr.toLowerCase() === String(addr).toLowerCase());
       if (i < 0) return;
-      if (accts.length <= 1) throw new Error("cannot remove the last account — reset the wallet to start over");
+      if (accts.length <= 1) throw new Error("cannot remove the last account: reset the wallet to start over");
     }
     const gone = accts[i]?.addr;
-    if (gone === undefined) throw new Error("no such account");   // i is the target's current index: found with no await since
+    if (gone === undefined) throw new Error("no such account");
+    // Its unrevealed sealed claims are kept before anything else changes: a failed write throws with the account still
+    // listed, switchable and removable (test/seal-remove-keep.test.mjs 6).
+    await this.claims.keepUnrevealedOf(gone);
+    i = accts.findIndex((x) => x.addr === gone);   // re-derived after the await, as above; already removed is done
+    if (i < 0) return;
     accts.splice(i, 1);
     if (this.active >= accts.length) this.active = accts.length - 1;
     else if (this.active > i) this.active -= 1;
-    // wipe the removed account's isolated data so it can't resurface.
-    // P75-6: ride the chains so a parked write for this account cannot land AFTER these deletes
-    // and resurrect a removed account's history or sealed preimages; purge its parked retries too.
-    const hk2 = histKey(gone), sk2 = sealKey(gone);
+    // Wipe the removed account's history (its unrevealed sealed claims were kept above).
+    // P75-6: ride the chains so a parked write for this account cannot land AFTER these writes
+    // and resurrect a removed account's history; purge its parked retries too.
+    const hk2 = histKey(gone);
     await this.hist.inHistChain(async () => { this.hist.pendingHist = this.hist.pendingHist.filter((p) => p.k !== hk2); await this.store.del(hk2); });
-    await this.claims.inSealChain(async () => { this.claims.pendingSeals = this.claims.pendingSeals.filter((p) => p.k !== sk2); await this.store.del(sk2); });
     await this.persistVault();
   }
 
@@ -580,8 +595,8 @@ export class Wallet {
     // B9: an omitted fee signs defaultFeeFor("propose"); the node-enforced MIN_FEE_PROPOSE floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER the user approved a screen that
     // showed a 0.01 CSD the node would have rejected anyway). An explicit sub-floor fee still refuses.
-    const fee = p.fee ?? defaultFeeFor("propose");
-    const hk = this.histKeyNow(); const r = await node.propose(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "propose", domain: p.domain, fee }); return r;
+    const f = proposeFields(p);
+    const hk = this.histKeyNow(); const r = await node.propose(this.rpc, f, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "propose", domain: f.domain, fee: f.fee }); return r;
   }
   async attest(p: { proposalId: string; score: number; confidence: number; fee?: number; expectSigner?: string; tokenQuote?: TokenFillQuote }) {
     // W4 (B5d): a token-fill-confidence attest is BYTE-IDENTICAL on-chain to a token fillOffer (the same
@@ -598,13 +613,13 @@ export class Wallet {
     // pay arbitrary CSD to any address via the attest method, whose clear-sign window renders NO outputs
     // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
-    if (isTokenFillAttest(p.confidence))
+    const a = attestFields(p);
+    if (a.route === "fill")
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
     // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
     // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
-    const fee = p.fee ?? defaultFeeFor("attest");
-    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { ...p, fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee }); return r;
+    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId: String(a.proposalId), score: a.score, confidence: a.confidence, fee: a.fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: a.fee }); return r;
   }
   // Offer fill (Attest + payment in ONE tx; CairnX applies the delivery). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
@@ -625,8 +640,9 @@ export class Wallet {
     // `null >>> 0` is 0 != SCORE_FILL, so a caller passing an explicit `score: null` (a shape store
     // 0.2.64 accepted, since this guard has never shipped) was refused for no reason. Absent means
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
-    if (p.score != null && (p.score >>> 0) !== SCORE_FILL) return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
-    const q = { proposalId: p.proposalId, score: SCORE_FILL, confidence: (p.confidence ?? 100) >>> 0, outputs: p.outputs, fee: p.fee ?? defaultFeeFor("attest") };
+    const f = fillFields(p);
+    if (f.refused === "score") return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
+    const q = { proposalId: p.proposalId, score: f.score, confidence: f.confidence, outputs: f.outputs, fee: f.fee };
     const notes: FillNotes = {};
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck, notes);
     if (refusal) return refusal;
@@ -697,53 +713,11 @@ export class Wallet {
   // /auth and NEVER mints a session; the dApp's own server verifies (verifySiwc) and issues its own
   // session. `origin` is supplied by the background from sender.origin (browser-set, unforgeable).
   async signInWithCsd(
-    params: { nonce?: unknown; statement?: unknown; uri?: unknown; domain?: unknown; expirationSecs?: unknown; notBeforeSecs?: unknown; requestId?: unknown; resources?: unknown },
+    params: SiwcParams,
     origin: string,
   ): Promise<{ account: string; pub33: string; sig64: string; message: string; chainId: string }> {
     const a = this.must();
-    const domain = originToDomain(origin);
-    if (!domain) throw new Error("sign-in: unknown requesting origin");
-    const p = params || {};
-    // The page MAY pass its domain, but it is only cross-checked against the real origin; never trusted.
-    if (p.domain !== undefined && String(p.domain) !== domain) throw new Error("sign-in: declared domain does not match the requesting site");
-    // uri defaults to the origin root; if supplied it MUST be on the requesting site.
-    let uri: string;
-    if (p.uri === undefined || p.uri === null) uri = origin.replace(/\/+$/, "") + "/";
-    else { let h: string | null; try { h = new URL(String(p.uri)).host; } catch { h = null; } if (h !== domain) throw new Error("sign-in: uri must be on the requesting site"); uri = String(p.uri); }
-    const nonce = String(p.nonce ?? "");
-    if (!/^[A-Za-z0-9]{8,}$/.test(nonce)) throw new Error("sign-in: a server-issued nonce (>=8 alphanumeric chars) is required");
-    const statement = p.statement != null && String(p.statement) !== "" ? String(p.statement) : undefined;
-    if (statement !== undefined && /[\r\n]/.test(statement)) throw new Error("sign-in: statement must be a single line");
-    // Rejected, not truncated, for the same WYSIWYS reason as requestId below.
-    if (statement !== undefined && statement.length > 256) throw new Error("sign-in: statement exceeds 256 chars");
-    const expSecs = Math.min(3600, Math.max(60, Math.floor(Number(p.expirationSecs) || 600))); // clamp 60s..1h, default 10m
-    const now = Date.now();
-    // Cap dApp-supplied resources (audit SIWC-RESOURCES): the user now sees them in the approval popup,
-    // and we bound count + per-entry length and reject embedded newlines so a dApp can neither bloat the
-    // signed credential nor inject extra SIWC lines via a multi-line resource entry.
-    if (p.resources !== undefined && !Array.isArray(p.resources)) throw new Error("sign-in: resources must be an array");
-    if (Array.isArray(p.resources) && p.resources.length > 10) throw new Error("sign-in: too many resources (max 10)");
-    const resources = Array.isArray(p.resources) ? p.resources.map((x) => {
-      const s = String(x);
-      if (s.length > 256) throw new Error("sign-in: a resource entry exceeds 256 chars");
-      if (/[\r\n]/.test(s)) throw new Error("sign-in: resources must be single-line");
-      return s;
-    }) : undefined;
-    // Reject (don't silently truncate) an over-long/multi-line requestId: the popup shows the full value,
-    // so truncating only the SIGNED copy would break what-you-see-is-what-you-sign.
-    const requestId = p.requestId != null ? String(p.requestId) : undefined;
-    if (requestId !== undefined && (requestId.length > 256 || /[\r\n]/.test(requestId))) throw new Error("sign-in: requestId too long or multi-line");
-    const fields: SiwcFields = {
-      domain, account: a.addr, statement, uri, version: SIWC_VERSION, chainId: CSD_CHAIN_MAINNET,
-      nonce, issuedAt: rfc3339(now), expirationTime: rfc3339(now + expSecs * 1000),
-      // Only emit notBefore for a POSITIVE offset; a 0/negative value is a no-op "valid from now-or-past"
-      // constraint that the clear-sign window (clearsign.ts) does NOT display, so signing it would mean
-      // committing a field the user never saw (audit SDS-1). Matching the conditions keeps WYSIWYS exact.
-      notBefore: p.notBeforeSecs != null && Number(p.notBeforeSecs) > 0 ? rfc3339(now + Math.floor(Number(p.notBeforeSecs)) * 1000) : undefined,
-      requestId,
-      resources,
-    };
-    const message = buildSiwcMessage(fields);
+    const message = siwcMessageFor(params, origin, a.addr, Date.now());
     const { sig64, pub33 } = signSighash(siwcDigest(message), a.privkey);
     return { account: a.addr, pub33, sig64, message, chainId: CSD_CHAIN_MAINNET };
   }
@@ -782,7 +756,7 @@ export class Wallet {
   // by node.sendMany; callers never supply UTXOs. History records the total + primary
   // recipient (single-output sends record identically to send()).
   async sendMany(p: { outputs: { to: string; value: number }[]; fee?: number; expectSigner?: string }) {
-    const fee = p.fee ?? 1_000_000;
+    const fee = p.fee ?? defaultFeeFor("send");
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(p.expectSigner, ctx.addr);
     if (early) return early;
@@ -810,7 +784,7 @@ export class Wallet {
       // PCD-2 class (P75-6 F5): a content-queue write failure after a PAID, broadcast propose must not
       // make cairnPost reject and skip the history record below. The propose is broadcast and recorded;
       // the body can be re-posted (registration is idempotent).
-      try { await this.addPending(content, r.txid); } catch { /* content queue write failed; propose is broadcast + recorded below */ }
+      try { await this.addPending(content, r.txid, hk); } catch { /* content queue write failed; propose is broadcast + recorded below */ }
       this.flushPending();
     } // durable, alarm-driven
     await this.hist.maybeRecord(hk, r, { type: "post", domain: p.domain, title: p.title, fee: p.fee });
@@ -840,6 +814,7 @@ export class Wallet {
 
   tokenFillQuote(proposalId: string) { return tokenFillQuote(this.viewIo, proposalId); }
   fillOfferView(proposalId: string) { return fillOfferView(this.viewIo, proposalId); }
+  attestTarget(proposalId: string) { return attestTargetView(this.rpc, proposalId); }
   tokenDisplayMeta(tickers: unknown) { return tokenDisplayMeta(this.viewIo, tickers); }
 
   // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates
@@ -968,18 +943,19 @@ export class Wallet {
     // CSDTX-SIWC-01: a non-string claim would be hashed as-is into the on-chain commitment but
     // String()-normalized on reveal, so the paid commit could never be revealed. dApp-reachable,
     // so the .d.ts type cannot be trusted at runtime. Refuse BEFORE any fee is spent.
-    if (typeof p?.claim !== "string" || !p.claim) throw new Error("sealClaim: claim must be a non-empty string");
+    const sf = sealFields(p);
+    if (sf.refused) throw new Error(sf.refused);
     const priv = this.must().privkey;
     const hk = this.histKeyNow(), sk = sealKey(this.addr()); // captured with the signer (F5)
-    const domain = (p.domain && p.domain.trim()) || "csd:sealed";
+    const domain = sf.domain;
     const nonce = bytesToHex(randomBytes(32));
     // The reveal preimage is encrypted BEFORE the commit is broadcast (no await since must() above, so the
     // vault key is still loaded): after the broadcast nothing needs the key, and a lock there cannot lose it.
-    const enc = await this.claims.sealPreimage(p.claim, nonce);
-    const content = { v: 1, sealed: 1, domain, claim: p.claim, nonce };
+    const enc = await this.claims.sealPreimage(sf.claim, nonce);
+    const content = { v: 1, sealed: 1, domain, claim: sf.claim, nonce };
     const ph = cairnPayloadHash(content);
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
-    const fee = p.fee ?? CAIRNX_PROPOSE_FEE; // propose min 0.25 CSD
+    const fee = sf.fee;
     const r = await node.propose(this.rpc, { domain, payloadHash: ph, uri: "cairn:seal:v1:" + ph.slice(2, 14), expiresEpoch, fee }, priv);
     // A maybe-inflight seal may still MINE: persist the reveal preimage (claim+nonce) on the
     // ambiguous path too, or a landed commit becomes forever unrevealable (0.2.56, same class as
@@ -997,6 +973,8 @@ export class Wallet {
   }
   revealClaim(txid: string) { return this.claims.revealClaim(txid); }
   sealedClaims(): Promise<any[]> { return this.claims.sealedClaims(); }
+  /** The removal warning's count: unrevealed sealed claims of the account `addr` (popup-only). */
+  unrevealedSeals(addr: string): Promise<number> { return this.claims.unrevealedCount(String(addr)); }
 
   // ── transaction history; isolated per active account ──────────────────────
   // Pre-await key capture (0.2.56, review F5): every recording path must file under the account
@@ -1025,9 +1003,10 @@ export class Wallet {
   }
 
   // ── durable off-chain content registration (account-agnostic) ──────────────
-  private async addPending(content: unknown, txid: string) {
+  // `hk`: the history the post's row is in, so a body the server refuses for good can be marked there.
+  private async addPending(content: unknown, txid: string, hk?: string) {
     const list: any[] = (await this.store.get("pendingContent")) || [];
-    if (!list.find((x) => x.txid === txid)) list.push({ content, txid, ts: Date.now() });
+    if (!list.find((x) => x.txid === txid)) list.push({ content, txid, ts: Date.now(), ...(hk ? { hk } : {}) });
     await this.store.set("pendingContent", list);
   }
   // F-QUEUE-2 (Plans/68 A3): flushPending is a read-modify-write over pendingContent with awaits in
@@ -1036,6 +1015,13 @@ export class Wallet {
   // with a stale list. The in-flight latch collapses overlaps; the final RE-READ + union-by-txid
   // merge keeps any entry added while this flush was running.
   private flushInFlight = false;
+  // A queued body is tried on every alarm (1 min) for its first CONTENT_FAST_TRIES attempts, which covers a normal
+  // mine and a short outage; after that the wait doubles from 2 min to at most an hour, so an entry the server keeps
+  // refusing costs 186 attempts over its 7 days instead of one a minute (test/flushpending.test.mjs).
+  static contentRetryDelayMs(fails: number): number {
+    if (fails < CONTENT_FAST_TRIES) return 0;
+    return Math.min(CONTENT_MAX_DELAY_MS, 2 * 60_000 * 2 ** Math.min(20, fails - CONTENT_FAST_TRIES));
+  }
   async flushPending(): Promise<void> {
     if (this.flushInFlight) return;
     this.flushInFlight = true;
@@ -1051,16 +1037,25 @@ export class Wallet {
         // landed, no error (Plans/66 B8). Content is self-certifying and re-POSTable, so a long
         // retry window costs nothing; expiry still bounds the queue.
         if (Date.now() - (x.ts || 0) > 7 * 86400000) continue;
+        if (Number(x.nextAt) > Date.now()) { keep.push(x); continue; }   // backing off (contentRetryDelayMs)
+        const later = () => { const fails = (Number(x.fails) || 0) + 1; keep.push({ ...x, fails, nextAt: Date.now() + Wallet.contentRetryDelayMs(fails) }); };
         try {
           const p = await node.getProposal(this.rpc, x.txid);
-          if (!(p && p.payload_hash)) { keep.push(x); continue; }  // not mined yet → retry later
+          if (!(p && p.payload_hash)) { later(); continue; }  // not mined yet → retry later
           // F-QUEUE-1 (Plans/68 A3): registerContent NEVER throws; it resolves {ok:false} on any
           // refusal/outage (node.ts). Dropping the entry on that path silently lost the body of a
           // tx the user PAID to anchor. Registration is idempotent and self-certifying, so a
-          // failed register keeps the entry for the next alarm tick instead.
-          const rr: { ok?: unknown } | null = await node.registerContent(this.api, x.content, x.txid);
-          if (!(rr && rr.ok)) keep.push(x);
-        } catch { keep.push(x); }                                  // transient/network error → retry later
+          // failed register keeps the entry, except on the server's lasting refusal, which a retry cannot change.
+          const rr: { ok?: unknown; status?: unknown; error?: unknown } | null = await node.registerContent(this.api, x.content, x.txid);
+          if (rr && rr.ok) continue;
+          if (node.contentRefusedForGood(rr)) {
+            // Its history row says the post was not published (popup-history.ts); a queue entry from before 0.3.3 has no hk.
+            console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}: ${String(rr?.error ?? "")}); it is not retried`);
+            if (typeof x.hk === "string") await this.hist.annotate(x.hk, x.txid, { bodyRefused: Number(rr?.status) });
+            continue;
+          }
+          later();
+        } catch { later(); }                                  // transient/network error → retry later
       }
       // re-read + merge (union by txid): entries queued DURING this flush survive the write-back.
       const now: any[] = (await this.store.get("pendingContent")) || [];
@@ -1094,9 +1089,10 @@ export class Wallet {
   // preimages; so a freshly-created wallet can't surface a prior owner's data.
   // RESET-RESURRECT (fund-safety red-team + P75-6): the wipe must not race ANY parked write. It is
   // serialized behind ALL THREE write chains (vault, history, seals); lock() above nulled
-  // this.accts, and every chained WRITE callback bails on !this.accts, so nothing queued after this
-  // point can land, and everything queued before it settles before the deletes run. doReset() below
-  // clears the parked arrays itself. (W4: lock() no longer clears them, because an idle auto-lock is
+  // this.accts, and every chained WRITE callback bails on !this.accts (history's `annotate`, which
+  // writes while locked, bails on `wiped`, set first below), so nothing queued after this point can
+  // land, and everything queued before it settles before the deletes run. doReset() below clears the
+  // parked arrays itself. (W4: lock() no longer clears them, because an idle auto-lock is
   // not a reset and destroying a PAID commit's only reveal nonce was the defect; the reset path's
   // clear was already independent, which is why the deletion did not touch this property.)
   async reset(): Promise<void> {
@@ -1112,6 +1108,7 @@ export class Wallet {
   private async doReset(wallets: PubAcct[]): Promise<void> {
     this.hist.pendingHist = []; this.claims.pendingSeals = []; // belt: a park that raced lock
     for (const w of wallets) { await this.store.del(histKey(w.addr)); await this.store.del(sealKey(w.addr)); }
+    await this.claims.dropKept();
     for (const k of ["vault", "wallets", "active", "addr", "txHistory", "sealedClaims", "pendingContent"]) await this.store.del(k);
   }
 }

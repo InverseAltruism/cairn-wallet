@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.3.3
+
+- The approval window shows the fields the wallet signs, for every request type it paints. An `attest` at the
+  token-fill confidence with no score painted "score 0" (and, with this release's cancel title, "Cancel your offer")
+  while the wallet signed it as a token fill at score 100, so a page could have the user approve a fill of their own
+  offer that the window called a cancel; it now paints "Fill offer" with score 100, never a cancel, and a score the
+  fill refuses is shown as refused (named only when it is a number, never echoed as the page's text). A reveal shows
+  no network fee and counts nothing against the balance: it signs no transaction (0.3.2 showed a network fee row, with
+  any fee a page put in its params). A seal's domain is shown trimmed, as signed; a seal domain that is not a string
+  is shown as refused; a sign-in always shows the URI it signs, its default included. One function per request type
+  (`src/core/signfields.ts`; `siwcFieldsFor` for a sign-in) gives the signer its fields and the window what it shows
+  and what it reads before and after the paint (the cancel read, the token quote, the fill view, the reveal preview,
+  the recipient checks). test/sign-display-parity.test.mjs sends every request type through the real worker to the
+  real approval window, approves it with the window's button, and compares the painted fields and the window's reads
+  with the signed transaction (at 29034be it fails 7 of its 46 checks, among them the window titling the user's own
+  token-priced offer "Cancel your offer" while the wallet signs a fill of it).
+- CI and the release workflow run on Node 26 (`node-version: "26"` in every setup-node step), the runtime of the
+  release host since 2026-11-13, so the local CI-equivalent run and a maintainer's reproduce-then-publish build use the
+  Node the workflows use (test/ci-node-version.test.mjs). The release zips built from v0.3.2 were byte-identical on
+  Node 22 (the release job) and Node 26 (local rebuilds by two reviewers on 2026-11-14).
+- Notes for the register (the register lives in cairn; nothing here edits it): row 82 (a failed delete of the session
+  key on lock is swallowed) stays accepted: both security reviews of 0.3.2 found no Chrome condition that makes the
+  in-memory session area refuse a delete while the worker runs, and any guard would need the same area to record the
+  failure. Row 83 (the fclaim lane's confirm step skipped when its re-read fails) closes as unreachable: by that point
+  the production source has proven the fclaim and memoises the event, so the read cannot fail or be empty
+  (`fillspv.ts` proveEventAt; both reviews read it the same way). Row 124 (history labels without the verdict) closes:
+  0.3.0 changed the labels to "Offer fill sent" and "Token transfer sent" (bf65b6a).
+- Removing an account keeps its sealed claims that are not revealed yet; it deleted them, and with them the only copy
+  of each reveal secret (random at seal time, not derived from the phrase or the key), so a paid commit could never be
+  opened again, even after the same key was imported back. The revealed records still go. The kept records stay
+  encrypted under the vault key and list and reveal again once the same address is back in this wallet; `reset()`
+  deletes them (the address is recorded before its kept list is written, so a worker stopped between the two writes
+  leaves nothing reset() misses). They are written before the account is taken out, so a removal whose write fails
+  leaves the account listed, switchable and removable once storage works, and removals run one at a time. The remove
+  step now says how many unrevealed sealed claims the account has and that only this wallet with the account in it can
+  reveal them (warn, not block), and README's backup section says neither backup covers them
+  (test/seal-remove-keep.test.mjs, test/account-remove-warn-dom.test.mjs).
+- A refused second fill (`FILL_IN_PROGRESS`) raises the approval window at most once per 5 seconds, whichever site
+  sends it. Every refusal used to raise the window, and every raise re-arms the request on screen (both buttons off for
+  700 ms), so a page repeating a fill of a target it held every 300 ms kept Approve and Reject off for as long as it ran
+  and pulled the window forward about three times a second, and a second site could do the same to another site's
+  request on screen. Nothing was signed either way. The first refusal still raises and re-arms the window as before, and
+  one after the gap does again (test/approve-raise-refused-bound.test.mjs; the Chromium case in
+  test/approve-raise-chrome.test.mjs).
+- A score-0 attestation that cancels the signer's own CairnX offer or bid (how the site cancels one) is titled "Cancel
+  your offer" or "Cancel your bid" in the approval window, with what that cancels; it read "Support / review" with
+  "score 0 · confidence 100". The window reads the target from the node first (`attestTarget`, popup-only) and says
+  cancel only when the node names the account on screen as its proposer; when the read fails it keeps "Support /
+  review" and says that score 0 cancels the target if it is your open offer or bid. Another account's offer and any
+  other proposal read as before (test/clearsign.ts, test/attest-target-view.test.mjs).
+- The wallet reads `truncated` on a `/utxos` answer (node 0.1.17 cuts the list at its bound, 10,000 by default, the
+  largest coins first; `confirmed_balance` stays whole). A cut mined set no longer marks a history row "not included:
+  its coins were spent by another transaction" because one of its inputs fell below the cut; a txid it lists still
+  counts as included. The coin counts shown from a cut list read as floors: "You have at least 10000 spendable coins",
+  "512 of at least 10000" and "at least 20 merges" in the merge sheet, Max's note "512 of your coins (at least
+  10000 in all)", and a sent merge's "At least N coin(s) left". Sends pick the largest coins, which a cut keeps; a send
+  the whole balance covers but the listed coins cannot cover within the 512-input limit refuses `TOO_MANY_INPUTS`
+  with the merge advice, not "insufficient confirmed balance" (test/utxos-truncated.test.mjs,
+  test/inclusion-chain.test.mjs case 6t, test/popup-inclusion-dom.test.mjs 7c).
+- A queued post body that cannot be registered no longer retries every minute for 7 days (up to 20,160 requests per
+  body). It is tried on every alarm for its first 15 attempts, as before, so a post mined within 15 minutes registers
+  just as fast; after that the wait doubles from 2 minutes to at most an hour (186 attempts in 7 days against a server
+  that keeps failing). A body the server refuses for good (HTTP 400, 413 or 422: a malformed request, a body over its
+  size cap) is dropped after the first refusal, and its post's history row reads "Not posted" with the server's status;
+  a 401, 403 or 404 comes from something in front of Cairn's content route or from an API setting the user can fix, so
+  it keeps the backoff. `registerContent` returns the HTTP status with a failure (test/flushpending.test.mjs,
+  test/popup-inclusion-dom.test.mjs 6b).
+- Block bodies for name proofs and fill checks are fetched by the hash of the header the wallet verified
+  (`/api/rpc/block/<hash>`) instead of by height. The front door marks a finalized body at that route immutable, so
+  the edge can serve it, and it debits no per-height block budget; the by-height route is never cached. The body is
+  still bound to the verified header's merkle root before anything is used (test/block-by-hash.test.mjs; the fixture
+  server in test/helpers/spvfixture.mjs answers by hash too).
+- The proportional fee cap in `src/core/node.ts` (max(1 CSD, 10% of the verified inputs)) is pinned to csd-tx's
+  `feeCap` by test/feecap-parity.test.mjs over 202,163 totals (the floor's crossing, the rounding edges, powers of two
+  and 200,000 seeded totals across the safe-integer range). The copy stays because the vendored bundle exports only
+  csd-tx's `selectInputs`; the next re-vendor can add `feeCap` to the export list and import it. No behaviour change.
+- Integration (third-party sites): a `signInWithCsd` request the wallet would refuse at signing (a UUID nonce, a
+  domain or URI of another site, an over-long field) is answered `BAD_REQUEST` before it is queued; it used to open the
+  window, take the user's approval and then fail `INTERNAL`. The check and the signing run one function
+  (`src/core/siwcparams.ts`). The reply an open page gets after the extension updates carries `code:
+  "WALLET_RELOADED"` beside its unchanged `WALLET_RELOADED: ...` text. With no vault yet, the approval window says how
+  to set the wallet up and that the request waits, instead of asking for a password. A sign-in's statement is labelled
+  "Text from <site>, not from Cairn Wallet". `getCapabilities()` no longer lists `signIn`, which cannot succeed from any
+  origin (it posts to an `/auth/nonce` the Cairn API no longer serves); the method and its first-party refusal stay
+  (test/siwc-prequeue.test.mjs, test/inpage-relay.test.mjs sections 8 and 9, test/approve-novault-statement-dom.test.mjs,
+  test/extension-boundary.ts CQ-4). WALLET-ERROR-CODES.md lists `WALLET_RELOADED` and the outer `BAD_REQUEST`.
+- Copy: SECURITY.md and README said the decrypted key lives only in the background service worker; the vault key is
+  also kept in the browser's in-memory session storage while unlocked, and the popup receives the phrase and a key at
+  creation and on a password-gated reveal. Both now say so. The privacy policy and the store listing's alarms
+  justification say the key is dropped from memory on lock, not wiped (JavaScript cannot zero memory). The wallet's
+  user-facing refusal texts lose their em dashes (account removal, restore and import over an existing vault, the
+  brute-force wait, `ACCOUNT_CHANGED`, the token zero-address and profile-key refusals, the name lapse and reservation
+  refusals, the content script's `WALLET_UNAVAILABLE`); the words and the codes are unchanged.
+- The SPV anchor table's newest entry is 139,263 (27 entries; it was 135,167). store/PUBLISH-RUNBOOK.md step 2 now
+  has a refresh cadence: a table-only release once the public tip is more than 14,400 blocks above the newest entry,
+  with the measured cost per header of the suffix every installed wallet carries.
+
 ## 0.3.2
 
 - CI and the release workflow run every job on `ubuntu-24.04`. GitHub moved `ubuntu-latest` to 26.04, where

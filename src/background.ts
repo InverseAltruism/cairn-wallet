@@ -7,6 +7,8 @@ import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
 import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
 import { fillTargetOf } from "./core/fillpreflight.js";
+import { siwcParamsRefusal } from "./core/siwcparams.js";
+import { sendFields, revealFields } from "./core/signfields.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -135,6 +137,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
     case "fillOfferView": return wallet.fillOfferView(args[0]); // listing id + listed asset for a CSD-paid fill card (display only)
+    case "attestTarget": return wallet.attestTarget(args[0]); // the target an attest names, for the cancel title (display only)
     case "cairnxNameRenew": return wallet.cairnxNameRenew(args[0], args[1], args[2], args[3] === true); // args[2] = expectSigner (A1), args[3] = the other-owner acknowledgement
     case "cairnxNameRenewFee": return wallet.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return wallet.cairnxSetPrimary(args[0], args[1]); // args[1] = expectSigner (A1)
@@ -161,6 +164,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "sealClaim": return wallet.sealClaim(args[0]);
     case "revealClaim": return wallet.revealClaim(args[0]);
     case "sealedClaims": return wallet.sealedClaims();
+    case "unrevealedSeals": return wallet.unrevealedSeals(args[0]); // the account removal warning's count (popup-only, READ_ONLY)
     default: throw new Error("unknown method: " + method);
   }
 }
@@ -235,7 +239,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // switched accounts in the toolbar popup after the window rendered), refuse rather than silently sign/
     // disclose with the now-active account the user did NOT review. Fail-closed → reopen + re-review.
     if (typeof displayedSigner === "string" && displayedSigner && displayedSigner.toLowerCase() !== String(st.addr).toLowerCase()) {
-      return finish({ ok: false, code: "ACCOUNT_CHANGED", error: "the active account changed since you reviewed this request — reopen it and review again before approving" });
+      return finish({ ok: false, code: "ACCOUNT_CHANGED", error: "the active account changed since you reviewed this request: reopen it and review again before approving" });
     }
     let result: any;
     if (p.method === "connect" || p.method === "getAddress") {
@@ -262,7 +266,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote }); // W4 (B5d): thread the reviewed signer so a token-fill-confidence attest gets the fill path's ACCOUNT_CHANGED cross-check; RT-W2: + the reviewed quote
     else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
-    else if (p.method === "revealClaim") result = await wallet.revealClaim(p.params);
+    else if (p.method === "revealClaim") result = await wallet.revealClaim(revealFields(p.params).txid);
     // Plain transfer. Reachable from a dApp ONLY through this approval path (the user
     // saw the recipient/amount/fee in the approve window). We read ONLY to/amount/fee
     // or outputs[]; never any caller-supplied inputs/UTXOs/change address; node.send*
@@ -270,14 +274,15 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     // methods (export/restore/import/reset/settings/account mgmt) stay out of this list
     // and fall through to the throw below, so a dApp can never reach them.
     else if (p.method === "send") {
-      const x = p.params || {};
+      const s = sendFields(p.params);
       // A1: thread the DISPLAYED signer into the method so the check fires at the sign tick,
       // not only at the pre-dispatch M5 guard above (fillOffer awaits between the two). Set from
       // displayedSigner LAST so a dApp-supplied expectSigner in params can never substitute it.
       const exp = typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined;
-      result = Array.isArray(x.outputs)
-        ? await wallet.sendMany({ outputs: x.outputs, fee: x.fee, expectSigner: exp })
-        : await wallet.send(x.to, x.amount, x.fee, exp);
+      const one = s.outputs[0];
+      result = s.many || !one
+        ? await wallet.sendMany({ outputs: s.outputs, fee: s.fee, expectSigner: exp })
+        : await wallet.send(one.to, one.value, s.fee, exp);
     }
     // Offer fill (Attest + payment in one tx; CairnX applies the delivery). Same posture as send:
     // the user clear-signed the recipient(s)/amount/fee; inputs are selected internally
@@ -308,7 +313,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative; anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "unrevealedSeals", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "attestTarget", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests
@@ -379,14 +384,29 @@ const MAX_PENDING_PER_ORIGIN = 5;
 // first is queued, that window is opened or focused; once it is in flight, an open window is focused (normally the one
 // that approved it, showing its outcome) and none is created, since a new window could only show other requests.
 const fillHolds = new Map<string, string>(); // fill target -> id of the request holding it
+// Each raise re-arms the request on screen (focusApprovalWindow: both buttons off for 700 ms), so a page repeating a
+// refused fill could hold another site's painted request off and keep pulling the window forward. A refusal raises at
+// most once per REFUSED_RAISE_GAP_MS, whichever site sends it (a per-origin key would let several tabs multiply the
+// rate); one inside the gap only answers, re-arms nothing, and the window was raised less than the gap ago.
+const REFUSED_RAISE_GAP_MS = 5_000;
+let refusedRaiseAt = Number.NEGATIVE_INFINITY;
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
+  // A sign-in the wallet would refuse after the user approved it is refused now, before anyone is asked.
+  if (method === "signinWithCsd") {
+    const bad = siwcParamsRefusal(params, origin);
+    if (bad) return Promise.resolve({ ok: false, code: "BAD_REQUEST", error: bad });
+  }
   const fillTarget = fillTargetOf(method, params);
   const holder = fillTarget ? fillHolds.get(fillTarget) : undefined;
   if (holder) {
-    if (pending.has(holder)) openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
-    else focusApprovalWindow();
+    const now = performance.now();
+    if (now - refusedRaiseAt >= REFUSED_RAISE_GAP_MS) {
+      refusedRaiseAt = now;
+      if (pending.has(holder)) openApprovalWindow().catch(() => { /* best-effort; badge still shows the count */ });
+      else focusApprovalWindow();
+    }
     return Promise.resolve({ ok: false, code: "FILL_IN_PROGRESS", error: FILL_IN_PROGRESS_TEXT });
   }
   if (pending.size >= MAX_PENDING_GLOBAL) return Promise.resolve({ ok: false, code: "RATE_LIMITED", error: "too many pending wallet requests; approve or reject the queued ones first" });

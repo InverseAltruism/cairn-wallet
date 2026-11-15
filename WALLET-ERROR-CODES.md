@@ -31,10 +31,12 @@ dropping it would be a dApp-visible shape change.)
 | `FIRST_PARTY_ONLY` | `signIn()` from a third-party origin. | No: use the audience-bound `signInWithCsd()`. | 0.2.46 |
 | `UNSUPPORTED_METHOD` | Method not in the dApp allowlist (or wallet predates it). | No. | 0.2.46 |
 | `RATE_LIMITED` | Too many pending approval requests (global or per-origin queue cap). | Yes, after the queued requests are approved or rejected. | 0.2.46 |
-| `FILL_IN_PROGRESS` | A fill request (`fillOffer`, or `attest` at the token-fill confidence 1,000,000) names a target (`proposalId`: the offer id or the reservation txid, compared in lower case) that another fill request holds: queued, back in the queue for its reservation confirm step, or approved and still signing or sending. Refused when it arrives, from any site and after a page reload: it is not queued, no approval window is created for it, and nothing is signed; the approval window that holds the first request is brought forward (while the first is signing or sending, only an open window is focused). The hold ends when the first request is answered (sent, refused, rejected or `APPROVAL_CLOSED`) or a worker restart empties the queue. Emitted by `background.ts` `queueDappRequest`. | Yes, once the first request is answered: after a rejection or a refusal, ask again; after it was sent, check that purchase before paying again. | 0.3.2 |
+| `FILL_IN_PROGRESS` | A fill request (`fillOffer`, or `attest` at the token-fill confidence 1,000,000) names a target (`proposalId`: the offer id or the reservation txid, compared in lower case) that another fill request holds: queued, back in the queue for its reservation confirm step, or approved and still signing or sending. Refused when it arrives, from any site and after a page reload: it is not queued, no approval window is created for it, and nothing is signed; the approval window that holds the first request is brought forward (while the first is signing or sending, only an open window is focused), at most once per 5 seconds across all sites since 0.3.3. The hold ends when the first request is answered (sent, refused, rejected or `APPROVAL_CLOSED`) or a worker restart empties the queue. Emitted by `background.ts` `queueDappRequest`. | Yes, once the first request is answered: after a rejection or a refusal, ask again; after it was sent, check that purchase before paying again. | 0.3.2 |
 | `FORBIDDEN` | Privileged internal message from a non-extension page. | No. | 0.2.46 |
 | `UNKNOWN_KIND` | Unknown message kind on the internal channel. | No. | 0.2.46 |
 | `INTERNAL` | Catch-all wrapper for anything thrown while executing an approved action, except the "locked" throw (`WALLET_LOCKED` since 0.2.74); `error` carries the thrown message. | Unknown from the code alone; consumers may inspect the string. | 0.2.46 |
+| `BAD_REQUEST` | A `signInWithCsd` request whose parameters the wallet would refuse at signing: a nonce that is not 8 or more ASCII letters and digits (a UUID, for one), a declared `domain` or a `uri` of another site, an opaque requesting origin, a statement over 256 characters or on more than one line, more than 10 resources, or an over-long or multi-line field. Refused before it is queued: no window opens and nothing is signed; `error` names the parameter. The same code is the nested `SubmitResult` code for a malformed propose or attest param (below). Emitted by `background.ts` `queueDappRequest` through `siwcparams.ts` `siwcParamsRefusal`. | No: fix the parameter. | 0.3.3 (outer envelope) |
+| `WALLET_RELOADED` | The extension was updated or reloaded under a live page, so the page's content script can no longer reach the wallet. Written by `src/content.ts` itself; `error` keeps the `WALLET_RELOADED: ...` prefix wallets before 0.3.3 sent without a code. | Yes, after a page refresh. | 0.3.3 (code); the string prefix since 0.2.50 |
 | `WALLET_UNAVAILABLE` | The content-script ↔ service-worker channel is closed (SW dropped, bfcache, or `wallet.init` rejected). The inpage waiter is resolved with this coded refusal instead of hanging. | Yes, after a page refresh (or once the extension is reachable again). | 0.2.70 |
 
 ## Nested SubmitResult codes (0.2.54)
@@ -76,8 +78,9 @@ The strings are unchanged from earlier releases; only the machine `code` is new.
 
 ## Code-less strings consumers must still know
 
-* `WALLET_RELOADED: ...` (string PREFIX on `error`, `src/content.ts`, since 0.2.50): the
-  extension was updated or reloaded under a live page; the page must refresh to reconnect.
+* `WALLET_RELOADED: ...` (string PREFIX on `error`, `src/content.ts`, 0.2.50 to 0.3.2): the
+  extension was updated or reloaded under a live page; the page must refresh to reconnect. Since
+  0.3.3 the same reply also carries `code: "WALLET_RELOADED"`; match the prefix only for older wallets.
 
 ## Consumption pattern (code first, string fallback)
 

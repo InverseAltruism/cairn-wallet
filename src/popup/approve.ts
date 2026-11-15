@@ -3,7 +3,8 @@
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
 import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
-import { decodeCairnxRecord, CAIRNX_DOMAIN, CONF_TOKEN_FILL } from "../core/cairnx.js";
+import { decodeCairnxRecord, CAIRNX_DOMAIN, SCORE_CANCEL } from "../core/cairnx.js";
+import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields } from "../core/signfields.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
@@ -24,6 +25,9 @@ const fontsLoaded: Promise<unknown> = Promise.race([
 ]);
 
 const call = (method: string, ...args: any[]): Promise<any> => extensionCall(chrome, method, ...args);
+// What the window reads before and after the paint comes from the fields the signer signs (signfields.ts): an attest's
+// (null when the signer signs it as a fill), a proposal's, a fill's.
+const attestOf = (r: any): { proposalId: unknown; score: number; confidence: number } | null => { const a = attestFields(r?.params); return a.route === "attest" ? a : null; };
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
 // What each request type asks for, under the requesting origin in the header.
 function asks(r: any): string {
@@ -66,7 +70,9 @@ async function render() {
   const seq = renderSeq;
   const st = await call("status");
   if (seq !== renderSeq) return;
-  ($("view-locked") as HTMLElement).hidden = st.unlocked;
+  // No vault yet (a site sent someone here before they set the wallet up): nothing to unlock, so say how to set it up.
+  ($("view-novault") as HTMLElement).hidden = st.unlocked || st.hasVault !== false;
+  ($("view-locked") as HTMLElement).hidden = st.unlocked || st.hasVault === false;
   ($("ap-signer") as HTMLElement).hidden = !st.unlocked;   // the account can change while locked; the unlock repaint writes it
   const pend = await call("pending");
   if (seq !== renderSeq) return;
@@ -96,14 +102,14 @@ async function render() {
   disableButtons();
   // CX-35: decimals for the token amounts this record clear-signs, fetched in parallel with the reads below.
   // Bounded and display only; a miss paints base units alone.
-  const p0 = current.params || {};
+  const p0 = proposeFields(current.params);
   const tickers = current.method === "propose" && String(p0.domain) === CAIRNX_DOMAIN ? cairnxTokenTickers(p0.uri, p0.payloadHash) : [];
   const metaP = tickers.length ? bounded(call("tokenDisplayMeta", tickers)) : null;
   // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
   // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
   // before building the request HTML (not per ~1.2s tick; this block runs once per new request).
   // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
-  if (current.method === "propose" && (current.params || {}).expiresEpoch !== undefined) {
+  if (current.method === "propose" && p0.expiresEpoch !== undefined) {
     // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
     // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
     // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
@@ -111,14 +117,18 @@ async function render() {
     if (e != null) current.currentEpoch = e;
     if (t != null) current.currentTip = t;
     if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
-  } else if (current.method === "attest"
-      && (Number((current.params || {}).score) >>> 0) === 50 && (Number((current.params || {}).confidence) >>> 0) === 0) {
+  } else if (current.method === "attest" && attestOf(current)?.score === 50 && attestOf(current)?.confidence === 0) {
     // B5h (score-50 V28 truth): thread the PoW-backed tip floor so describe() can warn that a legacy
     // SCORE_CLAIM past the V28 gate is a guaranteed on-chain no-op. tipFloor is a wallet-store read
     // (READ_ONLY, no network), so the attest paint gains no network dependency; a miss degrades to no
     // warning (today's behavior).
     const f = await bounded(call("tipFloor"));
     if (f != null) current.tipFloor = f;
+  } else if (current.method === "attest" && attestOf(current)?.score === SCORE_CANCEL) {
+    // A score-0 attest the signer signs as an attest (not at the token-fill confidence, which signs a fill) cancels the
+    // target when it is the signer's own CairnX offer or bid; the node's proposal read says whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
+    const t: any = await bounded(call("attestTarget", attestOf(current)?.proposalId));
+    current.attestTarget = t?.ok === true ? { kind: t.kind, mine: String(t.proposer) === String(st.addr || "").toLowerCase() } : { unknown: true };
   }
   if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
   await fontsLoaded;   // the density probe below measures text; resolved after the first paint
@@ -318,7 +328,7 @@ function armNfinalizeGate(r: any, st: any) {
   }
   nfinForId = r.id;
   nfinBlocked = false; nfinGate = null; nfinSettled = null; nfinLive = null;
-  const p = r.params || {};
+  const p = proposeFields(r.params);
   if (r.method !== "propose" || String(p.domain) !== CAIRNX_DOMAIN) return;
   const rec = decodeCairnxRecord(p.uri, p.payloadHash);
   if (!rec || typeof rec.name !== "string") return;
@@ -347,14 +357,9 @@ function armNfinalizeGate(r: any, st: any) {
 let tokenSimForId: string | null = null;
 // 0.2.71 (CX-15): a token-debiting fill is approvable only once its preview is `ready` for this very
 // request. States: loading -> ready | error. A failed quote is retried a few times before `error`.
-function isTokenFill(r: any): boolean {
-  const conf = Number((r?.params || {}).confidence ?? 100) >>> 0;
-  return !!r && (r.method === "fillOffer" || r.method === "attest") && conf === CONF_TOKEN_FILL;
-}
-function tokenNotReady(r: any): boolean { return isTokenFill(r) && rs(r.id).tokenPreview !== "ready"; }
+function tokenNotReady(r: any): boolean { return !!r && isTokenFill(r.method, r.params) && rs(r.id).tokenPreview !== "ready"; }
 async function fillTokenSim(r: any) {
-  const conf = Number((r.params || {}).confidence ?? 100) >>> 0;
-  if ((r.method !== "fillOffer" && r.method !== "attest") || conf !== CONF_TOKEN_FILL || tokenSimForId === r.id) return; tokenSimForId = r.id;
+  if (!isTokenFill(r.method, r.params) || tokenSimForId === r.id) return; tokenSimForId = r.id;
   rs(r.id).tokenPreview = "loading";
   const el = document.getElementById("token-sim");
   if (!el) return;
@@ -367,7 +372,7 @@ async function fillTokenSim(r: any) {
     const tipRead = cardTip();   // display only: the offer's remaining blocks on the card
     let q: any = null;
     for (let attempt = 0; attempt < 3; attempt++) {
-      q = await call("tokenFillQuote", (r.params || {}).proposalId).catch(() => null);
+      q = await call("tokenFillQuote", fillOf(r.method, r.params)?.proposalId).catch(() => null);
       if (q && q.ok) break;
       if (!live()) return;
       await new Promise((ok) => setTimeout(ok, 1500));
@@ -400,7 +405,7 @@ async function fillRevealPreview(r: any) {
   let html: string;
   try {
     const list = await call("sealedClaims");
-    const txid = String(r.params || "");
+    const txid = revealFields(r.params).txid;
     html = revealPreviewHtml((Array.isArray(list) ? list : []).find((x: any) => x && String(x.txid) === txid) ?? null);
   } catch {
     html = revealPreviewHtml({ failed: true }); // lookup failed ≠ "no such claim"; distinct honest caution
@@ -451,10 +456,11 @@ async function fillFillView(r: any) {
   if (r.method !== "fillOffer" || fillViewForId === r.id) return; fillViewForId = r.id;
   const el = document.getElementById("fill-view");
   if (!el) return;   // token-priced fills carry #token-sim instead
-  const id = String((r.params || {}).proposalId || "");
+  const f = fillFields(r.params);
+  const id = String(f.proposalId || "");
   const [view, tip] = await Promise.all([bounded(call("fillOfferView", id)), cardTip()]);
   if (renderedId !== r.id) return;
-  el.innerHTML = fillViewHtml(view as any, id, tip, (r.params || {}).outputs);
+  el.innerHTML = fillViewHtml(view as any, id, tip, f.outputs);
   (el as HTMLElement).hidden = false;
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning

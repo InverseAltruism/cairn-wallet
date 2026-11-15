@@ -116,6 +116,7 @@ try {
   const [fillId] = await pendingIds();
 
   // The double click: the first click asks for the same fill, the second lands on the raised window's Approve.
+  const refusedAt = Date.now();
   const refusal = await site.evaluate((p) => window.cairn.fillOffer(p), FILL);
   t.check(`the site's second fill of its held offer is refused FILL_IN_PROGRESS (${refusal?.code})`, refusal?.ok === false && refusal?.code === "FILL_IN_PROGRESS");
   let r = [];
@@ -153,6 +154,43 @@ try {
   const code2 = second?.code ?? second?.result?.code;
   t.check(`honest path: with no raise since it armed, the user's click approves the send at once (${code2}; ${quietFrom - n} raise when it queued, ${(await raises()).length - quietFrom} since)`,
     (await raises()).length === quietFrom && code2 !== "USER_REJECTED" && code2 !== "APPROVAL_CLOSED" && code2 !== undefined);
+
+  // A second origin queues a fill of its own target behind the site's request on screen, then repeats it every 300 ms
+  // (W1a's Chromium PoC). Each repeat is refused FILL_IN_PROGRESS; a refusal raises the window at most once per 5 s
+  // (background.ts REFUSED_RAISE_GAP_MS), so the buttons stay live and the user's click lands.
+  //   RED-FIRST (src/ at v0.3.2): 13 or more raises in 4 s, both buttons live in at most 8 of about 80 samples, and 8
+  //   clicks on Approve and 8 on Reject did nothing.
+  await approval.waitForTimeout(Math.max(0, refusedAt + 5_200 - Date.now()));   // past the gap the double click opened
+  await site.evaluate(() => { window.third = undefined; window.cairn.send({ to: "0x" + "33".repeat(20), amount: 100_000_000, fee: 1_000_000 }).then((x) => { window.third = x; }); });
+  await approval.waitForFunction(() => document.getElementById("req").textContent.includes("3333"), null, { timeout: 15_000, polling: "raf" });
+  const EVIL = "https://evil.test";
+  await ctx.route(`${EVIL}/**`, (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>evil</title><p>evil</p>" }));
+  const evil = await ctx.newPage();
+  await evil.goto(`${EVIL}/`);
+  await evil.waitForFunction(() => !!window.cairn, null, { timeout: 10_000 });
+  const OTHER = { proposalId: "0x" + "cd".repeat(32), outputs: [{ to: "0x" + "34".repeat(20), value: 100_000_000 }], fee: 5_000_000 };
+  await evil.evaluate((p) => { window.cairn.fillOffer(p); }, OTHER);
+  await approval.waitForTimeout(1200);
+  await approval.waitForFunction(() => !document.getElementById("btn-approve").disabled, null, { timeout: 15_000, polling: "raf" });
+  const head = ((await call("pending"))?.result ?? [])[0];
+  t.check(`setup: the site's send is the head of the queue and on screen with Approve live (${head?.origin})`, head?.origin === SITE && head?.method === "send");
+  const jamFrom = (await raises()).length;
+  await approval.evaluate(() => { window.samples = []; window.sampler = setInterval(() => window.samples.push(!document.getElementById("btn-approve").disabled && !document.getElementById("btn-reject").disabled), 50); });
+  await evil.evaluate((p) => { window.refused = 0; window.jam = setInterval(() => { window.cairn.fillOffer(p).then((r) => { if (r?.code === "FILL_IN_PROGRESS") window.refused++; }); }, 300); }, OTHER);
+  await approval.waitForTimeout(4000);
+  const jamRaises = (await raises()).length - jamFrom;
+  const samples = await approval.evaluate(() => { clearInterval(window.sampler); return window.samples; });
+  const liveN = samples.filter(Boolean).length;
+  t.check(`the other origin's repeats raised the window once in 4 s (${jamRaises})`, jamRaises === 1);
+  t.check(`both buttons were live in most samples while the repeats ran (${liveN} of ${samples.length})`, liveN >= samples.length * 0.7);
+  // Still repeating: the user rejects the site's send with the mouse.
+  const rbox = await approval.locator("#btn-reject").boundingBox();
+  await approval.waitForFunction(() => !document.getElementById("btn-reject").disabled, null, { timeout: 15_000, polling: "raf" });
+  await approval.mouse.click(rbox.x + rbox.width / 2, rbox.y + rbox.height / 2);
+  await site.waitForFunction(() => window.third !== undefined, null, { timeout: 15_000 });
+  const refusedN = await evil.evaluate(() => { clearInterval(window.jam); return window.refused; });
+  const third = await site.evaluate(() => window.third);
+  t.check(`honest path: while the other origin repeats (${refusedN} refused), the user's click rejects the send on screen (${third?.code})`, refusedN >= 10 && third?.code === "USER_REJECTED");
 } finally {
   await ctx?.close();
   rmSync(work, { recursive: true, force: true });

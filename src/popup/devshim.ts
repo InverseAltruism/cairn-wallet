@@ -1,5 +1,5 @@
 // Dev/E2E popup shim: drives a local Wallet against localStorage when chrome.runtime
-// is absent. MUST NOT load in the packaged extension — a static Wallet import in
+// is absent. MUST NOT load in the packaged extension: a static Wallet import in
 // popup.ts would embed the signing class in popup.js. This module throws at load if
 // the extension message surface exists, so a mistaken static import fails closed.
 import { Wallet } from "../core/wallet.js";
@@ -7,7 +7,7 @@ import { localStore } from "../core/storage.js";
 
 const chromeRef = (globalThis as { chrome?: { runtime?: { sendMessage?: unknown } } }).chrome;
 if (chromeRef?.runtime?.sendMessage) {
-  throw new Error("devshim must not load in the extension — chrome.runtime.sendMessage is present");
+  throw new Error("devshim must not load in the extension: chrome.runtime.sendMessage is present");
 }
 
 let dev: Wallet | null = null;
@@ -52,6 +52,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "tokenFillQuote": return w.tokenFillQuote(args[0]);
     case "tokenDisplayMeta": return w.tokenDisplayMeta(args[0]);
     case "fillOfferView": return w.fillOfferView(args[0]);
+    case "attestTarget": return w.attestTarget(args[0]);
     case "cairnxNameRenew": return w.cairnxNameRenew(args[0], args[1], args[2], args[3] === true);
     case "cairnxNameRenewFee": return w.cairnxNameRenewFee(args[0]);
     case "cairnxSetPrimary": return w.cairnxSetPrimary(args[0], args[1]);
@@ -71,6 +72,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "history": return w.history();
     case "sealClaim": return w.sealClaim(args[0]);
     case "sealedClaims": return w.sealedClaims();
+    case "unrevealedSeals": return w.unrevealedSeals(args[0]);
     case "revealClaim": return w.revealClaim(args[0]);
     case "connectedSites": return [];
     case "disconnectSite": return { ok: true };

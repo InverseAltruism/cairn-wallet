@@ -16,7 +16,7 @@ import {
   // constants
   DOMAIN, MIN_FEE_PROPOSE, MIN_FEE_ATTEST, TREASURY_ADDR,
   FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT,
-  CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL,
+  CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL, SCORE_CANCEL,
   NAME_RE, PKEY, RESERVED_NAMES, TICKER_RE, ADDR_RE, SALT_RE,
   MAX_AMOUNT, MAX_RECORD_BYTES, PROFILE_MAX_KEYS, PROFILE_MAX_VALUE_BYTES, MAX_TOKEN_DECIMALS,
   // functions
@@ -59,7 +59,7 @@ export function defaultFeeFor(method: string): number {
     default: return 0;
   }
 }
-export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL, NAME_RE, canonicalJson };
+export { TREASURY_ADDR, FEE_BPS, FEE_BPS_V16, REBATE_BPS, REBATE_FLAT, V16_HEIGHT, V18_HEIGHT, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, CONF_TOKEN_FILL, SCORE_FILL, SCORE_CANCEL, NAME_RE, canonicalJson };
 // v1.6 fee: the offer RECORD schema is unchanged, so the decode gates are already v1.6-complete; this just
 // computes the trade fee for clear-sign display. Byte-identical to cairnx-core (callers pass bigint). (The
 // cairnxMakerRebate re-export was removed 2026-07-06; it had zero callers anywhere; the rebate is computed
@@ -134,7 +134,7 @@ export function buildTransfer(p: { ticker: string; amount: string; to: string })
   // refuses 0x0 before reaching here, so this adds no friction to any legit flow; it just makes the
   // builder self-protecting against a future caller that skips the UI check. `to` is already lowercased
   // 0x+40hex here, so the exact form suffices.
-  if (/^0x0{40}$/.test(to)) throw new Error("refusing to send tokens to the zero address — they would be unrecoverable");
+  if (/^0x0{40}$/.test(to)) throw new Error("refusing to send tokens to the zero address: they would be unrecoverable");
   if (parseAmount(p.amount) === null) throw new Error("amount must be a positive integer of base units");
   const record = { v: 1, t: "transfer", ticker: p.ticker, amount: p.amount, to };
   const uri = canonicalJson(record);
@@ -199,7 +199,7 @@ export function buildNameProfile(p: { name: string; profile: Record<string, stri
   const keys = Object.keys(map);
   if (keys.length > PROFILE_MAX_KEYS) throw new Error(`too many profile keys (max ${PROFILE_MAX_KEYS})`);
   for (const k of keys) {
-    if (PROFILE_RESERVED_KEYS.has(k)) throw new Error(`profile key "${k}" is not allowed — addresses live in the name record (set-address), not the cosmetic profile`);
+    if (PROFILE_RESERVED_KEYS.has(k)) throw new Error(`profile key "${k}" is not allowed: addresses live in the name record (set-address), not the cosmetic profile`);
     if (!PKEY.test(k)) throw new Error(`invalid profile key "${k}" (lowercase a-z 0-9 . - , 1-32, alnum start/end)`);
     const val = map[k];
     if (typeof val !== "string") throw new Error(`profile value for "${k}" must be a string`);

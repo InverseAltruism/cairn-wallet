@@ -61,11 +61,15 @@ You can back up in two ways.
 
 Your keys stay portable and are never locked to this wallet.
 
+Neither backup covers a sealed claim that is not revealed yet: its reveal secret is made at random when you seal and is
+kept only in this wallet, encrypted with your vault. Removing the account keeps it (it comes back when you import that
+account's key again); resetting the wallet or removing the extension loses it, together with the claim's fee.
+
 ## Security
 
 * Keys are stored only as an AES-256-GCM vault, encrypted with a key derived from your password using PBKDF2-SHA256 (600,000 iterations). Nothing is uploaded.
 * Signing is local. The wallet builds each transaction, computes its `CSD_SIG_V1` sighash, and signs it on your device. Only the finished transaction is sent to the node, so a malicious or intercepted RPC cannot make the wallet sign anything other than what you approved.
-* The unlocked key lives only in the background service worker and is cleared by a 15-minute idle auto-lock.
+* While the wallet is unlocked, its keys are held in the background service worker's memory and the vault key in the browser's in-memory session storage (so an idle restart of the worker does not lock you out); locking, including the 15-minute idle auto-lock, drops both. The popup shows the phrase and a key only at creation and when you reveal them with your password.
 * Web pages reach the wallet only through the `window.cairn` provider, limited to connect, sign-in, propose, attest, sealed claims, send, and offer fills. Every fund-moving request needs the wallet unlocked and an explicit approval in a separate clear-signing popup. Key export, account management, and coin maintenance are never reachable from a page.
 
 To report a security issue, see [SECURITY.md](SECURITY.md).

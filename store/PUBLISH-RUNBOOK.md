@@ -72,6 +72,22 @@ name makes a stale local file self-evident.
      deeper than 1,000 blocks, a wrong entry or a compromised source). Do not release and do not regenerate over
      it; compare the hash at that height on the node, the miner and clarvis, and investigate first.
    - `does not match the generator's output`: the file was edited by hand; regenerate it with the script.
+   **Refresh cadence (a table-only release).** Nothing at runtime refuses an old table, but every header above the
+   newest entry is carried by every installed wallet: restored with every consensus check on the first proof of each
+   browser session, held as an object in the service worker, and fetched page by page on a fresh install. Measured
+   costs per header of that suffix:
+   - this host, Node v26.13.1, 2026-11-14, load average about 7, over 6,144 real headers (135,168 to 141,311), three
+     runs of `LightClient.fromRecords` from the vendored bundle: 81.3 to 92.9 us to restore, 946 to 949 bytes of heap
+     retained, and 11.7 to 14.3 us for the session-pin walk (`verifyLinkedRecords`);
+   - an extension page (docs/DESIGN-namespv-scaling.md, "Session pin", 2026-10-19): 2.1 s for 64,359 headers
+     unthrottled (32.6 us), and 8,690 to 11,631 ms at 4x CPU throttle (135 to 181 us).
+   At 21,600 headers (30 days at 720 blocks a day) that is 1.8 to 2.0 s on this host's Node, 0.7 s in an unthrottled
+   extension page, 2.9 to 3.9 s at 4x throttle, about 20.5 MB of service-worker heap, and 43 header pages of 512 (plus
+   the 8 of the anchor chunk) before a fresh install's first proof. The rule: when the public tip is more than
+   14,400 blocks (20 days) above the table's newest entry and no release is in progress, cut a table-only release:
+   steps 1 to 9 with the version, the regenerated table and its CHANGELOG line as the only changes. The 7,200 blocks
+   left before 21,600 are the budget for the store's review and the browsers' update; that delay is not measured here.
+   Every other release regenerates the table anyway (this step).
 3. **Vendor freshness:** after `npm ci`, `npm run verify:vendor` must pass. It rebuilds the SPV bundle and its
    `.d.ts` from the installed csd-sdk packages (the exact versions package.json pins, the integrity
    package-lock.json records) and requires both to be byte-identical to the committed files, and it checks the
