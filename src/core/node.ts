@@ -376,8 +376,8 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
   // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch:
   // nothing has been signed at this point, so the outcome is definitively clean.
-  let utxos: any[], truncated: boolean;
-  try { ({ utxos, truncated } = await balance(rpc, addr)); }
+  let utxos: any[], truncated: boolean, confirmed: number;
+  try { ({ utxos, truncated, confirmed } = await balance(rpc, addr)); }
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
   const exclude = sessionExclusions(now);
@@ -435,13 +435,16 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   // pure-50-CSD-coinbase holder tops out at 512×50 = 25,600 CSD per tx, and telling them
   // "insufficient confirmed balance" is false and alarming. Diagnose which it was: if the full
   // spendable set (same predicate, ghosts excluded) covers `need`, the cap was the blocker.
+  // A list the node cut holds only its largest coins: when more than the cap of them are listed and the whole balance
+  // it reports covers `need`, the cap is the blocker too.
   if (selExhausted) {
     let spendable = 0;
-    for (const c of spendableCoins(utxos, exclude)) {
+    const listed = spendableCoins(utxos, exclude);
+    for (const c of listed) {
       spendable += c.value;
       if (!Number.isSafeInteger(spendable)) { spendable = 0; break; } // beyond-supply garbage: fall through to INSUFFICIENT
     }
-    if (spendable >= need)
+    if (spendable >= need || (truncated && listed.length > MAX_TX_INPUTS && Number.isSafeInteger(confirmed) && confirmed >= need))
       return { error: `this spend needs more coins than the ${MAX_TX_INPUTS}-input per-transaction limit allows: send a smaller amount, or consolidate your coins first (settings ▸ coins)`, code: "TOO_MANY_INPUTS" };
   }
   if (!ghostCount && !horizonCount && !unrepCount) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
@@ -750,13 +753,15 @@ export async function sendMany(rpc: string, p: { outputs: { to: string; value: n
 // CSD has NO coinbase-maturity rule (verified against consensus params 2026-07-09), so any
 // ≥1-confirmation coin is mergeable. Popup-only (NOT in DAPP_METHODS; a dApp has no business
 // restructuring the user's coins; there is nothing to clear-sign that the preview doesn't show).
-export async function consolidate(rpc: string, p: { fee: number }, priv: string): Promise<SubmitResult & { merged?: number; remaining?: number; total?: number }> {
+// `truncated`: the node cut the coin list, so `remaining` counts the listed coins left and the address holds more.
+export async function consolidate(rpc: string, p: { fee: number }, priv: string): Promise<SubmitResult & { merged?: number; remaining?: number; truncated?: boolean; total?: number }> {
   const fee = Number(p?.fee);
   if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", sighashMatch: false, code: "BAD_FEE" };
   if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, sighashMatch: false, code: "FEE_CAP" };
   const addr = addrFromPriv(priv);
   let utxos: any[];
-  try { ({ utxos } = await balance(rpc, addr)); }
+  let truncated = false;
+  try { ({ utxos, truncated } = await balance(rpc, addr)); }
   catch { return { ok: false, error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" }; }
   // Same ghost handling as selectVerified: known-unprovable outpoints are pre-excluded, fresh
   // ghosts exclude-and-retry within the same bounded round budget, and no coin is EVER spent
@@ -793,7 +798,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
     const remaining = spendableCoins(utxos, exclude).length - pool.length;
     const tx: Tx = { version: 1, locktime: 0, app: { type: "None" }, inputs: pool.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: [{ value: outValue, scriptPubkey: addr }] };
     const r = await signAndSubmit(rpc, tx, priv);
-    return { ...r, merged: pool.length, remaining, total: ver.total, ...(r.txid ? { inputs: pool.map((i) => opKey(i.txid, i.vout)) } : {}), ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
+    return { ...r, merged: pool.length, remaining, truncated, total: ver.total, ...(r.txid ? { inputs: pool.map((i) => opKey(i.txid, i.vout)) } : {}), ...(r.ok ? { spentTxids: [...new Set(pool.map((i) => i.txid.toLowerCase()))] } : {}) };
   }
   let skipped = 0, skippedValue = 0;
   for (const c of spendableCoins(utxos)) if (exclude.has(opKey(c.txid, c.vout))) { skipped++; skippedValue += c.value; }

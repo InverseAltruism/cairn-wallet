@@ -7,7 +7,7 @@
 //   with exact counts (1, 2, 3).
 // Run: npx tsx test/utxos-truncated.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
-import { balance, consolidatePreview, maxSendable } from "../src/core/node.ts";
+import { balance, consolidatePreview, maxSendable, consolidate, send } from "../src/core/node.ts";
 import { mkCoin, txReply } from "./_coin.ts";
 import { checker } from "./helpers/check.mjs";
 
@@ -40,6 +40,33 @@ globalThis.fetch = async (url) => {
   const p2 = await consolidatePreview(RPC, ADDR, FEE), m2 = await maxSendable(RPC, ADDR, FEE);
   check("2. honest path: uncut, both say the count is exact", p2.ok && p2.truncated === false && m2.ok === true && m2.truncated === false && m2.amount === 55e8 - FEE);
   cut = true;
+}
+// 2b. A merge reports the cut too, so its "coins left" reads as a floor (test/popup-inclusion-dom.test.mjs 7c).
+{
+  const PRIV = "0x" + "11".repeat(32);
+  const m = await consolidate(RPC, { fee: FEE }, PRIV);
+  cut = false;
+  const m2 = await consolidate(RPC, { fee: FEE }, PRIV);
+  cut = true;
+  check(`2b. a merge from a cut list says truncated, from an uncut one not (${m.truncated}, ${m2.truncated})`, m.truncated === true && m2.truncated === false && m.merged === 3);
+}
+// 2c. A send the whole balance covers but whose listed coins cannot cover within the 512-input cap is TOO_MANY_INPUTS
+// under a cut list (W1b's probe: 600 listed coins of 1 CSD, whole balance 2,000 CSD, a 700 CSD send).
+{
+  const saved = globalThis.fetch;
+  const many = Array.from({ length: 600 }, (_, i) => ({ txid: "0x" + i.toString(16).padStart(64, "0"), vout: 0, value: 100_000_000, height: 100, confirmations: 10, coinbase: false }));
+  const serve = (truncated) => { globalThis.fetch = async (url) => String(url).includes("/utxos/") ? { ok: true, status: 200, json: async () => ({ confirmed_balance: truncated ? 2_000e8 : 600e8, utxos: many, ...(truncated ? { truncated: true } : {}) }) } : { ok: false, status: 404, json: async () => ({}) }; };
+  const PRIV = "0x" + "11".repeat(32), TO = "0x" + "22".repeat(20);
+  serve(true);
+  const capped = await send(RPC, { to: TO, amount: 700e8, fee: FEE }, PRIV);
+  serve(false);
+  const short = await send(RPC, { to: TO, amount: 700e8, fee: FEE }, PRIV);
+  serve(true);
+  const over = await send(RPC, { to: TO, amount: 2_500e8, fee: FEE }, PRIV);
+  globalThis.fetch = saved;
+  check(`2c. under a cut list a send the whole balance covers refuses TOO_MANY_INPUTS (${capped.code})`, capped.ok === false && capped.code === "TOO_MANY_INPUTS");
+  check(`2c. honest path: uncut, 600 CSD of coins cannot cover 700 CSD: INSUFFICIENT (${short.code})`, short.code === "INSUFFICIENT");
+  check(`2c. honest path: a send above the whole balance is still INSUFFICIENT under a cut list (${over.code})`, over.code === "INSUFFICIENT");
 }
 // 3. The popup: Settings' coin count and the merge sheet read "at least" under a cut list, the exact count otherwise.
 {

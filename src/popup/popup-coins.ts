@@ -75,7 +75,9 @@ $("btn-consolidate-confirm").addEventListener("click", async () => {
       // Sent, not merged: the merge line under the balance says when it is mined. The next round selects
       // DISJOINT coins (the node's available view excludes this round's inputs), so "run the next merge
       // right away" is true; only the final combining pass waits on confirmations.
-      msg(`Merge sent (${String(r.txid).slice(0, 12)}…), confirming.` + (r.remaining >= 1 ? ` ${r.remaining} coin(s) left; you can run the next merge right away.` : ""), "ok sent");
+      // A cut coin list (r.truncated) counts only the listed coins left: the count is a floor.
+      const left = r.truncated ? (r.remaining >= 1 ? `At least ${r.remaining} coin(s) left` : "More coins are left") : r.remaining >= 1 ? `${r.remaining} coin(s) left` : "";
+      msg(`Merge sent (${String(r.txid).slice(0, 12)}…), confirming.` + (left ? ` ${left}; you can run the next merge right away.` : ""), "ok sent");
       ($("consolidate-form") as HTMLElement).hidden = true;
       refreshBalance();
     } else {

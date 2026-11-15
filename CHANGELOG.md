@@ -46,9 +46,11 @@
   largest coins first; `confirmed_balance` stays whole). A cut mined set no longer marks a history row "not included:
   its coins were spent by another transaction" because one of its inputs fell below the cut; a txid it lists still
   counts as included. The coin counts shown from a cut list read as floors: "You have at least 10000 spendable coins",
-  "512 of at least 10000" and "at least 20 merges" in the merge sheet, and Max's note "512 of your coins (at least
-  10000 in all)". Sends were already right: they pick the largest coins, which a cut keeps
-  (test/utxos-truncated.test.mjs, test/inclusion-chain.test.mjs case 6t).
+  "512 of at least 10000" and "at least 20 merges" in the merge sheet, Max's note "512 of your coins (at least
+  10000 in all)", and a sent merge's "At least N coin(s) left". Sends pick the largest coins, which a cut keeps; a send
+  the whole balance covers but the listed coins cannot cover within the 512-input limit refuses `TOO_MANY_INPUTS`
+  with the merge advice, not "insufficient confirmed balance" (test/utxos-truncated.test.mjs,
+  test/inclusion-chain.test.mjs case 6t, test/popup-inclusion-dom.test.mjs 7c).
 - A queued post body that cannot be registered no longer retries every minute for 7 days (up to 20,160 requests per
   body). It is tried on every alarm for its first 15 attempts, as before, so a post mined within 15 minutes registers
   just as fast; after that the wait doubles from 2 minutes to at most an hour (186 attempts in 7 days against a server

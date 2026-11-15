@@ -101,5 +101,14 @@ byId("btn-consolidate-confirm").disabled = false;
 await byId("btn-consolidate-confirm").click(); await flush();
 check("(7b) paired: with coins left it still says the next merge can run now",
   byId("msg").textContent === `Merge sent (${MTX.slice(0, 12)}…), confirming. 40 coin(s) left; you can run the next merge right away.`);
+// (7c) from a coin list the node cut (truncated), the coins left are a floor. RED-FIRST: drop the truncated branch.
+h.consolidate = () => ({ ok: true, txid: MTX, merged: 512, remaining: 9488, truncated: true, total: 3e8, sighashMatch: true });
+byId("btn-consolidate-confirm").disabled = false;
+await byId("btn-consolidate-confirm").click(); await flush();
+check("(7c) a cut list's coins left read as a floor", byId("msg").textContent === `Merge sent (${MTX.slice(0, 12)}…), confirming. At least 9488 coin(s) left; you can run the next merge right away.`);
+h.consolidate = () => ({ ok: true, txid: MTX, merged: 512, remaining: 0, truncated: true, total: 3e8, sighashMatch: true });
+byId("btn-consolidate-confirm").disabled = false;
+await byId("btn-consolidate-confirm").click(); await flush();
+check("(7c) a cut list with none listed left still says more are left", byId("msg").textContent.includes("More coins are left; you can run the next merge right away."));
 
 done("popup-inclusion-dom");
