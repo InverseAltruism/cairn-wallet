@@ -1,201 +1,269 @@
 # cairn-wallet
 
-> Onboarding briefing for coding agents and outside contributors. `AGENTS.md` is canonical; `CLAUDE.md` is a symlink to it.
-> Production and operations specifics (hosting, deployment, keys) are intentionally out of scope here and maintained privately by the maintainers.
+Guide for maintainers, coding agents and outside contributors; `README.md` is for users and integrators. `AGENTS.md`
+is canonical and `CLAUDE.md` is a symlink to it. Production and operations specifics (hosting, deployment, keys) are
+intentionally out of scope here and maintained privately by the maintainers.
 
-The first non-custodial browser wallet for Compute Substrate (CSD): a Chrome MV3 extension (Chrome/Brave/Edge) that generates a BIP-39 phrase on-device, derives accounts via BIP-32/44 at m/44'/7779'/0'/0/i (7779 is this wallet's own coin-type convention), encrypts keys locally, and signs everything on-device. It is the fund-custody endpoint of the ecosystem: CSD sends, CairnX token transfers, .csd name operations (renew, set-primary, send-to-name with in-wallet SPV), sealed commit-reveal claims, Cairn posts, CairnX offer fills (the payment and the fill record in one transaction; CairnX decides delivery, and a refused fill keeps the payment), the `window.cairn` dApp provider used by cairn-substrate.com, and audience-bound Sign in with CSD (SIWC).
+The first non-custodial browser wallet for Compute Substrate (CSD): a Chrome MV3 extension (Chrome, Brave, Edge) that
+generates a BIP-39 phrase on-device, derives accounts via BIP-32/44 at m/44'/7779'/0'/0/i (7779 is this wallet's own
+coin-type convention), encrypts keys locally, and signs everything on-device. It is the fund-custody endpoint of the
+ecosystem: CSD sends, CairnX token transfers, .csd name operations (renew, set-primary, send-to-name with in-wallet
+SPV), sealed commit-reveal claims, Cairn posts, CairnX offer fills (the payment and the fill record in one
+transaction; CairnX decides delivery, and a refused fill keeps the payment), the `window.cairn` dApp provider used by
+cairn-substrate.com, and audience-bound Sign in with CSD (SIWC).
 
-Distribution: Chrome Web Store (primary; extension id nnjiejlalkcfckfojhihbbcpfhimfemd) + reproducible GitHub release zips. The version is in `package.json` and the git tags. Public repo InverseAltruism/cairn-wallet, MIT.
+- Distribution: the Chrome Web Store (primary; extension id nnjiejlalkcfckfojhihbbcpfhimfemd) and reproducible GitHub
+  release zips. The version is in `package.json` and the git tags. Public repo InverseAltruism/cairn-wallet, MIT.
+- Security posture: non-custodial, no hand-rolled crypto (every primitive comes from the four exact-pinned @noble and
+  @scure libraries). The threat model and what the wallet does and does not trust are public in `SECURITY.md`; read it
+  before touching a money path. The ranked hardening roadmap is maintained privately with the other audit docs.
 
-Security posture: non-custodial, no hand-rolled crypto (every primitive comes from the four exact-pinned @noble/@scure libraries). The threat model and what the wallet does and does not trust are public in `SECURITY.md`; read it before touching a money path. (The ranked hardening roadmap is maintained privately with the other audit docs.) No external professional audit yet (it is the top roadmap item).
-
-## Cross-repo standard
-
-This repo follows the maintainers' cross-repo engineering standard (a private document). The rules that matter for a contributor here:
-
-- One home per concept: consensus rules and shared money math are imported from the vendored csd-sdk bundle, never re-declared. The one deliberate copy (`src/core/csdtx.ts`) is pinned by tests and is not to be extended.
-- TypeScript `strict` with `noUncheckedIndexedAccess`, no `@ts-ignore`, `any` only at a parse boundary (`src/core` has no `as any`). Money is integer base units (`bigint`), never floats; conversion to display text happens in one helper. No empty `catch {}`; on money paths (signing, fills, claims, names, sends) no catch-and-continue that hides a failure from the user, and error text is honest ("may be in flight" only when something may have been broadcast).
-- Tests check behaviour at boundaries. A fix ships with a test that fails without it, plus an assertion that the honest path still passes with the exact call shape production sends. A skipped test names its reason and when it un-skips. `npm test` is offline and deterministic.
-- Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it, and on the signer path a second reviewer re-derives it.
-- Docs: this file holds what stays true: no version tables and no "current state" snapshots (the version is in `package.json` and the tags; live state comes from a live query). History goes to `CHANGELOG.md`. Dates are absolute, no em dashes.
-
-Known deviations (checked 2026-10-22, not exhaustive; line counts 2026-11-15):
-
-- Over 800 lines: `src/core/wallet.ts` (1,114, about a third of it comments), `src/core/namespv.ts` (1,025), `src/popup/clearsign.ts` (974), `src/core/node.ts` (943), and the third-party `src/popup/qr/qrcodegen.ts` (1,010), which tsc does not check (`@ts-nocheck` in its local banner: `noUncheckedIndexedAccess` would need edits to upstream code).
-- Copies kept in step by hand where the standard prefers an import: the fee cap in `src/core/node.ts` (`proportionalFeeCap`; the vendored bundle does not export csd-tx's `feeCap`, and test/feecap-parity.test.mjs compares the two over 202,163 totals against the pinned csd-tx; adding `feeCap` to scripts/build-spv-vendor.sh's export list at the next re-vendor retires it); the field checks `src/core/siwc.ts` shares with csd-siwc (KEEP-IN-SYNC comment). `src/core/csdtx.ts` calls itself the browser twin of the server codec and carries no marker; the golden vectors in `test/selftest.ts` pin it. `toChainEvent` in `src/core/spvbind.ts` mirrors the event shapes of the cairnx scanner, which lives in another repo; test/namespv.test.mjs replays them through the vendored resolver.
-- `npm run lint` (Biome, `biome.json`) reports 97 empty blocks as warnings (12 in `src/`, 85 in `test/`), so that rule does not fail CI yet.
-- Comment essays and audit IDs in `src/` are trimmed per module, not as drive-by edits.
-
-## The stack around it
-
-The wallet is the signer for the whole app layer. It talks to: the cairn web front door at https://cairn-substrate.com (/api/rpc/* proxying to the node RPC, /trade/api/cairnx/* to the CairnX resolver, /api/headers for SPV, /api/content, /auth), and clarvis (https://clarvis.cairn-substrate.com) as the second source for name verification (same operator and same registrable domain as the first, so not independent). Related public surfaces: the csd-sdk packages on npm (@inversealtruism/*) and the csd-indexer block explorer. Consensus math arrives only via the vendored csd-sdk bundle. The chain: Rust node, 120s blocks, UTXO P2PKH, no script VM, no finality below app-layer confirmation depths.
-
-## Build and test
+## Check
 
 ```bash
 npm ci                        # CI uses --ignore-scripts
-npm test                      # test/run.mjs glob runner, sequential
 npm run typecheck
 npm run lint                  # Biome, four rules only (biome.json; test/lint-config.test.mjs)
-npm run check:dashes-paths    # em dashes in docs, sibling-checkout reads in code (CI runs both)
-npm run build                 # tripwires run here -> dist/
-npm run package               # deterministic zips + sha256
+npm run check:dashes-paths    # em dashes in docs, sibling-checkout reads in code
+npm test                      # test/run.mjs, sequential and offline; one file: npx tsx test/<file>
+npm run build                 # tripwires run here -> dist/ (load it unpacked at chrome://extensions)
 npm run verify:vendor         # vendor-freshness gate
+npm run package               # deterministic zips + sha256
 ```
 
-- Load dist/ unpacked at chrome://extensions.
-- Re-vendor csd-sdk by moving the exact `@inversealtruism/*` dev dependency pins in package.json to the published versions (`npm install --save-dev --save-exact` with the per-command cooldown exclusion for the scope), then `bash scripts/build-spv-vendor.sh`, then `node scripts/check-vendor-fresh.mjs --write`, and commit package.json, package-lock.json, the bundle, its `.d.ts` and PROVENANCE.json together. No csd-sdk checkout is read; esbuild runs from the wallet root, so the bytes do not depend on where the checkout sits.
-- UI harness: `node scripts/ux-shots.mjs` (headless walk, zero-page-error and element-ID assertions).
-- Live mainnet E2E (maintainer-only, spends about 0.03 CSD of real funds): `tsx scripts/live-e2e.ts`.
+- New test files are discovered by the runner, not hand-listed; `COMMITTED_EXPECTED_MIN` in `test/run.mjs` is the
+  floor that fails it if a gate file is dropped.
+- Test files use the one shared helper `test/helpers/check.mjs` (`checker()`); files still on a local bare helper
+  adopt it when touched.
+- The in-Chrome tests (`test/*-chrome.test.mjs`) print SKIP without `PLAYWRIGHT_CORE` and `PLAYWRIGHT_CHROMIUM` (a
+  full Chromium); `CAIRN_E2E_REQUIRED=1` turns a SKIP into a failure, and CI sets it.
+- `node scripts/ux-shots.mjs` is the headless UI walk. `tsx scripts/live-e2e.ts` is maintainer-only: it spends about
+  0.03 CSD of real mainnet funds.
+- CI (`.github/workflows/ci.yml`) runs typecheck, lint, check:dashes-paths, the suite with its in-Chrome tests
+  required, the build, verify:vendor and a gitleaks `secrets` job. The runner, the helpers, what the main test files
+  cover and the CI pins: `docs/TESTING.md`.
 
-Tests:
+## Cross-repo standard
 
-- Test files use the one shared helper `test/helpers/check.mjs` (`checker()`; `test/_check.ts` re-exports it for older importers). Its tripwire throws when `check()` gets a function or a promise instead of an evaluated condition, since both are always truthy (test/check-helper.test.mjs). Files still on a local bare helper adopt it when touched.
-- Red-first mutation runs that drop a `MUTATE_` marker line load the Wallet through `test/helpers/mutant.mjs`, which finds the marker in `wallet.ts` or a module it imports.
-- `npm test` is `test/run.mjs`, a glob runner: new test files are discovered, not hand-listed; `COMMITTED_EXPECTED_MIN` in test/run.mjs is the floor that fails the runner if a gate file is dropped. Run one file with `npx tsx test/<file>`.
-- `test/runner-guards.test.mjs` drives the real runner against throwaway sandboxes, including a three-file fixture whose middle file fails: the remaining files still run and the exit is non-zero.
-- Highlights: sig-vectors.test.mjs (csd-vectors' signature encodings through both signature checks in `spvbind.ts`, the only ones in `src/`), selftest.ts (golden vectors, a real on-chain signature against a recomputed sighash, vault downgrade resistance, HD derivation, fee-cap lock), pentest.ts (source-scan tripwires), extension-boundary.ts (the real background message gate), poc-signin-oracle.ts, multiwallet.ts, bruteforce, csdtx-boundary, clearsign.ts, cairnx.ts (byte-for-byte against cairnx-core), siwc.ts, events.test.ts, namespv.test.mjs (with PoCs: union withholding, stale-tip lapse, srs escape, v23 burn guard), ghostcoin.test.mjs, consolidate.test.mjs (the maybe-inflight record, clear and reconcile matrix and account-switch filing), resolve-fallback.test.mjs (clarvis base-claim source selection), persistvault-race.test.mjs (concurrent account management cannot drop an imported key), selectinputs-parity.ts (runs the bundled csd-tx selectInputs and pins spendableCoins to it), selectinputs-spelling.test.mjs (a coin served in two txid spellings on the send and consolidate paths), identicon (the popup draws the vendored cairn-ui avatar), qr, maxsendable.test.mjs (Max against the engine), mark-home.test.mjs and extension-icons.test.mjs (the mark's one home), asset-tiles.test.mjs.
-- The in-Chrome tests (`test/*-chrome.test.mjs`) need playwright-core (`PLAYWRIGHT_CORE`, a package directory) and a Chromium (`PLAYWRIGHT_CHROMIUM`, a full Chromium: `popup-font-chrome` loads an unpacked extension, which the headless shell cannot); without them they print SKIP, and `CAIRN_E2E_REQUIRED=1` turns a SKIP into a failure.
-- CI: typecheck, lint, check:dashes-paths, the suite with its in-Chrome tests required (playwright-core 1.60.0 from its registry tarball checked against cairn's lockfile sha512, and its Chromium; the release build job too) (the byte-identity rebuild from the installed, pinned csd-sdk packages) and the `secrets` job (gitleaks 8.18.4, sha256-checked, over the full history of every ref with merge diffs and the repo's `.gitleaks.toml`). `test/release-workflow-permissions.test.mjs` pins the release workflow's permission split and the shape of the `secrets` job. Every job of both workflows runs on `ubuntu-24.04`, not a moving `-latest` image, where playwright-core 1.60.0 cannot install its Chromium (`test/ci-runner-image.test.mjs`). Every setup-node step names Node 26, the release host's runtime, which cairn's `scripts/ci-local.sh` compares with the host's major (`test/ci-node-version.test.mjs`).
+This repo follows the maintainers' cross-repo engineering standard (a private document). The summary below is the
+part that binds a contributor here:
 
-## Architecture
+- One home per concept: consensus rules and shared money math are imported from the vendored csd-sdk bundle, never
+  re-declared. The one deliberate copy (`src/core/csdtx.ts`) is pinned by tests and is not to be extended.
+- TypeScript `strict` with `noUncheckedIndexedAccess`, no `@ts-ignore`, `any` only at a parse boundary (`src/core`
+  has no `as any`). Money is integer base units (`bigint`), never floats; conversion to display text happens in one
+  helper. No empty `catch {}`; on money paths (signing, fills, claims, names, sends) no catch-and-continue that hides
+  a failure from the user, and error text is honest ("may be in flight" only when something may have been broadcast).
+- Tests check behaviour at boundaries. A fix ships with a test that fails without it, plus an assertion that the
+  honest path still passes with the exact call shape production sends. A skipped test names its reason and when it
+  un-skips. `npm test` is offline and deterministic.
+- Comments state constraints and non-obvious invariants, not history or audit IDs; existing comment essays and audit
+  IDs in `src/` are trimmed per module, not as drive-by edits. Removing code needs the same evidence as adding it,
+  and on the signer path a second reviewer re-derives it.
+- Docs: this file holds what stays true: no version tables and no "current state" snapshots (the version is in
+  `package.json` and the tags; live state comes from a live query). History goes to `CHANGELOG.md`. Dates are
+  absolute. No em dashes in any doc (`grep -cP '\x{2014}' <file>` prints 0; `npm run check:dashes-paths` checks every
+  tracked .md outside docs/archive/); no AI-slop phrasing.
 
-Everything ships bundled by esbuild from src/ into dist/ (gitignored), zero runtime npm imports (all four deps inlined).
-
-- `build.mjs`: build plus two tripwires that abort it: (1) a forbidden external message surface (externally_connectable or onMessageExternal anywhere), (2) source-host coverage (every hardcoded https fetch host must be in CSP connect-src and host_permissions). The release version lives only in package.json; the build stamps it into dist/manifest.json and the inpage provider (esbuild define `__WALLET_VERSION__`).
-- `src/background.ts`: MV3 service worker. It owns the unlocked key, the dApp approval queue, per-origin consent, the DAPP_METHODS allowlist (enforced twice: pre-queue and in resolvePending), the popup sender-origin gate, provider events and alarm-driven auto-lock.
-  - Queue caps: MAX_PENDING_GLOBAL=32, PER_ORIGIN=5. A request returned to its reservation confirm step is re-queued without re-checking them, so a site can sit one above its cap per such request.
-  - One fill request per fill target (`fillTargetOf` in fillpreflight.ts: a `fillOffer`, or an `attest` at the token-fill confidence, `fillOf` in signfields.ts) across sites and reloads: another is refused `FILL_IN_PROGRESS` before it is queued, until the first request's answer goes to its page (test/fill-one-request-per-offer.test.mjs).
-  - An open approval window is brought forward only by `focusApprovalWindow` (the one `chrome.windows.update` in src/), which first asks the window to re-arm (approve.ts `armButtons`, the 700 ms floor) and raises it on the answer, at once when no window listens, or after 250 ms when none comes (test/approve-raise-rearm.test.mjs, test/approve-raise-chrome.test.mjs).
-  - A `FILL_IN_PROGRESS` refusal raises the window at most once per `REFUSED_RAISE_GAP_MS` (5 s) across all origins; a refusal inside the gap re-arms nothing, so repeated refusals cannot hold the painted request's buttons off (test/approve-raise-refused-bound.test.mjs). Newly queued requests still raise each time; the queue caps bound them.
-  - At start it sets both `chrome.storage.local` and `chrome.storage.session` to `TRUSTED_CONTEXTS` (content scripts cannot read or write the vault or the header snapshot; test/storage-access-level.test.mjs).
-  - A keyed method that throws "locked" maps to `WALLET_LOCKED`, anything else to `INTERNAL` (`thrownCode`).
-  - A `signinWithCsd` request is checked before it is queued by `siwcParamsRefusal` (`src/core/siwcparams.ts`, the wallet's sign-in parameter rules; `signInWithCsd` signs through the same `siwcMessageFor`): one the wallet would refuse is answered `BAD_REQUEST` with no window (test/siwc-prequeue.test.mjs).
-- `src/content.ts` / `src/inpage.ts`: inject the frozen window.cairn provider and relay it over same-origin `window` messages (source, target and origin checked; replies are not authenticated, a script on the page can read and forge them); csd:announceProvider discovery. The two replies content.ts writes itself carry codes: `WALLET_RELOADED` (an orphaned content script after an update) and `WALLET_UNAVAILABLE` (a closed channel). `getCapabilities().methods` lists every DAPP_METHODS entry but the legacy `signIn`, which against the Cairn API can succeed from no origin (test/extension-boundary.ts CQ-4, test/inpage-relay.test.mjs).
-- `src/core/`:
-  - `keystore.ts`: AES-256-GCM vault; PBKDF2-SHA256 600k iters; MIN_ITERS=100k downgrade floor and MAX_ITERS=30M DoS ceiling.
-  - `account.ts`: BIP-39/32/44, coin type 7779.
-  - `csdtx.ts`: the deliberate browser twin of the server tx codec (bincode, txid=sha256d, sighash CSD_SIG_V1, low-S; loginDigest structurally disjoint from a tx sighash). Do not dedupe it into an import.
-  - `node.ts`: the send engine; `assembleValueTx` is the single chokepoint for every value tx, in this order:
-    - fee > 0, flat MAX_FEE=100 CSD, zero-address refusal;
-    - selectVerified, then csd-tx's selectInputs from the vendored bundle (greedy largest-first, MAX_TX_INPUTS=512 from csd-codec; one coin served in two txid spellings is one coin);
-    - verifyInputValues: fetch each source tx and recompute its txid with the consensus codec, in a bounded pool (VERIFY_CONCURRENCY=8) with a decisive short-circuit. Verdicts: number, notfound, transient, tamper, horizon, unrepresentable. "horizon" is classified only on the node's exact 503 plus body code `SCAN_HORIZON`, so a cold-index window skips coins instead of refusing the spend (test/ghostcoin.test.mjs). "unrepresentable" is classified on the raw body before the txid recompute when a serialized number cannot survive JSON.parse exactly (test/unrepresentable-coin.test.mjs). Both are skipped per coin like notfound and add no rung to the decisive tamper/transient fold; all three skip classes are remembered for the session (ghostSeen, horizonSeen, unrepSeen, 120 s, 2,048 each), so a retry starts without the coins an attempt already skipped;
-    - the ghost re-select loop, then the proportional fee cap max(1 CSD, 10% of verified inputs), change to self only, and signAndSubmit (SUBMIT_REJECTED vs SUBMIT_MAYBE_INFLIGHT vs SUBMIT_DUPLICATE).
-    - `maxSendable()` is the send sheet's Max, two passes of `selectVerified`: the first with a target that each round is the reported total of the 512 largest coins still eligible, the second the send's own numeric call with that figure, from the session caches the first filled. Max answers only when the second succeeds, so the figure (minus the fee, under both fee caps) is one the send's selection accepted at that moment; after the caches expire a send can take one retry. Popup-only, signs nothing (test/maxsendable.test.mjs sends exactly it and one base unit more).
-    - `consolidate()` merges dust: up to 512 smallest coins into one self-output, verified like a send, both fee caps apply (popup-only, not in DAPP_METHODS; `consolidatePreview()` feeds the settings ▸ coins UI). From a `/utxos` list the node cut (`truncated`) its `remaining` counts only listed coins, so the popup shows it as a floor; under such a list a send the reported whole balance covers that the listed coins cannot fill within 512 inputs is `TOO_MANY_INPUTS`, not `INSUFFICIENT` (test/utxos-truncated.test.mjs 2b, 2c).
-    - `spendableCoins()` is the set of coins selectInputs accepts, each once: it asks selectInputs about each coin and dedupes on `opKey`, csd-tx's outpoint key in the node's `0x` form (test/selectinputs-parity.ts, test/selectinputs-spelling.test.mjs).
-    - `VERIFY_UNAVAILABLE` also covers a `/utxos` body without a `utxos` array and a selection that used its three rounds on coins the node could not prove yet (both refuse before signing).
-  - `wallet.ts`: the `Wallet` class: vault lifecycle, multi-account, chrome.storage.session key rehydrate (fail-closed), brute-force auth guard (5 failures, then exponential lockout), endpoint settings, signer capture, the sign flows (send, sendMany, consolidate, propose, attest, fillOffer, posts, token transfer, name renew and set-primary, sealClaim, SIWC), SPV wiring and its test seams. The modules below hold the rest; each reads the wallet through a small IO object or host the class builds from closures, called when the code runs. Every flow captures its histKey before its first await so entries file under the account that signed.
-  - `endpoints.ts`: the default endpoints (incl. clarvis, the second source) and the URL rules. RPC rule: `rpcAllowed` accepts only the Cairn proxy or a loopback node (`http://127.0.0.1:<port>`, `http://localhost:<port>`); a saved remote RPC is moved to the proxy once with a notice. The Cairn and CairnX API settings take https or loopback (`validRpcUrl`), and the manifest CSP limits what is reachable.
-  - `signfields.ts`: the fields the wallet signs for each dApp request type, from its params (fee defaults, the u32 clamps, the token-fill confidence that turns an attest into a fill at score 100, a fill's score refusal, the trimmed seal domain): `attestFields`, `fillFields`, `proposeFields`, `sendFields`, `sealFields`, `revealFields`, `fillOf` (the fill a fillOffer or a token-fill attest signs) and `isTokenFill`. The sign path (wallet.ts, background.ts, fillpreflight.ts `fillTargetOf`) builds from them, and the approval window reads every request field it shows or uses from them (clearsign.ts `describe`, `debitOf`, `costBlock`, `signedFee`, `signedOutputs`, `requestRecipients`; approve.ts's reads before and after the paint; approve-density.ts); the sign-in's are `siwcparams.ts` `siwcFieldsFor`. test/sign-display-parity.test.mjs sends every request type the window paints through the real worker to the real approval window, approves it there, and compares the painted fields and the window's reads with the signed transaction's.
-  - `fillpreflight.ts`: what is checked before an offer fill is signed: the offer read, the output sums, then one of three lanes (`fclaimLanePreflight`, `csdLanePreflight`, `tokenLanePreflight`); returns a refusal or null, signs nothing. The design is `docs/DESIGN-fill-lanes.md`.
-  - `names.ts`: name resolution and verification for sends to a `.csd` name (`resolveName`, `verifyName`, `confirmName`, the hint-set cache read and write).
-  - `market.ts`: the CSD/USD rate behind the balance's USD line, read from the Cairn API's `/api/market/csd` (absent on its 503, a failure or a body without a positive price from a named venue); display only: no signing flow reads the rate. `wallet.ts` imports it for the `csdMarket` read and `popup-balance.ts` for the line, and test/usd-line.test.mjs scans every file under `src/` for other importers and for any other use in `wallet.ts`.
-  - `cairnxview.ts`: display-only CairnX reads for the popup and the approval cards (balances, token list, token-fill quote, fill view, token decimals, and `attestTargetView`, the node's `/proposal` read that tells the approval window whether a score-0 attest names the signer's own offer or bid, so it can title it "Cancel your offer" or "Cancel your bid"); never bound to a signature.
-  - `history.ts`: `TxHistory`, the per-account history. `maybeRecord` is the single history chokepoint: ok records, SUBMIT_MAYBE_INFLIGHT records maybe:true under the local txid, SUBMIT_DUPLICATE clears an earlier maybe in place (never inserts). Its write chain, the rows parked in RAM when a write fails or the wallet is locked, and the inclusion reconcile (`pendingMerge`, `docs/DESIGN-inclusion-reconcile.md`).
-  - `claims.ts`: `SealedClaims`, the per-account sealed claims: reveal preimages encrypted under the vault key, the write chain and parked records, `revealClaim` (refuses with `SEAL_NOT_MINED` until the node shows the commit mined) and the list. `sealClaim`, which signs the commit, is a `Wallet` method. An unrevealed record is never deleted except by `reset()`: the cap evicts revealed records only, and `removeAccount` keeps the account's unrevealed records (`keepUnrevealedOf`; the remove step counts them through the popup-only `unrevealedSeals`), so they list and reveal again when the same address is back in the wallet (test/seal-remove-keep.test.mjs).
-  - `cairnx.ts`: CairnX record builders over the vendored core; consensus rules imported, never re-typed; a pre-spend parseRecord round-trip so build success implies resolver acceptance. No on-device registration flow: the /names site drives registration through dApp propose, always clear-signed.
-  - `namespv.ts`: SPV name verification over the header store (`headerstore.ts`: IndexedDB, 84-byte records in 4,096-height chunks) anchored by the release table `spvanchors.ts` (one block hash per chunk from the names floor 29,960, each a light-client checkpoint).
-    - At or below the newest anchor a header is used only from a chunk whose records hash-link to two table hashes in the same session; above it, from the PoW light client seeded from the anchor chunk and synced forward with every consensus check, or, after a worker restart in a session that already verified it, by a hash walk to the session pin (`src/core/spvpin.ts`, test/namespv-session-pin.test.mjs).
-    - Then: full-block merkle bind, signer auth and prevout-ownership bind, and the two-source union (`verifyNameUnion`: primary and clarvis). A disagreeing source is a warning, not a refusal (the warn-over-block rule; SECURITY.md states it).
-    - Store, sync, migration and the union's lapse and badge rules: `docs/DESIGN-namespv-scaling.md`.
-  - `spvbind.ts`: the SPV primitives `namespv.ts` and `fillspv.ts` share: the block bind (`bindBlock` over csd-light `bindBlockBody`: exact parse of the served `/block` text, the repeated-txid refusal before the merkle compare, test/merkle-dup-txid.test.mjs), the author bind (`bindSigner` over csd-crypto `authorOf`: the owner of the coin input 0 spends, test/namespv-fillspv-parity.test.mjs), signer recovery, the coinbase test, `paidTo` and the event mapping. Both binds return their refusal; a body that does not decode throws. namespv turns a refusal into a reason and fillspv into a throw (`BodyMismatchError` for a merkle mismatch) or a null.
-- `src/popup/`: popup.ts (the popup's entry: it loads one `popup-*.ts` module per view or concern, such as `popup-send.ts`, `popup-sendflow.ts` for the review engine the CSD and token sends share, `popup-panels.ts` for the sheets and their teardown, `popup-state.ts` for the state several views read; source scans read the whole set through `scriptSource("popup.ts")` in scripts/popup-ids.mjs; `popup-outcome.ts` is one of them), popup-outcome.ts (the extension channel to the background, the one reading of a submit outcome and the one reading of a Reject's answer, which the popup takes through `popup-bridge.ts` and the approval window directly: approve.js is built without code splitting, so it must not import `popup-bridge.ts`, whose dev path would inline the Wallet; build.mjs aborts if it does), approve.ts (clear-signing window), clearsign.ts (pure formatters, among them `groupedAddr`, the one address-in-groups-of-four display both pages use, lookalike detection and the nfinalize approve gate: it re-fetches the reservation and runs finalizeWinnerCheck before allowing a fee-burning finalize), QR. The identity avatar is cairn-ui's `avatar.js`, vendored with the theme files and the logos in `src/vendor/cairn-ui/` (PROVENANCE.json, checked by scripts/check-ui-vendor.mjs). The Cairn mark has one home, the vendored `mark.svg`: the pages draw `<use href="ui/mark.svg#mark">` in its viewBox, and the drawing `<svg>` sets the fill because the mark sets no paint (test/popup-logos-chrome.test.mjs checks every one on the popup and the approval window, both themes), the sprite `icons.svg` holds Lucide icons only, and `scripts/mark.mjs` reads it for the extension icons and the store images (test/mark-home.test.mjs). `tiles.ts` gives a token row its tile: the mark only for the CAIRN whose served deploy id is the pinned one (`isPinnedDeploy`), the neutral glyph for every other token; the CSD row draws the vendored `csd-logo.jpg`.
-- `src/vendor/cairnx-spv.js`: vendored esbuild bundle of the published csd-sdk packages (csd-light, csd-client, csd-codec, csd-crypto, csd-tx, cairnx-core) at the exact versions package.json pins as dev dependencies; `cairnx-spv.d.ts` is generated with it from the same export list, so the types are the packages' own. PROVENANCE.json pins both files' sha256, each package's version and lockfile integrity, and the noble versions (read the file for the current values). scripts/check-vendor-fresh.mjs (`npm run verify:vendor`, run by CI and the release build) checks those pins, that the wallet's @noble pins equal the ones csd-crypto declares, and re-runs scripts/build-spv-vendor.sh into a temp dir: both files must be byte-identical to the committed ones.
-- `public/manifest.json`: permissions only storage, alarms and unlimitedStorage (the SPV header store grows with the chain); CSP connect-src limited to cairn-substrate.com, clarvis and localhost; web_accessible_resources only inpage.js; no externally_connectable.
-- `public/icons/icon-{16,32,48,128}.png`: written by `scripts/gen-icons.mjs` from the vendored mark (the light theme's on-ink colour on an ink tile, pure JavaScript, the same bytes for the same input); test/extension-icons.test.mjs compares the committed pixels with the script's.
-- `store/`: Chrome Web Store listing kit, including PUBLISH-RUNBOOK.md (security-critical). `WALLET-ERROR-CODES.md`: the dApp error contract (codes are the contract, strings are UX copy).
+Known deviations (files over 800 lines, four copies kept in step by hand, empty blocks that lint only warns about,
+comment essays in `src/`): `docs/ARCHITECTURE.md`, "Deviations from the cross-repo standard".
 
 ## Invariants and red lines
 
-- Local signing only. The wallet never signs a digest a server handed it. Inputs are always wallet-selected; change only returns to the wallet's own address. A dApp can pass outputs, never UTXOs or a change address.
-- Verify before sign, fail closed per class: tamper refuses the whole spend; transient is a retryable refusal; a ghost (notfound) coin is skipped, never spent unverified. Nothing is signed on any verify failure.
+The mechanism behind each is in `docs/ARCHITECTURE.md` and the design notes; the store release's red lines are under
+"Release and deploy".
+
+Signing and funds:
+
+- Local signing only. The wallet never signs a digest a server handed it. Inputs are always wallet-selected; change
+  only returns to the wallet's own address. A dApp can pass outputs, never UTXOs or a change address.
+- `assembleValueTx` (`src/core/node.ts`) is the single chokepoint for every value tx. Verify before sign, fail closed
+  per class: tamper refuses the whole spend; transient is a retryable refusal; a ghost (notfound) coin is skipped,
+  never spent unverified. Nothing is signed on any verify failure (test/ghostcoin.test.mjs).
 - Fee caps refuse, never rebuild.
-- What you see is what you sign: frozen review snapshots; confirm-time name re-resolve and verified-regression refusal; account-switch-mid-approval refusal (ACCOUNT_CHANGED); fee-gate crossing refusal (FEE_CHANGED); bidi- and zero-width-hardened escapeHtml.
-- No unattended transaction broadcast, in any form. Deferred finalize (sign upfront, broadcast later) was built and deliberately reverted; the wallet does not initiate a background broadcast. Automated flows may at most raise an approval prompt while the tab is visible.
-- The Chrome Web Store upload stays manual and off CI (store/PUBLISH-RUNBOOK.md; supply-chain rationale from the Shai-Hulud incident class). No store API key or webstore-upload action enters CI. Single maintainer, so no dual control: reproduce-then-publish (the local stamped zip's sha256 must equal the CI-attested `cairn-wallet-store.zip`), hardware 2FA, and a post-publish CRX check against the attested zip (commands in the runbook).
-- The deliberate copy stays a copy, never deduplicated into an import: src/core/csdtx.ts (server codec twin, pinned by the golden vectors in test/selftest.ts). Coin selection is csd-tx's selectInputs from the bundle, not a copy. The vendored bundle changes only via scripts/build-spv-vendor.sh and check-vendor-fresh.mjs --write.
-- Every new user-facing {ok:false} carries a machine code (WALLET-ERROR-CODES.md); codes are additive, never reused.
-- Build tripwires are load-bearing; adding a fetch host requires manifest CSP and host_permissions or the build fails.
-- Privileged methods (export, mnemonic, account management, settings, reset, consolidate) are popup-only, refused on the dApp channel even if approved. `reset` exists only as a background method; no screen offers it.
-- export/exportMnemonic deliberately work while locked (password-gated direct vault decrypt); correct behaviour, do not "fix".
-- Offer fills: every lane merkle-proves the offer and binds the served terms to it before signing; the remaining resolver trust (give-backing, the completeness of a partial offer's fill list on the offer-id lane) and the second-source reads with their gaps are in `docs/DESIGN-fill-lanes.md`. Name sends stay on SPV name verification (`namespv`).
-- Known accepted residuals: tx history and labels in chrome.storage.local are not additionally encrypted (sealed-claim preimages are vault-key-encrypted at rest, pinned by test/seal-encrypt.test.mjs; an OS-level compromise of the browser profile can read the remaining history, local-disk privacy only, never key material); PBKDF2-600k, with Argon2id on the roadmap; keys are hot in the service worker while unlocked (hardware-wallet support is on the roadmap); no external professional audit yet.
+- What you see is what you sign: frozen review snapshots; confirm-time name re-resolve and verified-regression
+  refusal; account-switch-mid-approval refusal (ACCOUNT_CHANGED); fee-gate crossing refusal (FEE_CHANGED); bidi- and
+  zero-width-hardened escapeHtml. The approval window reads every request field it shows or uses from
+  `src/core/signfields.ts`, which the sign path builds from (test/sign-display-parity.test.mjs), and it re-fetches
+  the reservation and runs `finalizeWinnerCheck` before allowing a fee-burning finalize.
+- No unattended transaction broadcast, in any form. Deferred finalize (sign upfront, broadcast later) was built and
+  deliberately reverted; the wallet does not initiate a background broadcast. Automated flows may at most raise an
+  approval prompt while the tab is visible.
+- Offer fills: every lane merkle-proves the offer and binds the served terms to it before signing; the remaining
+  resolver trust (give-backing, the completeness of a partial offer's fill list on the offer-id lane) and the
+  second-source reads with their gaps are in `docs/DESIGN-fill-lanes.md`. One fill request per fill target at a time:
+  another is refused `FILL_IN_PROGRESS` before it is queued (test/fill-one-request-per-offer.test.mjs).
+- Name sends stay on SPV name verification (`namespv`). A disagreeing second source is a warning, not a refusal (the
+  warn-over-block rule; `SECURITY.md` states it).
+- SPV headers (`docs/DESIGN-namespv-scaling.md`): the names floor 29,960 cannot move, since verifying a name event at
+  height h needs the verified header at exactly h. Every anchor-table entry is a light-client checkpoint for the life
+  of the release (an `anchors` prefix in tests narrows the newest anchor, never the checkpoint map,
+  test/namespv-anchor-prefix.test.mjs); a served chain that contradicts one fails closed with no fallback to an older
+  entry (test/namespv-store-pins.test.mjs). Do not adopt a stored header without its walk to the table, its forward
+  verification, or its walk to the session pin (headers verified earlier in the same browser session): that check is
+  the storage-poisoning defence. When the node tip cannot be read, `prepare` syncs nothing and reports
+  `tipKnown: false`, and the fclaim fill lane refuses (test/spv-unknown-tip.test.mjs).
+- Display-only reads never reach a signature: `src/core/market.ts` (the USD line; test/usd-line.test.mjs scans for
+  other importers) and `src/core/cairnxview.ts`.
+- An unrevealed sealed claim is never deleted except by `reset()`: the cap evicts revealed records only, and
+  `removeAccount` keeps the account's unrevealed records (test/seal-remove-keep.test.mjs).
+- `maybeRecord` (`src/core/history.ts`) is the single history chokepoint, and every sign flow captures its histKey
+  before its first await so entries file under the account that signed.
 
-## Runtime footprint
+Keys and the dApp boundary:
 
-- Node RPC: the Cairn proxy https://cairn-substrate.com/api/rpc or a loopback node only. GET 12s, POST 20s. Every outer timeout sits above its server-side worst case; do not lower one without re-deriving the inner chain.
-- Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15s with Retry-After-aware 429 and 502/503 backoff.
-- CairnX read API /trade/api (12s); clarvis /trade/api (name-history union always, resolve fallback, 12s).
-- Rate limits: the front door rate-limits per IP; the wallet's fan-out is bounded (send-path input verify at 8 concurrent, the fclaim fill-scan block fetch at 12), so legitimate flows stay under the per-IP budget.
-- Block bodies (name proofs, fill scans) are read by the verified header's hash, `/block/<hash>` (`namespv.ts` `blockAt`): the front door marks a finalized one immutable for the edge and charges it no per-height budget, while `/block/height/<h>` is never cached. The merkle bind checks the body either way (test/block-by-hash.test.mjs).
-- Storage: unlimitedStorage because the namespv header store (IndexedDB, 84 bytes per header, about 60 KB per chain-day) grows with the chain; chrome.storage.local holds the vault, history and settings.
-- Consensus caps: MAX_TX_INPUTS=512, MAX_TX_BYTES=100KB; an all-coinbase holder tops out around 25,600 CSD per tx. consolidate() is the wallet-side answer.
-- pendingMerge() (popup-only) settles open history rows (an unconfirmed merge, a maybe:true row) from chain state, not the clock, and submits nothing; the rules are in `docs/DESIGN-inclusion-reconcile.md` (`src/core/inclusion.ts`, test/inclusion-chain.test.mjs).
-- Pending post bodies (`pendingContent`, 7 days): `flushPending` tries each on every 1-minute alarm for 15 attempts, then doubles the wait from 2 minutes to at most an hour (186 attempts in 7 days against a server that keeps failing), and drops a body the server refuses for good (`contentRefusedForGood`: HTTP 400, 413 or 422; a 401, 403 or 404 comes from in front of Cairn's route or a fixable API setting and backs off), marking its post's history row `bodyRefused` so Activity reads "Not posted" (`TxHistory.annotate`). Cairn answers its own content refusals with HTTP 200 `{ok:false}` and no code, so those back off rather than stop (test/flushpending.test.mjs).
-- `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the result.
+- The vault is AES-256-GCM under PBKDF2-SHA256, with a downgrade floor and a DoS ceiling on a stored iteration count
+  (`src/core/keystore.ts`); the session key rehydrate fails closed. At start the background sets both
+  `chrome.storage.local` and `chrome.storage.session` to `TRUSTED_CONTEXTS`, so content scripts cannot read or write
+  the vault or the header snapshot (test/storage-access-level.test.mjs).
+- Privileged methods (export, mnemonic, account management, settings, reset, consolidate) are popup-only, refused on
+  the dApp channel even if approved. `reset` exists only as a background method; no screen offers it. The
+  `DAPP_METHODS` allowlist is enforced twice: before a request is queued and in `resolvePending`.
+- export/exportMnemonic deliberately work while locked (password-gated direct vault decrypt); correct behaviour, do
+  not "fix".
+- An open approval window is brought forward only by `focusApprovalWindow`, the one `chrome.windows.update` in
+  `src/`, which first asks the window to re-arm its buttons (test/approve-raise-rearm.test.mjs,
+  test/approve-raise-chrome.test.mjs).
+- Every new user-facing {ok:false} carries a machine code (`WALLET-ERROR-CODES.md`); codes are additive, never
+  reused. `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page
+  receives the result.
 
-SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
+Vendored consensus, permissions and the build:
 
-- The names floor 29,960 cannot move: verifying a name event at height h needs the verified header at exactly h. A name-history hint below it is dropped and flags `disagree`.
-- A start reads only the newest anchor's chunk and the suffix above it, so restore cost follows the suffix, not the chain. The table is regenerated per release (store/PUBLISH-RUNBOOK.md step 2), and the `anchors` job fails a tag whose newest entry is more than 6,000 blocks below the public tip. Between releases, a table-only release is cut once the public tip is more than 14,400 blocks above the newest entry (the runbook's refresh cadence, with the measured cost per header). An older height costs one chunk the first time a proof needs it.
-- Every table entry is a light-client checkpoint for the life of the release (an `anchors` prefix in tests narrows the newest anchor, never the checkpoint map); a served chain that contradicts one fails closed with no fallback to an older entry.
-- When the node tip cannot be read, `prepare` syncs nothing and reports `tipKnown: false`, and the fclaim fill lane refuses.
-- Do not adopt a stored header without its walk to the table, its forward verification, or its walk to the session pin (headers verified earlier in the same browser session): that check is the storage-poisoning defence.
+- Consensus rules are imported or vendored from csd-sdk, never re-declared in this repo. The deliberate copy stays a
+  copy, never deduplicated into an import: `src/core/csdtx.ts` (server codec twin, pinned by the golden vectors in
+  test/selftest.ts). Coin selection is csd-tx's `selectInputs` from the bundle, not a copy.
+- The vendored bundle (`src/vendor/cairnx-spv.js` and its generated `cairnx-spv.d.ts`) changes only via
+  `scripts/build-spv-vendor.sh` and `check-vendor-fresh.mjs --write`. `src/vendor/PROVENANCE.json` pins both files'
+  sha256, each csd-sdk package's version and lockfile integrity, and the noble versions; `npm run verify:vendor` (CI
+  and the release build) checks those pins and that a rebuild is byte-identical.
+- Re-vendor csd-sdk by moving the exact `@inversealtruism/*` dev dependency pins in package.json to the published
+  versions (`npm install --save-dev --save-exact` with the per-command cooldown exclusion for the scope), then
+  `bash scripts/build-spv-vendor.sh`, then `node scripts/check-vendor-fresh.mjs --write`, and commit package.json,
+  package-lock.json, the bundle, its `.d.ts` and PROVENANCE.json together. No csd-sdk checkout is read; esbuild runs
+  from the wallet root, so the bytes do not depend on where the checkout sits.
+- Dependencies: four runtime deps, exact-pinned (@noble/curves, @noble/hashes, @scure/bip32, @scure/bip39). Dev
+  dependencies are exact-pinned too, each to the version package-lock.json installs (test/dep-pins.test.mjs). The
+  csd-sdk packages are dev dependencies only: all trust-sensitive shared code ships as the vendored bundle built from
+  them, and nothing in `dist/` imports a package at runtime.
+- `public/manifest.json`: permissions only storage, alarms and unlimitedStorage (the SPV header store grows with the
+  chain); CSP connect-src limited to cairn-substrate.com, clarvis and loopback; web_accessible_resources only
+  inpage.js; no externally_connectable (test/pentest.ts section 10 pins the last two and the scope of
+  host_permissions).
+- Build tripwires are load-bearing (`build.mjs` aborts): no external message surface anywhere; adding a fetch host
+  requires manifest CSP and host_permissions or the build fails; the `Wallet` class stays out of `popup.js` and
+  `approve.js`, so `approve.ts` must not import `popup-bridge.ts`; the vendored cairn-ui files must match their
+  PROVENANCE.json.
+- Node RPC is the Cairn proxy or a loopback node only (`rpcAllowed`, `src/core/endpoints.ts`). Every outer timeout
+  sits above its server-side worst case; do not lower one without re-deriving the inner chain.
+- Known accepted residuals: tx history and labels in chrome.storage.local are not additionally encrypted
+  (sealed-claim preimages are vault-key-encrypted at rest, pinned by test/seal-encrypt.test.mjs; an OS-level
+  compromise of the browser profile can read the remaining history, local-disk privacy only, never key material);
+  PBKDF2-600k, with Argon2id on the roadmap; keys are hot in the service worker while unlocked (hardware-wallet
+  support is on the roadmap); no external professional audit yet (it is the top roadmap item).
 
-## Release and deploy
-
-1. Bump the version in package.json only (`npm version X.Y.Z --no-git-tag-version`, which also updates package-lock.json). build.mjs stamps it into dist/manifest.json and window.cairn.
-2. `npm test && npm run package` green. scripts/package.mjs emits byte-reproducible zips and sha256s: cairn-wallet-store-X.Y.Z.zip (manifest at the zip root, the local store upload file), cairn-wallet-store.zip (the same bytes under the stable name the release carries) and cairn-wallet.zip (nested, for load-unpacked). node_modules must be a real `npm ci` directory: a symlinked one changes esbuild's path comments and the hash.
-3. Tag and push (maintainers only). release.yml runs three jobs:
-   - `anchors`: re-walks `src/core/spvanchors.ts` from clarvis's public /api/headers and checks every entry against the front door's /api/rpc/block/height; the newest entry must be 1,000 to 6,000 below the public tip.
-   - `build`: npm ci, typecheck, test, verify:vendor (the byte-identity rebuild), package; the four files leave as one artifact.
-   - `release`, which needs the other two: it downloads the artifact, runs `sha256sum -c` on both zips, writes the SLSA attestation and runs the idempotent gh release create. Only `release` holds `contents: write`, `id-token: write` and `attestations: write`, and it checks nothing out and installs nothing, so tests and dev dependencies never run with the attestation token in reach (`test/release-workflow-permissions.test.mjs`).
-   - release.yml also runs on pull requests that touch the table, scripts/update-spv-anchors.mjs or the vendored bundle; there only `anchors` runs, the publish jobs are gated to tag pushes. The table is regenerated per store/PUBLISH-RUNBOOK.md step 2. Both workflows default to `permissions: {}` with per-job grants and check out with `persist-credentials: false`.
-4. Chrome Web Store: manual, per store/PUBLISH-RUNBOOK.md (upload the local `cairn-wallet-store-X.Y.Z.zip` to the [Developer Dashboard](https://chrome.google.com/webstore/devconsole) after its sha256 matches the release, then the post-publish CRX check). Never automate it.
-5. The website links the Chrome Web Store and releases/latest and restates no version or sha256 (cairn 0.5.43), so a release needs no site change.
-
-## Contributor guidance (standing project rules)
-
-1. Security fixes must not regress UX: no added latency, no declines on legitimate sends or buys, no over-engineering. Prefer warn over block, honesty over machinery. Fail-closed without an availability valve counts as a UX regression. Ideas already considered and declined as over-engineering include EIP-55-style checksums, hard-blocking unverified sends, and forced argon2id migration.
-2. Maintainers deploy and release. PRs should not assume deploy access, bump versions, or cut tags; propose the change and a maintainer handles versioning and release.
-3. Releases are tag plus CI GitHub release; the Chrome Web Store upload is always done manually by a maintainer, never automated (supply-chain caution after the npm Shai-Hulud incident class).
-4. No unattended transaction broadcast. Automated flows may only raise approval prompts while the tab is visible.
-5. Consensus rules are imported or vendored from csd-sdk, never re-declared in this repo.
-6. No em dashes in any doc (`grep -cP '\x{2014}' <file>` prints 0; `npm run check:dashes-paths` checks every tracked .md outside docs/archive/); no AI-slop phrasing.
-7. When scope is ambiguous, open an issue or short design note first rather than a large speculative diff.
-
-## Gotchas
+## Rules learned from incidents
 
 The incidents behind these are in `CHANGELOG.md`.
 
-- When a submit fails, tell "the front door refused the HTTP request" apart from "the node rejected the tx" before blaming the wallet, and show "may be in flight" only when the tx may have been broadcast.
+- When a submit fails, tell "the front door refused the HTTP request" apart from "the node rejected the tx" before
+  blaming the wallet, and show "may be in flight" only when the tx may have been broadcast.
 - One unverifiable coin must not block every spend: verify verdicts are per coin.
-- The unlocked key survives a service-worker idle kill through chrome.storage.session. The approval window runs in a tab, so the sender gate keys on the extension-origin `sender.url`, not on a missing tab.
-- The version is written only in package.json; the PROVENANCE and rebuild gates stop a stale vendored bundle; the source-host tripwire stops a fetch host missing from the CSP.
-- fillOffer's exact `bigint` need-map preflight and the fail-closed registered-versus-unregistered handling in the union path are load-bearing; keep them.
+- The unlocked key survives a service-worker idle kill through chrome.storage.session. The approval window runs in a
+  tab, so the sender gate keys on the extension-origin `sender.url`, not on a missing tab.
+- The version is written only in package.json; the PROVENANCE and rebuild gates stop a stale vendored bundle; the
+  source-host tripwire stops a fetch host missing from the CSP.
+- fillOffer's exact `bigint` need-map preflight and the fail-closed registered-versus-unregistered handling in the
+  union path are load-bearing; keep them.
 - rename/removeAccount take an address, not an index.
 - `sighashMatch` in SubmitResult is vestigial but dApp-visible; keep it.
 - A .csd recipient never reaches a URL unvalidated (NAME_RE first).
 - Wallet distribution is the Chrome Web Store and GitHub releases only; the sites do not serve the zip.
 
+## Release and deploy
+
+Maintainers deploy and release. PRs should not assume deploy access, bump versions, or cut tags; propose the change
+and a maintainer handles versioning and release.
+
+1. Bump the version in package.json only (`npm version X.Y.Z --no-git-tag-version`, which also updates
+   package-lock.json). build.mjs stamps it into dist/manifest.json and window.cairn.
+2. Regenerate the SPV anchor table (`src/core/spvanchors.ts`) per store/PUBLISH-RUNBOOK.md step 2. Between releases,
+   a table-only release is cut once the public tip is more than 14,400 blocks above the newest entry.
+3. `npm test && npm run package` green. scripts/package.mjs emits byte-reproducible zips and sha256s (the store
+   upload file `cairn-wallet-store-X.Y.Z.zip` and the two the release carries; the runbook's step 5). node_modules
+   must be a real `npm ci` directory: a symlinked one changes esbuild's path comments and the hash.
+4. Tag and push (maintainers only). release.yml runs `anchors` (re-walks the table against the public chain; the
+   newest entry must be 1,000 to 6,000 below the public tip), `build` (npm ci, typecheck, test, verify:vendor,
+   package) and `release` (checks the zips' sha256, writes the SLSA attestation, creates the GitHub release). Only
+   `release` holds write permissions, and it checks nothing out and installs nothing, so tests and dev dependencies
+   never run with the attestation token in reach (`test/release-workflow-permissions.test.mjs`). Both workflows
+   default to `permissions: {}` with per-job grants and check out with `persist-credentials: false`. The jobs in
+   full: `docs/TESTING.md`.
+5. Chrome Web Store: manual, per store/PUBLISH-RUNBOOK.md (upload the local `cairn-wallet-store-X.Y.Z.zip` to the
+   [Developer Dashboard](https://chrome.google.com/webstore/devconsole) after its sha256 matches the release, then the
+   post-publish CRX check). Never automate it.
+6. The website links the Chrome Web Store and releases/latest and restates no version or sha256, so a release needs
+   no site change.
+
+Red lines: the Chrome Web Store upload stays manual and off CI (store/PUBLISH-RUNBOOK.md; supply-chain rationale from
+the Shai-Hulud incident class). No store API key or webstore-upload action enters CI. Single maintainer, so no dual
+control: reproduce-then-publish (the local stamped zip's sha256 must equal the CI-attested `cairn-wallet-store.zip`),
+hardware 2FA, and a post-publish CRX check against the attested zip (commands in the runbook).
+
+## Working rules
+
+1. Security fixes must not regress UX: no added latency, no declines on legitimate sends or buys, no
+   over-engineering. Prefer warn over block, honesty over machinery. Fail-closed without an availability valve counts
+   as a UX regression. Ideas already considered and declined as over-engineering include EIP-55-style checksums,
+   hard-blocking unverified sends, and forced argon2id migration.
+2. When scope is ambiguous, open an issue or short design note first rather than a large speculative diff.
+
+## Cross-repo contract
+
+- The wallet is the signer for the whole app layer. It talks to the cairn web front door at
+  https://cairn-substrate.com (/api/rpc/* proxying to the node RPC with rate limiting and body caps,
+  /trade/api/cairnx/* to the CairnX resolver, /api/headers for SPV, /api/content, /auth) and to clarvis
+  (https://clarvis.cairn-substrate.com) as the second source for name verification (same operator and same
+  registrable domain as the first, so not independent). Related public surfaces: the csd-sdk packages on npm
+  (@inversealtruism/*) and the csd-indexer block explorer.
+- Consensus math arrives only via the vendored csd-sdk bundle (csd-tx is bundled like the other packages, for its
+  `selectInputs`); there is no dependency on cairn-sdk.
+- Downstream: cairn-sdk (`mapProviderError`) and the cairn site's trade UI consume the machine error codes.
+- The chain: Rust node, 120 s blocks, UTXO P2PKH, no script VM, no finality below app-layer confirmation depths.
+
+## Where code lives
+
+Everything ships bundled by esbuild from `src/` into `dist/` (gitignored). `docs/ARCHITECTURE.md` has the per-module
+detail and the runtime footprint (timeouts, fan-out, storage, consensus caps, the post retry schedule).
+
+- `build.mjs`, `scripts/`: the build and its tripwires; vendor build and checks, packaging, the anchor table
+  generator, icons.
+- `src/background.ts`: the MV3 service worker (the unlocked key, the dApp approval queue, per-origin consent, the
+  method allowlist, auto-lock). `src/content.ts`, `src/inpage.ts`: the frozen `window.cairn` provider and its relay.
+- `src/core/`: keys (`keystore.ts`, `account.ts`), the tx codec twin (`csdtx.ts`), the send engine (`node.ts`), the
+  `Wallet` class and its sign flows (`wallet.ts`), the signed fields per request (`signfields.ts`), offer fills
+  (`fillpreflight.ts`, `fillspv.ts`), name verification and SPV (`names.ts`, `namespv.ts`, `spvbind.ts`, the header
+  store and the anchor table), history and sealed claims (`history.ts`, `claims.ts`), CairnX record builders
+  (`cairnx.ts`), endpoints and sign-in rules.
+- `src/popup/`: `popup.ts` and one `popup-*.ts` module per view, `approve.ts` (the clear-signing window),
+  `clearsign.ts` (pure formatters). `tiles.ts` draws the Cairn mark only for the pinned CAIRN deploy.
+- `src/vendor/`: the csd-sdk bundle, and cairn-ui (avatar, theme, fonts, logos; the mark's one home is `mark.svg`)
+  with its own PROVENANCE.json, checked by scripts/check-ui-vendor.mjs.
+- `public/`: the manifest and the generated icons. `store/`: the Chrome Web Store kit.
+
 ## Docs
 
-| Doc | Holds |
-|---|---|
-| `README.md` | what the wallet is, install, accounts and recovery |
-| `SECURITY.md` | threat model, trust boundaries, how to report |
-| `WALLET-ERROR-CODES.md` | the dApp error-code contract (read by `test/wallet-0270-hygiene.test.mjs`; stays at the root) |
-| `CHANGELOG.md` | release notes, including the history and incident notes moved out of this file |
-| `docs/DESIGN-namespv-scaling.md` | the SPV header store, the release anchor table and name verification on top of them, as built |
-| `docs/DESIGN-fill-lanes.md` | what each offer-fill lane proves before signing, and what stays resolver-trusted |
-| `docs/DESIGN-inclusion-reconcile.md` | how sent transactions are settled as included, gone or stuck |
-| `docs/DESIGN-viafill.md` | why a name bought through the market does not show as verified, and the options to fix it (open) |
-| `store/README.md` | index of the Chrome Web Store package |
-| `store/PUBLISH-RUNBOOK.md`, `store/STORE-LISTING.md`, `store/PRIVACY-POLICY.md` | release procedure, listing copy, privacy policy text |
-| `.githooks/README.md` | the secret-scan pre-commit hook |
-| `docs/archive/` | superseded docs, indexed in `docs/archive/README.md`; moved with `git mv`, basenames kept |
-
-## Cross-repo map
-
-Runtime npm deps (exact-pinned, only four): @noble/curves, @noble/hashes, @scure/bip32, @scure/bip39. Dev dependencies are exact-pinned too, each to the version package-lock.json installs (test/dep-pins.test.mjs). The csd-sdk packages are dev dependencies only: all trust-sensitive shared code ships as the vendored bundle built from them, and nothing in dist/ imports a package at runtime. csd-tx is bundled like the other csd-sdk packages (its `selectInputs`); no dependency on cairn-sdk. Downstream consumers of the wallet's contract: cairn-sdk (mapProviderError) and the cairn site's trade UI consume the machine error codes. Server-side counterparts live behind the cairn front door at https://cairn-substrate.com: the /api/rpc proxy (rate limiting and body caps), /api/headers for SPV, /trade/api for CairnX reads, with clarvis as the second name-verification source (same operator) and the csd-indexer explorer for chain browsing.
+- `README.md` (users and integrators), `SECURITY.md` (threat model, trust boundaries, how to report),
+  `CHANGELOG.md` (release notes, including the history and incident notes moved out of this file).
+- `WALLET-ERROR-CODES.md`: the dApp error-code contract (codes are the contract, strings are UX copy; read by
+  `test/wallet-0270-hygiene.test.mjs`; stays at the root).
+- `docs/ARCHITECTURE.md` (per-module detail, runtime footprint, deviations) and `docs/TESTING.md` (runner, helpers,
+  CI, the release workflow).
+- Design notes: `docs/DESIGN-namespv-scaling.md` (header store, anchor table, name verification),
+  `docs/DESIGN-fill-lanes.md` (what each fill lane proves, what stays resolver-trusted),
+  `docs/DESIGN-inclusion-reconcile.md` (how sent transactions settle), `docs/DESIGN-viafill.md` (names bought
+  through the market; open).
+- `store/README.md` indexes the store package: `store/PUBLISH-RUNBOOK.md` (the release procedure,
+  security-critical), `store/STORE-LISTING.md`, `store/PRIVACY-POLICY.md`. `.githooks/README.md`: the secret-scan
+  pre-commit hook.
+- `docs/archive/`: superseded docs, indexed in `docs/archive/README.md`; moved with `git mv`, basenames kept.
