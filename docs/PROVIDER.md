@@ -98,7 +98,8 @@ inputs or a change address.
   `BAD_REQUEST` before any window opens.
 - `revealClaim`: the txid of a seal this account made in this wallet. No transaction; refused `SEAL_NOT_MINED`
   until the commit is mined. A txid the active account holds no seal for is `SEAL_UNKNOWN`: before any window for a
-  site connected to that account while the wallet is unlocked and that account is active, and after approval (nested)
+  site connected to that account while the wallet is unlocked and that account is active (a switch, a lock or a
+  disconnect while the wallet checks sends the request to the window), and after approval (nested)
   for any other site, whose request opens the window as any reveal does. A connected site so learns silently whether
   this install holds a record of a seal under the active account (it knows the address already); a site that is not
   connected learns nothing without the user seeing the window. A connected site asking to reveal a seal held under

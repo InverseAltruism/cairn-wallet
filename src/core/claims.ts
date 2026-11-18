@@ -139,8 +139,8 @@ export class SealedClaims {
     const list: any[] = (await this.store.get(k)) || [];
     return list.find((x) => x?.txid === txid) ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec;
   }
-  /** Whether the active account holds the seal `txid`: revealClaim's own lookup, local only. */
-  async holds(txid: string): Promise<boolean> { return !!(await this.findSeal(sealKey(this.w.addr()), txid)); }
+  /** Whether the account `addr` holds the seal `txid`: revealClaim's own lookup, local only. */
+  async holds(addr: string, txid: string): Promise<boolean> { return !!(await this.findSeal(sealKey(addr), txid)); }
   async revealClaim(txid: string) {
     const k = sealKey(this.w.addr());
     const rec = await this.findSeal(k, txid);

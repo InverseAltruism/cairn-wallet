@@ -227,7 +227,9 @@ carry (an empty domain or URI, an all-zero payload hash) are refused by the node
 because the wallet does not re-declare consensus. A `revealClaim` for a txid the active account holds no seal for is
 answered `SEAL_UNKNOWN` before the window only when the site is connected to that account, the wallet is unlocked and
 that account is active, which already lets it read the address with no prompt; what it learns is whether this install
-holds a record of that seal under that address; from any other site it opens the window as any reveal does, and approving it answers
+holds a record of that seal under that address. The lookup is made under the address the consent names, and an
+account switch, a lock or a disconnect while the check runs sends the request to the window, so a site never learns
+about an account it is not connected to. From any other site it opens the window as any reveal does, and approving it answers
 `SEAL_UNKNOWN`. An answer with no window there would let any page test the public seal commits against the wallet and
 learn which address the visitor holds. In the sign-in window, the site's
 statement is labelled as text from that site, not from the wallet. The legacy `signIn()` is not listed in
@@ -240,7 +242,9 @@ only by the background worker and never sent anywhere: the connected sites above
 and the origins the user has approved a request from (`approvedOrigins`), each with when, so the window can say "New site"
 when a site the user has approved nothing from asks. A connected site counts as approved. The second list is the
 user's own record of which sites they approved something from; it grants nothing, changes no button and adds no wait.
-It is written after the page has its answer and a failed write fails nothing. It keeps the 500 origins approved last
+It is written after the page has its answer, on its own queue, and the window reads an in-memory copy, so a slow or
+failing write or read delays and fails nothing (an unreadable list shows the line); an approval that completes after a
+reset records nothing. It keeps the 500 origins approved last
 (an older one is dropped and reads as new again) and never holds an opaque origin (`"null"`, `"unknown"`). Removing the
 extension deletes both lists; no screen clears the second one (the wallet's internal reset does). A site cannot read
 either list beyond its own connection: storage is restricted to the wallet's own pages and worker. Each sealed claim

@@ -531,6 +531,8 @@ export class Wallet {
     return a;
   }
   private addr(): string { return this.must().addr; }
+  /** The active account's address while unlocked, read with no await; null while locked. */
+  activeAddr(): string | null { return this.accts ? (this.accts[this.active]?.addr ?? null) : null; }
 
   // ── signing-context integrity (A1, Plans/68 FILL-RACE-1) ─────────────────────────────────────
   // Every signing method captures its key SYNCHRONOUSLY at entry; except fillOffer, whose
@@ -975,7 +977,8 @@ export class Wallet {
     return r;
   }
   revealClaim(txid: string) { return this.claims.revealClaim(txid); }
-  holdsSeal(txid: string): Promise<boolean> { return this.claims.holds(txid); }
+  /** Whether the account `addr` holds the seal `txid` (a local read). */
+  holdsSeal(addr: string, txid: string): Promise<boolean> { return this.claims.holds(addr, txid); }
   sealedClaims(): Promise<any[]> { return this.claims.sealedClaims(); }
   /** The removal warning's count: unrevealed sealed claims of the account `addr` (popup-only). */
   unrevealedSeals(addr: string): Promise<number> { return this.claims.unrevealedCount(String(addr)); }

@@ -57,13 +57,19 @@ events and alarm-driven auto-lock.
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the
   result.
 - `approvedOrigins` (storage key): `{ [origin]: ms }`, the origins the user has approved a request from and when they last
-  did, at most `APPROVED_CAP` = 500, the newest by that time (the oldest is dropped and reads as new again). `resolvePending`
-  writes it through `inConsentChain`, the consent map's queue, once the page has its answer and without awaiting it
-  (`recordApproved`; a failed write is logged). `pending` marks a request `first` when its origin is in neither this
-  list nor `connectedOrigins`, read through the same chain (`newOrigins`). Opaque origins (`src/core/origin.ts`
-  `opaqueOrigin`) are never written. `reset` clears it with `connectedOrigins` (test/approve-first-request.test.mjs).
-- A `revealClaim` for a seal the active account does not hold (`claims.ts` `holds`) from a site connected to that
-  account is answered `SEAL_UNKNOWN` before it is queued; from any other site it is queued, and `revealClaim` answers
+  did, at most `APPROVED_CAP` = 500, the newest by that time (the oldest is dropped and reads as new again). It is
+  display metadata and nothing the user waits for waits on it: `pending` reads an in-memory copy (`approvedNow`, loaded
+  once per worker; a listing waits at most `APPROVED_LOAD_WAIT_MS` = 250 ms for that load, and an origin not loaded
+  reads as new) and the consent map, and marks a request `first` when its origin is in neither (`newOrigins`, which
+  never fails: an unreadable list or map reads as new). `resolvePending` updates the copy once the page has its answer
+  and queues the storage write on its own queue (`recordApproved`, `inApprovedChain`, never awaited; a failed write is
+  logged), so no listing, consent write or approval queues behind it. `reset` bumps `approvedGen` and clears the copy
+  and the key: an approval that began before it records nothing when it completes. Opaque origins (`src/core/origin.ts`
+  `opaqueOrigin`) are never written (test/approve-first-request.test.mjs).
+- A `revealClaim` for a seal the active account does not hold from a site connected to that account is answered
+  `SEAL_UNKNOWN` before it is queued (`unknownSealFromConnected`: the lookup, `claims.ts` `holds`, is made under the
+  consented address, and after each await the active account, the lock and the consent must be unchanged, or the
+  request goes to the window); from any other site it is queued, and `revealClaim` answers
   it `SEAL_UNKNOWN` after approval. A seal records the asking origin on its record (`origin`; the extension's own for a
   popup seal), which `clearsign.ts` `revealPreviewHtml` shows.
 
