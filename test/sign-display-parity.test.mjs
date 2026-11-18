@@ -15,13 +15,18 @@
 // One home: src/core/signfields.ts (attestFields, fillFields, proposeFields, sendFields, sealFields, revealFields,
 // fillOf) and src/core/siwcparams.ts (siwcFieldsFor), which the signer builds from and the window reads. revealClaim
 // signs nothing (it publishes a stored preimage); its pair is the txid shown against the txid posted (section 6).
+// Sections 9 to 12 pin what docs/PROVIDER.md states about the approval window and consent; each says its red-first runs.
 // Run: npx tsx test/sign-display-parity.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 import { fmtCsd, CONF_TOKEN_FILL, CAIRNX_DOMAIN, buildNameProfile } from "../src/core/cairnx.ts";
 import { PROFILE_DROP_PENDING } from "../src/popup/clearsign.ts";
 import { world, truthful, PRIV } from "./helpers/fillworld.mjs";
-import { offer } from "../src/vendor/cairnx-spv.js";
+import {
+  offer, transfer, deploy, mint, bid, offerCancelAll, nameCommitRecord, nameClaim, nameFinalize, nameXfer, nameSet, nameRenew,
+  nameProfile, tokenMeta, fclaim, canonicalJson, payloadHash, resolve, requiredFillOutputs, provenOfferTerms, parseRecord,
+  epochOf, DEPLOY_FEE, TREASURY_ADDR,
+} from "../src/vendor/cairnx-spv.js";
 import { mkCoin, txReply } from "./_coin.ts";
 
 const { check, done } = checker("the approval window shows what the wallet signs:");
@@ -70,6 +75,8 @@ let fw = null, me = "";
 // The name service's `/cairnx/name/:name` answer (section 8); every other section reads no name record.
 const nameReads = [];
 let nameAnswer = async () => ({ ok: false, status: 404, json: async () => ({}) });
+// Offers the stub serves by id beside the fill world's (section 12's taker-bound offer).
+const servedOffers = new Map();
 const TOKEN_OFFER = "0x" + "7a".repeat(32), MINE = "0x" + "be".repeat(32), THEIRS = "0x" + "bf".repeat(32);
 const tokenOffer = () => ({ id: TOKEN_OFFER, seller: me, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 });
 const listed = offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(1e8) } });
@@ -82,6 +89,7 @@ globalThis.fetch = async (url, init) => {
   if (u.includes("/proposal/")) return { ok: true, status: 200, json: async () => ({ ok: true, proposal: { payload_hash: "0x" + "11".repeat(32) } }) };
   if (u.includes("clarvis")) return truthful(fw)(init, u);
   if (u.includes(`/cairnx/offer/${TOKEN_OFFER}`)) return { ok: true, status: 200, json: async () => tokenOffer() };
+  for (const [id, o] of servedOffers) if (u.includes(`/cairnx/offer/${id}`)) return { ok: true, status: 200, json: async () => structuredClone(o) };
   if (u.includes("/cairnx/offer/")) return { ok: true, status: 200, json: async () => fw.primary };
   if (/\/utxos\//.test(u)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
   if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: fw?.tip ?? 116_520 }) };
@@ -116,6 +124,7 @@ function shown(html) {
   };
 }
 const hex = (bytes) => "0x" + Buffer.from(bytes).toString("hex");
+const hexOf = (v) => (typeof v === "string" ? v : hex(v)).toLowerCase();
 // The signed transaction's fields: the app payload, the outputs that leave the wallet (not change to self), the fee.
 function signed(tx) {
   const ins = tx.inputs.length * coin.coin.value;
@@ -134,6 +143,9 @@ let pollTick = null;
 const TARGET_READS = ["attestTarget", "tokenFillQuote", "fillOfferView"];
 // Every call the window makes for a request, before its paint and after, other than the queue and status polls.
 const POLLS = new Set(["pending", "status", "resolve"]);
+// The window's painted parts outside the request markup: the header (origin line, ask, signer) and the mounts approve.ts
+// fills after the paint.
+const FACE = ["ap-origin", "ap-tile", "ap-ask", "ap-signer", "send-warn", "fill-view", "token-sim", "profile-drop"];
 // Queues one request, lets the window paint it (its pre-paint reads included), clicks Approve once the buttons arm, and
 // returns the painted fields, the window's target reads and the transaction submitted, if any.
 async function round(method, params, origin = ORIGIN) {
@@ -152,13 +164,14 @@ async function round(method, params, origin = ORIGIN) {
   const html = req();
   const preview = strip(registry.get("reveal-preview")?.innerHTML ?? "");
   const drop = registry.get("profile-drop")?.innerHTML;
+  const face = Object.fromEntries(FACE.map((id) => [id, String(registry.get(id)?.innerHTML ?? "")]));
   const calls = sent.slice(s0).map(([m]) => m).filter((m) => !POLLS.has(m));
   const reads = sent.slice(s0).filter(([m]) => TARGET_READS.includes(m)).map(([m, a]) => [m, String(a[0]).toLowerCase()]);
   const clicked = Date.now();
   if (armed()) await registry.get("btn-approve")._listeners.click();
   else await registry.get("btn-reject")._listeners.click();
   await until(() => page.reply !== undefined);
-  return { queued: true, page, d: shown(html), html, drop, reads, calls, preview, armedMs, replyMs: Date.now() - clicked, tx: submits.length > n ? signed(submits.at(-1)) : null };
+  return { queued: true, page, d: shown(html), html, face, drop, reads, calls, preview, armedMs, replyMs: Date.now() - clicked, tx: submits.length > n ? signed(submits.at(-1)) : null };
 }
 const sameOutputs = (d, s) => d.length === s.length && d.every((o, i) => o.to.toLowerCase() === s[i].to && o.amount === s[i].amount);
 // The invariant for a signed request; `kind` is what the title must call it, `wantReads` the target reads it must make.
@@ -252,7 +265,6 @@ for (const [label, params] of [["7. a sign-in with a statement, uri omitted", { 
   const signsShown = (label, r) => check(`${label}: signed as shown (fee ${r.d.fee}, ${JSON.stringify(r.tx?.app)})`,
     r.tx?.app.kind === "Propose" && r.tx.app.domain === CAIRNX_DOMAIN && r.d.fee === fmtCsd(r.tx.fee) && r.tx.outputs.length === 0 && r.page.reply?.ok === true
     && submits.at(-1).app.Propose.uri === b.uri && [b.payloadHash, b.payloadHash.slice(2)].includes(hexOf(submits.at(-1).app.Propose.payload_hash)));
-  const hexOf = (v) => (typeof v === "string" ? v : hex(v)).toLowerCase();
   nameAnswer = async () => rec({ contenthash: "ipfs://site-a", avatar: "https://a.example/x.png" });
   const cards = [];
   for (const origin of [ORIGIN, FIRST]) {
@@ -275,5 +287,140 @@ for (const [label, params] of [["7. a sign-in with a statement, uri omitted", { 
   check("8. read held open: the reserved row keeps its pending text", held.html.includes(`<span id="profile-drop" class="dim">${PROFILE_DROP_PENDING}</span>`) && !held.drop);
   check(`8. read held open: the click signs without waiting for the read (${held.replyMs} ms)`, held.tx !== null && held.replyMs < 1500);
   signsShown("8. read held open", held);
+}
+
+// The proposal the wallet signed carries the request's domain, uri and payload hash, and moves no CSD.
+const FIRST_PARTY = "https://cairn-substrate.com";
+function signedAsRequested(r, params) {
+  const a = r.tx ? submits.at(-1).app.Propose : null;
+  return !!a && r.page.reply?.ok === true && r.tx.outputs.length === 0 && r.d.fee === fmtCsd(r.tx.fee) && a.domain === params.domain && a.uri === params.uri
+    && [params.payloadHash.toLowerCase(), params.payloadHash.slice(2).toLowerCase()].includes(hexOf(a.payload_hash));
+}
+// 9. Every cairnx:v1 record type the window decodes, proposed by a third-party site, paints its decoded card (its title,
+// anchored as a cairnx:v1 proposal, no raw Domain row), and the wallet signs the request's uri and payload hash. The same
+// record from the wallet's first-party origin paints the same window: the request, the header and every mount filled
+// after the paint are equal; only the origin line (the origin and its initial tile) differs. No origin is connected.
+// The name service answers 503, so the name gates and the profile row take their could-not-read path for both alike.
+//   RED-FIRST: make describe() skip the cairnx:v1 branch and every decoded-card check fails; make approve.ts asks()
+//   word the first-party origin differently and every same-window check fails.
+nameAnswer = async () => ({ ok: false, status: 503, json: async () => ({}) });
+{
+  const SALT = "5a".repeat(16), HASH = "0x" + "ef".repeat(32);
+  const RECORDS = [
+    ["transfer", /^CairnX token transfer$/, transfer({ ticker: "AAA", amount: "5", to: TO })],
+    ["deploy", /^CairnX token deploy$/, deploy({ ticker: "NEWT", decimals: 2, supply: "100000", mint: "issuer" })],
+    ["mint", /^CairnX token mint$/, mint({ ticker: "AAA", amount: "10" })],
+    ["offer", /^CairnX offer$/, offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(1e8) } })],
+    ["bid", /^CairnX bid$/, bid({ want: { name: "alice" }, give: { value: String(1e8) } })],
+    ["ocancel", /^CairnX cancel offers$/, offerCancelAll({ ticker: "AAA" })],
+    ["ncommit", /^\.csd registration, step 1 of 3/, nameCommitRecord({ commit: HASH })],
+    ["name", /^\.csd registration, step 2 of 3/, nameClaim({ name: "alice", salt: SALT })],
+    ["nfinalize", /^\.csd registration, step 3 of 3/, nameFinalize({ name: "alice", salt: SALT })],
+    ["nxfer", /^\.csd name transfer$/, nameXfer({ name: "alice", to: TO })],
+    ["nset", /^\.csd name → address record$/, nameSet({ name: "alice", addr: TO2 })],
+    ["nrenew", /^\.csd name renewal$/, nameRenew({ name: "alice" })],
+    ["nprofile", /^\.csd identity profile$/, nameProfile({ name: "alice", p: { avatar: "https://b.example/y.png" } })],
+    ["tmeta", /^CairnX token metadata/, tokenMeta({ ticker: "AAA", hash: HASH })],
+    ["fclaim", /^Reserve an open offer$/, fclaim({ offer: MINE })],
+  ];
+  const painted = (r) => JSON.stringify({ req: r.html, ...r.face, "ap-origin": undefined, "ap-tile": undefined });
+  for (const [t, titled, b] of RECORDS) {
+    const params = { domain: CAIRNX_DOMAIN, uri: b.uri, payloadHash: b.payloadHash, expiresEpoch: 9_000 };
+    const third = await round("propose", params, ORIGIN);
+    check(`9. ${t} from ${ORIGIN}: the decoded card "${third.d.title}", signed with the request's uri and payload hash`,
+      titled.test(third.d.title) && third.d.rows["Anchored as"] === "a cairnx:v1 proposal" && !("Domain" in third.d.rows) && signedAsRequested(third, params));
+    const first = await round("propose", params, FIRST_PARTY);
+    check(`9. ${t}: ${FIRST_PARTY} paints the same window as ${ORIGIN} but for the origin line (${first.face["ap-origin"]} / ${third.face["ap-origin"]})`,
+      signedAsRequested(first, params) && painted(first) === painted(third) && first.face["ap-origin"] === FIRST_PARTY && third.face["ap-origin"] === ORIGIN);
+  }
+}
+
+// 10. A proposal the window does not decode is shown raw as "Post a proposal", with the domain, the payload hash and the
+// uri as sent and signed: a valid cairnx record's bytes in another domain, and three cairnx:v1 records the vendored
+// parser refuses (a payload hash that is not the record's, a record type it does not know, a uri that is not JSON).
+//   RED-FIRST: decode a record in any domain (drop the CAIRNX_DOMAIN test in describe()) and the first case fails; let
+//   decodeCairnxRecord parse the uri without its hash check and the hash-mismatch case fails.
+{
+  const unesc = (s) => String(s).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const tr = transfer({ ticker: "AAA", amount: "5", to: TO }), other = mint({ ticker: "AAA", amount: "10" });
+  const unknown = { v: 1, t: "zzz", x: 1 };
+  const RAW = [
+    ["a cairnx transfer's bytes in domain example:v1", { domain: "example:v1", uri: tr.uri, payloadHash: tr.payloadHash }],
+    ["cairnx:v1 whose payload hash is another record's", { domain: CAIRNX_DOMAIN, uri: tr.uri, payloadHash: other.payloadHash }],
+    ["cairnx:v1 with a record type the parser does not know", { domain: CAIRNX_DOMAIN, uri: canonicalJson(unknown), payloadHash: payloadHash(unknown) }],
+    ["cairnx:v1 whose uri is not JSON", { domain: CAIRNX_DOMAIN, uri: "data:,hello", payloadHash: PH }],
+  ];
+  for (const [label, p] of RAW) {
+    const params = { ...p, expiresEpoch: 9_000 };
+    const r = await round("propose", params);
+    agree(`10. ${label}`, r, /^Post a proposal$/);
+    const raw = (k) => unesc([...String(r.html).matchAll(/<div(?: data-to="[^"]*")?><dt>([^<]*)<\/dt><dd>([\s\S]*?)<\/dd><\/div>/g)].find((m) => m[1] === k)?.[2].replace(/<[^>]+>/g, "") ?? "");
+    check(`10. ${label}: the raw rows are the request's (Domain ${raw("Domain")}), not a decoded card, and the signed proposal is the request's`,
+      raw("Domain") === params.domain && raw("Payload hash") === params.payloadHash && raw("URI") === params.uri && !("Anchored as" in r.d.rows) && signedAsRequested(r, params));
+  }
+}
+
+// 11. A site that never called connect gets the approval window for a signing request, and the wallet signs on approve;
+// the request records no connection, so the site's getPermissions stays empty. Paired: a connect the user approves
+// records one.
+//   RED-FIRST: have resolvePending record consent for every approved request and the no-consent checks fail; refuse a
+//   signing method from an unconnected origin in queueDappRequest and the window check fails.
+{
+  const NEVER = "https://never-connected.example", JOINS = "https://connects.example";
+  const sites = async () => (await popup("connectedSites")).result.map((s) => s.origin);
+  const perms = async (origin) => { const out = dapp("getPermissions", undefined, origin); await until(() => out.reply !== undefined); return out.reply; };
+  check(`11. setup: neither ${NEVER} nor ${JOINS} is connected (${JSON.stringify(await sites())})`, !(await sites()).includes(NEVER) && !(await sites()).includes(JOINS));
+  const r = await round("send", { to: TO, amount: 120_000_000 }, NEVER);
+  check(`11. a send from ${NEVER}, never connected, is painted in the approval window (${r.face?.["ap-origin"] ?? JSON.stringify(r.page.reply)})`, r.queued && r.face["ap-origin"] === NEVER && r.d.title === "Send CSD");
+  agree("11. the unconnected site's send", r, /^Send CSD$/);
+  const p = await perms(NEVER);
+  check(`11. the signed request recorded no connection: not listed, getPermissions ${JSON.stringify(p)}`, !(await sites()).includes(NEVER) && p?.ok === true && Array.isArray(p.result) && p.result.length === 0);
+  const c = await round("connect", undefined, JOINS);
+  const q = await perms(JOINS);
+  check(`11. paired: an approved connect from ${JOINS} records the connection (getPermissions ${JSON.stringify(q?.result?.[0]?.invoker)})`,
+    c.page.reply?.ok === true && (await sites()).includes(JOINS) && q?.result?.[0]?.invoker === JOINS && String(q.result[0].accounts[0]).toLowerCase() === me);
+}
+
+// 12. A fill whose outputs pay one address more than the offer needs. Both lanes paint the extra output as a recipient
+// row and flag it as new to the wallet. The reservation (fclaim) lane refuses it before signing (FILL_UNSAFE: the planned
+// payment must equal the proven need exactly); the offer-id lane, here a taker-bound offer, signs it with the extra
+// output in the transaction. Paired: the same offer-id fill without the extra signs exactly the need.
+//   RED-FIRST: drop the `sums` bind passed to verifyFillSpv and the fclaim-lane refusal check fails; refuse an output
+//   to an address outside the need in csdLanePreflight and the offer-id lane check fails.
+{
+  const EXTRA = "0x" + "e7".repeat(20);
+  const flagged = (r) => r.face["send-warn"].includes(EXTRA.slice(0, 10)) && r.d.outputs.some((o) => o.to.toLowerCase() === EXTRA && o.amount === fmtCsd(1e8));
+  fw = world(me, "none", 8000);
+  const n0 = submits.length;
+  const a = await round("fillOffer", { proposalId: fw.fc.id, outputs: [...fw.outputs, { to: EXTRA, value: 1e8 }] });
+  const res = a.page.reply?.result;
+  check(`12. reservation lane: the extra output is shown and flagged as new (${strip(a.face["send-warn"]).slice(0, 60)})`, flagged(a));
+  check(`12. reservation lane: refused before signing, nothing submitted (${res?.code}: ${String(res?.error).slice(0, 70)})`,
+    a.page.reply?.ok === true && res?.ok === false && res.code === "FILL_UNSAFE" && /payment does not match the proven fill progress/.test(res.error) && submits.length === n0);
+
+  const S2 = "0x" + "5e".repeat(20), T = TREASURY_ADDR.toLowerCase(), h0 = 116_000;
+  const nid = (k) => "0x" + (0xf5000 + k).toString(16).padStart(64, "0");
+  const ev = (id, rec, h, paidTo = {}) => ({ kind: "propose", id, proposer: S2, uri: rec.uri, payloadHash: rec.payloadHash, height: h, pos: 1, expiresEpoch: epochOf(h) + 50_000, paidTo });
+  const dep = ev(nid(1), deploy({ ticker: "TKB", decimals: 0, supply: "10", mint: "issuer" }), h0, { [T]: String(DEPLOY_FEE) });
+  const mnt = ev(nid(2), mint({ ticker: "TKB", amount: "10" }), h0 + 1);
+  const offers = [3, 4].map((k) => ev(nid(k), offer({ give: { ticker: "TKB", amount: "1" }, want: { value: String(1e8) }, taker: me, memo: `lot ${k}` }), h0 + 2));
+  const state = resolve([dep, mnt, ...offers], 116_520).offers;
+  for (const o of offers) servedOffers.set(o.id, state[o.id]);
+  const prior = wallet.provenPaytoForTest;
+  wallet.provenPaytoForTest = (id, ...rest) => {
+    const o = offers.find((x) => x.id === String(id).toLowerCase());
+    return o ? { payto: S2, seller: S2, terms: provenOfferTerms(parseRecord(o.uri, o.payloadHash), o.height), expiresEpoch: o.expiresEpoch, height: o.height } : prior(id, ...rest);
+  };
+  const need = (o) => requiredFillOutputs(state[o.id], BigInt(1e8)).map(({ to, value }) => ({ to, value: Number(value) }));
+  check(`12. setup: the taker-bound offer is open and needs ${need(offers[0]).length} outputs`, state[offers[0].id]?.status === "open" && need(offers[0]).length >= 1);
+  const extra = await round("fillOffer", { proposalId: offers[0].id, outputs: [...need(offers[0]), { to: EXTRA, value: 1e8 }] });
+  check("12. offer-id lane: the extra output is shown and flagged as new", flagged(extra));
+  agree("12. offer-id lane: the fill with the extra output signs as shown", extra, /^Fill offer/, ["fillOfferView"]);
+  check(`12. offer-id lane: the signed transaction pays the extra output (${JSON.stringify(extra.tx?.outputs.map((o) => o.to.slice(0, 6)))})`,
+    extra.page.reply?.result?.ok === true && extra.tx?.outputs.some((o) => o.to === EXTRA && o.amount === fmtCsd(1e8)));
+  const exact = await round("fillOffer", { proposalId: offers[1].id, outputs: need(offers[1]) });
+  agree("12. paired: the offer-id fill of exactly the need signs", exact, /^Fill offer/, ["fillOfferView"]);
+  check("12. paired: ...and pays no address outside the need", exact.page.reply?.result?.ok === true && !exact.tx?.outputs.some((o) => o.to === EXTRA));
+  wallet.provenPaytoForTest = prior;
 }
 done("sign-display-parity");

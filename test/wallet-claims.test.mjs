@@ -2,8 +2,8 @@
 // CairnX may still refuse the delivery (the payment is then not returned), so no fill is "atomic" or
 // "delivery-versus-payment"; nothing is "trustless", "guaranteed" or "risk-free". Scans every source of shown text
 // (the popup and approval-window modules and pages, the core modules whose errors the popup shows verbatim, the store
-// listing, and the repo's public README.md, SECURITY.md and AGENTS.md) with comments stripped, so a new string in the
-// class fails here wherever it is added.
+// listing, and the repo's public README.md, SECURITY.md, AGENTS.md and docs/PROVIDER.md) with comments stripped, so a
+// new string in the class fails here wherever it is added.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { checker } from "./helpers/check.mjs";
@@ -19,7 +19,7 @@ const stripCode = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[\s;{}()
 const stripHtml = (s) => s.replace(/<!--[\s\S]*?-->/g, "");
 const files = (dir, ext) => readdirSync(join(ROOT, dir), { recursive: true }).map(String)
   .filter((f) => ext.some((e) => f.endsWith(e)) && !f.includes("vendor") && !f.includes("qr/")).map((f) => join(dir, f));
-const sources = [...files("src/popup", [".ts", ".html"]), ...files("src/core", [".ts"]), "src/background.ts", "src/inpage.ts", "store/STORE-LISTING.md", "README.md", "SECURITY.md", "AGENTS.md"];
+const sources = [...files("src/popup", [".ts", ".html"]), ...files("src/core", [".ts"]), "src/background.ts", "src/inpage.ts", "store/STORE-LISTING.md", "README.md", "SECURITY.md", "AGENTS.md", "docs/PROVIDER.md"];
 
 export function hits(path, text) {
   const shown = path.endsWith(".ts") ? stripCode(text) : path.endsWith(".html") ? stripHtml(text) : text;

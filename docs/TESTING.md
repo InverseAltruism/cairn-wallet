@@ -40,7 +40,8 @@ middle file fails: the remaining files still run and the exit is non-zero.
 | `maxsendable.test.mjs` | Max against the engine |
 | `identicon.test.ts` | the popup draws the vendored cairn-ui avatar |
 | `mark-home.test.mjs`, `extension-icons.test.mjs` | the mark's one home |
-| `sign-display-parity.test.mjs` | every request type the approval window paints, against the signed transaction |
+| `sign-display-parity.test.mjs` | every request type the approval window paints, against the signed transaction; every decoded `cairnx:v1` record type from a third-party and the first-party origin; the raw card; signing from a site that never connected; a fill with an extra output on both lanes |
+| `provider-discovery.test.mjs` | `cairn#initialized`, `csd:announceProvider` and its detail, the frozen provider and its members |
 
 Also: `poc-signin-oracle.ts`, `multiwallet.ts`, `bruteforce.test.mjs`, `csdtx-boundary.test.mjs`, `clearsign.ts`,
 `siwc.ts`, `events.test.ts`, `qr.test.ts`, `asset-tiles.test.mjs`. `ls test` is the full list; each file's header says
