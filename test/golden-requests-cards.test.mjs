@@ -8,7 +8,8 @@
 // For each call, from the wallet's own origin: describe() paints a titled card with the cost block and no refusal, and
 // what the window and the signer act on (the signed fee, the signed outputs, the debit, whether it is a token fill) is
 // pinned by a digest taken before the card wording of 2026-11-18 changed. A taker the site names in an answer to a bid
-// gets no first-time notice (only the look-alike check runs on a taker).
+// gets no first-time notice (only the look-alike check runs on a taker). Last, every call goes through the real
+// background's queue from that origin and is queued: no request of the site is refused before the window.
 //   RED-FIRST: tier a taker with the first-time notice (drop the LOOKALIKE_ONLY test in recipientFlags) and the two
 //   golden answers to a bid and the token-priced offer fail the taker check.
 // Run: npx tsx test/golden-requests-cards.test.mjs   (offline)
@@ -42,4 +43,36 @@ for (const [i, c] of calls.entries()) {
 }
 const digest = createHash("sha256").update(JSON.stringify(acted)).digest("hex");
 check(`what the window and the signer act on is unchanged (digest ${digest})`, digest === "ce7804fcf84555bfb1bc2da7b36a1f59b03d26f3b022a54cfb417af06131366a");
+
+// Through the real background's queue: every call, sent from the wallet's own origin, is queued and opens the window
+// (none is refused before queueing by the checks the signer shares, src/core/node.ts proposeRefusal and signfields.ts
+// sealFields), then rejected so the next one fits under the queue caps.
+//   RED-FIRST: lower proposeRefusal's output cap to 0 and every golden proposal with a treasury output is refused here.
+{
+  const mem = new Map();
+  let listener = () => undefined, windows = 0;
+  globalThis.chrome = {
+    runtime: { id: "cairnwallettestid", lastError: undefined, getURL: (p) => "chrome-extension://x/" + p, onMessage: { addListener: (fn) => { listener = fn; } }, onConnect: { addListener: () => undefined } },
+    storage: { local: { get: async (k) => ({ [k]: structuredClone(mem.get(k)) }), set: async (o) => { for (const k of Object.keys(o)) mem.set(k, structuredClone(o[k])); }, remove: async (k) => { mem.delete(k); } } },
+    alarms: { create: () => undefined, onAlarm: { addListener: () => undefined } },
+    action: { setBadgeText: () => undefined },
+    windows: { create: (_o, cb) => { windows++; cb?.({ id: 77 }); }, update: () => undefined, onRemoved: { addListener: () => undefined } },
+  };
+  globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
+  await import("../src/background.ts");
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
+  const popup = (method, ...args) => new Promise((res) => listener({ kind: "popup", method, args }, { id: "cairnwallettestid", url: "chrome-extension://x/approve.html" }, res));
+  let queued = 0;
+  for (const c of calls) {
+    const out = { reply: undefined };
+    listener({ kind: "dapp", method: c.method, params: c.params }, { origin: ORIGIN, url: ORIGIN + "/" }, (r) => { out.reply = r; });
+    await settle();
+    const q = (await popup("pending")).result;
+    const ok = out.reply === undefined && q.length === 1 && q[0].method === c.method && windows >= 1;
+    if (ok) queued++;
+    else check(`${c.case}: queued through the real background (reply ${JSON.stringify(out.reply)})`, false);
+    if (q[0]) { await popup("resolve", q[0].id, false); await settle(); }
+  }
+  check(`through the real queue, all 39 calls are queued and none is refused before the window (${queued} queued)`, queued === 39);
+}
 done("golden-requests-cards");

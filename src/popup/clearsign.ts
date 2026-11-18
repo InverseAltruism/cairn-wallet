@@ -1,7 +1,7 @@
 // Pure clear-signing formatters for the approval window and the popup's review: no DOM and no chrome, so they are
 // unit-testable (the "what am I signing?" layer). approve.ts and popup.ts import these and own only the DOM glue.
 import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, SCORE_CANCEL, finalizeWinnerCheck } from "../core/cairnx.js";
-import { EPOCH_LEN, PROFILE_MAX_KEYS, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
+import { EPOCH_LEN, MAX_DOMAIN_BYTES, MAX_URI_BYTES, PROFILE_MAX_KEYS, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields, sealFields, sendFields } from "../core/signfields.js";
@@ -87,12 +87,9 @@ export function truncLoud(s: unknown, cap: number): string {
   return `${escapeHtml(str.slice(0, cap))}<b class="err"> [truncated: showing the first ${cap} of ${str.length} characters]</b>`;
 }
 
-// G9 (B8w): the display cap for on-chain DOMAIN fields tracks the node's consensus byte cap
-// (MAX_DOMAIN_BYTES = 128; csd-sdk codec params + node params). A valid domain is <= 128 UTF-8 bytes, so
-// it is at most 128 characters, and this char cap therefore never loudly-truncates a valid domain (the
-// old 64 clipped legitimate 65-to-128-byte domains). Single-sourced so the two domain describe() sites
-// cannot drift; the uri cap stays the literal 512 at its own site (MAX_URI_BYTES) for the same reason.
-const DOMAIN_CAP = 128;
+// The display caps for the on-chain domain and uri are the consensus byte caps (the vendored MAX_DOMAIN_BYTES and
+// MAX_URI_BYTES). A valid field of n UTF-8 bytes has at most n characters, so a character cap at the byte cap never
+// truncates a valid field; the wallet refuses a longer one before it is queued (node.ts proposeRefusal).
 
 // W8 + F12 (B5g): token amounts on the popup's own send surfaces render BOTH scales, single-sourced here.
 // The human-scaled number rides resolver-served `decimals` (untrusted: a decimals lie rescales it by up to
@@ -524,7 +521,7 @@ export function describe(r: any): string {
       : "";
     const otherDomain = unread ? "" : lede(`This wallet does not interpret records of this domain: they cannot change CairnX names, tokens or offers. This one costs the network fee${outs.length ? " and the outputs shown" : ""}.`);
     return title("Post a proposal") + cost + xfer + unread + SEND_WARN + outRows + otherDomain
-      + rows([...exp, ["Domain", `<code>${truncLoud(String(q.domain), DOMAIN_CAP)}</code>`], ["Payload hash", `<code>${truncLoud(String(q.payloadHash || "(none)"), 80)}</code>`], ["URI", `<code>${truncLoud(String(q.uri || "(none)"), 512)}</code>`]]);
+      + rows([...exp, ["Domain", `<code>${truncLoud(String(q.domain), MAX_DOMAIN_BYTES)}</code>`], ["Payload hash", `<code>${truncLoud(String(q.payloadHash || "(none)"), 80)}</code>`], ["URI", `<code>${truncLoud(String(q.uri || "(none)"), MAX_URI_BYTES)}</code>`]]);
   }
   // score and confidence are serialized as u32 (>>>0); the window shows the same value that is signed, so a negative
   // or oversized input cannot show one thing and commit another.
@@ -575,7 +572,7 @@ export function describe(r: any): string {
     const claim = sf.claim;
     const refusedNote = sf.refused ? danger(`The wallet will refuse this request and sign nothing: ${escapeHtml(sf.refused.replace(/^sealClaim: /, ""))}.`) : "";
     return title("Seal a claim") + refusedNote + lede("Commit a hidden claim on-chain, to reveal later. The salt stays in your wallet; the claim is published only when you reveal.") + cost
-      + rows([["Domain", `<code>${truncLoud(sf.domain, DOMAIN_CAP)}</code>`], ...(claim ? [["Claim", `<code>${truncLoud(claim, 200)}</code>`] as Row] : [])]);
+      + rows([["Domain", `<code>${truncLoud(sf.domain, MAX_DOMAIN_BYTES)}</code>`], ...(claim ? [["Claim", `<code>${truncLoud(claim, 200)}</code>`] as Row] : [])]);
   }
   // M14 (B5h): a reveal publishes a secret. The full seal txid shows, and approve.ts fills #reveal-preview with the
   // domain and the claim text from the wallet's own sealed claims (a local read), so the user sees which secret.
@@ -696,9 +693,10 @@ export function moreBelowText(recipients: number): string {
   return "More below: scroll to read the whole request";
 }
 
-// The approval window's buttons, and their labels in the reservation confirm step (RESERVATION_UNCONFIRMED).
+// The approval window's buttons, and their labels when the request carries a warning to acknowledge: the reservation
+// confirm step (RESERVATION_UNCONFIRMED) and a name record's caution (namegate.ts `ackable`).
 export const APPROVE_LABELS = { approve: "Approve", reject: "Reject" } as const;
-export const UNCONFIRMED_LABELS = { approve: "Sign anyway", reject: "Cancel" } as const;
+export const ACKNOWLEDGE_LABELS = { approve: "Sign anyway", reject: "Cancel" } as const;
 // The line under the buttons: the latch while both wait, then what is below the fold (moreBelowText), then whether
 // Approve is live. Approve held down after the latch has its reason on screen above, except a token quote still loading.
 export const APPROVE_STATE = {

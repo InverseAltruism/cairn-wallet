@@ -20,7 +20,7 @@
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 import { fmtCsd, CONF_TOKEN_FILL, CAIRNX_DOMAIN, buildNameProfile } from "../src/core/cairnx.ts";
-import { PROFILE_DROP_PENDING } from "../src/popup/clearsign.ts";
+import { PROFILE_DROP_PENDING, nfinalizeApproveGate } from "../src/popup/clearsign.ts";
 import { world, truthful, PRIV } from "./helpers/fillworld.mjs";
 import {
   offer, transfer, deploy, mint, bid, offerCancelAll, nameCommitRecord, nameClaim, nameFinalize, nameXfer, nameSet, nameRenew,
@@ -150,8 +150,9 @@ const POLLS = new Set(["pending", "status", "resolve"]);
 // fills after the paint.
 const FACE = ["ap-origin", "ap-tile", "ap-ask", "ap-signer", "send-warn", "fill-view", "token-sim", "profile-drop"];
 // Queues one request, lets the window paint it (its pre-paint reads included), clicks Approve once the buttons arm, and
-// returns the painted fields, the window's target reads and the transaction submitted, if any.
-async function round(method, params, origin = ORIGIN) {
+// returns the painted fields, the window's target reads and the transaction submitted, if any. `beforeClick` runs once the
+// buttons arm, before the click.
+async function round(method, params, origin = ORIGIN, beforeClick = async () => undefined) {
   const s0 = sent.length, n = submits.length, f0 = fetchLog.length;
   const page = dapp(method, params, origin); await flush();
   const q = (await popup("pending")).result.at(-1);
@@ -163,6 +164,7 @@ async function round(method, params, origin = ORIGIN) {
   await until(() => armed(), 600);
   const armedMs = Date.now() - painted;
   await flush();
+  await beforeClick();
   await until(() => !String(registry.get("reveal-preview")?.innerHTML ?? "x").includes("Loading"), 100);
   const html = req();
   const preview = strip(registry.get("reveal-preview")?.innerHTML ?? "");
@@ -170,12 +172,13 @@ async function round(method, params, origin = ORIGIN) {
   const face = Object.fromEntries(FACE.map((id) => [id, String(registry.get(id)?.innerHTML ?? "")]));
   const calls = sent.slice(s0).map(([m]) => m).filter((m) => !POLLS.has(m));
   const reads = sent.slice(s0).filter(([m]) => TARGET_READS.includes(m)).map(([m, a]) => [m, String(a[0]).toLowerCase()]);
+  const labels = [registry.get("btn-approve").textContent, registry.get("btn-reject").textContent];
   const clicked = Date.now(), f1 = fetchLog.length;
   if (armed()) await registry.get("btn-approve")._listeners.click();
   else await registry.get("btn-reject")._listeners.click();
   await until(() => page.reply !== undefined);
   const fetches = { paint: fetchLog.slice(f0, f1), click: fetchLog.slice(f1) };
-  return { queued: true, page, d: shown(html), html, face, drop, reads, calls, preview, armedMs, fetches, replyMs: Date.now() - clicked, tx: submits.length > n ? signed(submits.at(-1)) : null };
+  return { queued: true, page, d: shown(html), html, face, drop, reads, calls, preview, armedMs, labels, fetches, replyMs: Date.now() - clicked, tx: submits.length > n ? signed(submits.at(-1)) : null };
 }
 const sameOutputs = (d, s) => d.length === s.length && d.every((o, i) => o.to.toLowerCase() === s[i].to && o.amount === s[i].amount);
 // The invariant for a signed request; `kind` is what the title must call it, `wantReads` the target reads it must make.
@@ -232,7 +235,11 @@ for (const [label, params] of [["5. a seal, domain and fee omitted", { claim: "f
   const list = (await popup("sealedClaims")).result, kept = list[0];   // newest first
   check(`${label}: the claim shown is the claim kept for the reveal (${kept?.claim})`, list.length === before + 1 && r.d.text.includes(String(kept?.claim)) && kept?.claim === params.claim);
 }
-refusedShown("5. a seal whose domain is not a string", await round("sealClaim", { claim: "x", domain: 5 }));
+{
+  // refused before it is queued by the function the signer refuses it with (test/propose-prequeue.test.mjs)
+  const r = await round("sealClaim", { claim: "x", domain: 5 });
+  check(`5. a seal whose domain is not a string: refused before the window, nothing signed (${r.page.reply?.code}: ${r.page.reply?.error})`, r.queued === false && r.page.reply?.code === "BAD_REQUEST" && r.page.reply.error === "sealClaim: domain must be a string");
+}
 // 6. revealClaim: no transaction; the txid shown is the txid posted
 {
   const sealTx = (await popup("sealedClaims")).result[0].txid;
@@ -487,7 +494,207 @@ nameAnswer = async () => ({ ok: false, status: 503, json: async () => ({}) });
   const fl = await round("fillOffer", { proposalId: fw.fc.id, outputs: fw.outputs });
   agree("13. a CSD-paid fill", fl, /^Fill offer/, ["fillOfferView"]);
   check(`13. a CSD-paid fill: Approve arms at the 700 ms floor (${fl.armedMs} ms)`, fl.armedMs >= 650 && fl.armedMs < 1500);
-  check(`13. a name transfer makes the fetches it made before (${JSON.stringify(counts["name transfer"])})`, JSON.stringify(counts["name transfer"]) === "[[3,3],[3,3]]");
+  // A name transfer reads the name record after the paint since section 14's check (one read, the one a profile write
+  // already made); after the click both make the three fetches they made on 649fcb4.
+  check(`13. a name transfer: one name read more before the click, the same fetches after it (${JSON.stringify(counts["name transfer"])})`, JSON.stringify(counts["name transfer"]) === "[[4,3],[4,3]]");
   check(`13. a profile write makes the fetches it made before (${JSON.stringify(counts["profile write setting contenthash and csd.rpc"])})`, JSON.stringify(counts["profile write setting contenthash and csd.rpc"]) === "[[4,3],[4,3]]");
+}
+
+// 14. A name transfer or a profile write for a name the served record does not give to this account, as a finalized
+// live name (and, for a transfer, one no open offer locks), paints a caution saying so and that the fee is spent if the
+// network gives the record no effect, and Approve reads "Sign anyway" (the acknowledgement the window's confirm step
+// uses). It never refuses and never waits: the served record can be a block behind, and two records in one block apply
+// in position order. The honest record paints none; a read held open is no verdict, so Approve arms at its 700 ms floor
+// and the click signs without waiting; a verdict that lands after the arm leaves Approve live. The read goes to the
+// configured name service, once per request, and the card is the same from a third-party site and the first-party one.
+//   RED-FIRST: on 3350dff every caution and label check here fails and the honest, held and signing checks pass; make
+//   the check set nfinGate (the click awaits the read) and the held-open click check fails; make applyNfin disable
+//   Approve on the caution and the late-verdict and signing checks fail.
+{
+  const OTHER = "0x" + "c4".repeat(20);
+  const tradeApi = String((await popup("status")).result.tradeApi);
+  const answer = (extra) => async () => ({ ok: true, status: 200, json: async () => ({ name: "alice", owner: me, locked: false, tipHeight: 116_520, ...extra }) });
+  const TAIL = (what) => `If that still holds when this ${what} is mined, it has no effect and the fee is spent. The service can be a block behind, so the wallet does not refuse it.`;
+  const STATES = [
+    ["another owner", answer({ owner: OTHER }), "The name service shows this name owned by another address."],
+    ["a pending reservation", answer({ pending: true }), "The name service shows this name as not yet finalized."],
+    ["a lapsed name", answer({ expired: true }), "The name service shows this name as lapsed."],
+    ["a name locked by an open offer", answer({ locked: true }), "The name service shows this name locked by an open offer."],
+    ["no record", async () => ({ ok: false, status: 404, json: async () => ({ ok: false }) }), "The name service has no record of this name."],
+  ];
+  const KINDS = [
+    ["transfer", { domain: CAIRNX_DOMAIN, ...(({ uri, payloadHash }) => ({ uri, payloadHash }))(nameXfer({ name: "alice", to: TO })) }],
+    ["profile write", { domain: CAIRNX_DOMAIN, ...(({ uri, payloadHash }) => ({ uri, payloadHash }))(nameProfile({ name: "alice", p: { avatar: "https://b.example/y.png" } })) }],
+  ];
+  const painted = (r) => JSON.stringify({ req: r.html, ...r.face, labels: r.labels, "ap-origin": undefined, "ap-tile": undefined });
+  const noteOf = (html) => strip(String(html).match(/<div class="req" id="nfin-note">([\s\S]*?)<\/div><\/div><\/div>/)?.[1] ?? "");
+  const signs = (r, params) => r.armedMs >= 650 && r.armedMs < 1500 && signedAsRequested(r, params);
+  for (const [what, p] of KINDS) {
+    const params = { ...p, expiresEpoch: 9_000 };
+    for (const [state, ans, lead] of STATES) {
+      nameAnswer = ans;
+      // a profile write on a locked name is applied (applyNprofile has no lock check), so it is that kind's honest case
+      const quiet = what === "profile write" && state.includes("locked");
+      const cards = [];
+      for (const origin of [ORIGIN, FIRST_PARTY]) {
+        const r0 = nameReads.length;
+        const r = await round("propose", params, origin);
+        const note = noteOf(r.html);
+        if (quiet) check(`14. ${what}, ${state}, from ${origin}: no caution, Approve and Reject (${note || "none"}; ${r.labels})`, note === "" && r.labels.join() === "Approve,Reject");
+        else check(`14. ${what}, ${state}, from ${origin}: the caution says so and that the fee is spent (${note.slice(0, 70)}), and Approve reads "Sign anyway" (${r.labels})`, note === `${lead} ${TAIL(what)}` && r.html.includes('<div class="check caution">') && r.labels.join() === "Sign anyway,Cancel");
+        check(`14. ${what}, ${state}, from ${origin}: Approve arms at the 700 ms floor (${r.armedMs} ms) and the click signs the request's uri and hash`, signs(r, params));
+        check(`14. ${what}, ${state}, from ${origin}: one name read, from the configured name service (${nameReads.slice(r0).join(", ")})`, nameReads.length === r0 + 1 && nameReads[r0] === `${tradeApi}/cairnx/name/alice`);
+        cards.push(painted(r));
+      }
+      check(`14. ${what}, ${state}: ${FIRST_PARTY} paints the same window as ${ORIGIN} but for the origin line`, cards[0] === cards[1]);
+    }
+    // the honest record: this account's finalized, live, unlocked name
+    nameAnswer = answer({});
+    const honest = await round("propose", params);
+    check(`14. ${what}, the honest record: no caution, Approve and Reject (${noteOf(honest.html) || "none"}; ${honest.labels})`, noteOf(honest.html) === "" && honest.labels.join() === "Approve,Reject" && signs(honest, params));
+    // held open: no verdict, nothing waits
+    nameAnswer = () => new Promise(() => { /* the name service never answers */ });
+    const held = await round("propose", params);
+    check(`14. ${what}, read held open: no caution, Approve arms at the floor (${held.armedMs} ms), and the click signs without waiting (${held.replyMs} ms)`,
+      noteOf(held.html) === "" && held.labels.join() === "Approve,Reject" && signs(held, params) && held.replyMs < 1500);
+    // another owner, answered after the arm: the caution lands, Approve stays live, and the click signs
+    let release = () => undefined;
+    nameAnswer = () => new Promise((res) => { release = () => res({ ok: true, status: 200, json: async () => ({ name: "alice", owner: OTHER, locked: false }) }); });
+    let late = null;
+    const r = await round("propose", params, ORIGIN, async () => {
+      const before = armed();
+      release(); await flush();
+      late = { before, after: armed(), note: noteOf(req()), label: registry.get("btn-approve").textContent };
+    });
+    check(`14. ${what}, another owner answered after the arm: Approve live before (${late?.before}) and after (${late?.after}) the caution, which says so (${late?.note.slice(0, 50)}), labelled "${late?.label}"`,
+      late?.before === true && late.after === true && late.note.startsWith(STATES[0][2]) && late.label === "Sign anyway");
+    check(`14. ${what}, another owner answered after the arm: the click signs (${JSON.stringify(r.tx?.app)})`, signedAsRequested(r, params));
+  }
+  // The renewal of another owner's live lease (namegate.ts nameActApproveGate, the `ackable` caution this check reuses)
+  // takes the same labels; its click still waits for its gate's read, as before.
+  nameAnswer = answer({ owner: OTHER });
+  const rn = nameRenew({ name: "alice" });
+  const rp = { domain: CAIRNX_DOMAIN, uri: rn.uri, payloadHash: rn.payloadHash, expiresEpoch: 9_000 };
+  const renew = await round("propose", rp);
+  check(`14. the renewal of another owner's live lease: its caution and "Sign anyway" (${noteOf(renew.html).slice(0, 50)}; ${renew.labels}), signed on the click`,
+    noteOf(renew.html).startsWith("This name is owned by a different address: approving pays that owner") && renew.labels.join() === "Sign anyway,Cancel" && signedAsRequested(renew, rp));
+}
+// 15. A name verdict belongs to the pair (request, signing address). With a request painted, the active account changes
+// and the wallet is locked and unlocked: the window repaints the same request for the new signer, and the name check
+// is recomputed for it from the record already read (no second read), never kept from the other account. A transfer:
+// as the name's owner A no caution, as B the caution and "Sign anyway", and the reverse. The set-address and finalize
+// gates, which hold Approve back on a certain no-op: as A Approve is live, as B it is held with the refusal, and the
+// reverse. A switch with no lock repaints nothing: the window still shows A and its click is refused ACCOUNT_CHANGED
+// with nothing signed (the existing M5 guard).
+//   RED-FIRST: on the code before this section every "as B" and "back to A" verdict check fails (the verdict computed
+//   for the first signer is re-attached); key the gate by request alone (armNfinalizeGate) and they fail again.
+{
+  const A = me;
+  const PW = "pw-parity-1234";
+  const B = String((await popup("addAccount", "B")).result.addr).toLowerCase();
+  await popup("switchAccount", A);
+  const ownedBy = (owner, extra = {}) => async () => ({ ok: true, status: 200, json: async () => ({ name: "alice", owner, locked: false, ...extra }) });
+  const signerShown = () => String(registry.get("ap-signer").innerHTML).replace(/<[^>]+>/g, "").toLowerCase();
+  const settled = async () => { await until(() => armed() || registry.get("btn-reject").disabled === false, 600); await flush(); await sleep(50); await flush(); };
+  const face = () => ({ signer: signerShown(), note: strip(String(req()).match(/<div class="req" id="nfin-note">([\s\S]*?)<\/div><\/div><\/div>/)?.[1] ?? ""),
+    labels: [registry.get("btn-approve").textContent, registry.get("btn-reject").textContent].join(), live: armed() });
+  async function paintAs(signer, params) {
+    await popup("switchAccount", signer);
+    const page = dapp("propose", params); await flush();
+    await pollTick(); await settled();
+    return page;
+  }
+  // the active account becomes `to`, then lock and unlock: the window shows the locked view, then repaints the request
+  async function relockAs(to) {
+    await popup("switchAccount", to);
+    await popup("lock"); await pollTick(); await flush();
+    await popup("unlock", PW); await pollTick(); await settled();
+  }
+  async function finish(page) {
+    await registry.get("btn-reject")._listeners.click();
+    await until(() => page.reply !== undefined);
+  }
+  const shows = (f, who) => f.signer.includes(who.slice(2, 6)) && f.signer.includes(who.slice(-4));
+  const nx = nameXfer({ name: "alice", to: TO });
+  const xfer = { domain: CAIRNX_DOMAIN, uri: nx.uri, payloadHash: nx.payloadHash, expiresEpoch: 9_000 };
+  const ns = nameSet({ name: "alice", addr: TO2 });
+  const nset = { domain: CAIRNX_DOMAIN, uri: ns.uri, payloadHash: ns.payloadHash, expiresEpoch: 9_000 };
+  const OTHER_LEAD = "The name service shows this name owned by another address.";
+  const NSET_BLOCK = "Refusing to sign: this name is owned by a different address";
+
+  // a transfer, A then B
+  nameAnswer = ownedBy(A);
+  let r0 = nameReads.length;
+  let page = await paintAs(A, xfer);
+  let f = face();
+  check(`15. transfer as A, the owner: no caution, Approve and Reject (${f.note || "none"}; ${f.labels})`, shows(f, A) && f.note === "" && f.labels === "Approve,Reject" && f.live);
+  await relockAs(B);
+  f = face();
+  check(`15. transfer, then the signer is B: the caution for another owner and "Sign anyway" (${f.note.slice(0, 60)}; ${f.labels})`, shows(f, B) && f.note.startsWith(OTHER_LEAD) && f.labels === "Sign anyway,Cancel" && f.live);
+  check(`15. transfer: the verdict for B is computed from the record already read (${nameReads.length - r0} reads)`, nameReads.length === r0 + 1);
+  await finish(page);
+  // a transfer, B then A
+  page = await paintAs(B, xfer);
+  f = face();
+  check(`15. transfer as B: the caution and "Sign anyway" (${f.labels})`, shows(f, B) && f.note.startsWith(OTHER_LEAD) && f.labels === "Sign anyway,Cancel");
+  await relockAs(A);
+  f = face();
+  check(`15. transfer, then the signer is A: the caution is gone, Approve and Reject (${f.note || "none"}; ${f.labels})`, shows(f, A) && f.note === "" && f.labels === "Approve,Reject" && f.live);
+  await finish(page);
+
+  // the set-address gate, A then B and back
+  page = await paintAs(A, nset);
+  f = face();
+  check(`15. set-address as A, the owner: no note, Approve live (${f.note || "none"}; ${f.live})`, shows(f, A) && f.note === "" && f.live);
+  await relockAs(B);
+  f = face();
+  check(`15. set-address, then the signer is B: Approve held with the refusal (${f.note.slice(0, 60)}; live ${f.live})`, shows(f, B) && f.note.startsWith(NSET_BLOCK) && !f.live);
+  await relockAs(A);
+  f = face();
+  check(`15. set-address, then A again: the refusal is gone and Approve is live (${f.note || "none"}; ${f.live})`, shows(f, A) && f.note === "" && f.live);
+  await finish(page);
+
+  // the finalize gate: a reservation A holds, inside its window at the tip the window reads
+  const tip = Number((await popup("tip")).result);
+  const eff = Array.from({ length: 400 }, (_, i) => tip - i).find((h) => nfinalizeApproveGate({ record: { owner: A, pending: true, effectiveHeight: h } }, A, tip).note === null);
+  check(`15. setup: a reservation height A can finalize at tip ${tip} (${eff})`, eff !== undefined);
+  nameAnswer = ownedBy(A, { pending: true, effectiveHeight: eff });
+  const nf = nameFinalize({ name: "alice", salt: "5a".repeat(16) });
+  const fin = { domain: CAIRNX_DOMAIN, uri: nf.uri, payloadHash: nf.payloadHash, expiresEpoch: 9_000 };
+  page = await paintAs(A, fin);
+  f = face();
+  check(`15. finalize as A, the reservation's holder: no refusal, Approve live (${f.note || "none"}; ${f.live})`, shows(f, A) && !/Refusing to sign/.test(f.note) && f.live);
+  await relockAs(B);
+  f = face();
+  check(`15. finalize, then the signer is B: Approve held with the refusal (${f.note.slice(0, 70)}; live ${f.live})`, shows(f, B) && /^Refusing to sign/.test(f.note) && !f.live);
+  await relockAs(A);
+  f = face();
+  check(`15. finalize, then A again: the refusal is gone and Approve is live (${f.note || "none"}; ${f.live})`, shows(f, A) && !/Refusing to sign/.test(f.note) && f.live);
+  await finish(page);
+
+  // the read still open when the signer changes: both paints' verdicts wait on the one read, and B's lands last
+  for (const [what, params, ok] of [["transfer", xfer, (g) => g.note.startsWith(OTHER_LEAD) && g.labels === "Sign anyway,Cancel"], ["set-address", nset, (g) => g.note.startsWith(NSET_BLOCK) && !g.live]]) {
+    let release = () => undefined;
+    nameAnswer = () => new Promise((res) => { release = () => res({ ok: true, status: 200, json: async () => ({ name: "alice", owner: A, locked: false }) }); });
+    page = await paintAs(A, params);
+    await relockAs(B);
+    const before = face();
+    release(); await flush(); await sleep(20); await flush();
+    f = face();
+    check(`15. ${what}, the read answered only after the signer became B: B's verdict stands (${f.note.slice(0, 50) || "none"}; ${f.labels}; live ${f.live}; before ${before.note || "none"})`, shows(f, B) && before.note === "" && ok(f));
+    await finish(page);
+  }
+
+  // a switch with no lock repaints nothing, and the click is refused ACCOUNT_CHANGED
+  nameAnswer = ownedBy(A);
+  page = await paintAs(A, xfer);
+  const n0 = submits.length;
+  await popup("switchAccount", B); await pollTick(); await settled();
+  f = face();
+  check(`15. a switch to B with no lock: the window still shows A, with A's verdict (${f.note || "none"}; ${f.labels})`, shows(f, A) && f.note === "" && f.labels === "Approve,Reject");
+  await registry.get("btn-approve")._listeners.click();
+  await until(() => page.reply !== undefined);
+  check(`15. ...and its click is refused ACCOUNT_CHANGED, nothing signed (${page.reply?.code})`, page.reply?.ok === false && page.reply.code === "ACCOUNT_CHANGED" && submits.length === n0);
+  await popup("switchAccount", A);
 }
 done("sign-display-parity");

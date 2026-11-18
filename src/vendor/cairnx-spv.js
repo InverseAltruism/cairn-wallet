@@ -477,6 +477,7 @@ var MAX_HALVINGS = 64;
 var MIN_FEE_PROPOSE = 25e6;
 var MIN_FEE_ATTEST = 5e6;
 var MAX_TX_INPUTS = 512;
+var MAX_DOMAIN_BYTES = 128;
 var MAX_URI_BYTES = 512;
 var MAX_U128 = (1n << 128n) - 1n;
 function blockReward(height) {
@@ -5507,12 +5508,14 @@ export {
   LightClient,
   MAX_ACTIVE_CLAIMS,
   MAX_AMOUNT,
+  MAX_DOMAIN_BYTES,
   MAX_OFFER_EPOCHS,
   MAX_PENDING_REG,
   MAX_RECORD_BYTES,
   MAX_SCAN,
   MAX_TOKEN_DECIMALS,
   MAX_TX_INPUTS,
+  MAX_URI_BYTES,
   MINT_KEYS,
   MIN_FEE_ATTEST,
   MIN_FEE_PROPOSE,
@@ -5603,6 +5606,7 @@ export {
   isNameGive,
   isOpenClaimLane,
   isTokenWant,
+  isWellFormedUtf16,
   makerRebate,
   merkleRoot,
   mint,
