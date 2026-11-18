@@ -29,6 +29,7 @@ import { SealedClaims, sealKey } from "./claims.js";
 import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
 import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, attestTargetView, type CairnxViewIo } from "./cairnxview.js";
 import { csdMarket } from "./market.js";
+import { opaqueOrigin } from "./origin.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
@@ -939,7 +940,9 @@ export class Wallet {
   }
 
   // ── sealed claims (commit-reveal); isolated per active account ─────────────
-  async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
+  // `origin` is the site that asked (background.ts: the page's origin, or the wallet's own for a popup seal); the record
+  // keeps it for the reveal card. Records sealed before this have none, nor does a seal asked by an opaque origin.
+  async sealClaim(p: { domain?: string; claim: string; fee?: number }, origin?: string) {
     // CSDTX-SIWC-01: a non-string claim would be hashed as-is into the on-chain commitment but
     // String()-normalized on reveal, so the paid commit could never be revealed. dApp-reachable,
     // so the .d.ts type cannot be trusted at runtime. Refuse BEFORE any fee is spent.
@@ -965,13 +968,14 @@ export class Wallet {
       // anchor may not have landed instead of listing it like a confirmed commit.
       // L5: the {claim, nonce} preimage is stored ENCRYPTED at rest (`enc`, fresh IV), so a parked
       // record is a pure store write needing no key.
-      const rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) };
+      const rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(origin && !opaqueOrigin(origin) ? { origin } : {}), ...(r.ok ? {} : { maybe: true }) };
       await this.claims.persistSeal({ k: sk, rec });
     }
     await this.hist.maybeRecord(hk, r, { type: "seal", domain, fee });
     return r;
   }
   revealClaim(txid: string) { return this.claims.revealClaim(txid); }
+  holdsSeal(txid: string): Promise<boolean> { return this.claims.holds(txid); }
   sealedClaims(): Promise<any[]> { return this.claims.sealedClaims(); }
   /** The removal warning's count: unrevealed sealed claims of the account `addr` (popup-only). */
   unrevealedSeals(addr: string): Promise<number> { return this.claims.unrevealedCount(String(addr)); }

@@ -59,9 +59,11 @@ function profileDropCandidates(): string[] {
   const read = Object.fromEntries([["contenthash", "v"], ["csd.rpc", "v"], ["csd.p2p", "v"], ...wide(PROFILE_MAX_KEYS - 3)]);
   return [profileDropValue({ failed: true }, {}), profileDropValue({ record: { profile: keys } }, {}), profileDropValue({ record: { profile: read } }, {})];
 }
-function revealCandidates(): string[] {
-  return [revealPreviewHtml({ failed: true }), revealPreviewHtml(null), revealPreviewHtml({ domain: "w".repeat(128), claim: "W".repeat(400) }),
-    revealPreviewHtml({ domain: "w".repeat(128) })];
+// The sealing site at its longest (a 253-character host) beside the site asking, which gets the other-site caution.
+const SEALER = "https://" + "w".repeat(253);
+function revealCandidates(asker: unknown): string[] {
+  return [revealPreviewHtml({ failed: true }), revealPreviewHtml(null), revealPreviewHtml({ domain: "w".repeat(128), claim: "W".repeat(400), origin: SEALER }, asker),
+    revealPreviewHtml({ domain: "w".repeat(128), origin: SEALER }, asker)];
 }
 // Every verdict note the name action's gate can paint, from its own functions over each kind of answer.
 function nameNoteCandidates(t: "nfinalize" | "nrenew" | "nset" | "nxfer" | "nprofile", me: string): string[] {
@@ -91,7 +93,7 @@ export function reservesFor(r: any, me: string): Reserve[] {
   }
   if (document.getElementById("fill-view")) out.push({ id: "fill-view", candidates: fillViewCandidates(String(fillOf(r?.method, r?.params)?.proposalId || "")) });
   if (document.getElementById("token-sim")) out.push({ id: "token-sim", candidates: tokenQuoteCandidates() });
-  if (document.getElementById("reveal-preview")) out.push({ id: "reveal-preview", candidates: revealCandidates() });
+  if (document.getElementById("reveal-preview")) out.push({ id: "reveal-preview", candidates: revealCandidates(r?.origin) });
   if (document.getElementById("profile-drop")) out.push({ id: "profile-drop", candidates: profileDropCandidates() });
   return out;
 }

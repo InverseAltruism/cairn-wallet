@@ -56,6 +56,16 @@ events and alarm-driven auto-lock.
   `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there.
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the
   result.
+- `approvedOrigins` (storage key): `{ [origin]: ms }`, the origins the user has approved a request from and when they last
+  did, at most `APPROVED_CAP` = 500, the newest by that time (the oldest is dropped and reads as new again). `resolvePending`
+  writes it through `inConsentChain`, the consent map's queue, once the page has its answer and without awaiting it
+  (`recordApproved`; a failed write is logged). `pending` marks a request `first` when its origin is in neither this
+  list nor `connectedOrigins`, read through the same chain (`newOrigins`). Opaque origins (`src/core/origin.ts`
+  `opaqueOrigin`) are never written. `reset` clears it with `connectedOrigins` (test/approve-first-request.test.mjs).
+- A `revealClaim` for a seal the active account does not hold (`claims.ts` `holds`) from a site connected to that
+  account is answered `SEAL_UNKNOWN` before it is queued; from any other site it is queued, and `revealClaim` answers
+  it `SEAL_UNKNOWN` after approval. A seal records the asking origin on its record (`origin`; the extension's own for a
+  popup seal), which `clearsign.ts` `revealPreviewHtml` shows.
 
 ## Provider (`src/content.ts`, `src/inpage.ts`)
 
@@ -263,7 +273,8 @@ dir: both files must be byte-identical to the committed ones.
   `blockAt`): the front door marks a finalized one immutable for the edge and charges it no per-height budget, while
   `/block/height/<h>` is never cached. The merkle bind checks the body either way (test/block-by-hash.test.mjs).
 - Storage: `unlimitedStorage` because the namespv header store (IndexedDB, 84 bytes per header, about 60 KB per
-  chain-day) grows with the chain; `chrome.storage.local` holds the vault, history and settings.
+  chain-day) grows with the chain; `chrome.storage.local` holds the vault, history and settings, the connected sites
+  and the 500 origins the user approved a request from last (`approvedOrigins`).
 - Consensus caps: `MAX_TX_INPUTS` = 512, `MAX_TX_BYTES` = 100 KB; an all-coinbase holder tops out around 25,600 CSD
   per tx. `consolidate()` is the wallet-side answer. A proposal's domain and uri: `MAX_DOMAIN_BYTES` = 128 and
   `MAX_URI_BYTES` = 512 UTF-8 bytes, vendored from csd-codec.

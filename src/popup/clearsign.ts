@@ -6,6 +6,7 @@ import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields, sealFields, sendFields } from "../core/signfields.js";
 import { siwcFieldsFor, ANY_ACCOUNT } from "../core/siwcparams.js";
+import { opaqueOrigin } from "../core/origin.js";
 // the v2.5 registration-window constants are vendored but not re-exported by core/cairnx.ts; take
 // them straight from the bundle (same reviewed bytes the resolver replays; typed in cairnx-spv.d.ts)
 
@@ -142,16 +143,29 @@ function unverifiedMark(ticker: unknown, pinned: boolean, deployId: unknown): st
   return pinned || tickerWarning(ticker, deployId) ? "" : ` <span class="dim">(unverified token)</span>`;
 }
 
+// The site that asked for the seal, as the record keeps it (`origin`: absent on records sealed before it was kept; an
+// opaque one reads as not recorded), and a caution when the site asking for the reveal is another one: `asker` is that
+// site's origin, `self` this wallet's own pages' origin, which a seal made in the popup records. Display only; nothing
+// is refused. The caution names both sites and says what approving does, so the row and the lede are left out beside it
+// (an origin can be long).
+function sealedBy(origin: unknown, asker: unknown, self: unknown): { rows: Row[]; caution: string } {
+  if (typeof origin !== "string" || opaqueOrigin(origin)) return { rows: [["Sealed by", `<span class="dim">not recorded</span>`]], caution: "" };
+  const own = !!self && origin === self;
+  const other = typeof asker === "string" && asker !== "" && (asker !== origin || opaqueOrigin(asker));
+  if (!other) return { rows: [["Sealed by", own ? "this wallet" : `<code>${escapeHtml(origin)}</code>`]], caution: "" };
+  return { rows: [], caution: caution(`This claim was sealed ${own ? "in this wallet, not by a site," : `by <code>${escapeHtml(origin)}</code>,`} and <code>${escapeHtml(asker)}</code> is asking to reveal it. Approving makes the claim <b>public</b>.`) };
+}
 // M14 (B5h): a revealClaim PUBLISHES the decrypted preimage of an earlier sealed commit; the user must
 // see WHICH secret goes public, not 18 characters of txid. The record comes from the wallet's own
 // sealedClaims store (already in READ_ONLY_METHODS; a local, vault-decrypted read - no network). Pure
 // over the looked-up record so it is unit-testable; approve.ts wires the live lookup (fillRevealPreview).
-export function revealPreviewHtml(rec: { domain?: unknown; claim?: unknown; failed?: boolean } | null | undefined): string {
+export function revealPreviewHtml(rec: { domain?: unknown; claim?: unknown; origin?: unknown; failed?: boolean } | null | undefined, asker?: unknown, self?: unknown): string {
   if (rec && rec.failed === true) return danger(`Could not load the sealed claim for preview. Approving still <b>publishes</b> whatever this txid seals. Only approve if you know which claim it is.`);
   if (!rec) return danger(`The active account holds <b>no</b> sealed claim with this txid. There is nothing to reveal here, and approving will fail without publishing anything. If you expected a reveal, check you are on the account that sealed it.`);
   const domain: Row = ["Domain", `<code>${escapeHtml(String(rec.domain ?? "csd:sealed"))}</code>`];
-  if (typeof rec.claim !== "string") return rows([domain]) + danger(`The sealed text could not be decrypted for preview. Approving still <b>publishes</b> it. Only approve if you know which claim this txid seals.`);
-  return lede("Approving makes this <b>public</b>:") + rows([domain, ["Claim", `<code>${truncLoud(rec.claim, 300)}</code>`]]);
+  const by = sealedBy(rec.origin, asker, self);
+  if (typeof rec.claim !== "string") return by.caution + rows([domain, ...by.rows]) + danger(`The sealed text could not be decrypted for preview. Approving still <b>publishes</b> it. Only approve if you know which claim this txid seals.`);
+  return (by.caution || lede("Approving makes this <b>public</b>:")) + rows([domain, ["Claim", `<code>${truncLoud(rec.claim, 300)}</code>`], ...by.rows]);
 }
 
 // The value outputs as rows, every one: each recipient whole, in groups of four, with its amount. Nothing is summarised

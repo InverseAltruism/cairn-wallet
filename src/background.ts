@@ -10,6 +10,8 @@ import { fillTargetOf } from "./core/fillpreflight.js";
 import { siwcParamsRefusal } from "./core/siwcparams.js";
 import { sendFields, revealFields, proposeFields, sealFields } from "./core/signfields.js";
 import { proposeRefusal, proposeFeeRefusal } from "./core/node.js";
+import { opaqueOrigin } from "./core/origin.js";
+import { SEAL_UNKNOWN_TEXT } from "./core/claims.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -56,7 +58,7 @@ function recordConsent(origin: string, addr: string): Promise<void> {
   // opaque-origin page; a silent cross-site disclosure. Reject it alongside "unknown"; the fast-path + get-
   // Permissions then fall through to a fresh prompt for every opaque page (an opaque origin has no identity to
   // remember). Deliberately NOT a per-frame ephemeral bucket; more machinery for no legitimate use.
-  if (!origin || origin === "unknown" || origin === "null") return Promise.resolve();
+  if (opaqueOrigin(origin)) return Promise.resolve();
   return inConsentChain(async () => {
     const c = await getConsents();
     c[origin] = { addr, ts: Date.now() };
@@ -77,6 +79,33 @@ async function listConsents(): Promise<{ origin: string; addr: string; ts: numbe
   return Object.entries(c).map(([origin, v]) => ({ origin, addr: v.addr, ts: v.ts })).sort((a, b) => b.ts - a.ts);
 }
 
+// The origins the user has approved a request from: origin -> ms of the last approval, kept on this device only so the
+// window can say when a site the user has approved nothing from asks. An origin in the consent map counts too, read at
+// each listing (one rule, no copy to drift), so a site connected before this list existed is not new. The newest
+// APPROVED_CAP by that time stay; an origin dropped past the cap reads as new again. Written through the consent chain once
+// the page has its answer, and cleared by reset with the consent map.
+const APPROVED_KEY = "approvedOrigins";
+const APPROVED_CAP = 500;
+type ApprovedMap = Record<string, number>;
+async function getApproved(): Promise<ApprovedMap> { return (await consentStore.get(APPROVED_KEY)) || {}; }
+const capApproved = (approved: ApprovedMap): ApprovedMap => Object.fromEntries(Object.entries(approved).sort((a, b) => b[1] - a[1]).slice(0, APPROVED_CAP));
+// Not awaited by the approval: a write that fails leaves the origin new, so the line shows again, and nothing else.
+function recordApproved(origin: string): void {
+  if (opaqueOrigin(origin)) return;
+  inConsentChain(async () => {
+    const approved = await getApproved();
+    approved[origin] = Date.now();
+    await consentStore.set(APPROVED_KEY, capApproved(approved));
+  }).catch((e) => console.warn("[background] the approved site was not recorded:", e));
+}
+// Whether an origin is new to this wallet, read through the consent chain so a listing after an approval sees its write.
+async function newOrigins(): Promise<(origin: string) => boolean> {
+  const [approved, consents] = await inConsentChain(() => Promise.all([getApproved(), getConsents()]));
+  return (o) => !opaqueOrigin(o) && !Object.hasOwn(approved, o) && !Object.hasOwn(consents, o);
+}
+// This wallet's own pages' origin: what a seal made in the popup records as the site that asked.
+const ownOrigin = (): string => String(chrome.runtime.getURL("")).replace(/\/$/, "");
+
 // --- Provider events (doc 28 Phase 2): push accountsChanged/disconnect to connected dApp pages. ---
 // The CONTENT SCRIPT opens a long-lived port (it initiates, so no extra permission is needed); we track
 // ports by their browser-set, UNFORGEABLE sender origin. We push events ONLY to the relevant origins.
@@ -89,7 +118,7 @@ chrome.runtime?.onConnect?.addListener((port: any) => {
   // L2: never register an event port for an opaque ("null") or unknown origin; it has no stable identity, so
   // bucketing them together would let one opaque page receive another opaque page's lock/account-switch events
   // (cross-frame timing). A page with a real origin re-establishes its port on the next connect().
-  if (origin === "null" || origin === "unknown") return;
+  if (opaqueOrigin(origin)) return;
   eventRegistry.add(origin, port);
   port.onDisconnect?.addListener(() => eventRegistry.remove(origin, port));
 });
@@ -156,14 +185,14 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "explorerList": return wallet.explorerList();
     case "addExplorer": return wallet.addExplorer(args[0]);
     case "removeExplorer": return wallet.removeExplorer(args[0]);
-    case "reset": { await inConsentChain(() => consentStore.set(CONSENT_KEY, {})); return wallet.reset(); }
+    case "reset": { await inConsentChain(async () => { await consentStore.set(CONSENT_KEY, {}); await consentStore.del(APPROVED_KEY); }); return wallet.reset(); }
     case "connectedSites": return listConsents();
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
-    case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
+    case "pending": { const isNew = await newOrigins(); return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params, first: isNew(p.origin) })); }
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1], args[2], args[3], args[4]); // (id, approve, displayedSigner?, displayedTokenQuote?, reservationAck?)
     case "history": return wallet.history();
-    case "sealClaim": return wallet.sealClaim(args[0]);
+    case "sealClaim": return wallet.sealClaim(args[0], ownOrigin());
     case "revealClaim": return wallet.revealClaim(args[0]);
     case "sealedClaims": return wallet.sealedClaims();
     case "unrevealedSeals": return wallet.unrevealedSeals(args[0]); // the account removal warning's count (popup-only, READ_ONLY)
@@ -225,6 +254,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   // `secondSource` is read from the wallet's result before pageResult strips it, and goes to the window only.
   const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }, secondSource?: unknown): ResolveOutcome => {
     p.resolve(out);
+    if (approve) recordApproved(p.origin);   // after the page's answer; never awaited
     const actionOk = out.ok && (out.result?.ok !== false);
     const soft = out.result?.ok === false;
     const notice: Pick<ResolveOutcome, "secondSource"> = actionOk && (secondSource === "pending" || secondSource === "failed") ? { secondSource } : {};
@@ -267,7 +297,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "signinWithCsd") result = await wallet.signInWithCsd(p.params, p.origin);
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote }); // W4 (B5d): thread the reviewed signer so a token-fill-confidence attest gets the fill path's ACCOUNT_CHANGED cross-check; RT-W2: + the reviewed quote
-    else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
+    else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params, p.origin);
     else if (p.method === "revealClaim") result = await wallet.revealClaim(revealFields(p.params).txid);
     // Plain transfer. Reachable from a dApp ONLY through this approval path (the user
     // saw the recipient/amount/fee in the approve window). We read ONLY to/amount/fee
@@ -393,6 +423,17 @@ const fillHolds = new Map<string, string>(); // fill target -> id of the request
 const REFUSED_RAISE_GAP_MS = 5_000;
 let refusedRaiseAt = Number.NEGATIVE_INFINITY;
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
+// A reveal of a txid the active account holds no seal for can only fail. It is answered before the window only for a site
+// connected to that account, as the silent getAddress path decides it (unlocked, that account active). That site knows
+// the address; what it learns silently is whether this install keeps a record of that seal under it. For any other site
+// it is queued as before and learns nothing, since an answer with no window would let any page test which seal txids
+// this wallet holds and so learn its address; the approval answers it SEAL_UNKNOWN (claims.ts).
+async function unknownSealFromConnected(origin: string, params: unknown): Promise<boolean> {
+  const st = await wallet.status();
+  const consentAddr = (await getConsents())[origin]?.addr;
+  if (!st.unlocked || !st.addr || !consentAddr || consentAddr.toLowerCase() !== String(st.addr).toLowerCase()) return false;
+  return !(await wallet.holdsSeal(revealFields(params).txid));
+}
 // A seal signs a proposal of its own domain with the page's fee (wallet.sealClaim): its sealFields refusal, then the fee's.
 const sealRefusal = (params: unknown): string | undefined => { const sf = sealFields(params); return sf.refused ?? proposeFeeRefusal(sf.fee)?.error; };
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
@@ -531,6 +572,10 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
             sendResponse({ ok: true, result: { addr: st.addr } });
             return;
           }
+        }
+        if (msg.method === "revealClaim" && await unknownSealFromConnected(origin, msg.params)) {
+          sendResponse({ ok: false, code: "SEAL_UNKNOWN", error: SEAL_UNKNOWN_TEXT });
+          return;
         }
         const res = await queueDappRequest(origin, msg.method, msg.params);
         sendResponse(res); return;

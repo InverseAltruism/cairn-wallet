@@ -97,7 +97,12 @@ inputs or a change address.
   keeps it; the commit expires 720 epochs after the current one. Any other claim, domain or fee is answered
   `BAD_REQUEST` before any window opens.
 - `revealClaim`: the txid of a seal this account made in this wallet. No transaction; refused `SEAL_NOT_MINED`
-  until the commit is mined.
+  until the commit is mined. A txid the active account holds no seal for is `SEAL_UNKNOWN`: before any window for a
+  site connected to that account while the wallet is unlocked and that account is active, and after approval (nested)
+  for any other site, whose request opens the window as any reveal does. A connected site so learns silently whether
+  this install holds a record of a seal under the active account (it knows the address already); a site that is not
+  connected learns nothing without the user seeing the window. A connected site asking to reveal a seal held under
+  another account of this wallet gets `SEAL_UNKNOWN` too, with no window.
 - `signInWithCsd`: `nonce` (required, 8 or more ASCII letters and digits), `statement` (one line, at most 256
   characters), `uri` (default: the site's root; must be on the site), `domain` (must equal the site's),
   `expirationSecs` (default 600, held to 60 to 3,600), `notBeforeSecs` (positive), `requestId` (one line, at most 256
@@ -142,8 +147,14 @@ inputs or a change address.
   nothing else. An opaque origin (`"null"`) is not recorded. The user sees and removes connected sites in Settings.
 - The signing methods (`signInWithCsd`, `signIn`, `propose`, `attest`, `send`, `fillOffer`, `sealClaim`,
   `revealClaim`) open the approval window every time, whether or not the site is connected, and approving one records
-  no connection. The window does not say whether the site is connected. A signature still shows the site the signing
-  address: `signInWithCsd` returns it as `account`, and a transaction spends that account's coins on chain.
+  no connection; a request answered before the window (`BAD_REQUEST`, `FIRST_PARTY_ONLY`, `UNSUPPORTED_METHOD`,
+  `FILL_IN_PROGRESS`, `RATE_LIMITED`, and `SEAL_UNKNOWN` for a connected site) signs nothing. The window does not say
+  whether the site is connected. A signature still shows the site the signing address: `signInWithCsd` returns it as
+  `account`, and a transaction spends that account's coins on chain.
+- The wallet records each origin the user approves a request from, with when, so the window can say when a site the
+  user has approved nothing from asks (below); a connected site counts as approved. The list stays on the device,
+  keeps the 500 origins approved last (an older one reads as new again) and never holds an opaque origin. It grants
+  nothing, and removing the extension deletes it (as does the wallet's internal reset).
 - There is no permission per method or per site and no allowance. The only origin rule is the legacy `signIn()`.
   Any site may propose any `cairnx:v1` record (a token transfer, an offer, a name transfer, a profile write) and gets
   the same approval window the wallet's own site gets (`test/sign-display-parity.test.mjs` sections 8 and 9).
@@ -151,7 +162,11 @@ inputs or a change address.
 ## What the approval window shows
 
 The header shows the requesting origin in full, an initial tile drawn from it, what the request asks for and the
-account that signs. A request that moves funds shows the network fee, the total and the balance after; recipients are
+account that signs. When the user has approved no request from the origin with this wallet and has not connected it,
+the ask line reads "New site, which asks ..." (its tooltip: "You have not approved a request from this site with this
+wallet before."). A rejected request or a closed window leaves it; once one request is approved, the next request from
+the origin reads as before, so two requests queued from a new site both carry it until one is approved. A request
+from an opaque origin never carries it. The line changes no button and adds no wait. A request that moves funds shows the network fee, the total and the balance after; recipients are
 shown in full, and one the wallet has not paid before, or one that resembles an address it has seen, is flagged.
 
 - Connect: "Connect", with what approving grants.
@@ -166,7 +181,10 @@ shown in full, and one the wallet has not paid before, or one that resembles an 
 - Attest: "Support / review" with the target, score and confidence; "Cancel your offer" or "Cancel your bid" for score
   0 when the node reports the signer as the target's proposer; "Reserve an open offer" for score 50, confidence 0.
 - Seal and reveal: "Seal a claim" with the domain and claim; "Reveal a sealed claim" with the seal txid and the domain
-  and claim from the wallet's own records.
+  and claim from the wallet's own records. A seal keeps the origin that asked for it (the wallet's own for a seal made
+  in its popup; none for an opaque origin): the reveal shows it as "Sealed by", and when another site asks for the
+  reveal a caution names both sites instead. A seal made before the wallet kept the origin, or asked by an opaque
+  origin, reads "Sealed by: not recorded". Nothing is refused.
 - A `cairnx:v1` proposal that the vendored parser accepts is decoded. Each card also shows any outputs as funds leaving
   the wallet, the expiry, the payload hash and "Anchored as: a cairnx:v1 proposal". By record type:
   - `transfer`: "CairnX token transfer": token, amount, recipient (flagged as above), memo.
@@ -252,7 +270,8 @@ the defaults and the limits are not part of the contract; a change to a default 
   `MIN_FEE_ATTEST` (`src/vendor/cairnx-spv.js`).
 - Score 100, confidence 1,000,000: the vendored `SCORE_FILL` and `CONF_TOKEN_FILL`, used by `src/core/signfields.ts`.
 - 512 inputs: the vendored `MAX_TX_INPUTS`.
-- 5 per site, 32 in all: `src/background.ts` `MAX_PENDING_PER_ORIGIN`, `MAX_PENDING_GLOBAL`.
+- 5 per site, 32 in all: `src/background.ts` `MAX_PENDING_PER_ORIGIN`, `MAX_PENDING_GLOBAL`. The 500 origins the
+  wallet remembers approving: `APPROVED_CAP` there.
 - The 5 CSD fee mark: `src/popup/clearsign.ts` `FEE_WARN`. The 700 ms floor: `src/popup/approve.ts` `armButtons`.
 - The 15-minute auto-lock and the 720-epoch seal expiry: `src/core/wallet.ts` `AUTO_LOCK_MS`, `PROPOSE_EXPIRY_EPOCHS`.
 - The sign-in limits: `src/core/siwcparams.ts`.

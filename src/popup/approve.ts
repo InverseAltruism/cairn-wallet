@@ -29,6 +29,8 @@ const call = (method: string, ...args: any[]): Promise<any> => extensionCall(chr
 // (null when the signer signs it as a fill), a proposal's, a fill's.
 const attestOf = (r: any): { proposalId: unknown; score: number; confidence: number } | null => { const a = attestFields(r?.params); return a.route === "attest" ? a : null; };
 function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
+const NEW_SITE = "New site";
+const NEW_SITE_TITLE = "You have not approved a request from this site with this wallet before.";
 // What each request type asks for, under the requesting origin in the header.
 function asks(r: any): string {
   if (r.method === "connect" || r.method === "getAddress" || r.method === "requestPermissions") return "asks to connect to your wallet";
@@ -85,7 +87,12 @@ async function render() {
   // The requesting origin, in full however long (a look-alike keeps its tail), set from the browser's sender origin.
   $("ap-origin").textContent = String(current.origin);
   $("ap-tile").textContent = originInitial(current.origin);
-  $("ap-ask").textContent = asks(current);
+  // A site the user has approved nothing from (background.ts newOrigins) says so on the same line, which costs the
+  // request no height: the longest, the connect line, stays one line at the window's width
+  // (test/approve-first-request-chrome.test.mjs).
+  const isNew = current.first === true;
+  $("ap-ask").textContent = isNew ? `${NEW_SITE}, which ${asks(current)}` : asks(current);
+  $("ap-ask").title = isNew ? NEW_SITE_TITLE : "";
   void refreshNfinalize(current.id);   // runs while locked too, so the unlock repaint shows a current verdict
   const reqView = $("view-req") as HTMLElement;
   reqView.hidden = !st.unlocked;
@@ -443,6 +450,8 @@ async function fillTokenSim(r: any) {
 // Pure rendering in clearsign.revealPreviewHtml; a missing or undecryptable record shows a LOUD caution
 // instead of silently narrowing the review to a txid. Once per request (render doesn't rebuild each tick).
 let revealForId: string | null = null;
+// This window's origin, the wallet's own pages' (what a popup seal records); empty where the page has no location.
+const SELF_ORIGIN = typeof location === "object" && location ? location.origin : "";
 async function fillRevealPreview(r: any) {
   if (r.method !== "revealClaim" || revealForId === r.id) return; revealForId = r.id;
   const el = document.getElementById("reveal-preview");
@@ -451,7 +460,7 @@ async function fillRevealPreview(r: any) {
   try {
     const list = await call("sealedClaims");
     const txid = revealFields(r.params).txid;
-    html = revealPreviewHtml((Array.isArray(list) ? list : []).find((x: any) => x && String(x.txid) === txid) ?? null);
+    html = revealPreviewHtml((Array.isArray(list) ? list : []).find((x: any) => x && String(x.txid) === txid) ?? null, r.origin, SELF_ORIGIN);
   } catch {
     html = revealPreviewHtml({ failed: true }); // lookup failed ≠ "no such claim"; distinct honest caution
   }
