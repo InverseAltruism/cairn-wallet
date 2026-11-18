@@ -597,6 +597,12 @@ async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
+  // The click belongs to the paint it was made on: its generation and its signer. Every await below is followed by
+  // `moved()`, and a click whose paint moved (a repaint, which may show another signer, or another request) is
+  // abandoned: it signs nothing, the request stays queued and the current paint's buttons are untouched. So a verdict a
+  // click acts on is the one its own paint computed for its own signer (armNfinalizeGate keys it by both).
+  const gen = paintGen;
+  const moved = (): boolean => !current || current.id !== id || paintGen !== gen || renderedSigner !== signer;
   const displayedQuote = rs(id).tokenQuoteDisplayed; // RT-W2: the number the user actually saw (survives the 1.2 s re-poll)
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
   if (approve && tokenNotReady(current)) { msg("The token amount is not shown yet. Wait for it or reject.", "err"); return; }
@@ -607,9 +613,9 @@ async function resolve(approve: boolean) {
   // verdict proceeds (fail-open). Reject never waits.
   if (approve && nfinGate && nfinForId === id) {
     const first = await nfinGate.catch(() => null);
-    if (!current || current.id !== id) return;   // superseded while awaiting the verdict
+    if (moved()) return abandoned(id);
     const g = await nfinAtClick(id, nfinSettled ?? first);   // the latest verdict, re-derived first when stale
-    if (!current || current.id !== id) return;
+    if (moved()) return abandoned(id);
     if (g?.block) { msg(g.note || "Refusing to sign this finalize.", "err"); return; }
   }
   // Only a click on the warning-state paint of this request acknowledges the unconfirmed reservation.
@@ -654,6 +660,11 @@ async function resolve(approve: boolean) {
   else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "info"); hold(); }
   else msg("Approved.", "ok");
   render();
+}
+
+// A click whose paint moved while it waited signs nothing; when its request is still the one on screen, say so.
+function abandoned(id: string): void {
+  if (current?.id === id) msg("This request was shown again while it was being checked. Review it and approve again.", "info");
 }
 
 // The line under the buttons (#ap-state). While the latch holds both buttons it says so; once they arm, while the request

@@ -282,7 +282,10 @@ add or hide the caution, never change what is signed. Every name check, these ca
 set-address gates alike, is for the account the window shows: a repaint of the same request for another account (an
 unlock after the active account changed) redoes it for that account from the record already read, so a verdict for
 one account never stands for another (section 15; before this, a set-address or finalize judged for the name's owner
-left Approve live for an account that would pay the fee for nothing). With the caution, a long "Keys removed" list (the honest
+left Approve live for an account that would pay the fee for nothing). A click is bound the same way: one that waits
+for a finalize, set-address or renewal check is abandoned, with nothing signed and the request still queued, when the
+window repaints the request before the check answers, so it never acts on a verdict another paint computed for another
+account (section 16). With the caution, a long "Keys removed" list (the honest
 maximum, 16 keys of 32 characters) can run past the buttons; the caution and everything before the list stay above
 them and the line under the buttons says more is below.
 

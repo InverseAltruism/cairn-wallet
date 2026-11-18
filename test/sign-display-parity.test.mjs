@@ -579,6 +579,8 @@ nameAnswer = async () => ({ ok: false, status: 503, json: async () => ({}) });
   check(`14. the renewal of another owner's live lease: its caution and "Sign anyway" (${noteOf(renew.html).slice(0, 50)}; ${renew.labels}), signed on the click`,
     noteOf(renew.html).startsWith("This name is owned by a different address: approving pays that owner") && renew.labels.join() === "Sign anyway,Cancel" && signedAsRequested(renew, rp));
 }
+// Section 16's fetch counts per uninterrupted approval, as 80e5bc3 made them: [before the click, after it].
+const COUNTS_80E5BC3 = { finalize: [5, 3], renewal: [4, 3], "set-address": [4, 3], transfer: [4, 3], "profile write": [4, 3] };
 // 15. A name verdict belongs to the pair (request, signing address). With a request painted, the active account changes
 // and the wallet is locked and unlocked: the window repaints the same request for the new signer, and the name check
 // is recomputed for it from the record already read (no second read), never kept from the other account. A transfer:
@@ -696,5 +698,74 @@ nameAnswer = async () => ({ ok: false, status: 503, json: async () => ({}) });
   await until(() => page.reply !== undefined);
   check(`15. ...and its click is refused ACCOUNT_CHANGED, nothing signed (${page.reply?.code})`, page.reply?.ok === false && page.reply.code === "ACCOUNT_CHANGED" && submits.length === n0);
   await popup("switchAccount", A);
+
+  // 16. A click belongs to the paint it was made on: its generation and its signer. On each gate a click waits for
+  // (finalize, set-address, renewal), a record that holds A back and lets B through: clicked as A while the name read is
+  // open, the card repaints as B (lock, unlock), the active account goes back to A with no repaint, and the read
+  // answers. The click acts on no verdict of another paint: nothing is submitted, the request stays queued and the
+  // current paint's buttons work, and approved again as B it signs. A click followed by the window's poll alone (no
+  // repaint) still signs, and an uninterrupted approval by the rightful owner signs a finalize, renewal, set-address,
+  // transfer and profile write with the fetches 80e5bc3 made.
+  //   RED-FIRST: on 80e5bc3 each gate's first check fails: A's request is signed and submitted with A's own verdict
+  //   blocking it.
+  {
+    const clickApprove = () => registry.get("btn-approve")._listeners.click();
+    const tip16 = Number((await popup("tip")).result);
+    const holdsAt = (who) => Array.from({ length: 400 }, (_, i) => tip16 - i).find((h) => nfinalizeApproveGate({ record: { owner: who, pending: true, effectiveHeight: h } }, who, tip16).note === null);
+    const heldBy = (rec) => { let open = () => undefined; nameAnswer = () => new Promise((res) => { open = () => res({ ok: true, status: 200, json: async () => ({ name: "alice", locked: false, ...rec }) }); }); return () => open(); };
+    const signerOfLast = () => { const t = submits.at(-1); return t ? t.outputs.map((o) => hex(o.script_pubkey).toLowerCase()) : []; };
+    const effB = holdsAt(B), effA = holdsAt(A);
+    const nr = nameRenew({ name: "alice" });
+    const renew = { domain: CAIRNX_DOMAIN, uri: nr.uri, payloadHash: nr.payloadHash, expiresEpoch: 9_000 };
+    // the reviewer's sequence, on each gate a click waits for: a record that holds A back and lets B through
+    for (const [what, params, rec] of [["finalize", fin, { owner: B, pending: true, effectiveHeight: effB }], ["set-address", nset, { owner: B }],
+      ["renewal", renew, { owner: B, lease: { leased: true, inGrace: true, lapsed: false } }]]) {
+      const release = heldBy(rec);
+      const n0 = submits.length;
+      const page = await paintAs(A, params);
+      const armedA = face().live;
+      const click = clickApprove();
+      await relockAs(B);
+      await popup("switchAccount", A);
+      release(); await flush(); await sleep(30); await flush();
+      await click; await flush();
+      const f = face();
+      const queued = (await popup("pending")).result.length;
+      check(`16. ${what} clicked as A, repainted as B, A active again, then the read: nothing submitted (${submits.length - n0}), still queued (${queued}), the window shows B with Approve usable (${f.live})`,
+        armedA && submits.length === n0 && page.reply === undefined && queued === 1 && shows(f, B) && f.live);
+      await popup("switchAccount", B);
+      await clickApprove();
+      await until(() => page.reply !== undefined);
+      check(`16. ${what}, then approved as B, the name's holder: signed by B (${page.reply?.result?.ok}, change to B ${signerOfLast().includes(B)})`, page.reply?.ok === true && page.reply.result?.ok === true && submits.length === n0 + 1 && signerOfLast().includes(B));
+      await popup("switchAccount", A);
+    }
+    // a click, then the poll alone
+    const release = heldBy({ owner: A, pending: true, effectiveHeight: effA });
+    const n1 = submits.length;
+    const page2 = await paintAs(A, fin);
+    const click2 = clickApprove();
+    await pollTick(); await flush();
+    release(); await click2;
+    await until(() => page2.reply !== undefined);
+    check(`16. a finalize clicked as A, then the poll renders as A with no repaint, then the read: signed by A (${page2.reply?.result?.ok})`, page2.reply?.ok === true && page2.reply.result?.ok === true && submits.length === n1 + 1 && signerOfLast().includes(A));
+    // uninterrupted rightful-owner approvals, and their fetches before and after the click
+    const np = nameProfile({ name: "alice", p: { avatar: "https://b.example/y.png" } });
+    const owned16 = (extra = {}) => async () => ({ ok: true, status: 200, json: async () => ({ name: "alice", owner: A, locked: false, tipHeight: tip16, ...extra }) });
+    const counts = {};
+    for (const [what, params, answer] of [
+      ["finalize", fin, owned16({ pending: true, effectiveHeight: effA })],
+      ["renewal", renew, owned16()],
+      ["set-address", nset, owned16()],
+      ["transfer", xfer, owned16()],
+      ["profile write", { domain: CAIRNX_DOMAIN, uri: np.uri, payloadHash: np.payloadHash, expiresEpoch: 9_000 }, owned16({ profile: { avatar: "x" } })],
+    ]) {
+      nameAnswer = answer;
+      const r = await round("propose", params);
+      counts[what] = [r.fetches.paint.length, r.fetches.click.length];
+      check(`16. ${what} by the name's owner, uninterrupted: Approve at the floor (${r.armedMs} ms), signed on the click (${r.replyMs} ms)`, r.armedMs >= 650 && r.armedMs < 1500 && r.replyMs < 1500 && signedAsRequested(r, params));
+    }
+    console.log("16. fetches [before the click, after it]:", JSON.stringify(counts));
+    check(`16. the same fetches as on 80e5bc3 (${JSON.stringify(counts)})`, JSON.stringify(counts) === JSON.stringify(COUNTS_80E5BC3));
+  }
 }
 done("sign-display-parity");

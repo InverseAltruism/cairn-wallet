@@ -15,7 +15,12 @@
   for the account the window shows: when an unlock after an account switch repaints the same request for another
   account, the check is redone for it from the record already read. Before, the verdict for the first account stayed,
   so a set-address or finalize judged for the name's owner left Approve live for an account that would pay the fee
-  for nothing (test/sign-display-parity.test.mjs sections 13 to 15, and
+  for nothing. A click on Approve that waits for a finalize, set-address or renewal check is bound to the paint it was
+  made on (its generation and its signer): if the request is repainted before the check answers, the click signs
+  nothing and the request stays queued. Before, a click made as one account and finished after a repaint for another
+  could act on that account's passing verdict and sign the first account's request, fee and all; an uninterrupted
+  approval by the rightful owner signs at once with the same fetches as before (test/sign-display-parity.test.mjs
+  sections 13 to 16, and
   test/approve-name-caution-chrome.test.mjs at both window heights, in its own file because
   test/approve-layout-chrome.test.mjs already takes 158 s of the runner's 180 s per-file cap; the page measurements
   the two share moved to test/helpers/approve-measure.mjs).

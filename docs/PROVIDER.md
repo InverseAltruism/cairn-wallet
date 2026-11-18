@@ -210,7 +210,10 @@ shown in full, and one the wallet has not paid before, or one that resembles an 
   shows as signing. When the window paints the same request for another account (an unlock after the active account
   changed), the check is redone for that account from the record already read, and nothing judged for the other
   account stays on screen. A switch of account while the window is unlocked does not repaint it: the window keeps the
-  account it shows, and Approve is then refused `ACCOUNT_CHANGED` with nothing signed.
+  account it shows, and Approve is then refused `ACCOUNT_CHANGED` with nothing signed. A click on Approve that waits for
+  a finalize, set-address or renewal check belongs to the paint it was made on: if the window repaints the request
+  before the check answers, that click signs nothing, the request stays queued, and the window says to review it and
+  approve again.
 - A proposal in another domain is shown raw as "Post a proposal": the fee, any outputs, the expiry, and the domain,
   payload hash and URI as sent, with a line that the wallet does not interpret records of that domain, that they
   cannot change CairnX names, tokens or offers, and that this one costs the network fee and any outputs shown. The

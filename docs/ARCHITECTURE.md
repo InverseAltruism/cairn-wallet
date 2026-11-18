@@ -212,7 +212,8 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   nor the click awaits that read, unlike the finalize, renew and set-address gate, which a click awaits. Every name
   verdict is keyed by the request and the signer the paint shows (`armNfinalizeGate`); a repaint for another signer
   recomputes it from the record already read, chained on that one read, so a verdict for the signer shown before
-  always lands first.
+  always lands first. A click (`resolve`) is bound to the paint generation and the signer it was made on and is
+  abandoned, signing nothing, when either has changed after one of its awaits.
 - `clearsign.ts`: pure formatters, among them `groupedAddr`, the one address-in-groups-of-four display both pages
   use, lookalike detection and the nfinalize approve gate: it re-fetches the reservation and runs
   `finalizeWinnerCheck` before allowing a fee-burning finalize.
