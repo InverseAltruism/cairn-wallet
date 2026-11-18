@@ -167,7 +167,8 @@ console.log("  ok");
 // not, so the check in resolvePending is all that stops it signing with an account the user never saw.
 console.log("(C1) a propose approved under a different displayed signer is refused before the wallet runs");
 const RENEW = buildNameRenew({ name: "satoshi" });
-const proposeParams = { domain: CAIRNX_DOMAIN, uri: RENEW.uri, payloadHash: RENEW.payloadHash, expiresEpoch: 2_300, fee: 1_000_000, outputs: [{ to: TREASURY_ADDR, value: 100_000_000 }] };
+// The fee is the network's proposal minimum (0.25 CSD): a lower one is refused before it is queued (node.ts proposeRefusal).
+const proposeParams = { domain: CAIRNX_DOMAIN, uri: RENEW.uri, payloadHash: RENEW.payloadHash, expiresEpoch: 2_300, fee: 25_000_000, outputs: [{ to: TREASURY_ADDR, value: 100_000_000 }] };
 // The active account holds one verifiable 10 CSD coin, so the honest path can sign and submit.
 const coin = mkCoin(10_00000000);
 const seen = [];

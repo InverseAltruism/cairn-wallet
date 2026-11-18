@@ -40,7 +40,8 @@ middle file fails: the remaining files still run and the exit is non-zero.
 | `maxsendable.test.mjs` | Max against the engine |
 | `identicon.test.ts` | the popup draws the vendored cairn-ui avatar |
 | `mark-home.test.mjs`, `extension-icons.test.mjs` | the mark's one home |
-| `sign-display-parity.test.mjs` | every request type the approval window paints, against the signed transaction; every decoded `cairnx:v1` record type from a third-party and the first-party origin; the raw card; signing from a site that never connected; a fill with an extra output on both lanes |
+| `sign-display-parity.test.mjs` | every request type the approval window paints, against the signed transaction; every decoded `cairnx:v1` record type from a third-party and the first-party origin; the raw card; signing from a site that never connected; a fill with an extra output on both lanes; the name record caution on a transfer or profile write, with the read held open; every name verdict recomputed when the signer shown changes |
+| `propose-prequeue.test.mjs` | one table of proposal and seal parameters through the pre-queue check and the signer, the same verdict and text on both |
 | `provider-discovery.test.mjs` | `cairn#initialized`, `csd:announceProvider` and its detail, the frozen provider and its members |
 
 Also: `poc-signin-oracle.ts`, `multiwallet.ts`, `bruteforce.test.mjs`, `csdtx-boundary.test.mjs`, `clearsign.ts`,
@@ -51,7 +52,9 @@ what it pins.
 
 The in-Chrome tests (`test/*-chrome.test.mjs`) need playwright-core (`PLAYWRIGHT_CORE`, a package directory) and a
 Chromium (`PLAYWRIGHT_CHROMIUM`, a full Chromium: `popup-font-chrome` loads an unpacked extension, which the headless
-shell cannot); without them they print SKIP, and `CAIRN_E2E_REQUIRED=1` turns a SKIP into a failure.
+shell cannot); without them they print SKIP, and `CAIRN_E2E_REQUIRED=1` turns a SKIP into a failure. The page
+measurements the approval window's layout tests share (`measure`, `settle`, the line's words) are in
+`test/helpers/approve-measure.mjs`.
 
 Not part of `npm test`:
 

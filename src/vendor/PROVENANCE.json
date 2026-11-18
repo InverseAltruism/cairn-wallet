@@ -27,8 +27,8 @@
     }
   },
   "sha256": {
-    "cairnx-spv.js": "965c6a96e561bc50d99dfcfa0bcd15f30a2a69f61fb13aeb1a769d1493b610a7",
-    "cairnx-spv.d.ts": "314a798ca69e5092600234f9fadba9c59a3b8a3129224c3cab56488810558818"
+    "cairnx-spv.js": "dcd8f4b73b4c2a9e7dc1b9fa50f38387fd4bf4ae6f497af811aa53799295a68c",
+    "cairnx-spv.d.ts": "f238d06efa39775fc576956868d66c13d470e60bfeed482076099295dd487198"
   },
   "noble": {
     "@noble/curves": "1.9.7",

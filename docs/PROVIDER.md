@@ -68,10 +68,17 @@ inputs or a change address.
 | `sealClaim(p)` | `{ claim, domain?, fee? }` | SubmitResult | always |
 | `revealClaim(txid)` | the seal's txid | the Cairn API's answer to the content post | always |
 
-- `propose`: `domain` is any string; the wallet does not check it. `payloadHash` is `0x` and 64 hex digits,
-  `expiresEpoch` a non-negative safe integer; both are checked after approval (nested `BAD_REQUEST`). `fee` defaults
-  to 25,000,000 (0.25 CSD). `outputs` is `[{ to, value }]`, at most 8, each `value` an integer or a string of decimal
-  digits.
+- `propose`: `domain` is a string of at most 128 UTF-8 bytes and `uri` a string of at most 512 (the network's caps),
+  neither with an unpaired surrogate; the wallet does not check what a domain means. `payloadHash` is `0x` and 64 hex
+  digits, `expiresEpoch` a non-negative safe integer. `fee` is an integer number from 25,000,000 (0.25 CSD, the
+  network's proposal minimum and the default) to 100 CSD. `outputs` is `[{ to, value }]`, at most 8, each `to` `0x`
+  and 40 hex digits and not the zero address, each `value` a positive integer or a string of decimal digits. A
+  proposal with any other parameter is answered `BAD_REQUEST` before any window opens, by the check the signer
+  applies (a call that reaches the signer gets it with the nested code: `BAD_REQUEST`, `BAD_OUTPUTS`, `BAD_FEE`,
+  `FEE_TOO_LOW`, `FEE_CAP` or `ZERO_ADDR_REFUSED`). Two rules stay after approval: the fee cap of 10% of the coins
+  the wallet selects needs those coins (nested `FEE_CAP`), and the node refuses at submit an empty domain or uri and
+  an all-zero payload hash (nested `SUBMIT_REJECTED`, nothing spent), rules csd-sdk does not carry and the wallet
+  does not repeat.
 - `attest`: `proposalId` is `0x` and 64 hex digits; `score` and `confidence` are signed as u32 (`>>> 0`); `fee`
   defaults to 5,000,000 (0.05 CSD). An attest never carries outputs. At confidence 1,000,000 it is signed as a
   token-priced fill and runs the fill checks below.
@@ -85,9 +92,10 @@ inputs or a change address.
   is open, another for it is refused `FILL_IN_PROGRESS`. On the reservation lane the outputs must pay exactly what the
   offer needs, per address; on the offer-id lane outputs beyond the need are signed (section 12 of
   `test/sign-display-parity.test.mjs`).
-- `sealClaim`: `claim` is a non-empty string, `domain` a string (trimmed, default `csd:sealed`), `fee` defaults to
-  25,000,000. The wallet makes the salt and keeps it; the commit expires 720 epochs after the current one. A claim or
-  domain of the wrong type is refused after approval (`INTERNAL`, nothing signed).
+- `sealClaim`: `claim` is a non-empty string, `domain` a string of at most 128 UTF-8 bytes once trimmed, with no
+  unpaired surrogate (default `csd:sealed`), `fee` as on a proposal (default 25,000,000). The wallet makes the salt and
+  keeps it; the commit expires 720 epochs after the current one. Any other claim, domain or fee is answered
+  `BAD_REQUEST` before any window opens.
 - `revealClaim`: the txid of a seal this account made in this wallet. No transaction; refused `SEAL_NOT_MINED`
   until the commit is mined.
 - `signInWithCsd`: `nonce` (required, 8 or more ASCII letters and digits), `statement` (one line, at most 256
@@ -104,11 +112,13 @@ inputs or a change address.
 
 ## Limits
 
-- Outputs: at most 8 on a proposal, 500 on a send and 100 on a fill (nested `BAD_OUTPUTS`). An output to the zero
-  address is refused (`ZERO_ADDR_REFUSED`). A transaction spends at most 512 inputs (`TOO_MANY_INPUTS`).
-- Fees: above zero (`FEE_TOO_LOW`), at most 100 CSD, and at most the larger of 1 CSD and 10% of the verified inputs
-  the wallet selects for that transaction (`FEE_CAP`). A cap refuses the request; the wallet does not lower the fee
-  and retry. The approval window marks a fee above 5 CSD as unusually large.
+- Outputs: at most 8 on a proposal (`BAD_REQUEST` before the window), 500 on a send and 100 on a fill (nested
+  `BAD_OUTPUTS`). An output to the zero address is refused (`ZERO_ADDR_REFUSED`). A transaction spends at most 512
+  inputs (`TOO_MANY_INPUTS`).
+- Fees: above zero (`FEE_TOO_LOW`), at least 0.25 CSD on a proposal or a seal (`FEE_TOO_LOW`), at most 100 CSD, and
+  at most the larger of 1 CSD and 10% of the verified inputs the wallet selects for that transaction (`FEE_CAP`). On a
+  proposal or a seal every fee rule but the last is answered `BAD_REQUEST` before the window. A cap refuses the
+  request; the wallet does not lower the fee and retry. The approval window marks a fee above 5 CSD as unusually large.
 - Queue: at most 5 pending requests per site and 32 in all; a request past either is refused `RATE_LIMITED` before it
   is queued. There is no limit over time.
 - One approval window shows the requests in arrival order, the first one first ("Request 1 of N"). Approve and Reject
@@ -174,12 +184,17 @@ shown in full, and one the wallet has not paid before, or one that resembles an 
     the configured CairnX API and keeps Approve off when its answer shows the finalize would pay the fee for nothing.
   - `nxfer`: ".csd name transfer": the name and the new owner (flagged as above), and a caution that the transfer is
     final, that the new owner controls the name from then on and that it clears the name's address record and its
-    profile.
+    profile. The window reads the name's record from the configured CairnX API after the paint; when it gives the
+    name to another address, shows it not yet finalized, lapsed or locked by an open offer, or has no record of it,
+    a caution says so and that the fee is spent if that still holds when the record is mined, and Approve reads
+    "Sign anyway" and Reject "Cancel". The read holds nothing back: Approve arms at its 700 ms floor, a click does not
+    wait for it, and the caution does not turn Approve off.
   - `nset`: ".csd name → address record": the name and the address (flagged as above); the zero address reads
     ".csd un-point (clear address record)". Approve stays off when the CairnX API answers that the name is not
     registered or has another owner.
   - `nrenew`: ".csd name renewal": the name. Approve stays off when the name is not registered, or is in its grace
-    period under another owner. A renewal or finalize that pays less than the current fee gets a warning.
+    period under another owner; the renewal of another owner's live lease gets a caution, and Approve reads "Sign
+    anyway". A renewal or finalize that pays less than the current fee gets a warning.
   - `nprofile`: ".csd identity profile": every key and value, the notice that the record replaces the whole profile
     and removes any key not listed, a "Keys removed" row with the current keys it drops (read from the configured
     CairnX API, display only), and a warning when a key or value looks like an address. When the new map sets
@@ -187,8 +202,18 @@ shown in full, and one the wallet has not paid before, or one that resembles an 
     for the name; the node address they may read the chain through for the name; a peer they may dial), and a
     removed one in "Keys removed" carries the same words. The sentence that the keys do not change where funds go
     (and that other applications may read some of them) covers the other keys only. An empty profile reads "Clears".
+    The record read for "Keys removed" also gives the caution and "Sign anyway" a transfer gets, except for a lock: a
+    profile write on a name an open offer locks takes effect.
   - `tmeta`: "CairnX token metadata (issuer only)": the token and the content hash.
   - `fclaim`: "Reserve an open offer": the offer id, and that it moves no money.
+- Every name check above (finalize, set-address, renewal, transfer, profile write) is for the account the window
+  shows as signing. When the window paints the same request for another account (an unlock after the active account
+  changed), the check is redone for that account from the record already read, and nothing judged for the other
+  account stays on screen. A switch of account while the window is unlocked does not repaint it: the window keeps the
+  account it shows, and Approve is then refused `ACCOUNT_CHANGED` with nothing signed. A click on Approve that waits for
+  a finalize, set-address or renewal check belongs to the paint it was made on: if the window repaints the request
+  before the check answers, that click signs nothing, the request stays queued, and the window says to review it and
+  approve again.
 - A proposal in another domain is shown raw as "Post a proposal": the fee, any outputs, the expiry, and the domain,
   payload hash and URI as sent, with a line that the wallet does not interpret records of that domain, that they
   cannot change CairnX names, tokens or offers, and that this one costs the network fee and any outputs shown. The
@@ -220,7 +245,9 @@ the defaults and the limits are not part of the contract; a change to a default 
 - The page match patterns and the top frame: `public/manifest.json` (`content_scripts`).
 - `rdns`, `name`, the per-load `uuid`, the event list and `getCapabilities().methods`: `src/inpage.ts`.
 - Output caps 8, 500, 100, the fee caps (`MAX_FEE` 100 CSD, `proportionalFeeCap`) and the address and hash shapes:
-  `src/core/node.ts`. 100,000,000 base units to one CSD: `src/core/cairnx.ts` `CSD_DECIMALS`.
+  `src/core/node.ts`; the proposal checks made before the window, `proposeRefusal` there. The 128 and 512 byte caps on
+  a proposal's domain and uri: the vendored `MAX_DOMAIN_BYTES` and `MAX_URI_BYTES`. 100,000,000 base units to one
+  CSD: `src/core/cairnx.ts` `CSD_DECIMALS`.
 - Fee defaults: `src/core/cairnx.ts` `defaultFeeFor`; 0.25 and 0.05 CSD are the vendored `MIN_FEE_PROPOSE` and
   `MIN_FEE_ATTEST` (`src/vendor/cairnx-spv.js`).
 - Score 100, confidence 1,000,000: the vendored `SCORE_FILL` and `CONF_TOKEN_FILL`, used by `src/core/signfields.ts`.

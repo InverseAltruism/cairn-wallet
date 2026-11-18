@@ -6,7 +6,8 @@
 import { signSighash, buildScriptSig, addrFromPriv, sighash as codecSighash, txid as codecTxid, loginDigest, bytesArr, type App, type Tx } from "./csdtx.js";
 import { fmtCsd, csdBase } from "./cairnx.js";
 import type { TxInclusion } from "./inclusion.js";
-import { selectInputs, strip0x, MAX_TX_INPUTS } from "../vendor/cairnx-spv.js";
+import { selectInputs, strip0x, MAX_TX_INPUTS, MAX_DOMAIN_BYTES, MAX_URI_BYTES, MIN_FEE_PROPOSE } from "../vendor/cairnx-spv.js";
+import { byteCapRefusal } from "./signfields.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever; the popup's "sending…" spinner never settled and there was no in-popup
@@ -613,16 +614,13 @@ async function assembleValueTx(
   // zero-fee tx is built and signed but then silently dropped by the mempool; surface it as a clear
   // error up front instead (audit FEE-FLOOR). Non-negative integer / safe-integer checks stay with the
   // callers that own the fee value.
-  if (!(fee > 0)) return { ok: false, error: "fee must be positive (the node enforces a minimum fee)", sighashMatch: false, code: "FEE_TOO_LOW" };
-  if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
   // Refuse the zero address at the SINGLE place every value tx is assembled; send, sendMany,
   // propose, attest, fillOffer and buildSignSubmit all route through here. A payment to 0x000…0 is an
   // irrecoverable burn; the popup send form already blocks it, but the dApp send/sendMany/fillOffer paths
   // bypass that form, so the universal backstop lives here (audit M1 / V23 nset-clear burn class). The
   // node accepts a zero-address output, so this MUST be caught client-side. Change is always to self.
-  for (const o of outputs) {
-    if (/^(0x)?0{40}$/i.test(o.scriptPubkey)) return { ok: false, error: "refusing to send to the zero address (0x000…0): these funds would be unrecoverable", sighashMatch: false, code: "ZERO_ADDR_REFUSED" };   // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
-  }
+  const early = feeBoundsRefusal(fee) ?? zeroAddrRefusal(outputs);
+  if (early) return { ok: false, ...early, sighashMatch: false };
   const addr = addrFromPriv(priv);
   const need = outputs.reduce((s, o) => s + o.value, 0) + fee;
   const sv = await selectVerified(rpc, addr, need);
@@ -680,7 +678,8 @@ function validateOutputs(outs: { to: string; value: number }[], opts: { max: num
 // send/fillOffer: each recipient validated, sums safe-integer-guarded, inputs selected
 // internally, change ONLY to the wallet's own address; a dApp can't pick UTXOs or redirect change.
 async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string, payouts: { to: string; value: number }[] = []): Promise<SubmitResult> {
-  if (!Number.isSafeInteger(fee) || fee < 0) return { ok: false, error: "fee out of safe integer range", sighashMatch: false, code: "BAD_FEE" };
+  const badFee = feeTypeRefusal(fee);
+  if (badFee) return { ok: false, ...badFee, sighashMatch: false };
   // Cap the value outputs a Propose may carry (normally one protocol-fee output). Prevents a
   // hostile dApp from flooding the clear-signing window with hundreds of disguised payments.
   const chk = validateOutputs(payouts, { max: 8, minOne: false });
@@ -688,20 +687,51 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
   return assembleValueTx(rpc, chk.outputs, fee, app, priv);
 }
 
+type Refusal = { code: string; error: string };
+// The fee checks that need no coins, one home each: the engine runs them at signing and proposeRefusal before the queue.
+// The proportional cap needs the selected inputs, so it stays in assembleValueTx.
+const feeTypeRefusal = (fee: unknown): Refusal | null =>
+  Number.isSafeInteger(fee) && (fee as number) >= 0 ? null : { code: "BAD_FEE", error: "fee out of safe integer range" };
+function feeBoundsRefusal(fee: number): Refusal | null {
+  if (!(fee > 0)) return { code: "FEE_TOO_LOW", error: "fee must be positive (the node enforces a minimum fee)" };
+  if (fee > MAX_FEE) return { code: "FEE_CAP", error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing (a legitimate fee is well under 1 CSD)` };
+  return null;
+}
+function zeroAddrRefusal(outputs: { scriptPubkey: string }[]): Refusal | null {
+  // (0x)? so the guard matches whether or not the caller carries the codec prefix (QA #3)
+  return outputs.some((o) => /^(0x)?0{40}$/i.test(o.scriptPubkey))
+    ? { code: "ZERO_ADDR_REFUSED", error: "refusing to send to the zero address (0x000…0): these funds would be unrecoverable" } : null;
+}
+/** A proposal's fee: the coin-free fee checks, and the node's proposal minimum (it rejects a Propose below
+ *  MIN_FEE_PROPOSE, the floor csd-tx's buildPropose applies). background.ts asks it for a seal too. */
+export function proposeFeeRefusal(fee: unknown): Refusal | null {
+  const bad = feeTypeRefusal(fee) ?? feeBoundsRefusal(fee as number);
+  if (bad) return bad;
+  return (fee as number) < MIN_FEE_PROPOSE ? { code: "FEE_TOO_LOW", error: `a proposal's fee must be at least ${fmtCsd(MIN_FEE_PROPOSE)}, the minimum the network takes` } : null;
+}
+/** Why the engine refuses a proposal's parameters, before it selects a coin, or null. background.ts asks the same
+ *  function before it queues a page's propose, so the window never opens for a request the signer would refuse
+ *  (test/propose-prequeue.test.mjs). A malformed payloadHash or expiresEpoch would otherwise throw in the codec or wrap
+ *  in u64() (a signed "never expires"); a domain or uri of the wrong type throws there, and one past the consensus byte
+ *  caps or with an unpaired surrogate signs a transaction the node rejects. `outputs` is what proposeFields reads (an
+ *  array, or none). What it cannot judge stays at signing: the proportional fee cap and the balance need the selected
+ *  coins. The node's other Propose rules (an empty domain or uri, an all-zero payload hash) are not in csd-sdk, and the
+ *  wallet does not re-declare consensus: the node refuses those at submit, with nothing spent. */
+export function proposeRefusal(p: { domain: unknown; payloadHash: unknown; uri: unknown; expiresEpoch: unknown; fee: unknown; outputs: { to: string; value: number }[] }): Refusal | null {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.payloadHash))) return { code: "BAD_REQUEST", error: "payloadHash must be a 0x… 32-byte hash" };
+  if (!Number.isSafeInteger(p.expiresEpoch) || (p.expiresEpoch as number) < 0) return { code: "BAD_REQUEST", error: "expiresEpoch must be a non-negative safe integer" };
+  const text = byteCapRefusal("domain", p.domain, MAX_DOMAIN_BYTES) ?? byteCapRefusal("uri", p.uri, MAX_URI_BYTES);
+  if (text) return { code: "BAD_REQUEST", error: text };
+  const fee = proposeFeeRefusal(p.fee);
+  if (fee) return fee;
+  const chk = validateOutputs(p.outputs, { max: 8, minOne: false });
+  return "sumOut" in chk ? zeroAddrRefusal(chk.outputs) : { code: "BAD_OUTPUTS", error: String(chk.error) };
+}
 export function propose(rpc: string, p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee: number; outputs?: { to: string; value: number }[] }, priv: string): Promise<SubmitResult> {
-  // Validate the dApp-supplied payloadHash shape up front (parity with fillOffer's proposalId guard) so a
-  // malformed value fails closed with a clear error instead of throwing a cryptic codec error deep inside
-  // bytesArr() AFTER the SafeInteger checks pass (audit VAL-3). A real cairnx payloadHash is sha256 = 0x+64hex.
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.payloadHash))) {
-    return Promise.resolve({ ok: false, error: "payloadHash must be a 0x… 32-byte hash", sighashMatch: false, code: "BAD_REQUEST" });
-  }
-  // Validate expiresEpoch up front: a negative/fractional/>2^53 value would otherwise wrap or throw
-  // inside u64() serialization, committing signed bytes (e.g. 0xFFFF…FF "never expires") that don't
-  // match the dApp's intent. Same SafeInteger posture as amounts/fee. (redteam LOW-1)
-  if (!Number.isSafeInteger(p.expiresEpoch) || p.expiresEpoch < 0) {
-    return Promise.resolve({ ok: false, error: "expiresEpoch must be a non-negative safe integer", sighashMatch: false, code: "BAD_REQUEST" });
-  }
-  return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, Array.isArray(p.outputs) ? p.outputs : []);
+  const outputs = Array.isArray(p.outputs) ? p.outputs : [];
+  const bad = proposeRefusal({ ...p, outputs });
+  if (bad) return Promise.resolve({ ok: false, error: bad.error, sighashMatch: false, code: bad.code });
+  return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, outputs);
 }
 export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
   // Validate the proposalId shape up front (parity with fillOffer) so a malformed dApp-supplied value fails

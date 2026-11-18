@@ -353,14 +353,12 @@ async function main() {
   check("propose used the wallet's OWN input (smuggled `inputs` ignored)", pins.length === 1 && spkHex(pins[0].prevout.txid) === MOCK_UTXO.txid);
   check("propose change returned only to the wallet's own address (smuggled `change` ignored)", pouts.every((o: any) => spkHex(o.script_pubkey) === FEE_TO || spkHex(o.script_pubkey) === addr));
   check("propose tx carries the Propose app (not a disguised send)", !!lastSubmit?.tx?.app?.Propose);
-  // anti-flood: too many outputs is refused at build (no silent execution)
+  // anti-flood: too many outputs is refused before it is queued, by the signer's own check (node.ts proposeRefusal), so
+  // no window opens; the signer's nested BAD_OUTPUTS code for the same row is pinned in test/propose-prequeue.test.mjs
+  const queuedBefore = (await popup("pending")).result.length;
   const flood = dappAsync("propose", { domain: "d", payloadHash: "0x" + "11".repeat(32), uri: "x", expiresEpoch: 1, fee: 25_000_000, outputs: Array.from({ length: 20 }, () => ({ to: FEE_TO, value: 1_000_000 })) });
-  await tick();
-  sp = (await popup("pending")).result;
-  await popup("resolve", sp[sp.length - 1].id, true);
   await tick(); await tick();
-  check("propose with >8 outputs is refused (anti-flood)", flood.get()?.ok === true && flood.get()?.result?.ok === false && /too many outputs/.test(JSON.stringify(flood.get())));
-  check("WS5: the >8-outputs refusal carries the BAD_OUTPUTS code (node validateOutputs)", flood.get()?.result?.code === "BAD_OUTPUTS");
+  check("propose with >8 outputs is refused before it is queued (anti-flood)", flood.get()?.ok === false && flood.get()?.code === "BAD_REQUEST" && /too many outputs/.test(JSON.stringify(flood.get())) && (await popup("pending")).result.length === queuedBefore);
   // D7: the collapsed message interpolates the cap itself (the prose table is gone)
   check("D7: the cap is interpolated into the single generic message", /max 8/.test(JSON.stringify(flood.get())));
 

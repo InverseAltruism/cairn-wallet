@@ -4,6 +4,7 @@
 // signer cannot read one request two ways (test/sign-display-parity.test.mjs). The engine (node.ts) still validates what
 // it is given and refuses the rest.
 import { defaultFeeFor, SCORE_FILL, CONF_TOKEN_FILL } from "./cairnx.js";
+import { MAX_DOMAIN_BYTES, isWellFormedUtf16 } from "../vendor/cairnx-spv.js";
 
 type Out = { to: string; value: number };
 type Params = Record<string, any>;
@@ -61,13 +62,24 @@ export function sendFields(params: unknown): SendFields {
 /** A reveal publishes the stored preimage of the seal `txid` (the request's params) and signs no transaction. */
 export const revealFields = (params: unknown): { txid: string } => ({ txid: String(params ?? "") });
 
+/** Why a text field the chain caps in UTF-8 bytes is refused (not a string, an unpaired surrogate, which UTF-8 cannot
+ *  carry and the consensus codec refuses, or longer than `max`), or undefined. */
+export function byteCapRefusal(field: string, v: unknown, max: number): string | undefined {
+  if (typeof v !== "string") return `${field} must be a string`;
+  if (!isWellFormedUtf16(v)) return `${field} has an unpaired surrogate, a character UTF-8 cannot carry`;
+  const n = new TextEncoder().encode(v).length;
+  return n > max ? `${field} is ${n} UTF-8 bytes; the network takes at most ${max}` : undefined;
+}
+
 /** A sealed claim's commit: the trimmed domain (default csd:sealed) and the claim it hashes; a claim that is not a
- *  non-empty string, or a domain that is not a string, is refused before any fee is spent. */
+ *  non-empty string, or a domain that is not a string or is past the consensus cap, is refused before any fee is spent
+ *  (and by background.ts before the request is queued). */
 export type SealFields = { domain: string; claim: string; fee: number; refused?: string };
 export function sealFields(params: unknown): SealFields {
   const p = paramsOf(params);
-  const refused = typeof p.claim !== "string" || !p.claim ? "sealClaim: claim must be a non-empty string"
-    : p.domain != null && typeof p.domain !== "string" ? "sealClaim: domain must be a string" : undefined;
   const domain = (typeof p.domain === "string" && p.domain.trim()) || "csd:sealed";
+  const refused = typeof p.claim !== "string" || !p.claim ? "sealClaim: claim must be a non-empty string"
+    : p.domain != null && typeof p.domain !== "string" ? "sealClaim: domain must be a string"
+    : byteCapRefusal("sealClaim: domain", domain, MAX_DOMAIN_BYTES);
   return { domain, claim: typeof p.claim === "string" ? p.claim : "", fee: p.fee ?? defaultFeeFor("sealClaim"), ...(refused ? { refused } : {}) };
 }

@@ -47,7 +47,13 @@ events and alarm-driven auto-lock.
 - A keyed method that throws "locked" maps to `WALLET_LOCKED`, anything else to `INTERNAL` (`thrownCode`).
 - A `signinWithCsd` request is checked before it is queued by `siwcParamsRefusal` (`src/core/siwcparams.ts`, the
   wallet's sign-in parameter rules; `signInWithCsd` signs through the same `siwcMessageFor`): one the wallet would
-  refuse is answered `BAD_REQUEST` with no window (test/siwc-prequeue.test.mjs).
+  refuse is answered `BAD_REQUEST` with no window (test/siwc-prequeue.test.mjs). A `propose` is checked by
+  `node.ts` `proposeRefusal`, the function `node.propose` refuses with (payload hash, expiry, the domain and uri
+  types, their consensus byte caps and surrogates, the fee checks that need no coins and the proposal minimum, the
+  outputs and the zero address), and a `sealClaim` by `signfields.ts` `sealFields`, which `wallet.sealClaim` signs
+  from, and `proposeFeeRefusal`; one the signer would refuse is answered `BAD_REQUEST` with no window and no queue
+  slot (test/propose-prequeue.test.mjs). The fee and zero-address helpers are the ones `assembleValueTx` and
+  `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there.
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the
   result.
 
@@ -199,9 +205,15 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   reading of a Reject's answer, which the popup takes through `popup-bridge.ts` and the approval window directly:
   `approve.js` is built without code splitting, so it must not import `popup-bridge.ts`, whose dev path would inline
   the Wallet; `build.mjs` aborts if it does.
-- `approve.ts`: the clear-signing window. For an `nprofile` it reads the name's record from the configured CairnX API
-  (`namegate.ts` `readNameRecord`, bounded at 6 s) and fills the reserved "Keys removed" row with the current keys the
-  record drops (`clearsign.ts` `profileDropValue`); display only, never awaited by the arm or the click.
+- `approve.ts`: the clear-signing window. For an `nprofile` or an `nxfer` it reads the name's record once from the
+  configured CairnX API (`namegate.ts` `readNameRecord`, bounded at 6 s) after the paint: an `nprofile` fills the
+  reserved "Keys removed" row with the current keys the record drops (`clearsign.ts` `profileDropValue`), and both
+  get `namegate.ts` `nameRecordCaution` in the name action's note, with "Sign anyway" for a caution. Neither the arm
+  nor the click awaits that read, unlike the finalize, renew and set-address gate, which a click awaits. Every name
+  verdict is keyed by the request and the signer the paint shows (`armNfinalizeGate`); a repaint for another signer
+  recomputes it from the record already read, chained on that one read, so a verdict for the signer shown before
+  always lands first. A click (`resolve`) is bound to the paint generation and the signer it was made on and is
+  abandoned, signing nothing, when either has changed after one of its awaits.
 - `clearsign.ts`: pure formatters, among them `groupedAddr`, the one address-in-groups-of-four display both pages
   use, lookalike detection and the nfinalize approve gate: it re-fetches the reservation and runs
   `finalizeWinnerCheck` before allowing a fee-burning finalize.
@@ -253,7 +265,8 @@ dir: both files must be byte-identical to the committed ones.
 - Storage: `unlimitedStorage` because the namespv header store (IndexedDB, 84 bytes per header, about 60 KB per
   chain-day) grows with the chain; `chrome.storage.local` holds the vault, history and settings.
 - Consensus caps: `MAX_TX_INPUTS` = 512, `MAX_TX_BYTES` = 100 KB; an all-coinbase holder tops out around 25,600 CSD
-  per tx. `consolidate()` is the wallet-side answer.
+  per tx. `consolidate()` is the wallet-side answer. A proposal's domain and uri: `MAX_DOMAIN_BYTES` = 128 and
+  `MAX_URI_BYTES` = 512 UTF-8 bytes, vendored from csd-codec.
 - `pendingMerge()` (popup-only) settles open history rows (an unconfirmed merge, a `maybe: true` row) from chain
   state, not the clock, and submits nothing; the rules are in `docs/DESIGN-inclusion-reconcile.md`
   (`src/core/inclusion.ts`, test/inclusion-chain.test.mjs).

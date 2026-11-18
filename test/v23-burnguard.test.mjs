@@ -24,7 +24,8 @@ console.log("A. universal zero-address burn guard (core/node.ts assembleValueTx)
   ok("send → 0x0 refused (no network)", isBurn(await send(RPC, { to: ZERO, amount: 1, fee: 1000 }, PRIV)));
   ok("sendMany → output to 0x0 refused", isBurn(await sendMany(RPC, { outputs: [{ to: ZERO, value: 1 }], fee: 1000 }, PRIV)));
   ok("fillOffer → output to 0x0 refused", isBurn(await fillOffer(RPC, { proposalId: HASH, score: 1, confidence: 1, outputs: [{ to: ZERO, value: 1 }], fee: 50_000_000 }, PRIV)));
-  ok("propose → fee output to 0x0 refused", isBurn(await propose(RPC, { domain: "cairnx:v1", payloadHash: HASH, uri: "x", expiresEpoch: 100, fee: 1000, outputs: [{ to: ZERO, value: 1 }] }, PRIV)));
+  // the network's proposal minimum as the fee, so the zero-address output is what refuses (a lower fee refuses first)
+ok("propose → fee output to 0x0 refused", isBurn(await propose(RPC, { domain: "cairnx:v1", payloadHash: HASH, uri: "x", expiresEpoch: 100, fee: 25_000_000, outputs: [{ to: ZERO, value: 1 }] }, PRIV)));
   // negative control: a mixed-case all-zero still all-zero (the /i flag) — still refused
   ok("send → mixed-case 0x0 still refused", isBurn(await send(RPC, { to: "0x" + "00".repeat(20), amount: 1, fee: 1000 }, PRIV)));
 }

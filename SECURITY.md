@@ -215,7 +215,16 @@ the fast-path guard in `background.ts` + the positive whitelist in `resolvePendi
 `test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15). A sign-in request whose
 parameters the wallet would refuse at signing (a nonce that is not 8 or more letters and digits, a domain or URI of
 another site, an over-long or multi-line field) is answered `BAD_REQUEST` before it is queued, so no window asks the
-user to approve something that cannot be signed (test/siwc-prequeue.test.mjs). In the sign-in window, the site's
+user to approve something that cannot be signed (test/siwc-prequeue.test.mjs). A proposal or a seal is checked the
+same way, by the function the signer refuses it with (`node.ts` `proposeRefusal`, `signfields.ts` `sealFields`): a
+malformed payload hash or expiry, a domain or URI that is not a string, has an unpaired surrogate or is past the
+network's byte cap, a fee that is not an integer from the network's 0.25 CSD proposal minimum to the 100 CSD cap,
+outputs the signer refuses (the zero address included), a seal claim or domain of the wrong type. Such a request is
+answered `BAD_REQUEST` before it is queued and uses no queue slot; none of the site's golden requests is refused
+(test/propose-prequeue.test.mjs, test/golden-requests-cards.test.mjs). Two kinds of refusal stay after approval:
+the 10% fee cap and the balance need the coins the wallet selects, and the node's own rules that csd-sdk does not
+carry (an empty domain or URI, an all-zero payload hash) are refused by the node at submit with nothing spent,
+because the wallet does not re-declare consensus. In the sign-in window, the site's
 statement is labelled as text from that site, not from the wallet. The legacy `signIn()` is not listed in
 `getCapabilities()`: against the Cairn API it succeeds from no origin (that API no longer serves the `/auth/nonce` it
 uses; a self-hosted API that still serves it would work), and it
@@ -259,6 +268,26 @@ it is not refused, since it may be a record type newer than the wallet. A propos
 does not interpret it and that it cannot change CairnX names, tokens or offers (CairnX reads `cairnx:v1` proposals
 only). The CSD-paid fill card carries the ticker look-alike warning and the unverified-token mark the token-priced card
 shows for the same listing.
+
+A name transfer or a profile write takes effect only from the name's owner, on a finalized name whose lease has not
+lapsed, and a transfer only while no open offer locks the name. The approval window reads the name's record from the
+configured CairnX API after the paint (a profile write shares the read "Keys removed" already makes) and, when the
+record gives the name to another address, shows it not yet finalized, lapsed or (for a transfer) locked, or has no
+record of it, shows a caution that the fee is spent if that still holds when the record is mined, with Approve
+relabelled "Sign anyway". It never refuses and never waits: the served record can be a block behind, and two records
+in one block apply in position order, so a transfer to this account followed by its profile write is valid while the
+record still names the old owner. Approve arms at its 700 ms floor, a read that has not answered is no verdict, and
+the caution does not turn Approve off (test/sign-display-parity.test.mjs section 14). A name service that lies can
+add or hide the caution, never change what is signed. Every name check, these cautions and the finalize, renewal and
+set-address gates alike, is for the account the window shows: a repaint of the same request for another account (an
+unlock after the active account changed) redoes it for that account from the record already read, so a verdict for
+one account never stands for another (section 15; before this, a set-address or finalize judged for the name's owner
+left Approve live for an account that would pay the fee for nothing). A click is bound the same way: one that waits
+for a finalize, set-address or renewal check is abandoned, with nothing signed and the request still queued, when the
+window repaints the request before the check answers, so it never acts on a verdict another paint computed for another
+account (section 16). With the caution, a long "Keys removed" list (the honest
+maximum, 16 keys of 32 characters) can run past the buttons; the caution and everything before the list stay above
+them and the line under the buttons says more is below.
 
 ## Supply chain
 

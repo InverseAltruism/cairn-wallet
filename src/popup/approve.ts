@@ -1,8 +1,8 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, profileDropValue, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
-import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, profileDropValue, APPROVE_LABELS, ACKNOWLEDGE_LABELS, APPROVE_STATE } from "./clearsign.js";
+import { nameActApproveGate, nameRecordCaution, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, SCORE_CANCEL } from "../core/cairnx.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields } from "../core/signfields.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
@@ -42,7 +42,8 @@ let current: any = null;
 // tick: in 0.2.70 the RT-W2 displayed quote therefore almost never reached the signer. Keep it here.
 // `balShort`: the balance read showed the debit exceeds the spendable balance (a pending spend holds coins).
 // `unconfirmed`: the worker returned RESERVATION_UNCONFIRMED for this request; the window shows the confirm step.
-const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean; unconfirmed?: { fclaimTxid: string; fclaimHeight: number; tipHeight: number } }>();
+// `nameAck`: the name record's verdict is a caution to acknowledge (namegate.ts `ackable`); Approve reads "Sign anyway".
+const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean; unconfirmed?: { fclaimTxid: string; fclaimHeight: number; tipHeight: number }; nameAck?: true }>();
 const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
@@ -188,13 +189,20 @@ async function render() {
 function paintUnconfirmed(id: string) {
   const u = rs(id).unconfirmed;
   warnedFor = u ? id : null;
-  const labels = u ? UNCONFIRMED_LABELS : APPROVE_LABELS;
+  paintLabels(id);
+  if (u) $("req").insertAdjacentHTML("afterbegin", reservationUnconfirmedHtml(u));
+}
+// A request whose paint carries a warning to acknowledge (the confirm step, or a name record's caution) has "Sign anyway"
+// and "Cancel", the safe choice with the filled `primary` style; the order is unchanged. Labels only: which button works
+// and when is the latch's and the gates' (armButtons, applyNfin).
+const acknowledges = (id: string): boolean => !!reviewState.get(id)?.unconfirmed || reviewState.get(id)?.nameAck === true;
+function paintLabels(id: string) {
+  const ack = acknowledges(id);
+  const labels = ack ? ACKNOWLEDGE_LABELS : APPROVE_LABELS;
   $("btn-approve").textContent = labels.approve;
   $("btn-reject").textContent = labels.reject;
-  // In the confirm step the safe choice (Cancel) carries the filled `primary` style; the order is unchanged.
-  $("btn-approve").className = u ? "" : "primary";
-  $("btn-reject").className = u ? "primary" : "";
-  if (u) $("req").insertAdjacentHTML("afterbegin", reservationUnconfirmedHtml(u));
+  $("btn-approve").className = ack ? "" : "primary";
+  $("btn-reject").className = ack ? "primary" : "";
 }
 
 // ── nfinalize finalize-window gate (Plan 63 carry-over, shipped with 0.2.54) ──────────────────
@@ -206,11 +214,16 @@ function paintUnconfirmed(id: string) {
 // racing the fetch cannot slip past a blocking verdict. Armed once per request; an nfinalize verdict is
 // then kept current by refreshNfinalize (poll) and nfinAtClick (click), because its window moves with the tip.
 let nfinForId: string | null = null;
+// The signer nfinForId's verdict is for. A verdict belongs to the pair (request, signing address): a repaint of the same
+// request for another signer (an unlock after the active account changed) recomputes it from the record already read.
+let nfinForSigner: string | null = null;
 let nfinBlocked = false;   // read by armButtons' re-enable
-let nfinGate: Promise<{ block: boolean; note: string | null }> | null = null;
+// A name action's verdict; `ackable` marks a caution the user acknowledges with "Sign anyway" (namegate.ts).
+type NameVerdict = { block: boolean; note: string | null; ackable?: true };
+let nfinGate: Promise<NameVerdict> | null = null;
 // The latest verdict for nfinForId. Kept per request id, never per paint: a verdict that settles while the
 // wallet is locked must still reach the unlock repaint (note and button state).
-let nfinSettled: { block: boolean; note: string | null } | null = null;
+let nfinSettled: NameVerdict | null = null;
 // nfinalize only: the inputs of the last verdict, so the poll and the click can re-derive it at a newer tip.
 // The finalize window is a function of the tip, so a verdict computed once goes wrong while the request
 // stays open (too late: Approve would burn the fee; too early: the user is stuck until a reopen).
@@ -221,6 +234,7 @@ let nfinSettled: { block: boolean; note: string | null } | null = null;
 // instead of on every poll tick.
 type NfinLive = { id: string; name: string; tradeApi: string; me: string; fetched: NameFetchResult; recTip: number | null; tip: number | null; at: number; seq: number; tried: number; busy: boolean };
 let nfinLive: NfinLive | null = null;
+let nfinFirst: Promise<unknown> | null = null;   // nfinLive's first read, which a recompute for another signer waits on
 let nfinReadSeq = 0;
 // Re-read the tip this often while an nfinalize request is open (driven by the 1.2 s poll, also while
 // locked). Blocks average 120 s and finalizeWinnerCheck keeps a 2-block margin before the window closes,
@@ -236,6 +250,13 @@ function fetchNameRecord(name: string, tradeApi: string): Promise<NameFetchResul
   const base = String(tradeApi || "").replace(/\/$/, "");
   return readNameRecord((path) => fetch(base + path, { signal: AbortSignal.timeout(NAME_READ_TIMEOUT_MS) }), name);
 }
+// One read of the name record per request for renew, set-address, transfer and profile write: the name check, its
+// recompute for another signer and #profile-drop share it.
+let nameRead: { id: string; read: Promise<NameFetchResult> } | null = null;
+function nameReadFor(id: string, name: string, tradeApi: string): Promise<NameFetchResult> {
+  if (nameRead?.id !== id) nameRead = { id, read: fetchNameRecord(name, tradeApi) };
+  return nameRead.read;
+}
 async function readTip(): Promise<number | null> {
   const t = await bounded(call("tip"));
   return t == null ? null : Number(t);
@@ -249,14 +270,10 @@ async function checkNfinalize(live: NfinLive): Promise<{ block: boolean; note: s
   live.busy = false;
   return nfinalizeApproveGate(live.fetched, live.me, live.tip);
 }
-// same fetch, lighter verdict: nrenew/nset existence + ownership (Plans/68 B2)
-async function checkNameAct(kind: "nrenew" | "nset", name: string, tradeApi: string, me: string): Promise<{ block: boolean; note: string | null }> {
-  return nameActApproveGate(kind, await fetchNameRecord(name, tradeApi), me);
-}
 // The gate's note is written INTO $("req"), so the innerHTML rebuild in render() destroys it exactly like
 // #send-warn. One emitter, used by the settle path, the refresh and the repaint re-attach; it replaces the
 // previous note so a changed verdict never leaves the old one on screen.
-function paintNfinNote(g: { block: boolean; note: string | null }) {
+function paintNfinNote(g: NameVerdict) {
   document.getElementById("nfin-note")?.remove();
   if (!g.note) return;
   // after the cost rows and the warnings under them, before the record's own rows (test/approve-layout-chrome.test.mjs)
@@ -265,13 +282,16 @@ function paintNfinNote(g: { block: boolean; note: string | null }) {
   if (after) after.insertAdjacentHTML("afterend", html); else $("req").insertAdjacentHTML("beforeend", html);
 }
 // Record a verdict for request `id` and, when that request is on screen, show it: note in place, Approve
-// down on a block, back up on a pass once this paint's own re-enable floor has run.
-function applyNfin(id: string, g: { block: boolean; note: string | null }) {
+// down on a block, back up on a pass once this paint's own re-enable floor has run. A caution to acknowledge relabels
+// the buttons and changes neither.
+function applyNfin(id: string, g: NameVerdict) {
   if (nfinForId !== id) return;                      // a different request was armed since: never paint over it (the AW-3 class)
   nfinSettled = g;
   nfinBlocked = g.block;
+  if (g.ackable) rs(id).nameAck = true;
   if (renderedId !== id) return;                     // locked or mid-repaint: the repaint re-attaches nfinSettled
   paintNfinNote(g);
+  if (g.ackable) paintLabels(id);
   const btn = $("btn-approve") as HTMLButtonElement;
   // render() sets renderedId only to current.id (or null), so here current is the request `id`.
   if (g.block) btn.disabled = true;
@@ -318,8 +338,11 @@ async function nfinAtClick(id: string, g: { block: boolean; note: string | null 
   return nfinForId === id && nfinSettled ? nfinSettled : g;
 }
 function armNfinalizeGate(r: any, st: any) {
-  if (nfinForId === r.id) {
-    // W8 (AW-4, the fifth latch): SAME request, repainted. The unlock-after-idle-auto-lock rebuild just
+  // The signer this paint shows (render's renderedSigner): the background signs with it, since it refuses a resolve
+  // whose displayed signer is not the active account (M5).
+  const me = String(st.addr || "");
+  if (nfinForId === r.id && nfinForSigner === me) {
+    // W8 (AW-4, the fifth latch): SAME request and signer, repainted. The unlock-after-idle-auto-lock rebuild just
     // destroyed this gate's note, and that note is a FEE-BURN warning. Re-attach the latest verdict
     // (including one that settled while locked) and return. Re-arming instead would re-run the name
     // fetch on every repaint and reset nfinBlocked, so armButtons' 700ms timer would re-enable Approve on
@@ -327,23 +350,44 @@ function armNfinalizeGate(r: any, st: any) {
     if (nfinSettled) paintNfinNote(nfinSettled);
     return;
   }
-  nfinForId = r.id;
-  nfinBlocked = false; nfinGate = null; nfinSettled = null; nfinLive = null;
+  // A new request, or this one shown for another signer: no verdict for this pair yet, and none from the other signer
+  // is kept (its note, its block, its "Sign anyway"). Every verdict of one request chains on its one read (the shared
+  // record read, or the finalize gate's first read), so one for a signer shown earlier lands before this one.
+  const again = nfinForId === r.id;
+  nfinForId = r.id; nfinForSigner = me;
+  nfinBlocked = false; nfinGate = null; nfinSettled = null;
+  if (!again) { nfinLive = null; nfinFirst = null; }
+  if (reviewState.get(r.id)?.nameAck) { delete rs(r.id).nameAck; paintLabels(r.id); }
   const p = proposeFields(r.params);
   if (r.method !== "propose" || String(p.domain) !== CAIRNX_DOMAIN) return;
   const rec = decodeCairnxRecord(p.uri, p.payloadHash);
   if (!rec || typeof rec.name !== "string") return;
+  const tradeApi = String(st.tradeApi || "");
+  if (rec.t === "nxfer" || rec.t === "nprofile") {
+    // A caution only (namegate.ts nameRecordCaution): nfinGate stays null, so neither the arm nor a click waits for the
+    // read, and a verdict that has not arrived is none.
+    const kind = rec.t;
+    void nameReadFor(r.id, rec.name, tradeApi).then((f) => applyNfin(r.id, nameRecordCaution(kind, f, me)));
+    return;
+  }
   // Plans/68 B2: the gate now also covers nrenew and nset (set-primary / re-point); both ride a fee
   // that burns on a resolver no-op. nfinalize keeps the full winner+window verdict; nrenew/nset get
   // the lighter existence/ownership verdict (nameActApproveGate). Same fail-open transport posture.
   if (rec.t !== "nfinalize" && rec.t !== "nrenew" && rec.t !== "nset") return;
-  // signer captured at arm time = the account this request is DISPLAYED as signing with (M5 pairing:
-  // the background refuses the resolve anyway if the active account changed since render)
   if (rec.t === "nfinalize") {
-    nfinLive = { id: r.id, name: rec.name, tradeApi: String(st.tradeApi || ""), me: String(st.addr || ""), fetched: { failed: true }, recTip: null, tip: null, at: Date.now(), seq: 0, tried: Date.now(), busy: true };
-    nfinGate = checkNfinalize(nfinLive);
+    const live = again && nfinLive?.id === r.id ? nfinLive : null;
+    if (live && nfinFirst) {
+      // the refresh and the click re-check read live.me, so they now judge for this signer
+      live.me = me;
+      nfinGate = nfinFirst.then(() => nfinalizeApproveGate(live.fetched, me, live.tip));
+    } else {
+      nfinLive = { id: r.id, name: rec.name, tradeApi, me, fetched: { failed: true }, recTip: null, tip: null, at: Date.now(), seq: 0, tried: Date.now(), busy: true };
+      nfinGate = checkNfinalize(nfinLive);
+      nfinFirst = nfinGate;
+    }
   } else {
-    nfinGate = checkNameAct(rec.t, rec.name, String(st.tradeApi || ""), String(st.addr || ""));
+    const kind = rec.t;
+    nfinGate = nameReadFor(r.id, rec.name, tradeApi).then((f) => nameActApproveGate(kind, f, me));
   }
   nfinGate.then((g) => applyNfin(r.id, g));
 }
@@ -475,7 +519,7 @@ async function fillProfileDrop(r: any, tradeApi: string) {
   if (!el || !rec || rec.t !== "nprofile" || typeof rec.name !== "string") return;
   const next = (rec.p && typeof rec.p === "object" ? rec.p : {}) as Record<string, unknown>;
   const gen = paintGen;
-  const fetched = await fetchNameRecord(rec.name, tradeApi);
+  const fetched = await nameReadFor(r.id, rec.name, tradeApi);
   if (gen !== paintGen || renderedId !== r.id) return;
   el.innerHTML = profileDropValue(fetched, next);
   el.className = "";
@@ -553,6 +597,12 @@ async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
+  // The click belongs to the paint it was made on: its generation and its signer. Every await below is followed by
+  // `moved()`, and a click whose paint moved (a repaint, which may show another signer, or another request) is
+  // abandoned: it signs nothing, the request stays queued and the current paint's buttons are untouched. So a verdict a
+  // click acts on is the one its own paint computed for its own signer (armNfinalizeGate keys it by both).
+  const gen = paintGen;
+  const moved = (): boolean => !current || current.id !== id || paintGen !== gen || renderedSigner !== signer;
   const displayedQuote = rs(id).tokenQuoteDisplayed; // RT-W2: the number the user actually saw (survives the 1.2 s re-poll)
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
   if (approve && tokenNotReady(current)) { msg("The token amount is not shown yet. Wait for it or reject.", "err"); return; }
@@ -563,9 +613,9 @@ async function resolve(approve: boolean) {
   // verdict proceeds (fail-open). Reject never waits.
   if (approve && nfinGate && nfinForId === id) {
     const first = await nfinGate.catch(() => null);
-    if (!current || current.id !== id) return;   // superseded while awaiting the verdict
+    if (moved()) return abandoned(id);
     const g = await nfinAtClick(id, nfinSettled ?? first);   // the latest verdict, re-derived first when stale
-    if (!current || current.id !== id) return;
+    if (moved()) return abandoned(id);
     if (g?.block) { msg(g.note || "Refusing to sign this finalize.", "err"); return; }
   }
   // Only a click on the warning-state paint of this request acknowledges the unconfirmed reservation.
@@ -612,6 +662,11 @@ async function resolve(approve: boolean) {
   render();
 }
 
+// A click whose paint moved while it waited signs nothing; when its request is still the one on screen, say so.
+function abandoned(id: string): void {
+  if (current?.id === id) msg("This request was shown again while it was being checked. Review it and approve again.", "info");
+}
+
 // The line under the buttons (#ap-state). While the latch holds both buttons it says so; once they arm, while the request
 // does not end in view it counts the recipient rows not fully shown (a site can make a request longer than the window:
 // more recipients, a long origin), or says more is below; otherwise it says whether Approve is live. It reads geometry
@@ -628,7 +683,7 @@ function updateState() {
   const latched = ($("btn-reject") as HTMLButtonElement).disabled;
   const live = !($("btn-approve") as HTMLButtonElement).disabled;
   const text = !shown || !current ? "" : latched ? APPROVE_STATE.arming : open ? moreBelowText(hidden)
-    : live ? (warnedFor === current.id ? APPROVE_STATE.readyUnconfirmed : APPROVE_STATE.ready)
+    : live ? (acknowledges(current.id) ? APPROVE_STATE.readyUnconfirmed : APPROVE_STATE.ready)
     : tokenNotReady(current) ? APPROVE_STATE.tokenWait : APPROVE_STATE.held;
   const el = $("ap-state");
   if (el.textContent !== text) el.textContent = text;

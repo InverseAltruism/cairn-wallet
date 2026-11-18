@@ -2,9 +2,47 @@
 
 ## Unreleased
 
+- A `.csd` name transfer (`nxfer`) or profile write (`nprofile`) for a name the configured CairnX API does not give to
+  the signing account as a finalized live name says so in the approval window: another owner, not yet finalized,
+  lapsed, locked by an open offer (transfers only: a profile write on a locked name takes effect), or no record. The
+  caution says that the fee is spent if that still holds when the record is mined, and Approve reads "Sign anyway"
+  (Reject "Cancel"), the labels of the reservation confirm step; the renewal of another owner's live lease, which had
+  the caution alone, gets the same labels. Nothing is refused and nothing waits: the served record can be a block
+  behind and two records in one block apply in position order. Approve arms at its 700 ms floor, a read that has not
+  answered is no verdict, and the caution does not turn Approve off. A profile write uses the read its "Keys removed"
+  row already made; a transfer makes that one read after the paint (4 fetches before the click instead of 3), and
+  both make the same 3 after it. Every name check (these cautions, and the finalize, renewal and set-address gates) is
+  for the account the window shows: when an unlock after an account switch repaints the same request for another
+  account, the check is redone for it from the record already read. Before, the verdict for the first account stayed,
+  so a set-address or finalize judged for the name's owner left Approve live for an account that would pay the fee
+  for nothing. A click on Approve that waits for a finalize, set-address or renewal check is bound to the paint it was
+  made on (its generation and its signer): if the request is repainted before the check answers, the click signs
+  nothing and the request stays queued. Before, a click made as one account and finished after a repaint for another
+  could act on that account's passing verdict and sign the first account's request, fee and all; an uninterrupted
+  approval by the rightful owner signs at once with the same fetches as before (test/sign-display-parity.test.mjs
+  sections 13 to 16, and
+  test/approve-name-caution-chrome.test.mjs at both window heights, in its own file because
+  test/approve-layout-chrome.test.mjs already takes 158 s of the runner's 180 s per-file cap; the page measurements
+  the two share moved to test/helpers/approve-measure.mjs).
+- A `propose` or `sealClaim` the wallet would refuse at signing is answered `BAD_REQUEST` before it is queued, as a
+  sign-in already was: no window opens and no queue slot is used. The check is the function the signer refuses with
+  (`node.ts` `proposeRefusal`, `signfields.ts` `sealFields`): the payload hash and expiry checks that ran after
+  approval, the outputs, the fee checks that need no coins (an integer, above zero, at most 100 CSD) and the
+  zero-address output, and three that are new to the signer: a domain or uri that is not a string (it threw in the
+  codec, `INTERNAL`), one past the network's 128 and 512 UTF-8 byte caps or with an unpaired surrogate, and a
+  proposal fee below the network's 0.25 CSD minimum (`FEE_TOO_LOW`); in each of the last two the wallet signed a
+  transaction the node rejects. A seal's domain and fee get the same checks. The 10% fee cap needs the selected coins
+  and stays at signing; the node's empty-domain, empty-uri and zero-payload-hash rules are not in csd-sdk and stay
+  the node's, refused at submit with nothing spent. The caps, the surrogate rule and the minimum are the vendored
+  csd-codec `MAX_DOMAIN_BYTES`, `MAX_URI_BYTES`, `isWellFormedUtf16` and `MIN_FEE_PROPOSE`, the first three now
+  exported by the bundle entry (no package version changed), and the window's display caps use them. A table of 48
+  rows gets the same verdict and text on both paths, a good proposal's signed transaction is byte-identical to the one
+  3350dff signed, and the site's 39 golden proposals, attests and fills all queue through the real background
+  (test/propose-prequeue.test.mjs, test/golden-requests-cards.test.mjs).
 - The approval window says what more records do, in text only: no request that could be approved before is refused,
-  Approve still arms at its 700 ms floor, and no read is added (the window and the worker make 3 fetches before the
-  click and 3 after it for a name transfer, and 4 and 3 for a profile write, as before). A name transfer says it is
+  Approve still arms at its 700 ms floor, and that wording added no read (3 fetches before the click and 3 after it
+  for a name transfer, and 4 and 3 for a profile write, as before it; the name check above then adds one read before
+  a transfer's click). A name transfer says it is
   final and clears the name's address record and profile. A profile write that sets `contenthash`, `csd.rpc` or
   `csd.p2p` says what each does for other applications, a removed one is marked the same way in "Keys removed", and
   the sentence that called a profile cosmetic now says the other keys do not change where funds go and that other

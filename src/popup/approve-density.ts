@@ -8,13 +8,14 @@
 // never shows one density and then the other, and a mount landing later fits its reserve, so nothing moves after the
 // latch arms. Served text (a listing, a quote) has no length cap; a hostile offer service can outgrow any reserve and
 // push its own text past the fold in either density, but not what comes before it: the cost and the warnings render
-// first (test/approve-layout-chrome).
+// first (test/approve-layout-chrome). The keys a profile write removes are capped, yet the longest list beside a name
+// caution runs past the fold too, with the caution above it.
 import { fillOf, proposeFields } from "../core/signfields.js";
 import {
   balanceShortBox, checkRow, debitOf, fillViewHtml, nfinNoteBox, nfinalizeApproveGate, profileDropValue, requestRecipients,
   revealPreviewHtml, tokenQuoteHtml, warningCandidates,
 } from "./clearsign.js";
-import { nameActApproveGate } from "../core/namegate.js";
+import { nameActApproveGate, nameRecordCaution } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
 import { PROFILE_MAX_KEYS } from "../vendor/cairnx-spv.js";
 
@@ -63,13 +64,15 @@ function revealCandidates(): string[] {
     revealPreviewHtml({ domain: "w".repeat(128) })];
 }
 // Every verdict note the name action's gate can paint, from its own functions over each kind of answer.
-function nameNoteCandidates(t: "nfinalize" | "nrenew" | "nset", me: string): string[] {
+function nameNoteCandidates(t: "nfinalize" | "nrenew" | "nset" | "nxfer" | "nprofile", me: string): string[] {
+  const answers = [{ failed: true as const }, { record: null }, { record: { owner: OTHER } }, { record: { owner: me, pending: true } },
+    { record: { owner: me, expired: true } }, { record: { owner: me, locked: true } }];
   const notes = t === "nfinalize"
     ? [{ failed: true as const }, { record: null }, { record: { owner: OTHER, pending: true, effectiveHeight: TIP } },
       { record: { owner: me, pending: false } }, { record: { owner: me, pending: true, effectiveHeight: TIP } },
       { record: { owner: me, pending: true, effectiveHeight: 1 } }].map((f) => nfinalizeApproveGate(f, me, TIP))
-    : [{ failed: true as const }, { record: null }, { record: { owner: OTHER } }, { record: { owner: me, pending: true } },
-      { record: { owner: me, expired: true } }].map((f) => nameActApproveGate(t, f, me));
+    : t === "nxfer" || t === "nprofile" ? answers.map((f) => nameRecordCaution(t, f, me))
+    : answers.map((f) => nameActApproveGate(t, f, me));
   return notes.flatMap((g) => (g.note ? [nfinNoteBox({ block: g.block, note: g.note })] : []));
 }
 
@@ -82,7 +85,7 @@ export function reservesFor(r: any, me: string): Reserve[] {
   if (debitOf(r) > 0) out.push({ after: ["cost"], candidates: [balanceShortBox()] });
   if (r?.method === "propose" && String(p.domain) === CAIRNX_DOMAIN) {
     const rec = decodeCairnxRecord(p.uri, p.payloadHash);
-    if (rec && typeof rec.name === "string" && (rec.t === "nfinalize" || rec.t === "nrenew" || rec.t === "nset")) {
+    if (rec && typeof rec.name === "string" && (rec.t === "nfinalize" || rec.t === "nrenew" || rec.t === "nset" || rec.t === "nxfer" || rec.t === "nprofile")) {
       out.push({ after: ["send-warn", "cost"], candidates: nameNoteCandidates(rec.t, me) });
     }
   }

@@ -1,7 +1,7 @@
-// The verdict on a name action (renew, or a name record such as set primary) from the name service's record, and
-// the one reader of that record. The approval window shows the verdict before Approve (approve.ts); the wallet
-// re-derives it before it signs its own renew and set primary (wallet.ts), so a review primed earlier cannot pay a
-// fee the resolver would ignore.
+// The verdict on a name action (renew, or a name record such as set primary, a transfer or a profile write) from the
+// name service's record, and the one reader of that record. The approval window shows the verdict before Approve
+// (approve.ts); the wallet re-derives it before it signs its own renew and set primary (wallet.ts), so a review primed
+// earlier cannot pay a fee the resolver would ignore.
 
 /** The name service's answer: a record, a clean 404 (`record: null`), or no usable answer (`failed`). */
 export type NameFetchResult =
@@ -59,6 +59,25 @@ export function nameActApproveGate(kind: "nrenew" | "nset", fetched: NameFetchRe
     return { block: false, note: "This name is owned by a different address: approving pays that owner's renewal and extends their lease, not yours. If you just bought it, wait for the purchase to settle.", ackable: true };
   }
   return { block: false, note: null };
+}
+
+// A transfer or a profile write takes effect only from the name's owner, on a finalized name whose lease has not lapsed,
+// and a transfer only while no open offer locks the name (the vendored applyNxfer and applyNprofile; a profile write
+// ignores the lock). The served record can be a block behind, and two records in one block apply in position order (a
+// name sent to this account, then its profile write), so each mismatch is an acknowledged caution, never a block. A
+// read with no answer is no verdict.
+export function nameRecordCaution(kind: "nxfer" | "nprofile", fetched: NameFetchResult, me: string): { block: false; note: string | null; ackable?: true } {
+  if (fetched.failed) return { block: false, note: null };
+  const rec = fetched.record;
+  const lead = rec == null ? "The name service has no record of this name."
+    : typeof rec.owner === "string" && rec.owner.toLowerCase() !== me.toLowerCase() ? "The name service shows this name owned by another address."
+    : rec.pending === true ? "The name service shows this name as not yet finalized."
+    : rec.expired === true ? "The name service shows this name as lapsed."
+    : kind === "nxfer" && rec.locked === true ? "The name service shows this name locked by an open offer."
+    : null;
+  if (!lead) return { block: false, note: null };
+  const what = kind === "nxfer" ? "transfer" : "profile write";
+  return { block: false, ackable: true, note: `${lead} If that still holds when this ${what} is mined, it has no effect and the fee is spent. The service can be a block behind, so the wallet does not refuse it.` };
 }
 
 /** The wallet's own renew and set primary, at the sign: null to sign, `refuse` with the text, or `confirm` with the

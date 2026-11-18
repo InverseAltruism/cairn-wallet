@@ -8,7 +8,8 @@ import { PortRegistry } from "./core/events.js";
 import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
 import { fillTargetOf } from "./core/fillpreflight.js";
 import { siwcParamsRefusal } from "./core/siwcparams.js";
-import { sendFields, revealFields } from "./core/signfields.js";
+import { sendFields, revealFields, proposeFields, sealFields } from "./core/signfields.js";
+import { proposeRefusal, proposeFeeRefusal } from "./core/node.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -32,8 +33,9 @@ let reqSeq = 0;
 // Per-origin "connected sites" (MetaMask model): once the user approves a `connect`
 // for an origin, that origin may READ the address (connect/getAddress) without a fresh
 // prompt. This grants ADDRESS VISIBILITY ONLY; every signing / fund-moving method
-// (signin/send/propose/attest/sealClaim/revealClaim) ALWAYS goes through the
-// clear-signing approval window, every time, regardless of connection state. Consent
+// (signin/signinWithCsd/send/propose/attest/fillOffer/sealClaim/revealClaim) and
+// requestPermissions ALWAYS go through the clear-signing approval window, every time,
+// regardless of connection state. Consent
 // is wiped on `reset` and revocable from the popup. Stored separately from the vault.
 const consentStore = chromeStore();
 const CONSENT_KEY = "connectedOrigins";
@@ -391,13 +393,17 @@ const fillHolds = new Map<string, string>(); // fill target -> id of the request
 const REFUSED_RAISE_GAP_MS = 5_000;
 let refusedRaiseAt = Number.NEGATIVE_INFINITY;
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
+// A seal signs a proposal of its own domain with the page's fee (wallet.sealClaim): its sealFields refusal, then the fee's.
+const sealRefusal = (params: unknown): string | undefined => { const sf = sealFields(params); return sf.refused ?? proposeFeeRefusal(sf.fee)?.error; };
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
-  // A sign-in the wallet would refuse after the user approved it is refused now, before anyone is asked.
-  if (method === "signinWithCsd") {
-    const bad = siwcParamsRefusal(params, origin);
-    if (bad) return Promise.resolve({ ok: false, code: "BAD_REQUEST", error: bad });
-  }
+  // A sign-in, proposal or seal the wallet would refuse after the user approved it is refused now, before anyone is
+  // asked, by the function the signer refuses it with.
+  const bad = method === "signinWithCsd" ? siwcParamsRefusal(params, origin)
+    : method === "propose" ? proposeRefusal(proposeFields(params))?.error
+    : method === "sealClaim" ? sealRefusal(params)
+    : undefined;
+  if (bad) return Promise.resolve({ ok: false, code: "BAD_REQUEST", error: bad });
   const fillTarget = fillTargetOf(method, params);
   const holder = fillTarget ? fillHolds.get(fillTarget) : undefined;
   if (holder) {
