@@ -150,7 +150,9 @@ shown in full, and one the wallet has not paid before, or one that resembles an 
 - Send: "Send CSD", the amount and every recipient with its amount. Approve stays off when the balance after is short.
 - Fill: "Fill offer", the total, every recipient, what the listing gives as the offer service lists it, the offer's
   expiry, the offer id and that a refused fill keeps the payment. A token-priced fill shows a warning and the offer
-  service's token quote, and Approve waits for the quote.
+  service's token quote, and Approve waits for the quote. Both kinds mark a listed token that is a well-known or
+  Cairn-like ticker Cairn has not verified (or a CAIRN that is not Cairn's deploy) with a warning, and an amount of
+  another unpinned token "(unverified token)", from the token record the window already reads.
 - Attest: "Support / review" with the target, score and confidence; "Cancel your offer" or "Cancel your bid" for score
   0 when the node reports the signer as the target's proposer; "Reserve an open offer" for score 50, confidence 0.
 - Seal and reveal: "Seal a claim" with the domain and claim; "Reveal a sealed claim" with the seal txid and the domain
@@ -161,14 +163,18 @@ shown in full, and one the wallet has not paid before, or one that resembles an 
   - `deploy`: "CairnX token deploy": ticker and name, supply (also at the record's decimals), decimals, minting.
   - `mint`: "CairnX token mint": token, and the amount or "default lot".
   - `offer`: "CairnX offer": give, want, the partial-fill minimum, the only taker, the accepted bid, the paid-to
-    address (flagged as above), memo.
+    address (flagged as above), memo. The only taker gets the look-alike flag and never the first-time one (an
+    answer to a bid always names an address new to the wallet). An offer whose want is zero says that it asks
+    nothing in return and that whoever fills it gets what the user gives for nothing.
   - `bid`: "CairnX bid": what is bid and for what, memo.
   - `ocancel`: "CairnX cancel offers": the open offers it cancels (one ticker's, one name's, or all).
   - `ncommit`: ".csd registration, step 1 of 3 (commit)": the commitment.
   - `name`: ".csd registration, step 2 of 3 (reserve, free)", or ".csd name claim" without a salt: the name.
   - `nfinalize`: ".csd registration, step 3 of 3 (finalize and pay)": the name. The window reads the reservation from
     the configured CairnX API and keeps Approve off when its answer shows the finalize would pay the fee for nothing.
-  - `nxfer`: ".csd name transfer": the name and the new owner (flagged as above).
+  - `nxfer`: ".csd name transfer": the name and the new owner (flagged as above), and a caution that the transfer is
+    final, that the new owner controls the name from then on and that it clears the name's address record and its
+    profile.
   - `nset`: ".csd name → address record": the name and the address (flagged as above); the zero address reads
     ".csd un-point (clear address record)". Approve stays off when the CairnX API answers that the name is not
     registered or has another owner.
@@ -176,14 +182,21 @@ shown in full, and one the wallet has not paid before, or one that resembles an 
     period under another owner. A renewal or finalize that pays less than the current fee gets a warning.
   - `nprofile`: ".csd identity profile": every key and value, the notice that the record replaces the whole profile
     and removes any key not listed, a "Keys removed" row with the current keys it drops (read from the configured
-    CairnX API, display only), and a warning when a key or value looks like an address. An empty profile reads
-    "Clears".
+    CairnX API, display only), and a warning when a key or value looks like an address. When the new map sets
+    `contenthash`, `csd.rpc` or `csd.p2p`, a caution says what each does for other applications (the site they open
+    for the name; the node address they may read the chain through for the name; a peer they may dial), and a
+    removed one in "Keys removed" carries the same words. The sentence that the keys do not change where funds go
+    (and that other applications may read some of them) covers the other keys only. An empty profile reads "Clears".
   - `tmeta`: "CairnX token metadata (issuer only)": the token and the content hash.
   - `fclaim`: "Reserve an open offer": the offer id, and that it moves no money.
 - A proposal in another domain is shown raw as "Post a proposal": the fee, any outputs, the expiry, and the domain,
-  payload hash and URI as sent. The wallet does not fetch the URI or interpret the record.
+  payload hash and URI as sent, with a line that the wallet does not interpret records of that domain, that they
+  cannot change CairnX names, tokens or offers, and that this one costs the network fee and any outputs shown. The
+  wallet does not fetch the URI.
 - A `cairnx:v1` proposal the parser refuses (a payload hash that is not the record's, an unknown type, a uri that is
-  not canonical JSON) is shown raw the same way, with no row saying that the record is invalid.
+  not canonical JSON) is shown raw the same way, with a caution that the wallet does not recognise the record, that it
+  may be a record type newer than this wallet, that the network may give it no effect and that the fee (and any
+  outputs) is spent either way. It is not refused.
 
 ## Not offered
 

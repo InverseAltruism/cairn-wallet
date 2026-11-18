@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- The approval window says what more records do, in text only: no request that could be approved before is refused,
+  Approve still arms at its 700 ms floor, and no read is added (the window and the worker make 3 fetches before the
+  click and 3 after it for a name transfer, and 4 and 3 for a profile write, as before). A name transfer says it is
+  final and clears the name's address record and profile. A profile write that sets `contenthash`, `csd.rpc` or
+  `csd.p2p` says what each does for other applications, a removed one is marked the same way in "Keys removed", and
+  the sentence that called a profile cosmetic now says the other keys do not change where funds go and that other
+  applications may read some of them. A `cairnx:v1` record the wallet cannot read gets a caution that the network may
+  give it no effect and the fee is spent either way; a proposal in another domain says the wallet does not interpret
+  it and that it cannot change CairnX names, tokens or offers. An offer's only taker gets the look-alike check and no
+  first-time notice, and an offer whose want is zero says it gives the asset for nothing. The CSD-paid fill card shows
+  the ticker look-alike warning and the unverified-token mark the token-priced card shows, with the deploy id from the
+  token read `fillOfferView` already made. The 39 proposals, attests and fills among the site's 46 golden requests
+  (cairn `test/fixtures/wallet-requests-golden.json`, copied with its commit and sha256) still paint their cards with
+  nothing refused (test/golden-requests-cards.test.mjs, test/clearsign.ts, test/cairnx.ts,
+  test/approve-card-honesty.test.mjs section 5, test/sign-display-parity.test.mjs section 13, the new cases in
+  test/approve-layout-chrome.test.mjs).
 - A `.csd` profile write (`nprofile`) says in the approval window that the record replaces the name's whole profile and
   that any key not listed is removed: one record sets the whole map, so a write from one site removed the keys another
   site wrote, and the card listed only the keys being set. The card also has a "Keys removed" row: the keys of the

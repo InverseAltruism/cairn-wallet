@@ -13,14 +13,17 @@
 //       RED-FIRST: drop the balShort block in fillBalance and 3a, 3b fail.
 //   (4) The same in the real window for an nset: RED-FIRST: pass bare strings to sendWarnings in approve.ts
 //       and 4a fails.
+//   (5) A CSD-paid fill card shows the ticker look-alike warning and the unverified mark the token-priced card shows for
+//       the same listing data, with the deploy id from the token read fillOfferView already makes. RED-FIRST: on 649fcb4
+//       5a, 5b, 5c, 5e and 5f fail; drop the warning row from fillViewHtml and 5a, 5b, 5f fail; drop the mark and 5c fails.
 // PAIRED HONEST PATHS: 1a (a payment still warns as before), 2c (a direct fill shows no reservation
 // line), 3c (a covered request arms Approve after the click-through delay).
 //
 // Run: node --import tsx test/approve-card-honesty.test.mjs   (offline)
 import assert from "node:assert/strict";
-import { sendWarnings, fillViewHtml, tokenQuoteHtml } from "../src/popup/clearsign.ts";
+import { sendWarnings, fillViewHtml, tokenQuoteHtml, tickerWarning } from "../src/popup/clearsign.ts";
 import { fillOfferView, tokenFillQuote } from "../src/core/cairnxview.ts";
-import { buildNameSet, CAIRNX_DOMAIN } from "../src/core/cairnx.ts";
+import { buildNameSet, CAIRNX_DOMAIN, PINNED_TOKENS } from "../src/core/cairnx.ts";
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { APPROVE_IDS } from "./helpers/approve-dom.mjs";
 
@@ -77,10 +80,46 @@ t("1f the card says the wallet will refuse a fill only when it will", () => {
   });
 }
 
+
+console.log("5. a CSD-paid fill card's listing ticker (pure)");
+const DEP = "0x" + "d1".repeat(32);
+const listing = (giveTicker, giveDeployId, extra = {}) => ({ ok: true, offerId: LIST, giveTicker, giveAmount: "5000000", giveDecimals: 6, giveDeployId, ...extra });
+const quoteFor = (giveTicker, giveDeployId) => tokenQuoteHtml({ ok: true, ticker: "PAY", amount: "1", fee: "0", total: "1", wantDecimals: 0, wantDeployId: DEP, giveTicker, giveAmount: "5000000", giveDecimals: 6, giveDeployId });
+t("5a a look-alike ticker gets the warning the token-priced card shows for the same listing", () => {
+  const w = tickerWarning("USDT", DEP);
+  assert.match(w, /USDT is a well-known or Cairn-like ticker that Cairn has not verified/);
+  assert.ok(fillViewHtml(listing("USDT", DEP), LIST).includes(w) && quoteFor("USDT", DEP).includes(w));
+});
+t("5b a CAIRN that is not Cairn's deploy, or whose record did not load, is warned as on the token-priced card", () => {
+  for (const dep of [DEP, undefined]) {
+    const w = tickerWarning("CAIRN", dep);
+    assert.ok(w.length > 0 && fillViewHtml(listing("CAIRN", dep), LIST).includes(w) && quoteFor("CAIRN", dep).includes(w));
+  }
+});
+t("5c an ordinary unpinned ticker carries the unverified mark, on a whole and on a partial listing", () => {
+  assert.match(fillViewHtml(listing("FOO", DEP), LIST), /<dt>You receive<\/dt><dd><b>5 FOO = 5000000 base units<\/b> <span class="dim">\(unverified token\)<\/span>/);
+  assert.match(quoteFor("FOO", DEP), /\(unverified token\)/);
+  const partial = fillViewHtml(listing("FOO", DEP, { partial: true, listing: { status: "open", give: { ticker: "FOO", amount: "5000000" }, want: { value: "100000000", payto: SELLER }, min: "1000000", feeBps: 150, height: 1 } }), LIST, undefined, [{ to: SELLER, value: 50_000_000 }]);
+  assert.match(partial, /<dt>You receive<\/dt><dd>about <b>[^<]* FOO = [^<]*<\/b> <span class="dim">\(unverified token\)<\/span>/);
+  assert.match(partial, /<dt>Whole listing<\/dt><dd>5 FOO = 5000000 base units <span class="dim">\(unverified token\)<\/span>/);
+});
+t("5d honest: Cairn's own CAIRN gets neither the warning nor the mark", () => {
+  const html = fillViewHtml(listing("CAIRN", PINNED_TOKENS.CAIRN.deployId), LIST);
+  assert.doesNotMatch(html, /check danger|unverified token|not verified|not Cairn's/);
+});
+{
+  const reads = [];
+  const io = { addr: () => ME, tradeGet: async (path) => { reads.push(path); return path.startsWith("/cairnx/offer/") ? { ok: true, status: 200, json: async () => ({ id: LIST, status: "open", seller: SELLER, give: { ticker: "USDT", amount: "5" }, want: { value: "100", payto: SELLER }, feeBps: 150, expiresEpoch: 3_910, height: 117_000 }) } : path === "/cairnx/token/USDT" ? { ok: true, status: 200, json: async () => ({ ticker: "USDT", decimals: 6, deployId: DEP }) } : { ok: false, status: 404, json: async () => ({}) }; } };
+  const v = await fillOfferView(io, LIST);
+  t("5e the fill view carries the listing token's deploy id from the token read it already makes (no new read)", () => {
+    assert.equal(v.giveDeployId, DEP); assert.deepEqual(reads, [`/cairnx/offer/${LIST}`, "/cairnx/token/USDT"]);
+  });
+}
+
 // ── the real approval window ──────────────────────────────────────────────────────────────────────────
 const { byId, registry, El } = installFakeDom();
 for (const id of APPROVE_IDS) registry.set(id, new El(id));
-const state = { pending: [], balance: 100e8, resolves: 0, views: 0 };
+const state = { pending: [], balance: 100e8, resolves: 0, views: 0, view: null };
 const h = {
   status: () => ({ unlocked: true, accounts: [{ label: "A1", addr: ME }], active: 0, addr: ME, tradeApi: "https://x/trade/api" }),
   pending: () => state.pending,
@@ -88,7 +127,7 @@ const h = {
   history: () => [],
   sealedClaims: () => [],
   tip: () => 117_000, epoch: () => 3_900, tipFloor: () => 0,
-  fillOfferView: (id) => { state.views++; return { ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "18401371902", giveDecimals: 8, expiresAt: 117_330, _id: id }; },
+  fillOfferView: (id) => { state.views++; return state.view ?? { ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "18401371902", giveDecimals: 8, expiresAt: 117_330, _id: id }; },
   resolve: () => { state.resolves++; return { ok: true, txid: "0x" + "ee".repeat(32) }; },
 };
 installBridge(h);
@@ -147,6 +186,19 @@ t("4a the warning says where sends to the name will go, not that payments are ir
   const w = byId("send-warn");
   assert.ok(w && !w.hidden); assert.match(w.innerHTML, /First time pointing a name at/); assert.doesNotMatch(w.innerHTML, /[Pp]ayments are irreversible/);
 });
+
+
+console.log("5. the look-alike listing ticker in the window");
+state.view = { ok: true, offerId: LIST, giveTicker: "USDT", giveAmount: "5000000", giveDecimals: 6, giveDeployId: DEP, expiresAt: 117_330 };
+state.pending = [fillReq("f5", LIST)];
+await tick(); await flush();
+const offAt = byId("btn-approve").disabled;
+await new Promise((r) => setTimeout(r, 800)); await flush();
+t("5f the window's fill card shows the look-alike warning, and Approve arms after the click-through delay as before", () => {
+  assert.ok(byId("fill-view").innerHTML.includes(tickerWarning("USDT", DEP)));
+  assert.equal(offAt, true); assert.equal(byId("btn-approve").disabled, false);
+});
+state.view = null;
 
 console.log(`\napprove-card-honesty: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1,10 +1,10 @@
 // Clear-signing formatter coverage; the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, recipientKey, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate, FILL_PAYS, profileDropValue, PROFILE_DROP_PENDING, PROFILE_DROP_UNREAD } from "../src/popup/clearsign.js";
+import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, recipientKey, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate, FILL_PAYS, profileDropValue, PROFILE_DROP_PENDING, PROFILE_DROP_UNREAD, requestRecipients, warningCandidates } from "../src/popup/clearsign.js";
 import { nameActApproveGate } from "../src/core/namegate.js";
 import { explorerLink } from "../src/core/wallet.js";
-import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
-import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck, type NameState } from "../src/vendor/cairnx-spv.js";
+import { buildNameRenew, buildNameSet, buildNameProfile, buildNameXfer, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, finalizeWinnerCheck, offer as vOffer, type NameState } from "../src/vendor/cairnx-spv.js";
 import { checker } from "./helpers/check.mjs";
 
 const { check: ok, done } = checker();
@@ -259,6 +259,52 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   const capped = profileDropValue(served(many), next);
   ok("profileDropValue: lists the first 16 keys (the consensus cap) and counts the rest", (capped.match(/<code>/g) || []).length === 16 && capped.includes("<code>k15</code>") && !capped.includes("<code>k16</code>") && capped.endsWith(" and 4 more"));
   ok("profileDropValue: 16 keys are listed in full with no count", !profileDropValue(served(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`k${i}`, "v"]))), next).includes("more"));
+}
+
+// The cards say what a record does for other applications and for the user, from the request alone (2026-11-18).
+// RED-FIRST: on 649fcb4 13 checks here fail; the three that pass are the two paired honest paths and the new-taker check
+// (it held because no taker was checked at all; the LOOKALIKE_ONLY mutation turns it red). Removing each new sentence
+// from src/popup/clearsign.ts fails the check that names it.
+{
+  const pick = (b: { uri: string; payloadHash: string }) => ({ uri: b.uri, payloadHash: b.payloadHash });
+  const req = (b: { uri: string; payloadHash: string }) => describe({ method: "propose", origin: "https://site.example", params: { domain: CAIRNX_DOMAIN, uri: b.uri, payloadHash: b.payloadHash, fee: 25000000, expiresEpoch: 2000 } });
+  const xfer = req(buildNameXfer({ name: "alice", to: ADDR }));
+  ok("nxfer: the card says the transfer is final and clears the address record and the profile",
+    xfer.includes("This transfer is final: the new owner controls <code>alice.csd</code> from then on. It also clears the name's address record and its profile."));
+
+  const all = req(buildNameProfile({ name: "alice", profile: { contenthash: "ipfs://x", "csd.p2p": "peer.example:7779", "csd.rpc": "https://rpc.example", bio: "hi" } }));
+  ok("nprofile: contenthash, csd.p2p and csd.rpc each say what they do for other applications",
+    all.includes("Other applications read these keys:<br><code>contenthash</code>: the site other applications open for this name.<br><code>csd.p2p</code>: a peer other applications may dial.<br><code>csd.rpc</code>: the node address other applications may read the chain through for this name."));
+  ok("nprofile: the funds sentence speaks for the other keys only, and no longer calls the profile cosmetic",
+    all.includes("The other keys do <b>not</b> change where funds go, and other applications may read some of them.") && !/[Cc]osmetic metadata/.test(all));
+  const one = req(buildNameProfile({ name: "alice", profile: { contenthash: "ipfs://x" } }));
+  ok("nprofile: one such key alone gets the singular line and no sentence about other keys",
+    one.includes("Other applications read this key:<br><code>contenthash</code>: the site other applications open for this name.") && !one.includes("The other keys"));
+  const plain = req(buildNameProfile({ name: "alice", profile: { avatar: "https://b.example/y.png" } }));
+  ok("nprofile: a profile of ordinary keys gets one funds sentence that is true and no other-applications line",
+    plain.includes("Profile keys on <code>alice.csd</code>. They do <b>not</b> change where funds go, and other applications may read some of them.") && !plain.includes("Other applications read th"));
+  const clear = req(buildNameProfile({ name: "alice", profile: {} }));
+  ok("nprofile: the Clears card no longer calls the profile cosmetic", clear.includes("It does not change where funds go; other applications that read this profile find it empty.") && !/[Cc]osmetic/.test(clear));
+  const served = (profile: unknown) => ({ record: { name: "alice", owner: ADDR, profile } });
+  ok("profileDropValue: a removed contenthash, csd.rpc or csd.p2p carries what it did for other applications",
+    profileDropValue(served({ contenthash: "a", "csd.rpc": "b", "csd.p2p": "c", avatar: "d" }), { avatar: "e" })
+      === "<code>contenthash</code> (the site other applications open for this name), <code>csd.rpc</code> (the node address other applications may read the chain through for this name), <code>csd.p2p</code> (a peer other applications may dial)");
+
+  const OWN = "0x" + "11".repeat(20), LOOK = "0x111111" + "44".repeat(15) + "1111", NEW = "0x" + "22".repeat(20);
+  const offerReq = (taker: string) => ({ method: "propose", params: { domain: CAIRNX_DOMAIN, ...pick(vOffer({ give: { ticker: "TKN", amount: "5" }, want: { value: "9" }, taker })), fee: 25000000 } });
+  ok("offer: the taker is a recipient the window checks", requestRecipients(offerReq(NEW)).some((x) => x.kind === "taker" && x.to === NEW));
+  const lookFlags = sendWarnings(requestRecipients(offerReq(LOOK)), [], [OWN]);
+  ok("offer: a taker that looks like one of this wallet's addresses gets the look-alike warning", lookFlags.length === 1 && lookFlags[0]!.tier === "danger" && lookFlags[0]!.html.includes("Only this address can fill the offer."));
+  ok("offer: a new taker gets no first-time notice", sendWarnings(requestRecipients(offerReq(NEW)), [], [OWN]).length === 0);
+  ok("offer, paired honest path: a new payto still gets its first-time notice", sendWarnings([{ to: NEW, kind: "proceeds" }], [], [OWN]).length === 1);
+  ok("offer: the taker row names its address for the row marks", describe(offerReq(NEW)).includes(`<div data-to="${NEW}"><dt>Only fillable by</dt>`));
+  ok("offer: the reserved warning box holds the taker's look-alike line and never a first-time line for it",
+    warningCandidates([{ to: NEW, kind: "taker" }]).flat().every((c) => c.tier === "danger") && warningCandidates([{ to: NEW, kind: "taker" }]).length > 0);
+  const gift = (want: { value: string } | { ticker: string; amount: string }) => describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, ...pick(vOffer({ give: { ticker: "TKN", amount: "5" }, want })), fee: 25000000 } });
+  const FREE = "This offer asks <b>nothing</b> in return: whoever fills it gets what you give for nothing.";
+  ok("offer: a want of zero CSD says the asset goes for nothing", gift({ value: "0" }).includes(FREE));
+  ok("offer: a want of zero tokens says the asset goes for nothing", gift({ ticker: "OTH", amount: "0" }).includes(FREE));
+  ok("offer, paired honest path: a priced offer has no such line", !gift({ value: "1" }).includes("asks <b>nothing</b>"));
 }
 
 // NFIN-WINDOW-1 (Plan 63 carry-over, 0.2.54); the approve-path nfinalize gate: a displaced or

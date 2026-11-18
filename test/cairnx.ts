@@ -97,7 +97,7 @@ const RECORDS: [string, string, string, string[]][] = [
   ["nset", `{"addr":"${ADDR_CD}","name":"satoshi","t":"nset","v":1}`,
     "0x22ea436ed94a3af8465f5f3f491707e350f14007d1a04f0a78eff4b5f858a74d", ["address record", "satoshi.csd", ADDR_CD]],
   ["nprofile", `{"name":"satoshi","p":{"avatar":"https://a.co/x.png","com.twitter":"satoshi","display":"Satoshi"},"t":"nprofile","v":1}`,
-    "0x2534b3e7e47ef746054197113c843bc9579a65dd6bbc7e724a55b86f16a20d4e", ["identity profile", "satoshi.csd", "avatar", "com.twitter", "Satoshi", "does <b>not</b> change where funds go"]],
+    "0x2534b3e7e47ef746054197113c843bc9579a65dd6bbc7e724a55b86f16a20d4e", ["identity profile", "satoshi.csd", "avatar", "com.twitter", "Satoshi", "do <b>not</b> change where funds go"]],
 ];
 // an address is grouped into spans, so a field may be whole only in the shown text (tags dropped)
 const surfaces = (html: string, w: string) => html.includes(w) || html.replace(/<[^>]+>/g, "").includes(w);
@@ -131,7 +131,7 @@ for (const [t, uri, ph, wants] of RECORDS) {
   const cleared = buildNameProfile({ name: "satoshi", profile: {} });
   check("buildNameProfile: empty map (= clear) is byte-exact", cleared.uri === `{"name":"satoshi","p":{},"t":"nprofile","v":1}`);
   const clearHtml = cairnxDescribe(cleared.uri, cleared.payloadHash);
-  check("clear-sign: an empty profile renders as 'clears' + cosmetic-only", clearHtml !== null && /clears/i.test(clearHtml!) && /cosmetic only/i.test(clearHtml!));
+  check("clear-sign: an empty profile renders as 'clears' and says it does not change where funds go", clearHtml !== null && /clears/i.test(clearHtml!) && /does not change where funds go/i.test(clearHtml!));
   // decode is semantics-AGNOSTIC (mirrors the resolver): a hand-crafted record with an `addr` KEY still
   // decodes (the resolver would store it); but the clear-sign WARNS it is cosmetic, not a send address.
   const addrUri = `{"name":"satoshi","p":{"addr":"0x1234"},"t":"nprofile","v":1}`;
@@ -173,6 +173,18 @@ for (const [t, uri, ph, wants] of RECORDS) {
   check("describe(propose, unknown cairnx shape) still shows the RAW uri", fullUnknown.includes("futurething") && fullUnknown.includes("<dt>URI</dt>"));
   const fullOther = describe({ method: "propose", params: { domain: "csd:apps", payloadHash: "0x" + "11".repeat(32), uri: t[1], fee: 1 } });
   check("a cairnx-looking uri in a NON-cairnx domain is NOT decoded", fullOther.includes("Post a proposal") && !fullOther.includes("token transfer"));
+  // The raw card says what it can of a record it shows raw (2026-11-18): a cairnx:v1 record this wallet cannot read may be
+  // newer than this build, so it is shown with a caution, never refused; a record in another domain is outside CairnX.
+  // RED-FIRST: on 649fcb4 the four checks that name the sentences fail; remove either sentence and its checks fail.
+  const UNREAD = "This wallet does not recognise this cairnx:v1 record, so it cannot show what it does; it may be a record type newer than this wallet. The network may give it no effect, and the fee is spent either way.";
+  const OTHER = "This wallet does not interpret records of this domain: they cannot change CairnX names, tokens or offers. This one costs the network fee.";
+  check("raw cairnx:v1 card: cautions that the wallet does not recognise the record and the fee is spent either way", fullUnknown.includes(`<div class="check caution">`) && fullUnknown.includes(UNREAD) && !fullUnknown.includes("does not interpret records"));
+  const unknownOut = describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, payloadHash: cairnxPayloadHash({ t: "futurething", v: 1 }), uri: `{"t":"futurething","v":1}`, fee: 1, outputs: [{ to: ADDR_AB, value: 5 }] } });
+  check("raw cairnx:v1 card with outputs: the outputs are spent either way too", unknownOut.includes("The network may give it no effect, and the fee and the outputs shown are spent either way."));
+  check("raw other-domain card: says the wallet does not interpret the domain and it cannot change CairnX state", fullOther.includes(OTHER) && !fullOther.includes("does not recognise"));
+  const otherOut = describe({ method: "propose", params: { domain: "csd:apps", payloadHash: "0x" + "11".repeat(32), uri: "https://x.example/p/1", fee: 1, outputs: [{ to: ADDR_AB, value: 5 }] } });
+  check("raw other-domain card with outputs: it costs the fee and the outputs shown", otherOut.includes("This one costs the network fee and the outputs shown."));
+  check("raw cards keep the domain, payload hash and URI rows", [fullOther, fullUnknown].every((h) => h.includes("<dt>Domain</dt>") && h.includes("<dt>Payload hash</dt>") && h.includes("<dt>URI</dt>")));
   // a memo is dApp-controlled text → must be HTML-escaped in the structured view
   const memoRec = { v: 1, t: "transfer", ticker: "TKN", amount: "1", to: ADDR_AB, memo: "<img src=x onerror=alert(1)>" };
   const memoHtml = cairnxDescribe(canonicalJson(memoRec), cairnxPayloadHash(memoRec));

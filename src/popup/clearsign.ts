@@ -283,11 +283,14 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
       const give = sideStr(r.give, meta), want = sideStr(r.want, meta);
       const extras: Row[] = [
         ...(r.min !== undefined ? [["Partial fills from", baseAmt(r.min)] as Row] : []),
-        ...(r.taker !== undefined ? [["Only fillable by", `<code class="addr">${groupedAddr(String(r.taker))}</code>`] as Row] : []),
+        ...(r.taker !== undefined ? [["Only fillable by", `<code class="addr">${groupedAddr(String(r.taker))}</code>`, String(r.taker)] as Row] : []),
         ...(r.bid !== undefined ? [["Accepts bid", `<code>${esc(r.bid)}</code>`] as Row] : []),
         ...((r.want as any)?.payto !== undefined ? [["Paid to", `<code class="addr">${groupedAddr(String((r.want as any).payto))}</code>`, String((r.want as any).payto)] as Row] : []),
       ];
-      return parts("CairnX offer", rows([["Give", give.html], ["Want", want.html], ...extras, ...memo]) + warnRows(give.warn, want.warn), lede("Escrows what you give until it is filled or cancelled."));
+      // parseRecord allows a want of zero (CSD value or token amount): the filler then pays nothing for the give.
+      const w = r.want as { value?: unknown; amount?: unknown };
+      const free = /^0+$/.test(String(w?.value ?? w?.amount ?? "")) ? "This offer asks <b>nothing</b> in return: whoever fills it gets what you give for nothing." : "";
+      return parts("CairnX offer", rows([["Give", give.html], ["Want", want.html], ...extras, ...memo]) + warnRows(free, give.warn, want.warn), lede("Escrows what you give until it is filled or cancelled."));
     }
     case "bid": {
       const give = sideStr(r.give, meta), want = sideStr(r.want, meta);
@@ -309,7 +312,9 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
       return parts(".csd registration, step 3 of 3 (finalize and pay)", rows([nameRow]),
         lede("Completes your reservation and pays the fee shown above (the registration fee, or the decaying recapture premium for a lapsed name). Only the winner's finalize registers the name; a finalize the chain does not credit still pays the fee, so approve only at the site's finalize step."));
     case "nxfer":
-      return parts(".csd name transfer", rows([nameRow, ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`, String(r.to)]]));
+      // What the vendored resolver's applyNxfer does: it sets the owner and clears the name's addr and profile.
+      return parts(".csd name transfer", rows([nameRow, ["To", `<code class="addr">${groupedAddr(String(r.to))}</code>`, String(r.to)]])
+        + caution(`This transfer is final: the new owner controls <code>${esc(r.name)}.csd</code> from then on. It also clears the name's address record and its profile.`));
     case "nset": {
       // QA #4: a zero-address nset is the V23 "un-point" sentinel, not a send to 0x0. The wallet cannot know the
       // landing height at sign time, so it states both effects and the backstop (sends to a 0x0-resolving name are
@@ -323,20 +328,26 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
     case "nrenew":
       return parts(".csd name renewal", lede(`Extends the lease on <code>${esc(r.name)}.csd</code>.`));
     case "nprofile": {
-      // v1.9 identity profile: cosmetic, it does not change where funds go. Every key and value being set is shown in
-      // full (parseRecord caps a value at 256 bytes), an empty map clears it, and a field named or shaped like an
-      // address is flagged (a dApp could try to dress a profile value up as a send target).
+      // v1.9 identity profile: it does not change where this wallet sends funds, and other applications read some keys
+      // (PROFILE_KEY_USE). Every key and value being set is shown in full (parseRecord caps a value at 256 bytes), an
+      // empty map clears it, and a field named or shaped like an address is flagged (a dApp could try to dress a profile
+      // value up as a send target).
       const pm = (r.p && typeof r.p === "object" ? r.p : {}) as Record<string, unknown>;
       const keys = Object.keys(pm);
-      if (!keys.length) return parts(".csd profile", lede(`<b>Clears</b> the identity profile on <code>${esc(r.name)}.csd</code>.`), lede(`<span class="dim">Cosmetic only; it does not change where funds go.</span>`));
+      if (!keys.length) return parts(".csd profile", lede(`<b>Clears</b> the identity profile on <code>${esc(r.name)}.csd</code>.`), lede(`<span class="dim">It does not change where funds go; other applications that read this profile find it empty.</span>`));
+      const used = keys.filter((k) => Object.hasOwn(PROFILE_KEY_USE, k));
+      const usedNote = used.length ? caution(`Other applications read ${used.length === 1 ? "this key" : "these keys"}:` + used.map((k) => `<br><code>${esc(k)}</code>: ${PROFILE_KEY_USE[k]}.`).join("")) : "";
+      const funds = used.length === keys.length ? ""
+        : used.length ? lede("The other keys do <b>not</b> change where funds go, and other applications may read some of them.")
+        : lede(`Profile keys on <code>${esc(r.name)}.csd</code>. They do <b>not</b> change where funds go, and other applications may read some of them.`);
       const flagKey = keys.find((k) => k === "addr" || k === "address" || k === "coin" || /0x[0-9a-fA-F]{40}/.test(String(pm[k])));
       const warn = flagKey ? danger(`This profile's “${esc(flagKey)}” field is cosmetic text, <b>not</b> a send address. Funds always go to the name's verified record, never the profile.`) : "";
       // The record replaces the whole map, so keys another site wrote go too. Said from the request alone; approve.ts
       // fills #profile-drop from the name service's current profile and never waits on it.
       const replaces = caution(`This record replaces the whole profile on <code>${esc(r.name)}.csd</code>: any key not listed below is removed.`);
-      return parts(".csd identity profile", lede(`Cosmetic metadata on <code>${esc(r.name)}.csd</code>. It does <b>not</b> change where funds go.`) + replaces + warn
+      return parts(".csd identity profile", replaces + usedNote + warn
         + rows([["Keys removed", `<span id="profile-drop" class="dim">${PROFILE_DROP_PENDING}</span>`]]),
-        rows(keys.map((k) => [esc(k), `<code>${esc(String(pm[k]))}</code>`] as Row)));
+        funds + rows(keys.map((k) => [esc(k), `<code>${esc(String(pm[k]))}</code>`] as Row)));
     }
     case "tmeta":
       return parts("CairnX token metadata (issuer only)", rows([["Token", `<b>${esc(r.ticker)}</b>`], ["Content", `<code>${esc(r.hash)}</code>`]]));
@@ -354,6 +365,13 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: Token
   return x && x.title + x.main + x.notes;
 }
 
+// The profile keys other applications act on, and what each does for them: an nprofile card names them in the new map
+// and in #profile-drop.
+const PROFILE_KEY_USE: Readonly<Record<string, string>> = Object.freeze({
+  contenthash: "the site other applications open for this name",
+  "csd.rpc": "the node address other applications may read the chain through for this name",
+  "csd.p2p": "a peer other applications may dial",
+});
 // #profile-drop: the keys of the name's current profile, as the name service serves it, that an nprofile's new map does
 // not set. The served map is untrusted text: every key is escaped, cut loudly past the 32-character key length (PKEY
 // allows 1 to 32, so a valid key is never cut), and at most PROFILE_MAX_KEYS are listed. Display only.
@@ -366,7 +384,7 @@ export function profileDropValue(fetched: NameFetchResult, next: Record<string, 
   const dropped = Object.keys(cur).filter((k) => !Object.hasOwn(next, k));
   if (!dropped.length) return "none";
   const more = dropped.length - PROFILE_MAX_KEYS;
-  return dropped.slice(0, PROFILE_MAX_KEYS).map((k) => `<code>${truncLoud(k, PROFILE_KEY_CAP)}</code>`).join(", ") + (more > 0 ? ` and ${more} more` : "");
+  return dropped.slice(0, PROFILE_MAX_KEYS).map((k) => `<code>${truncLoud(k, PROFILE_KEY_CAP)}</code>${Object.hasOwn(PROFILE_KEY_USE, k) ? ` (${PROFILE_KEY_USE[k]})` : ""}`).join(", ") + (more > 0 ? ` and ${more} more` : "");
 }
 
 // The mounts approve.ts fills after the paint: first-time and address-poisoning rows, the token debit quote, the
@@ -497,7 +515,15 @@ export function describe(r: any): string {
     // wallet), then the capped and loud domain, hash and uri: unbounded text under the Approve button must never
     // scroll what this costs out of view. The uri cap is 512 (the node's own on-chain cap), so no valid record's uri
     // is cut; only oversized text the chain would reject anyway gets the marker.
-    return title("Post a proposal") + cost + xfer + SEND_WARN + outRows
+    // What the wallet can say of a record it shows raw. A cairnx:v1 record it cannot read may be a type newer than this
+    // build, so it is shown with a caution and never refused. CairnX reads only cairnx:v1 proposals, so a record in
+    // another domain cannot change its names, tokens or offers.
+    const spent = outs.length ? "the fee and the outputs shown are" : "the fee is";
+    const unread = String(q.domain) === CAIRNX_DOMAIN
+      ? caution(`This wallet does not recognise this cairnx:v1 record, so it cannot show what it does; it may be a record type newer than this wallet. The network may give it no effect, and ${spent} spent either way.`)
+      : "";
+    const otherDomain = unread ? "" : lede(`This wallet does not interpret records of this domain: they cannot change CairnX names, tokens or offers. This one costs the network fee${outs.length ? " and the outputs shown" : ""}.`);
+    return title("Post a proposal") + cost + xfer + unread + SEND_WARN + outRows + otherDomain
       + rows([...exp, ["Domain", `<code>${truncLoud(String(q.domain), DOMAIN_CAP)}</code>`], ["Payload hash", `<code>${truncLoud(String(q.payloadHash || "(none)"), 80)}</code>`], ["URI", `<code>${truncLoud(String(q.uri || "(none)"), 512)}</code>`]]);
   }
   // score and confidence are serialized as u32 (>>>0); the window shows the same value that is signed, so a negative
@@ -611,39 +637,45 @@ export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
 // to the listing's payee buys, computed with the vendored previewFill over the listing the card already read; the
 // whole listing gets its own row. When the figure cannot be computed (a field it needs is missing or malformed) the
 // card says so instead of showing the whole give as received. Display only: the fill preflight binds what is signed.
-function partialReceive(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number; partial?: boolean; listing?: FillListing }, outputs: unknown): string | null {
+type FillView = { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; giveDeployId?: string; expiresAt?: number; partial?: boolean; listing?: FillListing };
+// A listed token's figure in both scales, escaped, and its unverified mark, as tokenQuoteHtml marks the same listing on
+// the token-priced card.
+const giveFigure = (view: FillView, base: string): string => escapeHtml(tokenAmountBothScales(base, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker));
+const giveMark = (view: FillView): string => unverifiedMark(view.giveTicker, displayDecimals(view.giveTicker, view.giveDecimals).pinned, view.giveDeployId);
+function partialReceive(view: FillView, outputs: unknown): string | null {
   const l = view.listing;
   if (!view.partial) return null;
   if (!l || l.min === undefined || "name" in l.give || view.giveTicker === undefined || view.giveAmount === undefined) return noPartialEstimate(view);
   let pay = 0n;
   for (const o of Array.isArray(outputs) ? outputs : []) if (String(o?.to ?? "").toLowerCase() === l.want.payto) pay += csdBase(o?.value) ?? 0n;
-  const dec = displayDecimals(view.giveTicker, view.giveDecimals).decimals;
-  const listingRow = rows([["Whole listing", `${escapeHtml(tokenAmountBothScales(view.giveAmount, dec, view.giveTicker))} for ${escapeHtml(fmtCsd(l.want.value))}`]]);
+  const listingRow = rows([["Whole listing", `${giveFigure(view, view.giveAmount)}${giveMark(view)} for ${escapeHtml(fmtCsd(l.want.value))}`]]);
   let p: ReturnType<typeof previewFill>;
   try { p = previewFill(l as unknown as OfferState, pay); } catch { return noPartialEstimate(view); }
   if (!p.deliverable) {
     const why = p.reason === "below-min" ? "the payment is below what the listing accepts" : p.reason === "zero-delivery" ? "the payment rounds to no tokens at the listing's price" : "the listing cannot take this payment";
     return danger(`By the offer service's listing this payment receives nothing: ${why}. Check the listing on the site before approving.`) + listingRow;
   }
-  return rows([["You receive", `about <b>${escapeHtml(tokenAmountBothScales(String(p.got), dec, view.giveTicker))}</b> <span class="dim">(computed from the offer service's listing)</span>`]]) + listingRow;
+  return rows([["You receive", `about <b>${giveFigure(view, String(p.got))}</b>${giveMark(view)} <span class="dim">(computed from the offer service's listing)</span>`]]) + listingRow;
 }
-function noPartialEstimate(view: { giveTicker?: string; giveAmount?: string; giveDecimals?: number }): string {
+function noPartialEstimate(view: FillView): string {
   const whole = view.giveTicker !== undefined && view.giveAmount !== undefined
-    ? rows([["Whole listing", `${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))} <span class="dim">(as listed by the offer service)</span>`]])
+    ? rows([["Whole listing", `${giveFigure(view, view.giveAmount)}${giveMark(view)} <span class="dim">(as listed by the offer service)</span>`]])
     : "";
   return danger(`Could not calculate what this payment receives from the offer service's listing, so it is not shown here. Check the listing on the site before approving.`) + whole;
 }
 
-export function fillViewHtml(view: { ok?: boolean; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; partial?: boolean; listing?: FillListing } | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown): string {
+export function fillViewHtml(view: FillView | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown): string {
   if (!view || !view.ok) return danger(`Could not load this listing from the offer service, so what you receive is not shown here. Check the listing on the site before approving.`);
   const reserved = !!view.offerId && view.offerId.toLowerCase() !== String(proposalId).toLowerCase();
   const gets = view.giveName !== undefined ? `<b>${escapeHtml(view.giveName)}.csd</b>`
     : view.giveTicker !== undefined && view.giveAmount !== undefined
-      ? `<b>${escapeHtml(tokenAmountBothScales(view.giveAmount, displayDecimals(view.giveTicker, view.giveDecimals).decimals, view.giveTicker))}</b>`
+      ? `<b>${giveFigure(view, view.giveAmount)}</b>${giveMark(view)}`
       : "";
   const exp = offerExpiryLine(view.expiresAt, tip);
   const partial = partialReceive(view, outputs);
+  const tickerWarn = view.giveTicker !== undefined ? tickerWarning(view.giveTicker, view.giveDeployId) : "";
   return (partial ?? (gets ? rows([["You receive", `${gets} <span class="dim">(as listed by the offer service)</span>`]]) : danger(`The offer service did not say what this listing gives. Check the listing on the site before approving.`)))
+    + (tickerWarn ? danger(tickerWarn) : "")
     + (exp ? lede(exp) : "")
     + (reserved ? rows([["Listing", `<code>${escapeHtml(view.offerId!)}</code>`]]) + lede(`<span class="dim">The offer id below is your reservation of this listing.</span>`) : "");
 }
@@ -734,15 +766,19 @@ export function recipientStatus(to: string, sentTo: string[], ownAddrs: string[]
 }
 // What the address receives decides the warning's wording: only a payment moves CSD, and a name record
 // moves none. A bare string is a payment.
-export type RecipientKind = "payment" | "token" | "name-point" | "name-transfer" | "proceeds";
-const FIRST_TIME_LEAD: Record<RecipientKind, string> = {
+export type RecipientKind = "payment" | "token" | "name-point" | "name-transfer" | "proceeds" | "taker";
+// Kinds checked for a look-alike only, never flagged as first-time.
+const LOOKALIKE_ONLY: ReadonlySet<RecipientKind> = new Set(["taker"]);
+const FIRST_TIME_LEAD: Record<Exclude<RecipientKind, "taker">, string> = {
   payment: "First time sending to", token: "First time sending tokens to", "name-point": "First time pointing a name at",
   "name-transfer": "First time transferring a name to", proceeds: "First time using this payout address:",
 };
+// recipientFlags never makes a first-time flag for a LOOKALIKE_ONLY kind, so its lead is never shown.
+const firstTimeLead = (k: RecipientKind): string => (k === "taker" ? "" : FIRST_TIME_LEAD[k]);
 const WARN_TAIL: Record<RecipientKind, string> = {
   payment: "Payments are irreversible.", token: "Token transfers are irreversible.",
   "name-point": "Sends to this name will go to this address.", "name-transfer": "The new owner controls the name.",
-  proceeds: "The sale proceeds will be paid to this address.",
+  proceeds: "The sale proceeds will be paid to this address.", taker: "Only this address can fill the offer.",
 };
 /** The recipients a request's first-time and look-alike checks cover. Send, fillOffer and a propose with outputs move
  *  funds to dApp-chosen recipients (propose outputs could be a disguised payout, so they are covered too, and shown
@@ -769,6 +805,9 @@ export function requestRecipients(r: any): { to: string; kind: RecipientKind }[]
     // proceeds. The field is shown at clear-sign but had no automated look-alike flag; add it here so it
     // gets the same first-time / address-poisoning check as every other dApp-supplied recipient.
     if (rec && rec.t === "offer" && rec.want && typeof (rec.want as any).payto === "string") outs.push({ to: (rec.want as any).payto, kind: "proceeds" });
+    // An offer's only taker gets the look-alike check alone (LOOKALIKE_ONLY): every answer to a bid names an address new
+    // to this wallet, so a first-time notice there would teach users to skip the box.
+    if (rec && rec.t === "offer" && typeof rec.taker === "string") outs.push({ to: rec.taker, kind: "taker" });
   }
   return outs;
 }
@@ -792,7 +831,7 @@ export function recipientFlags(recipients: Recipient[], sentTo: string[], ownAdd
     seen.add(to.toLowerCase());
     const { lookalike, firstTime } = recipientStatus(to, sentTo, ownAddrs);
     if (lookalike) flags.push({ to, kind, tier: "danger", lookalike });
-    else if (firstTime) flags.push({ to, kind, tier: "caution", lookalike: null });
+    else if (firstTime && !LOOKALIKE_ONLY.has(kind)) flags.push({ to, kind, tier: "caution", lookalike: null });
   }
   return flags;
 }
@@ -813,7 +852,7 @@ export function warningChecks(flags: RecipientFlag[]): Check[] {
     const html = named
       ? fs.map((f) => f.tier === "danger"
         ? `<b>Possible address-poisoning:</b> ${addrTag(f.to)} resembles ${addrTag(f.lookalike ?? "")} you've seen before but is <b>not</b> identical. Verify every character. ${WARN_TAIL[f.kind]}`
-        : `${FIRST_TIME_LEAD[f.kind]} ${addrTag(f.to)}. Verify every character. ${WARN_TAIL[f.kind]}`).join("<br>")
+        : `${firstTimeLead(f.kind)} ${addrTag(f.to)}. Verify every character. ${WARN_TAIL[f.kind]}`).join("<br>")
       : tier === "danger"
         ? (fs.length === 1
           ? `<b>Possible address-poisoning:</b> 1 of these addresses resembles one you've seen before but is <b>not</b> identical. It is marked in the list below. Verify every character. ${tailsOf(fs)}`
@@ -838,17 +877,18 @@ export function sendWarnings(recipients: Recipient[], sentTo: string[], ownAddrs
 export function warningCandidates(recipients: Recipient[]): Check[][] {
   const rs = recipients.map(recipientOf).filter((r) => r.to.toLowerCase() !== TREASURY_ADDR);
   if (!rs.length) return [];
-  const flag = (r: { to: string; kind: RecipientKind }, tier: "danger" | "caution"): RecipientFlag =>
-    ({ ...r, tier, lookalike: tier === "danger" ? r.to : null });
-  const len = (r: { kind: RecipientKind }) => FIRST_TIME_LEAD[r.kind].length + WARN_TAIL[r.kind].length;
+  // a LOOKALIKE_ONLY recipient is never flagged caution, so a combination giving it that tier leaves it out
+  const flag = (r: { to: string; kind: RecipientKind }, tier: "danger" | "caution"): RecipientFlag[] =>
+    tier === "caution" && LOOKALIKE_ONLY.has(r.kind) ? [] : [{ ...r, tier, lookalike: tier === "danger" ? r.to : null }];
+  const len = (r: { kind: RecipientKind }) => firstTimeLead(r.kind).length + WARN_TAIL[r.kind].length;
   const longest = [...rs].sort((a, b) => len(b) - len(a)).slice(0, NAMED_WARNINGS);
   const tiers = ["danger", "caution"] as const;
   const out: Check[][] = [];
   const combos = longest.length === 1 ? tiers.map((t) => [t]) : tiers.flatMap((a) => tiers.map((b) => [a, b]));
-  for (const c of combos) out.push(warningChecks(longest.map((r, i) => flag(r, c[i]!))));
+  for (const c of combos) out.push(warningChecks(longest.flatMap((r, i) => flag(r, c[i]!))));
   if (rs.length > NAMED_WARNINGS) {
-    out.push(warningChecks(rs.map((r) => flag(r, "danger"))), warningChecks(rs.map((r) => flag(r, "caution"))),
-      warningChecks(rs.map((r, i) => flag(r, i === 0 ? "danger" : "caution"))));
+    out.push(warningChecks(rs.flatMap((r) => flag(r, "danger"))), warningChecks(rs.flatMap((r) => flag(r, "caution"))),
+      warningChecks(rs.flatMap((r, i) => flag(r, i === 0 ? "danger" : "caution"))));
   }
   return out;
 }
