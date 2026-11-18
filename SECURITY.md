@@ -156,6 +156,13 @@ warns and lets you decide:
   that ownership depends on state outside the name's own history; it gets an explicit caution. The replay shows it
   only when the records it replays include the sale: the stale-seller residual above is the case where they do not.
 
+Decided on 2026-11-18 for names bought on the market: the base of name verification will move from a replay of one
+name's records to a full replay of the `cairnx:v1` domain, from a pinned record log plus the complete blocks above the
+pin, and the per-name verifier will be retired with that change. The reason is a principle: some resolver rules read
+state outside the name, and a replay of one name's records cannot evaluate them, so it can undercount and accept what the
+chain refused. Until that change ships, the caution on such names stays as described above
+(`docs/DESIGN-viafill.md`, "Decision").
+
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
 refuse: a lease the chain shows has lapsed (or that a resolver reports lapsed and the chain cannot show
 current), and a change between review and confirm. At confirm the wallet **re-resolves and
@@ -225,6 +232,16 @@ those methods and `reset` (which no screen offers) are refused on the dApp chann
 user approves the dialog
 (enforced by the positive method whitelist in `resolvePending`, proven by
 `test/extension-boundary.ts`).
+
+A `.csd` profile record (`nprofile`) replaces the name's whole profile, and any site can ask the wallet to sign one, so a
+write from one site removes the keys another site wrote. The approval window says so with the request itself: the record
+replaces the whole profile and any key not listed is removed. It also lists the keys of the current profile that the
+record removes, read from the name record the configured CairnX API serves, never from the requesting site; when the read
+fails, times out or the name is unknown, the row says the current profile could not be read. That list is the name
+service's answer and display only: Approve arms at its 700 ms floor whether or not the read has answered, a click never
+waits for it, and nothing that is signed reads it. A name service that lies can make the list wrong (list keys the name
+does not have, or leave out keys it has), never change the record that is signed. The same card is shown for every
+origin, the wallet's own site included (test/sign-display-parity.test.mjs section 8).
 
 ## Supply chain
 

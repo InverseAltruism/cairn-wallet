@@ -98,7 +98,7 @@ const CASES = [
   ["name-nset", [req("ns", "propose", O, prop(cx.buildNameSet({ name: "alice", addr: LOOK })))], seen, ["Possible address-poisoning", "#nfin-note", "Resolves to", "cost"]],
   ["name-nset-unpoint", [req("ns0", "propose", O, prop(cx.buildNameSet({ name: "alice", addr: "0x" + "0".repeat(40) })))], {}, ["#nfin-note", "cost"]],
   ["name-nxfer", [req("nx", "propose", O, prop(cx.buildNameXfer({ name: "alice", to: RCPT })))], {}, ["First time transferring a name to", "to:1", "cost"]],
-  ["name-nprofile", [req("np", "propose", O, prop(cx.buildNameProfile({ name: "alice", profile: { bio: "builder", url: "https://example.org", wallet: RCPT } })))], {}, ["is cosmetic text", "cost"]],
+  ["name-nprofile", [req("np", "propose", O, prop(cx.buildNameProfile({ name: "alice", profile: { bio: "builder", url: "https://example.org", wallet: RCPT } })))], {}, ["is cosmetic text", "replaces the whole profile", "Keys removed", "cost"]],
   ["token-mint", [req("mi", "propose", O, prop(v.mint({ ticker: "TKN", amount: "100" })))], {}, ["cost"]],
   ["token-bid", [req("bi", "propose", O, prop(v.bid({ give: { value: "5000000000" }, want: { ticker: "TKN", amount: "4638" } })))], {}, ["cost"]],
   ["offer-cancel", [req("oc", "propose", O, prop(v.offerCancelAll({ ticker: "TKN" })))], {}, ["cost"]],
@@ -121,7 +121,7 @@ function measure([expect, origin]) {
   const barTop = Math.min(document.getElementById("btn-reject").getBoundingClientRect().top, document.getElementById("btn-approve").getBoundingClientRect().top);
   const fold = Math.min(reqEl.getBoundingClientRect().bottom, barTop, innerHeight);
   const shown = (el) => !!el && el.getClientRects().length > 0 && el.getBoundingClientRect().height > 0;
-  const WEIGHT_ROWS = new Set(["To", "Resolves to", "Paid to", "Only fillable by", "You receive", "Amount", "Token", "Give", "Want", "Bidding", "For", "Name", "Claim"]);
+  const WEIGHT_ROWS = new Set(["To", "Resolves to", "Paid to", "Only fillable by", "You receive", "Amount", "Token", "Give", "Want", "Bidding", "For", "Name", "Claim", "Keys removed"]);
   const weight = [];
   const add = (el, what) => { if (shown(el)) weight.push([el, what]); };
   add(document.getElementById("ap-origin"), "origin");
@@ -569,6 +569,50 @@ try {
       t.check(`${tag}: the request body enters over 320 ms from transparent (${at.duration} ms, fades ${at.fades})`, at.duration === 320 && at.fades);
       t.check(`${tag}: ${reducedMotion === "reduce" ? "a crossfade, no movement" : "it rises as it enters"} (moves ${at.moves})`, at.moves === (reducedMotion !== "reduce"));
       t.check(`${tag}: once armed the line says Approve is ready ("${after}")`, after === STATE.ready);
+      t.check(`${tag}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  // An nprofile's removed-keys row: Approve arms while the name service has not answered and the row shows its pending
+  // text; the answer, held until the test releases it, fills the row as text (served HTML and a bidi control included)
+  // without moving the buttons, and everything with weight, the row too, stays above them. The second case is a current
+  // profile at the 16-key cap with every key removed. Every nprofile card paints compact at this size, so the row's
+  // density reserve (reservesFor) decides nothing here; these checks hold with or without it.
+  console.log("profile row:");
+  function heldNameService(profile) {
+    let release;
+    const answered = new Promise((r) => { release = r; });
+    window.__answerName = () => release();
+    const real = window.fetch;
+    window.fetch = (url, opts) => /\/cairnx\/name\//.test(String(url))
+      ? answered.then(() => new Response(JSON.stringify({ name: "alice", owner: "0x" + "ab".repeat(20), profile }), { status: 200, headers: { "content-type": "application/json" } }))
+      : real(url, opts);
+  }
+  const hostileKey = "<img src=x onerror=alert(1)>";
+  const wide = Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`${i}`.padStart(32, "w"), "v"]));
+  for (const theme of ["light", "dark"]) for (const [name, profile, want] of [
+    ["two sites' keys", { contenthash: "ipfs://site-a", avatar: "https://a.example/x.png", [hostileKey]: "v", "ab‮cd": "v" }, `contenthash, ${hostileKey}, ab\\u202Ecd`],
+    ["16 keys, all removed", wide, Object.keys(wide).join(", ")],
+  ]) {
+    const tag = `${theme} profile row, ${name}`;
+    const r = req("pp", "propose", D, prop(cx.buildNameProfile({ name: "alice", profile: { avatar: "https://b.example/y.png" } })));
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: [r] }, { viewport: { width: WIDTH, height: INNER_H }, colorScheme: theme, init: heldNameService, initArg: profile });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      const row = () => page.evaluate(() => document.getElementById("profile-drop")?.textContent ?? null);
+      const before = { row: await row(), at: await buttonsAt(page), live: await page.evaluate(() => !document.getElementById("btn-approve").disabled) };
+      t.check(`${tag}: while the read is held, Approve is armed (${before.live}) and the row says "${before.row}"`, before.live && before.row === "checking the current profile");
+      await page.evaluate(() => window.__answerName());
+      await page.waitForFunction(() => document.getElementById("profile-drop")?.textContent !== "checking the current profile", null, { timeout: 5_000 });
+      await settle(page);
+      const after = { row: await row(), at: await buttonsAt(page), img: await page.evaluate(() => document.querySelectorAll("#req img").length), live: await page.evaluate(() => !document.getElementById("btn-approve").disabled) };
+      t.check(`${tag}: the answer fills the row as text ("${after.row.slice(0, 60)}", ${after.img} img elements)`, after.row === want && after.img === 0);
+      t.check(`${tag}: the buttons do not move when the row fills, and Approve stays armed (${before.at} then ${after.at}, ${after.live})`, after.at.join() === before.at.join() && after.live);
+      const m = await page.evaluate(measure, [["replaces the whole profile", "Keys removed", "cost"], r.origin]);
+      t.check(`${tag}: everything with weight is above the buttons (missing: ${m.missing.join(", ") || "none"}; below: ${m.below.join(", ") || "none"})`, m.missing.length === 0 && m.below.length === 0 && m.scrollTop === 0);
       t.check(`${tag}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();

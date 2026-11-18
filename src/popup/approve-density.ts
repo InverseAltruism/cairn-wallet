@@ -3,18 +3,20 @@
 //
 // A request paints roomy only when all of it fits the window in the roomy scale with every mount that fills after the
 // paint (the recipient warnings, the balance note, a name action's verdict, a fill's listing, the token quote, a
-// reveal's secret) reserved at the tallest content it can take. approve.ts decides this synchronously between writing
-// the request and the first frame and never changes it for that paint, so the window never shows one density and then
-// the other, and a mount landing later fits its reserve, so nothing moves after the latch arms. Served text (a listing,
-// a quote) has no length cap; a hostile offer service can outgrow any reserve and push its own text past the fold in
-// either density, but not what comes before it: the cost and the warnings render first (test/approve-layout-chrome).
+// reveal's secret, the keys a profile write removes) reserved at the tallest content it can take. approve.ts decides
+// this synchronously between writing the request and the first frame and never changes it for that paint, so the window
+// never shows one density and then the other, and a mount landing later fits its reserve, so nothing moves after the
+// latch arms. Served text (a listing, a quote) has no length cap; a hostile offer service can outgrow any reserve and
+// push its own text past the fold in either density, but not what comes before it: the cost and the warnings render
+// first (test/approve-layout-chrome).
 import { fillOf, proposeFields } from "../core/signfields.js";
 import {
-  balanceShortBox, checkRow, debitOf, fillViewHtml, nfinNoteBox, nfinalizeApproveGate, requestRecipients, revealPreviewHtml,
-  tokenQuoteHtml, warningCandidates,
+  balanceShortBox, checkRow, debitOf, fillViewHtml, nfinNoteBox, nfinalizeApproveGate, profileDropValue, requestRecipients,
+  revealPreviewHtml, tokenQuoteHtml, warningCandidates,
 } from "./clearsign.js";
 import { nameActApproveGate } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN } from "../core/cairnx.js";
+import { PROFILE_MAX_KEYS } from "../vendor/cairnx-spv.js";
 
 export type Density = "roomy" | "compact";
 // A mount's room: `id` names a mount describe() wrote (hidden and empty); `after` lists the ids a box is placed after,
@@ -47,6 +49,12 @@ function tokenQuoteCandidates(): string[] {
     tokenQuoteHtml({ ...q, giveName: NAME }, TIP),
   ];
 }
+// Every honest current profile at its longest (PROFILE_MAX_KEYS keys of 32 wide characters, all removed) and the unread
+// line; a hostile name service can outgrow this, as with any served text.
+function profileDropCandidates(): string[] {
+  const keys = Object.fromEntries(Array.from({ length: PROFILE_MAX_KEYS }, (_, i) => [`${i}`.padStart(32, "w"), "v"]));
+  return [profileDropValue({ failed: true }, {}), profileDropValue({ record: { profile: keys } }, {})];
+}
 function revealCandidates(): string[] {
   return [revealPreviewHtml({ failed: true }), revealPreviewHtml(null), revealPreviewHtml({ domain: "w".repeat(128), claim: "W".repeat(400) }),
     revealPreviewHtml({ domain: "w".repeat(128) })];
@@ -78,6 +86,7 @@ export function reservesFor(r: any, me: string): Reserve[] {
   if (document.getElementById("fill-view")) out.push({ id: "fill-view", candidates: fillViewCandidates(String(fillOf(r?.method, r?.params)?.proposalId || "")) });
   if (document.getElementById("token-sim")) out.push({ id: "token-sim", candidates: tokenQuoteCandidates() });
   if (document.getElementById("reveal-preview")) out.push({ id: "reveal-preview", candidates: revealCandidates() });
+  if (document.getElementById("profile-drop")) out.push({ id: "profile-drop", candidates: profileDropCandidates() });
   return out;
 }
 

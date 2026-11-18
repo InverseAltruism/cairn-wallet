@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- A `.csd` profile write (`nprofile`) says in the approval window that the record replaces the name's whole profile and
+  that any key not listed is removed: one record sets the whole map, so a write from one site removed the keys another
+  site wrote, and the card listed only the keys being set. The card also has a "Keys removed" row: the keys of the
+  current profile, from the name record the configured CairnX API serves, that the new map does not set (escaped, a key
+  over 32 characters cut loudly, at most 16 listed). It says "checking the current profile" until the read answers and
+  "could not read the current profile" when the read fails, times out or the name is unknown. The read is display only:
+  Approve arms at its 700 ms floor whether or not it has answered and a click never waits for it. The empty-map "Clears"
+  card is unchanged, and the same card shows for every origin (test/clearsign.ts, test/sign-display-parity.test.mjs
+  section 8, the "profile row" cases in test/approve-layout-chrome.test.mjs).
+- Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
+  `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
+  domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with
+  it; until then the caution on those names stays.
+
 ## 0.3.3
 
 - The approval window shows the fields the wallet signs, for every request type it paints. An `attest` at the

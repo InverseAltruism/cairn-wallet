@@ -18,7 +18,8 @@
 // Run: npx tsx test/sign-display-parity.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
-import { fmtCsd, CONF_TOKEN_FILL, CAIRNX_DOMAIN } from "../src/core/cairnx.ts";
+import { fmtCsd, CONF_TOKEN_FILL, CAIRNX_DOMAIN, buildNameProfile } from "../src/core/cairnx.ts";
+import { PROFILE_DROP_PENDING } from "../src/popup/clearsign.ts";
 import { world, truthful, PRIV } from "./helpers/fillworld.mjs";
 import { offer } from "../src/vendor/cairnx-spv.js";
 import { mkCoin, txReply } from "./_coin.ts";
@@ -32,7 +33,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const until = async (cond, n = 400) => { for (let i = 0; i < n && !cond(); i++) await sleep(5); return cond(); };
 let listener = () => undefined;
 const popup = (method, ...args) => new Promise((res) => listener({ kind: "popup", method, args }, WINDOW_PAGE, res));
-const dapp = (method, params) => { const out = { reply: undefined }; listener({ kind: "dapp", method, params }, { origin: ORIGIN, url: ORIGIN + "/", tab: { id: 2 } }, (r) => { out.reply = r; }); return out; };
+const dapp = (method, params, origin = ORIGIN) => { const out = { reply: undefined }; listener({ kind: "dapp", method, params }, { origin, url: origin + "/", tab: { id: 2 } }, (r) => { out.reply = r; }); return out; };
 
 // The window's channel is the worker's popup channel; `sent` records every call the window makes, with its arguments.
 const sent = [];
@@ -66,6 +67,9 @@ Object.assign(globalThis.chrome, {
 const coin = mkCoin(5_000e8);
 const submits = [], posted = [];
 let fw = null, me = "";
+// The name service's `/cairnx/name/:name` answer (section 8); every other section reads no name record.
+const nameReads = [];
+let nameAnswer = async () => ({ ok: false, status: 404, json: async () => ({}) });
 const TOKEN_OFFER = "0x" + "7a".repeat(32), MINE = "0x" + "be".repeat(32), THEIRS = "0x" + "bf".repeat(32);
 const tokenOffer = () => ({ id: TOKEN_OFFER, seller: me, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 });
 const listed = offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(1e8) } });
@@ -81,6 +85,7 @@ globalThis.fetch = async (url, init) => {
   if (u.includes("/cairnx/offer/")) return { ok: true, status: 200, json: async () => fw.primary };
   if (/\/utxos\//.test(u)) return { ok: true, status: 200, json: async () => ({ confirmed_balance: coin.coin.value, utxos: [coin.coin] }) };
   if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: fw?.tip ?? 116_520 }) };
+  if (u.includes("/cairnx/name/")) { nameReads.push(u); return nameAnswer(u); }
   return txReply(u, [coin]) ?? { ok: false, status: 404, json: async () => ({}) };
 };
 await import("../src/background.ts");
@@ -131,25 +136,29 @@ const TARGET_READS = ["attestTarget", "tokenFillQuote", "fillOfferView"];
 const POLLS = new Set(["pending", "status", "resolve"]);
 // Queues one request, lets the window paint it (its pre-paint reads included), clicks Approve once the buttons arm, and
 // returns the painted fields, the window's target reads and the transaction submitted, if any.
-async function round(method, params) {
+async function round(method, params, origin = ORIGIN) {
   const s0 = sent.length, n = submits.length;
-  const page = dapp(method, params); await flush();
+  const page = dapp(method, params, origin); await flush();
   const q = (await popup("pending")).result.at(-1);
   if (!q) return { queued: false, page };
   pollTick ??= await loadApprove();
   await pollTick();
+  const painted = Date.now();
   await until(() => req().includes(String(q.id)) || (req().length > 0 && sent.slice(s0).some(([m]) => m === "pending")));
   await until(() => armed(), 600);
+  const armedMs = Date.now() - painted;
   await flush();
   await until(() => !String(registry.get("reveal-preview")?.innerHTML ?? "x").includes("Loading"), 100);
   const html = req();
   const preview = strip(registry.get("reveal-preview")?.innerHTML ?? "");
+  const drop = registry.get("profile-drop")?.innerHTML;
   const calls = sent.slice(s0).map(([m]) => m).filter((m) => !POLLS.has(m));
   const reads = sent.slice(s0).filter(([m]) => TARGET_READS.includes(m)).map(([m, a]) => [m, String(a[0]).toLowerCase()]);
+  const clicked = Date.now();
   if (armed()) await registry.get("btn-approve")._listeners.click();
   else await registry.get("btn-reject")._listeners.click();
   await until(() => page.reply !== undefined);
-  return { queued: true, page, d: shown(html), reads, calls, preview, tx: submits.length > n ? signed(submits.at(-1)) : null };
+  return { queued: true, page, d: shown(html), html, drop, reads, calls, preview, armedMs, replyMs: Date.now() - clicked, tx: submits.length > n ? signed(submits.at(-1)) : null };
 }
 const sameOutputs = (d, s) => d.length === s.length && d.every((o, i) => o.to.toLowerCase() === s[i].to && o.amount === s[i].amount);
 // The invariant for a signed request; `kind` is what the title must call it, `wantReads` the target reads it must make.
@@ -226,5 +235,45 @@ for (const [label, params] of [["7. a sign-in with a statement, uri omitted", { 
   const rows = d.rows;
   check(`${label}: audience ${rows.Audience}, URI ${rows.URI}, expiry ${rows.Expires} shown = signed (${msg.split("\n")[0].split(" ")[0]}, ${line("URI")}, ${secs} s)`,
     msg.startsWith(`${rows.Audience} wants you`) && rows.URI === line("URI") && rows.Expires === `in ~${secs}s` && line("Nonce") === params.nonce && (!params.statement || (d.text.includes(params.statement) && msg.includes("\n" + params.statement + "\n"))) && (params.notBeforeSecs ? d.text.includes(`~${params.notBeforeSecs}s from now`) && !!line("Not Before") : !line("Not Before")));
+}
+// 8. nprofile replaces the name's whole profile. The card says so with the request, and its reserved row lists the keys
+// of the current profile the new map drops, read from the configured name service (never the requesting site), for a
+// third-party site and the first-party site alike. The read is information only: Approve arms at its 700 ms floor and a
+// click signs without waiting for it.
+//   RED-FIRST: drop fillProfileDrop from approve.ts's paint and the removed-keys and hostile-text checks fail; make
+//   resolve() await the read and the held-open click signs nothing.
+{
+  const FIRST = "https://cairn-substrate.com";
+  check(`8. setup: ${FIRST} is the wallet's first-party origin`, wallet.isFirstPartyOrigin(FIRST) === true && !wallet.isFirstPartyOrigin(ORIGIN));
+  const tradeApi = String((await popup("status")).result.tradeApi);
+  const rec = (profile) => ({ ok: true, status: 200, json: async () => ({ name: "alice", owner: me, profile, tipHeight: 116_520 }) });
+  const b = buildNameProfile({ name: "alice", profile: { avatar: "https://b.example/y.png" } });
+  const params = { domain: CAIRNX_DOMAIN, uri: b.uri, payloadHash: b.payloadHash, expiresEpoch: 9_000 };
+  const signsShown = (label, r) => check(`${label}: signed as shown (fee ${r.d.fee}, ${JSON.stringify(r.tx?.app)})`,
+    r.tx?.app.kind === "Propose" && r.tx.app.domain === CAIRNX_DOMAIN && r.d.fee === fmtCsd(r.tx.fee) && r.tx.outputs.length === 0 && r.page.reply?.ok === true
+    && submits.at(-1).app.Propose.uri === b.uri && [b.payloadHash, b.payloadHash.slice(2)].includes(hexOf(submits.at(-1).app.Propose.payload_hash)));
+  const hexOf = (v) => (typeof v === "string" ? v : hex(v)).toLowerCase();
+  nameAnswer = async () => rec({ contenthash: "ipfs://site-a", avatar: "https://a.example/x.png" });
+  const cards = [];
+  for (const origin of [ORIGIN, FIRST]) {
+    const r0 = nameReads.length;
+    const r = await round("propose", params, origin);
+    signsShown(`8. nprofile from ${origin}`, r);
+    check(`8. from ${origin}: the card says the record replaces the whole profile (${r.d.title})`, /identity profile/.test(r.d.title) && r.html.includes("This record replaces the whole profile on <code>alice.csd</code>: any key not listed below is removed."));
+    check(`8. from ${origin}: the removed-keys row lists contenthash, not avatar (${r.drop})`, r.drop === "<code>contenthash</code>");
+    check(`8. from ${origin}: the current profile is read from the configured name service (${nameReads.slice(r0).join(", ")})`, nameReads.length === r0 + 1 && nameReads[r0] === `${tradeApi}/cairnx/name/alice`);
+    cards.push(`${r.html}|${r.drop}`);
+  }
+  check("8. a third-party site and the first-party site paint the same card", cards.length === 2 && cards[0] === cards[1]);
+  nameAnswer = async () => rec({ "<img src=x onerror=alert(1)>": "v", "ab‮cd​": "v", avatar: "x" });
+  const h = await round("propose", params);
+  check(`8. HTML and bidi characters in a current key are rendered as text (${h.drop})`, h.drop === "<code>&lt;img src=x onerror=alert(1)&gt;</code>, <code>ab\\u202Ecd\\u200B</code>");
+  signsShown("8. hostile current profile", h);
+  nameAnswer = () => new Promise(() => { /* the name service never answers */ });
+  const held = await round("propose", params);
+  check(`8. read held open: Approve arms at the 700 ms floor (${held.armedMs} ms after the paint)`, held.armedMs >= 650 && held.armedMs < 1500);
+  check("8. read held open: the reserved row keeps its pending text", held.html.includes(`<span id="profile-drop" class="dim">${PROFILE_DROP_PENDING}</span>`) && !held.drop);
+  check(`8. read held open: the click signs without waiting for the read (${held.replyMs} ms)`, held.tx !== null && held.replyMs < 1500);
+  signsShown("8. read held open", held);
 }
 done("sign-display-parity");
