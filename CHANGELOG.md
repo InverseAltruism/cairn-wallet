@@ -5,16 +5,18 @@
 - The approval window says when a site is new to the wallet: when the user has approved no request from the origin and
   has not connected it, the ask line under the origin reads "New site, which asks ..." (tooltip: "You have not approved
   a request from this site with this wallet before."). The origin is recorded when the user approves a request from it,
-  in a new `chrome.storage.local` key `approvedOrigins` (origin to the time of the last approval), written on its own queue
+  in a new `chrome.storage.local` key `approvedOrigins` (`{ vault, origins }`: the vault's identifier, its PBKDF2 salt,
+  and each origin with the time of its last approval; a list belongs to that vault and reads as empty under any other,
+  so a list from before a reset is never the next wallet's), written on its own queue
   after the page has its answer, never awaited by the approval or the reset, at most 500 origins (the oldest by
   last approval is dropped and reads as new again), never an opaque origin, cleared by the internal reset and deleted
   with the extension. A rejected request or a closed window records nothing, so two requests queued from a new site
   both carry the line until one is approved. A connected site is not new. A site used only for signing, never
   connected, before this release reads as new once after the update: the wallet kept no record of it. Nothing the user waits for waits on the list: each queued request carries its flag,
   decided from memory and refreshed when the list or the connected sites load or change, so a listing reads no
-  storage; until they have loaded, and when they cannot be read, a site reads as new. A reset erases the wallet first
-  and never waits on the list, whose stored copy is deleted after it (a failed deletion is replaced by the next
-  write); an approval that completes after a reset records nothing. The line shares
+  storage; until they have loaded, and when they cannot be read, a site reads as new. A reset erases the wallet without
+  waiting on the list, whose stored copy is deleted after it as hygiene only; an approval or a write from before a reset
+  records nothing in the next wallet's list. The line shares
   the ask line, so it adds no height: a line of its own (18.6 px) pushed rows with weight below the buttons on three
   card types. No button changes and Approve arms at its 700 ms floor as before (test/approve-first-request.test.mjs,
   test/approve-first-request-chrome.test.mjs at both window heights).

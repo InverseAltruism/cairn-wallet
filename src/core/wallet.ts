@@ -93,6 +93,9 @@ export class Wallet {
   private active = 0;
   private vaultKey: CryptoKey | null = null;
   private salt = "";
+  // The current vault's identifier: its PBKDF2 salt, 16 random bytes made with the vault (create, restore, import),
+  // kept by every re-seal and erased with it, so it never repeats across a reset. Null with no vault.
+  private vaultIdNow: string | null = null;
   private iter = 0;
   // HD state (memory only, while unlocked): the seed phrase + next free derivation
   // index. null mnemonic = a legacy/import-only wallet with no recovery phrase.
@@ -163,8 +166,11 @@ export class Wallet {
     this.api = (await this.store.get("api")) || DEFAULT_API;
     this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
     this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
+    this.vaultIdNow = ((await this.store.get("vault")) as Vault | null)?.salt ?? null;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
+  /** The current vault's identifier (see vaultIdNow), read with no await; null with no vault. */
+  vaultId(): string | null { return this.vaultIdNow; }
   // The SPV source reads block bodies from `rpc` and headers from `api`, so a changed endpoint drops it, and the
   // hint-set cache, whose header hashes came from it.
   async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this.endpointChanged(); this.rpc = u; await this.store.set("rpc", u); }
@@ -252,6 +258,7 @@ export class Wallet {
     await this.persistVault(() => this.writeVault(vault, mirrorOf(next.accts ?? []), next.active));
     this.mnemonic = next.mnemonic; this.nextIndex = next.nextIndex; this.accts = next.accts; this.active = next.active;
     this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter;
+    this.vaultIdNow = vault.salt;
     this.wiped = false;
     this.touch();
     await this.persistSession(); // a freshly created/restored wallet is unlocked → persist the session
@@ -1100,6 +1107,7 @@ export class Wallet {
   // clear was already independent, which is why the deletion did not touch this property.)
   async reset(): Promise<void> {
     this.wiped = true;
+    this.vaultIdNow = null;
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
     const wipe = () => this.doReset(wallets);

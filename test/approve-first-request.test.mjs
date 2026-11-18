@@ -22,6 +22,11 @@
 //   7. reset() clears the list with the consent map; an approval that completes after it records nothing; a held write
 //      of the list does not delay it and a failing deletion does not fail it (the vault is gone, the wallet locked),
 //      and the next write replaces the stored list.
+//   8. A list belongs to one vault: stored as { vault, origins } under the vault's salt. After an approval and a worker
+//      restart the site reads as known under the same vault; a list under another vault, with no vault or in the old
+//      plain shape reads as empty; a write started before a reset and landing after it, a failed deletion followed by a
+//      worker restart, and a write queued before a reset and run after it (its deletion failing) all leave their sites
+//      new in the next wallet. Listings still read no storage.
 // RED-FIRST, each run 2026-11-18 in a disposable worktree (failing checks of this file in brackets): record on every
 // answer, rejections included: 1 [2]; record the head of the queue when it is listed (on paint): 1 [8]; ignore the
 // consent map: 1 [1]; await the write before the answer, or inside the approval: 1 [2] each; drop the list's queue from
@@ -31,7 +36,9 @@
 // generation: 7 [1]. Against 3d45edb's src: 11 failed (sections 0, 1 by cascade, 6, 7). Then, each removing one fix:
 // an answer before the window for a connected site's unknown txid: 6 [2]; a listing that reads the consent map: 0 and
 // 1 [4]; flags not refreshed on a change: 1 [1]; reset awaiting the list's deletion: 7 [4]; a write after a failed
-// deletion that adds to the stored list: 7 [1].
+// deletion that adds to the stored list: 7 [1]. The vault binding, against d77eb02's src: 11 failed (section 8 and the
+// sections reading the stored shape). Then, one per rule: a list read under any vault or none: 7 and 8 [7]; a write
+// recorded under the vault current when it runs: 8 [2]; an approval recorded in memory under any vault: 7 [1].
 // Run: npx tsx test/approve-first-request.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
@@ -68,7 +75,8 @@ globalThis.location = { origin: SELF };   // the window's own origin, which a po
 // at its start, is held until section 0 releases it.
 const mem = new Map();
 const held = [];
-let holdSeen = true, failSeen = false, failSeenRead = false, holdConsent = false, failSeenRemove = false;
+let holdSeen = true, failSeen = false, failSeenRead = false, holdConsent = false, failSeenRemove = false, holdSeenSet = false;
+const heldSets = [];
 const reads = { [SEEN]: 0, connectedOrigins: 0 };
 let closeWindow = () => undefined;
 const windowCalls = [];
@@ -84,7 +92,12 @@ Object.assign(globalThis.chrome, {
       if (k === SEEN && failSeenRead) throw new Error("read failed");
       return { [k]: snap };
     },
-    set: async (o) => { if (failSeen && SEEN in o) throw new Error("quota"); for (const k of Object.keys(o)) mem.set(k, structuredClone(o[k])); },
+    set: async (o) => {
+      if (failSeen && SEEN in o) throw new Error("quota");
+      const copy = structuredClone(o);   // what the write sends; a held write lands it later
+      if (holdSeenSet && SEEN in o) await new Promise((release) => heldSets.push(release));
+      for (const k of Object.keys(copy)) mem.set(k, copy[k]);
+    },
     remove: async (k) => { if (failSeenRemove && k === SEEN) throw new Error("remove failed"); mem.delete(k); },
   } },
   alarms: { create: () => undefined, onAlarm: { addListener: () => undefined } },
@@ -118,7 +131,7 @@ check("setup: a wallet", (await popup("create", "pw-first-request-1")).ok === tr
 me = String((await popup("status")).result.addr);
 
 const ask = () => String(registry.get("ap-ask").textContent);
-const seen = () => mem.get(SEEN) ?? {};
+const seen = () => mem.get(SEEN)?.origins ?? {};   // the stored list: { vault, origins }
 const queue = async () => (await popup("pending")).result;
 const NEW = /^New site, which /;
 const release = () => { while (held.length) held.shift()(); };
@@ -381,7 +394,7 @@ async function revealCard(txid, origin) {
   holdContent = false; heldContent.shift()();
   await approved; await until(() => asked.reply !== undefined); await flush(20);
   dapp("connect", {}, S); await flush();
-  check(`7. the reveal approved before the reset and answered after it leaves the list empty (${JSON.stringify(mem.get(SEEN))}) and ${S} reads as new`, !Object.hasOwn(mem.get(SEEN) ?? {}, S) && (await queue()).at(-1)?.first === true);
+  check(`7. the reveal approved before the reset and answered after it leaves the list empty (${JSON.stringify(mem.get(SEEN))}) and ${S} reads as new`, !Object.hasOwn(seen(), S) && (await queue()).at(-1)?.first === true);
   await resolveAll(false);
   // The reset never waits on the list: with a write of it held, and with its deletion failing.
   const PW = "pw-first-request-2";
@@ -397,19 +410,19 @@ async function revealCard(txid, origin) {
   const st1 = (await popup("status")).result;
   check(`7. with a write of the list held, the reset completes at once (${Date.now() - t0} ms): the vault is gone and the wallet locked`, reset1.ok === true && !mem.has("vault") && st1.unlocked === false && st1.hasVault === false);
   holdSeen = false; release(); await flush(20);
-  check(`7. ...and the held write, from before the reset, writes nothing (${JSON.stringify(mem.get(SEEN))})`, !Object.hasOwn(mem.get(SEEN) ?? {}, R));
+  check(`7. ...and the held write, from before the reset, writes nothing (${JSON.stringify(mem.get(SEEN))})`, !Object.hasOwn(seen(), R));
   check("setup: a wallet again", (await popup("create", PW)).ok === true);
   me = String((await popup("status")).result.addr);
   const R2 = "https://r2.example", Q = "https://q.example";
   dapp("connect", {}, R2); await flush();
   await popup("resolve", (await queue()).at(-1).id, true, me);
-  await until(() => Object.hasOwn(mem.get(SEEN) ?? {}, R2));
+  await until(() => Object.hasOwn(seen(), R2));
   failSeenRemove = true;
   const reset2 = await popup("reset");
   await flush(20);
   const st2 = (await popup("status")).result;
-  check(`7. with its deletion failing, the reset still completes (${reset2.ok}): the vault is gone, the wallet locked, the stored list still there (${JSON.stringify(Object.keys(mem.get(SEEN) ?? {}))})`,
-    reset2.ok === true && !mem.has("vault") && st2.unlocked === false && Object.hasOwn(mem.get(SEEN) ?? {}, R2));
+  check(`7. with its deletion failing, the reset still completes (${reset2.ok}): the vault is gone, the wallet locked, the stored list still there (${JSON.stringify(Object.keys(seen()))})`,
+    reset2.ok === true && !mem.has("vault") && st2.unlocked === false && Object.hasOwn(seen(), R2));
   failSeenRemove = false;
   dapp("connect", {}, R2); await flush();
   check("7. ...the site it held reads as new", (await queue()).at(-1)?.first === true);
@@ -418,7 +431,82 @@ async function revealCard(txid, origin) {
   me = String((await popup("status")).result.addr);
   dapp("connect", {}, Q); await flush();
   await popup("resolve", (await queue()).at(-1).id, true, me);
-  await until(() => Object.hasOwn(mem.get(SEEN) ?? {}, Q));
-  check(`7. ...and the next write replaces the stored list (${JSON.stringify(Object.keys(mem.get(SEEN) ?? {}))})`, JSON.stringify(Object.keys(mem.get(SEEN))) === JSON.stringify([Q]));
+  await until(() => Object.hasOwn(seen(), Q));
+  check(`7. ...and the next write replaces the stored list (${JSON.stringify(Object.keys(seen()))})`, JSON.stringify(Object.keys(seen())) === JSON.stringify([Q]));
+}
+// ── 8. a list belongs to one vault ────────────────────────────────────────────────────────────────────────────────
+{
+  // A worker restart: the background built again over the same storage.
+  let restarts = 0;
+  const restart = async () => {
+    await resolveAll(false);
+    globalThis.chrome.runtime.onMessage = { addListener: (fn) => { listener = fn; } };
+    await import(`../src/background.ts?restart=${++restarts}`);
+    globalThis.chrome.runtime.onMessage = windowOnMessage;
+    await flush(20);
+  };
+  const SIGNIN = { nonce: "Nonce1234abcdef" };
+  const approveSignin = async (origin) => { const pg = dapp("signinWithCsd", SIGNIN, origin); await flush(); await popup("resolve", (await queue()).at(-1).id, true, me); await until(() => pg.reply !== undefined); };
+  // Whether `origin` reads as new once the stored list has been read: the request starts the read when none is done.
+  const readsNew = async (origin) => {
+    const r0 = reads[SEEN];
+    dapp("signinWithCsd", SIGNIN, origin); await flush();
+    await until(() => reads[SEEN] > r0, 100); await flush(10);
+    const f = (await queue()).at(-1)?.first;
+    await resolveAll(false);
+    return f;
+  };
+  const PW3 = "pw-first-request-3";
+  const K = "https://k2.example";
+  await approveSignin(K);
+  await until(() => Object.hasOwn(seen(), K));
+  const vault2 = mem.get(SEEN)?.vault;
+  check(`8. the stored list names its vault (${String(vault2).slice(0, 8)}, the vault's salt ${String(mem.get("vault")?.salt).slice(0, 8)})`, typeof vault2 === "string" && vault2 === mem.get("vault")?.salt);
+  await restart();
+  check("setup: unlock after the restart", (await popup("unlock", "pw-first-request-2")).ok === true);
+  check(`8. honest path: an approval, a worker restart and a listing: the site reads as known under the same vault`, (await readsNew(K)) === false);
+  // A list under another vault, with no vault, or in the old plain shape reads as empty.
+  for (const [label, shape] of [["under another vault", { vault: "ab".repeat(16), origins: { [K]: 1 } }], ["with no vault", { origins: { [K]: 1 } }], ["in the old plain shape", { [K]: 1 }]]) {
+    mem.set(SEEN, shape);
+    await restart();
+    check(`8. a list stored ${label} reads as empty`, (await readsNew(K)) === true);
+  }
+  check("setup: unlock", (await popup("unlock", "pw-first-request-2")).ok === true);
+  // A write already started before a reset, its storage write held across it, and the list's deletion failing.
+  const R3 = "https://r3.example";
+  holdSeenSet = true;
+  await approveSignin(R3);
+  await until(() => heldSets.length === 1);
+  failSeenRemove = true;
+  await popup("reset");
+  check("setup: a new wallet", (await popup("create", PW3)).ok === true);
+  me = String((await popup("status")).result.addr);
+  holdSeenSet = false; heldSets.shift()(); await flush(20);
+  failSeenRemove = false;
+  check(`8. a write started before a reset and landing after it (${JSON.stringify(Object.keys(seen()))}) leaves its site new in the next wallet`, (await readsNew(R3)) === true);
+  await restart();
+  check("setup: unlock after the restart", (await popup("unlock", PW3)).ok === true);
+  check("8. ...also after a worker restart, with the old list's deletion failed", (await readsNew(R3)) === true);
+  // A write queued before a reset and run after it: it is not recorded under the next wallet's vault.
+  const W1 = "https://w1.example", W2 = "https://w2.example";
+  holdSeenSet = true;
+  await approveSignin(W1);
+  await until(() => heldSets.length === 1);
+  await approveSignin(W2);   // its write waits behind W1's on the list's queue
+  failSeenRemove = true;     // the reset's deletion is hygiene: nothing may rely on it
+  await popup("reset");
+  check("setup: another new wallet", (await popup("create", PW3)).ok === true);
+  me = String((await popup("status")).result.addr);
+  holdSeenSet = false; heldSets.shift()(); await flush(20);
+  failSeenRemove = false;
+  const Q4 = "https://q4.example";
+  await approveSignin(Q4);
+  await until(() => Object.hasOwn(seen(), Q4));
+  check(`8. a write queued before a reset and run after it records nothing in the next wallet's list (${JSON.stringify(Object.keys(seen()))})`, !Object.hasOwn(seen(), W2) && !Object.hasOwn(seen(), W1) && mem.get(SEEN)?.vault === mem.get("vault")?.salt);
+  check("8. ...and its site reads as new", (await readsNew(W2)) === true);
+  // The earlier guarantees with the binding: a listing reads no storage.
+  const before = { ...reads };
+  for (let i = 0; i < 10; i++) await popup("pending");
+  check(`8. listings still read no storage (${reads[SEEN] - before[SEEN]} list reads, ${reads.connectedOrigins - before.connectedOrigins} consent reads)`, reads[SEEN] === before[SEEN] && reads.connectedOrigins === before.connectedOrigins);
 }
 done("approve-first-request");

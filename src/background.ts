@@ -83,39 +83,43 @@ async function listConsents(): Promise<{ origin: string; addr: string; ts: numbe
   return Object.entries(c).map(([origin, v]) => ({ origin, addr: v.addr, ts: v.ts })).sort((a, b) => b.ts - a.ts);
 }
 
-// The origins the user has approved a request from: origin -> ms of the last approval, kept on this device only so the
-// window can say when a site the user has approved nothing from asks; a connected site counts too, so a site connected
-// before this list existed is not new. The newest APPROVED_CAP by that time stay; an origin dropped past the cap reads
-// as new again. It is display metadata, kept apart from everything a user waits for: each queued request carries its
-// flag (`first`), decided from memory (approvedNow, connectedNow) when it is queued and refreshed whenever either changes
-// or finishes loading. `pending` reads only the flag, and no request, approval, consent change or reset awaits these
-// lists or their storage.
+// The origins the user has approved a request from, kept on this device only so the window can say when a site the user
+// has approved nothing from asks; a connected site counts too, so a site connected before this list existed is not new.
+// Stored as { vault, origins: { [origin]: ms of the last approval } }: a list belongs to the vault it was recorded under
+// (Wallet.vaultId) and is read as empty under any other vault, with no vault id, or in the old plain shape, so a list
+// from before a reset is never the new wallet's, whatever happened to its deletion. The newest APPROVED_CAP by time stay;
+// an origin dropped past the cap reads as new again. It is display metadata, kept apart from everything a user waits
+// for: each queued request carries its flag (`first`), decided from memory (approvedNow, connectedNow) when it is queued
+// and refreshed whenever either changes or finishes loading. `pending` reads only the flag, and no request, approval,
+// consent change or reset awaits these lists or their storage.
 const APPROVED_KEY = "approvedOrigins";
 const APPROVED_CAP = 500;
 type ApprovedMap = Record<string, number>;
-async function getApproved(): Promise<ApprovedMap> { return (await consentStore.get(APPROVED_KEY)) || {}; }
+// The stored list's origins when it belongs to `vault`, else none.
+async function getApproved(vault: string): Promise<ApprovedMap> {
+  const v = await consentStore.get(APPROVED_KEY);
+  return v && typeof v === "object" && v.vault === vault && v.origins && typeof v.origins === "object" ? { ...v.origins } : {};
+}
 const capApproved = (approved: ApprovedMap): ApprovedMap => Object.fromEntries(Object.entries(approved).sort((a, b) => b[1] - a[1]).slice(0, APPROVED_CAP));
 const inApprovedChain = serialQueue();
+// approvedNow is the current vault's list in memory: loaded only under the vault it was stored under, and emptied by reset.
 let approvedNow: ApprovedMap = {};
 let connectedNow = new Set<string>();
-// approvedGen is bumped by reset: an approval that began before it, or a load that read before it, changes nothing.
 // consentGen is bumped by every consent change: a load of the map that read before one is read again.
-let approvedGen = 0, consentGen = 0;
+let consentGen = 0;
 let approvedLoaded = false, connectedLoaded = false, approvedLoading = false, connectedLoading = false;
-// Set by reset until its deletion of the stored list succeeds: until then a write replaces the stored list with the one
-// in memory instead of adding to it.
-let approvedCleared = false;
 const isNewOrigin = (origin: string): boolean => !opaqueOrigin(origin) && !Object.hasOwn(approvedNow, origin) && !connectedNow.has(origin);
 function refreshNew(): void { for (const p of pending.values()) p.first = isNewOrigin(p.origin); }
 const noted = (what: string) => (e: unknown) => console.warn(`[background] ${what}:`, e);
 // Reads what is stored into memory in the background, one read of each at a time; a read that fails is tried again
-// when the next request is queued. Until a list has loaded, an origin it would name reads as new.
+// when the next request is queued. Until a list has loaded, an origin it would name reads as new. The approved list is
+// taken only if the vault it was read for is still the current one when the read answers.
 function loadKnown(): void {
-  if (!approvedLoaded && !approvedLoading) {
+  const vault = wallet.vaultId();
+  if (!approvedLoaded && !approvedLoading && vault) {
     approvedLoading = true;
-    const gen = approvedGen;
-    getApproved().then((stored) => {
-      if (gen !== approvedGen || approvedLoaded) return;
+    getApproved(vault).then((stored) => {
+      if (approvedLoaded || wallet.vaultId() !== vault) return;
       for (const [o, at] of Object.entries(stored)) if (!((approvedNow[o] ?? 0) >= at)) approvedNow[o] = at;
       approvedNow = capApproved(approvedNow);
       approvedLoaded = true;
@@ -134,43 +138,39 @@ function loadKnown(): void {
     }, (e) => { connectedLoading = false; noted("the connected sites could not be read")(e); });
   }
 }
+ready.then(loadKnown, () => { /* a wallet whose init failed answers every message WALLET_UNAVAILABLE */ });
 // Called by the consent writers once their write has landed.
 function consentChanged(change: (now: Set<string>) => void): void {
   consentGen++;
   change(connectedNow);
   refreshNew();
 }
-// `gen` is approvedGen when the user approved. Not awaited by the approval: a write that fails leaves the origin new
-// after a worker restart, so the line shows again, and nothing else.
-function recordApproved(origin: string, gen: number): void {
-  if (opaqueOrigin(origin) || gen !== approvedGen) return;
+// `vault` is Wallet.vaultId when the user approved. The origin is recorded only under that vault, and only while it is
+// still the current one: in memory now, and in storage when the write runs on the list's own queue, so an approval that
+// began before a reset, or a write queued before it, never lands in the next wallet's list; with no vault nothing is
+// recorded. Not awaited by the approval: a write that fails leaves the origin new after a worker restart, and nothing else.
+function recordApproved(origin: string, vault: string | null): void {
+  if (opaqueOrigin(origin) || !vault || wallet.vaultId() !== vault) return;
   const at = Date.now();
   approvedNow[origin] = at;
   if (Object.keys(approvedNow).length > APPROVED_CAP) approvedNow = capApproved(approvedNow);
   refreshNew();
   inApprovedChain(async () => {
-    const stored = approvedCleared ? { ...approvedNow } : await getApproved();
-    if (gen !== approvedGen) return;
+    if (wallet.vaultId() !== vault) return;
+    const stored = await getApproved(vault);
+    if (wallet.vaultId() !== vault) return;
     stored[origin] = Math.max(stored[origin] ?? 0, at);
-    await consentStore.set(APPROVED_KEY, capApproved(stored));
-    approvedCleared = false;
+    await consentStore.set(APPROVED_KEY, { vault, origins: capApproved(stored) });
   }).catch(noted("the approved site was not recorded"));
 }
-// reset: the list is forgotten in memory at once and its stored copy deleted after, on the list's own queue; neither
-// is awaited, so a stalled or failing write or deletion never holds up or fails the reset.
+// reset: the list is emptied in memory at once. Its stored copy is deleted after, on the list's own queue, as hygiene
+// only: neither step is awaited, and a deletion that fails leaves a list bound to a vault that no longer exists.
 function clearApproved(): void {
-  approvedGen++;
   approvedNow = {};
-  approvedLoaded = true;
-  approvedCleared = true;
+  approvedLoaded = false;
   refreshNew();
-  const gen = approvedGen;
-  inApprovedChain(async () => {
-    await consentStore.del(APPROVED_KEY);
-    if (gen === approvedGen) approvedCleared = false;
-  }).catch(noted("the approved sites were not deleted; the next write replaces them"));
+  inApprovedChain(() => consentStore.del(APPROVED_KEY)).catch(noted("the approved sites were not deleted; they belong to the erased vault"));
 }
-loadKnown();
 // This wallet's own pages' origin: what a seal made in the popup records as the site that asked.
 const ownOrigin = (): string => String(chrome.runtime.getURL("")).replace(/\/$/, "");
 
@@ -311,7 +311,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   if (!p) return { done: false };
   pending.delete(id);
   showQueueBadge();
-  const approvedAt = approvedGen;   // an approval that completes after a reset records nothing
+  const approvedUnder = wallet.vaultId();   // an approval that completes under another vault, or none, records nothing
   // MACHINE ERROR CODES (Plan 57 B9, additive): every {ok:false} a dApp can see now also carries a
   // stable `code` (USER_REJECTED / WALLET_LOCKED / ACCOUNT_CHANGED / FIRST_PARTY_ONLY /
   // UNSUPPORTED_METHOD / RATE_LIMITED / APPROVAL_CLOSED / FORBIDDEN / UNKNOWN_KIND / INTERNAL) so
@@ -323,7 +323,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   // `secondSource` is read from the wallet's result before pageResult strips it, and goes to the window only.
   const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }, secondSource?: unknown): ResolveOutcome => {
     p.resolve(out);
-    if (approve) recordApproved(p.origin, approvedAt);   // after the page's answer; never awaited
+    if (approve) recordApproved(p.origin, approvedUnder);   // after the page's answer; never awaited
     const actionOk = out.ok && (out.result?.ok !== false);
     const soft = out.result?.ok === false;
     const notice: Pick<ResolveOutcome, "secondSource"> = actionOk && (secondSource === "pending" || secondSource === "failed") ? { secondSource } : {};

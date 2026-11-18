@@ -56,17 +56,22 @@ events and alarm-driven auto-lock.
   `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there.
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the
   result.
-- `approvedOrigins` (storage key): `{ [origin]: ms }`, the origins the user has approved a request from and when they last
-  did, at most `APPROVED_CAP` = 500, the newest by that time (the oldest is dropped and reads as new again). It is
+- `approvedOrigins` (storage key): `{ vault, origins: { [origin]: ms } }`, the origins the user has approved a request
+  from and when they last did, at most `APPROVED_CAP` = 500, the newest by that time (the oldest is dropped and reads as
+  new again). A list belongs to one vault: `vault` is `Wallet.vaultId()`, the vault's PBKDF2 salt (16 random bytes made
+  with the vault, kept by every re-seal, erased with it), and a list under another vault, with no vault or in the old
+  plain shape reads as empty and is replaced by the next write. It is
   display metadata, kept apart from everything essential. Each queued request carries its flag (`first`), set from
   memory when it is queued (`isNewOrigin`: in neither `approvedNow` nor `connectedNow`) and refreshed (`refreshNew`)
   when either loads (`loadKnown`, in the background, one read of each at a time, tried again when a request is queued)
   or changes (an approval, a consent write, a reset). `pending` reads only the flags and touches no storage; until a
   list has loaded, or when it cannot be read, an origin reads as new. `resolvePending` updates `approvedNow` once the
   page has its answer and queues the storage write on the list's own queue (`recordApproved`, `inApprovedChain`, never
-  awaited; a failed write is logged). `reset` forgets the list in memory, queues the stored deletion without awaiting
-  it, then clears the consent map and erases the wallet; a deletion that fails is replaced by the next write. A reset
-  generation (`approvedGen`) discards an approval that began before the reset. Opaque origins (`src/core/origin.ts`
+  awaited; a failed write is logged). An approval records its origin under the vault current when the user approved,
+  and only while that vault is still current: in memory at once and in storage when the write runs on its queue, so
+  an approval or a write from before a reset never lands in the next wallet's list. `reset` empties the list in memory
+  and queues the stored deletion as hygiene, awaited by nothing and relied on by nothing, then clears the consent map
+  and erases the wallet. Opaque origins (`src/core/origin.ts`
   `opaqueOrigin`) are never written (test/approve-first-request.test.mjs).
 - A `revealClaim` for a seal the active account does not hold is queued like any reveal, from every site, and
   `revealClaim` answers it `SEAL_UNKNOWN` after approval. A seal records the asking origin on its record (`origin`; the

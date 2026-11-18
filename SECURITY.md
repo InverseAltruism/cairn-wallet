@@ -235,13 +235,16 @@ stays refused off the first-party site.
 
 **What the wallet keeps about sites.** Two lists of origins, in `chrome.storage.local` on the user's device, written
 only by the background worker and never sent anywhere: the connected sites above (each with the address it was shown),
-and the origins the user has approved a request from (`approvedOrigins`), each with when, so the window can say "New site"
+and the origins the user has approved a request from (`approvedOrigins`, stored with the identifier of the vault they
+were recorded under, its PBKDF2 salt), each with when, so the window can say "New site"
 when a site the user has approved nothing from asks. A connected site counts as approved. The second list is the
 user's own record of which sites they approved something from; it grants nothing, changes no button and adds no wait.
 It is display metadata kept apart from everything essential: each queued request carries its flag, decided from memory,
 the list is written after the page has its answer on its own queue, and a reset erases the wallet without waiting on
-it, so a slow or failing read, write or deletion delays and fails nothing (an unreadable list shows the line); an
-approval that completes after a reset records nothing. It keeps the 500 origins approved last
+it, so a slow or failing read, write or deletion delays and fails nothing (an unreadable list shows the line). A list
+belongs to one vault and reads as empty under any other, so a list from before a reset, whether or not its deletion
+succeeded, never marks a site as familiar in the next wallet, and an approval or a write from before a reset records
+nothing there. It keeps the 500 origins approved last
 (an older one is dropped and reads as new again) and never holds an opaque origin (`"null"`, `"unknown"`). Removing the
 extension deletes both lists; no screen clears the second one (the wallet's internal reset does). A site cannot read
 either list beyond its own connection: storage is restricted to the wallet's own pages and worker. Each sealed claim
