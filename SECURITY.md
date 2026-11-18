@@ -243,6 +243,23 @@ waits for it, and nothing that is signed reads it. A name service that lies can 
 does not have, or leave out keys it has), never change the record that is signed. The same card is shown for every
 origin, the wallet's own site included (test/sign-display-parity.test.mjs section 8).
 
+Some profile keys are read by other applications: `contenthash` (the site they open for the name), `csd.rpc` (the node
+address they may read the chain through for the name) and `csd.p2p` (a peer they may dial). A write that sets one gets
+a caution saying what it does, and a removed one is marked the same way in "Keys removed"; the sentence that profile
+keys do not change where funds go covers the other keys only. The wallet does not check these values, and the
+applications that read them are responsible for their own reader rules.
+
+Any site may also ask for a name transfer, an offer or a proposal in any domain, so those cards say what the record
+does, from the request alone and with no added read, wait or refusal (test/sign-display-parity.test.mjs section 13).
+A name transfer says it is final and clears the name's address record and profile (what the vendored resolver's
+`applyNxfer` does). An offer's only taker gets the look-alike check against the wallet's known addresses but no
+first-time notice, and an offer that asks nothing in return says the asset goes for nothing. A `cairnx:v1` record the
+wallet cannot read is shown raw with a caution that the network may give it no effect and the fee is spent either way;
+it is not refused, since it may be a record type newer than the wallet. A proposal in another domain says the wallet
+does not interpret it and that it cannot change CairnX names, tokens or offers (CairnX reads `cairnx:v1` proposals
+only). The CSD-paid fill card carries the ticker look-alike warning and the unverified-token mark the token-priced card
+shows for the same listing.
+
 ## Supply chain
 
 The wallet has a small, pinned dependency set (`@noble/curves`, `@noble/hashes`,

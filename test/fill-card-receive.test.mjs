@@ -41,7 +41,8 @@ check(`a partial listing served without feeBps says the receipt could not be cal
 
 const whole = await view(served());
 html = fillViewHtml(whole, OID, undefined, outs(100_000_000));
-check("honest: a whole listing keeps \"as listed by the offer service\" with its full give", /<b>100 NEWF[^<]*<\/b> <span class="dim">\(as listed by the offer service\)/.test(html) && !/Whole listing/.test(html));
+// NEWF is an unpinned token that is not a look-alike, so its figure carries the unverified mark the token-priced card uses.
+check("honest: a whole listing keeps \"as listed by the offer service\" with its full give", /<b>100 NEWF[^<]*<\/b> <span class="dim">\(unverified token\)<\/span> <span class="dim">\(as listed by the offer service\)/.test(html) && !/Whole listing/.test(html));
 const name = await view(served({ give: { name: "alice" } }));
 html = fillViewHtml(name, OID, undefined, outs(100_000_000));
 check("honest: a name listing keeps its line", /<b>alice\.csd<\/b> <span class="dim">\(as listed by the offer service\)/.test(html));

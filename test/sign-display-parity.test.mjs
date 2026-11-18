@@ -81,8 +81,11 @@ const TOKEN_OFFER = "0x" + "7a".repeat(32), MINE = "0x" + "be".repeat(32), THEIR
 const tokenOffer = () => ({ id: TOKEN_OFFER, seller: me, give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" }, status: "open", expiresEpoch: 9e15, height: 47_000, feeBps: 150 });
 const listed = offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(1e8) } });
 const proposal = (id) => ({ ok: true, proposal: { payload_hash: listed.payloadHash, domain: CAIRNX_DOMAIN, uri: listed.uri, proposer: id === THEIRS ? "0x" + "99".repeat(20) : me } });
+// Every fetch the worker and the window make, in order (section 13 counts them).
+const fetchLog = [];
 globalThis.fetch = async (url, init) => {
   const u = String(url);
+  fetchLog.push(u);
   if (u.includes("/tx/submit")) { submits.push(JSON.parse(init.body).tx); return { ok: true, status: 200, json: async () => ({ ok: true, txid: "0x" + String(submits.length).padStart(64, "0") }) }; }
   if (u.includes("/api/content")) { posted.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
   for (const id of [MINE, THEIRS, TOKEN_OFFER]) if (u.includes(`/proposal/${id}`)) return { ok: true, status: 200, json: async () => proposal(id) };
@@ -149,7 +152,7 @@ const FACE = ["ap-origin", "ap-tile", "ap-ask", "ap-signer", "send-warn", "fill-
 // Queues one request, lets the window paint it (its pre-paint reads included), clicks Approve once the buttons arm, and
 // returns the painted fields, the window's target reads and the transaction submitted, if any.
 async function round(method, params, origin = ORIGIN) {
-  const s0 = sent.length, n = submits.length;
+  const s0 = sent.length, n = submits.length, f0 = fetchLog.length;
   const page = dapp(method, params, origin); await flush();
   const q = (await popup("pending")).result.at(-1);
   if (!q) return { queued: false, page };
@@ -167,11 +170,12 @@ async function round(method, params, origin = ORIGIN) {
   const face = Object.fromEntries(FACE.map((id) => [id, String(registry.get(id)?.innerHTML ?? "")]));
   const calls = sent.slice(s0).map(([m]) => m).filter((m) => !POLLS.has(m));
   const reads = sent.slice(s0).filter(([m]) => TARGET_READS.includes(m)).map(([m, a]) => [m, String(a[0]).toLowerCase()]);
-  const clicked = Date.now();
+  const clicked = Date.now(), f1 = fetchLog.length;
   if (armed()) await registry.get("btn-approve")._listeners.click();
   else await registry.get("btn-reject")._listeners.click();
   await until(() => page.reply !== undefined);
-  return { queued: true, page, d: shown(html), html, face, drop, reads, calls, preview, armedMs, replyMs: Date.now() - clicked, tx: submits.length > n ? signed(submits.at(-1)) : null };
+  const fetches = { paint: fetchLog.slice(f0, f1), click: fetchLog.slice(f1) };
+  return { queued: true, page, d: shown(html), html, face, drop, reads, calls, preview, armedMs, fetches, replyMs: Date.now() - clicked, tx: submits.length > n ? signed(submits.at(-1)) : null };
 }
 const sameOutputs = (d, s) => d.length === s.length && d.every((o, i) => o.to.toLowerCase() === s[i].to && o.amount === s[i].amount);
 // The invariant for a signed request; `kind` is what the title must call it, `wantReads` the target reads it must make.
@@ -272,7 +276,7 @@ for (const [label, params] of [["7. a sign-in with a statement, uri omitted", { 
     const r = await round("propose", params, origin);
     signsShown(`8. nprofile from ${origin}`, r);
     check(`8. from ${origin}: the card says the record replaces the whole profile (${r.d.title})`, /identity profile/.test(r.d.title) && r.html.includes("This record replaces the whole profile on <code>alice.csd</code>: any key not listed below is removed."));
-    check(`8. from ${origin}: the removed-keys row lists contenthash, not avatar (${r.drop})`, r.drop === "<code>contenthash</code>");
+    check(`8. from ${origin}: the removed-keys row lists contenthash, with what it did for other applications, not avatar (${r.drop})`, r.drop === "<code>contenthash</code> (the site other applications open for this name)");
     check(`8. from ${origin}: the current profile is read from the configured name service (${nameReads.slice(r0).join(", ")})`, nameReads.length === r0 + 1 && nameReads[r0] === `${tradeApi}/cairnx/name/alice`);
     cards.push(`${r.html}|${r.drop}`);
   }
@@ -422,5 +426,68 @@ nameAnswer = async () => ({ ok: false, status: 503, json: async () => ({}) });
   agree("12. paired: the offer-id fill of exactly the need signs", exact, /^Fill offer/, ["fillOfferView"]);
   check("12. paired: ...and pays no address outside the need", exact.page.reply?.result?.ok === true && !exact.tx?.outputs.some((o) => o.to === EXTRA));
   wallet.provenPaytoForTest = prior;
+}
+// 13. The cards that say what a record does, through the real background and window, from a third-party site and from
+// the first-party origin alike (one card, and the signed uri and hash are the request's): a name transfer is final and
+// clears the name's address record and profile; a profile write says what contenthash, csd.rpc and csd.p2p do for other
+// applications, in the new map and in the removed-keys row (filled from the read the window already makes); a cairnx:v1 record the wallet cannot read, and a record in
+// another domain, say what they can and cannot do; an offer's only taker gets the look-alike check and no first-time
+// notice, and an offer that wants nothing says so. Each card arms Approve at its 700 ms floor and is signed on the click.
+// The window and the worker make as many fetches for a name transfer and a profile write as before this wording (counted
+// on 649fcb4 with this section: before the click and after it).
+//   RED-FIRST: on 649fcb4 the 13 copy and taker checks here fail and the arm, signing, same-window and fetch checks
+//   pass; remove any one new sentence from src/popup/clearsign.ts and its two copy checks (one per origin) fail.
+{
+  const pickRec = (b) => ({ uri: b.uri, payloadHash: b.payloadHash });
+  const LOOK_ME = me.slice(0, 8) + [...me.slice(8, 38)].map((c) => (c === "0" ? "1" : "0")).join("") + me.slice(38);
+  const unknown = { v: 1, t: "zzz", x: 1 };
+  nameAnswer = async () => ({ ok: true, status: 200, json: async () => ({ name: "alice", owner: me, profile: { contenthash: "ipfs://site-a", "csd.p2p": "peer.example:7779", avatar: "https://a.example/x.png" }, tipHeight: 116_520 }) });
+  const CARDS = [
+    ["name transfer", { domain: CAIRNX_DOMAIN, ...pickRec(nameXfer({ name: "alice", to: TO })) }, ["This transfer is final: the new owner controls <code>alice.csd</code> from then on. It also clears the name's address record and its profile."]],
+    ["profile write setting contenthash and csd.rpc", { domain: CAIRNX_DOMAIN, ...pickRec(nameProfile({ name: "alice", p: { avatar: "https://b.example/y.png", contenthash: "ipfs://site-b", "csd.rpc": "https://rpc.example" } })) },
+      ["Other applications read these keys:<br><code>contenthash</code>: the site other applications open for this name.<br><code>csd.rpc</code>: the node address other applications may read the chain through for this name.",
+        "The other keys do <b>not</b> change where funds go, and other applications may read some of them."]],
+    ["cairnx:v1 record the wallet cannot read", { domain: CAIRNX_DOMAIN, uri: canonicalJson(unknown), payloadHash: payloadHash(unknown) },
+      ["This wallet does not recognise this cairnx:v1 record, so it cannot show what it does; it may be a record type newer than this wallet. The network may give it no effect, and the fee is spent either way."]],
+    ["record in another domain", { domain: "example:v1", uri: "data:,hi", payloadHash: PH },
+      ["This wallet does not interpret records of this domain: they cannot change CairnX names, tokens or offers. This one costs the network fee."]],
+    ["offer that wants nothing, for a look-alike of this account", { domain: CAIRNX_DOMAIN, ...pickRec(offer({ give: { ticker: "AAA", amount: "10" }, want: { value: "0" }, taker: LOOK_ME })) },
+      ["This offer asks <b>nothing</b> in return: whoever fills it gets what you give for nothing."]],
+    ["offer for a new taker", { domain: CAIRNX_DOMAIN, ...pickRec(offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(1e8) }, taker: TO2 })) }, []],
+  ];
+  const painted = (r) => JSON.stringify({ req: r.html, ...r.face, "ap-origin": undefined, "ap-tile": undefined });
+  const counts = {};
+  for (const [label, p, copy] of CARDS) {
+    const params = { ...p, expiresEpoch: 9_000 };
+    const third = await round("propose", params, ORIGIN);
+    const first = await round("propose", params, FIRST_PARTY);
+    for (const [o, r] of [[ORIGIN, third], [FIRST_PARTY, first]]) {
+      const missing = copy.filter((s) => !r.html.includes(s));
+      check(`13. ${label} from ${o}: the card says what it does (missing: ${missing.map((s) => s.slice(0, 40)).join(" | ") || "none"})`, missing.length === 0);
+      check(`13. ${label} from ${o}: Approve arms at the 700 ms floor (${r.armedMs} ms) and the click signs the request's uri and hash`, r.armedMs >= 650 && r.armedMs < 1500 && signedAsRequested(r, params));
+    }
+    check(`13. ${label}: ${FIRST_PARTY} paints the same window as ${ORIGIN} but for the origin line`, painted(first) === painted(third));
+    counts[label] = [third.fetches, first.fetches].map((f) => [f.paint.length, f.click.length]);
+    if (label === "name transfer" || label.startsWith("profile write")) console.log(`13. ${label} fetches:`, JSON.stringify(third.fetches).replace(/https?:\/\/[^/"]+/g, ""));
+    if (label.startsWith("offer that")) {
+      const w = third.face["send-warn"];
+      check(`13. a taker that looks like this account gets the look-alike warning (${strip(w).slice(0, 80)})`, /Possible address-poisoning/.test(w) && w.includes("Only this address can fill the offer.") && !/First time/.test(w));
+      check("13. ...and its row carries the address it names", third.html.includes(`<div data-to="${LOOK_ME}"><dt>Only fillable by</dt>`));
+    }
+    if (label === "offer for a new taker") check(`13. a new taker gets no first-time notice (send-warn ${JSON.stringify(third.face["send-warn"])} / ${JSON.stringify(first.face["send-warn"])})`, third.face["send-warn"] === "" && first.face["send-warn"] === "");
+    if (label.startsWith("profile write")) {
+      check(`13. the removed-keys row marks the csd.p2p it removes (${third.drop})`, third.drop === "<code>csd.p2p</code> (a peer other applications may dial)" && first.drop === third.drop);
+    }
+  }
+  // Fetches before the click (the window's own reads and the worker's answers to them) and after it (the signing), on
+  // 649fcb4 and on this change: the wording added no read.
+  console.log("13. fetches [before the click, after it] per origin:", JSON.stringify(counts));
+  // The CSD-paid fill card (its listing ticker warning and mark fill #fill-view after the paint) arms at the same floor.
+  fw = world(me, "none", 9000);
+  const fl = await round("fillOffer", { proposalId: fw.fc.id, outputs: fw.outputs });
+  agree("13. a CSD-paid fill", fl, /^Fill offer/, ["fillOfferView"]);
+  check(`13. a CSD-paid fill: Approve arms at the 700 ms floor (${fl.armedMs} ms)`, fl.armedMs >= 650 && fl.armedMs < 1500);
+  check(`13. a name transfer makes the fetches it made before (${JSON.stringify(counts["name transfer"])})`, JSON.stringify(counts["name transfer"]) === "[[3,3],[3,3]]");
+  check(`13. a profile write makes the fetches it made before (${JSON.stringify(counts["profile write setting contenthash and csd.rpc"])})`, JSON.stringify(counts["profile write setting contenthash and csd.rpc"]) === "[[4,3],[4,3]]");
 }
 done("sign-display-parity");

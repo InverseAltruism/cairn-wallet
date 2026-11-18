@@ -103,7 +103,7 @@ function listingOf(o: any, giveTicker?: string, giveAmount?: string, giveName?: 
   if (extra.some((x) => x === null)) return undefined;
   return { status: "open", give, want: { value, payto }, feeBps, height, ...Object.assign({}, ...extra), ...(typeof o?.taker === "string" ? { taker: o.taker } : {}), ...(typeof o?.bid === "string" ? { bid: o.bid } : {}) };
 }
-export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; expiresAt?: number; partial?: boolean; listing?: FillListing }> {
+export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): Promise<{ ok: boolean; error?: string; offerId?: string; giveTicker?: string; giveAmount?: string; giveName?: string; giveDecimals?: number; giveDeployId?: string; expiresAt?: number; partial?: boolean; listing?: FillListing }> {
   try {
     const so = await servedOpenOffer(wallet, proposalId);
     if (!so.ok) return so;
@@ -116,7 +116,7 @@ export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): P
     const giveName = typeof g?.name === "string" ? g.name : undefined;
     const meta = giveTicker ? await tokenDisplayMeta(wallet, [giveTicker]) : {};
     const partial = o.min != null && giveName === undefined;
-    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, expiresAt: servedExpiryHeight(o), partial, listing: listingOf(o, giveTicker, giveAmount, giveName) };
+    return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined, expiresAt: servedExpiryHeight(o), partial, listing: listingOf(o, giveTicker, giveAmount, giveName) };
   } catch { return { ok: false, error: "offer unavailable" }; }
 }
 

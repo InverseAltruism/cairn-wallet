@@ -51,7 +51,9 @@ const req = (id, method, origin, params) => ({ id, method, origin, params });
 const sendTo = (outs, fee = 1_000_000) => ({ outputs: outs.map(([to, value]) => ({ to, value })), fee });
 const fill = (outs, extra = {}) => ({ proposalId: PID, outputs: outs.map(([to, value]) => ({ to, value })), fee: 1_000_000, score: 100, confidence: 100, ...extra });
 
-const view = { ok: true, giveTicker: "CAIRN", giveAmount: "100000000", giveDecimals: 8, expiresAt: nfinTip + 300 };
+const view = { ok: true, giveTicker: "CAIRN", giveAmount: "100000000", giveDecimals: 8, giveDeployId: cx.PINNED_TOKENS.CAIRN.deployId, expiresAt: nfinTip + 300 };
+// a listing whose token is a look-alike ticker: the CSD-paid card warns as the token-priced card does
+const viewLookalike = { ok: true, giveTicker: "USDT", giveAmount: "100000000", giveDecimals: 6, giveDeployId: "0x" + "d1".repeat(32), expiresAt: nfinTip + 300 };
 // a reservation of a listing (the claim lane) whose expiry is too close to mine: the longest listing block
 const viewReserved = { ok: true, offerId: "0x" + "ab".repeat(32), giveName: "satoshi", expiresAt: nfinTip + 2 };
 const quote = { ok: true, ticker: "CAIRN", amount: "150000000000", fee: "1500000000", total: "151500000000", wantDecimals: 8, giveName: "quay", expiresAt: nfinTip + 300 };
@@ -75,6 +77,7 @@ const CASES = [
   ["token-send", [req("tx", "propose", O, prop(cx.buildTransfer({ ticker: "CAIRN", amount: "1500000000", to: RCPT })))], {}, ["First time sending tokens to", "to:1", "cost"]],
   ["token-send-lookalike-ticker", [req("tx2", "propose", O, prop(cx.buildTransfer({ ticker: "USDT", amount: "1500000000", to: RCPT })))], { tokenDisplayMeta: { USDT: { decimals: 6 } } }, ["well-known or Cairn-like ticker", "First time sending tokens to", "cost"]],
   ["fill-csd", [req("f1", "fillOffer", O, fill([[RCPT, 250_000_000], [T, 3_750_000]]))], { fillOfferView: view }, ["#fill-view", "First time sending to", "to:2", "cost"]],
+  ["fill-csd-lookalike-ticker", [req("f1l", "fillOffer", O, fill([[RCPT, 250_000_000], [T, 3_750_000]]))], { fillOfferView: viewLookalike }, ["#fill-view", "well-known or Cairn-like ticker", "First time sending to", "to:2", "cost"]],
   ["fill-partial-reserved", [req("f2", "fillOffer", O, fill([[RCPT, 50_000_000], [T, 750_000]]))], { fillOfferView: viewReserved }, ["#fill-view", "the wallet will refuse this fill", "to:2", "cost"]],
   // a two-recipient CSD fill whose listing does not load: both first-time warnings and the listing failure
   ["fill-2-nolisting", [req("f3", "fillOffer", O, fill([[RCPT, 500_000_000], ["0x" + "34".repeat(20), 7_500_000]], { fee: 5_000_000 }))], {}, ["Could not load this listing", "warn:2", "named:2", "to:2", "cost"]],
@@ -84,7 +87,11 @@ const CASES = [
   ["attest-token", [req("at", "attest", O, { proposalId: PID, score: 100, confidence: cx.CONF_TOKEN_FILL, fee: 1_000_000 })], { tokenFillQuote: quote }, ["Token-priced fill", "#token-sim", "cost"]],
   ["propose-outputs", [req("po", "propose", D, { domain: "csd:apps", payloadHash: "0x" + "77".repeat(32), uri: `${D}/p/42`, fee: 25_000_000, outputs: [{ to: RCPT, value: 100_000_000 }, { to: R2, value: 200_000_000 }] })], {}, ["transfers funds out of your wallet", "warn:2", "named:2", "to:2", "cost"]],
   ["propose-deploy", [req("pd", "propose", O, prop(v.deploy({ ticker: "TKN", decimals: 8, supply: "2100000000000000", mint: "open", mintLimit: "100000000" }), { outputs: [{ to: T, value: Number(v.DEPLOY_FEE) }] }))], {}, ["transfers funds out of your wallet", "to:1", "cost"]],
-  ["propose-raw", [req("pr", "propose", D, { domain: "csd:apps", payloadHash: "0x" + "77".repeat(32), uri: `${D}/p/42`, fee: 25_000_000 })], {}, ["origin", "cost"]],
+  ["propose-raw", [req("pr", "propose", D, { domain: "csd:apps", payloadHash: "0x" + "77".repeat(32), uri: `${D}/p/42`, fee: 25_000_000 })], {}, ["origin", "This wallet does not interpret records of this domain", "cost"]],
+  // a cairnx:v1 record this wallet cannot read, with an output: the caution comes before the recipient
+  ["propose-raw-cairnx-unread", [req("pu", "propose", D, { domain: cx.CAIRNX_DOMAIN, payloadHash: v.payloadHash({ v: 1, t: "zzz", x: 1 }), uri: v.canonicalJson({ v: 1, t: "zzz", x: 1 }), fee: 25_000_000, outputs: [{ to: RCPT, value: 100_000_000 }] })], {}, ["This wallet does not recognise this cairnx:v1 record", "transfers funds out of your wallet", "to:1", "cost"]],
+  // an offer that wants nothing, for a taker that looks like an address this wallet paid
+  ["offer-taker-free", [req("otf", "propose", D, prop(v.offer({ give: { ticker: "TKN", amount: "100" }, want: { value: "0" }, taker: LOOK })))], seen, ["Possible address-poisoning", "This offer asks nothing in return", "cost"]],
   ["offer-payto", [req("of", "propose", O, prop(v.offer({ give: { name: "alice" }, want: { value: "500000000", payto: R2 } })))], {}, ["First time using this payout address", "cost"]],
   ["seal", [req("sl", "sealClaim", O, { domain: "csd:sealed", claim: "ETH > $4000 by Friday", fee: 25_000_000 })], {}, ["cost"]],
   ["reveal", [req("rv", "revealClaim", O, "0x" + "5e".repeat(32))], {}, ["#reveal-preview", "cost"]],
@@ -97,8 +104,10 @@ const CASES = [
   ["name-nrenew-underpaid", [req("nnu", "propose", O, prop(cx.buildNameRenew({ name: "alice" }), { outputs: [{ to: T, value: 1 }] }))], {}, ["is below the current price", "#nfin-note", "cost"]],
   ["name-nset", [req("ns", "propose", O, prop(cx.buildNameSet({ name: "alice", addr: LOOK })))], seen, ["Possible address-poisoning", "#nfin-note", "Resolves to", "cost"]],
   ["name-nset-unpoint", [req("ns0", "propose", O, prop(cx.buildNameSet({ name: "alice", addr: "0x" + "0".repeat(40) })))], {}, ["#nfin-note", "cost"]],
-  ["name-nxfer", [req("nx", "propose", O, prop(cx.buildNameXfer({ name: "alice", to: RCPT })))], {}, ["First time transferring a name to", "to:1", "cost"]],
-  ["name-nprofile", [req("np", "propose", O, prop(cx.buildNameProfile({ name: "alice", profile: { bio: "builder", url: "https://example.org", wallet: RCPT } })))], {}, ["is cosmetic text", "replaces the whole profile", "Keys removed", "cost"]],
+  ["name-nxfer", [req("nx", "propose", O, prop(cx.buildNameXfer({ name: "alice", to: RCPT })))], {}, ["First time transferring a name to", "This transfer is final", "to:1", "cost"]],
+  ["name-nprofile", [req("np", "propose", O, prop(cx.buildNameProfile({ name: "alice", profile: { bio: "builder", url: "https://example.org", wallet: RCPT } })))], {}, ["is cosmetic text", "replaces the whole profile", "They do not change where funds go", "Keys removed", "cost"]],
+  // the three keys other applications read, each with what it does, beside an ordinary key and an address-shaped value
+  ["name-nprofile-read-keys", [req("npr", "propose", D, prop(cx.buildNameProfile({ name: "w".repeat(32), profile: { contenthash: "ipfs://" + "b".repeat(59), "csd.p2p": "peer.example:7779", "csd.rpc": "https://rpc.example", wallet: RCPT } })))], {}, ["replaces the whole profile", "Other applications read these keys", "The other keys do not change where funds go", "is cosmetic text", "Keys removed", "cost"]],
   ["token-mint", [req("mi", "propose", O, prop(v.mint({ ticker: "TKN", amount: "100" })))], {}, ["cost"]],
   ["token-bid", [req("bi", "propose", O, prop(v.bid({ give: { value: "5000000000" }, want: { ticker: "TKN", amount: "4638" } })))], {}, ["cost"]],
   ["offer-cancel", [req("oc", "propose", O, prop(v.offerCancelAll({ ticker: "TKN" })))], {}, ["cost"]],
@@ -179,7 +188,7 @@ function measure([expect, origin]) {
     if (label === "Resolves to") return [...reqEl.querySelectorAll(".kv > div")].filter((r) => r.querySelector("dt")?.textContent === label);
     const words = label.replace(/[<>]/g, "");
     const walker = document.createTreeWalker(reqEl, NodeFilter.SHOW_ELEMENT);
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.matches(".check, .err, .ap-box, .kv > div, .req.dim") && n.textContent.replace(/\s+/g, " ").includes(words)) return [n];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.matches(".check, .err, .ap-box, .kv > div, .req.dim, .ap-lede") && n.textContent.replace(/\s+/g, " ").includes(words)) return [n];
     return [];
   };
   const missing = [];
@@ -370,6 +379,30 @@ try {
       const fx = await windowFixed(page);
       t.check(`full height ${name}: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px)`, fx.ok);
       t.check(`full height ${name}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  // The cards whose wording says what a record does (2026-11-18), in the whole window too: what they add renders, and
+  // everything with weight stays above the buttons, which do not move from where an ordinary request has them.
+  console.log("full height, what a record does:");
+  const SAYS = new Set(["name-nxfer", "name-nprofile", "name-nprofile-read-keys", "propose-raw", "propose-raw-cairnx-unread", "offer-taker-free", "fill-csd-lookalike-ticker"]);
+  let fullBar = null;
+  for (const theme of ["light", "dark"]) for (const [name, queue, extra, expect] of CASES.filter(([n]) => SAYS.has(n))) {
+    const tag = `full height ${theme} ${name}`;
+    const { page, ctx, errors } = await openWalletPage(browser, "approve", { ...base, pending: queue, ...extra }, { viewport: { width: WIDTH, height: APPROVE_WINDOW.height }, colorScheme: theme });
+    try {
+      await page.waitForSelector("#view-req:not([hidden])", { timeout: 10_000 });
+      await settle(page);
+      const r = await page.evaluate(measure, [expect, queue[0].origin]);
+      const bar = await page.evaluate(() => [document.getElementById("btn-reject").getBoundingClientRect().top, document.getElementById("btn-approve").getBoundingClientRect().top]);
+      fullBar ??= bar;
+      t.check(`${tag}: what must render is there (missing: ${r.missing.join(", ") || "none"}) and everything with weight is above the buttons (below: ${r.below.join(", ") || "none"})`, r.missing.length === 0 && r.below.length === 0 && r.scrollTop === 0);
+      t.check(`${tag}: the buttons sit where every other card has them (${bar} vs ${fullBar})`, bar.join() === fullBar.join());
+      const fx = await windowFixed(page);
+      t.check(`${tag}: the window itself does not scroll (document ${fx.doc.h} of ${fx.doc.inner} px)`, fx.ok);
+      t.check(`${tag}: no page error (${errors.join(" | ") || "none"})`, errors.length === 0);
     } finally {
       await ctx.close();
     }
@@ -593,7 +626,9 @@ try {
   const hostileKey = "<img src=x onerror=alert(1)>";
   const wide = Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`${i}`.padStart(32, "w"), "v"]));
   for (const theme of ["light", "dark"]) for (const [name, profile, want] of [
-    ["two sites' keys", { contenthash: "ipfs://site-a", avatar: "https://a.example/x.png", [hostileKey]: "v", "ab‮cd": "v" }, `contenthash, ${hostileKey}, ab\\u202Ecd`],
+    ["two sites' keys", { contenthash: "ipfs://site-a", avatar: "https://a.example/x.png", [hostileKey]: "v", "ab‮cd": "v" }, `contenthash (the site other applications open for this name), ${hostileKey}, ab\\u202Ecd`],
+    ["the three keys other applications read, removed", { contenthash: "a", "csd.rpc": "b", "csd.p2p": "c", ...Object.fromEntries(Object.entries(wide).slice(0, 13)) },
+      `contenthash (the site other applications open for this name), csd.rpc (the node address other applications may read the chain through for this name), csd.p2p (a peer other applications may dial), ${Object.keys(wide).slice(0, 13).join(", ")}`],
     ["16 keys, all removed", wide, Object.keys(wide).join(", ")],
   ]) {
     const tag = `${theme} profile row, ${name}`;

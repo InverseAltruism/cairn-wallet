@@ -49,11 +49,14 @@ function tokenQuoteCandidates(): string[] {
     tokenQuoteHtml({ ...q, giveName: NAME }, TIP),
   ];
 }
-// Every honest current profile at its longest (PROFILE_MAX_KEYS keys of 32 wide characters, all removed) and the unread
-// line; a hostile name service can outgrow this, as with any served text.
+// Every honest current profile at its longest (PROFILE_MAX_KEYS keys of 32 wide characters, all removed, and the same
+// with the three keys other applications read, which carry what they do) and the unread line; a hostile name service
+// can outgrow this, as with any served text.
 function profileDropCandidates(): string[] {
-  const keys = Object.fromEntries(Array.from({ length: PROFILE_MAX_KEYS }, (_, i) => [`${i}`.padStart(32, "w"), "v"]));
-  return [profileDropValue({ failed: true }, {}), profileDropValue({ record: { profile: keys } }, {})];
+  const wide = (n: number) => Array.from({ length: n }, (_, i) => [`${i}`.padStart(32, "w"), "v"]);
+  const keys = Object.fromEntries(wide(PROFILE_MAX_KEYS));
+  const read = Object.fromEntries([["contenthash", "v"], ["csd.rpc", "v"], ["csd.p2p", "v"], ...wide(PROFILE_MAX_KEYS - 3)]);
+  return [profileDropValue({ failed: true }, {}), profileDropValue({ record: { profile: keys } }, {}), profileDropValue({ record: { profile: read } }, {})];
 }
 function revealCandidates(): string[] {
   return [revealPreviewHtml({ failed: true }), revealPreviewHtml(null), revealPreviewHtml({ domain: "w".repeat(128), claim: "W".repeat(400) }),
