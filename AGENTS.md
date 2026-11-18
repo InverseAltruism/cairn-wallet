@@ -256,7 +256,8 @@ detail and the runtime footprint (timeouts, fan-out, storage, consensus caps, th
 - `README.md` (users and integrators), `SECURITY.md` (threat model, trust boundaries, how to report),
   `CHANGELOG.md` (release notes, including the history and incident notes moved out of this file).
 - `WALLET-ERROR-CODES.md`: the dApp error-code contract (codes are the contract, strings are UX copy; read by
-  `test/wallet-0270-hygiene.test.mjs`; stays at the root).
+  `test/wallet-0270-hygiene.test.mjs`; stays at the root). `docs/PROVIDER.md`: the rest of the provider contract for
+  application developers; its last section names the file that holds each number it states.
 - `docs/ARCHITECTURE.md` (per-module detail, runtime footprint, deviations) and `docs/TESTING.md` (runner, helpers,
   CI, the release workflow).
 - Design notes: `docs/DESIGN-namespv-scaling.md` (header store, anchor table, name verification),

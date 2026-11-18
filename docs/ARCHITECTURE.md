@@ -58,7 +58,9 @@ origin checked; replies are not authenticated, a script on the page can read and
 `csd:announceProvider` discovery. The two replies `content.ts` writes itself carry codes: `WALLET_RELOADED` (an
 orphaned content script after an update) and `WALLET_UNAVAILABLE` (a closed channel). `getCapabilities().methods`
 lists every `DAPP_METHODS` entry but the legacy `signIn`, which against the Cairn API can succeed from no origin
-(test/extension-boundary.ts CQ-4, test/inpage-relay.test.mjs).
+(test/extension-boundary.ts CQ-4, test/inpage-relay.test.mjs). The contract this surface offers applications
+(discovery, methods, limits, events, consent, the approval cards, stability) is `docs/PROVIDER.md`;
+test/provider-discovery.test.mjs pins the discovery part.
 
 ## Core (`src/core/`)
 

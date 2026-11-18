@@ -208,8 +208,8 @@ may read the address without a fresh prompt. This is the **only** silent path, a
 the wallet is unlocked **and the currently-active address is the SAME one the user consented to
 share** (F11): consent is recorded against a specific address, so if the user has since switched
 accounts, the silent path falls through to a fresh approval prompt rather than disclose the new,
-unconsented address. **Every signing / fund-moving action (signin, send, propose, attest,
-sealClaim, revealClaim) ALWAYS opens the clear-signing approval window, every time,
+unconsented address. **Every signing / fund-moving action (signin, signinWithCsd, send, fillOffer,
+propose, attest, sealClaim, revealClaim) ALWAYS opens the clear-signing approval window, every time,
 regardless of connection state.** Being connected never pre-approves a signature (enforced by
 the fast-path guard in `background.ts` + the positive whitelist in `resolvePending`; proven by
 `test/extension-boundary.ts` and the source-scan tripwires in `test/pentest.ts` §15). A sign-in request whose
