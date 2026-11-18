@@ -97,13 +97,9 @@ inputs or a change address.
   keeps it; the commit expires 720 epochs after the current one. Any other claim, domain or fee is answered
   `BAD_REQUEST` before any window opens.
 - `revealClaim`: the txid of a seal this account made in this wallet. No transaction; refused `SEAL_NOT_MINED`
-  until the commit is mined. A txid the active account holds no seal for is `SEAL_UNKNOWN`: before any window for a
-  site connected to that account while the wallet is unlocked and that account is active (a switch, a lock or a
-  disconnect while the wallet checks sends the request to the window), and after approval (nested)
-  for any other site, whose request opens the window as any reveal does. A connected site so learns silently whether
-  this install holds a record of a seal under the active account (it knows the address already); a site that is not
-  connected learns nothing without the user seeing the window. A connected site asking to reveal a seal held under
-  another account of this wallet gets `SEAL_UNKNOWN` too, with no window.
+  until the commit is mined. A txid the active account holds no seal for opens the window like any reveal, from every
+  site, and approving it answers `SEAL_UNKNOWN` (nested); nothing a site gets before the window depends on which seals
+  the wallet holds.
 - `signInWithCsd`: `nonce` (required, 8 or more ASCII letters and digits), `statement` (one line, at most 256
   characters), `uri` (default: the site's root; must be on the site), `domain` (must equal the site's),
   `expirationSecs` (default 600, held to 60 to 3,600), `notBeforeSecs` (positive), `requestId` (one line, at most 256
@@ -149,7 +145,7 @@ inputs or a change address.
 - The signing methods (`signInWithCsd`, `signIn`, `propose`, `attest`, `send`, `fillOffer`, `sealClaim`,
   `revealClaim`) open the approval window every time, whether or not the site is connected, and approving one records
   no connection; a request answered before the window (`BAD_REQUEST`, `FIRST_PARTY_ONLY`, `UNSUPPORTED_METHOD`,
-  `FILL_IN_PROGRESS`, `RATE_LIMITED`, and `SEAL_UNKNOWN` for a connected site) signs nothing. The window does not say
+  `FILL_IN_PROGRESS`, `RATE_LIMITED`) signs nothing. The window does not say
   whether the site is connected. A signature still shows the site the signing address: `signInWithCsd` returns it as
   `account`, and a transaction spends that account's coins on chain.
 - The wallet records each origin the user approves a request from, with when, so the window can say when a site the

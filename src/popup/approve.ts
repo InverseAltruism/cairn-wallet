@@ -87,7 +87,7 @@ async function render() {
   // The requesting origin, in full however long (a look-alike keeps its tail), set from the browser's sender origin.
   $("ap-origin").textContent = String(current.origin);
   $("ap-tile").textContent = originInitial(current.origin);
-  // A site the user has approved nothing from (background.ts newOrigins) says so on the same line, which costs the
+  // A site the user has approved nothing from (background.ts isNewOrigin) says so on the same line, which costs the
   // request no height: the longest, the connect line, stays one line at the window's width
   // (test/approve-first-request-chrome.test.mjs).
   const isNew = current.first === true;

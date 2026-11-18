@@ -12,7 +12,7 @@ export const sealKey = (addr: string) => "sealedClaims:" + addr;
 // the wallet's own list of accounts no longer names them.
 const KEPT_SEALS = "keptSealAddrs";
 const revealed = (rec: any): boolean => !!rec?.revealed;
-export const SEAL_UNKNOWN_TEXT = "no sealed claim with that txid in this account";
+const SEAL_UNKNOWN_TEXT = "no sealed claim with that txid in this account";
 
 // SEAL-EVICT-01 (P75-6 F2): the sealed-claims cap must never evict an UNREVEALED preimage; it is the only
 // copy of the reveal nonce for a PAID commit (unrecoverable from phrase or chain). Evict oldest REVEALED
@@ -139,8 +139,6 @@ export class SealedClaims {
     const list: any[] = (await this.store.get(k)) || [];
     return list.find((x) => x?.txid === txid) ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec;
   }
-  /** Whether the account `addr` holds the seal `txid`: revealClaim's own lookup, local only. */
-  async holds(addr: string, txid: string): Promise<boolean> { return !!(await this.findSeal(sealKey(addr), txid)); }
   async revealClaim(txid: string) {
     const k = sealKey(this.w.addr());
     const rec = await this.findSeal(k, txid);

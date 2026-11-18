@@ -58,20 +58,19 @@ events and alarm-driven auto-lock.
   result.
 - `approvedOrigins` (storage key): `{ [origin]: ms }`, the origins the user has approved a request from and when they last
   did, at most `APPROVED_CAP` = 500, the newest by that time (the oldest is dropped and reads as new again). It is
-  display metadata and nothing the user waits for waits on it: `pending` reads an in-memory copy (`approvedNow`, loaded
-  once per worker; a listing waits at most `APPROVED_LOAD_WAIT_MS` = 250 ms for that load, and an origin not loaded
-  reads as new) and the consent map, and marks a request `first` when its origin is in neither (`newOrigins`, which
-  never fails: an unreadable list or map reads as new). `resolvePending` updates the copy once the page has its answer
-  and queues the storage write on its own queue (`recordApproved`, `inApprovedChain`, never awaited; a failed write is
-  logged), so no listing, consent write or approval queues behind it. `reset` bumps `approvedGen` and clears the copy
-  and the key: an approval that began before it records nothing when it completes. Opaque origins (`src/core/origin.ts`
+  display metadata, kept apart from everything essential. Each queued request carries its flag (`first`), set from
+  memory when it is queued (`isNewOrigin`: in neither `approvedNow` nor `connectedNow`) and refreshed (`refreshNew`)
+  when either loads (`loadKnown`, in the background, one read of each at a time, tried again when a request is queued)
+  or changes (an approval, a consent write, a reset). `pending` reads only the flags and touches no storage; until a
+  list has loaded, or when it cannot be read, an origin reads as new. `resolvePending` updates `approvedNow` once the
+  page has its answer and queues the storage write on the list's own queue (`recordApproved`, `inApprovedChain`, never
+  awaited; a failed write is logged). `reset` forgets the list in memory, queues the stored deletion without awaiting
+  it, then clears the consent map and erases the wallet; a deletion that fails is replaced by the next write. A reset
+  generation (`approvedGen`) discards an approval that began before the reset. Opaque origins (`src/core/origin.ts`
   `opaqueOrigin`) are never written (test/approve-first-request.test.mjs).
-- A `revealClaim` for a seal the active account does not hold from a site connected to that account is answered
-  `SEAL_UNKNOWN` before it is queued (`unknownSealFromConnected`: the lookup, `claims.ts` `holds`, is made under the
-  consented address, and after each await the active account, the lock and the consent must be unchanged, or the
-  request goes to the window); from any other site it is queued, and `revealClaim` answers
-  it `SEAL_UNKNOWN` after approval. A seal records the asking origin on its record (`origin`; the extension's own for a
-  popup seal), which `clearsign.ts` `revealPreviewHtml` shows.
+- A `revealClaim` for a seal the active account does not hold is queued like any reveal, from every site, and
+  `revealClaim` answers it `SEAL_UNKNOWN` after approval. A seal records the asking origin on its record (`origin`; the
+  extension's own for a popup seal, none for an opaque origin), which `clearsign.ts` `revealPreviewHtml` shows.
 
 ## Provider (`src/content.ts`, `src/inpage.ts`)
 

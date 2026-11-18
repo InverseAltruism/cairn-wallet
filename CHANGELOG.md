@@ -6,13 +6,15 @@
   has not connected it, the ask line under the origin reads "New site, which asks ..." (tooltip: "You have not approved
   a request from this site with this wallet before."). The origin is recorded when the user approves a request from it,
   in a new `chrome.storage.local` key `approvedOrigins` (origin to the time of the last approval), written on its own queue
-  after the page has its answer, never awaited by the approval, at most 500 origins (the oldest by
+  after the page has its answer, never awaited by the approval or the reset, at most 500 origins (the oldest by
   last approval is dropped and reads as new again), never an opaque origin, cleared by the internal reset and deleted
   with the extension. A rejected request or a closed window records nothing, so two requests queued from a new site
   both carry the line until one is approved. A connected site is not new. A site used only for signing, never
-  connected, before this release reads as new once after the update: the wallet kept no record of it. Nothing the user waits for waits on the list: the window reads an in-memory copy
-  that an approval updates at once, a list that cannot be read shows the line, and after a worker start a listing
-  waits at most 250 ms for it to load. An approval that completes after a reset records nothing. The line shares
+  connected, before this release reads as new once after the update: the wallet kept no record of it. Nothing the user waits for waits on the list: each queued request carries its flag,
+  decided from memory and refreshed when the list or the connected sites load or change, so a listing reads no
+  storage; until they have loaded, and when they cannot be read, a site reads as new. A reset erases the wallet first
+  and never waits on the list, whose stored copy is deleted after it (a failed deletion is replaced by the next
+  write); an approval that completes after a reset records nothing. The line shares
   the ask line, so it adds no height: a line of its own (18.6 px) pushed rows with weight below the buttons on three
   card types. No button changes and Approve arms at its 700 ms floor as before (test/approve-first-request.test.mjs,
   test/approve-first-request-chrome.test.mjs at both window heights).
@@ -21,13 +23,10 @@
   "Sealed by" that site, or a caution naming both sites when another site asks for the reveal, or "Sealed by: not
   recorded". Nothing is refused. With a 253-character sealing host, the longest asking origin, claim and domain the card
   runs past the buttons: the caution comes first and the line under the buttons says more is below.
-- `revealClaim` for a txid the active account holds no seal for answers `SEAL_UNKNOWN` (it answered `{ok:false}` with
-  no code). A site connected to the active account gets it before any window, with no queue slot, while the wallet is
-  unlocked and that account is active; it learns whether this install holds a record of that seal. The lookup is made
-  under the address the consent names, and a switch of account, a lock or a disconnect while the check runs sends the
-  request to the window. Any other site's
-  request opens the window as before and gets the code, nested, after approval, because an answer with no window would
-  let any page learn which seals, and so which address, the wallet holds. cairn-sdk at origin/master keeps a code it
+- `revealClaim` for a txid the active account holds no seal for answers `SEAL_UNKNOWN`, nested, after approval (it
+  answered `{ok:false}` with no code). The request opens the window as before, from every site: an answer before the
+  window, even one limited to connected sites, let a site learn which seals the wallet holds, through races found in
+  review, so there is none. cairn-sdk at origin/master keeps a code it
   does not list as sent and final (`mapProviderError`, `retryable: false`), as it treated the codeless refusal.
 
 - A `.csd` name transfer (`nxfer`) or profile write (`nprofile`) for a name the configured CairnX API does not give to

@@ -11,7 +11,6 @@ import { siwcParamsRefusal } from "./core/siwcparams.js";
 import { sendFields, revealFields, proposeFields, sealFields } from "./core/signfields.js";
 import { proposeRefusal, proposeFeeRefusal } from "./core/node.js";
 import { opaqueOrigin } from "./core/origin.js";
-import { SEAL_UNKNOWN_TEXT } from "./core/claims.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -28,7 +27,7 @@ if ((globalThis as { __CAIRN_TEST__?: unknown }).__CAIRN_TEST__) (globalThis as 
 const ready = wallet.init();
 
 // pending dApp approvals: id -> {origin, method, params, resolve}
-type Pending = { origin: string; method: string; params: any; resolve: (v: any) => void };
+type Pending = { origin: string; method: string; params: any; resolve: (v: any) => void; first: boolean };
 const pending = new Map<string, Pending>();
 let reqSeq = 0;
 
@@ -66,6 +65,7 @@ function recordConsent(origin: string, addr: string): Promise<void> {
     const c = await getConsents();
     c[origin] = { addr, ts: Date.now() };
     await consentStore.set(CONSENT_KEY, c);
+    consentChanged((now) => now.add(origin));
   });
 }
 function revokeConsent(origin: string): Promise<{ removed: boolean }> {
@@ -74,6 +74,7 @@ function revokeConsent(origin: string): Promise<{ removed: boolean }> {
     if (!c[origin]) return { removed: false };
     delete c[origin];
     await consentStore.set(CONSENT_KEY, c);
+    consentChanged((now) => now.delete(origin));
     return { removed: true };
   });
 }
@@ -83,11 +84,12 @@ async function listConsents(): Promise<{ origin: string; addr: string; ts: numbe
 }
 
 // The origins the user has approved a request from: origin -> ms of the last approval, kept on this device only so the
-// window can say when a site the user has approved nothing from asks. An origin in the consent map counts too, read at
-// each listing (one rule, no copy to drift), so a site connected before this list existed is not new. The newest
-// APPROVED_CAP by that time stay; an origin dropped past the cap reads as new again. It is display metadata: the
-// listing reads an in-memory copy, updated at approval before the write is queued, and the write has its own queue, so
-// nothing the user waits for (a listing, a consent write, an approval's answer) waits on it or fails with it.
+// window can say when a site the user has approved nothing from asks; a connected site counts too, so a site connected
+// before this list existed is not new. The newest APPROVED_CAP by that time stay; an origin dropped past the cap reads
+// as new again. It is display metadata, kept apart from everything a user waits for: each queued request carries its
+// flag (`first`), decided from memory (approvedNow, connectedNow) when it is queued and refreshed whenever either changes
+// or finishes loading. `pending` reads only the flag, and no request, approval, consent change or reset awaits these
+// lists or their storage.
 const APPROVED_KEY = "approvedOrigins";
 const APPROVED_CAP = 500;
 type ApprovedMap = Record<string, number>;
@@ -95,24 +97,49 @@ async function getApproved(): Promise<ApprovedMap> { return (await consentStore.
 const capApproved = (approved: ApprovedMap): ApprovedMap => Object.fromEntries(Object.entries(approved).sort((a, b) => b[1] - a[1]).slice(0, APPROVED_CAP));
 const inApprovedChain = serialQueue();
 let approvedNow: ApprovedMap = {};
-// Bumped by reset: an approval that began before it, or a load that read before it, writes nothing.
-let approvedGen = 0;
-let approvedLoad: Promise<void> | null = null;
-let approvedReady = false;
-// Loads the stored list into approvedNow once per worker; a failed read is retried by the next listing.
-function loadApproved(): Promise<void> {
-  if (!approvedLoad) {
+let connectedNow = new Set<string>();
+// approvedGen is bumped by reset: an approval that began before it, or a load that read before it, changes nothing.
+// consentGen is bumped by every consent change: a load of the map that read before one is read again.
+let approvedGen = 0, consentGen = 0;
+let approvedLoaded = false, connectedLoaded = false, approvedLoading = false, connectedLoading = false;
+// Set by reset until its deletion of the stored list succeeds: until then a write replaces the stored list with the one
+// in memory instead of adding to it.
+let approvedCleared = false;
+const isNewOrigin = (origin: string): boolean => !opaqueOrigin(origin) && !Object.hasOwn(approvedNow, origin) && !connectedNow.has(origin);
+function refreshNew(): void { for (const p of pending.values()) p.first = isNewOrigin(p.origin); }
+const noted = (what: string) => (e: unknown) => console.warn(`[background] ${what}:`, e);
+// Reads what is stored into memory in the background, one read of each at a time; a read that fails is tried again
+// when the next request is queued. Until a list has loaded, an origin it would name reads as new.
+function loadKnown(): void {
+  if (!approvedLoaded && !approvedLoading) {
+    approvedLoading = true;
     const gen = approvedGen;
-    approvedLoad = getApproved().then((stored) => {
-      if (gen !== approvedGen) return;
+    getApproved().then((stored) => {
+      if (gen !== approvedGen || approvedLoaded) return;
       for (const [o, at] of Object.entries(stored)) if (!((approvedNow[o] ?? 0) >= at)) approvedNow[o] = at;
       approvedNow = capApproved(approvedNow);
-      approvedReady = true;
-    }, (e) => { approvedLoad = null; console.warn("[background] the approved sites could not be read:", e); });
+      approvedLoaded = true;
+      refreshNew();
+    }, noted("the approved sites could not be read")).finally(() => { approvedLoading = false; });
   }
-  return approvedLoad;
+  if (!connectedLoaded && !connectedLoading) {
+    connectedLoading = true;
+    const gen = consentGen;
+    getConsents().then((c) => {
+      connectedLoading = false;
+      if (gen !== consentGen) { loadKnown(); return; }
+      connectedNow = new Set(Object.keys(c));
+      connectedLoaded = true;
+      refreshNew();
+    }, (e) => { connectedLoading = false; noted("the connected sites could not be read")(e); });
+  }
 }
-void loadApproved();
+// Called by the consent writers once their write has landed.
+function consentChanged(change: (now: Set<string>) => void): void {
+  consentGen++;
+  change(connectedNow);
+  refreshNew();
+}
 // `gen` is approvedGen when the user approved. Not awaited by the approval: a write that fails leaves the origin new
 // after a worker restart, so the line shows again, and nothing else.
 function recordApproved(origin: string, gen: number): void {
@@ -120,34 +147,30 @@ function recordApproved(origin: string, gen: number): void {
   const at = Date.now();
   approvedNow[origin] = at;
   if (Object.keys(approvedNow).length > APPROVED_CAP) approvedNow = capApproved(approvedNow);
+  refreshNew();
   inApprovedChain(async () => {
-    const stored = await getApproved();
+    const stored = approvedCleared ? { ...approvedNow } : await getApproved();
     if (gen !== approvedGen) return;
     stored[origin] = Math.max(stored[origin] ?? 0, at);
     await consentStore.set(APPROVED_KEY, capApproved(stored));
-  }).catch((e) => console.warn("[background] the approved site was not recorded:", e));
+    approvedCleared = false;
+  }).catch(noted("the approved site was not recorded"));
 }
-// reset: what was approved before it is gone from memory at once and from storage after any write already queued.
-function clearApproved(): Promise<void> {
+// reset: the list is forgotten in memory at once and its stored copy deleted after, on the list's own queue; neither
+// is awaited, so a stalled or failing write or deletion never holds up or fails the reset.
+function clearApproved(): void {
   approvedGen++;
   approvedNow = {};
-  approvedLoad = Promise.resolve();
-  approvedReady = true;
-  return inApprovedChain(() => consentStore.del(APPROVED_KEY));
+  approvedLoaded = true;
+  approvedCleared = true;
+  refreshNew();
+  const gen = approvedGen;
+  inApprovedChain(async () => {
+    await consentStore.del(APPROVED_KEY);
+    if (gen === approvedGen) approvedCleared = false;
+  }).catch(noted("the approved sites were not deleted; the next write replaces them"));
 }
-// A listing waits at most this long for the stored list after a worker start, then reads what has loaded: every
-// origin not yet loaded reads as new, the conservative side, and a storage read that hangs blocks nothing.
-const APPROVED_LOAD_WAIT_MS = 250;
-// Whether an origin is new to this wallet. Never fails: an unreadable consent map reads as no connection.
-async function newOrigins(): Promise<(origin: string) => boolean> {
-  if (!approvedReady) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([loadApproved(), new Promise((r) => { timer = setTimeout(r, APPROVED_LOAD_WAIT_MS); })]);
-    clearTimeout(timer);
-  }
-  const consents = await getConsents().catch((): ConsentMap => ({}));
-  return (o) => !opaqueOrigin(o) && !Object.hasOwn(approvedNow, o) && !Object.hasOwn(consents, o);
-}
+loadKnown();
 // This wallet's own pages' origin: what a seal made in the popup records as the site that asked.
 const ownOrigin = (): string => String(chrome.runtime.getURL("")).replace(/\/$/, "");
 
@@ -230,10 +253,10 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "explorerList": return wallet.explorerList();
     case "addExplorer": return wallet.addExplorer(args[0]);
     case "removeExplorer": return wallet.removeExplorer(args[0]);
-    case "reset": { await Promise.all([inConsentChain(() => consentStore.set(CONSENT_KEY, {})), clearApproved()]); return wallet.reset(); }
+    case "reset": { clearApproved(); await inConsentChain(async () => { await consentStore.set(CONSENT_KEY, {}); consentChanged((now) => now.clear()); }); return wallet.reset(); }
     case "connectedSites": return listConsents();
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
-    case "pending": { const isNew = await newOrigins(); return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params, first: isNew(p.origin) })); }
+    case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params, first: p.first }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1], args[2], args[3], args[4]); // (id, approve, displayedSigner?, displayedTokenQuote?, reservationAck?)
     case "history": return wallet.history();
@@ -469,22 +492,6 @@ const fillHolds = new Map<string, string>(); // fill target -> id of the request
 const REFUSED_RAISE_GAP_MS = 5_000;
 let refusedRaiseAt = Number.NEGATIVE_INFINITY;
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
-// A reveal of a txid the active account holds no seal for can only fail. It is answered before the window only for a site
-// connected to that account, as the silent getAddress path decides it (unlocked, that account active). That site knows
-// the address; what it learns silently is whether this install keeps a record of that seal under it. For any other site
-// it is queued as before and learns nothing, since an answer with no window would let any page test which seal txids
-// this wallet holds and so learn its address; the approval answers it SEAL_UNKNOWN (claims.ts).
-// The lookup is made under the address the consent was checked for, and after every await the active account, the lock
-// and the consent must be what they were: an account switch, a lock or a disconnect in between sends the request to
-// the window, never to the silent answer about another account.
-async function unknownSealFromConnected(origin: string, params: unknown): Promise<boolean> {
-  const addr = wallet.activeAddr();
-  const consented = async (): Promise<boolean> => String((await getConsents())[origin]?.addr ?? "").toLowerCase() === addr?.toLowerCase();
-  if (!addr || !(await consented())) return false;
-  const held = await wallet.holdsSeal(addr, revealFields(params).txid);
-  if (!(await consented()) || wallet.activeAddr() !== addr) return false;
-  return !held;
-}
 // A seal signs a proposal of its own domain with the page's fee (wallet.sealClaim): its sealFields refusal, then the fee's.
 const sealRefusal = (params: unknown): string | undefined => { const sf = sealFields(params); return sf.refused ?? proposeFeeRefusal(sf.fee)?.error; };
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
@@ -517,7 +524,8 @@ function queueDappRequest(origin: string, method: string, params: any): Promise<
       fillHolds.set(fillTarget, id);
       answer = (v) => { if (fillHolds.get(fillTarget) === id) fillHolds.delete(fillTarget); resolve(v); };
     }
-    pending.set(id, { origin, method, params, resolve: answer });
+    pending.set(id, { origin, method, params, resolve: answer, first: isNewOrigin(origin) });
+    loadKnown();   // a load that failed is tried again; never awaited
     showQueueBadge();
     // Raise the clear-signing window. If it can't open (rare), the request still sits in the
     // queue + badge; the user opens the toolbar popup and clicks "Review", which calls
@@ -623,10 +631,6 @@ chrome.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (v: a
             sendResponse({ ok: true, result: { addr: st.addr } });
             return;
           }
-        }
-        if (msg.method === "revealClaim" && await unknownSealFromConnected(origin, msg.params)) {
-          sendResponse({ ok: false, code: "SEAL_UNKNOWN", error: SEAL_UNKNOWN_TEXT });
-          return;
         }
         const res = await queueDappRequest(origin, msg.method, msg.params);
         sendResponse(res); return;

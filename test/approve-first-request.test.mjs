@@ -1,37 +1,37 @@
 // What the wallet remembers about the sites that ask it, through the REAL background worker and the REAL approval window
 // (src/popup/approve.ts on helpers/approve-dom.mjs, its calls answered by the worker over the popup channel).
-//   0. After a worker start a listing waits at most a moment for the stored list (approvedOrigins) and reads an origin
-//      not loaded as new; a list that cannot be read gives a listing with the line, never an error.
+//   0. A listing reads memory only: while the stored list (approvedOrigins) has not loaded, or when it cannot be read,
+//      it answers at once with the site as new; with every consent read held, a queued send lists, paints and arms on
+//      its floor, and ten listings read no storage.
 //   1. A site the user has approved nothing from says so in the header's ask line ("New site, which asks ..."). The
 //      origin is recorded when the user approves a request from it, after the page has its answer and never failing
 //      the approval; a paint, a rejection or a closed window records nothing. While that write waits, the next request
 //      lists and paints (without the line for that site) and another connect's approval answers its page. Two queued
-//      requests from a new site both carry the line until one is approved. A site in the consent map is not new (a
-//      site connected before this list existed). The line changes no label and Approve arms at its 700 ms floor.
+//      requests from a new site both carry the line until one is approved. A site in the consent map when the worker
+//      starts is not new (a site connected before this list existed). The line changes no label and Approve arms at
+//      its 700 ms floor.
 //   2. Two approvals from two new origins recorded at once both stay (the list's own queue serialises the writes).
 //   3. The list keeps the 500 origins approved last; the oldest goes and reads as new again.
 //   4. An opaque origin ("null", "unknown") is never stored and gets no line.
 //   5. A seal records the site that asked (the popup's records the wallet's own origin, an opaque one nothing); the
 //      reveal card names it and cautions when another site asks for the reveal, both origins through the module's
 //      escaping. A record without one says so.
-//   6. A reveal of a seal this account does not hold is SEAL_UNKNOWN: before any window and with no queue slot only for
-//      a site connected to the active account while unlocked; after approval (nested) for any other site, whose request
-//      queues as before, as does a connected site's while the wallet is locked, while another account is active, or
-//      when the user switches account while the check waits on its consent read (for a txid the other account holds
-//      and for one neither holds).
-//   7. reset() clears the list with the consent map, and an approval that completes after it (a reveal whose content
-//      registration answers after the reset) records nothing.
+//   6. No site gets an answer before the window that depends on the seals the wallet holds: an unknown txid from a
+//      connected, unlocked site is queued; with the site's queue full a held and an unknown txid get the same
+//      RATE_LIMITED; approved, an unknown txid is answered SEAL_UNKNOWN.
+//   7. reset() clears the list with the consent map; an approval that completes after it records nothing; a held write
+//      of the list does not delay it and a failing deletion does not fail it (the vault is gone, the wallet locked),
+//      and the next write replaces the stored list.
 // RED-FIRST, each run 2026-11-18 in a disposable worktree (failing checks of this file in brackets): record on every
 // answer, rejections included: 1 [2]; record the head of the queue when it is listed (on paint): 1 [8]; ignore the
 // consent map: 1 [1]; await the write before the answer, or inside the approval: 1 [2] each; drop the list's queue from
 // recordApproved: 2 [1]; drop capApproved: 3 [2]; drop the opaqueOrigin check in recordApproved: 4 [2]; store an opaque
 // sealing origin (wallet.ts): 5 [1]; drop the other-site caution: 5 [3]; leave the asking origin unescaped: 5 [1];
-// answer the unknown reveal without a code: 6 [2]; drop the active-address comparison: 6 [1]; drop the unlocked
-// condition: 6 [1]; drop the connected-site condition: 6 [3]; a 1,900 ms arm floor: 1 [2]. Sections 0, 6 (the switch)
-// and 7 (the late approval) against 432fe64's src: 7 failed. Then, each removing one fix: look up under the active
-// account with no re-check: 6 [1]; drop the re-check alone: 6 [2]; read the list through the consent chain, its write
-// on it too: 0 and 1 [5]; the write on the consent chain alone: 1 [1]; read the stored list at each listing, with no
-// in-memory copy: 0 and 1 [5]; drop the reset generation: 7 [1].
+// answer the unknown reveal without a code: 6 [1 of 2 at the time]; a 1,900 ms arm floor: 1 [2]; drop the reset
+// generation: 7 [1]. Against 3d45edb's src: 11 failed (sections 0, 1 by cascade, 6, 7). Then, each removing one fix:
+// an answer before the window for a connected site's unknown txid: 6 [2]; a listing that reads the consent map: 0 and
+// 1 [4]; flags not refreshed on a change: 1 [1]; reset awaiting the list's deletion: 7 [4]; a write after a failed
+// deletion that adds to the stored list: 7 [1].
 // Run: npx tsx test/approve-first-request.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
@@ -68,7 +68,8 @@ globalThis.location = { origin: SELF };   // the window's own origin, which a po
 // at its start, is held until section 0 releases it.
 const mem = new Map();
 const held = [];
-let holdSeen = true, failSeen = false, failSeenRead = false, holdConsent = false;
+let holdSeen = true, failSeen = false, failSeenRead = false, holdConsent = false, failSeenRemove = false;
+const reads = { [SEEN]: 0, connectedOrigins: 0 };
 let closeWindow = () => undefined;
 const windowCalls = [];
 globalThis.__CAIRN_TEST__ = true;
@@ -78,12 +79,13 @@ Object.assign(globalThis.chrome, {
   storage: { local: {
     get: async (k) => {
       const snap = structuredClone(mem.get(k));
+      if (k in reads) reads[k]++;
       if ((k === SEEN && holdSeen) || (k === "connectedOrigins" && holdConsent)) await new Promise((release) => held.push(release));
       if (k === SEEN && failSeenRead) throw new Error("read failed");
       return { [k]: snap };
     },
     set: async (o) => { if (failSeen && SEEN in o) throw new Error("quota"); for (const k of Object.keys(o)) mem.set(k, structuredClone(o[k])); },
-    remove: async (k) => { mem.delete(k); },
+    remove: async (k) => { if (failSeenRemove && k === SEEN) throw new Error("remove failed"); mem.delete(k); },
   } },
   alarms: { create: () => undefined, onAlarm: { addListener: () => undefined } },
   action: { setBadgeText: () => undefined },
@@ -106,6 +108,9 @@ globalThis.fetch = async (url, init) => {
   if (u.endsWith("/tip")) return { ok: true, status: 200, json: async () => ({ height: 65_000 }) };
   return txReply(u, [coin]) ?? { ok: false, status: 404, json: async () => ({}) };
 };
+// A site connected before this list existed: in the consent map the worker loads at its start, absent from the list.
+const F = "https://f.example";
+mem.set("connectedOrigins", { [F]: { addr: "0x" + "00".repeat(19) + "01", ts: 1 } });
 await import("../src/background.ts");
 globalThis.chrome.runtime.onMessage = windowOnMessage;
 await flush();
@@ -142,20 +147,34 @@ const click = async (which, page) => {
 const SEND = { to: "0x" + "31".repeat(20), amount: 1e8, fee: 1e6 };
 const resolveAll = async (approve) => { for (const q of await queue()) await popup("resolve", q.id, approve, me); await flush(); };
 
-// ── 0. the list after a worker start ──────────────────────────────────────────────────────────────────────────────
+// ── 0. listings read memory only ──────────────────────────────────────────────────────────────────────────────────
 {
   const Z = "https://z.example";
   const pz = dapp("connect", {}, Z); await flush();
   const t0 = Date.now();
   const listed = await Promise.race([popup("pending"), sleep(1_500).then(() => ({ ok: "no answer in 1.5 s", result: [] }))]);
   const ms = Date.now() - t0;
-  check(`0. while the stored list has not loaded, a listing waits at most a moment (${ms} ms, ${held.length} read held) and the site reads as new`, listed.ok === true && ms < 1_000 && held.length >= 1 && listed.result.at(-1)?.first === true);
+  check(`0. while the stored list has not loaded (${held.length} read held), a listing answers at once (${ms} ms) and the site reads as new`, listed.ok === true && ms < 200 && held.length >= 1 && listed.result.at(-1)?.first === true);
   failSeenRead = true; holdSeen = false; release(); await flush();
   const failed = await Promise.race([popup("pending"), sleep(1_500).then(() => ({ ok: "no answer in 1.5 s", result: [] }))]);
   check(`0. a list that cannot be read gives a listing, not an error (${failed.ok}, ${failed.code ?? "no code"}), with the line shown`, failed.ok === true && failed.result.at(-1)?.first === true);
   failSeenRead = false;
   await resolveAll(false);
   await until(() => pz.reply !== undefined);
+  dapp("connect", {}, Z); await flush(); await resolveAll(false);   // a queued request tries the load again; it succeeds
+  // With every read of the consent map held, a queued send lists at once and the window paints and arms on its floor,
+  // and listings read no storage at all.
+  holdConsent = true;
+  const r = await Promise.race([paint("send", SEND, "https://k.example"), sleep(1_500).then(() => null)]);
+  const before = { ...reads };
+  const t1 = Date.now();
+  for (let i = 0; i < 10; i++) await Promise.race([popup("pending"), sleep(1_500)]);
+  const tenMs = Date.now() - t1;
+  const a = r ? await armedAfter(r.at) : { armed: false, ms: -1 };
+  check(`0. with the consent read held, a queued send lists and paints (${r !== null}) and Approve arms on its floor (${a.ms} ms)`, r !== null && r.q?.first === true && armsOnFloor(a));
+  check(`0. ten listings answer at once (${tenMs} ms) and read no storage (${reads[SEEN] - before[SEEN]} list reads, ${reads.connectedOrigins - before.connectedOrigins} consent reads)`, tenMs < 500 && reads[SEEN] === before[SEEN] && reads.connectedOrigins === before.connectedOrigins);
+  if (r) await click("btn-reject", r.page);
+  holdConsent = false; release(); await flush();
 }
 
 // ── 1. a new site ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -221,10 +240,8 @@ const resolveAll = async (approve) => { for (const q of await queue()) await pop
   await resolveAll(false);
   await until(() => e1.reply !== undefined && e2.reply !== undefined);
   // A site connected before this list existed: in the consent map, absent from approvedOrigins.
-  const F = "https://f.example";
-  mem.set("connectedOrigins", { ...mem.get("connectedOrigins"), [F]: { addr: me, ts: 1 } });
   const f = await paint("send", SEND, F);
-  check(`1. a site connected before the update (in the consent map, not in approvedOrigins) has no line ("${ask()}")`, !Object.hasOwn(seen(), F) && f.q.first === false && ask() === "asks you to sign a transaction");
+  check(`1. a site connected before the update (in the consent map when the worker started, not in approvedOrigins) has no line ("${ask()}")`, !Object.hasOwn(seen(), F) && f.q.first === false && ask() === "asks you to sign a transaction");
   await click("btn-reject", f.page);
 }
 
@@ -324,54 +341,19 @@ async function revealCard(txid, origin) {
 
 // ── 6. a reveal of a seal this account does not hold ─────────────────────────────────────────────────────────────
 {
+  // No site gets an answer before the window: what a reveal answers never depends on which seals the wallet holds.
   const unknown = "0x" + "9d".repeat(32);
-  const before = (await queue()).length, calls = windowCalls.length;
+  const before = (await queue()).length;
   const r = dapp("revealClaim", unknown, A);
   await flush();
-  check(`6. from ${A}, connected to the active account: SEAL_UNKNOWN before any window, no queue slot (${JSON.stringify(r.reply)})`,
-    r.reply?.ok === false && r.reply.code === "SEAL_UNKNOWN" && (await queue()).length === before && windowCalls.length === calls);
-  const held2 = (await popup("sealedClaims")).result[0].txid;
-  const ok = dapp("revealClaim", held2, A);
-  await flush();
-  check("6. honest path: the same site's reveal of a seal it holds is queued for the window", ok.reply === undefined && (await queue()).length === before + 1);
-  await popup("resolve", (await queue()).at(-1).id, false);
-  // Connected, but locked: the silent getAddress path would not answer either, so neither does this.
-  await popup("lock");
-  const locked = dapp("revealClaim", unknown, A);
-  await flush();
-  check(`6. from ${A} while the wallet is locked: queued, no answer before the window (${JSON.stringify(locked.reply)})`, locked.reply === undefined && (await queue()).length === before + 1);
+  check(`6. from ${A}, connected and unlocked: an unknown txid is queued for the window, no answer before it (${JSON.stringify(r.reply)})`, r.reply === undefined && (await queue()).length === before + 1);
   await resolveAll(false);
-  check("setup: unlock", (await popup("unlock", "pw-first-request-1")).ok === true);
-  // Connected under the first account while another is active, for an unknown txid and for one the first account holds.
-  const second = (await popup("addAccount")).result;
-  await popup("switchAccount", second.addr);
-  const otherUnknown = dapp("revealClaim", unknown, A), otherHeld = dapp("revealClaim", sealHeld, A);
-  await flush();
-  check(`6. from ${A} with another account active: both an unknown txid and one the connected account holds are queued (${JSON.stringify([otherUnknown.reply, otherHeld.reply])})`,
-    otherUnknown.reply === undefined && otherHeld.reply === undefined && (await queue()).length === before + 2);
+  const fill = Array.from({ length: 5 }, () => dapp("send", SEND, A)); await flush();
+  const full = [dapp("revealClaim", sealHeld, A), dapp("revealClaim", unknown, A)]; await flush();
+  check(`6. with ${A}'s queue full, a held and an unknown txid get the same answer (${JSON.stringify(full.map((x) => x.reply?.code))})`,
+    full.every((x) => x.reply?.code === "RATE_LIMITED") && JSON.stringify(full[0].reply) === JSON.stringify(full[1].reply));
   await resolveAll(false);
-  // A seal the second account holds, then back to the account the site is connected to.
-  const sealB = await popup("sealClaim", { claim: "held by the second account" });
-  const txidB = (await popup("sealedClaims")).result.find((x) => x.claim === "held by the second account")?.txid;
-  check(`setup: a seal held by the second account (${String(txidB).slice(0, 12)})`, sealB.result?.ok === true && typeof txidB === "string");
-  await popup("switchAccount", me);
-  // The user switches to the second account while the pre-window check waits on its consent read.
-  for (const [label, txid] of [["held by the second account", txidB], ["held by neither", unknown]]) {
-    holdConsent = true;
-    const asked = dapp("revealClaim", txid, A);
-    await until(() => held.length === 1);
-    const switched = popup("switchAccount", second.addr);
-    await until(() => held.length === 2);   // the switch has happened; its event to connected sites reads the map
-    held.shift()();   // the reveal's consent read answers with the map read before the switch
-    for (let i = 0; i < 200 && asked.reply === undefined && (await Promise.race([switched.then(() => true), sleep(1).then(() => false)])) === false; i++) release();
-    holdConsent = false; release();
-    await switched; await flush();
-    check(`6. an account switch during the consent read, txid ${label}: queued for the window, no silent answer (${JSON.stringify(asked.reply)})`, asked.reply === undefined && (await queue()).some((q) => q.method === "revealClaim" && q.params === txid));
-    await resolveAll(false);
-    await popup("switchAccount", me);
-  }
-  const still = dapp("revealClaim", unknown, A); await flush();
-  check(`6. honest path: connected and unchanged, still SEAL_UNKNOWN with no window (${still.reply?.code})`, still.reply?.code === "SEAL_UNKNOWN");
+  await until(() => fill.every((x) => x.reply !== undefined));
   const U = "https://u.example";
   const other = await paint("revealClaim", unknown, U);
   check(`6. from ${U}, not connected: queued for the window as before (${other.page.reply === undefined})`, other.page.reply === undefined && other.q?.method === "revealClaim");
@@ -394,11 +376,49 @@ async function revealCard(txid, origin) {
   const approved = popup("resolve", (await queue()).at(-1).id, true, me);
   await until(() => heldContent.length === 1);
   await popup("reset");
+  await until(() => !mem.has(SEEN));
   check(`7. reset clears the list with the consent map (${JSON.stringify(mem.get(SEEN))}, ${JSON.stringify(mem.get("connectedOrigins"))})`, !mem.has(SEEN) && JSON.stringify(mem.get("connectedOrigins")) === "{}");
   holdContent = false; heldContent.shift()();
   await approved; await until(() => asked.reply !== undefined); await flush(20);
   dapp("connect", {}, S); await flush();
   check(`7. the reveal approved before the reset and answered after it leaves the list empty (${JSON.stringify(mem.get(SEEN))}) and ${S} reads as new`, !Object.hasOwn(mem.get(SEEN) ?? {}, S) && (await queue()).at(-1)?.first === true);
   await resolveAll(false);
+  // The reset never waits on the list: with a write of it held, and with its deletion failing.
+  const PW = "pw-first-request-2";
+  check("setup: a wallet again", (await popup("create", PW)).ok === true);
+  me = String((await popup("status")).result.addr);
+  const R = "https://r.example";
+  dapp("connect", {}, R); await flush();
+  holdSeen = true;
+  await popup("resolve", (await queue()).at(-1).id, true, me);
+  await until(() => held.length === 1);
+  const t0 = Date.now();
+  const reset1 = await Promise.race([popup("reset"), sleep(1_500).then(() => ({ ok: "no answer in 1.5 s" }))]);
+  const st1 = (await popup("status")).result;
+  check(`7. with a write of the list held, the reset completes at once (${Date.now() - t0} ms): the vault is gone and the wallet locked`, reset1.ok === true && !mem.has("vault") && st1.unlocked === false && st1.hasVault === false);
+  holdSeen = false; release(); await flush(20);
+  check(`7. ...and the held write, from before the reset, writes nothing (${JSON.stringify(mem.get(SEEN))})`, !Object.hasOwn(mem.get(SEEN) ?? {}, R));
+  check("setup: a wallet again", (await popup("create", PW)).ok === true);
+  me = String((await popup("status")).result.addr);
+  const R2 = "https://r2.example", Q = "https://q.example";
+  dapp("connect", {}, R2); await flush();
+  await popup("resolve", (await queue()).at(-1).id, true, me);
+  await until(() => Object.hasOwn(mem.get(SEEN) ?? {}, R2));
+  failSeenRemove = true;
+  const reset2 = await popup("reset");
+  await flush(20);
+  const st2 = (await popup("status")).result;
+  check(`7. with its deletion failing, the reset still completes (${reset2.ok}): the vault is gone, the wallet locked, the stored list still there (${JSON.stringify(Object.keys(mem.get(SEEN) ?? {}))})`,
+    reset2.ok === true && !mem.has("vault") && st2.unlocked === false && Object.hasOwn(mem.get(SEEN) ?? {}, R2));
+  failSeenRemove = false;
+  dapp("connect", {}, R2); await flush();
+  check("7. ...the site it held reads as new", (await queue()).at(-1)?.first === true);
+  await resolveAll(false);
+  check("setup: a wallet again", (await popup("create", PW)).ok === true);
+  me = String((await popup("status")).result.addr);
+  dapp("connect", {}, Q); await flush();
+  await popup("resolve", (await queue()).at(-1).id, true, me);
+  await until(() => Object.hasOwn(mem.get(SEEN) ?? {}, Q));
+  check(`7. ...and the next write replaces the stored list (${JSON.stringify(Object.keys(mem.get(SEEN) ?? {}))})`, JSON.stringify(Object.keys(mem.get(SEEN))) === JSON.stringify([Q]));
 }
 done("approve-first-request");
