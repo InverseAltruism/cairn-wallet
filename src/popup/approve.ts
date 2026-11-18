@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, profileDropValue, APPROVE_LABELS, UNCONFIRMED_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, SCORE_CANCEL } from "../core/cairnx.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields } from "../core/signfields.js";
@@ -154,7 +154,7 @@ async function render() {
     // address-poisoning and first-time-recipient warnings silently ABSENT and the token debit quote an
     // empty box. Reset them exactly HERE, where the rebuild happens, and nowhere else: resetting on the
     // 1.2s tick would refetch balance and history twice a second per open approval window.
-    balForId = warnForId = tokenSimForId = revealForId = fillViewForId = null;
+    balForId = warnForId = tokenSimForId = revealForId = fillViewForId = profileForId = null;
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
     $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b title="${escapeHtml(acct.label)}">${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
     $("req").innerHTML = `${prior}${queued}<div class="req">${describe(current)}</div>${connectNote}`;
@@ -175,6 +175,7 @@ async function render() {
     fillBalance(current);
     fillRevealPreview(current); // M14: which secret a revealClaim makes public (local sealedClaims read)
     fillFillView(current);      // a CSD-paid fill: the listing and the asset it gives (display only)
+    fillProfileDrop(current, String(st.tradeApi || ""));   // an nprofile: the current keys it removes (display only)
     armNfinalizeGate(current, st);
   } catch (e) {
     renderedId = null;   // AW-1: a describe()/paint throw must NOT latch renderedId, or `if (renderedId === current.id) return` (above) leaves the request permanently unpaintable AND (disableButtons ran, armButtons did not) unapprovable/unrejectable. Reset so the next tick retries.
@@ -462,6 +463,22 @@ async function fillFillView(r: any) {
   if (renderedId !== r.id) return;
   el.innerHTML = fillViewHtml(view as any, id, tip, f.outputs);
   (el as HTMLElement).hidden = false;
+}
+// An nprofile replaces the name's whole profile: #profile-drop lists the current keys it removes, from the configured
+// name service. Information only: nothing waits for it (armButtons, resolve) and its answer never changes a button.
+let profileForId: string | null = null;
+async function fillProfileDrop(r: any, tradeApi: string) {
+  if (profileForId === r.id) return; profileForId = r.id;
+  const el = document.getElementById("profile-drop");   // describe() writes it only for a non-empty cairnx:v1 nprofile
+  const p = proposeFields(r.params);
+  const rec = el ? decodeCairnxRecord(p.uri, p.payloadHash) : null;
+  if (!el || !rec || rec.t !== "nprofile" || typeof rec.name !== "string") return;
+  const next = (rec.p && typeof rec.p === "object" ? rec.p : {}) as Record<string, unknown>;
+  const gen = paintGen;
+  const fetched = await fetchNameRecord(rec.name, tradeApi);
+  if (gen !== paintGen || renderedId !== r.id) return;
+  el.innerHTML = profileDropValue(fetched, next);
+  el.className = "";
 }
 // For a send, warn on a never-seen-before recipient and hard-flag an address-poisoning
 // lookalike; checked against this account's send history + own addresses. The recipient

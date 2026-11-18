@@ -4,6 +4,8 @@ Status: open, 2026-10-23. Option 0 is evaluated and rejected; no other option is
 2026-10-23 (wallet branch `wave-m/2026-10-23`, csd-sdk origin/master 594c25a). The name-verification design is
 `docs/DESIGN-namespv-scaling.md`; the user-facing account is the "Sending to a `.csd` name" section of `SECURITY.md`.
 
+Update, 2026-11-18: a decision is taken on the base of name verification for these names; see "Decision" below.
+
 ## The trap
 
 A `.csd` name delivered by an offer fill does not verify when the wallet sends to it, for as long as the name keeps
@@ -122,6 +124,19 @@ confirm step and its strings in the popup, tests for the bind and its invalidati
 gate. The bind is only as good as the user's out-of-band check, and it does nothing for the first send to each
 name. It stays blocked until the wallet has a sound address to bind: the served address is what a compromised
 name service serves, and the replayed one is what the claim-cap attack steers (option 0).
+
+## Decision (2026-11-18)
+
+The base for verifying a name bought on the market moves from per-name replay to a full replay of the `cairnx:v1`
+domain: a pinned record log plus the complete blocks above the pin. The per-name verifier (`replayName` over one name's
+records, `verifyNameUnion`) is retired with that change.
+
+The reason, as a principle: some resolver rules read state outside the name being verified. A replay of one name's
+records cannot evaluate those rules, so it can undercount what they count and accept a record the chain refused. A full
+replay of the domain holds that state, so it can evaluate those rules as the chain did.
+
+Until the full replay ships, nothing changes for these names: the `viaFill` gate stays, and the wallet keeps showing them
+as not chain-verified with the purchased-name caution.
 
 ## Constraints on any choice
 

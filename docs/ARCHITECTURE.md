@@ -197,7 +197,9 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   reading of a Reject's answer, which the popup takes through `popup-bridge.ts` and the approval window directly:
   `approve.js` is built without code splitting, so it must not import `popup-bridge.ts`, whose dev path would inline
   the Wallet; `build.mjs` aborts if it does.
-- `approve.ts`: the clear-signing window.
+- `approve.ts`: the clear-signing window. For an `nprofile` it reads the name's record from the configured CairnX API
+  (`namegate.ts` `readNameRecord`, bounded at 6 s) and fills the reserved "Keys removed" row with the current keys the
+  record drops (`clearsign.ts` `profileDropValue`); display only, never awaited by the arm or the click.
 - `clearsign.ts`: pure formatters, among them `groupedAddr`, the one address-in-groups-of-four display both pages
   use, lookalike detection and the nfinalize approve gate: it re-fetches the reservation and runs
   `finalizeWinnerCheck` before allowing a fee-burning finalize.

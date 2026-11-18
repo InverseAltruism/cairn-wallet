@@ -1,7 +1,7 @@
 // Pure clear-signing formatters for the approval window and the popup's review: no DOM and no chrome, so they are
 // unit-testable (the "what am I signing?" layer). approve.ts and popup.ts import these and own only the DOM glue.
 import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, SCORE_CANCEL, finalizeWinnerCheck } from "../core/cairnx.js";
-import { EPOCH_LEN, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
+import { EPOCH_LEN, PROFILE_MAX_KEYS, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
 import type { NameFetchResult } from "../core/namegate.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields, sealFields, sendFields } from "../core/signfields.js";
@@ -331,7 +331,11 @@ export function cairnxParts(uri: unknown, payloadHash?: unknown, meta?: TokenDis
       if (!keys.length) return parts(".csd profile", lede(`<b>Clears</b> the identity profile on <code>${esc(r.name)}.csd</code>.`), lede(`<span class="dim">Cosmetic only; it does not change where funds go.</span>`));
       const flagKey = keys.find((k) => k === "addr" || k === "address" || k === "coin" || /0x[0-9a-fA-F]{40}/.test(String(pm[k])));
       const warn = flagKey ? danger(`This profile's “${esc(flagKey)}” field is cosmetic text, <b>not</b> a send address. Funds always go to the name's verified record, never the profile.`) : "";
-      return parts(".csd identity profile", lede(`Cosmetic metadata on <code>${esc(r.name)}.csd</code>. It does <b>not</b> change where funds go.`) + warn,
+      // The record replaces the whole map, so keys another site wrote go too. Said from the request alone; approve.ts
+      // fills #profile-drop from the name service's current profile and never waits on it.
+      const replaces = caution(`This record replaces the whole profile on <code>${esc(r.name)}.csd</code>: any key not listed below is removed.`);
+      return parts(".csd identity profile", lede(`Cosmetic metadata on <code>${esc(r.name)}.csd</code>. It does <b>not</b> change where funds go.`) + replaces + warn
+        + rows([["Keys removed", `<span id="profile-drop" class="dim">${PROFILE_DROP_PENDING}</span>`]]),
         rows(keys.map((k) => [esc(k), `<code>${esc(String(pm[k]))}</code>`] as Row)));
     }
     case "tmeta":
@@ -350,8 +354,23 @@ export function cairnxDescribe(uri: unknown, payloadHash?: unknown, meta?: Token
   return x && x.title + x.main + x.notes;
 }
 
+// #profile-drop: the keys of the name's current profile, as the name service serves it, that an nprofile's new map does
+// not set. The served map is untrusted text: every key is escaped, cut loudly past the 32-character key length (PKEY
+// allows 1 to 32, so a valid key is never cut), and at most PROFILE_MAX_KEYS are listed. Display only.
+export const PROFILE_DROP_PENDING = "checking the current profile";
+export const PROFILE_DROP_UNREAD = "could not read the current profile";
+const PROFILE_KEY_CAP = 32;
+export function profileDropValue(fetched: NameFetchResult, next: Record<string, unknown>): string {
+  const cur = fetched.failed ? null : fetched.record == null ? null : fetched.record.profile === undefined ? {} : fetched.record.profile;
+  if (!cur || typeof cur !== "object" || Array.isArray(cur)) return PROFILE_DROP_UNREAD;
+  const dropped = Object.keys(cur).filter((k) => !Object.hasOwn(next, k));
+  if (!dropped.length) return "none";
+  const more = dropped.length - PROFILE_MAX_KEYS;
+  return dropped.slice(0, PROFILE_MAX_KEYS).map((k) => `<code>${truncLoud(k, PROFILE_KEY_CAP)}</code>`).join(", ") + (more > 0 ? ` and ${more} more` : "");
+}
+
 // The mounts approve.ts fills after the paint: first-time and address-poisoning rows, the token debit quote, the
-// listing a CSD fill buys, and the sealed text a reveal publishes.
+// listing a CSD fill buys, and the sealed text a reveal publishes. An nprofile's #profile-drop is written in its row.
 const SEND_WARN = `<div id="send-warn" class="checks" hidden></div>`;
 const TOKEN_SIM = `<div id="token-sim" class="ap-box" hidden></div>`;
 const FILL_VIEW = `<div id="fill-view" class="ap-box" hidden></div>`;

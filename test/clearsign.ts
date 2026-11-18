@@ -1,6 +1,6 @@
 // Clear-signing formatter coverage; the previously-untested "what am I signing?" layer (the user's
 // last line of defense). Focus: C-WL5 (no "NaN CSD"), HTML-escaping of dApp strings, address-poisoning.
-import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, recipientKey, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate, FILL_PAYS } from "../src/popup/clearsign.js";
+import { fmtCsd, baseVal, describe, debitOf, lookalikeOf, sendWarnings, recipientKey, nameCautionHtml, nameCheck, NAME_SAFE_DEPTH, costBlock, escapeHtml, expiryValue, nfinalizeApproveGate, FILL_PAYS, profileDropValue, PROFILE_DROP_PENDING, PROFILE_DROP_UNREAD } from "../src/popup/clearsign.js";
 import { nameActApproveGate } from "../src/core/namegate.js";
 import { explorerLink } from "../src/core/wallet.js";
 import { buildNameRenew, buildNameSet, buildNameProfile, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
@@ -223,6 +223,42 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
   const prof = buildNameProfile({ name: "audit", profile: { bio: long } });
   const html = describe({ method: "propose", params: { domain: CAIRNX_DOMAIN, uri: prof.uri, payloadHash: prof.payloadHash, fee: 25000000, expiresEpoch: 2000 } });
   ok("RT-W1: nprofile value longer than 120 chars is shown in full", html.includes(`<dt>bio</dt><dd><code>${long}</code></dd>`));
+}
+
+// An nprofile replaces the name's whole profile, so a write from one site removes the keys another site wrote. The card
+// says so with the request itself, and its reserved row lists the keys of the current served profile the new map drops.
+// RED-FIRST: drop the replace sentence from the nprofile branch of cairnxParts and the first check fails.
+{
+  const card = (profile: Record<string, string>) => {
+    const b = buildNameProfile({ name: "alice", profile });
+    return describe({ method: "propose", origin: "https://site.example", params: { domain: CAIRNX_DOMAIN, uri: b.uri, payloadHash: b.payloadHash, fee: 25000000, expiresEpoch: 2000 } });
+  };
+  const write = card({ avatar: "https://b.example/y.png" });
+  ok("nprofile: a non-empty write says it replaces the whole profile and removes every key not listed",
+    write.includes("This record replaces the whole profile on <code>alice.csd</code>: any key not listed below is removed."));
+  ok("nprofile: the removed-keys row is painted with the request, pending", write.includes(`<dt>Keys removed</dt><dd><span id="profile-drop" class="dim">${PROFILE_DROP_PENDING}</span></dd>`));
+  const clear = card({});
+  ok("nprofile: an empty map keeps the Clears card, with no replace sentence and no removed-keys row",
+    /<b>Clears<\/b> the identity profile/.test(clear) && !clear.includes("replaces the whole profile") && !clear.includes("profile-drop"));
+
+  const next = { avatar: "https://b.example/y.png" };
+  const served = (profile: unknown) => ({ record: { name: "alice", owner: ADDR, profile } });
+  const drop = profileDropValue(served({ contenthash: "ipfs://x", avatar: "https://a.example/x.png" }), next);
+  ok("profileDropValue: lists a current key the new map drops, not one it sets", drop.includes("<code>contenthash</code>") && !drop.includes("avatar"));
+  ok("profileDropValue: a record with no profile removes nothing", profileDropValue({ record: { name: "alice", owner: ADDR } }, next) === "none");
+  ok("profileDropValue: the same keys remove nothing", profileDropValue(served({ avatar: "x" }), next) === "none");
+  for (const [label, f] of [["a failed read", { failed: true }], ["an unknown name (404)", { record: null }], ["a profile that is not a map", served(["contenthash"])], ["a string profile", served("contenthash")]] as const) {
+    ok(`profileDropValue: ${label} says the current profile could not be read`, profileDropValue(f as any, next) === PROFILE_DROP_UNREAD);
+  }
+  const hostile = profileDropValue(served({ "<img src=x onerror=alert(1)>": "v", "ab‮cd​": "v" }), next);
+  ok("profileDropValue: served HTML in a key is text", !hostile.includes("<img") && hostile.includes("&lt;img src=x onerror=alert(1)&gt;"));
+  ok("profileDropValue: bidi and zero-width characters in a key are shown visibly", hostile.includes("ab\\u202Ecd\\u200B") && !/[‮​]/.test(hostile));
+  const long = profileDropValue(served({ ["k".repeat(40)]: "v" }), next);
+  ok("profileDropValue: a key past the 32-character key cap is cut loudly", long.includes("k".repeat(32) + "<b class=\"err\"> [truncated: showing the first 32 of 40 characters]</b>"));
+  const many = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, "v"]));
+  const capped = profileDropValue(served(many), next);
+  ok("profileDropValue: lists the first 16 keys (the consensus cap) and counts the rest", (capped.match(/<code>/g) || []).length === 16 && capped.includes("<code>k15</code>") && !capped.includes("<code>k16</code>") && capped.endsWith(" and 4 more"));
+  ok("profileDropValue: 16 keys are listed in full with no count", !profileDropValue(served(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`k${i}`, "v"]))), next).includes("more"));
 }
 
 // NFIN-WINDOW-1 (Plan 63 carry-over, 0.2.54); the approve-path nfinalize gate: a displaced or
