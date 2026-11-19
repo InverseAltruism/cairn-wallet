@@ -250,12 +250,13 @@ hid every request behind it; a seeded fuzz now finds no request that passes thes
 before it paints, is shown as one it could not show, with Approve off and Reject live after the 700 ms floor, also
 when it comes back to the head of the queue after another request's paint (test/approve-paint-throw-dom.test.mjs,
 test/approve-paint-throw-preread-dom.test.mjs, test/approve-paint-throw-requeue-dom.test.mjs). What stays after
-approval needs the coins, a read or the node: on every request that spends, the 10% fee cap and the balance, which
-need the coins the wallet selects; on a proposal, the node's own rules that csd-sdk does not carry (an empty domain
+approval, beside the lock and account-change refusals: on every request that spends, the 10% fee cap and the
+balance, which need the coins the wallet selects; on a proposal, the node's own rules that csd-sdk does not carry (an empty domain
 or URI, an all-zero payload hash), refused by the node at submit with nothing spent, because the wallet does not
 re-declare consensus; on a fill, and on an attest at the token-fill confidence, which the wallet signs as a fill, the
 fill preflight, which reads the offer, its proofs and this account's history (`fillpreflight.ts`), and a score other
-than 100, which the window shows as refused (test/sign-display-parity.test.mjs). A `revealClaim` for a txid the active account holds no seal for
+than 100, which is decided on the parameters alone and still queued: the window shows it as refused, and approving
+signs nothing (test/sign-display-parity.test.mjs). A `revealClaim` for a txid the active account holds no seal for
 opens the window as any reveal does, from every site, and approving it answers `SEAL_UNKNOWN`: nothing a page gets
 before the window depends on which seals the wallet holds, since such an answer would let a page test the public seal
 commits against the wallet and learn which address the visitor holds. In the sign-in window, the site's
