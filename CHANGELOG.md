@@ -208,6 +208,15 @@
   capped expiry has passed while its proposal has not: the node would admit that fill and the resolver refuse it.
   Taker-bound and token-priced fills and the reservation (fclaim) lane are unchanged. The expiry copy reads "the chain
   is at or past block N", since N is a lower bound (test/fill-legacy-sunset.test.mjs, test/fill-failclosed.test.mjs).
+- Names: the wallet's own renewal is priced at the served tip raised to the lowest height the chain can be at for this
+  release and install (`namespv.ts` `lowestChainHeight`: the stored floor or the release's newest anchor), the bound the
+  offer-id fill checks use. Before, a fresh install at a served tip of 39,000 priced a renewal of "abc" at 500,000,000
+  base units, which the resolver refuses after the fee has left; it is now 1,500,000,000, the price at any height this
+  release can see. With no usable tip and no stored floor the renewal is still refused. The approval window reads the
+  same height from the background (`lowestChainHeight`, a local read) for its underpaid-fee warning on a site's name
+  record, for the legacy reservation's V28 warning (now shown on a fresh install too) and for a fill card's blocks left
+  (test/fee-tier-clamp.test.mjs, test/display-truth.test.mjs, test/sign-display-parity.test.mjs section 3,
+  test/approve-card-honesty.test.mjs section 6).
 - Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with

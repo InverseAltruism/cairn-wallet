@@ -219,6 +219,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "tipFloor": return wallet.tipFloor(); // M11/B5b: PoW-backed floor for review-side fee clamping (popup-only; READ_ONLY so it never extends the idle lock)
+    case "lowestChainHeight": return wallet.lowestChainHeight(); // the floor raised to the release's newest anchor, for the approval window's fee and V28 lines (popup-only; READ_ONLY)
     case "send": return wallet.send(args[0], args[1], args[2], args[3]); // args[3] = expectSigner (A1 popup snapshot)
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS; a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
@@ -414,7 +415,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative; anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "unrevealedSeals", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "attestTarget", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "lowestChainHeight", "rpcList", "explorerList", "connectedSites", "sealedClaims", "unrevealedSeals", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "attestTarget", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

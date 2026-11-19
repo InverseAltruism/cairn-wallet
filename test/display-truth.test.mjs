@@ -149,6 +149,7 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
   const warned = describe({ ...base, tipFloor: V28_HEIGHT });
   ok("LOW-V28: PoW-backed floor at the gate warns REJECTED on-chain (fee-costing no-op)", /rejected<\/b> on-chain/.test(warned) && warned.includes(String(V28_HEIGHT)));
   ok("LOW-V28: the warning is a warn, not a re-label (reserve copy still present)", /Reserve an open offer/.test(warned));
+  ok("LOW-V28: floor 0 with the lowest chain height past the gate (a fresh install) warns", /rejected<\/b> on-chain/.test(describe({ ...base, tipFloor: 0, lowestHeight: V28_HEIGHT })));
 }
 
 // ── LOW: the v2.8 fclaim record clear-signs structurally (no raw-JSON fallback) ─

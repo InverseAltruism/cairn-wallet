@@ -216,7 +216,9 @@ agree("3. an attest with no score and no confidence on the user's own offer", aw
 {
   const r = await round("attest", { proposalId: MINE, score: 50, confidence: 0 });
   agree("3. a legacy reservation (score 50, confidence 0)", r, /^Reserve an open offer/);
-  check(`3. the legacy reservation's pre-paint read is the wallet's local tip floor, with no tip read (${JSON.stringify(r.calls)})`, r.calls.includes("tipFloor") && !r.calls.includes("tip"));
+  check(`3. the legacy reservation's pre-paint read is the wallet's local lowest chain height, with no tip read (${JSON.stringify(r.calls)})`, r.calls.includes("lowestChainHeight") && !r.calls.includes("tip"));
+  // A fresh store has floor 0; the lowest chain height is the release anchor, past V28, so the card says the chain rejects it.
+  check("3. ...and on a fresh install the card says the legacy reservation is rejected on-chain", /rejected<\/b> on-chain/.test(r.html));
 }
 agree("3. W1a R1: the token-fill confidence with no score is shown and signed as a fill at score 100, not a cancel", await round("attest", { proposalId: TOKEN_OFFER, confidence: CONF_TOKEN_FILL, fee: 5_000_000 }), /^Fill offer/, ["tokenFillQuote"]);
 agree("3. the token-fill confidence as a digit string, score 100", await round("attest", { proposalId: TOKEN_OFFER, score: 100, confidence: String(CONF_TOKEN_FILL) }), /^Fill offer/, ["tokenFillQuote"]);

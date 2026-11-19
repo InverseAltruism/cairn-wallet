@@ -490,15 +490,10 @@ export function describe(r: any): string {
         // under v2.5 the `name` reveal is PAYMENT-FREE (the fee moves to `nfinalize`), so the fee-bearing record
         // is nrenew, nfinalize, or a PRE-v2.5 `name`. An underpaid nfinalize burns exactly like an underpaid
         // pre-v2.5 registration (the fee leaves, the name is not registered), so it gets the same loud warning.
-        // M11 (B5b): the review-side tip is clamped with the PoW-backed floor via the ONE shared helper
-        // (cairnx.ts feePricingTip), the same clamp the build sites apply, so a deflating RPC cannot
-        // price a cheaper tier here while silencing this very warning. Floor-only (tip read failed but a
-        // floor exists) still arms the warning; both absent keeps today's skip-when-offline behavior.
-        // W5 (Q-02): the outer "is there anything to price with" gate is GONE, because feePricingTip now
-        // owns that question and answers it with null. It also answers null for a served tip that is
-        // finite but not a height (65100.5, 1e16), which previously slipped through to buildFeeHeight and
-        // threw into the bare catch below, silently disarming this very warning.
-        const tipNow = feePricingTip(r.currentTip, r.tipFloor);
+        // Priced at cairnx.ts feePricingTip over the served tip, the stored floor and the lowest chain height approve.ts
+        // reads from the background, as the build sites price, so a tip served too low cannot price a cheaper tier
+        // here and silence this warning. feePricingTip answers null (skip) when neither the tip nor the floor is usable.
+        const tipNow = feePricingTip(r.currentTip, r.tipFloor, Number(r.lowestHeight) || 0);
         const rec = decodeCairnxRecord(q.uri, q.payloadHash);
         const feeBearing = !!rec && typeof rec.name === "string" && tipNow != null &&
           (rec.t === "nrenew" || rec.t === "nfinalize" || (rec.t === "name" && tipNow < V25_HEIGHT));
@@ -552,11 +547,11 @@ export function describe(r: any): string {
     const score = af.score, conf = af.confidence;
     // CairnX v1.7: score 50 / confidence 0 is a claim-to-fill reservation on an open CSD offer, a payment-free attest
     // that reserves the offer for the legacy claim window (CLAIM_WINDOW_BLOCKS_V20). From V28 the chain rejects every
-    // new legacy SCORE_CLAIM, so when the PoW-backed floor proves the gate has passed, warn that this is an on-chain
-    // no-op that still costs the network fee (warn, never block; the floor is a local read threaded by approve.ts,
-    // and when it is absent or below the gate the warning stays silent).
+    // new legacy SCORE_CLAIM, so when the lowest chain height (or a stored floor) is past the gate, warn that this is an
+    // on-chain no-op that still costs the network fee (warn, never block; approve.ts reads the height locally, and
+    // when it is absent or below the gate the warning stays silent).
     if (score === 50 && conf === 0) {
-      const v28warn = (Number(r.tipFloor) || 0) >= V28_HEIGHT
+      const v28warn = Math.max(Number(r.tipFloor) || 0, Number(r.lowestHeight) || 0) >= V28_HEIGHT
         ? danger(`The chain has passed the v2.8 upgrade (block ${V28_HEIGHT}): this legacy reservation type is <b>rejected</b> on-chain, so approving would be a no-op that still costs the network fee. Use the site's current buy flow instead.`)
         : "";
       return title("Reserve an open offer") + cost + v28warn + lede(`v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~${CLAIM_WINDOW_BLOCKS_V20} blocks. You pay only when you complete the purchase.`)
@@ -624,7 +619,8 @@ export function describe(r: any): string {
   return title(escapeHtml(r.method)) + cost;
 }
 
-// The listed offer's expiry on a fill card, against the tip (the wallet's floor-clamped tip when approve.ts has it).
+// The listed offer's expiry on a fill card, against the tip (approve.ts cardTip: the served tip raised to the lowest
+// chain height).
 // Served by the offer service, so display only; the preflight decides on the proven record with the same
 // offerFillTooLate, so the card names a refusal exactly when the wallet will make it.
 export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {

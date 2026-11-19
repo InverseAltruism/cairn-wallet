@@ -57,7 +57,10 @@ The RPC's tip is served as well. The offer-id fill checks that depend on the cha
 refusal `FILL_LEGACY_SUNSET` and the offer expiry check) compare the largest of that tip, the tip floor the wallet
 stored after its last header sync, and the height of the release's newest built-in block hash, which the chain is
 past whatever is served. A tip served too low therefore cannot get an offer-id fill of an open CSD offer signed, nor
-one of an offer that expired below that height. On a fresh install the stored floor is 0 until the first sync.
+one of an offer that expired below that height. The wallet's own name renewal is priced at the same height, and so
+is the approval window's warning about an underpaid name fee, so a tip served too low cannot price a cheaper fee
+tier; with no usable tip and no stored floor the renewal is still refused. On a fresh install the stored floor is 0
+until the first sync.
 
 The approval window's title for a score-0 attestation (how a site cancels a CairnX offer or bid) also comes from that
 RPC: it reads the target proposal, and says "Cancel your offer" or "Cancel your bid" only when the node reports the

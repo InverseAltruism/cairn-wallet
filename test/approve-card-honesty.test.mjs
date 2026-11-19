@@ -200,5 +200,15 @@ t("5f the window's fill card shows the look-alike warning, and Approve arms afte
 });
 state.view = null;
 
+console.log("6. the card's tip is raised to the lowest chain height, as the preflight's is");
+h.lowestChainHeight = () => 117_300;      // the stored floor or the release anchor, read from the background
+state.pending = [fillReq("f6", LIST)];
+await tick(); await flush();
+await new Promise((r) => setTimeout(r, 800)); await flush();
+t("6a with a served tip of 117,000 and a lowest chain height of 117,300 the card counts from 117,300", () => {
+  assert.match(byId("fill-view").innerHTML, /Offer expires at block 117,330, 30 blocks after the current tip \(~1 h\)/);
+});
+delete h.lowestChainHeight;
+
 console.log(`\napprove-card-honesty: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

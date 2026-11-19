@@ -11,7 +11,7 @@ import { fillOf, type AttestFields } from "./signfields.js";
 import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { CLARVIS_TRADE_API } from "./endpoints.js";
 import { OWN_FILL_INDEX_WAIT_MS } from "./history.js";
-import { SPV_NEWEST } from "./namespv.js";
+import { lowestChainHeight } from "./namespv.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
 // requiredFillOutputs sizes the treasury fee from feeBps (= feeBpsAt(creation height)), the maker rebate from
@@ -41,13 +41,11 @@ function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean
   return bindOfferTerms(offer, t, { give: true, wantType: true });
 }
 
-/** The height the offer-id checks (the sunset and expiry refusals) compare: the largest of the served tip, the stored
- *  floor and the release's newest anchor (SPV_NEWEST, a block the public chain had buried 1,000 to 6,000 deep when
- *  the release was cut). The chain is at least that high whatever is served or stored, so the result is a lower
- *  bound on the chain's height, not the tip. A non-finite input counts as 0. */
+/** The height the offer-id checks (the sunset and expiry refusals) compare: the served tip or namespv.ts
+ *  lowestChainHeight (the stored floor and the release's newest anchor), whichever is higher. A non-finite tip
+ *  counts as 0. */
 export function offerIdChainBound(tip: number, floor: number): number {
-  const h = (v: number): number => (Number.isFinite(v) ? v : 0);
-  return Math.max(h(tip), h(floor), SPV_NEWEST);
+  return Math.max(Number.isFinite(tip) ? tip : 0, lowestChainHeight(floor));
 }
 
 /** The sunset refusal for an offer-id fill; `height` gives the chain height (offerIdChainBound in production) and is
