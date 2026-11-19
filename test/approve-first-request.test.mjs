@@ -424,7 +424,7 @@ async function revealCard(txid, origin) {
   const st1 = (await popup("status")).result;
   check(`7. with a write of the list held, the reset completes at once (${Date.now() - t0} ms): the vault is gone and the wallet locked`, reset1.ok === true && !mem.has("vault") && st1.unlocked === false && st1.hasVault === false);
   holdSeen = false; release(); await flush(20);
-  check(`7. ...and the held write, from before the reset, writes nothing (${JSON.stringify(mem.get(SEEN))})`, !Object.hasOwn(seen(), R));
+  check(`7. ...and the held write, from before the reset, leaves nothing stored once the reset's deletion has run (${JSON.stringify(mem.get(SEEN))})`, !Object.hasOwn(seen(), R));
   check("setup: a wallet again", (await popup("create", PW)).ok === true);
   me = String((await popup("status")).result.addr);
   const R2 = "https://r2.example", Q = "https://q.example";

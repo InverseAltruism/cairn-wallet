@@ -68,8 +68,10 @@ events and alarm-driven auto-lock.
   list has loaded, or when it cannot be read, an origin reads as new. `resolvePending` updates `approvedNow` once the
   page has its answer and queues the storage write on the list's own queue (`recordApproved`, `inApprovedChain`, never
   awaited; a failed write is logged). An approval records its origin under the vault current when the user approved,
-  and only while that vault is still current: in memory at once and in storage when the write runs on its queue, so
-  an approval, a write or a load from before a reset never lands in the next wallet's list (sections 7 to 9 of
+  and only if that vault is still current when the approval finishes: in memory at once, and in storage by a queued
+  write that carries that vault, so one that runs after a reset lands as a list bound to the erased vault, which every
+  reader takes as empty. So an approval, a write or a load from before a reset never lands in the next wallet's
+  list (sections 7 to 9 of
   test/approve-first-request.test.mjs). The reset clears the consent map, then calls `wallet.reset()`, which drops the
   vault id before its first await, and only then empties the list: nothing that finishes during the consent write can
   refill it, and a consent write that throws leaves the wallet and its list as they were. The stored copy's deletion is
