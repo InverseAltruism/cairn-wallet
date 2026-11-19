@@ -228,8 +228,10 @@
   (test/fill-refill-after-send.test.mjs, test/fill-taker-partial.test.mjs). One reservation-lane test that claimed to
   pin the retryable answer for an unprovable offer author was answered by this refusal instead (its wallet had signed a
   fill of the offer just before); it now uses a wallet with no history (test/fill-fclaim-preflight.test.mjs).
-- Submit: a `SUBMIT_REJECTED` result reads "<the node's reason>. The node that answered refused this transaction. Check
-  your history before sending it again." where it read "<reason>. Nothing was sent." The node answers every submit
+- Submit: a `SUBMIT_REJECTED` result reads "<reason>. The submit was refused; nothing was recorded in this wallet. If
+  you already tried this same payment and that try's outcome was unclear, look that one up before sending again."
+  where it read "<reason>. Nothing was sent." A rejected submit leaves no history row and no txid, and the proxy's own
+  400, 413 and 429 come from no node, so the line names neither. The node answers every submit
   with HTTP 200 and refuses with `ok:false`; a 4xx comes from a proxy before it forwards (400, 413, 429). Through a
   proxy with two backends an earlier attempt of the same request may have reached the other backend and been
   admitted, and an older proxy then relays the second backend's refusal. The `SUBMIT_REJECTED` row and the comments

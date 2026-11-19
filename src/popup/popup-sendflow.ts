@@ -115,7 +115,8 @@ function sendOutcome(f: SendFlow, o: Outcome) {
 // A throw is routed by whether anything could have been submitted (see AnsweredError).
 export function sendThrew(f: SendFlow, e: any) { sendOutcome(f, thrownCopy(e, "send")); }
 // A structured {ok:false} from the send engine: only SUBMIT_MAYBE_INFLIGHT is ambiguous; every other
-// code is a clean pre-broadcast refusal or a definitive rejection, shown with the engine's own reason.
+// code is a clean pre-broadcast refusal or a refusal of this submit (SUBMIT_REJECTED: what the node or proxy that
+// answered did with it; popup-outcome.ts), shown with the engine's own reason.
 export function sendRefused(f: SendFlow, r: any) {
   const o = refusedCopy(r, "send");
   if (o.maybe) return sendOutcome(f, o);
