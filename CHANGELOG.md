@@ -107,8 +107,13 @@
   local); a fill marked gone or older than the wait lets the next one sign; a second partial reservation fill after
   the first is mined signs, sized by the replay that includes it; the token lane is unchanged. The cost: while a fill
   is unseen, a retry that would spend other coins (its submit reached the node, or the request differs) is refused for
-  up to 30 minutes after the first was sent, which on the reservation lane can outlast the hold; so is a fill the node
-  accepted and then dropped (test/fill-refill-after-send.test.mjs). Three tests that signed one reservation
+  up to 30 minutes after the first was last sent, which on the reservation lane can outlast the hold; so is a fill the
+  node accepted and then dropped (test/fill-refill-after-send.test.mjs). The 30 minutes count from the last time the
+  wallet submitted the fill's transaction: `history.ts` stores a later submit of a recorded txid (a definitive or
+  another lost answer, or `SUBMIT_DUPLICATE`) on its row as `resent`, keeping the row's `ts`, place and confirmed
+  latch, and `recentFillsOf` reads the later of the two. Counted from the first record, a lost submit retried and
+  accepted at minute 29 left the window at minute 30, and another payment for the target was signed while the retry
+  was one minute old (test/fill-refill-after-send.test.mjs section 6). Three tests that signed one reservation
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).

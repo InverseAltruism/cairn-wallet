@@ -201,11 +201,11 @@ returned. The wallet checks the fill against the offer's proven record before an
 fill request per offer target at a time: a second one, from any site, is refused `FILL_IN_PROGRESS` before it is
 queued, until the first is answered. Once the first was sent, another CSD-paid fill of the same target is refused
 after approval as retryable (`VERIFY_UNAVAILABLE`, "was sent and is not confirmed yet") while the first is in this
-account's history from the last 30 minutes, not marked gone, and not yet seen applied: listed by the offer service on
-the offer-id lane, proven by the block scan on the reservation lane. A retry after a submit whose answer was lost
-builds the same transaction from the same unspent coins and is signed and sent again, which cannot pay twice; a retry
-that would spend other coins is refused for up to those 30 minutes; a token-priced fill has no such check;
-docs/DESIGN-fill-lanes.md).
+account's history, sent in the last 30 minutes (counted from its last send, so a lost submit's retry restarts them),
+not marked gone, and not yet seen applied: listed by the offer service on the offer-id lane, proven by the block scan
+on the reservation lane. A retry after a submit whose answer was lost builds the same transaction from the same
+unspent coins and is signed and sent again, which cannot pay twice; a retry that would spend other coins is refused
+for up to those 30 minutes; a token-priced fill has no such check; docs/DESIGN-fill-lanes.md).
 
 **Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
 the first time an origin connects the user approves it, and the origin is recorded as a

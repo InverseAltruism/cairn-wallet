@@ -7,9 +7,13 @@ import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, IN
 // Per-account storage namespaces; keep each account's activity + secrets separate.
 export const histKey = (addr: string) => "txHistory:" + addr;
 // How long an account's own fill of an offer, recorded here, counts as possibly not listed by the offer service yet
-// (recentFillsOf). The service reads a block within a minute of it being mined; past this an unlisted fill no longer
-// refuses the next one, so a fill that never landed cannot block the offer for good.
+// (recentFillsOf), from the last time this wallet submitted it. The service reads a block within a minute of it being
+// mined; past this an unlisted fill no longer refuses the next one, so a fill that never landed cannot block the offer
+// for good.
 export const OWN_FILL_INDEX_WAIT_MS = 30 * 60_000;
+// When this wallet last submitted a row's transaction: its first record (`ts`) or a later submit of the same txid
+// (`resent`). Only recentFillsOf reads it; `ts` stays the first record's time.
+const lastSent = (x: any): number => Math.max(Number(x?.ts) || 0, Number(x?.resent) || 0);
 // A merge whose output is not yet seen and that is not known to be gone.
 const isMergeCandidate = (x: any): boolean => x?.type === "consolidate" && !x.confirmed && !x.gone;
 // A row pendingMerge still evaluates; `gone` stays here so a later reading can undo it.
@@ -94,15 +98,23 @@ export class TxHistory {
     // deriving a false "merging" line until a balance refresh saw them).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
   }
+  // The duplicate answer is a submit of the transaction now, so the row's `resent` moves to now. A parked twin can be
+  // the only copy (recorded while locked), and history() reads it, so it is updated as well.
   private clearMaybe(k: string, txid: string): Promise<void> {
-    // a definitive record can also supersede a parked maybe twin for the same txid
-    for (const p of this.pendingHist) if (p.k === k && p.entry.txid === txid) delete p.entry.maybe;
+    const now = Date.now();
+    const mark = (e: any): boolean => {
+      const was = !!e.maybe;
+      delete e.maybe;
+      if (now > lastSent(e)) { e.resent = now; return true; }
+      return was;
+    };
+    for (const p of this.pendingHist) if (p.k === k && p.entry.txid === txid) mark(p.entry);
     return this.inHistChain(async () => {
       if (!this.w.unlocked()) return;
       try {
         const h: any[] = (await this.store.get(k)) || [];
-        const e = h.find((x) => x?.txid === txid && x.maybe);
-        if (e) { delete e.maybe; await this.store.set(k, h); }
+        const e = h.find((x) => x?.txid === txid);
+        if (e && mark(e)) await this.store.set(k, h);
       } catch { /* flag hygiene only: a stale maybe marker self-heals via the pendingMerge reconcile and the spend latch */ }
     });
   }
@@ -129,8 +141,12 @@ export class TxHistory {
       // Idempotent by txid; but a DEFINITIVE record for a txid first recorded maybe:true resolves
       // the ambiguity: clear the flag IN PLACE. Never re-insert or reorder; ts, position and the
       // consolidate confirmed-latch must survive (a replace would resurrect the pending-forever
-      // bug the latch exists to prevent).
-      if (e.maybe && !entry.maybe) { delete e.maybe; await this.store.set(k, h); }
+      // bug the latch exists to prevent). A later submit of the same txid only moves `resent`.
+      let dirty = false;
+      if (e.maybe && !entry.maybe) { delete e.maybe; dirty = true; }
+      const at = lastSent(entry);
+      if (at > lastSent(e)) { e.resent = at; dirty = true; }
+      if (dirty) await this.store.set(k, h);
       return;
     }
     h.unshift(entry);
@@ -181,12 +197,12 @@ export class TxHistory {
       return parked.length ? [...parked, ...stored] : stored;
     });
   }
-  /** `addr`'s fills of `offerId` recorded at or after `since` (ms) and not known to be gone: each txid (lowercase) and
-   *  whether its submit answer was lost (`maybe`). */
+  /** `addr`'s fills of `offerId` this wallet last submitted at or after `since` (ms) and not known to be gone: each
+   *  txid (lowercase) and whether its submit answer was lost (`maybe`). */
   async recentFillsOf(addr: string, offerId: string, since: number): Promise<{ txid: string; maybe: boolean }[]> {
     const id = String(offerId).toLowerCase();
     const rows = await this.historyOf(addr);
-    return rows.filter((e: any) => e?.type === "fillOffer" && String(e.target ?? "").toLowerCase() === id && Number(e.ts) >= since && !e.gone)
+    return rows.filter((e: any) => e?.type === "fillOffer" && String(e.target ?? "").toLowerCase() === id && lastSent(e) >= since && !e.gone)
       .map((e: any) => ({ txid: String(e.txid).toLowerCase(), maybe: !!e.maybe }));
   }
 

@@ -25,6 +25,9 @@
 //      coin: refused, and the row keeps its maybe mark. A re-send of a transaction the node holds (a coin index that
 //      still serves the coin) is answered SUBMIT_DUPLICATE with one row, its maybe mark cleared. Lost twice, the row
 //      stays one and maybe until a definitive answer. A fill the node accepted allows nothing: refused at once.
+//   6. The window counts from the last send of the transaction: a lost submit retried at minute 29 (accepted, lost
+//      again, or answered SUBMIT_DUPLICATE) still refuses another fill at minute 31 and lets one sign past the wait
+//      after the retry; a fill with no retry counts from its ts; the history row keeps its ts and place.
 //   RED-FIRST: on d562218 the second fill signs in 1 and 2 (two submits each, two distinct transactions in 2), and 4
 //   reads ok with a second txid. Make repeatedFillRefusal answer null and 1, 2 and 4 fail; keep the history check for
 //   partial offers only (the old rule) and 1 fails; drop the fclaim lane's call and 2 and 4 fail; treat every recent
@@ -37,7 +40,7 @@ import { createHash } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
-import { histKey, OWN_FILL_INDEX_WAIT_MS } from "../src/core/history.js";
+import { histKey, OWN_FILL_INDEX_WAIT_MS, TxHistory } from "../src/core/history.js";
 import { repeatedFillRefusal } from "../src/core/fillpreflight.js";
 import { mkCoin, txReply } from "./_coin.js";
 import {
@@ -442,5 +445,100 @@ async function fclaimRetry(pw, base, opts) {
   const rowsB = await fillRows(X.w, part.id);
   check(`5. offer-id lane, partial offer, the first submit lost (${b1?.code}): the retry signs the same transaction (${b2?.ok}, ${b2?.txid === b1?.txid}), the node holds ${X.st.ingested.length}, one row cleared (${rowsText(rowsB)})`,
     b1?.code === "SUBMIT_MAYBE_INFLIGHT" && b2?.ok === true && b2?.txid === b1?.txid && X.st.ingested.length === 2 && rowsB.length === 1 && !rowsB[0].maybe);
+}
+
+// ── 6. The window counts from the last time the wallet sent the transaction ─────────────────────────────
+// A first submit lost at minute 0 and retried at minute 29 puts the transaction in the mempool at minute 29; the row's
+// `ts` stays at minute 0. Measured from `ts`, at minute 31 another payment for the target was signed while the retry
+// was one minute old. The clock is moved with Date.now, which stamps the history rows and the rule's window.
+// RED-FIRST: with recentFillsOf reading `ts` alone, the three "minute 31" checks sign a second fill (3 submits).
+const realNow = Date.now;
+const MIN = 60_000;
+async function atMinutes(t0, m, fn) {
+  Date.now = () => t0 + m * MIN;
+  try { return await fn(); } finally { Date.now = realNow; }
+}
+const sixFee = { fee: 6_000_000 };   // another transaction of the same request: another payment for the target
+for (const [base, label, opts, retryCode] of [
+  [9800, "the retry accepted", { mode: (n) => (n === 1 ? "lost" : "ok") }, undefined],
+  [9900, "the retry's answer lost again, the node took it", { mode: (n) => (n === 1 ? "lost" : n === 2 ? "ingested502" : "ok") }, "SUBMIT_MAYBE_INFLIGHT"],
+  [10000, "the retry answered already present", { mode: (n) => (n === 1 ? "ingested502" : "ok"), stale: true }, "SUBMIT_DUPLICATE"],
+]) {
+  const R = await fclaimRetry(`pw-refill-window-${base}`, base, opts);
+  const t0 = realNow();
+  const r1 = await atMinutes(t0, 0, () => R.ask());
+  const r2 = await atMinutes(t0, 29, () => R.ask());
+  const retried = retryCode === undefined ? r2?.ok === true : r2?.ok === false && r2?.code === retryCode;
+  const rows = await fillRows(R.w, R.world.fc.id);
+  check(`6. ${label}: first submit lost at minute 0 (${r1?.code}), the same transaction sent again at minute 29 (${r2?.ok ? "ok" : r2?.code}, same txid ${r2?.txid === r1?.txid}); one row, its ts still minute 0 (${rows.length}, ${rows[0]?.ts === t0})`,
+    r1?.ok === false && r1?.code === "SUBMIT_MAYBE_INFLIGHT" && retried && r2?.txid === r1?.txid && R.st.submits.length === 2 && rows.length === 1 && rows[0].ts === t0);
+  const r3 = await atMinutes(t0, 31, () => R.ask(sixFee));
+  check(`6. ${label}: at minute 31 another fill of the target is refused (${r3?.ok ? "signed" : r3?.code}), nothing more sent (${R.st.submits.length} submits)`,
+    r3?.ok === false && r3?.code === "VERIFY_UNAVAILABLE" && CONFIRMING.test(String(r3?.error)) && R.st.submits.length === 2);
+  if (retryCode === undefined) {
+    // The valve still holds: past 30 minutes after the retry, the row still unseen, another fill signs.
+    const r4 = await atMinutes(t0, 29 + WAIT_MIN + 1, () => R.ask(sixFee));
+    const still = await fillRows(R.w, R.world.fc.id);
+    check(`6. ${label}: at minute ${29 + WAIT_MIN + 1}, past the wait after the retry with the row still unseen (${rowsText(still)}), another fill signs (${r4?.ok}${r4?.error ? `: ${r4.code} ${r4.error}` : ""}, ${R.st.submits.length} submits)`,
+      r4?.ok === true && R.st.submits.length === 3);
+  }
+}
+{
+  // A first fill with no retry: the window counts from its ts, as before.
+  const R = await fclaimRetry("pw-refill-window-plain", 10100);
+  const t0 = realNow();
+  const r1 = await atMinutes(t0, 0, () => R.ask());
+  const r2 = await atMinutes(t0, WAIT_MIN - 1, () => R.ask(sixFee));
+  const r3 = await atMinutes(t0, WAIT_MIN + 1, () => R.ask(sixFee));
+  check(`6. no retry: sent at minute 0 (${r1?.ok}); another fill at minute ${WAIT_MIN - 1} is refused (${r2?.code}), at minute ${WAIT_MIN + 1} it signs (${r3?.ok}, ${R.st.submits.length} submits)`,
+    r1?.ok === true && r2?.ok === false && r2?.code === "VERIFY_UNAVAILABLE" && r3?.ok === true && R.st.submits.length === 2);
+}
+{
+  // The history row itself: a later record of the same txid keeps its ts, its position and a consolidate's confirmed
+  // latch, and stores when it was sent again; recentFillsOf counts the later time.
+  const store = memoryStore();
+  const ADDR = "0x" + "a1".repeat(20), K = histKey(ADDR), OFFER = "0x" + "0f".repeat(32);
+  const h = new TxHistory(store, { unlocked: () => true, wiped: () => false, addr: () => ADDR, rpc: () => "http://127.0.0.1:1" });
+  const TA = "0x" + "aa".repeat(32), TB = "0x" + "bb".repeat(32), TC = "0x" + "cc".repeat(32);
+  const t0 = realNow();
+  const fill = { type: "fillOffer", target: OFFER };
+  await atMinutes(t0, 0, () => h.maybeRecord(K, { ok: false, code: "SUBMIT_MAYBE_INFLIGHT", txid: TA }, fill));
+  await atMinutes(t0, 1, () => h.maybeRecord(K, { ok: true, txid: TC }, { type: "consolidate", amount: 5, fee: 1 }));
+  await h.annotate(K, TC, { confirmed: true });
+  await atMinutes(t0, 2, () => h.maybeRecord(K, { ok: true, txid: TB }, { type: "send" }));
+  await atMinutes(t0, 29, () => h.maybeRecord(K, { ok: true, txid: TA }, fill));
+  await atMinutes(t0, 30, () => h.maybeRecord(K, { ok: true, txid: TC }, { type: "consolidate", amount: 5, fee: 1 }));
+  const rows = await store.get(K);
+  const a = rows.find((e) => e.txid === TA), c = rows.find((e) => e.txid === TC);
+  check(`6. history: the retried row keeps its position (${rows.map((e) => e.txid.slice(2, 4)).join(",")}), its ts (${a?.ts === t0}), loses its maybe mark (${!a?.maybe}) and stores the retry time (${a?.resent === t0 + 29 * MIN})`,
+    rows.length === 3 && rows.map((e) => e.txid).join() === [TB, TC, TA].join() && a.ts === t0 && !a.maybe && a.resent === t0 + 29 * MIN);
+  check(`6. history: a re-recorded consolidate keeps its ts and its confirmed latch (${c?.ts === t0 + MIN}, ${c?.confirmed})`, c?.ts === t0 + MIN && c?.confirmed === true);
+  const inWin = await h.recentFillsOf(ADDR, OFFER, t0 + 28 * MIN), outWin = await h.recentFillsOf(ADDR, OFFER, t0 + 29 * MIN + 1);
+  check(`6. history: recentFillsOf counts the retry time (since minute 28: ${inWin.length} row; since just after minute 29: ${outWin.length})`, inWin.length === 1 && outWin.length === 0);
+  // An older record of the same txid (a parked twin drained late) does not move the time back.
+  await atMinutes(t0, 5, () => h.maybeRecord(K, { ok: true, txid: TA }, fill));
+  check(`6. history: an older record of the row does not move its time back (${(await store.get(K)).find((e) => e.txid === TA)?.resent === t0 + 29 * MIN})`, (await store.get(K)).find((e) => e.txid === TA)?.resent === t0 + 29 * MIN);
+}
+{
+  // SUBMIT_DUPLICATE on a stored maybe row, and on a parked row that is the only copy (recorded while locked).
+  const store = memoryStore();
+  const ADDR = "0x" + "a2".repeat(20), K = histKey(ADDR), OFFER = "0x" + "1f".repeat(32);
+  let unlocked = true;
+  const h = new TxHistory(store, { unlocked: () => unlocked, wiped: () => false, addr: () => ADDR, rpc: () => "http://127.0.0.1:1" });
+  const TS = "0x" + "d1".repeat(32), TP = "0x" + "d2".repeat(32);
+  const fill = { type: "fillOffer", target: OFFER };
+  const t0 = realNow();
+  await atMinutes(t0, 0, () => h.maybeRecord(K, { ok: false, code: "SUBMIT_MAYBE_INFLIGHT", txid: TS }, fill));
+  unlocked = false;
+  await atMinutes(t0, 0, () => h.maybeRecord(K, { ok: false, code: "SUBMIT_MAYBE_INFLIGHT", txid: TP }, fill));
+  unlocked = true;
+  await atMinutes(t0, 29, () => h.maybeRecord(K, { ok: false, code: "SUBMIT_DUPLICATE", txid: TS }, fill));
+  await atMinutes(t0, 29, () => h.maybeRecord(K, { ok: false, code: "SUBMIT_DUPLICATE", txid: TP }, fill));
+  const stored = await store.get(K), parked = h.pendingHist.filter((p) => p.entry.txid === TP);
+  const s = stored.find((e) => e.txid === TS);
+  check(`6. history: a duplicate answer clears the stored row's maybe mark and stores the time (${!s?.maybe}, ${s?.ts === t0}, ${s?.resent === t0 + 29 * MIN})`, stored.length === 1 && !s.maybe && s.ts === t0 && s.resent === t0 + 29 * MIN);
+  check(`6. history: ...and on a parked row that is the only copy (${parked.length} parked, ${parked[0]?.entry.resent === t0 + 29 * MIN})`, parked.length === 1 && !parked[0].entry.maybe && parked[0].entry.ts === t0 && parked[0].entry.resent === t0 + 29 * MIN);
+  const recent = await h.recentFillsOf(ADDR, OFFER, t0 + 28 * MIN);
+  check(`6. history: both count inside the window from the duplicate answer (${recent.length} rows)`, recent.length === 2);
 }
 done("fill-refill-after-send");

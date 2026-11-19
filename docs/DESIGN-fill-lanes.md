@@ -59,10 +59,12 @@ What the hold leaves to other rules:
 
 Decided in one function, `repeatedFillRefusal` (fillpreflight.ts), so a warning in the approval window could replace
 the refusal. Its input is this account's fills of the fill target in its own history (`recentOwnFills`, a local read)
-from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) and not marked gone (an ambiguous submit whose inputs another
-mined transaction spent), and the ones the lane has seen applied: on the offer-id lane the fills the offer service
-lists (a partial offer's listed fills are then proven; a whole offer that applied a fill is no longer served open, so
-nothing served counts for it), on the fclaim lane the attests of this reservation the block scan proved. One that is
+sent in the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`, counted from the wallet's last submit of the transaction: a
+later submit of a recorded txid is stored on its row as `resent`, and the row keeps its first `ts` and its place) and
+not marked gone (an ambiguous submit whose inputs another mined transaction spent), and the ones the lane has seen
+applied: on the offer-id lane the fills the offer service lists (a partial offer's listed fills are then proven; a
+whole offer that applied a fill is no longer served open, so nothing served counts for it), on the fclaim lane the
+attests of this reservation the block scan proved. One that is
 recent and unseen refuses another payment with the retryable `VERIFY_UNAVAILABLE`, the rule the owner set for partial
 offers on 2026-11-02 (a short retryable refusal over an unrecoverable overpayment): the copy says the earlier fill was
 sent and is not confirmed yet, to try again once it confirms, and that the refusal lasts up to 30 minutes after it
@@ -82,8 +84,8 @@ reported as a conflict or sent to the confirm step. After the first fill of a pa
 one signs, sized by the replay that includes it.
 
 The cost: while a fill is unseen, a retry that would spend other coins (the first submit reached the node and its coin
-is spent, or the request differs) is refused for up to 30 minutes after the first was sent, which on the fclaim lane
-can outlast the hold; so is a fill the node accepted and then dropped (test/fill-refill-after-send.test.mjs).
+is spent, or the request differs) is refused for up to 30 minutes after the first was last sent, which on the fclaim
+lane can outlast the hold; so is a fill the node accepted and then dropped (test/fill-refill-after-send.test.mjs).
 
 ## The fclaim lane
 
