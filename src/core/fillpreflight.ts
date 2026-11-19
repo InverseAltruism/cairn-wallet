@@ -248,6 +248,22 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
   }
 }
 
+/** The repeated-fill rule, the one place it is decided (a warning in the approval window could replace the refusal
+ *  here). `recent` are this account's fills of the target from its history within OWN_FILL_INDEX_WAIT_MS and not marked
+ *  gone (FillPreflightIo recentOwnFills); `seen` are those the lane has seen applied (listed by the offer service on the
+ *  offer-id lane, proven in the block scan on the reservation lane). One that is recent and unseen may still land, and
+ *  paying again before it does pays twice: a whole offer delivers once and keeps the second payment, and a partial one
+ *  is sized on what was left before it. That is refused as retryable; the refusal ends when the fill is seen, is marked
+ *  gone, or leaves the window. `copy` names the partial offer-id case, whose risk is the amount served as left. */
+export function repeatedFillRefusal(recent: readonly string[], seen: ReadonlySet<string>, copy: "unlisted-partial" | "confirming"): FillRefusal | null {
+  const t = recent.find((x) => !seen.has(String(x).toLowerCase()));
+  if (!t) return null;
+  const waitMin = OWN_FILL_INDEX_WAIT_MS / 60_000;
+  return refuse("VERIFY_UNAVAILABLE", copy === "unlisted-partial"
+    ? `refusing to sign for now: your earlier fill of this offer (${t.slice(0, 12)}…) is not listed as applied by the offer service yet, so the amount it lists as left may be too high and the surplus would go to the seller; try again in a few minutes (if the service rejected that fill, this lasts up to ${waitMin} minutes)`
+    : `refusing to sign for now: your earlier fill of this offer (${t.slice(0, 12)}…) is still confirming, and paying again before it is mined could lose some or all of the second payment. Try again shortly. If that fill does not go through, this lasts up to ${waitMin} minutes after it was sent.`);
+}
+
 // The offer-id CSD lane (the legacy and dApp fill, no SPV scan): the served payto, seller and fee terms are bound
 // to the merkle-proven offer, then every leg of the resolver's need-map must be paid. A partial offer is sized against
 // the running state its listed fills prove, and its legs must be paid exactly.
@@ -266,18 +282,13 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
   // default payto/seller to the author, so no honest fill declines.
   const partial = offer.min != null;   // an absent or null min: a whole offer
   const listed = partial ? (Array.isArray(offer.fills) ? offer.fills : []).map((f) => ({ txid: String(f?.txid ?? ""), height: Number(f?.height) })) : undefined;
-  // A partial offer's `paid` and `delivered` decide how much of a payment the resolver applies; it clamps a payment past
-  // what is left and keeps the surplus. Only the taker fills a taker-bound offer, so a fill the service has not listed
-  // yet is this account's own: one recorded here and missing from the list refuses retryably, from local history and
-  // before the listed fills are proven (no block read for a fill that refuses anyway). The list holds applied fills
-  // only, so the copy says "not listed as applied": the service may also have read the fill and rejected it, and then
-  // the refusal lasts until the fill leaves the OWN_FILL_INDEX_WAIT_MS window, which the copy names.
-  if (partial) {
-    const listedIds = new Set((listed ?? []).map((f) => f.txid.toLowerCase()));
-    const unindexed = (await wallet.recentOwnFills(String(offer.id), me)).find((t) => !listedIds.has(t));
-    if (unindexed)
-      return refuse("VERIFY_UNAVAILABLE", `refusing to sign for now: your earlier fill of this offer (${unindexed.slice(0, 12)}…) is not listed as applied by the offer service yet, so the amount it lists as left may be too high and the surplus would go to the seller; try again in a few minutes (if the service rejected that fill, this lasts up to ${OWN_FILL_INDEX_WAIT_MS / 60_000} minutes)`);
-  }
+  // Only the taker fills a taker-bound offer, so a fill the service has not listed yet is this account's own: the
+  // repeated-fill rule runs from local history and before the listed fills are proven (no block read for a fill that
+  // refuses anyway). A partial offer's listed fills are proven below, so a listed own fill counts as seen. A whole
+  // offer that applied a fill is no longer open (refused above), so for it nothing served counts as seen.
+  const seen = new Set((listed ?? []).map((f) => f.txid.toLowerCase()));
+  const repeated = repeatedFillRefusal(await wallet.recentOwnFills(String(offer.id), me), seen, partial ? "unlisted-partial" : "confirming");
+  if (repeated) return repeated;
   const proven = await wallet.makeProvenOfferPayto(String(offer.id).toLowerCase(), Number(offer.height), listed);
   if (proven && "refused" in proven) return offerNotAdmitted(proven.refused);
   if (!proven || !/^0x[0-9a-f]{40}$/.test(proven.payto) || !/^0x[0-9a-f]{40}$/.test(proven.seller))
@@ -473,6 +484,20 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
   for (const { to, value } of need) if ((sums.get(to) ?? 0n) < value) {
     const what = to === TREASURY_ADDR.toLowerCase() ? "protocol fee output" : to === payto ? "seller payment" : "maker rebate output";
     return { ok: false, error: `refusing to sign: the ${what} is missing or underpaid; the chain would take your payment and reject the fill. Rebuild the fill with the quoted fee/rebate outputs.`, sighashMatch: false, code: "FILL_UNSAFE" };
+  }
+  // The repeated-fill rule: an own fill of this reservation counts as seen once the scan proved it (mined), and the
+  // replay above then sized this fill with it applied. The history read is local, and provenEvent answers from what the
+  // scan already proved. Before the second-source checks, so a fill still confirming is not reported as a conflict or
+  // sent to the confirm step.
+  const recent = await wallet.recentOwnFills(fclaimTxid, me);
+  if (recent.length) {
+    const seen = new Set<string>();
+    for (const t of recent) {
+      const ev = await io.provenEvent(t).catch(() => null);
+      if (ev && ev.kind === "attest" && String(ev.proposalId).toLowerCase() === fclaimTxid.toLowerCase()) seen.add(String(t).toLowerCase());
+    }
+    const repeated = repeatedFillRefusal(recent, seen, "confirming");
+    if (repeated) return repeated;
   }
   // Pre-window withholding: the scan cannot see a cancel or fill older than its window, so ask the second
   // source about the offer. Its answer counts only if it has already arrived; pending or unusable proceeds.

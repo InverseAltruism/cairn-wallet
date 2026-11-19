@@ -33,15 +33,17 @@ an open window is focused and none is created. A window brought forward re-arms 
 does (SECURITY.md, dApp boundary). The hold ends when the first request's answer goes to its page, or when a worker
 restart empties the queue. Without it, approving both requests paid twice: the resolver refuses a second fill of a
 whole offer and keeps its payment, a second partial fill is sized on what was left before the first applied, and a
-second token fill pays its network fee for nothing (test/fill-one-request-per-offer.test.mjs).
+second token fill pays its network fee for nothing (test/fill-one-request-per-offer.test.mjs). The same loss follows
+a request asked again after the first was sent and before it is mined or listed; that case is the repeated-fill
+rule below, which the CSD lanes apply when the request signs.
 
 What the hold leaves to other rules:
 
 - Two targets of one offer (its offer id and a reservation txid) are two keys. The lanes decide between them: an
   offer-id fill of an open CSD offer during a live hold refuses `FILL_WRONG_TARGET`, and the fclaim lane signs only for
   the live granted hold.
-- A fill after the first was sent: the site tracks that purchase, and on the offer-id CSD lane the 30-minute own-fill
-  history check applies.
+- A fill after the first was sent: the repeated-fill rule below, on the offer-id CSD lane (whole and partial offers)
+  and the fclaim lane. The token lane has none: a repeated token fill costs its network fee, which was accepted.
 - The hold is global, so a site learns whether another site's fill of a target it names is held, and a site can hold a
   target by queueing a fill of it. Both need the site open in the user's browser; a miss and a hold are each a fill
   request the user sees in the approval window and can reject (at most 5 per site). Accepted, 2026-11-06. A hit
@@ -52,6 +54,25 @@ What the hold leaves to other rules:
   test/approve-raise-chrome.test.mjs). Before 0.3.3 every refusal raised and re-armed, so a page repeating one, or a
   second site holding its own target, kept another site's painted request unapprovable while it ran
   (test/approve-raise-refused-bound.test.mjs).
+
+## The repeated-fill rule
+
+Decided in one function, `repeatedFillRefusal` (fillpreflight.ts), so a warning in the approval window could replace
+the refusal. Its input is this account's fills of the fill target in its own history (`recentOwnFills`, a local read)
+from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) and not marked gone (an ambiguous submit whose inputs another
+mined transaction spent), and the ones the lane has seen applied: on the offer-id lane the fills the offer service
+lists (a partial offer's listed fills are then proven; a whole offer that applied a fill is no longer served open, so
+nothing served counts for it), on the fclaim lane the attests of this reservation the block scan proved. One that is
+recent and unseen refuses with the retryable `VERIFY_UNAVAILABLE`, the rule the owner set for partial offers on
+2026-11-02 (a short retryable refusal over an unrecoverable overpayment): the copy says the earlier fill is still
+confirming and to try again shortly, and that the refusal lasts up to 30 minutes after it was sent if that fill does
+not go through; a partial offer-id fill keeps its copy about the amount listed as left. The refusal ends when the
+fill is seen (listed, or mined and proven), is marked gone, or leaves the window. A first fill reads nothing more and
+makes the same fetches; on the fclaim lane the check runs after the scan, reading only what the scan proved, and
+before the second-source checks, so a fill still confirming is not reported as a conflict or sent to the confirm
+step. After the first fill of a partial reservation is mined, a second one signs, sized by the replay that includes
+it. The cost: a first fill that stalls and never lands blocks its own retry for up to 30 minutes, which on the fclaim
+lane can outlast the hold (test/fill-refill-after-send.test.mjs).
 
 ## The fclaim lane
 
@@ -111,11 +132,10 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   cannot be read (its author is unknown, not disproven); one that is another offer's or is not signed by its coin's
   owner refuses with `FILL_UNSAFE`, as does a served `paid` or `delivered` that differs from the proven one. Every need-map leg must then be paid exactly:
   a payment past what is left refuses, because the resolver clamps it and keeps the surplus. Only the taker fills a
-  taker-bound offer, so a fill the service has not indexed yet is the buyer's own: a fill of the offer in this
-  account's history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) that the service does not list refuses with
-  the retryable `VERIFY_UNAVAILABLE` (the owner's ruling of 2026-11-02: a short retryable refusal over an
-  unrecoverable overpayment). Cost: the first fill of an offer reads nothing more; the k-th reads the blocks of the
-  k-1 listed fills, in parallel (test/fill-offer-progress.test.mjs, test/fill-taker-partial.test.mjs).
+  taker-bound offer, so a fill the service has not indexed yet is the buyer's own: the repeated-fill rule above runs
+  for whole and partial offers alike, before the listed fills are proven. Cost: the first fill of an offer reads
+  nothing more; the k-th reads the blocks of the k-1 listed fills, in parallel (test/fill-offer-progress.test.mjs,
+  test/fill-taker-partial.test.mjs).
 - Offer expiry (both offer-id lanes), strand avoidance: the node refuses an attest after its proposal's expiry
   epoch, in mempool admission and in block apply, so a fill that is not mined by the offer's last live block (the
   vendored `offerExpiryHeightOf` minus one) sits unconfirmed and is dropped; no payment moves. For offers anchored at

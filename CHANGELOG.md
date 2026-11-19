@@ -87,6 +87,24 @@
   refusal from the balance (`INSUFFICIENT`) instead of the zero address, test/extension-boundary.ts (g) reads the
   fractional fill value's refusal before the queue, and test/fill-reservation-confirm.test.mjs (10) checks the queue
   cap with a send the signer accepts instead of one with no parameters.
+- A fill asked again after the first was sent no longer pays twice. The `FILL_IN_PROGRESS` hold ends when the first
+  request is answered, and until the first fill was mined (the reservation lane's block scan then proves it) or listed
+  by the offer service (the offer-id lane), the same request passed every other check and was signed again from other
+  coins: on a whole offer the resolver applies one fill and keeps the second payment, and a second partial fill on the
+  reservation lane is sized on what was left before the first. The own-fill history check that covered partial
+  offer-id offers since 0.3.2 (the owner's ruling of 2026-11-02: a short retryable refusal over an unrecoverable
+  overpayment) now covers whole offer-id offers and the reservation lane: a fill of the same target in this account's
+  history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`), not marked gone and not yet seen applied, refuses with
+  the retryable `VERIFY_UNAVAILABLE`, and the text says the earlier fill is still confirming, to try again shortly, and
+  that this lasts up to 30 minutes if that fill does not go through. The rule is decided in one function,
+  `fillpreflight.ts` `repeatedFillRefusal`. A first fill makes the same fetches and signs the same bytes as before (the
+  history read is local); a fill marked gone or older than the wait lets the next one sign; a second partial
+  reservation fill after the first is mined signs, sized by the replay that includes it; the token lane is unchanged.
+  The cost: a first fill that stalls and never lands blocks its own retry for up to 30 minutes, which on the
+  reservation lane can outlast the hold (test/fill-refill-after-send.test.mjs). Three tests that signed one reservation
+  several times with one wallet for other reasons now use a wallet with the same key and no history
+  (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
+  the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
 - The approval window no longer hangs on a request it cannot draw: such a request is shown as one the wallet could not
   show, Approve stays off, and Reject arms after the 700 ms floor, so the user can reject it and reach the requests
   behind it. Each 1.2 s poll still retries the paint, so a paint that fails once draws on the next tick as before

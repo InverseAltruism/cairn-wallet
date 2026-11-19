@@ -97,8 +97,11 @@ inputs or a change address.
   `confidence` defaults to 100; 1,000,000 marks a token-priced fill, which may carry no CSD output. `fee` defaults to
   5,000,000. The wallet checks the fill against the offer's proven record before signing
   (`docs/DESIGN-fill-lanes.md`); a CairnX that refuses the fill keeps the payment. While one fill request for a target
-  is open, another for it is refused `FILL_IN_PROGRESS`. On the reservation lane the outputs must pay exactly what the
-  offer needs, per address; on the offer-id lane outputs beyond the need are signed (section 12 of
+  is open, another for it is refused `FILL_IN_PROGRESS`. After a CSD-paid fill of a target was sent, another fill of
+  it is refused after approval with the nested `VERIFY_UNAVAILABLE` while the first is less than 30 minutes old in
+  the wallet's history, not marked gone, and not yet seen applied (listed by the offer service on the offer-id lane,
+  mined on the reservation lane); ask again once it confirms. On the reservation lane the outputs must pay exactly
+  what the offer needs, per address; on the offer-id lane outputs beyond the need are signed (section 12 of
   `test/sign-display-parity.test.mjs`).
 - `sealClaim`: `claim` is a non-empty string, `domain` a string of at most 128 UTF-8 bytes once trimmed, with no
   unpaired surrogate (default `csd:sealed`), `fee` as on a proposal (default 25,000,000). The wallet makes the salt and

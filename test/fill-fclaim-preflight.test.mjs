@@ -214,7 +214,11 @@ let honestBody = null, honestWallet = null;
 // want.amount on a CSD-priced offer is read by nothing on this lane (the lane is CSD-only and every signed output
 // must equal the proven need-map), so a served value there cannot change the signed bytes.
 {
-  const w = honestWallet;   // same key and coin as the honest fill, so deterministic signing makes equal bytes comparable
+  // The honest wallet's key and coin in a wallet with no history, so deterministic signing makes equal bytes comparable
+  // (the honest wallet itself now refuses a second fill of this reservation while its first is unconfirmed:
+  // test/fill-refill-after-send.test.mjs).
+  const w = new Wallet(memoryStore());
+  await w.importKey(await honestWallet.exportKey("pw-noclarvis"), "pw-noclarvis-twin");
   w.fillSpvIoForTest = (oid, fc, me) => makeIo([...baseFor(), fcFor(fcH, OID, H0 + 3, me)], HOLD_END - 5, me, H0 + 3);
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => servedOffer(fcH, H0 + 3, { want: { value: String(V), payto: S, amount: "999" } }) }) });
   const r = await w.fillOffer({ proposalId: fcH, outputs });

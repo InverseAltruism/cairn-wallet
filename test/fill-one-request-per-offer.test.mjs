@@ -19,6 +19,7 @@ import { isDeepStrictEqual } from "node:util";
 import { checker } from "./helpers/check.mjs";
 import { PRIV, world, stub, body, recordAnswer, truthful, H } from "./helpers/fillworld.mjs";
 import { CONF_TOKEN_FILL } from "../src/core/cairnx.ts";
+import { histKey, OWN_FILL_INDEX_WAIT_MS } from "../src/core/history.ts";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const settle = async () => { for (let i = 0; i < 10; i++) await tick(); };
@@ -110,6 +111,12 @@ const REFUSED = {
 };
 const refused = (r) => isDeepStrictEqual(r, REFUSED);
 const { check, done } = checker("one fill request per offer through the worker channel:");
+// This file tests the hold, which acts before any fill check. A section that signs the reservation again first ages
+// the fills sent before it past OWN_FILL_INDEX_WAIT_MS, as if they were sent long ago: within the window an unconfirmed
+// fill of the same target refuses the next one (the repeated-fill rule, test/fill-refill-after-send.test.mjs).
+async function ageSentFills() {
+  for (const e of await bg.history()) if (e.type === "fillOffer") await bg.hist.annotate(histKey(bg.addr()), e.txid, { ts: Date.now() - OWN_FILL_INDEX_WAIT_MS - 1_000 });
+}
 
 // 1. Two sites' pages ask to fill one reservation.
 {
@@ -172,6 +179,7 @@ const { check, done } = checker("one fill request per offer through the worker c
 
 // 5. The first fill was approved and is still signing and sending.
 {
+  await ageSentFills();
   const n0 = st.submits.length;
   const a = dapp(SITE, "fillOffer", whole()); await settle();
   let reached, open;
@@ -208,6 +216,7 @@ const { check, done } = checker("one fill request per offer through the worker c
 
 // 7. The first was rejected: the next queues and signs.
 {
+  await ageSentFills();
   dapp(SITE, "fillOffer", whole()); await settle();
   await reject(await lastId());
   const b = dapp(OTHER, "fillOffer", whole()); await settle();
@@ -258,6 +267,7 @@ const { check, done } = checker("one fill request per offer through the worker c
   const b = dapp(OTHER, "fillOffer", whole()); await settle();
   check("10. a refused retry opens the window that holds the queued first request, and is not queued itself", refused(b.reply) && isDeepStrictEqual(await ids(), [aId]) && isDeepStrictEqual(windowCalls.slice(w0), ["create"]));
   const n0 = st.submits.length;
+  await ageSentFills();
   await approve(aId);
   check("10. honest path: the first fill then signs once", st.submits.length - n0 === 1 && a.reply?.ok === true);
   await clear();

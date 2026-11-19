@@ -42,6 +42,7 @@ middle file fails: the remaining files still run and the exit is non-zero.
 | `mark-home.test.mjs`, `extension-icons.test.mjs` | the mark's one home |
 | `sign-display-parity.test.mjs` | every request type the approval window paints, against the signed transaction; every decoded `cairnx:v1` record type from a third-party and the first-party origin; the raw card; signing from a site that never connected; a fill with an extra output on both lanes; the name record caution on a transfer or profile write, with the read held open; every name verdict recomputed when the signer shown changes |
 | `propose-prequeue.test.mjs` | one table of proposal and seal parameters through the pre-queue check and the signer, the same verdict and text on both |
+| `fill-refill-after-send.test.mjs` | a fill asked again after the first was sent, on the offer-id and reservation lanes (two coins), each limit of the rule, and what the page and the window are told |
 | `send-fill-prequeue.test.mjs` | the same for sends and fills, the output caps at their boundaries, and that the refusal reads nothing and is the same locked or unlocked |
 | `provider-discovery.test.mjs` | `cairn#initialized`, `csd:announceProvider` and its detail, the frozen provider and its members |
 
