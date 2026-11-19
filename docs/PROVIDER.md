@@ -47,9 +47,11 @@ The transaction methods (`propose`, `attest`, `send`, `fillOffer`, `sealClaim`) 
 approved and then the wallet refused before signing or the submit did not succeed. Check both levels.
 `SUBMIT_MAYBE_INFLIGHT` and `SUBMIT_DUPLICATE` carry the `txid` of a transaction that may be on the network.
 
-Amounts and fees are integer base units of CSD (100,000,000 to one CSD); `fee` is a number. The wallet picks the
-inputs from coins it verified against the chain and returns change to its own address; a site can name outputs, never
-inputs or a change address.
+Amounts and fees are integer base units of CSD (100,000,000 to one CSD); `fee` is a number. Every id, txid, hash and
+address is a string; a `score` or `confidence` is a number (a digit string reads the same) and never an object or a
+list. A request with an object or a list in one of those fields is answered `BAD_REQUEST` before any window opens. The
+wallet picks the inputs from coins it verified against the chain and returns change to its own address; a site can
+name outputs, never inputs or a change address.
 
 ## Methods
 
@@ -80,8 +82,10 @@ inputs or a change address.
   an all-zero payload hash (nested `SUBMIT_REJECTED`, nothing spent), rules csd-sdk does not carry and the wallet
   does not repeat.
 - `attest`: `proposalId` is `0x` and 64 hex digits; `score` and `confidence` are signed as u32 (`>>> 0`); `fee`
-  defaults to 5,000,000 (0.05 CSD). An attest never carries outputs. At confidence 1,000,000 it is signed as a
-  token-priced fill and runs the fill checks below.
+  defaults to 5,000,000 (0.05 CSD) and is an integer number above zero and at most 100 CSD. An attest with any other
+  proposalId or fee is answered `BAD_REQUEST` before any window opens, by the checks the signer applies (nested at the
+  signer: `BAD_REQUEST`, `BAD_FEE`, `FEE_TOO_LOW` or `FEE_CAP`). An attest never carries outputs. At confidence
+  1,000,000 it is signed as a token-priced fill and runs the fill checks below.
 - `send`: `to` is `0x` and 40 hex digits and not the zero address, and `amount` a positive safe integer (a number);
   or `outputs`, 1 to 500 objects `{ to, value }` with `to` and `value` as on a proposal. `fee` defaults to 1,000,000
   (0.01 CSD) and is an integer number above zero and at most 100 CSD. A send with any other parameter (a decimal
@@ -107,8 +111,8 @@ inputs or a change address.
   unpaired surrogate (default `csd:sealed`), `fee` as on a proposal (default 25,000,000). The wallet makes the salt and
   keeps it; the commit expires 720 epochs after the current one. Any other claim, domain or fee is answered
   `BAD_REQUEST` before any window opens.
-- `revealClaim`: the txid of a seal this account made in this wallet. No transaction; refused `SEAL_NOT_MINED`
-  until the commit is mined. A txid the active account holds no seal for opens the window like any reveal, from every
+- `revealClaim`: the txid of a seal this account made in this wallet, a string (an object or a list is answered
+  `BAD_REQUEST` before any window opens). No transaction; refused `SEAL_NOT_MINED` until the commit is mined. A txid the active account holds no seal for opens the window like any reveal, from every
   site, and approving it answers `SEAL_UNKNOWN` (nested); nothing a site gets before the window depends on which seals
   the wallet holds.
 - `signInWithCsd`: `nonce` (required, 8 or more ASCII letters and digits), `statement` (one line, at most 256

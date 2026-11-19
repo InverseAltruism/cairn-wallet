@@ -120,7 +120,29 @@
   show, Approve stays off, and Reject arms after the 700 ms floor, so the user can reject it and reach the requests
   behind it. Each 1.2 s poll still retries the paint, so a paint that fails once draws on the next tick as before
   (test/approve-guards-dom.test.mjs (5)); a retry that fails again leaves Reject live (test/approve-paint-throw-dom.test.mjs).
-  Before, the paint threw on every poll with both buttons off.
+  Before, the paint threw on every poll with both buttons off. The window keeps which request's "could not show" card
+  is on screen (`unpaintableShown`), not a mark on the request, so one that failed before and comes back to the head of
+  the queue after another request's paint (a reservation fill's confirm step puts the fill back in front of it) is
+  disabled and shown so again: with a mark on the request, the fill's card, "Sign anyway" and "Cancel" stayed on screen
+  for it with both buttons live, and only a check in `resolve` kept Approve from signing it
+  (test/approve-paint-throw-requeue-dom.test.mjs, which also pins that check).
+- An `attest` and a `revealClaim` the wallet would refuse on their parameters alone are answered `BAD_REQUEST` before
+  they are queued, like the other painted methods: an attest's proposalId that is not a txid or a fee outside the
+  bounds (`node.ts` `attestRefusal`, which `node.attest` runs), as a fill at the token-fill confidence, and a reveal
+  whose txid is not a string. Across the painted methods the engine reads an id or address only from a string, and the
+  readers in `signfields.ts` refuse a score, confidence or seal txid that is a JSON object or a list (`shape`) before
+  the queue and at the signer, instead of reading it as a number. Before, a page could queue an attest whose proposalId
+  or score was `{ "toString": 1 }` or a reveal of it, which the window could not draw; such a send `to`, propose
+  payloadHash or fill proposalId made the pre-queue check itself throw (`INTERNAL`); and a list holding one id or
+  address passed the checks through `String()`, then threw in the codec after approval or was signed as its one
+  element. No documented caller sends a list or object there (cairn-sdk types each field as a string or a number; the
+  site's 39 golden calls queue as before). A score or confidence sent as a digit string still signs as before. The
+  chain moved to `src/core/prequeue.ts` `prequeueRefusal`; `node.ts`'s range refusal is a fresh object per call. A
+  seeded fuzz of every allowlisted method (a grid of 18,839 shapes and 200,000 random ones) finds no request that
+  passes the checks and makes the window's paint throw, and the real window paints a sample of them, every documented
+  shape and every golden call (test/request-shape-fuzz.test.mjs, test/request-shape-prequeue.test.mjs).
+  test/resolve-allowlist-second-line.test.mjs starts each row from a fresh wallet restored from a phrase, so each row
+  turns red on its own effect.
 - The approval window says what more records do, in text only: no request that could be approved before is refused,
   Approve still arms at its 700 ms floor, and that wording added no read (3 fetches before the click and 3 after it
   for a name transfer, and 4 and 3 for a profile write, as before it; the name check above then adds one read before

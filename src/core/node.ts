@@ -657,6 +657,10 @@ async function assembleValueTx(
 // parse, so the window and the signed tx read one value (test/output-value-parse.test.mjs). An element that is not an
 // object is refused like any other bad output, so a page's `[null]` gets BAD_OUTPUTS here and BAD_REQUEST before the
 // queue, never a throw (test/send-fill-prequeue.test.mjs).
+// An id or an address is read only from a string: String() reads a JSON list as its elements' text and throws on an
+// object whose `toString` is not a function (signfields.ts `shape` guards a score or confidence the same way).
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/, TXID_RE = /^0x[0-9a-fA-F]{64}$/;
+const isText = (v: unknown, re: RegExp): v is string => typeof v === "string" && re.test(v);
 type ParsedOutputs = { sumOut: number; outputs: { value: number; scriptPubkey: string }[] };
 function validateOutputs(outs: readonly unknown[], opts: { max: number; minOne: boolean }): SubmitResult | ParsedOutputs {
   if (opts.minOne && outs.length < 1) return { ok: false, error: "at least one output is required", sighashMatch: false, code: "BAD_OUTPUTS" };
@@ -666,13 +670,13 @@ function validateOutputs(outs: readonly unknown[], opts: { max: number; minOne: 
   for (const el of outs) {
     if (!el || typeof el !== "object") return { ok: false, error: "each output must be an object { to, value }", sighashMatch: false, code: "BAD_OUTPUTS" };
     const o = el as { to?: unknown; value?: unknown };
-    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
+    if (!isText(o.to, ADDR_RE)) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
     const b = csdBase(o.value);
     const v = b !== null && b <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(b) : NaN;
     if (!(v > 0) || !Number.isSafeInteger(v)) return { ok: false, error: "each amount must be a positive safe integer", sighashMatch: false, code: "BAD_OUTPUTS" };
     sumOut += v;
     if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false, code: "BAD_OUTPUTS" };
-    outputs.push({ value: v, scriptPubkey: String(o.to) });
+    outputs.push({ value: v, scriptPubkey: o.to as string });
   }
   return { sumOut, outputs };
 }
@@ -714,32 +718,34 @@ function zeroAddrRefusal(outputs: { scriptPubkey: string }[]): Refusal | null {
 // the balance) stays in assembleValueTx, which repeats the fee bounds and the zero address for every value tx.
 type Checked = SubmitResult | ParsedOutputs;
 const asRefusal = (c: Checked): Refusal | null => ("sumOut" in c ? null : { code: String(c.code), error: String(c.error) });
-const SUM_RANGE: SubmitResult = { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
+const sumRange = (): SubmitResult => ({ ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" });
 const sumFits = (sumOut: number, fee: unknown): boolean => Number.isSafeInteger(fee) && (fee as number) >= 0 && Number.isSafeInteger(sumOut + (fee as number));
 function coinFree(fee: number, parsed: ParsedOutputs): Checked {
   const bad = feeBoundsRefusal(fee) ?? zeroAddrRefusal(parsed.outputs);
   return bad ? { ok: false, ...bad, sighashMatch: false } : parsed;
 }
 function sendChecks(p: { to: unknown; amount: unknown; fee: unknown }): Checked {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(String(p.to))) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
-  if (!((p.amount as number) > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false, code: "BAD_OUTPUTS" };
+  if (!isText(p.to, ADDR_RE)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
+  // `>` would coerce a JSON object, which throws when it carries a `toString` that is not a function
+  const amount = p.amount !== null && typeof p.amount === "object" ? Number.NaN : p.amount;
+  if (!((amount as number) > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false, code: "BAD_OUTPUTS" };
   // CSD amounts are integer base units carried as JS numbers. Above 2^53 a Number silently loses precision, so the
   // value signed could differ from the one meant: anything outside the exactly representable range is refused.
-  if (!Number.isSafeInteger(p.amount) || !sumFits(p.amount as number, p.fee)) return SUM_RANGE;
+  if (!Number.isSafeInteger(p.amount) || !sumFits(p.amount as number, p.fee)) return sumRange();
   return coinFree(p.fee as number, { sumOut: p.amount as number, outputs: [{ value: p.amount as number, scriptPubkey: p.to as string }] });
 }
 function sendManyChecks(p: { outputs: unknown; fee: unknown }): Checked {
   const chk = validateOutputs(Array.isArray(p.outputs) ? p.outputs : [], { max: 500, minOne: true });
   if (!("sumOut" in chk)) return chk;
-  return sumFits(chk.sumOut, p.fee) ? coinFree(p.fee as number, chk) : SUM_RANGE;
+  return sumFits(chk.sumOut, p.fee) ? coinFree(p.fee as number, chk) : sumRange();
 }
 function fillChecks(p: { proposalId: unknown; outputs: unknown; fee: unknown }): Checked {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
+  if (!isText(p.proposalId, TXID_RE)) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
   // outs MAY be empty: a token-priced fill pays in tokens (resolver-debited, marked by confidence 1e6) and carries no
   // CSD payment; the tx is attest + change only.
   const chk = validateOutputs(Array.isArray(p.outputs) ? p.outputs : [], { max: 100, minOne: false });
   if (!("sumOut" in chk)) return chk;
-  return sumFits(chk.sumOut, p.fee) ? coinFree(p.fee as number, chk) : SUM_RANGE;
+  return sumFits(chk.sumOut, p.fee) ? coinFree(p.fee as number, chk) : sumRange();
 }
 /** Why the engine refuses a page's send on its parameters alone, or null. `s` is signfields.ts sendFields: `outputs`
  *  (signed by sendMany) when the page passed an array, else the one output from `to` and `amount` (signed by send). */
@@ -768,7 +774,7 @@ export function proposeFeeRefusal(fee: unknown): Refusal | null {
  *  coins. The node's other Propose rules (an empty domain or uri, an all-zero payload hash) are not in csd-sdk, and the
  *  wallet does not re-declare consensus: the node refuses those at submit, with nothing spent. */
 export function proposeRefusal(p: { domain: unknown; payloadHash: unknown; uri: unknown; expiresEpoch: unknown; fee: unknown; outputs: { to: string; value: number }[] }): Refusal | null {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.payloadHash))) return { code: "BAD_REQUEST", error: "payloadHash must be a 0x… 32-byte hash" };
+  if (!isText(p.payloadHash, TXID_RE)) return { code: "BAD_REQUEST", error: "payloadHash must be a 0x… 32-byte hash" };
   if (!Number.isSafeInteger(p.expiresEpoch) || (p.expiresEpoch as number) < 0) return { code: "BAD_REQUEST", error: "expiresEpoch must be a non-negative safe integer" };
   const text = byteCapRefusal("domain", p.domain, MAX_DOMAIN_BYTES) ?? byteCapRefusal("uri", p.uri, MAX_URI_BYTES);
   if (text) return { code: "BAD_REQUEST", error: text };
@@ -783,14 +789,18 @@ export function propose(rpc: string, p: { domain: string; payloadHash: string; u
   if (bad) return Promise.resolve({ ok: false, error: bad.error, sighashMatch: false, code: bad.code });
   return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, outputs);
 }
-export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
-  // Validate the proposalId shape up front (parity with fillOffer) so a malformed dApp-supplied value fails
-  // closed instead of throwing a cryptic codec error inside bytesArr() (audit VAL-3). A proposalId is a txid.
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) {
-    return Promise.resolve({ ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" });
-  }
+/** Why the engine refuses an attest on its parameters alone, before it selects a coin, or null: the proposalId (a txid;
+ *  a malformed one would otherwise throw in the codec), then the coin-free fee checks buildSignSubmit and
+ *  assembleValueTx run. background.ts asks it before it queues a page's attest (test/request-shape-prequeue.test.mjs). */
+export function attestRefusal(p: { proposalId: unknown; fee: unknown }): Refusal | null {
+  if (!isText(p.proposalId, TXID_RE)) return { code: "BAD_REQUEST", error: "proposalId must be a 0x… 32-byte txid" };
+  return feeTypeRefusal(p.fee) ?? feeBoundsRefusal(p.fee as number);
+}
+export function attest(rpc: string, p: { proposalId: unknown; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
+  const bad = attestRefusal(p);
+  if (bad) return Promise.resolve({ ok: false, error: bad.error, sighashMatch: false, code: bad.code });
   // Clamp to u32 here (parity with fillOffer) so the signed bytes equal the displayed score/confidence.
-  return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, p.fee, priv);
+  return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId as string, score: p.score >>> 0, confidence: p.confidence >>> 0 }, p.fee, priv);
 }
 
 // Plain CSD transfer (app:None). Built + signed entirely client-side; sighash via

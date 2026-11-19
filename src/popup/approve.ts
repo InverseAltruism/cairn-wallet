@@ -45,10 +45,13 @@ let current: any = null;
 // `balShort`: the balance read showed the debit exceeds the spendable balance (a pending spend holds coins).
 // `unconfirmed`: the worker returned RESERVATION_UNCONFIRMED for this request; the window shows the confirm step.
 // `nameAck`: the name record's verdict is a caution to acknowledge (namegate.ts `ackable`); Approve reads "Sign anyway".
-// `unpaintable`: describe() threw for this request; it is shown as such, Approve stays off and Reject works.
-const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean; unconfirmed?: { fclaimTxid: string; fclaimHeight: number; tipHeight: number }; nameAck?: true; unpaintable?: true }>();
+const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean; unconfirmed?: { fclaimTxid: string; fclaimHeight: number; tipHeight: number }; nameAck?: true }>();
 const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
+// The request whose "could not show" card (render's catch) is the request view now, or null. It describes the screen,
+// not the request: another request's paint clears it, so a request that failed before and comes back to the head of
+// the queue is disabled and painted again like any other (test/approve-paint-throw-dom.test.mjs).
+let unpaintableShown: string | null = null;
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
 // Bumped on every paint. The unlock repaint keeps the same request id, so renderedId alone cannot tell
 // a superseded paint's in-flight quote or arm timer from the current paint's; those check this instead.
@@ -107,9 +110,9 @@ async function render() {
   // click landing during that await cannot resolve the new request against the still-visible OLD paint. Split
   // from armButtons deliberately: hoisting armButtons ENTIRE would start its 700ms re-enable timer DURING the
   // ~2.5s await, re-enabling the buttons well before the new request paints (relocating the very window this
-  // closes). The re-enable timer still fires only from the armButtons call AFTER the paint below. A request already
-  // on screen as unpaintable (the catch below) keeps Approve off and its Reject live while its paint is retried.
-  if (!rs(current.id).unpaintable) disableButtons();
+  // closes). The re-enable timer still fires only from the armButtons call AFTER the paint below. A request whose own
+  // "could not show" card is on screen (the catch below) keeps Approve off and its Reject live while its paint is retried.
+  if (unpaintableShown !== current.id) disableButtons();
   // CX-35: decimals for the token amounts this record clear-signs, fetched in parallel with the reads below.
   // Bounded and display only; a miss paints base units alone.
   const p0 = proposeFields(current.params);
@@ -168,7 +171,7 @@ async function render() {
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
     $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b title="${escapeHtml(acct.label)}">${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
     $("req").innerHTML = `${prior}${queued}<div class="req">${describe(current)}</div>${connectNote}`;
-    delete rs(current.id).unpaintable;   // a retry that paints is an ordinary paint: armButtons below arms Approve as usual
+    unpaintableShown = null;   // a retry that paints is an ordinary paint: armButtons below arms Approve as usual
     paintUnconfirmed(current.id);
     // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm
     // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which the line under the
@@ -190,11 +193,11 @@ async function render() {
     armNfinalizeGate(current, st);
   } catch (e) {
     renderedId = null;   // AW-1: a describe()/paint throw must NOT latch renderedId: the next tick retries the paint.
-    // Until a retry paints it, the request must not hold the window or hide the requests behind it: the first failure
-    // shows it as one the wallet could not show and arms Reject alone after the usual floor (armButtons keeps Approve
-    // off); a retry that fails again leaves that state as it is, Reject live, and does not restart the floor.
-    if (!rs(current.id).unpaintable) {
-      rs(current.id).unpaintable = true;
+    // Until a retry paints it, the request must not hold the window or hide the requests behind it: a failure shows it
+    // as one the wallet could not show and arms Reject alone after the usual floor (armButtons keeps Approve off); a
+    // retry that fails again while that card is on screen leaves it as it is, Reject live, and does not restart the floor.
+    if (unpaintableShown !== current.id) {
+      unpaintableShown = current.id;
       try { $("req").innerHTML = `${prior}${queued}<div class="req">${unpaintableBox()}</div>`; } catch { /* the request view itself failed: the buttons below still work */ }
       paintLabels(current.id);
       msg("");
@@ -317,7 +320,7 @@ function applyNfin(id: string, g: NameVerdict) {
   const btn = $("btn-approve") as HTMLButtonElement;
   // render() sets renderedId only to current.id (or null), so here current is the request `id`.
   if (g.block) btn.disabled = true;
-  else if (approveArmedGen === paintGen) btn.disabled = tokenNotReady(current) || !!rs(id).balShort || !!rs(id).unpaintable;
+  else if (approveArmedGen === paintGen) btn.disabled = tokenNotReady(current) || !!rs(id).balShort;
 }
 // Called on every poll tick for the request at the head of the queue. Reads the tip at most once per
 // NFIN_REFRESH_MS and refetches the reservation only when the tip moved (resolver state changes per block).
@@ -614,7 +617,7 @@ function armButtons() {
   Promise.all([base, Promise.resolve(tokenPainted).catch(() => { /* a failed preview is not "ready", so tokenNotReady keeps Approve disabled; Reject re-enables */ })]).then(() => {
     if (seq !== armSeq || current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the latest arm re-enables
     approveArmedGen = armedGen;
-    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort || !!rs(armedId!).unpaintable; ($("btn-reject") as HTMLButtonElement).disabled = false;
+    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort || unpaintableShown === armedId; ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
 }
 async function resolve(approve: boolean) {
@@ -631,7 +634,7 @@ async function resolve(approve: boolean) {
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
   if (approve && tokenNotReady(current)) { msg("The token amount is not shown yet. Wait for it or reject.", "err"); return; }
   if (approve && rs(id).balShort) { msg("Your spendable balance does not cover this request. Reject it and retry once your pending transaction is mined.", "err"); return; }
-  if (approve && rs(id).unpaintable) return;
+  if (approve && unpaintableShown === id) return;
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip, plus one
   // 2.5s tip read when the verdict is older than NFIN_CLICK_MAX_AGE_MS), then acts on the latest one recorded.
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only

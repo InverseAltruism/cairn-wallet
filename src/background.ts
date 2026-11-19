@@ -6,10 +6,9 @@ import { Wallet, AUTO_LOCK_MS } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
 import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
-import { fillTargetOf, fillRefusal } from "./core/fillpreflight.js";
-import { siwcParamsRefusal } from "./core/siwcparams.js";
-import { sendFields, revealFields, proposeFields, sealFields, fillFields } from "./core/signfields.js";
-import { proposeRefusal, proposeFeeRefusal, sendRefusal } from "./core/node.js";
+import { fillTargetOf } from "./core/fillpreflight.js";
+import { prequeueRefusal } from "./core/prequeue.js";
+import { sendFields, revealFields } from "./core/signfields.js";
 import { opaqueOrigin } from "./core/origin.js";
 
 const chrome: any = (globalThis as any).chrome;
@@ -493,20 +492,11 @@ const fillHolds = new Map<string, string>(); // fill target -> id of the request
 const REFUSED_RAISE_GAP_MS = 5_000;
 let refusedRaiseAt = Number.NEGATIVE_INFINITY;
 const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in your wallet, waiting for your answer or being sent. Answer that one in the wallet's approval window, or let it finish, instead of sending another: a second payment for the same offer could lose some or all of what it pays. Nothing was signed.";
-// A seal signs a proposal of its own domain with the page's fee (wallet.sealClaim): its sealFields refusal, then the fee's.
-const sealRefusal = (params: unknown): string | undefined => { const sf = sealFields(params); return sf.refused ?? proposeFeeRefusal(sf.fee)?.error; };
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
-  // A sign-in, proposal, seal, send or fill the wallet would refuse after the user approved it is refused now, before
-  // anyone is asked, by the function the signer refuses it with. Each is a function of the request's parameters alone
-  // (and, for a sign-in, the origin): no read, no wait and no wallet state, so the answer tells a page nothing about the
-  // wallet. What needs coins or reads (the proportional fee cap, the balance, the fill preflight) stays at signing.
-  const bad = method === "signinWithCsd" ? siwcParamsRefusal(params, origin)
-    : method === "propose" ? proposeRefusal(proposeFields(params))?.error
-    : method === "sealClaim" ? sealRefusal(params)
-    : method === "send" ? sendRefusal(sendFields(params))?.error
-    : method === "fillOffer" ? fillRefusal(fillFields(params))?.error
-    : undefined;
+  // A request the wallet would refuse after the user approved it is refused now, before anyone is asked, by the
+  // function the signer refuses it with (core/prequeue.ts).
+  const bad = prequeueRefusal(method, params, origin);
   if (bad) return Promise.resolve({ ok: false, code: "BAD_REQUEST", error: bad });
   const fillTarget = fillTargetOf(method, params);
   const holder = fillTarget ? fillHolds.get(fillTarget) : undefined;

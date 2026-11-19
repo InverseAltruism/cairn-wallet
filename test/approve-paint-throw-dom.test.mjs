@@ -9,7 +9,7 @@
 //      does nothing.
 //   3. Reject answers it USER_REJECTED, and the honest request behind it is painted and arms as any request does.
 //   RED-FIRST: on d562218 the head request never paints, both buttons stay off, a click on Reject does nothing and the
-//   honest request is never shown (the audit's zz-audit-paint-throw-dom). Let armButtons ignore `unpaintable` and 1
+//   honest request is never shown (the audit's zz-audit-paint-throw-dom). Let armButtons ignore `unpaintableShown` and 1
 //   and 2 fail on Approve; disable both buttons on every retry and 1 fails on Reject.
 // Run: npx tsx test/approve-paint-throw-dom.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";

@@ -227,14 +227,22 @@ outputs the signer refuses (the zero address included), a seal claim or domain o
 are checked by the checks their signer runs before it selects a coin (`node.ts` `sendRefusal`, `fillpreflight.ts`
 `fillRefusal`): an output that is not an object, more outputs than the signer takes (500 on a send, 100 on a fill), an
 address or amount it refuses (a decimal-string `amount` included), the zero address, a fee that is not an integer
-number above zero and at most 100 CSD, a fill target that is not a txid. Such a request is answered `BAD_REQUEST`
-before it is queued and uses no queue slot; none of the site's golden requests is refused
-(test/propose-prequeue.test.mjs, test/send-fill-prequeue.test.mjs, test/golden-requests-cards.test.mjs). Each of these
-checks is a function of the request's parameters: it reads nothing and waits for nothing, so the answer is the same
-whatever the wallet holds and whether it is locked. Before, a page could queue a send or fill whose outputs held
-`null`: the approval window could not draw it, kept both buttons off and hid every request behind it. A request the
-window still fails to draw is shown as one it could not show, with Approve off and Reject live after the 700 ms floor
-(test/approve-paint-throw-dom.test.mjs). Two kinds of refusal stay after approval:
+number above zero and at most 100 CSD, a fill target that is not a txid. An attest is checked by the same engine checks
+(`node.ts` `attestRefusal`: a proposalId that is not a txid, a fee outside those bounds), or as a fill at the token-fill
+confidence, and a reveal's txid must be a string. Across these methods an id or address must be a string and a score
+or confidence must not be an object or a list (`signfields.ts`): JSON objects and lists made `String()` and
+`Number()` throw or read a list as its one element, in the window and in the codec. Such a request is answered
+`BAD_REQUEST` before it is queued and uses no queue slot; none of the site's golden requests and no shape
+docs/PROVIDER.md documents is refused (test/propose-prequeue.test.mjs, test/send-fill-prequeue.test.mjs,
+test/request-shape-prequeue.test.mjs, test/golden-requests-cards.test.mjs). Each of these checks is a function of the
+request's parameters (`prequeue.ts`): it reads nothing and waits for nothing, so the answer is the same whatever the
+wallet holds and whether it is locked. Before, a page could queue a request the approval window could not draw (a
+send or fill whose outputs held `null`, an attest or reveal whose id was an object), which kept both buttons off and
+hid every request behind it; a seeded fuzz now finds no request that passes these checks and fails to draw
+(test/request-shape-fuzz.test.mjs). A request the window still fails to draw is shown as one it could not show, with
+Approve off and Reject live after the 700 ms floor, also when it comes back to the head of the queue after another
+request's paint (test/approve-paint-throw-dom.test.mjs, test/approve-paint-throw-requeue-dom.test.mjs). Two kinds of
+refusal stay after approval:
 the 10% fee cap and the balance need the coins the wallet selects, and the node's own rules that csd-sdk does not
 carry (an empty domain or URI, an all-zero payload hash) are refused by the node at submit with nothing spent,
 because the wallet does not re-declare consensus. A `revealClaim` for a txid the active account holds no seal for

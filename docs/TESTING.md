@@ -44,6 +44,8 @@ middle file fails: the remaining files still run and the exit is non-zero.
 | `propose-prequeue.test.mjs` | one table of proposal and seal parameters through the pre-queue check and the signer, the same verdict and text on both |
 | `fill-refill-after-send.test.mjs` | a fill asked again after the first was sent, on the offer-id and reservation lanes (two coins), each limit of the rule, and what the page and the window are told |
 | `send-fill-prequeue.test.mjs` | the same for sends and fills, the output caps at their boundaries, and that the refusal reads nothing and is the same locked or unlocked |
+| `request-shape-prequeue.test.mjs` | attests, reveals and ids, addresses and scores of the wrong JSON type through the pre-queue check and the signer, and every documented shape queues |
+| `request-shape-fuzz.test.mjs` | a grid and a seeded, time-bounded fuzz of every allowlisted method: no request that passes the pre-queue check makes the window's paint throw, in the pure formatters and the real window |
 | `provider-discovery.test.mjs` | `cairn#initialized`, `csd:announceProvider` and its detail, the frozen provider and its members |
 
 Also: `poc-signin-oracle.ts`, `multiwallet.ts`, `bruteforce.test.mjs`, `csdtx-boundary.test.mjs`, `clearsign.ts`,

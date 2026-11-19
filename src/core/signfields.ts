@@ -10,29 +10,45 @@ type Out = { to: string; value: number };
 type Params = Record<string, any>;
 const paramsOf = (p: unknown): Params => (p && typeof p === "object" ? (p as Params) : {});
 
+// A page's params are JSON. Number() and String() throw on an object whose `toString` is not a function, and read a
+// list as its elements' text, so a score, confidence or seal txid is read only from a scalar (null, a string, a number
+// or a boolean). A reader returns for any JSON value: one of those fields that is present and not a scalar is named in
+// `shape`, which background.ts refuses before the queue and the signer refuses after it, never read as a number. An id,
+// address, amount or fee of the wrong type is refused by the engine's own checks (node.ts). The approval window paints
+// every request that passes those checks (test/request-shape-fuzz.test.mjs).
+const scalar = (v: unknown): boolean => v === null || typeof v !== "object";
+const num = (v: unknown): number => (scalar(v) ? Number(v) : Number.NaN);
+/** The first named field that is present and not a scalar, as the refusal text, or undefined. */
+function shapeOf(fields: Record<string, unknown>): string | undefined {
+  for (const [k, v] of Object.entries(fields)) if (!scalar(v)) return `${k} must be a number, not an object or a list`;
+  return undefined;
+}
+
 /** An attest at the token-fill confidence is signed as a fill (fillFields), never as a plain attest. */
-const isTokenFillAttest = (confidence: unknown): boolean => (Number(confidence ?? 100) >>> 0) === CONF_TOKEN_FILL;
+const isTokenFillAttest = (confidence: unknown): boolean => (num(confidence ?? 100) >>> 0) === CONF_TOKEN_FILL;
 
 /** A fill (fillOffer, or an attest at the token-fill confidence). The signed score is SCORE_FILL; a present score that
  *  is not SCORE_FILL is refused (`refused`), never coerced, since the resolver ignores any other score after the payment. */
-export type FillFields = { proposalId: unknown; score: number; confidence: number; outputs: Out[]; fee: number; refused?: "score" };
+export type FillFields = { proposalId: unknown; score: number; confidence: number; outputs: Out[]; fee: number; refused?: "score"; shape?: string };
 export function fillFields(params: unknown): FillFields {
   const p = paramsOf(params);
-  const badScore = p.score != null && (Number(p.score) >>> 0) !== SCORE_FILL;
+  const shape = shapeOf({ score: p.score, confidence: p.confidence });
+  const badScore = p.score != null && (num(p.score) >>> 0) !== SCORE_FILL;
   return {
-    proposalId: p.proposalId, score: SCORE_FILL, confidence: Number(p.confidence ?? 100) >>> 0,
+    proposalId: p.proposalId, score: SCORE_FILL, confidence: num(p.confidence ?? 100) >>> 0,
     outputs: Array.isArray(p.outputs) ? p.outputs : [], fee: p.fee ?? defaultFeeFor("fillOffer"),
-    ...(badScore ? { refused: "score" as const } : {}),
+    ...(badScore ? { refused: "score" as const } : {}), ...(shape ? { shape } : {}),
   };
 }
 
 /** An attest: a token fill with no CSD outputs at the token-fill confidence, else a plain attest with its score and
  *  confidence clamped to u32 as they are serialized. */
-export type AttestFields = { route: "fill"; fill: FillFields } | { route: "attest"; proposalId: unknown; score: number; confidence: number; fee: number };
+export type AttestFields = { route: "fill"; fill: FillFields } | { route: "attest"; proposalId: unknown; score: number; confidence: number; fee: number; shape?: string };
 export function attestFields(params: unknown): AttestFields {
   const p = paramsOf(params);
   if (isTokenFillAttest(p.confidence)) return { route: "fill", fill: fillFields({ proposalId: p.proposalId, score: p.score, confidence: p.confidence, fee: p.fee, outputs: [] }) };
-  return { route: "attest", proposalId: p.proposalId, score: Number(p.score) >>> 0, confidence: Number(p.confidence) >>> 0, fee: p.fee ?? defaultFeeFor("attest") };
+  const shape = shapeOf({ score: p.score, confidence: p.confidence });
+  return { route: "attest", proposalId: p.proposalId, score: num(p.score) >>> 0, confidence: num(p.confidence) >>> 0, fee: p.fee ?? defaultFeeFor("attest"), ...(shape ? { shape } : {}) };
 }
 
 /** The fill a request signs: a fillOffer, or an attest the signer signs as a fill; null for any other request. */
@@ -60,7 +76,8 @@ export function sendFields(params: unknown): SendFields {
 }
 
 /** A reveal publishes the stored preimage of the seal `txid` (the request's params) and signs no transaction. */
-export const revealFields = (params: unknown): { txid: string } => ({ txid: String(params ?? "") });
+export const revealFields = (params: unknown): { txid: string; shape?: string } =>
+  scalar(params) ? { txid: String(params ?? "") } : { txid: "", shape: "the seal txid must be a string, not an object or a list" };
 
 /** Why a text field the chain caps in UTF-8 bytes is refused (not a string, an unpaired surrogate, which UTF-8 cannot
  *  carry and the consensus codec refuses, or longer than `max`), or undefined. */

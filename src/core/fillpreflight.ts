@@ -1,13 +1,13 @@
 // The fill preflight: what the wallet checks before it signs an offer fill (fillOffer, and an attest at the
 // token-fill confidence). It reads the offer and the chain through the wallet (FillPreflightIo) and returns a
 // refusal, or null to sign. Nothing here signs or records.
-import { fillTxRefusal, type SubmitResult } from "./node.js";
+import { attestRefusal, fillTxRefusal, type SubmitResult } from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms, OfferProgress } from "./fillspv.js";
 import { refuse } from "./refuse.js";
-import { fillOf } from "./signfields.js";
+import { fillOf, type AttestFields } from "./signfields.js";
 import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { CLARVIS_TRADE_API } from "./endpoints.js";
 import { OWN_FILL_INDEX_WAIT_MS } from "./history.js";
@@ -76,6 +76,7 @@ const SECOND_SOURCE_TIMEOUT_MS = 12000;
 export type FillRefusal = SubmitResult & { unconfirmed?: ReservationUnconfirmed };
 // The shape of a fill target (an offer id or a reservation txid); the preflight refuses anything else before any read.
 const FILL_TARGET_RE = /^0x[0-9a-fA-F]{64}$/;
+const isTarget = (v: unknown): v is string => typeof v === "string" && FILL_TARGET_RE.test(v);
 const badTarget = (): FillRefusal => ({ ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" });
 // The preflight sums a fill's outputs in bigint and takes each value only as a positive safe integer number; a
 // decimal-digit string, which the engine would parse, is refused here first.
@@ -83,21 +84,28 @@ function outputValueRefusal(outputs: readonly unknown[]): FillRefusal | null {
   const bad = outputs.some((o) => { const v = (o as { value?: unknown } | null)?.value; return typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0; });
   return bad ? { ok: false, error: "each output value must be a positive integer amount in base units: refusing to sign", sighashMatch: false, code: "BAD_OUTPUTS" } : null;
 }
-/** Why the signer refuses a page's fill on its parameters alone (`f` is signfields.ts fillFields), or null: the
- *  preflight's checks that read nothing, then the engine's (node.ts fillTxRefusal). background.ts asks it before it
- *  queues a fillOffer, so the window does not open for a fill the signer refuses on its parameters alone
- *  (test/send-fill-prequeue.test.mjs). */
-export function fillRefusal(f: { proposalId: unknown; outputs: readonly unknown[]; fee: unknown }): { code: string; error: string } | null {
-  const pre = !FILL_TARGET_RE.test(String(f.proposalId)) ? badTarget() : outputValueRefusal(f.outputs);
+/** Why the signer refuses a page's fill on its parameters alone (`f` is signfields.ts fillFields), or null: a score or
+ *  confidence that is not a scalar (wallet.ts fillOffer), the preflight's checks that read nothing, then the engine's
+ *  (node.ts fillTxRefusal). background.ts asks it before it queues a fillOffer or an attest signed as a fill, so the
+ *  window does not open for a fill the signer refuses on its parameters alone (test/send-fill-prequeue.test.mjs). */
+export function fillRefusal(f: { proposalId: unknown; outputs: readonly unknown[]; fee: unknown; shape?: string }): { code: string; error: string } | null {
+  if (f.shape) return { code: "BAD_REQUEST", error: f.shape };
+  const pre = !isTarget(f.proposalId) ? badTarget() : outputValueRefusal(f.outputs);
   return pre ? { code: String(pre.code), error: String(pre.error) } : fillTxRefusal(f);
+}
+/** Why the signer refuses a page's attest on its parameters alone, or null: as a fill (fillRefusal) at the token-fill
+ *  confidence, else a score or confidence that is not a scalar (wallet.ts attest), then the engine's checks
+ *  (node.ts attestRefusal). background.ts asks it before it queues an attest. */
+export function attestRequestRefusal(a: AttestFields): { code: string; error: string } | null {
+  if (a.route === "fill") return fillRefusal(a.fill);
+  return a.shape ? { code: "BAD_REQUEST", error: a.shape } : attestRefusal(a);
 }
 /** The target a dApp request would fill, lowercased as the preflight compares it, or null when the request is not a
  *  fill or names a malformed target (which the preflight refuses with BAD_REQUEST before any read). */
 export function fillTargetOf(method: string, params: unknown): string | null {
   const f = fillOf(method, params);
   if (!f) return null;
-  const id = String(f.proposalId);
-  return FILL_TARGET_RE.test(id) ? id.toLowerCase() : null;
+  return isTarget(f.proposalId) ? f.proposalId.toLowerCase() : null;
 }
 
 // Set by a passing fclaim-lane preflight when clarvis's record read had not answered (or failed) at its verdict; a
@@ -149,7 +157,7 @@ export type TokenFillQuote = {
 // `reservationAck` is the fclaim txid the user confirmed in the approval window after an "unknown" reservation
 // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
 export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
-  if (!FILL_TARGET_RE.test(String(proposalId))) return badTarget();
+  if (!isTarget(proposalId)) return badTarget();
   let offer: OfferState | null = null;
   let fetchFailed = false;
   try {

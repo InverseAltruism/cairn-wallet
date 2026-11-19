@@ -625,12 +625,13 @@ export class Wallet {
     // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
     const a = attestFields(p);
+    if (a.route === "attest" && a.shape) return refuse("BAD_REQUEST", a.shape);
     if (a.route === "fill")
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
     // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
     // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
-    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId: String(a.proposalId), score: a.score, confidence: a.confidence, fee: a.fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: a.fee }); return r;
+    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId: a.proposalId, score: a.score, confidence: a.confidence, fee: a.fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: a.fee }); return r;
   }
   // Offer fill (Attest + payment in ONE tx; CairnX applies the delivery). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
@@ -652,6 +653,7 @@ export class Wallet {
     // 0.2.64 accepted, since this guard has never shipped) was refused for no reason. Absent means
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
     const f = fillFields(p);
+    if (f.shape) return refuse("BAD_REQUEST", f.shape);
     if (f.refused === "score") return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
     const q = { proposalId: p.proposalId, score: f.score, confidence: f.confidence, outputs: f.outputs, fee: f.fee };
     const notes: FillNotes = {};

@@ -16,6 +16,7 @@
 //   4. A refused request opens no window and takes no queue slot; honest sends approved through the real resolvePending
 //      sign, and every one of the site's golden fill calls still queues (test/golden-requests-cards.test.mjs, unchanged).
 //   5. Every honest row signs the bytes it signed at d562218.
+//   6. A refusal the engine returns is a fresh object per call, so a caller that edits one cannot change the next.
 //   RED-FIRST: on d562218 every bad send and fill row of section 1 queues and opens the window, `[null]` queues for both
 //   methods, the decimal-string `amount` queues and is refused only at signing (BAD_FEE), and section 2 reads INTERNAL.
 //   Drop the send branch from queueDappRequest and every bad send row fails; give fillTxRefusal its own cap of 101 and
@@ -216,5 +217,20 @@ for (const [label, method, params, want, via] of TABLE) {
 {
   const digest = createHash("sha256").update(JSON.stringify(signed)).digest("hex");
   check(`5. the ${signed.length} honest transactions are byte-identical to d562218's (sha256 ${digest})`, signed.length === 14 && digest === "82fd6cc74f10c1be878a9b783de92f853de1cd6a3fd9d69c2e6500409888aa6d");
+}
+
+// 6. Each answer is its own object: a caller that changes one refusal does not change the next (the range refusal was
+// one shared object that send, sendMany and fillOffer returned as is).
+{
+  const over = [["send", () => node.send("https://rpc.test", { to: TO, amount: 2 ** 53, fee: 1e6 }, PRIV)],
+    ["sendMany", () => node.sendMany("https://rpc.test", { outputs: [{ to: TO, value: 2 ** 53 - 1 }], fee: 1e6 }, PRIV)],
+    ["fillOffer", () => node.fillOffer("https://rpc.test", { proposalId: ID, score: 100, confidence: 100, outputs: [{ to: TO, value: 2 ** 53 - 1 }], fee: 1e6 }, PRIV)]];
+  for (const [name, call] of over) {
+    const a = await call();
+    const text = a.error;
+    a.error = "changed by a caller";
+    const b = await call();
+    check(`6. ${name}: the range refusal (${b.code}) is a fresh object each time (${b.error})`, a.code === "BAD_FEE" && b.code === "BAD_FEE" && b.error === text && a !== b);
+  }
 }
 done("send-fill-prequeue");
