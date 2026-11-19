@@ -27,7 +27,9 @@
 //      stays one and maybe until a definitive answer. A fill the node accepted allows nothing: refused at once.
 //   6. The window counts from the last send of the transaction: a lost submit retried at minute 29 (accepted, lost
 //      again, or answered SUBMIT_DUPLICATE) still refuses another fill at minute 31 and lets one sign past the wait
-//      after the retry; a fill with no retry counts from its ts; the history row keeps its ts and place.
+//      after the retry; so does a retry whose history write failed (its parked row is read folded into the stored one)
+//      and a re-send of an accepted fill answered SUBMIT_DUPLICATE; a fill with no retry counts from its ts; the
+//      history row keeps its ts and place.
 //   RED-FIRST: on d562218 the second fill signs in 1 and 2 (two submits each, two distinct transactions in 2), and 4
 //   reads ok with a second txid. Make repeatedFillRefusal answer null and 1, 2 and 4 fail; keep the history check for
 //   partial offers only (the old rule) and 1 fails; drop the fclaim lane's call and 2 and 4 fail; treat every recent
@@ -211,8 +213,8 @@ function fclaimStub(world, coins, opts) {
     return null;
   }, opts);
 }
-async function fclaimWallet(pw) {
-  const w = new Wallet(memoryStore());
+async function fclaimWallet(pw, store = memoryStore()) {
+  const w = new Wallet(store);
   const { addr } = await w.importKey(PRIV, pw);
   return { w, me: String(addr).toLowerCase() };
 }
@@ -355,8 +357,8 @@ for (const lane of ["offerId", "fclaim"]) {
 // `rows` are the account's fill rows of the target; `maybe` the rows still marked as possibly in flight.
 const fillRows = async (w, target) => (await w.history()).filter((e) => e.type === "fillOffer" && String(e.target).toLowerCase() === String(target).toLowerCase());
 const rowsText = (rows) => JSON.stringify(rows.map((e) => ({ txid: String(e.txid).slice(0, 10), maybe: !!e.maybe })));
-async function fclaimRetry(pw, base, opts) {
-  const { w, me } = await fclaimWallet(pw);
+async function fclaimRetry(pw, base, opts, store) {
+  const { w, me } = await fclaimWallet(pw, store);
   const world = fclaimWorld(me, base, false);
   w.fillSpvIoForTest = () => world.io();
   const st = fclaimStub(world, [mkCoin(2_000e8, 0), mkCoin(2_000e8, 1)], opts);
@@ -482,6 +484,53 @@ for (const [base, label, opts, retryCode] of [
     check(`6. ${label}: at minute ${29 + WAIT_MIN + 1}, past the wait after the retry with the row still unseen (${rowsText(still)}), another fill signs (${r4?.ok}${r4?.error ? `: ${r4.code} ${r4.error}` : ""}, ${R.st.submits.length} submits)`,
       r4?.ok === true && R.st.submits.length === 3);
   }
+}
+{
+  // The retry is accepted at minute 29 and its history write fails once: the row is parked in memory while the stored
+  // row keeps its minute-0 time and its maybe mark. history() reads the stored row with its parked twin folded in, as
+  // the drain will write it, so at minute 31 another fill is refused.
+  // RED-FIRST: with historyOf hiding a parked twin behind its stored row, the minute-31 fill signs (3 submits).
+  const base = memoryStore();
+  let failHist = 0;
+  const store = { ...base, async set(k, v) { if (failHist > 0 && String(k).startsWith("txHistory:")) { failHist--; throw new Error("storage write failed"); } return base.set(k, v); } };
+  const R = await fclaimRetry("pw-refill-window-parked", 10200, { mode: (n) => (n === 1 ? "lost" : "ok") }, store);
+  const t0 = realNow();
+  const r1 = await atMinutes(t0, 0, () => R.ask());
+  failHist = 1;
+  const r2 = await atMinutes(t0, 29, () => R.ask());
+  const k = histKey(R.w.addr());
+  const stored = (await store.get(k)).filter((e) => e.type === "fillOffer");
+  const parked = R.w.hist.pendingHist.filter((p) => p.k === k);
+  const read = await fillRows(R.w, R.world.fc.id);
+  check(`6. a retry whose history write failed: accepted at minute 29 (${r2?.ok}, same txid ${r2?.txid === r1?.txid}), parked (${parked.length}) while the stored row keeps minute 0 and its maybe mark (${stored[0]?.ts === t0}, ${stored[0]?.maybe})`,
+    r1?.code === "SUBMIT_MAYBE_INFLIGHT" && r2?.ok === true && r2?.txid === r1?.txid && failHist === 0 && parked.length === 1 && stored.length === 1 && stored[0].ts === t0 && stored[0].maybe === true && stored[0].resent === undefined);
+  check(`6. ...history() reads one row with the parked send time and the definitive answer (${read.length}, resent ${read[0]?.resent === t0 + 29 * MIN}, maybe ${!!read[0]?.maybe}), the stored row unchanged`,
+    read.length === 1 && read[0].ts === t0 && read[0].resent === t0 + 29 * MIN && !read[0].maybe && (await store.get(k)).find((e) => e.txid === r1?.txid)?.resent === undefined);
+  const r3 = await atMinutes(t0, 31, () => R.ask(sixFee));
+  check(`6. ...at minute 31 another fill of the target is refused (${r3?.ok ? "signed" : r3?.code}), nothing more sent (${R.st.submits.length} submits)`,
+    r3?.ok === false && r3?.code === "VERIFY_UNAVAILABLE" && R.st.submits.length === 2);
+  // The read is what the drain writes: after the next history write the stored row equals the row read before it.
+  await atMinutes(t0, 32, () => R.w.hist.maybeRecord(k, { ok: true, txid: "0x" + "e9".repeat(32) }, { type: "send" }));
+  await R.w.hist.histChain;
+  const drained = (await store.get(k)).find((e) => e.txid === r1?.txid);
+  check(`6. ...after the drain the stored row is the row history() read (resent ${drained?.resent === read[0].resent}, maybe ${!!drained?.maybe}, ts ${drained?.ts === t0}, ${R.w.hist.pendingHist.length} parked)`,
+    drained?.resent === read[0].resent && !drained?.maybe && drained?.ts === t0 && R.w.hist.pendingHist.length === 0);
+}
+{
+  // A fill the node accepted, sent again at minute 31 (the same transaction: the coin index still serves its coin) and
+  // answered SUBMIT_DUPLICATE: a transaction spending those coins is pending now, so the row's time moves to minute 31
+  // although it carried no maybe mark, and another payment at minute 32 is refused.
+  // RED-FIRST: with clearMaybe matching only rows marked maybe, the minute-32 fill signs (3 submits).
+  const R = await fclaimRetry("pw-refill-window-dup-accepted", 10300, { stale: true });
+  const t0 = realNow();
+  const r1 = await atMinutes(t0, 0, () => R.ask());
+  const r2 = await atMinutes(t0, 31, () => R.ask());
+  const rows = await fillRows(R.w, R.world.fc.id);
+  check(`6. an accepted fill sent again at minute 31: answered ${r2?.code} (same txid ${r2?.txid === r1?.txid}), one row with resent at minute 31 (${rows.length}, ${rows[0]?.resent === t0 + 31 * MIN})`,
+    r1?.ok === true && r2?.ok === false && r2?.code === "SUBMIT_DUPLICATE" && r2?.txid === r1?.txid && rows.length === 1 && rows[0].ts === t0 && rows[0].resent === t0 + 31 * MIN);
+  const r3 = await atMinutes(t0, 32, () => R.ask(sixFee));
+  check(`6. ...at minute 32 another fill of the target is refused (${r3?.ok ? "signed" : r3?.code}), nothing more sent (${R.st.submits.length} submits)`,
+    r3?.ok === false && r3?.code === "VERIFY_UNAVAILABLE" && R.st.submits.length === 2);
 }
 {
   // A first fill with no retry: the window counts from its ts, as before.

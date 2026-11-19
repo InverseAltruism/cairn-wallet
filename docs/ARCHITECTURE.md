@@ -253,9 +253,10 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   verdict is keyed by the request and the signer the paint shows (`armNfinalizeGate`); a repaint for another signer
   recomputes it from the record already read, chained on that one read, so a verdict for the signer shown before
   always lands first. A click (`resolve`) is bound to the paint generation and the signer it was made on and is
-  abandoned, signing nothing, when either has changed after one of its awaits. A request whose paint throws is shown
-  as one the wallet could not show: Approve stays off and Reject arms after the 700 ms floor, so it cannot hold the
-  window or hide the requests behind it (test/approve-paint-throw-dom.test.mjs). `unpaintableShown` names the request
+  abandoned, signing nothing, when either has changed after one of its awaits. A request whose paint throws, or whose
+  reads before the paint throw (caught and rethrown inside the paint's `try`), is shown as one the wallet could not
+  show: Approve stays off and Reject arms after the 700 ms floor, so it cannot hold the window or hide the requests
+  behind it (test/approve-paint-throw-dom.test.mjs, test/approve-paint-throw-preread-dom.test.mjs). `unpaintableShown` names the request
   whose card that is: another request's paint clears it, so one that failed before and comes back to the head of the
   queue is disabled and shown so again, never under the other request's card and buttons
   (test/approve-paint-throw-requeue-dom.test.mjs).

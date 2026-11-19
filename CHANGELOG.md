@@ -113,10 +113,18 @@
   another lost answer, or `SUBMIT_DUPLICATE`) on its row as `resent`, keeping the row's `ts`, place and confirmed
   latch, and `recentFillsOf` reads the later of the two. Counted from the first record, a lost submit retried and
   accepted at minute 29 left the window at minute 30, and another payment for the target was signed while the retry
-  was one minute old (test/fill-refill-after-send.test.mjs section 6). Three tests that signed one reservation
+  was one minute old (test/fill-refill-after-send.test.mjs section 6). A retry whose history write fails is parked in
+  memory, and `history()` reads a stored row with its parked twin folded in as the write will store it (the later send
+  time, and no maybe mark once a twin carries the node's acceptance), so it counts from that send as well; before, the
+  stored row hid its parked twin and another payment signed at minute 31. A re-send of a fill the node accepted,
+  answered `SUBMIT_DUPLICATE`, moves the time too. Two re-sends do not move it (SECURITY.md): one answered
+  `SUBMIT_DUPLICATE` while the wallet is locked, and one whose parked row is lost before it is written. Three tests
+  that signed one reservation
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
+- `test/run.mjs` refuses to run with fewer than 198 discovered test files (the floor was 142), so a dropped gate file
+  fails the runner.
 - Tests for six guards that held but that no test turned red when removed (found by the audit of 2026-11-19; no source
   change): the offer-id lane's terms bind, which is the only check of a served fee rate, give or value there
   (test/fill-offerid-terms-bind.test.mjs); `resolvePending`'s second allowlist line, driven by letting the first one
@@ -137,7 +145,11 @@
   the queue after another request's paint (a reservation fill's confirm step puts the fill back in front of it) is
   disabled and shown so again: with a mark on the request, the fill's card, "Sign anyway" and "Cancel" stayed on screen
   for it with both buttons live, and only a check in `resolve` kept Approve from signing it
-  (test/approve-paint-throw-requeue-dom.test.mjs, which also pins that check).
+  (test/approve-paint-throw-requeue-dom.test.mjs, which also pins that check). A throw in the reads the window makes
+  before it paints (a request field read as text, a read's answer) is caught and rethrown inside the paint's `try`, so
+  it lands in the same card: before, such a request left the card empty, both buttons off and Reject answering
+  nothing, and hid the requests behind it (test/approve-paint-throw-preread-dom.test.mjs). No request that passes the
+  pre-queue checks reaches it today; it is the window's second line.
 - An `attest` and a `revealClaim` the wallet would refuse on their parameters alone are answered `BAD_REQUEST` before
   they are queued, like the other painted methods: an attest's proposalId that is not a txid or a fee outside the
   bounds (`node.ts` `attestRefusal`, which `node.attest` runs), as a fill at the token-fill confidence, and a reveal
@@ -150,7 +162,8 @@
   element. No documented caller sends a list or object there (cairn-sdk types each field as a string or a number; the
   site's 39 golden calls queue as before). A score or confidence sent as a digit string still signs as before. The
   chain moved to `src/core/prequeue.ts` `prequeueRefusal`; `node.ts`'s range refusal is a fresh object per call. A
-  seeded fuzz of every allowlisted method (a grid of 18,839 shapes and 200,000 random ones) finds no request that
+  seeded fuzz of every allowlisted method (a grid of 20,506 shapes, among them 1,667 `cairnx:v1` records each committed
+  by its own payloadHash, 99 of which decode as records, and 200,000 random ones) finds no request that
   passes the checks and makes the window's paint throw, and the real window paints a sample of them, every documented
   shape and every golden call (test/request-shape-fuzz.test.mjs, test/request-shape-prequeue.test.mjs).
   test/resolve-allowlist-second-line.test.mjs starts each row from a fresh wallet restored from a phrase, so each row

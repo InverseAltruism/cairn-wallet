@@ -3,15 +3,17 @@
 // list (read as its elements' text). Every request that passes the checks background.ts runs before the queue
 // (src/core/prequeue.ts, the function it calls) is painted here without a throw, for every method on its allowlist.
 //   1. A grid: each method's honest params with each field, each output field, the params themselves and pairs of
-//      fields set to odd JSON values, plus cairnx:v1 records the window decodes.
+//      fields set to odd JSON values, plus cairnx:v1 records: shapes under a fixed payloadHash (the raw card) and, each
+//      committed by its own payloadHash so the window decodes what parseRecord admits, every record type's honest
+//      record with each field and each nested field set to an odd JSON value.
 //   2. Seeded random JSON shapes (mulberry32, seed below) for every method, bounded by a count and a time budget
 //      (CAIRN_FUZZ_MS, default 20000 ms; the count run is printed).
 //   For each shape that passes prequeueRefusal, describe, debitOf, requestRecipients, recipientFlags, signedFee and
 //   signedOutputs run with each set of fields the window adds to a request; none may throw, and prequeueRefusal
 //   itself may not throw on any shape.
 //   3. The real approval window (src/popup/approve.ts on helpers/approve-dom.mjs) paints a seeded sample of the
-//      passing shapes, every documented shape and every golden call, each as its own card, never the "could not show"
-//      card.
+//      passing shapes, a sample of the hash-committed records it decodes, every documented shape and every golden call,
+//      each as its own card, never the "could not show" card.
 //   4. Every shape docs/PROVIDER.md documents and every one of the site's golden calls passes prequeueRefusal
 //      (test/request-shape-prequeue.test.mjs and test/golden-requests-cards.test.mjs queue them through the real
 //      background).
@@ -29,6 +31,11 @@ import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush } from "./helpers/approve-dom.mjs";
 import { prequeueRefusal } from "../src/core/prequeue.ts";
 import { describe, debitOf, requestRecipients, recipientFlags, signedFee, signedOutputs } from "../src/popup/clearsign.ts";
+import { decodeCairnxRecord } from "../src/core/cairnx.ts";
+import {
+  canonicalJson, payloadHash, transfer, deploy, mint, offer, bid, offerCancelAll, nameCommitRecord, nameClaim, nameFinalize,
+  nameXfer, nameSet, nameRenew, nameProfile, tokenMeta, fclaim,
+} from "../src/vendor/cairnx-spv.js";
 
 const { check, done } = checker("every request that passes the checks before the queue paints:");
 const ORIGIN = "https://app.example";
@@ -38,6 +45,7 @@ const SEED = 0x5eed49;
 const BUDGET_MS = Number(process.env.CAIRN_FUZZ_MS || 20_000);
 const RANDOM_CASES = 200_000;
 const WINDOW_SAMPLE = 400;
+const RECORD_SAMPLE = 100;
 
 // The methods the background lets a page call, read from its allowlist so a new method cannot skip this file.
 const bgSrc = readFileSync(new URL("../src/background.ts", import.meta.url), "utf8");
@@ -120,6 +128,39 @@ for (const uri of ["{}", "null", "[]", '{"t":"nprofile","name":"a","p":null}', '
   '{"t":"deploy","ticker":null,"decimals":"x","supply":{}}', '{"t":"bid","want":null,"give":null}', '{"t":"ocancel"}', '{"t":"tmeta","ticker":1,"hash":2}',
   '{"t":"mint","ticker":[],"amount":{}}', '{"t":"offer","give":{"ticker":"TOKA","amount":{"toString":1}},"want":{"value":{"toString":1}}}'])
   attempt("propose", { ...BASE.propose, domain: "cairnx:v1", uri }, "cairnx uri");
+// Hash-committed cairnx:v1 records: canonical JSON under its own payloadHash, as parseRecord requires before it decodes.
+const SALT = "5a".repeat(16);
+const RECORDS = [
+  transfer({ ticker: "AAA", amount: "5", to: TO }), deploy({ ticker: "NEWT", decimals: 2, supply: "100000", mint: "issuer" }),
+  mint({ ticker: "AAA", amount: "10" }), offer({ give: { ticker: "AAA", amount: "10" }, want: { value: String(1e8) } }),
+  offer({ give: { ticker: "AAA", amount: "50" }, want: { value: String(1e8) }, min: "10000000", taker: TO, memo: "m" }),
+  offer({ give: { ticker: "AAA", amount: "10" }, want: { ticker: "PAY", amount: "7" } }),
+  bid({ want: { name: "alice" }, give: { value: String(1e8) } }), offerCancelAll({ ticker: "AAA" }), nameCommitRecord({ commit: HASH }),
+  nameClaim({ name: "alice", salt: SALT }), nameFinalize({ name: "alice", salt: SALT }), nameXfer({ name: "alice", to: TO }),
+  nameSet({ name: "alice", addr: TO }), nameRenew({ name: "alice" }), nameProfile({ name: "alice", p: { avatar: "https://b.example/y.png", "csd.rpc": "https://rpc.example" } }),
+  tokenMeta({ ticker: "AAA", hash: HASH }), fclaim({ offer: ID }),
+];
+let recTried = 0, recDecoded = 0;
+const decodedRecords = [];
+function committed(obj, how) {
+  let uri, hash;
+  try { uri = canonicalJson(obj); hash = payloadHash(obj); } catch { return; }
+  recTried++;
+  const params = { ...BASE.propose, domain: "cairnx:v1", uri, payloadHash: hash };
+  if (decodeCairnxRecord(uri, hash)) { recDecoded++; if (!prequeueRefusal("propose", json(params), ORIGIN)) decodedRecords.push(["propose", json(params)]); }
+  attempt("propose", params, how);
+}
+for (const rec of RECORDS) {
+  const obj = JSON.parse(rec.uri);
+  committed(obj, `cairnx ${obj.t}`);
+  for (const k of Object.keys(obj)) {
+    if (k === "v" || k === "t") continue;
+    for (const o of ODD) committed({ ...obj, [k]: o }, `cairnx ${obj.t}.${k}`);
+    const inner = obj[k];
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) for (const k2 of Object.keys(inner)) for (const o of ODD) committed({ ...obj, [k]: { ...inner, [k2]: o } }, `cairnx ${obj.t}.${k}.${k2}`);
+  }
+}
+check(`1. hash-committed cairnx records: ${recTried} built, ${recDecoded} decode as records (the rest are refused by parseRecord and paint as raw proposals), ${decodedRecords.length} decoded ones pass the checks`, RECORDS.every((r) => decodeCairnxRecord(r.uri, r.payloadHash)) && recDecoded >= RECORDS.length && decodedRecords.length >= RECORDS.length);
 const gridTried = tried, gridPassed = passed;
 check(`1. the grid: ${gridTried} shapes, ${gridPassed} pass the checks, prequeueRefusal never throws (${report(prequeueThrows) || "none"})`, prequeueThrows.size === 0);
 check(`1. no shape of the grid that passes the checks throws in the window's paint (${report(throws) || "none"})`, throws.size === 0);
@@ -187,6 +228,8 @@ check(`4. all ${GOLDEN.length} golden calls pass the checks (${goldenRefused.map
   const sample = [];
   const step = Math.max(1, Math.floor(passing.length / WINDOW_SAMPLE));
   for (let i = 0; i < passing.length && sample.length < WINDOW_SAMPLE; i += step) sample.push(passing[i]);
+  const recStep = Math.max(1, Math.floor(decodedRecords.length / RECORD_SAMPLE));
+  for (let i = 0; i < decodedRecords.length; i += recStep) sample.push(decodedRecords[i]);
   for (const [m, p] of DOCUMENTED) sample.push([m, json(p)]);
   for (const c of GOLDEN) sample.push([c.method, json(c.params)]);
   state.pending = [{ id: "w-first", method: "send", origin: ORIGIN, params: BASE.send }];

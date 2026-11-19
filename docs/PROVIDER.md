@@ -137,7 +137,8 @@ name outputs, never inputs or a change address.
   `BAD_REQUEST` before the window). A transaction spends at most 512 inputs (`TOO_MANY_INPUTS`).
 - Fees: above zero (`FEE_TOO_LOW`), at least 0.25 CSD on a proposal or a seal (`FEE_TOO_LOW`), at most 100 CSD, and
   at most the larger of 1 CSD and 10% of the verified inputs the wallet selects for that transaction (`FEE_CAP`). On a
-  proposal, a seal, a send or a fill every fee rule but the last is answered `BAD_REQUEST` before the window. A cap
+  proposal, a seal, a send, a fill or an attest every fee rule but the last is answered `BAD_REQUEST` before the
+  window. A cap
   refuses the request; the wallet does not lower the fee and retry. The approval window marks a fee above 5 CSD as
   unusually large.
 - Queue: at most 5 pending requests per site and 32 in all; a request past either is refused `RATE_LIMITED` before it

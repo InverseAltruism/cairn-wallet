@@ -205,7 +205,12 @@ account's history, sent in the last 30 minutes (counted from its last send, so a
 not marked gone, and not yet seen applied: listed by the offer service on the offer-id lane, proven by the block scan
 on the reservation lane. A retry after a submit whose answer was lost builds the same transaction from the same
 unspent coins and is signed and sent again, which cannot pay twice; a retry that would spend other coins is refused
-for up to those 30 minutes; a token-priced fill has no such check; docs/DESIGN-fill-lanes.md).
+for up to those 30 minutes; a token-priced fill has no such check; docs/DESIGN-fill-lanes.md). The 30 minutes count
+from the wallet's last recorded send of that transaction, and two re-sends do not move them: one answered
+`SUBMIT_DUPLICATE` while the wallet is locked, since the stored history row is not written while locked; and one whose
+history row was parked (recorded while locked, or after a failed storage write) and lost before it was written, since
+parked rows live in memory only and a service-worker teardown drops them. In both cases the stored row keeps its
+earlier time, and the refusal can end while the re-sent transaction is still unconfirmed.
 
 **Per-origin consent (connected sites).** `connect`/`getAddress` grant *address visibility*:
 the first time an origin connects the user approves it, and the origin is recorded as a
@@ -241,13 +246,16 @@ request's parameters (`prequeue.ts`): it reads nothing and waits for nothing, so
 wallet holds and whether it is locked. Before, a page could queue a request the approval window could not draw (a
 send or fill whose outputs held `null`, an attest or reveal whose id was an object), which kept both buttons off and
 hid every request behind it; a seeded fuzz now finds no request that passes these checks and fails to draw
-(test/request-shape-fuzz.test.mjs). A request the window still fails to draw is shown as one it could not show, with
-Approve off and Reject live after the 700 ms floor, also when it comes back to the head of the queue after another
-request's paint (test/approve-paint-throw-dom.test.mjs, test/approve-paint-throw-requeue-dom.test.mjs). Two kinds of
-refusal stay after approval:
-the 10% fee cap and the balance need the coins the wallet selects, and the node's own rules that csd-sdk does not
-carry (an empty domain or URI, an all-zero payload hash) are refused by the node at submit with nothing spent,
-because the wallet does not re-declare consensus. A `revealClaim` for a txid the active account holds no seal for
+(test/request-shape-fuzz.test.mjs). A request the window still fails to draw, in its paint or in the reads it makes
+before it paints, is shown as one it could not show, with Approve off and Reject live after the 700 ms floor, also
+when it comes back to the head of the queue after another request's paint (test/approve-paint-throw-dom.test.mjs,
+test/approve-paint-throw-preread-dom.test.mjs, test/approve-paint-throw-requeue-dom.test.mjs). What stays after
+approval needs the coins, a read or the node: on every request that spends, the 10% fee cap and the balance, which
+need the coins the wallet selects; on a proposal, the node's own rules that csd-sdk does not carry (an empty domain
+or URI, an all-zero payload hash), refused by the node at submit with nothing spent, because the wallet does not
+re-declare consensus; on a fill, and on an attest at the token-fill confidence, which the wallet signs as a fill, the
+fill preflight, which reads the offer, its proofs and this account's history (`fillpreflight.ts`), and a score other
+than 100, which the window shows as refused (test/sign-display-parity.test.mjs). A `revealClaim` for a txid the active account holds no seal for
 opens the window as any reveal does, from every site, and approving it answers `SEAL_UNKNOWN`: nothing a page gets
 before the window depends on which seals the wallet holds, since such an answer would let a page test the public seal
 commits against the wallet and learn which address the visitor holds. In the sign-in window, the site's

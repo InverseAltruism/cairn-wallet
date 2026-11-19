@@ -14,6 +14,16 @@ export const OWN_FILL_INDEX_WAIT_MS = 30 * 60_000;
 // When this wallet last submitted a row's transaction: its first record (`ts`) or a later submit of the same txid
 // (`resent`). Only recentFillsOf reads it; `ts` stays the first record's time.
 const lastSent = (x: any): number => Math.max(Number(x?.ts) || 0, Number(x?.resent) || 0);
+// Folds a later record of the same txid into its row, as doRecordTx stores it and historyOf reads a parked twin: a
+// definitive record clears the maybe mark and a later send moves `resent`; ts, position and every other field stay.
+// True when the row changed.
+function foldRecord(e: any, entry: any): boolean {
+  let changed = false;
+  if (e.maybe && !entry.maybe) { delete e.maybe; changed = true; }
+  const at = lastSent(entry);
+  if (at > lastSent(e)) { e.resent = at; changed = true; }
+  return changed;
+}
 // A merge whose output is not yet seen and that is not known to be gone.
 const isMergeCandidate = (x: any): boolean => x?.type === "consolidate" && !x.confirmed && !x.gone;
 // A row pendingMerge still evaluates; `gone` stays here so a later reading can undo it.
@@ -98,8 +108,9 @@ export class TxHistory {
     // deriving a false "merging" line until a balance refresh saw them).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
   }
-  // The duplicate answer is a submit of the transaction now, so the row's `resent` moves to now. A parked twin can be
-  // the only copy (recorded while locked), and history() reads it, so it is updated as well.
+  // The duplicate answer is a submit of the transaction now: `resent` moves to now on every parked twin (one can be the
+  // only copy, recorded while locked; history() reads it) and, while unlocked, on the stored row. While locked the
+  // stored row is not written, so its time stays (SECURITY.md states it).
   private clearMaybe(k: string, txid: string): Promise<void> {
     const now = Date.now();
     const mark = (e: any): boolean => {
@@ -142,11 +153,7 @@ export class TxHistory {
       // the ambiguity: clear the flag IN PLACE. Never re-insert or reorder; ts, position and the
       // consolidate confirmed-latch must survive (a replace would resurrect the pending-forever
       // bug the latch exists to prevent). A later submit of the same txid only moves `resent`.
-      let dirty = false;
-      if (e.maybe && !entry.maybe) { delete e.maybe; dirty = true; }
-      const at = lastSent(entry);
-      if (at > lastSent(e)) { e.resent = at; dirty = true; }
-      if (dirty) await this.store.set(k, h);
+      if (foldRecord(e, entry)) await this.store.set(k, h);
       return;
     }
     h.unshift(entry);
@@ -187,14 +194,25 @@ export class TxHistory {
     if (!this.w.unlocked()) return Promise.resolve([]);
     return this.historyOf(this.w.addr());
   }
+  // A parked row with no stored twin is listed first; a stored row with parked twins is read as the drain will store it
+  // (foldRecord on a copy), so a retry whose write failed counts from its send time. The stored row is not changed.
   private historyOf(addr: string): Promise<any[]> {
     const k = histKey(addr);
     return this.store.get(k).then((h: any[]) => {
       const stored = h || [];
-      const parked = this.pendingHist
-        .filter((p) => p.k === k && !stored.some((x: any) => x?.txid === p.entry.txid))
-        .map((p) => p.entry);
-      return parked.length ? [...parked, ...stored] : stored;
+      const twins = this.pendingHist.filter((p) => p.k === k);
+      if (!twins.length) return stored;
+      const ids = new Set(stored.map((x: any) => x?.txid));
+      const parked = twins.filter((p) => !ids.has(p.entry.txid)).map((p) => p.entry);
+      const read = stored.map((x: any) => {
+        const mine = twins.filter((p) => p.entry.txid === x?.txid);
+        if (!mine.length) return x;
+        const y = { ...x };
+        let changed = false;
+        for (const p of mine) if (foldRecord(y, p.entry)) changed = true;
+        return changed ? y : x;
+      });
+      return parked.length ? [...parked, ...read] : read;
     });
   }
   /** `addr`'s fills of `offerId` this wallet last submitted at or after `since` (ms) and not known to be gone: each

@@ -113,36 +113,42 @@ async function render() {
   // closes). The re-enable timer still fires only from the armButtons call AFTER the paint below. A request whose own
   // "could not show" card is on screen (the catch below) keeps Approve off and its Reject live while its paint is retried.
   if (unpaintableShown !== current.id) disableButtons();
-  // CX-35: decimals for the token amounts this record clear-signs, fetched in parallel with the reads below.
-  // Bounded and display only; a miss paints base units alone.
-  const p0 = proposeFields(current.params);
-  const tickers = current.method === "propose" && String(p0.domain) === CAIRNX_DOMAIN ? cairnxTokenTickers(p0.uri, p0.payloadHash) : [];
-  const metaP = tickers.length ? bounded(call("tokenDisplayMeta", tickers)) : null;
-  // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
-  // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
-  // before building the request HTML (not per ~1.2s tick; this block runs once per new request).
-  // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
-  if (current.method === "propose" && p0.expiresEpoch !== undefined) {
-    // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
-    // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
-    // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
-    const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
-    if (e != null) current.currentEpoch = e;
-    if (t != null) current.currentTip = t;
-    if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
-  } else if (current.method === "attest" && attestOf(current)?.score === 50 && attestOf(current)?.confidence === 0) {
-    // B5h (score-50 V28 truth): thread the PoW-backed tip floor so describe() can warn that a legacy
-    // SCORE_CLAIM past the V28 gate is a guaranteed on-chain no-op. tipFloor is a wallet-store read
-    // (READ_ONLY, no network), so the attest paint gains no network dependency; a miss degrades to no
-    // warning (today's behavior).
-    const f = await bounded(call("tipFloor"));
-    if (f != null) current.tipFloor = f;
-  } else if (current.method === "attest" && attestOf(current)?.score === SCORE_CANCEL) {
-    // A score-0 attest the signer signs as an attest (not at the token-fill confidence, which signs a fill) cancels the
-    // target when it is the signer's own CairnX offer or bid; the node's proposal read says whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
-    const t: any = await bounded(call("attestTarget", attestOf(current)?.proposalId));
-    current.attestTarget = t?.ok === true ? { kind: t.kind, mine: String(t.proposer) === String(st.addr || "").toLowerCase() } : { unknown: true };
-  }
+  // A throw in the reads below (a request field they read as text) lands in the paint's catch, which shows the request
+  // as one the wallet could not show, as a throw in the paint does: it is rethrown first inside that try.
+  let readThrew: { e: unknown } | null = null;
+  let metaP: Promise<unknown> | null = null;
+  try {
+    // CX-35: decimals for the token amounts this record clear-signs, fetched in parallel with the reads below.
+    // Bounded and display only; a miss paints base units alone.
+    const p0 = proposeFields(current.params);
+    const tickers = current.method === "propose" && String(p0.domain) === CAIRNX_DOMAIN ? cairnxTokenTickers(p0.uri, p0.payloadHash) : [];
+    metaP = tickers.length ? bounded(call("tokenDisplayMeta", tickers)) : null;
+    // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
+    // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
+    // before building the request HTML (not per ~1.2s tick; this block runs once per new request).
+    // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
+    if (current.method === "propose" && p0.expiresEpoch !== undefined) {
+      // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
+      // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
+      // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
+      const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
+      if (e != null) current.currentEpoch = e;
+      if (t != null) current.currentTip = t;
+      if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
+    } else if (current.method === "attest" && attestOf(current)?.score === 50 && attestOf(current)?.confidence === 0) {
+      // B5h (score-50 V28 truth): thread the PoW-backed tip floor so describe() can warn that a legacy
+      // SCORE_CLAIM past the V28 gate is a guaranteed on-chain no-op. tipFloor is a wallet-store read
+      // (READ_ONLY, no network), so the attest paint gains no network dependency; a miss degrades to no
+      // warning (today's behavior).
+      const f = await bounded(call("tipFloor"));
+      if (f != null) current.tipFloor = f;
+    } else if (current.method === "attest" && attestOf(current)?.score === SCORE_CANCEL) {
+      // A score-0 attest the signer signs as an attest (not at the token-fill confidence, which signs a fill) cancels the
+      // target when it is the signer's own CairnX offer or bid; the node's proposal read says whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
+      const t: any = await bounded(call("attestTarget", attestOf(current)?.proposalId));
+      current.attestTarget = t?.ok === true ? { kind: t.kind, mine: String(t.proposer) === String(st.addr || "").toLowerCase() } : { unknown: true };
+    }
+  } catch (e) { readThrew = { e }; }
   if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
   await fontsLoaded;   // the density probe below measures text; resolved after the first paint
   if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
@@ -159,6 +165,7 @@ async function render() {
     ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings › Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
     : "";
   try {
+    if (readThrew) throw readThrew.e;
     // W1 (AW-4): this assignment DESTROYS every element describe() emits (#send-warn, #token-sim,
     // #reveal-preview) and the #cost row. It runs on a new request AND on the unlock repaint after an
     // idle auto-lock (render() returns early while locked and nulls renderedId, and `status` is in
