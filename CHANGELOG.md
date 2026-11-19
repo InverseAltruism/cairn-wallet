@@ -7,9 +7,9 @@
   a request from this site with this wallet before."). The origin is recorded when the user approves a request from it,
   in a new `chrome.storage.local` key `approvedOrigins` (`{ vault, origins }`: the vault's identifier, its PBKDF2 salt,
   and each origin with the time of its last approval; a list belongs to that vault and reads as empty under any other,
-  so a list from before a reset is never the next wallet's), written on its own queue
-  after the page has its answer, never awaited by the approval or the reset, at most 500 origins (the oldest by
-  last approval is dropped and reads as new again), never an opaque origin, cleared by the internal reset and deleted
+  so a list from before a reset is never the next wallet's: test/approve-first-request.test.mjs sections 7 to 9), written
+  on its own queue after the page has its answer, never awaited by the approval or the reset (sections 1 and 7), at most
+  500 origins (the oldest by last approval is dropped and reads as new again), never an opaque origin (section 4), cleared by the internal reset and deleted
   with the extension. A rejected request or a closed window records nothing, so two requests queued from a new site
   both carry the line until one is approved. A connected site is not new. A site used only for signing, never
   connected, before this release reads as new once after the update: the wallet kept no record of it. Nothing the user waits for waits on the list: each queued request carries its flag,

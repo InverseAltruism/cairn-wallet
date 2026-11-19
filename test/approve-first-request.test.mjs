@@ -27,6 +27,10 @@
 //      plain shape reads as empty; a write started before a reset and landing after it, a failed deletion followed by a
 //      worker restart, and a write queued before a reset and run after it (its deletion failing) all leave their sites
 //      new in the next wallet. Listings still read no storage.
+//   9. Across a reset: an approval answered while the reset clears the consent map (R1), a request queued then with an
+//      earlier write in flight (R2), an approval answered under the next wallet (R5) and a worker restart whose load
+//      answers under the next wallet (R4) all leave their sites new there; a reset whose consent write throws leaves
+//      the wallet, its vault and its list as they were.
 // RED-FIRST, each run 2026-11-18 in a disposable worktree (failing checks of this file in brackets): record on every
 // answer, rejections included: 1 [2]; record the head of the queue when it is listed (on paint): 1 [8]; ignore the
 // consent map: 1 [1]; await the write before the answer, or inside the approval: 1 [2] each; drop the list's queue from
@@ -38,7 +42,11 @@
 // 1 [4]; flags not refreshed on a change: 1 [1]; reset awaiting the list's deletion: 7 [4]; a write after a failed
 // deletion that adds to the stored list: 7 [1]. The vault binding, against d77eb02's src: 11 failed (section 8 and the
 // sections reading the stored shape). Then, one per rule: a list read under any vault or none: 7 and 8 [7]; a write
-// recorded under the vault current when it runs: 8 [2]; an approval recorded in memory under any vault: 7 [1].
+// recorded under the vault current when it runs: 8 [2]; an approval recorded in memory under any vault: 7 [1]. Section 9
+// against 068ba59's src: 4 failed (R1, R2 and the consent-write error path). Then: the reset emptying the list before its
+// consent write: 9 [4]; a load taken whatever vault is current when it answers: 9 [1] (R4); an approval recorded under
+// the vault current when it finishes: 9 [1] (R5); the reset leaving the vault id: 7 [2]; the finish-time vault check
+// dropped: 7 and 9 [2]; a list read under any vault or none: 7, 8 and 9 [9].
 // Run: npx tsx test/approve-first-request.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
@@ -76,6 +84,8 @@ globalThis.location = { origin: SELF };   // the window's own origin, which a po
 const mem = new Map();
 const held = [];
 let holdSeen = true, failSeen = false, failSeenRead = false, holdConsent = false, failSeenRemove = false, holdSeenSet = false;
+let holdConsentSet = false, failConsentSet = false, holdSubmit = false;
+const heldSubmit = [];
 const heldSets = [];
 const reads = { [SEEN]: 0, connectedOrigins: 0 };
 let closeWindow = () => undefined;
@@ -94,8 +104,9 @@ Object.assign(globalThis.chrome, {
     },
     set: async (o) => {
       if (failSeen && SEEN in o) throw new Error("quota");
+      if (failConsentSet && "connectedOrigins" in o) throw new Error("consent write failed");
       const copy = structuredClone(o);   // what the write sends; a held write lands it later
-      if (holdSeenSet && SEEN in o) await new Promise((release) => heldSets.push(release));
+      if ((holdSeenSet && SEEN in o) || (holdConsentSet && "connectedOrigins" in o)) await new Promise((release) => heldSets.push(release));
       for (const k of Object.keys(copy)) mem.set(k, copy[k]);
     },
     remove: async (k) => { if (failSeenRemove && k === SEEN) throw new Error("remove failed"); mem.delete(k); },
@@ -111,7 +122,10 @@ let holdContent = false;
 const heldContent = [];
 globalThis.fetch = async (url, init) => {
   const u = String(url);
-  if (u.includes("/tx/submit")) return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  if (u.includes("/tx/submit")) {
+    if (holdSubmit) await new Promise((release) => heldSubmit.push(release));
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  }
   if (u.includes("/api/content")) {
     if (holdContent) await new Promise((release) => heldContent.push(release));
     return { ok: true, status: 200, json: async () => ({ ok: true }) };
@@ -508,5 +522,93 @@ async function revealCard(txid, origin) {
   const before = { ...reads };
   for (let i = 0; i < 10; i++) await popup("pending");
   check(`8. listings still read no storage (${reads[SEEN] - before[SEEN]} list reads, ${reads.connectedOrigins - before.connectedOrigins} consent reads)`, reads[SEEN] === before[SEEN] && reads.connectedOrigins === before.connectedOrigins);
+
+  // ── 9. what runs while a reset is still clearing the consent map, or across a reset ──────────────────────────────
+  const releaseSets = () => { while (heldSets.length) heldSets.shift()(); };
+  const newWallet = async () => { const ok = (await popup("create", PW3)).ok === true; me = String((await popup("status")).result.addr); return ok; };
+  // R1: a send approved before the reset whose submit answers while the reset's consent write is in flight.
+  {
+    const S1 = "https://r1.example";
+    const page = dapp("send", SEND, S1); await flush();
+    holdSubmit = true;
+    const approved = popup("resolve", (await queue()).at(-1).id, true, me);
+    await until(() => heldSubmit.length === 1);
+    holdConsentSet = true;
+    const reset = popup("reset");
+    await until(() => heldSets.length === 1);
+    holdSubmit = false; heldSubmit.shift()();
+    await approved; await until(() => page.reply !== undefined);
+    holdConsentSet = false; releaseSets();
+    const r = await reset; await flush(20);
+    check(`9. R1 setup: the reset completed (${r.ok}) and erased the vault`, r.ok === true && !mem.has("vault"));
+    check("setup: the next wallet", await newWallet());
+    check("9. R1 an approval answered while the reset clears the consent map leaves its site new in the next wallet", (await readsNew(S1)) === true);
+  }
+  // R2: a request queued while the reset clears the consent map, with an earlier write of the list in flight.
+  {
+    const T = "https://r2t.example", U2 = "https://r2u.example", V2 = "https://r2v.example";
+    await approveSignin(T);
+    await until(() => Object.hasOwn(seen(), T));
+    holdSeenSet = true;
+    await approveSignin(U2);
+    await until(() => heldSets.length === 1);
+    holdConsentSet = true;
+    const reset = popup("reset");
+    await until(() => heldSets.length === 2);
+    dapp("signinWithCsd", SIGNIN, V2); await flush(20);
+    holdSeenSet = false; holdConsentSet = false; releaseSets();
+    const r = await reset; await flush(20);
+    await resolveAll(false);
+    check(`9. R2 setup: the reset completed (${r.ok}) and erased the vault`, r.ok === true && !mem.has("vault"));
+    check("setup: the next wallet", await newWallet());
+    check("9. R2 a site from the erased wallet's list reads as new in the next wallet", (await readsNew(T)) === true);
+  }
+  // R5: a send approved under one vault whose submit answers after the reset and the next wallet's creation.
+  {
+    const S5 = "https://r5.example";
+    const page = dapp("send", SEND, S5); await flush();
+    holdSubmit = true;
+    const approved = popup("resolve", (await queue()).at(-1).id, true, me);
+    await until(() => heldSubmit.length === 1);
+    const was = me;
+    const r = await popup("reset"); await flush(20);
+    check(`9. R5 setup: reset (${r.ok}) and the next wallet`, r.ok === true && (await newWallet()) && me !== was);
+    holdSubmit = false; heldSubmit.shift()();
+    await approved; await until(() => page.reply !== undefined); await flush(20);
+    check(`9. R5 an approval given under the erased vault and answered under the next one leaves its site new there (${JSON.stringify(Object.keys(seen()))})`, (await readsNew(S5)) === true && !Object.hasOwn(seen(), S5));
+  }
+  // R4: a worker restart whose load of the list is held across a reset (its deletion failing) and the next wallet.
+  {
+    const T4 = "https://r4.example";
+    await approveSignin(T4);
+    await until(() => Object.hasOwn(seen(), T4));
+    await resolveAll(false);
+    holdSeen = true;
+    globalThis.chrome.runtime.onMessage = { addListener: (fn) => { listener = fn; } };
+    await import(`../src/background.ts?restart=${++restarts}`);
+    globalThis.chrome.runtime.onMessage = windowOnMessage;
+    await until(() => held.length === 1);
+    failSeenRemove = true;
+    const r = await popup("reset"); await flush(20);
+    failSeenRemove = false;
+    check(`9. R4 setup: reset (${r.ok}) and the next wallet, the old list still stored (${JSON.stringify(Object.keys(seen()))})`, r.ok === true && (await newWallet()) && Object.hasOwn(seen(), T4));
+    holdSeen = false; release(); await flush(20);
+    check("9. R4 a load begun under the erased vault and answered under the next one leaves its sites new there", (await readsNew(T4)) === true);
+  }
+  // A reset whose consent write throws changes nothing: the wallet, its vault and its list stay.
+  {
+    const E9 = "https://e9.example";
+    await approveSignin(E9);
+    await until(() => Object.hasOwn(seen(), E9));
+    failConsentSet = true;
+    const r = await popup("reset"); await flush(20);
+    failConsentSet = false;
+    const st = (await popup("status")).result;
+    check(`9. a reset whose consent write throws answers an error (${r.code}) and leaves the wallet, its vault and its list (${JSON.stringify(Object.keys(seen()))})`,
+      r.ok === false && mem.has("vault") && st.hasVault === true && st.unlocked === true && Object.hasOwn(seen(), E9));
+    dapp("signinWithCsd", SIGNIN, E9); await flush();
+    check("9. ...and the site still reads as known", (await queue()).at(-1)?.first === false);
+    await resolveAll(false);
+  }
 }
 done("approve-first-request");

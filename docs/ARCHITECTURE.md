@@ -69,9 +69,11 @@ events and alarm-driven auto-lock.
   page has its answer and queues the storage write on the list's own queue (`recordApproved`, `inApprovedChain`, never
   awaited; a failed write is logged). An approval records its origin under the vault current when the user approved,
   and only while that vault is still current: in memory at once and in storage when the write runs on its queue, so
-  an approval or a write from before a reset never lands in the next wallet's list. `reset` empties the list in memory
-  and queues the stored deletion as hygiene, awaited by nothing and relied on by nothing, then clears the consent map
-  and erases the wallet. Opaque origins (`src/core/origin.ts`
+  an approval, a write or a load from before a reset never lands in the next wallet's list (sections 7 to 9 of
+  test/approve-first-request.test.mjs). The reset clears the consent map, then calls `wallet.reset()`, which drops the
+  vault id before its first await, and only then empties the list: nothing that finishes during the consent write can
+  refill it, and a consent write that throws leaves the wallet and its list as they were. The stored copy's deletion is
+  queued as hygiene, awaited by nothing and relied on by nothing. Opaque origins (`src/core/origin.ts`
   `opaqueOrigin`) are never written (test/approve-first-request.test.mjs).
 - A `revealClaim` for a seal the active account does not hold is queued like any reveal, from every site, and
   `revealClaim` answers it `SEAL_UNKNOWN` after approval. A seal records the asking origin on its record (`origin`; the

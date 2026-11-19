@@ -145,10 +145,11 @@ function consentChanged(change: (now: Set<string>) => void): void {
   change(connectedNow);
   refreshNew();
 }
-// `vault` is Wallet.vaultId when the user approved. The origin is recorded only under that vault, and only while it is
-// still the current one: in memory now, and in storage when the write runs on the list's own queue, so an approval that
-// began before a reset, or a write queued before it, never lands in the next wallet's list; with no vault nothing is
-// recorded. Not awaited by the approval: a write that fails leaves the origin new after a worker restart, and nothing else.
+// `vault` is Wallet.vaultId when the user approved. The origin is recorded only under that vault and only if it is still
+// the current one when the approval finishes; with no vault nothing is recorded. The stored write carries that vault,
+// so one that runs after a reset lands as a list bound to the erased vault, which every reader takes as empty: it is
+// queued only while its vault is current, so it runs before any write for the next vault, which then replaces it. Not
+// awaited by the approval: a write that fails leaves the origin new after a worker restart, and nothing else.
 function recordApproved(origin: string, vault: string | null): void {
   if (opaqueOrigin(origin) || !vault || wallet.vaultId() !== vault) return;
   const at = Date.now();
@@ -156,9 +157,7 @@ function recordApproved(origin: string, vault: string | null): void {
   if (Object.keys(approvedNow).length > APPROVED_CAP) approvedNow = capApproved(approvedNow);
   refreshNew();
   inApprovedChain(async () => {
-    if (wallet.vaultId() !== vault) return;
     const stored = await getApproved(vault);
-    if (wallet.vaultId() !== vault) return;
     stored[origin] = Math.max(stored[origin] ?? 0, at);
     await consentStore.set(APPROVED_KEY, { vault, origins: capApproved(stored) });
   }).catch(noted("the approved site was not recorded"));
@@ -253,7 +252,9 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "explorerList": return wallet.explorerList();
     case "addExplorer": return wallet.addExplorer(args[0]);
     case "removeExplorer": return wallet.removeExplorer(args[0]);
-    case "reset": { clearApproved(); await inConsentChain(async () => { await consentStore.set(CONSENT_KEY, {}); consentChanged((now) => now.clear()); }); return wallet.reset(); }
+    // wallet.reset() drops the vault id before its first await and clearApproved() then empties the list with no vault
+    // current, so nothing can refill it; a consent write that throws leaves the wallet and its list untouched.
+    case "reset": { await inConsentChain(async () => { await consentStore.set(CONSENT_KEY, {}); consentChanged((now) => now.clear()); }); const erased = wallet.reset(); clearApproved(); return erased; }
     case "connectedSites": return listConsents();
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
     case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params, first: p.first }));
