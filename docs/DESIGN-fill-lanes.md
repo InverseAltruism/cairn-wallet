@@ -174,10 +174,11 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer (an open one is refu
   says the chain is "at or past" it. With no readable tip the anchor alone is compared; a release is cut with its
   newest anchor 1,000 to 6,000 blocks below the public tip, so this refuses only offers the chain has already
   expired (test/fill-failclosed.test.mjs, test/fill-token-content.test.mjs, test/fill-legacy-sunset.test.mjs).
-  The fill cards show the listed offer's expiry block and the blocks left after the served tip raised to
-  `lowestChainHeight` of the stored floor (the window holds the anchor's height itself), from the offer service's
-  listing (display only), and name a refusal only when `offerFillTooLate` says the preflight will make it
-  (test/approve-card-honesty.test.mjs).
+  The fill cards show the listed offer's expiry block, from the offer service's listing (display only), and the
+  blocks left only when the served tip is at or above `lowestChainHeight` of the stored floor (the window holds the
+  anchor's height itself); with no such tip they show the block alone and name only the refusals that height already
+  proves. Every refusal a card names, `offerFillTooLate` makes in the preflight (test/approve-card-honesty.test.mjs,
+  test/approve-bound-dom.test.mjs).
   For a partial listing the card's "You receive" is what the request's payment to the listing's payee buys, from the
   vendored `previewFill` over the same listing, labelled as computed from it, with the whole listing on its own row
   (display only; test/fill-card-receive.test.mjs). A served listing without its minimum reads as a whole listing, so

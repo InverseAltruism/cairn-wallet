@@ -36,6 +36,7 @@ import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, parseRecord,
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
+import { heightOf } from "./chainbound.js";
 import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "./spvpin.js";
 import { bindBlock, bindSigner, toChainEvent, type ChainEvent } from "./spvbind.js";
 
@@ -219,7 +220,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   }
   const { verifiedTip, nodeTip, floorTip } = await src.prepare(maxHeight);
   if (maxHeight > verifiedTip) return { ok: false, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
-  const lapseTip = Math.max(verifiedTip, Number.isFinite(nodeTip) ? nodeTip : 0);
+  const lapseTip = Math.max(verifiedTip, heightOf(nodeTip));
 
   const events: ChainEvent[] = [];
   for (const [height, hs] of byHeight) {
@@ -261,7 +262,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     // without any consensus math here; if the lease is expired even at that trusted lower-bound tip, the lapse
     // is confident. If it is expired ONLY at the current (claimed) nodeTip, the caller degrades it to caution
     // unless a second source corroborates; so an inflated fresh-install tip can't assert a false lapse.
-    const floor = Number.isFinite(floorTip as number) ? Number(floorTip) : 0;
+    const floor = heightOf(floorTip);
     const atFloor = resolve(scoped, floor).names;
     const floorCorroborated = floor > 0 && Object.hasOwn(atFloor, name) && atFloor[name]?.expired === true;
     return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain); refusing to send` };
@@ -463,8 +464,8 @@ export interface LiveSpvOpts {
 // chainbound.ts lowestChainHeight, which also counts the release's newest anchor.
 export const FLOOR_SLACK = CONF_BUFFER;
 export function floorAdvance(seenFloor: number, nodeTip: number, verifiedTip: number): number {
-  const raw = Number.isFinite(nodeTip) ? nodeTip : 0;
-  const cand = Math.min(raw, (Number.isFinite(verifiedTip) ? verifiedTip : 0) + FLOOR_SLACK);
+  const raw = heightOf(nodeTip);   // a served tip that is not a height stores nothing
+  const cand = Math.min(raw, heightOf(verifiedTip) + FLOOR_SLACK);
   return cand > seenFloor ? cand : seenFloor;
 }
 
@@ -838,7 +839,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   };
 
   let seenFloor = 0;
-  if (opts.floor) { try { const f = Number(await opts.floor.get()); if (Number.isFinite(f) && f > 0) seenFloor = f; } catch { /* no persisted floor → start at 0 */ } }
+  if (opts.floor) { try { seenFloor = heightOf(Number(await opts.floor.get())); } catch { /* no persisted floor → start at 0 */ } }
   // WALLET-LAPSE-TIP-1: freeze the floor as seeded from PRIOR sessions, BEFORE any current-session read
   // advances seenFloor. This is the trusted-across-sessions tip used ONLY to corroborate a lease-lapse
   // verdict (replayName re-runs the audited resolver at it). On a fresh install it is 0 → a lapse rests on

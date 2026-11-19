@@ -123,7 +123,7 @@
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
-- `test/run.mjs` refuses to run with fewer than 202 discovered test files (the floor was 142), so a dropped gate file
+- `test/run.mjs` refuses to run with fewer than 203 discovered test files (the floor was 142), so a dropped gate file
   fails the runner.
 - Tests for six guards that held but that no test turned red when removed (found by the audit of 2026-11-19; no source
   change): the offer-id lane's terms bind, which is the only check of a served fee rate, give or value there
@@ -241,6 +241,17 @@
   release's newest anchor), the longer line wrapped in the compact window of a reservation fill awaiting confirmation
   and put a recipient row 14 px under the buttons; it now keeps 3 px above them in both themes
   (test/approve-layout-chrome.test.mjs `fill-unconfirmed`, whose reservation heights also move above the anchor).
+- Heights: a served tip or a stored floor counts only as a positive safe integer (`chainbound.ts` `heightOf`), at each
+  place one enters: what `prepare()` stores as the floor, `Wallet.tipFloor()`, `lowestChainHeight`, the offer-id bound,
+  the name lapse tip and the reservation lane's floor. A served tip of 139263.5 was stored as the floor, and a floor that
+  is not an integer made `feePricingTip` drop both it and the release anchor: at a served tip of 39,000 the wallet's own
+  renewal of "abc" signed 500,000,000 base units, which the resolver refuses after the fee has left, and the window's
+  warning was silent. It now prices 1,500,000,000 and warns, and a non-integer floor stored by an earlier version reads as
+  0 (test/height-integer.test.mjs).
+- Approval window: a fill card counts the blocks left only from a served tip at or above the release bound. When the tip
+  read gives no height, or a lower one, the card shows the expiry block alone, as before this release, and names only the
+  refusals the bound proves (an expiry at or below it, or within 4 blocks of it), where it had counted from the bound
+  (test/approve-bound-dom.test.mjs, test/approve-card-honesty.test.mjs 6a).
 - Names: a name the verified records do not register is not verified when it is the name of a property every object
   inherits. The replay read `names[name]` from a plain object, so for "constructor" (the one such name the name grammar
   accepts) it found Object's constructor and answered verified with owner and address the text "undefined"; both reads

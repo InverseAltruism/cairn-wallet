@@ -204,13 +204,13 @@ t("5f the window's fill card shows the look-alike warning, and Approve arms afte
 });
 state.view = null;
 
-console.log("6. the card's tip is raised to the stored floor, as the preflight's is");
+console.log("6. a stored floor above the served tip: the card does not count from a tip it does not have");
 h.tipFloor = () => EXP - 30;              // a floor above the served tip (the release-anchor case: test/approve-bound-dom)
 state.pending = [fillReq("f6", LIST)];
 await tick(); await flush();
 await new Promise((r) => setTimeout(r, 800)); await flush();
-t("6a with a stored floor 300 blocks above the served tip the card counts from the floor", () => {
-  assert.match(byId("fill-view").innerHTML, new RegExp(`Offer expires at block ${fmtN(EXP)}, in 30 blocks \\(~1 h\\)`));
+t("6a with a stored floor 300 blocks above the served tip the card shows the expiry block alone", () => {
+  assert.ok(byId("fill-view").innerHTML.includes(`Offer expires at block ${fmtN(EXP)}.`)); assert.doesNotMatch(byId("fill-view").innerHTML, /in \d+ blocks|refuse/);
 });
 h.tipFloor = () => 0;
 

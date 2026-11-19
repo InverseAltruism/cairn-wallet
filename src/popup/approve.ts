@@ -4,7 +4,7 @@
 import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, unpaintableBox, originInitial, profileDropValue, APPROVE_LABELS, ACKNOWLEDGE_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, nameRecordCaution, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, SCORE_CANCEL } from "../core/cairnx.js";
-import { lowestChainHeight } from "../core/chainbound.js";
+import { heightOf, lowestChainHeight } from "../core/chainbound.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields } from "../core/signfields.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
@@ -130,8 +130,8 @@ async function render() {
     // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
     if (current.method === "propose" && p0.expiresEpoch !== undefined) {
       // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
-      // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
-      // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
+      // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded). A miss shows the raw signed
+      // epoch, and the fee-sufficiency hint prices at the release bound (clearsign.ts).
       const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
       if (e != null) current.currentEpoch = e;
       if (t != null) current.currentTip = t;
@@ -457,9 +457,9 @@ async function fillTokenSim(r: any) {
     const shown = q && q.ok ? { ticker: q.ticker, amount: q.amount, fee: q.fee, total: q.total, giveTicker: q.giveTicker, giveAmount: q.giveAmount, giveName: q.giveName } : undefined;
     rs(r.id).tokenQuoteDisplayed = shown;
     rs(r.id).tokenPreview = shown ? "ready" : "error";
-    const tip = await tipRead;
+    const at = await tipRead;
     if (!live()) return;
-    show(tokenQuoteHtml(q, tip));
+    show(tokenQuoteHtml(q, at.tip, at.bound));
   } catch {
     rs(r.id).tokenPreview = "error";
     show(tokenQuoteHtml(null)); // bridge threw → same loud "could not compute" caution
@@ -519,11 +519,12 @@ async function fillBalance(r: any) {
     if (el) el.textContent = "unavailable";
   }
 }
-// The tip a fill card measures the offer's expiry against: the served tip raised to chainbound.ts lowestChainHeight of
-// the stored floor, as the preflight raises it. Never below the release's newest anchor, whichever read misses.
-async function cardTip(): Promise<number> {
+// What a fill card measures the offer's expiry against: the served tip (null when the read gave no height) and
+// chainbound.ts lowestChainHeight of the stored floor, the height the preflight never goes below. clearsign.ts
+// offerExpiryLine counts from the tip only when it is at or above the bound.
+async function cardTip(): Promise<{ tip: number | null; bound: number }> {
   const [t, f] = await Promise.all([bounded(call("tip")), bounded(call("tipFloor"))]);
-  return Math.max(Number(t) || 0, lowestChainHeight(Number(f) || 0));
+  return { tip: heightOf(Number(t)) || null, bound: lowestChainHeight(Number(f) || 0) };
 }
 let fillViewForId: string | null = null;
 async function fillFillView(r: any) {
@@ -532,9 +533,9 @@ async function fillFillView(r: any) {
   if (!el) return;   // token-priced fills carry #token-sim instead
   const f = fillFields(r.params);
   const id = String(f.proposalId || "");
-  const [view, tip] = await Promise.all([bounded(call("fillOfferView", id)), cardTip()]);
+  const [view, at] = await Promise.all([bounded(call("fillOfferView", id)), cardTip()]);
   if (renderedId !== r.id) return;
-  el.innerHTML = fillViewHtml(view as any, id, tip, f.outputs);
+  el.innerHTML = fillViewHtml(view as any, id, at.tip, f.outputs, at.bound);
   (el as HTMLElement).hidden = false;
 }
 // An nprofile replaces the name's whole profile: #profile-drop lists the current keys it removes, from the configured

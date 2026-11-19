@@ -23,6 +23,7 @@ import {
 } from "../vendor/cairnx-spv.js";
 import { liveSpvSource, type LiveSpvOpts, type SpvSource } from "./namespv.js";
 import { BodyMismatchError, bindBlock, bindSigner, recoverSigner, toChainEvent } from "./spvbind.js";
+import { heightOf as servedHeight } from "./chainbound.js";
 import { OfferNotAdmittedError } from "./fillpreflight.js";
 
 // B4a (REBIND W2): the fee/rebate term derivation is SINGLE-SOURCED in the vendored cairnx-core
@@ -145,7 +146,7 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
   if (!Number.isFinite(verifiedTip)) throw new Error("fill-SPV: no PoW-verified tip");
   // Without a node tip nothing was synced, and holds would be judged against a verified tip that may be behind.
   if (tipKnown === false) throw new Error("fill-SPV: the node tip could not be read, so the hold cannot be checked against the chain tip");
-  const floorTip = Number.isFinite(rawFloorTip as number) ? Number(rawFloorTip) : 0;
+  const floorTip = servedHeight(rawFloorTip);
   // FILLSPV-01: the deadline/hold-liveness guards in verifyFillSpv read io.tip(). A DEFLATED served tip
   // under-states verifiedTip (prepare syncs only to the served tip), so a hold that has ACTUALLY lapsed can
   // read as still live -> the fill signs -> the chain rejects it -> the payment burns. Clamp the reported tip

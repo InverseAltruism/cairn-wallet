@@ -13,7 +13,7 @@ import { siwcDigest, CSD_CHAIN_MAINNET } from "./siwc.js";
 import { siwcMessageFor, type SiwcParams } from "./siwcparams.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
-import { lowestChainHeight } from "./chainbound.js";
+import { heightOf, lowestChainHeight } from "./chainbound.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
@@ -603,7 +603,7 @@ export class Wallet {
   // it synced. A fresh install reads 0, so the floor raises nothing until the first sync; the offer-id fill
   // checks and fee pricing also count the release's newest anchor (chainbound.ts lowestChainHeight). Popup-only
   // read; never a dApp method.
-  async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
+  async tipFloor(): Promise<number> { try { return heightOf(Number(await this.store.get("spvNodeTipFloor"))); } catch { return 0; } }
   // The name-fee pricing tip at both build sites: cairnx.ts feePricingTip over the served tip, the stored floor and the
   // lowest chain height; null when neither the served tip nor the floor is usable (the sites refuse then).
   private async pricingTip(): Promise<number | null> {

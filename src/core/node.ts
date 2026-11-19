@@ -558,7 +558,7 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   const localTxid = codecTxid(tx);
   const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
   // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = the answering node refused this request (a 200
-  // ok:false) or a proxy refused it before forwarding (400/413/429). It says what the answering node did: through a
+  // ok:false) or a proxy refused it before forwarding (400/413/429). It says what the node or proxy that answered did: through a
   // proxy with two backends an earlier attempt may have reached the other one, so the copy does not say "nothing
   // was sent";
   // SUBMIT_MAYBE_INFLIGHT = the request threw / timed out / hit a 5xx gateway failure / had an unreadable
