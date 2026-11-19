@@ -608,6 +608,7 @@ async function assembleValueTx(
   app: App,
   priv: string,
   emptyError = "tx would have no outputs",
+  beforeSign?: (txid: string) => SubmitResult | null,
 ): Promise<SubmitResult> {
   // Reject a zero (or negative) fee at the SINGLE place every value tx is assembled; send, sendMany,
   // propose, attest and fillOffer all route through here. The node enforces a minimum feerate, so a
@@ -639,6 +640,9 @@ async function assembleValueTx(
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
   if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false, code: "NO_OUTPUTS" };
   const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
+  // The txid leaves out the scriptSig, so this is the txid of the transaction signAndSubmit signs.
+  const held = beforeSign?.(codecTxid(tx));
+  if (held) return held;
   const r = await signAndSubmit(rpc, tx, priv);
   if (!r.txid) return r;
   return { ...r, inputs: sv.inputs.map((i) => opKey(i.txid, i.vout)), ...(r.ok ? { spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : {}) };
@@ -971,14 +975,17 @@ export async function maxSendable(rpc: string, addr: string, fee: number): Promi
 // that carries an Attest app payload AND payment outputs. Same trust posture as sendMany:
 // recipients validated, sums safe-integer guarded, inputs selected INTERNALLY, change only
 // ever returns to this account's own address. The attest fee floor (0.05 CSD) applies.
+/** `beforeSign` sees the txid of the assembled transaction and may refuse it before it is signed (wallet.ts fillOffer:
+ *  the repeated-fill rule, fillpreflight.ts repeatedFillRefusal). */
 export async function fillOffer(
   rpc: string,
   p: { proposalId: string; score: number; confidence: number; outputs: { to: string; value: number }[]; fee: number },
   priv: string,
+  beforeSign?: (txid: string) => SubmitResult | null,
 ): Promise<SubmitResult> {
   const chk = fillChecks(p);
   if (!("sumOut" in chk)) return chk;
-  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs: add a payment or leave change");
+  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs: add a payment or leave change", beforeSign);
 }
 
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:

@@ -63,16 +63,27 @@ from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) and not marked gone (an ambi
 mined transaction spent), and the ones the lane has seen applied: on the offer-id lane the fills the offer service
 lists (a partial offer's listed fills are then proven; a whole offer that applied a fill is no longer served open, so
 nothing served counts for it), on the fclaim lane the attests of this reservation the block scan proved. One that is
-recent and unseen refuses with the retryable `VERIFY_UNAVAILABLE`, the rule the owner set for partial offers on
-2026-11-02 (a short retryable refusal over an unrecoverable overpayment): the copy says the earlier fill is still
-confirming and to try again shortly, and that the refusal lasts up to 30 minutes after it was sent if that fill does
-not go through; a partial offer-id fill keeps its copy about the amount listed as left. The refusal ends when the
-fill is seen (listed, or mined and proven), is marked gone, or leaves the window. A first fill reads nothing more and
-makes the same fetches; on the fclaim lane the check runs after the scan, reading only what the scan proved, and
-before the second-source checks, so a fill still confirming is not reported as a conflict or sent to the confirm
-step. After the first fill of a partial reservation is mined, a second one signs, sized by the replay that includes
-it. The cost: a first fill that stalls and never lands blocks its own retry for up to 30 minutes, which on the fclaim
-lane can outlast the hold (test/fill-refill-after-send.test.mjs).
+recent and unseen refuses another payment with the retryable `VERIFY_UNAVAILABLE`, the rule the owner set for partial
+offers on 2026-11-02 (a short retryable refusal over an unrecoverable overpayment): the copy says the earlier fill was
+sent and is not confirmed yet, to try again once it confirms, and that the refusal lasts up to 30 minutes after it
+was sent if that fill does not go through; a partial offer-id fill keeps its copy about the amount listed as left.
+The refusal ends when the fill is seen (listed, or mined and proven), is marked gone, or leaves the window.
+
+One retry is not another payment: the very transaction of an unseen fill whose submit answer was lost (its history
+row is marked maybe). A lost submit leaves its coins unspent, so the retry selects them again and, with deterministic
+signing, builds the same transaction with the same txid. For such a fill the preflight hands the unseen fills to the
+signer, and the rule decides on the assembled transaction just before signing (`node.ts` `assembleValueTx`, whose
+txid leaves out the signature): the same txid is signed and sent, any other is refused. The node answers a
+transaction it already holds `SUBMIT_DUPLICATE`; either way the history keeps one row, and a definitive answer clears
+its maybe mark. A fill the node accepted needs no re-send, so for it the rule allows nothing and decides in the
+preflight: on the offer-id lane before any proof read (a first fill makes the same fetches), on the fclaim lane after
+the scan, reading only what the scan proved, and before the second-source checks, so a fill still confirming is not
+reported as a conflict or sent to the confirm step. After the first fill of a partial reservation is mined, a second
+one signs, sized by the replay that includes it.
+
+The cost: while a fill is unseen, a retry that would spend other coins (the first submit reached the node and its coin
+is spent, or the request differs) is refused for up to 30 minutes after the first was sent, which on the fclaim lane
+can outlast the hold; so is a fill the node accepted and then dropped (test/fill-refill-after-send.test.mjs).
 
 ## The fclaim lane
 
@@ -133,7 +144,7 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer, or an open one belo
   owner refuses with `FILL_UNSAFE`, as does a served `paid` or `delivered` that differs from the proven one. Every need-map leg must then be paid exactly:
   a payment past what is left refuses, because the resolver clamps it and keeps the surplus. Only the taker fills a
   taker-bound offer, so a fill the service has not indexed yet is the buyer's own: the repeated-fill rule above runs
-  for whole and partial offers alike, before the listed fills are proven. Cost: the first fill of an offer reads
+  for whole and partial offers alike, from local history before the listed fills are proven. Cost: the first fill of an offer reads
   nothing more; the k-th reads the blocks of the k-1 listed fills, in parallel (test/fill-offer-progress.test.mjs,
   test/fill-taker-partial.test.mjs).
 - Offer expiry (both offer-id lanes), strand avoidance: the node refuses an attest after its proposal's expiry

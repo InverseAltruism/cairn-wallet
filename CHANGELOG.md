@@ -93,15 +93,22 @@
   coins: on a whole offer the resolver applies one fill and keeps the second payment, and a second partial fill on the
   reservation lane is sized on what was left before the first. The own-fill history check that covered partial
   offer-id offers since 0.3.2 (the owner's ruling of 2026-11-02: a short retryable refusal over an unrecoverable
-  overpayment) now covers whole offer-id offers and the reservation lane: a fill of the same target in this account's
-  history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`), not marked gone and not yet seen applied, refuses with
-  the retryable `VERIFY_UNAVAILABLE`, and the text says the earlier fill is still confirming, to try again shortly, and
-  that this lasts up to 30 minutes if that fill does not go through. The rule is decided in one function,
-  `fillpreflight.ts` `repeatedFillRefusal`. A first fill makes the same fetches and signs the same bytes as before (the
-  history read is local); a fill marked gone or older than the wait lets the next one sign; a second partial
-  reservation fill after the first is mined signs, sized by the replay that includes it; the token lane is unchanged.
-  The cost: a first fill that stalls and never lands blocks its own retry for up to 30 minutes, which on the
-  reservation lane can outlast the hold (test/fill-refill-after-send.test.mjs). Three tests that signed one reservation
+  overpayment) now covers whole offer-id offers and the reservation lane: while a fill of the same target in this
+  account's history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) is not marked gone and not yet seen applied,
+  another payment refuses with the retryable `VERIFY_UNAVAILABLE`, and the text says the earlier fill was sent and is
+  not confirmed yet, to try again once it confirms, and that this lasts up to 30 minutes if that fill does not go
+  through. A retry after a submit whose answer was lost (a history row marked maybe) is not another payment when it
+  builds the same transaction from the same unspent coins: the rule then decides on the assembled transaction, just
+  before signing, and signs and sends the same txid again; any other transaction is refused. The node answers one it
+  already holds `SUBMIT_DUPLICATE`, and the history keeps one row, its maybe mark cleared by a definitive answer. A
+  fill the node accepted allows nothing and is refused in the preflight, before the offer-id lane's proof read and the
+  reservation lane's second-source checks. The rule is decided in one function, `fillpreflight.ts`
+  `repeatedFillRefusal`. A first fill makes the same fetches and signs the same bytes as before (the history read is
+  local); a fill marked gone or older than the wait lets the next one sign; a second partial reservation fill after
+  the first is mined signs, sized by the replay that includes it; the token lane is unchanged. The cost: while a fill
+  is unseen, a retry that would spend other coins (its submit reached the node, or the request differs) is refused for
+  up to 30 minutes after the first was sent, which on the reservation lane can outlast the hold; so is a fill the node
+  accepted and then dropped (test/fill-refill-after-send.test.mjs). Three tests that signed one reservation
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).

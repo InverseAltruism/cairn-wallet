@@ -20,7 +20,7 @@ import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
 import { attestFields, fillFields, proposeFields, sealFields } from "./signfields.js";
 import { readNameRecord, nameActSignVerdict, CONFIRM_OTHER_OWNER, NAME_READ_TIMEOUT_MS } from "./namegate.js";
-import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
+import { fillOfferPreflight, repeatedFillRefusal, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
@@ -660,7 +660,8 @@ export class Wallet {
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck, notes);
     if (refusal) return refusal;
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
-    const r = await node.fillOffer(this.rpc, q, ctx.priv);
+    const rep = notes.repeat;
+    const r = await node.fillOffer(this.rpc, q, ctx.priv, rep ? (txid) => repeatedFillRefusal(rep.unseen, rep.copy, txid) : undefined);
     const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
     await this.hist.maybeRecord(ctx.histKey, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
     return r.ok && notes.secondSource ? { ...r, secondSource: notes.secondSource } : r;
@@ -676,7 +677,7 @@ export class Wallet {
     recentOwnFills: (offerId, me) => this.hist.recentFillsOf(me, offerId, Date.now() - OWN_FILL_INDEX_WAIT_MS),
     makeFillSpvIo: (offerId, fclaimTxid, me, offerHeight) => this.makeFillSpvIo(offerId, fclaimTxid, me, offerHeight),
   };
-  private fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
+  private fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote: TokenFillQuote | undefined, reservationAck: string | undefined, notes: FillNotes): Promise<FillRefusal | null> {
     return fillOfferPreflight(this.fillIo, proposalId, outputs, me, reviewedQuote, reservationAck, notes);
   }
 

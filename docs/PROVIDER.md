@@ -104,7 +104,9 @@ name outputs, never inputs or a change address.
   is open, another for it is refused `FILL_IN_PROGRESS`. After a CSD-paid fill of a target was sent, another fill of
   it is refused after approval with the nested `VERIFY_UNAVAILABLE` while the first is less than 30 minutes old in
   the wallet's history, not marked gone, and not yet seen applied (listed by the offer service on the offer-id lane,
-  mined on the reservation lane); ask again once it confirms. On the reservation lane the outputs must pay exactly
+  mined on the reservation lane); ask again once it confirms. The exception is a retry after a submit whose answer
+  was lost (`SUBMIT_MAYBE_INFLIGHT`): when it builds the same transaction (same coins, same txid) it is signed and
+  sent again, and the answer is the submit's (a node that already holds it answers `SUBMIT_DUPLICATE`). On the reservation lane the outputs must pay exactly
   what the offer needs, per address; on the offer-id lane outputs beyond the need are signed (section 12 of
   `test/sign-display-parity.test.mjs`).
 - `sealClaim`: `claim` is a non-empty string, `domain` a string of at most 128 UTF-8 bytes once trimmed, with no

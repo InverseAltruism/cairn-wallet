@@ -181,12 +181,13 @@ export class TxHistory {
       return parked.length ? [...parked, ...stored] : stored;
     });
   }
-  /** The txids (lowercase) of `addr`'s fills of `offerId` recorded at or after `since` (ms) and not known to be gone. */
-  async recentFillsOf(addr: string, offerId: string, since: number): Promise<string[]> {
+  /** `addr`'s fills of `offerId` recorded at or after `since` (ms) and not known to be gone: each txid (lowercase) and
+   *  whether its submit answer was lost (`maybe`). */
+  async recentFillsOf(addr: string, offerId: string, since: number): Promise<{ txid: string; maybe: boolean }[]> {
     const id = String(offerId).toLowerCase();
     const rows = await this.historyOf(addr);
     return rows.filter((e: any) => e?.type === "fillOffer" && String(e.target ?? "").toLowerCase() === id && Number(e.ts) >= since && !e.gone)
-      .map((e: any) => String(e.txid).toLowerCase());
+      .map((e: any) => ({ txid: String(e.txid).toLowerCase(), maybe: !!e.maybe }));
   }
 
   // Pending-merge line and inclusion reconcile (popup-only; test/inclusion-chain.test.mjs). Each open row is
