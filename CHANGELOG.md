@@ -236,6 +236,11 @@
   proxy with two backends an earlier attempt of the same request may have reached the other backend and been
   admitted, and an older proxy then relays the second backend's refusal. The `SUBMIT_REJECTED` row and the comments
   in `node.ts` say the same (test/popup-outcome-dom.test.mjs 4f).
+- Approval window: a fill card's expiry line reads "Offer expires at block N, in K blocks (~X)." where it read "..., K
+  blocks after the current tip (~X)." At the six-digit heights the card now counts from (the served tip raised to the
+  release's newest anchor), the longer line wrapped in the compact window of a reservation fill awaiting confirmation
+  and put a recipient row 14 px under the buttons; it now keeps 3 px above them in both themes
+  (test/approve-layout-chrome.test.mjs `fill-unconfirmed`, whose reservation heights also move above the anchor).
 - Names: a name the verified records do not register is not verified when it is the name of a property every object
   inherits. The replay read `names[name]` from a plain object, so for "constructor" (the one such name the name grammar
   accepts) it found Object's constructor and answered verified with owner and address the text "undefined"; both reads

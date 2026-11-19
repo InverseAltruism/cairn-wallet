@@ -63,7 +63,7 @@ const viewLookalike = { ok: true, giveTicker: "USDT", giveAmount: "100000000", g
 const viewReserved = { ok: true, offerId: "0x" + "ab".repeat(32), giveName: "satoshi", expiresAt: CARD_TIP + 2 };
 const quote = { ok: true, ticker: "CAIRN", amount: "150000000000", fee: "1500000000", total: "151500000000", wantDecimals: 8, giveName: "quay", expiresAt: CARD_TIP + 300 };
 const seen = { history: [{ type: "send", to: RCPT, amount: 1, txid: "0x" + "a1".repeat(32) }] };
-const unconfirmed = { resolve: { ok: false, code: "RESERVATION_UNCONFIRMED", error: "reservation unconfirmed", unconfirmed: { fclaimTxid: "0x" + "f1".repeat(32), fclaimHeight: nfinTip - 3, tipHeight: nfinTip } } };
+const unconfirmed = { resolve: { ok: false, code: "RESERVATION_UNCONFIRMED", error: "reservation unconfirmed", unconfirmed: { fclaimTxid: "0x" + "f1".repeat(32), fclaimHeight: CARD_TIP - 3, tipHeight: CARD_TIP } } };
 
 // [name, the queue, extra answers, what must render (each is also weight, so above the buttons), an action]
 const CASES = [

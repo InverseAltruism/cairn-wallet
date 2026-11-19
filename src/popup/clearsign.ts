@@ -622,7 +622,8 @@ export function describe(r: any): string {
 }
 
 // The listed offer's expiry on a fill card, against the tip (approve.ts cardTip: the served tip raised to the lowest
-// chain height).
+// chain height). One line in the compact window at six-digit heights (test/approve-layout-chrome.test.mjs), so the
+// distance reads "in N blocks".
 // Served by the offer service, so display only; the preflight decides on the proven record with the same
 // offerFillTooLate, so the card names a refusal exactly when the wallet will make it.
 export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
@@ -634,7 +635,7 @@ export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
   const dist = h - at;   // blocks from the tip to the expiry block; the refusal itself is offerFillTooLate's
   if (dist <= 0) return `Offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>.`;
   if (dist === 1) return `Offer expires at block ${block}, the next block <span class="err">(the wallet will refuse this fill)</span>.`;
-  const where = `Offer expires at block ${block}, ${dist} blocks after the current tip`;
+  const where = `Offer expires at block ${block}, in ${dist} blocks`;
   if (offerFillTooLate(h, at)) return `${where} <span class="err">(too close to be mined in time: the wallet will refuse this fill)</span>.`;
   return `${where} (${humanBlocks(dist)}).`;
 }

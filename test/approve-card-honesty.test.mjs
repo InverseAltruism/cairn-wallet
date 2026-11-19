@@ -62,10 +62,10 @@ t("1f the card says the wallet will refuse a fill only when it will", () => {
   // chain accepts a fill through it. At tip 120,000 (inside epoch 4,000) the expiry block is 30 blocks away and a fill
   // can still be mined in 29 of them.
   const at = (tip) => fillViewHtml({ ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "1", expiresAt: 120_030 }, LIST, tip);
-  assert.match(at(120_000), /Offer expires at block 120,030, 30 blocks after the current tip \(~1 h\)/); assert.doesNotMatch(at(120_000), /refuse/);
-  assert.match(at(120_020), /10 blocks after the current tip \(~20 min\)/);
-  assert.match(at(120_025), /Offer expires at block 120,030, 5 blocks after the current tip \(~10 min\)/); assert.doesNotMatch(at(120_025), /refuse/);
-  assert.match(at(120_026), /Offer expires at block 120,030, 4 blocks after the current tip <span class="err">\(too close to be mined in time: the wallet will refuse this fill\)<\/span>/);
+  assert.match(at(120_000), /Offer expires at block 120,030, in 30 blocks \(~1 h\)/); assert.doesNotMatch(at(120_000), /refuse/);
+  assert.match(at(120_020), /in 10 blocks \(~20 min\)/);
+  assert.match(at(120_025), /Offer expires at block 120,030, in 5 blocks \(~10 min\)/); assert.doesNotMatch(at(120_025), /refuse/);
+  assert.match(at(120_026), /Offer expires at block 120,030, in 4 blocks <span class="err">\(too close to be mined in time: the wallet will refuse this fill\)<\/span>/);
   assert.match(at(120_029), /Offer expires at block 120,030, the next block <span class="err">\(the wallet will refuse this fill\)<\/span>/);
   assert.match(at(120_030), /Offer expired at block 120,030 <span class="err">\(the wallet will refuse this fill\)<\/span>/);
 });
@@ -77,7 +77,7 @@ t("1f the card says the wallet will refuse a fill only when it will", () => {
   const view = await fillOfferView(io, LIST), quote = await tokenFillQuote(io, LIST);
   t("1g the fill view and the token quote carry the listed offer's expiry block", () => {
     assert.equal(view.expiresAt, 117_330); assert.equal(quote.expiresAt, 117_330);
-    assert.match(tokenQuoteHtml(quote, 117_000), /Offer expires at block 117,330, 330 blocks after the current tip \(~11 h\)/);
+    assert.match(tokenQuoteHtml(quote, 117_000), /Offer expires at block 117,330, in 330 blocks \(~11 h\)/);
   });
 }
 
@@ -155,7 +155,7 @@ t("2b on the reservation lane the card names the listing", () => {
   assert.match(byId("fill-view").innerHTML, new RegExp(`<dt>Listing</dt><dd><code>${LIST}</code></dd>`));
 });
 t("2d the card shows when the listed offer expires, from the tip", () => {
-  assert.match(byId("fill-view").innerHTML, new RegExp(`Offer expires at block ${fmtN(EXP)}, 330 blocks after the current tip \\(~11 h\\)`));
+  assert.match(byId("fill-view").innerHTML, new RegExp(`Offer expires at block ${fmtN(EXP)}, in 330 blocks \\(~11 h\\)`));
 });
 t("3c honest: a covered request arms Approve after the click-through delay", () => {
   assert.equal(byId("btn-approve").disabled, false);
@@ -210,7 +210,7 @@ state.pending = [fillReq("f6", LIST)];
 await tick(); await flush();
 await new Promise((r) => setTimeout(r, 800)); await flush();
 t("6a with a stored floor 300 blocks above the served tip the card counts from the floor", () => {
-  assert.match(byId("fill-view").innerHTML, new RegExp(`Offer expires at block ${fmtN(EXP)}, 30 blocks after the current tip \\(~1 h\\)`));
+  assert.match(byId("fill-view").innerHTML, new RegExp(`Offer expires at block ${fmtN(EXP)}, in 30 blocks \\(~1 h\\)`));
 });
 h.tipFloor = () => 0;
 

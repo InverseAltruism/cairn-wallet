@@ -86,7 +86,7 @@ console.log("3. the fill card's tip");
 const fill = { method: "fillOffer", origin: "https://cairn-substrate.com", params: { proposalId: LIST, score: 100, confidence: 100, fee: 5_000_000, outputs: [{ to: SELLER, value: 100_000_000 }, { to: TREASURY_ADDR, value: 1_500_000 }] } };
 for (const mode of ["ok", "reject", "hang"]) {
   const { card } = await paint(fill, mode);
-  check(`3. reads ${mode}: the card counts from the release anchor (30 blocks left)`, /Offer expires at block [\d,]+, 30 blocks after the current tip/.test(card));
+  check(`3. reads ${mode}: the card counts from the release anchor (30 blocks left)`, /Offer expires at block [\d,]+, in 30 blocks \(/.test(card));
 }
 
 done("approve-bound-dom");
