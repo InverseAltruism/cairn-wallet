@@ -2,8 +2,8 @@
 // token-fill confidence). It reads the offer and the chain through the wallet (FillPreflightIo) and returns a
 // refusal, or null to sign. Nothing here signs or records.
 import { attestRefusal, fillTxRefusal, type SubmitResult } from "./node.js";
-import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
-import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
+import { cairnxTradeFee, fillIsSafe, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR } from "./cairnx.js";
+import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, LEGACY_HOLD_SUNSET_HEIGHT, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms, OfferProgress } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -50,22 +50,23 @@ export function offerIdChainBound(tip: number, floor: number): number {
   return Math.max(h(tip), h(floor), SPV_NEWEST);
 }
 
-/** The first height at which the resolver rejects every offer-id fill of an open CSD offer: the last legacy grant
- *  (V28 - 1) holds through V28 + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS - 1. */
-export const LEGACY_SUNSET_HEIGHT = V28_HEIGHT + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS;
-
 /** The sunset refusal for an offer-id fill; `height` gives the chain height (offerIdChainBound in production) and is
- *  asked only for an open CSD offer, so the exempt lanes read nothing more. It reads no served claim field, so a
- *  resolver that omits `claimTxid` or forges `claimedBy` cannot steer past it. Taker-bound and token-priced offers
- *  are exempt: neither is an open-lane claim fill. */
+ *  asked only for an open CSD offer, so the exempt lanes read nothing more. From the bundle's LEGACY_HOLD_SUNSET_HEIGHT
+ *  no legacy hold is live (hasLiveClaim of the last legacy grant, at V28 - 1, is false there), and the resolver
+ *  rejects every offer-id fill of an open CSD offer. It reads no served claim field, so a resolver that omits
+ *  `claimTxid` or forges `claimedBy` cannot steer past it. Taker-bound and token-priced offers are exempt: neither is
+ *  an open-lane claim fill. */
 export async function legacySunsetRefusal(offer: OfferState, isCsdWant: boolean, height: () => Promise<number>): Promise<FillRefusal | null> {
-  if (offer.taker !== undefined || !isCsdWant || (await height()) < LEGACY_SUNSET_HEIGHT) return null;
+  if (offer.taker !== undefined || !isCsdWant || (await height()) < LEGACY_HOLD_SUNSET_HEIGHT) return null;
   return { ok: false, error: "past the V28 sunset an open offer can only be filled through its reservation (fclaim) target: ask the marketplace for the reservation id; paying the offer id now would be rejected on-chain and the funds lost", sighashMatch: false, code: "FILL_LEGACY_SUNSET" };
 }
 
 // The offer-id lanes' expiry check, on the merkle-proven expiry and anchor height, at offerIdChainBound: a fill whose
-// offer's last live block is below that bound plus FILL_TIP_MARGIN cannot be mined, and the node drops it (no payment
-// moves). The bound is a lower bound on the chain's height, so the copy says "at or past".
+// offer's last live block is below that bound plus FILL_TIP_MARGIN is refused. For an offer anchored at or above V22
+// that expiry is the proposal's own, and the node drops the late fill (no payment moves). Below V22 the bundle caps
+// the offer's life (offerExpiryHeightOf) and the proposal can carry a later expiry, so the node admits a fill that the
+// resolver refuses as expired: the payment moves. The bound is a lower bound on the chain's height, so the copy says
+// "at or past".
 async function offerExpiryRefusal(wallet: FillPreflightIo, proven: ProvenOfferPayto, tip: number): Promise<FillRefusal | null> {
   if (!Number.isFinite(proven.expiresEpoch) || !Number.isInteger(proven.height)) return null;
   const at = offerIdChainBound(tip, await wallet.tipFloor());
@@ -225,16 +226,8 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
       };
       try { return await fclaimLanePreflight(wallet, offer, proposalId, me, sums, payto, pay, second, reservationAck, notes); } finally { second.offer.stop(); second.record.stop(); }
     }
-    // The open-CSD lane (untaken + CSD-priced) is the whole-payment-loss lane, and its claim gate NEEDS
-    // a live tip. wallet.tip() yields null on RPC failure (→ 0) and a degenerate 200-without-height reads
-    // as 0. But the disarm is NOT just tip==0: fillIsSafe only runs the claim check when
-    // isOpenClaimLane(offer, tip) is true, which requires tip >= V13_HEIGHT; so ANY reported tip in
-    // (0, V13_HEIGHT) (a grossly-stale or hostile RPC) silently SKIPS the claim gate and would let a
-    // non-claimant's open-CSD fill through, while the real chain (tip ~47k) no-ops it and the whole
-    // payment is lost (C2/C4). So: for this lane, if the claim gate is NOT active at the reported tip
-    // (isOpenClaimLane false; which, given taker===undefined && CSD want, can only be a too-low tip),
-    // fail CLOSED with the retryable posture. Red-team 2026-07-06 hardened the guard from `!(tip > 0)`
-    // to cover the full (0, V13) band. Taker-bound / token lanes never consult the tip (unaffected).
+    // The served tip; an RPC failure reads as 0. It feeds the FILL_WRONG_TARGET mirror and fillIsSafe, and through
+    // offerIdChainBound the sunset and expiry checks.
     const tip = (await wallet.tip()) ?? 0;
     // Correction 1 (RT3) mirror: reaching here means `proposalId === offer.id` (the fclaim lane already
     // returned above). An offer-id fill DURING a live fclaim hold burns; the V28 resolver routes fills to the
@@ -250,8 +243,6 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
     // (provenTermsMismatch in csdLanePreflight) and the token lane its give and want (tokenLanePreflight).
     const sunset = await legacySunsetRefusal(offer, isCsdWant, async () => offerIdChainBound(tip, await wallet.tipFloor()));
     if (sunset) return sunset;
-    if (offer.taker === undefined && isCsdWant && !isOpenClaimLane(offer, tip))
-      return { ok: false, error: "couldn't fetch the chain tip to verify your claim on this open offer: try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
     const verdict = fillIsSafe(offer, me, pay, tip);
     if (!verdict.safe) return { ok: false, error: `refusing to sign: ${verdict.reason}`, sighashMatch: false, code: "FILL_UNSAFE" };
     return isCsdWant ? await csdLanePreflight(wallet, offer, sums, payto, pay, tip, me, notes) : await tokenLanePreflight(wallet, offer, sums, tip, reviewedQuote);

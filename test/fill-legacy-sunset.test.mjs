@@ -1,21 +1,22 @@
 // The offer-id sunset and expiry refusals and the height they compare (fillpreflight.ts offerIdChainBound,
 // legacySunsetRefusal, offerExpiryRefusal).
 //
-// From LEGACY_SUNSET_HEIGHT (60,045) the resolver rejects every offer-id fill of an open CSD offer after the payment
-// moved: the last legacy grant (V28 - 1) holds through 60,044. The refusal reads no served claim field, so a resolver
+// From the bundle's LEGACY_HOLD_SUNSET_HEIGHT (60,044) no legacy hold is live, so the resolver rejects every offer-id
+// fill of an open CSD offer after the payment moved. The refusal reads no served claim field, so a resolver
 // that omits `claimTxid` and forges `claimedBy` cannot steer a buyer into that lane. The height is the largest of the
 // served tip, the stored floor and the release's newest anchor (SPV_NEWEST): the chain is at least that high whatever
 // is served or stored, so a served tip below the sunset on an install whose floor is 0 does not disarm the refusal.
-// The same bound arms the expiry check. Taker-bound and token-priced offers stay exempt from the sunset refusal.
+// The same bound arms the expiry check, which matters most below V22, where the bundle caps an offer's life and the node
+// admits a fill the resolver refuses as expired. Taker-bound and token-priced offers stay exempt from the sunset refusal.
 // Every height below is written against the constants, so a newer anchor table changes no expectation.
 //
 // Run: TSX_DISABLE_CACHE=1 node --import tsx test/fill-legacy-sunset.test.mjs   (offline)
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
-import { offerIdChainBound, legacySunsetRefusal, LEGACY_SUNSET_HEIGHT } from "../src/core/fillpreflight.js";
+import { offerIdChainBound, legacySunsetRefusal } from "../src/core/fillpreflight.js";
 import { SPV_NEWEST } from "../src/core/namespv.js";
-import { V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, offerExpiryHeightOf } from "../src/vendor/cairnx-spv.js";
+import { V28_HEIGHT, V22_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, LEGACY_HOLD_SUNSET_HEIGHT, EPOCH_LEN, offerExpiryHeightOf, hasLiveClaim } from "../src/vendor/cairnx-spv.js";
 import { mkCoin, txReply } from "./_coin.js";
 import { checker } from "./helpers/check.mjs";
 
@@ -23,9 +24,14 @@ const { check, done } = checker("offer-id sunset and expiry refusals at the anch
 const origFetch = globalThis.fetch;
 const fmt = (n) => n.toLocaleString("en-US");
 
-check(`the sunset derives to 60,045 from the vendored gates (got ${LEGACY_SUNSET_HEIGHT})`,
-  LEGACY_SUNSET_HEIGHT === 60_045 && LEGACY_SUNSET_HEIGHT === V28_HEIGHT + CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS);
-check(`the release's newest anchor is past the sunset (SPV_NEWEST ${fmt(SPV_NEWEST)})`, SPV_NEWEST >= LEGACY_SUNSET_HEIGHT);
+const SUNSET = LEGACY_HOLD_SUNSET_HEIGHT;
+{
+  // The last legacy grant is at V28 - 1; its hold is live one block before the sunset and not at it.
+  const me = "0x" + "ab".repeat(20), grant = V28_HEIGHT - 1, last = { claimedBy: me, claimUntilHeight: grant + CLAIM_WINDOW_BLOCKS_V20 };
+  check(`the bundle's sunset is 60,044 (got ${fmt(SUNSET)}); the last legacy hold is live at ${fmt(SUNSET - 1)} and not at ${fmt(SUNSET)}`,
+    SUNSET === 60_044 && hasLiveClaim(last, me, SUNSET - 1) === true && hasLiveClaim(last, me, SUNSET) === false);
+}
+check(`the release's newest anchor is past the sunset (SPV_NEWEST ${fmt(SPV_NEWEST)})`, SPV_NEWEST >= SUNSET);
 
 // 1. The bound: never below the anchor; a higher served tip or stored floor raises it; garbage counts as 0.
 check("bound: no tip and no floor gives the anchor", offerIdChainBound(0, 0) === SPV_NEWEST);
@@ -68,12 +74,12 @@ const openOffer = (me, claimUntil, expiresEpoch = 9e15) => ({
 const provenTerms = { height: 47_000, feeBps: 150, value: "5000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "csd" };
 const outputsFor = (offer) => requiredFillOutputs(offer, 5_000_000n).map(({ to, value }) => ({ to, value: Number(value) }));
 
-async function freshWallet(pw, { floor = 0, expiresEpoch = 9e15, taker = false } = {}) {
+async function freshWallet(pw, { floor = 0, expiresEpoch = 9e15, taker = false, height = 47_000 } = {}) {
   const st = memoryStore();
   const w = new Wallet(st);
   const { addr } = await w.create(pw);
   if (floor > 0) await st.set("spvNodeTipFloor", floor);
-  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: SELLER, expiresEpoch, height: 47_000, terms: { ...provenTerms, taker: taker ? String(addr).toLowerCase() : undefined } });
+  w.provenPaytoForTest = () => ({ payto: PAYTO, seller: SELLER, expiresEpoch, height, terms: { ...provenTerms, height, taker: taker ? String(addr).toLowerCase() : undefined } });
   return { w, addr };
 }
 
@@ -82,10 +88,10 @@ async function freshWallet(pw, { floor = 0, expiresEpoch = 9e15, taker = false }
   const me = "0x" + "ab".repeat(20);
   const open = openOffer(me, 99_999);
   const at = (h) => async () => h;
-  check(`predicate: open CSD offer one block below the sunset (${fmt(LEGACY_SUNSET_HEIGHT - 1)}) is not refused`, (await legacySunsetRefusal(open, true, at(LEGACY_SUNSET_HEIGHT - 1))) === null);
-  const r0 = await legacySunsetRefusal(open, true, at(LEGACY_SUNSET_HEIGHT));
-  check(`predicate: at the sunset (${fmt(LEGACY_SUNSET_HEIGHT)}) it refuses FILL_LEGACY_SUNSET (${r0?.code})`, r0?.ok === false && r0?.code === "FILL_LEGACY_SUNSET");
-  const r1 = await legacySunsetRefusal(open, true, at(LEGACY_SUNSET_HEIGHT + 1));
+  check(`predicate: open CSD offer one block below the sunset (${fmt(SUNSET - 1)}) is not refused`, (await legacySunsetRefusal(open, true, at(SUNSET - 1))) === null);
+  const r0 = await legacySunsetRefusal(open, true, at(SUNSET));
+  check(`predicate: at the sunset (${fmt(SUNSET)}) it refuses FILL_LEGACY_SUNSET (${r0?.code})`, r0?.ok === false && r0?.code === "FILL_LEGACY_SUNSET");
+  const r1 = await legacySunsetRefusal(open, true, at(SUNSET + 1));
   check(`predicate: above the sunset it refuses (${r1?.code})`, r1?.code === "FILL_LEGACY_SUNSET");
   let asked = 0;
   const counted = async () => { asked++; return SPV_NEWEST; };
@@ -159,6 +165,23 @@ for (const [label, tip] of [["served tip 50,000", 50_000], ["no served tip", nul
   const s = mkStub({ offer, tip: honestTip });
   const r = await w.fillOffer({ proposalId: OID, outputs: outputsFor(offer) });
   check(`expiry: honest tip, floor 0, offer that expires after the anchor is signed (${r?.error ?? "ok"})`, r?.ok === true && s.submits.length === 1);
+}
+
+// 7. Below V22 the bundle caps an offer's life, so a taker-bound CSD offer anchored at 40,500 with a far expires_epoch
+//    expires at its capped height while its proposal stays valid: the node would admit the fill and the resolver refuse
+//    it. A served tip under the capped expiry with floor 0, and a failed tip read with floor 0, are both refused.
+{
+  const H = 40_500;
+  const capped = offerExpiryHeightOf(9e15, H);
+  check(`fixture: an offer anchored at ${fmt(H)} (below V22 ${fmt(V22_HEIGHT)}) with a far expiry is capped at ${fmt(capped)}, below the anchor`, H < V22_HEIGHT && capped < SPV_NEWEST);
+  for (const [label, tip] of [[`served tip ${fmt(capped - 100)}`, capped - 100], ["no served tip", null]]) {
+    const { w, addr } = await freshWallet(`pw-capped-${tip}-12345`, { taker: true, height: H });
+    const offer = { id: OID, seller: SELLER, give: { ticker: "TKN", amount: "5" }, want: { value: "5000000", payto: PAYTO }, status: "open", expiresEpoch: 9e15, height: H, feeBps: 150, taker: addr };
+    const s = mkStub({ offer, tip });
+    const r = await w.fillOffer({ proposalId: OID, outputs: outputsFor(offer) });
+    check(`capped expiry: ${label}, floor 0: FILL_UNSAFE (${r?.code ?? "signed"})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /expires at block/.test(String(r?.error)));
+    check(`...and nothing was submitted (${s.submits.length})`, s.submits.length === 0);
+  }
 }
 
 globalThis.fetch = origFetch;

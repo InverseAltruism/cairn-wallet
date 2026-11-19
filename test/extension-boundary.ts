@@ -293,7 +293,7 @@ async function main() {
 
   // ── review F1/F2/F4 follow-ups: the open-CSD offer-id lane at any served tip, fee need-map, integer-only money ──
   // An OPEN CSD offer where the served fields say *I* hold a live legacy claim (claimUntilHeight past the served tip
-  // 34000). The resolver rejects every offer-id fill of an open CSD offer from 60,045, and the wallet compares the
+  // 34000). The resolver rejects every offer-id fill of an open CSD offer from 60,044, and the wallet compares the
   // served tip, its floor and the release anchor, which is past that height: the full need-map fill is refused
   // FILL_LEGACY_SUNSET whatever the RPC serves, including a tip that cannot be read or one below V13 (31,100).
   const MY_CLAIM_ID = "0x" + "26".repeat(32);

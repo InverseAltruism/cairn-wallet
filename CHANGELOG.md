@@ -197,13 +197,17 @@
 - Fills: the two offer-id checks that depend on the chain's height, the V28 sunset refusal (`FILL_LEGACY_SUNSET`) and
   the offer expiry refusal (`FILL_UNSAFE`), compare the largest of the RPC's tip, the stored tip floor and the
   release's newest anchor height (`fillpreflight.ts` `offerIdChainBound`). They compared the larger of the tip and the
-  floor, and the floor is 0 on a fresh install, so a front door that served a tip below 60,045 together with forged
+  floor, and the floor is 0 on a fresh install, so a front door that served a tip below 60,044 together with forged
   claim fields got an offer-id fill of an open CSD offer signed, which the resolver rejects after the payment has
   moved. Every offer-id fill of an open CSD offer is now refused on every install; before, it was refused once the
-  served tip or the floor reached 60,045, which the chain passed before the release's anchor. Taker-bound and
-  token-priced fills and the reservation (fclaim) lane are unchanged, and so is fee pricing. The expiry copy reads
-  "the chain is at or past block N", since N is a lower bound (test/fill-legacy-sunset.test.mjs,
-  test/fill-failclosed.test.mjs).
+  served tip or the floor reached the sunset, which the chain passed before the release's anchor. The sunset is the
+  bundle's `LEGACY_HOLD_SUNSET_HEIGHT` (60,044, from which no legacy hold is live); the wallet's own constant was one
+  block later. The check that answered `VERIFY_UNAVAILABLE` ("couldn't fetch the chain tip to verify your claim on this
+  open offer") for an open CSD offer at a served tip below V13 is removed: the sunset refusal answers first at every
+  height the wallet can compare. The expiry refusal at the same bound also covers an offer anchored below V22 whose
+  capped expiry has passed while its proposal has not: the node would admit that fill and the resolver refuse it.
+  Taker-bound and token-priced fills and the reservation (fclaim) lane are unchanged. The expiry copy reads "the chain
+  is at or past block N", since N is a lower bound (test/fill-legacy-sunset.test.mjs, test/fill-failclosed.test.mjs).
 - Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with
