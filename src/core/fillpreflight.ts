@@ -11,7 +11,7 @@ import { fillOf, type AttestFields } from "./signfields.js";
 import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnanswered, startSecondSourceRead, okBody, type SecondSourceRead, type ReservationUnconfirmed } from "./offerxcheck.js";
 import { CLARVIS_TRADE_API } from "./endpoints.js";
 import { OWN_FILL_INDEX_WAIT_MS } from "./history.js";
-import { lowestChainHeight } from "./namespv.js";
+import { lowestChainHeight } from "./chainbound.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
 // requiredFillOutputs sizes the treasury fee from feeBps (= feeBpsAt(creation height)), the maker rebate from
@@ -41,7 +41,7 @@ function provenTermsMismatch(offer: unknown, t: MintedProvenOfferTerms): boolean
   return bindOfferTerms(offer, t, { give: true, wantType: true });
 }
 
-/** The height the offer-id checks (the sunset and expiry refusals) compare: the served tip or namespv.ts
+/** The height the offer-id checks (the sunset and expiry refusals) compare: the served tip or chainbound.ts
  *  lowestChainHeight (the stored floor and the release's newest anchor), whichever is higher. A non-finite tip
  *  counts as 0. */
 export function offerIdChainBound(tip: number, floor: number): number {

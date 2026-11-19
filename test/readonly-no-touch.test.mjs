@@ -38,7 +38,7 @@ const autolock = async () => { alarm({ name: "cairn-autolock" }); await settle()
 check(`setup: the idle window is 15 minutes (${AUTO_LOCK_MS / MIN})`, AUTO_LOCK_MS === 15 * MIN);
 check("setup: a wallet from a known key", (await popup("import", PRIV, PW)).ok === true);
 // The approval window's poll and the popup's reads, each one of READ_ONLY_METHODS.
-const READS = [["status"], ["pending"], ["history"], ["tipFloor"], ["lowestChainHeight"], ["sealedClaims"], ["connectedSites"], ["rpcList"]];
+const READS = [["status"], ["pending"], ["history"], ["tipFloor"], ["sealedClaims"], ["connectedSites"], ["rpcList"]];
 
 // 1. Reads ten minutes after the unlock do not move the idle start.
 {

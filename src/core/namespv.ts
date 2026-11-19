@@ -458,21 +458,12 @@ export interface LiveSpvOpts {
 // The floor advances only inside prepare(), so a fresh install has floor 0 and a guard clamped by the floor
 // alone does not see past a deflated served tip until the first successful verify. That causes no false
 // refusal, but it is not safe everywhere, so the offer-id fill checks and fee pricing compare against
-// lowestChainHeight below, which also counts the release's newest anchor.
+// chainbound.ts lowestChainHeight, which also counts the release's newest anchor.
 export const FLOOR_SLACK = CONF_BUFFER;
 export function floorAdvance(seenFloor: number, nodeTip: number, verifiedTip: number): number {
   const raw = Number.isFinite(nodeTip) ? nodeTip : 0;
   const cand = Math.min(raw, (Number.isFinite(verifiedTip) ? verifiedTip : 0) + FLOOR_SLACK);
   return cand > seenFloor ? cand : seenFloor;
-}
-
-/** The lowest height the chain can be at for this release and this install: the stored floor (floorAdvance) or the
- *  release's newest anchor (SPV_NEWEST), whichever is higher. Every chain this release accepts contains the anchor, a
- *  light-client checkpoint, so no served value can put the chain below it. A non-finite floor counts as 0. The
- *  offer-id fill checks (fillpreflight.ts) and fee pricing (cairnx.ts feePricingTip, through wallet.ts and the
- *  approval window's `lowestChainHeight` read) compare against it. */
-export function lowestChainHeight(floor: number): number {
-  return Math.max(Number.isFinite(floor) ? floor : 0, SPV_NEWEST);
 }
 
 // M8 (B5e): the transient-vs-STRUCTURAL sync-failure classifier, ONE exported source so prepare()'s catch

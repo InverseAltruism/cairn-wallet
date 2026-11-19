@@ -3,6 +3,7 @@
 import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, SCORE_CANCEL, finalizeWinnerCheck } from "../core/cairnx.js";
 import { EPOCH_LEN, MAX_DOMAIN_BYTES, MAX_URI_BYTES, PROFILE_MAX_KEYS, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
+import { lowestChainHeight } from "../core/chainbound.js";
 import type { NameFetchResult } from "../core/namegate.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields, sealFields, sendFields } from "../core/signfields.js";
 import { siwcFieldsFor, ANY_ACCOUNT } from "../core/siwcparams.js";
@@ -490,10 +491,12 @@ export function describe(r: any): string {
         // under v2.5 the `name` reveal is PAYMENT-FREE (the fee moves to `nfinalize`), so the fee-bearing record
         // is nrenew, nfinalize, or a PRE-v2.5 `name`. An underpaid nfinalize burns exactly like an underpaid
         // pre-v2.5 registration (the fee leaves, the name is not registered), so it gets the same loud warning.
-        // Priced at cairnx.ts feePricingTip over the served tip, the stored floor and the lowest chain height approve.ts
-        // reads from the background, as the build sites price, so a tip served too low cannot price a cheaper tier
-        // here and silence this warning. feePricingTip answers null (skip) when neither the tip nor the floor is usable.
-        const tipNow = feePricingTip(r.currentTip, r.tipFloor, Number(r.lowestHeight) || 0);
+        // Priced at cairnx.ts feePricingTip over the served tip, the stored floor and chainbound.ts lowestChainHeight, as
+        // the build sites price, so a tip served too low cannot price a cheaper tier and silence this warning. Where
+        // feePricingTip answers null (no usable tip or floor; the build sites refuse there) it prices at the bound: the
+        // warning signs nothing, and the chain is at least that high.
+        const lowest = lowestChainHeight(Number(r.tipFloor) || 0);
+        const tipNow = feePricingTip(r.currentTip, r.tipFloor, lowest) ?? lowest;
         const rec = decodeCairnxRecord(q.uri, q.payloadHash);
         const feeBearing = !!rec && typeof rec.name === "string" && tipNow != null &&
           (rec.t === "nrenew" || rec.t === "nfinalize" || (rec.t === "name" && tipNow < V25_HEIGHT));
@@ -547,11 +550,10 @@ export function describe(r: any): string {
     const score = af.score, conf = af.confidence;
     // CairnX v1.7: score 50 / confidence 0 is a claim-to-fill reservation on an open CSD offer, a payment-free attest
     // that reserves the offer for the legacy claim window (CLAIM_WINDOW_BLOCKS_V20). From V28 the chain rejects every
-    // new legacy SCORE_CLAIM, so when the lowest chain height (or a stored floor) is past the gate, warn that this is an
-    // on-chain no-op that still costs the network fee (warn, never block; approve.ts reads the height locally, and
-    // when it is absent or below the gate the warning stays silent).
+    // new legacy SCORE_CLAIM, so when chainbound.ts lowestChainHeight is past the gate (the release's newest anchor
+    // is past V28), warn that this is an on-chain no-op that still costs the network fee (warn, never block).
     if (score === 50 && conf === 0) {
-      const v28warn = Math.max(Number(r.tipFloor) || 0, Number(r.lowestHeight) || 0) >= V28_HEIGHT
+      const v28warn = lowestChainHeight(Number(r.tipFloor) || 0) >= V28_HEIGHT
         ? danger(`The chain has passed the v2.8 upgrade (block ${V28_HEIGHT}): this legacy reservation type is <b>rejected</b> on-chain, so approving would be a no-op that still costs the network fee. Use the site's current buy flow instead.`)
         : "";
       return title("Reserve an open offer") + cost + v28warn + lede(`v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~${CLAIM_WINDOW_BLOCKS_V20} blocks. You pay only when you complete the purchase.`)

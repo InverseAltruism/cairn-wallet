@@ -123,7 +123,7 @@
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
-- `test/run.mjs` refuses to run with fewer than 199 discovered test files (the floor was 142), so a dropped gate file
+- `test/run.mjs` refuses to run with fewer than 201 discovered test files (the floor was 142), so a dropped gate file
   fails the runner.
 - Tests for six guards that held but that no test turned red when removed (found by the audit of 2026-11-19; no source
   change): the offer-id lane's terms bind, which is the only check of a served fee rate, give or value there
@@ -209,14 +209,17 @@
   Taker-bound and token-priced fills and the reservation (fclaim) lane are unchanged. The expiry copy reads "the chain
   is at or past block N", since N is a lower bound (test/fill-legacy-sunset.test.mjs, test/fill-failclosed.test.mjs).
 - Names: the wallet's own renewal is priced at the served tip raised to the lowest height the chain can be at for this
-  release and install (`namespv.ts` `lowestChainHeight`: the stored floor or the release's newest anchor), the bound the
-  offer-id fill checks use. Before, a fresh install at a served tip of 39,000 priced a renewal of "abc" at 500,000,000
-  base units, which the resolver refuses after the fee has left; it is now 1,500,000,000, the price at any height this
-  release can see. With no usable tip and no stored floor the renewal is still refused. The approval window reads the
-  same height from the background (`lowestChainHeight`, a local read) for its underpaid-fee warning on a site's name
-  record, for the legacy reservation's V28 warning (now shown on a fresh install too) and for a fill card's blocks left
-  (test/fee-tier-clamp.test.mjs, test/display-truth.test.mjs, test/sign-display-parity.test.mjs section 3,
-  test/approve-card-honesty.test.mjs section 6).
+  release and install (`chainbound.ts` `lowestChainHeight`: the stored floor or the release's newest anchor), the bound
+  the offer-id fill checks use. Before, a fresh install at a served tip of 39,000 priced a renewal of "abc" at
+  500,000,000 base units, which the resolver refuses after the fee has left; it is now 1,500,000,000, the price at any
+  height this release can see. With no usable tip and no stored floor the renewal is still refused. The approval window
+  holds the same bound itself (`src/core/spvnewest.ts`, the newest anchor's height, which the anchor generator writes
+  beside the table, and `chainbound.ts`, neither of which brings the table into its bundle), combined with the floor read
+  when it answers. So its underpaid-fee warning on a site's name record prices at the bound even when the tip and floor
+  reads fail or time out (where the renewal itself refuses), the legacy reservation's V28 warning is shown on every
+  install with no read, and a fill card never counts its blocks left from below the bound (test/approve-bound-dom.test.mjs,
+  test/chainbound.test.mjs, test/fee-tier-clamp.test.mjs, test/display-truth.test.mjs, test/clearsign.ts,
+  test/sign-display-parity.test.mjs section 3, test/approve-card-honesty.test.mjs).
 - Fills: the repeated-fill refusal (an earlier fill of the same target from this account, sent in the last 30 minutes,
   not marked gone and not yet seen applied) has its own code, `FILL_ALREADY_SENT`, in place of `VERIFY_UNAVAILABLE`,
   which a page or the SDK may retry on a timer: each retry is another approval window, and the one that succeeds can

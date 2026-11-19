@@ -59,8 +59,9 @@ stored after its last header sync, and the height of the release's newest built-
 past whatever is served. A tip served too low therefore cannot get an offer-id fill of an open CSD offer signed, nor
 one of an offer that expired below that height. The wallet's own name renewal is priced at the same height, and so
 is the approval window's warning about an underpaid name fee, so a tip served too low cannot price a cheaper fee
-tier; with no usable tip and no stored floor the renewal is still refused. On a fresh install the stored floor is 0
-until the first sync.
+tier; with no usable tip and no stored floor the renewal is still refused, and the window's warning prices at the
+release's newest anchor, which the window holds without a read. On a fresh install the stored floor is 0 until the
+first sync.
 
 The approval window's title for a score-0 attestation (how a site cancels a CairnX offer or bid) also comes from that
 RPC: it reads the target proposal, and says "Cancel your offer" or "Cancel your bid" only when the node reports the

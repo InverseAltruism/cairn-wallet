@@ -15,11 +15,11 @@ Then it routes on the request alone, never on a served field:
 - Otherwise it is an offer-id fill: `csdLanePreflight` for a CSD-priced want, `tokenLanePreflight` for a token want.
   An open CSD offer filled by offer id during a live hold refuses with `FILL_WRONG_TARGET`, and from the V28 sunset
   height (the bundle's `LEGACY_HOLD_SUNSET_HEIGHT`, 60,044, from which no legacy hold is live) with
-  `FILL_LEGACY_SUNSET`. The height compared is `offerIdChainBound`: the served tip or `namespv.ts` `lowestChainHeight`
-  (the stored tip floor and the release's newest anchor, `SPV_NEWEST`), whichever is higher; fee pricing uses the same
-  `lowestChainHeight`. The chain is at least as high as that anchor whatever is served or stored, and the anchor is past
-  60,044 (the test asserts it; a later table only adds newer entries), so the refusal fires for every offer-id fill of
-  an open CSD offer on every install, whatever tip is served (test/fill-legacy-sunset.test.mjs).
+  `FILL_LEGACY_SUNSET`. The height compared is `offerIdChainBound`: the served tip or `chainbound.ts`
+  `lowestChainHeight` (the stored tip floor and the release's newest anchor, `SPV_NEWEST`), whichever is higher; fee
+  pricing uses the same `lowestChainHeight`. The chain is at least as high as that anchor whatever is served or stored,
+  and the anchor is past 60,044 (the test asserts it; a later table only adds newer entries), so the refusal fires for
+  every offer-id fill of an open CSD offer on every install, whatever tip is served (test/fill-legacy-sunset.test.mjs).
 
 Every lane returns a refusal or null and signs nothing. An unprovable or transient read refuses as retryable
 (`VERIFY_UNAVAILABLE`); a proven mismatch refuses as `FILL_UNSAFE`.
@@ -175,8 +175,9 @@ An offer-id fill of a CSD-priced offer: a taker-bound offer (an open one is refu
   newest anchor 1,000 to 6,000 blocks below the public tip, so this refuses only offers the chain has already
   expired (test/fill-failclosed.test.mjs, test/fill-token-content.test.mjs, test/fill-legacy-sunset.test.mjs).
   The fill cards show the listed offer's expiry block and the blocks left after the served tip raised to
-  `lowestChainHeight` (read from the background), from the offer service's listing (display only), and name a refusal
-  only when `offerFillTooLate` says the preflight will make it (test/approve-card-honesty.test.mjs).
+  `lowestChainHeight` of the stored floor (the window holds the anchor's height itself), from the offer service's
+  listing (display only), and name a refusal only when `offerFillTooLate` says the preflight will make it
+  (test/approve-card-honesty.test.mjs).
   For a partial listing the card's "You receive" is what the request's payment to the listing's payee buys, from the
   vendored `previewFill` over the same listing, labelled as computed from it, with the whole listing on its own row
   (display only; test/fill-card-receive.test.mjs). A served listing without its minimum reads as a whole listing, so

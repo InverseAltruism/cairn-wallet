@@ -59,8 +59,10 @@ name makes a stale local file self-evident.
    node scripts/update-spv-anchors.mjs /tmp/anchor.json --write    # rewrites src/core/spvanchors.ts
    ```
    The generator refuses, and writes nothing, when the anchor JSON fails any check, a header page is short or
-   out of order, the walk from the floor pin does not reach the corroborated hash, or the new table does not
-   extend the committed one. Commit the table on its own and keep the anchor JSON line with the release record.
+   out of order, the walk from the floor pin does not reach the corroborated hash, or the new table does not extend the
+   committed one. With `--write` it also writes `src/core/spvnewest.ts`, the newest entry's height alone, which the
+   approval window uses without the table (`test/chainbound.test.mjs` fails when the two disagree). Commit the table and
+   that file on their own and keep the anchor JSON line with the release record.
    The `anchors` job in `release.yml` runs on that PR and on the tag (the release job needs it): it re-walks the
    chain from clarvis's public `/api/headers`, requires every entry to equal the walk, requires
    `https://cairn-substrate.com/api/rpc/block/height/<h>` to answer with that hash at every entry, and requires

@@ -38,7 +38,6 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "epoch": return w.epoch();
     case "tip": return w.tip();
     case "tipFloor": return w.tipFloor();
-    case "lowestChainHeight": return w.lowestChainHeight();
     case "send": return w.send(args[0], args[1], args[2], args[3]);
     case "consolidate": return w.consolidate(args[0]);
     case "consolidatePreview": return w.consolidatePreview(args[0]);

@@ -4,6 +4,7 @@
 import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, unpaintableBox, originInitial, profileDropValue, APPROVE_LABELS, ACKNOWLEDGE_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, nameRecordCaution, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, SCORE_CANCEL } from "../core/cairnx.js";
+import { lowestChainHeight } from "../core/chainbound.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields } from "../core/signfields.js";
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
@@ -131,17 +132,12 @@ async function render() {
       // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
       // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
       // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
-      const [e, t, f, l] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor")), bounded(call("lowestChainHeight"))]);
+      const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
       if (e != null) current.currentEpoch = e;
       if (t != null) current.currentTip = t;
-      // The stored floor and the lowest chain height, so the review-side fee warning prices the tier the build side would
+      // The stored floor; describe() raises it to the release's newest anchor itself (chainbound.ts), so a missed read
+      // still prices the fee warning at that height.
       if (f != null) current.tipFloor = f;
-      if (l != null) current.lowestHeight = l;
-    } else if (current.method === "attest" && attestOf(current)?.score === 50 && attestOf(current)?.confidence === 0) {
-      // The lowest chain height (the stored floor or the release's newest anchor), so describe() can warn that a legacy
-      // SCORE_CLAIM past V28 is an on-chain no-op. A wallet-store read (READ_ONLY, no network); a miss leaves no warning.
-      const l = await bounded(call("lowestChainHeight"));
-      if (l != null) current.lowestHeight = l;
     } else if (current.method === "attest" && attestOf(current)?.score === SCORE_CANCEL) {
       // A score-0 attest the signer signs as an attest (not at the token-fill confidence, which signs a fill) cancels the
       // target when it is the signer's own CairnX offer or bid; the node's proposal read says whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
@@ -523,13 +519,11 @@ async function fillBalance(r: any) {
     if (el) el.textContent = "unavailable";
   }
 }
-// The tip a fill card measures the offer's expiry against: the node tip raised to the lowest chain height (the stored
-// floor or the release's newest anchor), as the preflight raises it; undefined when neither read answers (the card then
-// shows the expiry block alone).
-async function cardTip(): Promise<number | undefined> {
-  const [t, l] = await Promise.all([bounded(call("tip")), bounded(call("lowestChainHeight"))]);
-  const at = Math.max(Number(t) || 0, Number(l) || 0);
-  return at > 0 ? at : undefined;
+// The tip a fill card measures the offer's expiry against: the served tip raised to chainbound.ts lowestChainHeight of
+// the stored floor, as the preflight raises it. Never below the release's newest anchor, whichever read misses.
+async function cardTip(): Promise<number> {
+  const [t, f] = await Promise.all([bounded(call("tip")), bounded(call("tipFloor"))]);
+  return Math.max(Number(t) || 0, lowestChainHeight(Number(f) || 0));
 }
 let fillViewForId: string | null = null;
 async function fillFillView(r: any) {

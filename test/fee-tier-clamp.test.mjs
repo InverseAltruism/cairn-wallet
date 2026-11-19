@@ -1,4 +1,4 @@
-// Name-fee pricing is raised to the stored floor and to the lowest chain height (namespv.ts lowestChainHeight: the
+// Name-fee pricing is raised to the stored floor and to the lowest chain height (chainbound.ts lowestChainHeight: the
 // floor or the release's newest anchor), identically at build time and review time.
 //
 // A served tip is an unvalidated read. One served too low prices an obsolete cheaper tier: the resolver rejects the
@@ -12,7 +12,8 @@ import { readFileSync } from "node:fs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { feePricingTip, nameRegFee, buildFeeHeight, buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
-import { SPV_NEWEST, lowestChainHeight } from "../src/core/namespv.js";
+import { SPV_NEWEST } from "../src/core/namespv.js";
+import { lowestChainHeight } from "../src/core/chainbound.js";
 import { describe } from "../src/popup/clearsign.js";
 import { mkCoin, txReply } from "./_coin.js";
 import { checker } from "./helpers/check.mjs";
@@ -88,7 +89,8 @@ function tipStub(height) {
   check("review: deflated tip + floor 47,000 WARNS on an underpaying pre-V24-tier payment", /below the current price/i.test(mk(feeDeflated, 40_000, 47_000)));
   check("review: paying the V24 tier under the same deflated tip does NOT warn", !/below the current price/i.test(mk(feeAtFloor, 40_000, 47_000)));
   check("review: floor-only (tip read failed) still arms the warning", /below the current price/i.test(mk(feeDeflated, undefined, 47_000)));
-  check("review: fully offline (no tip, no floor) still skips the check (no false warning)", !/below the current price/i.test(mk(feeDeflated, undefined, 0)));
+  check("review: fully offline (no tip, no floor) prices at the release anchor and warns on the pre-V24 tier", /below the current price/i.test(mk(feeDeflated, undefined, 0)));
+  check("review: ...and does not warn on the anchor's tier", !/below the current price/i.test(mk(Number(nameRegFee(NAME, buildFeeHeight(SPV_NEWEST))), undefined, 0)));
 }
 
 // ── source pins: ONE helper at every pricing site (build AND review) ───────────────────────────────
@@ -98,7 +100,7 @@ const wCalls = (wsrc.match(/buildFeeHeight\(/g) || []).length;
 const wPriced = (wsrc.match(/= await this\.pricingTip\(\)/g) || []).length;
 check(`wallet.ts: every buildFeeHeight call prices pricingTip's tip (${wPriced} of ${wCalls})`, wCalls >= 2 && wPriced >= wCalls);
 check("wallet.ts: pricingTip is feePricingTip over the served tip, the floor and the lowest chain height", /return feePricingTip\(raw, floor, lowestChainHeight\(floor\)\)/.test(wsrc));
-check("clearsign.ts: the review tip is the shared feePricingTip with the lowest chain height", /feePricingTip\(r\.currentTip, r\.tipFloor, Number\(r\.lowestHeight\) \|\| 0\)/.test(csrc));
+check("clearsign.ts: the review tip is the shared feePricingTip with the lowest chain height, and the bound where it is null", /feePricingTip\(r\.currentTip, r\.tipFloor, lowest\) \?\? lowest/.test(csrc));
 check("clearsign.ts: no raw currentTip reaches buildFeeHeight", !/buildFeeHeight\(\s*Number\(r\.currentTip/.test(csrc));
 
 // ══ W5 (Q-02): a served non-integer or oversize tip must not silently disarm the fee guards ═══════════
@@ -196,15 +198,16 @@ console.log(`\nPAIRED HAPPY-PATH (W5): fresh install, live tip ${LIVE_TIP}, floo
   const mkTip = (treasuryVal, tip, floor) => describe({ method: "propose", currentTip: tip, tipFloor: floor,
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
   check("review: a fractional served tip WITH a PoW floor still warns (the floor governs)", /below the current price/i.test(mkTip(need - 1, 65100.5, LIVE_TIP)));
-  check("review: a fractional served tip with NO floor skips rather than showing a false clean bill", !/below the current price/i.test(mkTip(need - 1, 65100.5, 0)));
-  // The approval window passes the lowest chain height: an "abc" renewal paying the 39,000 tier warns at a served tip of
-  // 39,000 with floor 0, as the build side prices it.
+  // With no usable tip and no floor feePricingTip is null (the build sites refuse); the review prices at the bound.
+  check("review: a fractional served tip with NO floor prices at the release bound and warns", /below the current price/i.test(mkTip(need - 1, 65100.5, 0)));
+  check("review: ...and a correct payment at that bound does not warn", !/below the current price/i.test(mkTip(need, 65100.5, 0)));
+  // describe() raises a served tip of 39,000 with floor 0 to the bound itself: an "abc" renewal paying the 39,000 tier
+  // warns. The approval window's own path, with its reads failing or timing out: test/approve-bound-dom.test.mjs.
   const abc = buildNameRenew({ name: "abc" });
   const low = Number(nameRegFee("abc", buildFeeHeight(39_000)));
-  const mkAbc = (extra) => describe({ method: "propose", currentTip: 39_000, tipFloor: 0, ...extra,
+  const mkAbc = () => describe({ method: "propose", currentTip: 39_000, tipFloor: 0,
     params: { domain: CAIRNX_DOMAIN, uri: abc.uri, payloadHash: abc.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: low }] } });
-  check(`review: "abc" paying the 39,000 tier (${low}) at a served tip of 39,000 warns with the lowest chain height passed`, /below the current price/i.test(mkAbc({ lowestHeight: lowestChainHeight(0) })));
-  check("review: ...and the same record without it does not (the window must pass it)", !/below the current price/i.test(mkAbc({})));
+  check(`review: "abc" paying the 39,000 tier (${low}) at a served tip of 39,000 with floor 0 warns`, /below the current price/i.test(mkAbc()));
 }
 
 globalThis.fetch = origFetch;

@@ -144,12 +144,12 @@ ok("M15: truncLoud escapes after slicing (no live markup)", (() => {
 // ── LOW: score-50 past V28 warns it is a guaranteed on-chain no-op ───────────
 {
   const base = { method: "attest", params: { proposalId: ID, score: 50, confidence: 0, fee: 5_000_000 } };
-  ok("LOW-V28: no floor threaded, no warning (today's behavior)", !/rejected<\/b> on-chain/.test(describe(base)));
-  ok("LOW-V28: floor below the gate, no warning (no false alarm mid-transition)", !/rejected<\/b> on-chain/.test(describe({ ...base, tipFloor: V28_HEIGHT - 1 })));
-  const warned = describe({ ...base, tipFloor: V28_HEIGHT });
-  ok("LOW-V28: PoW-backed floor at the gate warns REJECTED on-chain (fee-costing no-op)", /rejected<\/b> on-chain/.test(warned) && warned.includes(String(V28_HEIGHT)));
+  // The release's newest anchor is past V28, so the warning needs no read: chainbound.ts lowestChainHeight is past the
+  // gate with no floor, a floor of 0 and a floor below the gate alike.
+  const warned = describe(base);
+  ok("LOW-V28: no floor threaded (a fresh install, or the floor read missed) warns REJECTED on-chain (fee-costing no-op)", /rejected<\/b> on-chain/.test(warned) && warned.includes(String(V28_HEIGHT)));
+  ok("LOW-V28: a floor of 0 or below the gate still warns (the release anchor is past V28)", [0, V28_HEIGHT - 1].every((f) => /rejected<\/b> on-chain/.test(describe({ ...base, tipFloor: f }))));
   ok("LOW-V28: the warning is a warn, not a re-label (reserve copy still present)", /Reserve an open offer/.test(warned));
-  ok("LOW-V28: floor 0 with the lowest chain height past the gate (a fresh install) warns", /rejected<\/b> on-chain/.test(describe({ ...base, tipFloor: 0, lowestHeight: V28_HEIGHT })));
 }
 
 // ── LOW: the v2.8 fclaim record clear-signs structurally (no raw-JSON fallback) ─

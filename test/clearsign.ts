@@ -212,8 +212,10 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
   ok("FEE-1: underpaid renewal (3 CSD where V24 needs 5) WARNS", /below the current price/i.test(mk(3e8, 49300)));
   ok("FEE-1: correctly-paid renewal (5 CSD at V24) does NOT warn", !/below the current price/i.test(mk(5e8, 49300)));
-  ok("FEE-1: pre-V24 renewal paying the 3 CSD V18 price does NOT warn (no false alarm)", !/below the current price/i.test(mk(3e8, 44230)));
-  ok("FEE-1: offline (no tip) skips the fee check (no false warning)", !/below the current price/i.test(mk(3e8, undefined)));
+  // A served tip below V24, or none, is raised to the release's newest anchor (chainbound.ts), past V24: the chain is
+  // there, so the V18 price is underpaid and the V24 price is not.
+  ok("FEE-1: a served tip below V24 (44,230) prices at the release anchor: the 3 CSD V18 price WARNS", /below the current price/i.test(mk(3e8, 44230)));
+  ok("FEE-1: offline (no tip, no floor) prices at the release anchor: 3 CSD WARNS, 5 CSD does not", /below the current price/i.test(mk(3e8, undefined)) && !/below the current price/i.test(mk(5e8, undefined)));
 }
 
 // RT-W1: an nprofile value (consensus cap 256 bytes) must be shown in full; the popup used to cut it at

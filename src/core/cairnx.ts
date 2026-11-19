@@ -76,11 +76,11 @@ export { buildFeeHeight } from "../vendor/cairnx-spv.js";
 // The one tip for name-fee pricing, used at build time (wallet.ts renew and renewFee) and at review time (clearsign.ts
 // fee warning) so the two sides price the same tier. A served tip is an unauthenticated read: one served too low
 // prices an obsolete cheaper tier, the resolver rejects the record and the fee leaves the wallet. So the tip is
-// raised to the stored floor and to `lowest`, namespv.ts lowestChainHeight (the floor and the release's newest
-// anchor), which callers pass in because this module is also in the approval window's bundle. An over-tier fee only
-// overpays. Each input counts only as a positive safe integer: 65100.5 or 1e16 is not a height. The answer is null
-// when neither the served tip nor the stored floor is usable, whatever `lowest` is: the build sites refuse to price
-// then and the review skips its warning, because a height of 0 would price the cheapest tier and burn the fee.
+// raised to the stored floor and to `lowest`, chainbound.ts lowestChainHeight (the floor and the release's newest
+// anchor), which callers pass in. An over-tier fee only overpays. Each input counts only as a positive safe integer:
+// 65100.5 or 1e16 is not a height. The answer is null when neither the served tip nor the stored floor is usable,
+// whatever `lowest` is: the build sites refuse to price then, because a height of 0 would price the cheapest tier and
+// burn the fee. The review warning, which signs nothing, prices at `lowest` instead (clearsign.ts).
 export function feePricingTip(rawTip: number | null | undefined, floor: number | null | undefined, lowest: number): number | null {
   const t = Number(rawTip), f = Number(floor), l = Number(lowest);
   const rt = Number.isSafeInteger(t) && t > 0 ? t : null;
