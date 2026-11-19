@@ -320,11 +320,15 @@ async function main() {
   lastSubmit = null;
   const rNoRebate = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 40_000_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES when price+rebate at the same address underpays the SUM (F2)", rNoRebate?.result?.ok === false && /underpaid|missing/i.test(String(rNoRebate?.result?.error)) && lastSubmit === null);
-  // (g) F4: a fractional output value is a structured refusal, never a raw BigInt throw
+  // (g) F4: a fractional output value is a structured refusal, never a raw BigInt throw. It is refused before the queue
+  // by the preflight's own check (fillpreflight.ts fillRefusal); the signer's nested BAD_OUTPUTS for the same row is
+  // pinned in test/send-fill-prequeue.test.mjs.
   lastSubmit = null;
-  const rFrac = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 1.5 }], fee: 5_000_000 });
-  check("fillOffer REFUSES a fractional output value with the structured error shape (F4)", rFrac?.result?.ok === false && /integer/i.test(String(rFrac?.result?.error)) && lastSubmit === null);
-  check("WS5: the bad-output refusal carries the BAD_OUTPUTS code", rFrac?.result?.code === "BAD_OUTPUTS");
+  const fracQueued = (await popup("pending")).result.length;
+  const frac = dappAsync("fillOffer", { proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 1.5 }], fee: 5_000_000 });
+  await tick(); await tick();
+  check("fillOffer REFUSES a fractional output value with the structured error shape (F4)", frac.get()?.ok === false && /integer/i.test(String(frac.get()?.error)) && lastSubmit === null && (await popup("pending")).result.length === fracQueued);
+  check("WS5: the bad-output refusal is answered BAD_REQUEST before it is queued", frac.get()?.code === "BAD_REQUEST");
   // (h) CONTROL: the correctly-built fill (price+rebate summed at payto==seller, fee to treasury) SIGNS
   lastSubmit = null;
   const rGood = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });

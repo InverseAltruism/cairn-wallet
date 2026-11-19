@@ -217,7 +217,8 @@ await test("10. queue caps: a confirm-step request re-queued after five newer on
   assert.equal((await inFlight).code, "RESERVATION_UNCONFIRMED");
   assert.equal((await call("pending")).filter((p) => p.origin === "https://dapp.test").length, 6, "one above the per-site cap of 5");
   let over;
-  chrome.listener({ kind: "dapp", method: "send", params: {} }, { origin: "https://dapp.test" }, (r) => { over = r; });
+  // a send the signer accepts: one it would refuse on its parameters is answered BAD_REQUEST before the caps are read
+  chrome.listener({ kind: "dapp", method: "send", params: { to: "0x" + "11".repeat(20), amount: 1e7, fee: 1e6 } }, { origin: "https://dapp.test" }, (r) => { over = r; });
   await settle();
   assert.equal(over?.code, "RATE_LIMITED", "the cap still refuses the next one");
   for (const p of await call("pending")) await call("resolve", p.id, false);

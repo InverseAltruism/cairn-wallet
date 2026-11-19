@@ -133,16 +133,18 @@ assert.deepEqual(await sites(), [A, C], "(A2) C is connected, A untouched");
 console.log("  ok");
 
 // ── (B) the outcome code reaches the approval window ─────────────────────────────────────────────────
+// A refusal that needs the coins (here the balance; the node serves none) is the signer's after approval; one decided by
+// the parameters alone, such as the zero address, is refused before the queue (test/send-fill-prequeue.test.mjs).
 console.log("(B1) a soft refusal from the signer carries its code to the window");
-const zero = dapp("send", { to: "0x" + "00".repeat(20), amount: 1_00000000, fee: 1_000_000 }, A);
+const poor = dapp("send", { to: "0x" + "55".repeat(20), amount: 1_00000000, fee: 1_000_000 }, A);
 await tick(); await tick();
 const reqZ = await lastPending("send");
 const outZ = (await popup("resolve", reqZ.id, true, signer)).result;
-assert.equal(outZ.ok, false, "(B1) the zero-address send is refused");
-assert.equal(outZ.code, "ZERO_ADDR_REFUSED", "(B1) the window receives the machine code");
-assert.match(outZ.error, /zero address/, "(B1) and the reason text");
-const dappZ = await zero;
-assert.equal(dappZ.result?.code, "ZERO_ADDR_REFUSED", "(B1) the page still receives the code as before");
+assert.equal(outZ.ok, false, "(B1) the send the balance does not cover is refused");
+assert.equal(outZ.code, "INSUFFICIENT", "(B1) the window receives the machine code");
+assert.match(outZ.error, /insufficient/, "(B1) and the reason text");
+const dappZ = await poor;
+assert.equal(dappZ.result?.code, "INSUFFICIENT", "(B1) the page still receives the code as before");
 console.log("  ok");
 
 console.log("(B2) a refusal raised in resolvePending itself carries its code too");

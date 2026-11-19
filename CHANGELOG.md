@@ -68,6 +68,30 @@
   rows gets the same verdict and text on both paths, a good proposal's signed transaction is byte-identical to the one
   3350dff signed, and the site's 39 golden proposals, attests and fills all queue through the real background
   (test/propose-prequeue.test.mjs, test/golden-requests-cards.test.mjs).
+- A `send` or `fillOffer` the wallet would refuse on its parameters alone is answered `BAD_REQUEST` before it is
+  queued, by the checks its signer runs before it selects a coin (`node.ts` `sendRefusal`, run by `node.send` and
+  `node.sendMany`; `fillpreflight.ts` `fillRefusal`, the preflight's checks that read nothing and then `node.ts`
+  `fillTxRefusal`, run by `node.fillOffer`): an output that is not an object, more than 500 outputs on a send or 100
+  on a fill, an address, amount or fee the signer refuses, the zero address, a fill target that is not a txid, and a
+  fill value that is not an integer number. A page could queue a send or fill whose outputs held `null`: the approval
+  window's paint threw on every poll, both buttons stayed off and every request behind it, another site's included,
+  stayed hidden until the window was closed. A decimal-string `amount` on a one-recipient send was shown and then
+  refused after approval (`BAD_FEE`); it is now refused before the window. `validateOutputs` refuses an element that is
+  not an object (`BAD_OUTPUTS`) instead of throwing, so a `propose` with a `null` output is answered the `BAD_REQUEST`
+  the provider contract states (it read `INTERNAL` on master after 0.3.3; 0.3.3 queued it). The checks are functions of
+  the parameters: no read, no wait, the same answer locked or unlocked. In the test's table every request the signer
+  accepts queues and every refused one is refused by the signer with the same text, the caps hold at 500 and 501 outputs on a send
+  and 100 and 101 on a fill, and the 10% fee cap, the balance and the fill preflight's reads stay after approval
+  (test/send-fill-prequeue.test.mjs; test/golden-requests-cards.test.mjs unchanged). Two tests that used a request now
+  refused before the queue moved to an equivalent one: test/background-consent-outcome.test.mjs (B1) takes its signer
+  refusal from the balance (`INSUFFICIENT`) instead of the zero address, test/extension-boundary.ts (g) reads the
+  fractional fill value's refusal before the queue, and test/fill-reservation-confirm.test.mjs (10) checks the queue
+  cap with a send the signer accepts instead of one with no parameters.
+- The approval window no longer hangs on a request it cannot draw: such a request is shown as one the wallet could not
+  show, Approve stays off, and Reject arms after the 700 ms floor, so the user can reject it and reach the requests
+  behind it. Each 1.2 s poll still retries the paint, so a paint that fails once draws on the next tick as before
+  (test/approve-guards-dom.test.mjs (5)); a retry that fails again leaves Reject live (test/approve-paint-throw-dom.test.mjs).
+  Before, the paint threw on every poll with both buttons off.
 - The approval window says what more records do, in text only: no request that could be approved before is refused,
   Approve still arms at its 700 ms floor, and that wording added no read (3 fetches before the click and 3 after it
   for a name transfer, and 4 and 3 for a profile write, as before it; the name check above then adds one read before

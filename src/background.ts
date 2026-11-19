@@ -6,10 +6,10 @@ import { Wallet, AUTO_LOCK_MS } from "./core/wallet.js";
 import { chromeStore, chromeSessionStore } from "./core/storage.js";
 import { PortRegistry } from "./core/events.js";
 import { APPROVE_REARM, APPROVE_WINDOW } from "./approve-window.js";
-import { fillTargetOf } from "./core/fillpreflight.js";
+import { fillTargetOf, fillRefusal } from "./core/fillpreflight.js";
 import { siwcParamsRefusal } from "./core/siwcparams.js";
-import { sendFields, revealFields, proposeFields, sealFields } from "./core/signfields.js";
-import { proposeRefusal, proposeFeeRefusal } from "./core/node.js";
+import { sendFields, revealFields, proposeFields, sealFields, fillFields } from "./core/signfields.js";
+import { proposeRefusal, proposeFeeRefusal, sendRefusal } from "./core/node.js";
 import { opaqueOrigin } from "./core/origin.js";
 
 const chrome: any = (globalThis as any).chrome;
@@ -497,11 +497,15 @@ const FILL_IN_PROGRESS_TEXT = "A payment request for this offer is already in yo
 const sealRefusal = (params: unknown): string | undefined => { const sf = sealFields(params); return sf.refused ?? proposeFeeRefusal(sf.fee)?.error; };
 function queueDappRequest(origin: string, method: string, params: any): Promise<any> {
   if (!DAPP_METHODS.has(method)) return Promise.resolve({ ok: false, code: "UNSUPPORTED_METHOD", error: "unsupported dApp method: " + String(method).slice(0, 32) });
-  // A sign-in, proposal or seal the wallet would refuse after the user approved it is refused now, before anyone is
-  // asked, by the function the signer refuses it with.
+  // A sign-in, proposal, seal, send or fill the wallet would refuse after the user approved it is refused now, before
+  // anyone is asked, by the function the signer refuses it with. Each is a function of the request's parameters alone
+  // (and, for a sign-in, the origin): no read, no wait and no wallet state, so the answer tells a page nothing about the
+  // wallet. What needs coins or reads (the proportional fee cap, the balance, the fill preflight) stays at signing.
   const bad = method === "signinWithCsd" ? siwcParamsRefusal(params, origin)
     : method === "propose" ? proposeRefusal(proposeFields(params))?.error
     : method === "sealClaim" ? sealRefusal(params)
+    : method === "send" ? sendRefusal(sendFields(params))?.error
+    : method === "fillOffer" ? fillRefusal(fillFields(params))?.error
     : undefined;
   if (bad) return Promise.resolve({ ok: false, code: "BAD_REQUEST", error: bad });
   const fillTarget = fillTargetOf(method, params);

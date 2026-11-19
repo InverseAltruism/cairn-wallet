@@ -579,9 +579,12 @@ export class Wallet {
   }
 
   // Summarize payment outputs for a history entry: total value + a single-recipient addr or "N recipients".
-  private summarizeOutputs(outs: { to: string; value: number }[]): { total: number; to: string } {
-    const total = outs.reduce((a, o) => a + Number(o.value || 0), 0);
-    return { total, to: outs.length === 1 ? outs[0]!.to : `${outs.length} recipients` };
+  // Runs after the engine answered, refusals included, so an element that is not an object (refused BAD_OUTPUTS) must
+  // not throw here.
+  private summarizeOutputs(outs: readonly unknown[]): { total: number; to: string } {
+    const os = outs as readonly ({ to?: unknown; value?: unknown } | null | undefined)[];
+    const total = os.reduce((a, o) => a + Number(o?.value || 0), 0);
+    return { total, to: os.length === 1 ? String(os[0]?.to) : `${os.length} recipients` };
   }
 
   balance() { return node.balance(this.rpc, this.addr()); }

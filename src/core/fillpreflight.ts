@@ -1,7 +1,7 @@
 // The fill preflight: what the wallet checks before it signs an offer fill (fillOffer, and an attest at the
 // token-fill confidence). It reads the offer and the chain through the wallet (FillPreflightIo) and returns a
 // refusal, or null to sign. Nothing here signs or records.
-import type * as node from "./node.js";
+import { fillTxRefusal, type SubmitResult } from "./node.js";
 import { cairnxTradeFee, fillIsSafe, isOpenClaimLane, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS } from "./cairnx.js";
 import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
@@ -73,9 +73,24 @@ function offerNotAdmitted(reason: string): FillRefusal {
 const SECOND_SOURCE_TIMEOUT_MS = 12000;
 
 // A fill refusal; RESERVATION_UNCONFIRMED also carries the facts the approval window shows.
-export type FillRefusal = node.SubmitResult & { unconfirmed?: ReservationUnconfirmed };
+export type FillRefusal = SubmitResult & { unconfirmed?: ReservationUnconfirmed };
 // The shape of a fill target (an offer id or a reservation txid); the preflight refuses anything else before any read.
 const FILL_TARGET_RE = /^0x[0-9a-fA-F]{64}$/;
+const badTarget = (): FillRefusal => ({ ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" });
+// The preflight sums a fill's outputs in bigint and takes each value only as a positive safe integer number; a
+// decimal-digit string, which the engine would parse, is refused here first.
+function outputValueRefusal(outputs: readonly unknown[]): FillRefusal | null {
+  const bad = outputs.some((o) => { const v = (o as { value?: unknown } | null)?.value; return typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0; });
+  return bad ? { ok: false, error: "each output value must be a positive integer amount in base units: refusing to sign", sighashMatch: false, code: "BAD_OUTPUTS" } : null;
+}
+/** Why the signer refuses a page's fill on its parameters alone (`f` is signfields.ts fillFields), or null: the
+ *  preflight's checks that read nothing, then the engine's (node.ts fillTxRefusal). background.ts asks it before it
+ *  queues a fillOffer, so the window does not open for a fill the signer refuses on its parameters alone
+ *  (test/send-fill-prequeue.test.mjs). */
+export function fillRefusal(f: { proposalId: unknown; outputs: readonly unknown[]; fee: unknown }): { code: string; error: string } | null {
+  const pre = !FILL_TARGET_RE.test(String(f.proposalId)) ? badTarget() : outputValueRefusal(f.outputs);
+  return pre ? { code: String(pre.code), error: String(pre.error) } : fillTxRefusal(f);
+}
 /** The target a dApp request would fill, lowercased as the preflight compares it, or null when the request is not a
  *  fill or names a malformed target (which the preflight refuses with BAD_REQUEST before any read). */
 export function fillTargetOf(method: string, params: unknown): string | null {
@@ -134,7 +149,7 @@ export type TokenFillQuote = {
 // `reservationAck` is the fclaim txid the user confirmed in the approval window after an "unknown" reservation
 // verdict; the background sets it only from that window's own resolve call (background.ts reservationAckFor).
 export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
-  if (!FILL_TARGET_RE.test(String(proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
+  if (!FILL_TARGET_RE.test(String(proposalId))) return badTarget();
   let offer: OfferState | null = null;
   let fetchFailed = false;
   try {
@@ -147,10 +162,10 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
     // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
     // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
     // instead of letting BigInt() throw raw out of the preflight.
+    const badValue = outputValueRefusal(outputs ?? []);
+    if (badValue) return badValue;
     const sums = new Map<string, bigint>();
     for (const o of outputs ?? []) {
-      if (typeof o.value !== "number" || !Number.isSafeInteger(o.value) || o.value <= 0)
-        return { ok: false, error: "each output value must be a positive integer amount in base units: refusing to sign", sighashMatch: false, code: "BAD_OUTPUTS" };
       const k = String(o.to).toLowerCase();
       sums.set(k, (sums.get(k) ?? 0n) + BigInt(o.value));
     }

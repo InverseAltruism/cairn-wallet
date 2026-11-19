@@ -53,7 +53,14 @@ events and alarm-driven auto-lock.
   outputs and the zero address), and a `sealClaim` by `signfields.ts` `sealFields`, which `wallet.sealClaim` signs
   from, and `proposeFeeRefusal`; one the signer would refuse is answered `BAD_REQUEST` with no window and no queue
   slot (test/propose-prequeue.test.mjs). The fee and zero-address helpers are the ones `assembleValueTx` and
-  `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there.
+  `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there. A `send` is checked by
+  `node.ts` `sendRefusal` and a `fillOffer` by `fillpreflight.ts` `fillRefusal`, which run the checks `node.send`,
+  `node.sendMany` and `node.fillOffer` run before they select a coin (the outputs and their caps of 500 and 100, an
+  element that is not an object, the amount, the fee checks that need no coins, the zero address) and, for a fill,
+  the preflight's checks that read nothing (the target's shape, output values that are integer numbers); one the
+  signer would refuse is answered `BAD_REQUEST` the same way (test/send-fill-prequeue.test.mjs). Every pre-queue
+  check is a function of the request's parameters (and, for a sign-in, the origin): it reads nothing and waits for
+  nothing, so its answer carries no wallet state.
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the
   result.
 - `approvedOrigins` (storage key): `{ vault, origins: { [origin]: ms } }`, the origins the user has approved a request
@@ -237,7 +244,9 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   verdict is keyed by the request and the signer the paint shows (`armNfinalizeGate`); a repaint for another signer
   recomputes it from the record already read, chained on that one read, so a verdict for the signer shown before
   always lands first. A click (`resolve`) is bound to the paint generation and the signer it was made on and is
-  abandoned, signing nothing, when either has changed after one of its awaits.
+  abandoned, signing nothing, when either has changed after one of its awaits. A request whose paint throws is shown
+  as one the wallet could not show: Approve stays off and Reject arms after the 700 ms floor, so it cannot hold the
+  window or hide the requests behind it (test/approve-paint-throw-dom.test.mjs).
 - `clearsign.ts`: pure formatters, among them `groupedAddr`, the one address-in-groups-of-four display both pages
   use, lookalike detection and the nfinalize approve gate: it re-fetches the reservation and runs
   `finalizeWinnerCheck` before allowing a fee-burning finalize.

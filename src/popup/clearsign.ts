@@ -742,6 +742,8 @@ export function secondSourceNote(state: unknown): string | null {
 // box; one markup each for the window and the density probe that reserves their room before the paint.
 export const balanceShortBox = (): string => `<div class="checks">${danger(escapeHtml(balanceShortNote("Reject this")))}</div>`;
 export const nfinNoteBox = (g: { block: boolean; note: string }): string => `<div class="req" id="nfin-note">${checkRow({ tier: g.block ? "danger" : "caution", html: escapeHtml(g.note) })}</div>`;
+// What approve.ts shows in place of a request describe() could not paint: Approve stays off, Reject works.
+export const unpaintableBox = (): string => `<div class="checks">${danger("The wallet could not show this request, so it cannot be approved. Reject it to see the next request.")}</div>`;
 
 // The balance-after is negative: the node's spendable balance (the sum of its available coins, the same
 // coins the engine selects from) does not cover the debit, so signing could only end in INSUFFICIENT.

@@ -219,9 +219,18 @@ user to approve something that cannot be signed (test/siwc-prequeue.test.mjs). A
 same way, by the function the signer refuses it with (`node.ts` `proposeRefusal`, `signfields.ts` `sealFields`): a
 malformed payload hash or expiry, a domain or URI that is not a string, has an unpaired surrogate or is past the
 network's byte cap, a fee that is not an integer from the network's 0.25 CSD proposal minimum to the 100 CSD cap,
-outputs the signer refuses (the zero address included), a seal claim or domain of the wrong type. Such a request is
-answered `BAD_REQUEST` before it is queued and uses no queue slot; none of the site's golden requests is refused
-(test/propose-prequeue.test.mjs, test/golden-requests-cards.test.mjs). Two kinds of refusal stay after approval:
+outputs the signer refuses (the zero address included), a seal claim or domain of the wrong type. A send and a fill
+are checked by the checks their signer runs before it selects a coin (`node.ts` `sendRefusal`, `fillpreflight.ts`
+`fillRefusal`): an output that is not an object, more outputs than the signer takes (500 on a send, 100 on a fill), an
+address or amount it refuses (a decimal-string `amount` included), the zero address, a fee that is not an integer
+number above zero and at most 100 CSD, a fill target that is not a txid. Such a request is answered `BAD_REQUEST`
+before it is queued and uses no queue slot; none of the site's golden requests is refused
+(test/propose-prequeue.test.mjs, test/send-fill-prequeue.test.mjs, test/golden-requests-cards.test.mjs). Each of these
+checks is a function of the request's parameters: it reads nothing and waits for nothing, so the answer is the same
+whatever the wallet holds and whether it is locked. Before, a page could queue a send or fill whose outputs held
+`null`: the approval window could not draw it, kept both buttons off and hid every request behind it. A request the
+window still fails to draw is shown as one it could not show, with Approve off and Reject live after the 700 ms floor
+(test/approve-paint-throw-dom.test.mjs). Two kinds of refusal stay after approval:
 the 10% fee cap and the balance need the coins the wallet selects, and the node's own rules that csd-sdk does not
 carry (an empty domain or URI, an all-zero payload hash) are refused by the node at submit with nothing spent,
 because the wallet does not re-declare consensus. A `revealClaim` for a txid the active account holds no seal for
