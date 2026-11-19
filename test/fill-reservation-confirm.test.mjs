@@ -67,6 +67,11 @@ async function request(kind, clarvisFor, { scanMs = 0, params = {}, base } = {})
   out.id = q[q.length - 1].id;
   return out;
 }
+// A reservation of its own for a request that is to sign after another fill of the default one was sent: within
+// OWN_FILL_INDEX_WAIT_MS an unconfirmed fill of the same target refuses the next (the repeated-fill rule,
+// test/fill-refill-after-send.test.mjs), which this file does not test.
+let lastBase = 5000;
+const freshBase = () => (lastBase += 100);
 // The window's resolve for one request, with that request's chain view in place.
 const resolveAs = (req, ...args) => { req.arm(); return call("resolve", req.id, ...args); };
 // clarvis on the true chain for the offer, and a record 404 30 blocks past our fclaim: "unknown".
@@ -161,7 +166,7 @@ await test("7. honest path: a granted reservation signs on the first approval, w
   const runs = async (cl) => {
     const t = [];
     for (let i = 0; i < 5; i++) {
-      const R = await request(null, cl, { scanMs: 300 });
+      const R = await request(null, cl, { scanMs: 300, base: freshBase() });
       const t0 = performance.now();
       const r = await resolveAs(R, true, ME);
       t.push(performance.now() - t0);
@@ -178,12 +183,12 @@ await test("7. honest path: a granted reservation signs on the first approval, w
 });
 
 await test("8. the window closing settles a confirm-step request APPROVAL_CLOSED, before or during the re-run", async () => {
-  const E = await request(null, unknown);
+  const E = await request(null, unknown, { base: freshBase() });
   assert.equal((await resolveAs(E, true, ME)).code, "RESERVATION_UNCONFIRMED");
   onRemoved(WIN);
   await settle();
   assert.deepEqual(E.reply, { ok: false, code: "APPROVAL_CLOSED", error: "rejected (approval window closed)" });
-  const F = await request(null, unknown, { scanMs: 200 });
+  const F = await request(null, unknown, { scanMs: 200, base: freshBase() });
   const inFlight = resolveAs(F, true, ME);
   await new Promise((r) => setTimeout(r, 50));
   onRemoved(WIN);
@@ -194,7 +199,7 @@ await test("8. the window closing settles a confirm-step request APPROVAL_CLOSED
 });
 
 await test("9. the window closing during the Sign anyway re-run still signs: the user chose", async () => {
-  const G = await request(null, unknown, { scanMs: 200 });
+  const G = await request(null, unknown, { scanMs: 200, base: freshBase() });
   assert.equal((await resolveAs(G, true, ME)).code, "RESERVATION_UNCONFIRMED");
   const inFlight = resolveAs(G, true, ME, undefined, ackFor(G));
   await new Promise((r) => setTimeout(r, 50));
@@ -207,7 +212,7 @@ await test("9. the window closing during the Sign anyway re-run still signs: the
 });
 
 await test("10. queue caps: a confirm-step request re-queued after five newer ones from its site overshoots by one, bounded", async () => {
-  const H1 = await request(null, unknown, { scanMs: 200 });
+  const H1 = await request(null, unknown, { scanMs: 200, base: freshBase() });
   const inFlight = resolveAs(H1, true, ME);
   await new Promise((r) => setTimeout(r, 20));
   const sends = [];
@@ -217,7 +222,8 @@ await test("10. queue caps: a confirm-step request re-queued after five newer on
   assert.equal((await inFlight).code, "RESERVATION_UNCONFIRMED");
   assert.equal((await call("pending")).filter((p) => p.origin === "https://dapp.test").length, 6, "one above the per-site cap of 5");
   let over;
-  chrome.listener({ kind: "dapp", method: "send", params: {} }, { origin: "https://dapp.test" }, (r) => { over = r; });
+  // a send the signer accepts: one it would refuse on its parameters is answered BAD_REQUEST before the caps are read
+  chrome.listener({ kind: "dapp", method: "send", params: { to: "0x" + "11".repeat(20), amount: 1e7, fee: 1e6 } }, { origin: "https://dapp.test" }, (r) => { over = r; });
   await settle();
   assert.equal(over?.code, "RATE_LIMITED", "the cap still refuses the next one");
   for (const p of await call("pending")) await call("resolve", p.id, false);
@@ -227,7 +233,7 @@ await test("10. queue caps: a confirm-step request re-queued after five newer on
 //   RED-FIRST: drop `delete out.secondSource` in background.ts pageResult and the page check fails; drop the
 //   second argument of the success `finish(...)` and the window check fails.
 await test("11. a fill signed while the record read is pending: the window is told, the page is not", async () => {
-  const P = await request(null, (w) => (i, u) => (String(u).includes("/cairnx/record/") ? delayed(3000, truthful(w))(i, u) : body(w.truth)()));
+  const P = await request(null, (w) => (i, u) => (String(u).includes("/cairnx/record/") ? delayed(3000, truthful(w))(i, u) : body(w.truth)()), { base: freshBase() });
   const r = await resolveAs(P, true, ME);
   assert.equal(r.ok, true, String(r.error));
   assert.equal(r.secondSource, "pending", "the window's outcome names the unanswered read");
@@ -235,7 +241,7 @@ await test("11. a fill signed while the record read is pending: the window is to
   assert.equal(P.reply?.ok, true);
   assert.equal(typeof P.reply?.result?.txid, "string");
   assert.equal("secondSource" in P.reply.result, false, "the page's result does not carry it");
-  const Q = await request(null, (w) => truthful(w));
+  const Q = await request(null, (w) => truthful(w), { base: freshBase() });
   const q = await resolveAs(Q, true, ME);
   assert.equal(q.ok, true);
   assert.equal("secondSource" in q, false, "honest path: an answered read gives the window no notice");

@@ -92,7 +92,11 @@ Signing and funds:
 - Offer fills: every lane merkle-proves the offer and binds the served terms to it before signing; the remaining
   resolver trust (give-backing, the completeness of a partial offer's fill list on the offer-id lane) and the
   second-source reads with their gaps are in `docs/DESIGN-fill-lanes.md`. One fill request per fill target at a time:
-  another is refused `FILL_IN_PROGRESS` before it is queued (test/fill-one-request-per-offer.test.mjs).
+  another is refused `FILL_IN_PROGRESS` before it is queued (test/fill-one-request-per-offer.test.mjs). After the
+  first was sent, another CSD-paid fill of the same target refuses retryably while the first is recent (30 minutes),
+  not gone and not seen applied, except a lost submit's retry that builds the same transaction; the rule is decided in
+  one function, `fillpreflight.ts` `repeatedFillRefusal`, which for such a retry runs on the assembled transaction
+  (test/fill-refill-after-send.test.mjs).
 - Name sends stay on SPV name verification (`namespv`). A disagreeing second source is a warning, not a refusal (the
   warn-over-block rule; `SECURITY.md` states it).
 - SPV headers (`docs/DESIGN-namespv-scaling.md`): the names floor 29,960 cannot move, since verifying a name event at
@@ -118,7 +122,8 @@ Keys and the dApp boundary:
   the vault or the header snapshot (test/storage-access-level.test.mjs).
 - Privileged methods (export, mnemonic, account management, settings, reset, consolidate) are popup-only, refused on
   the dApp channel even if approved. `reset` exists only as a background method; no screen offers it. The
-  `DAPP_METHODS` allowlist is enforced twice: before a request is queued and in `resolvePending`.
+  `DAPP_METHODS` allowlist is enforced twice: before a request is queued and in `resolvePending`
+  (test/extension-boundary.ts, test/resolve-allowlist-second-line.test.mjs).
 - export/exportMnemonic deliberately work while locked (password-gated direct vault decrypt); correct behaviour, do
   not "fix".
 - An open approval window is brought forward only by `focusApprovalWindow`, the one `chrome.windows.update` in
@@ -177,7 +182,7 @@ The incidents behind these are in `CHANGELOG.md`.
   union path are load-bearing; keep them.
 - rename/removeAccount take an address, not an index.
 - `sighashMatch` in SubmitResult is vestigial but dApp-visible; keep it.
-- A .csd recipient never reaches a URL unvalidated (NAME_RE first).
+- A .csd recipient never reaches a URL unvalidated (NAME_RE first; test/names-check-before-url.test.mjs).
 - Wallet distribution is the Chrome Web Store and GitHub releases only; the sites do not serve the zip.
 
 ## Release and deploy

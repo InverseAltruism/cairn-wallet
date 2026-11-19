@@ -20,7 +20,7 @@ import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
 import { attestFields, fillFields, proposeFields, sealFields } from "./signfields.js";
 import { readNameRecord, nameActSignVerdict, CONFIRM_OTHER_OWNER, NAME_READ_TIMEOUT_MS } from "./namegate.js";
-import { fillOfferPreflight, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
+import { fillOfferPreflight, repeatedFillRefusal, type FillPreflightIo, type FillRefusal, type FillNotes, type FillSpvIoExt, type ProvenOfferPayto, type ProvenOfferRefused, type TokenFillQuote } from "./fillpreflight.js";
 import { DEFAULT_EXPLORER } from "./explorer.js";
 import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, rpcAllowed, RPC_LOCAL_ERR } from "./endpoints.js";
 import type { HintSetEntry } from "./namecache.js";
@@ -579,9 +579,12 @@ export class Wallet {
   }
 
   // Summarize payment outputs for a history entry: total value + a single-recipient addr or "N recipients".
-  private summarizeOutputs(outs: { to: string; value: number }[]): { total: number; to: string } {
-    const total = outs.reduce((a, o) => a + Number(o.value || 0), 0);
-    return { total, to: outs.length === 1 ? outs[0]!.to : `${outs.length} recipients` };
+  // Runs after the engine answered, refusals included, so an element that is not an object (refused BAD_OUTPUTS) must
+  // not throw here.
+  private summarizeOutputs(outs: readonly unknown[]): { total: number; to: string } {
+    const os = outs as readonly ({ to?: unknown; value?: unknown } | null | undefined)[];
+    const total = os.reduce((a, o) => a + Number(o?.value || 0), 0);
+    return { total, to: os.length === 1 ? String(os[0]?.to) : `${os.length} recipients` };
   }
 
   balance() { return node.balance(this.rpc, this.addr()); }
@@ -622,12 +625,13 @@ export class Wallet {
     // and whose debit line counts only the fee (a WYSIWYS bypass -> silent CSD theft). So the route hardcodes
     // outputs:[] and the method does not accept an outputs param at all - a token fill never has CSD outputs.
     const a = attestFields(p);
+    if (a.route === "attest" && a.shape) return refuse("BAD_REQUEST", a.shape);
     if (a.route === "fill")
       return this.fillOffer({ proposalId: p.proposalId, outputs: [], score: p.score, confidence: p.confidence, fee: p.fee, expectSigner: p.expectSigner, tokenQuote: p.tokenQuote });
     // B9: an omitted fee signs defaultFeeFor("attest"); the node-enforced MIN_FEE_ATTEST floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER approval of a self-contradictory
     // screen: fee row "0 CSD", cost row "0.05 CSD"). fillOffer has always defaulted the same floor.
-    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId: String(a.proposalId), score: a.score, confidence: a.confidence, fee: a.fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: a.fee }); return r;
+    const hk = this.histKeyNow(); const r = await node.attest(this.rpc, { proposalId: a.proposalId, score: a.score, confidence: a.confidence, fee: a.fee }, this.must().privkey); await this.hist.maybeRecord(hk, r, { type: "support", target: p.proposalId, fee: a.fee }); return r;
   }
   // Offer fill (Attest + payment in ONE tx; CairnX applies the delivery). fee default 0.05 CSD (attest floor).
   // A1 (Plans/68 FILL-RACE-1): the ONLY signing method with awaits between validation and the key read.
@@ -649,13 +653,15 @@ export class Wallet {
     // 0.2.64 accepted, since this guard has never shipped) was refused for no reason. Absent means
     // absent, however it is spelled; a score that is PRESENT and not 100 is still refused.
     const f = fillFields(p);
+    if (f.shape) return refuse("BAD_REQUEST", f.shape);
     if (f.refused === "score") return SCORE_FILL_REFUSAL(); // MUTATE_SCORE_GUARD
     const q = { proposalId: p.proposalId, score: f.score, confidence: f.confidence, outputs: f.outputs, fee: f.fee };
     const notes: FillNotes = {};
     const refusal = await this.fillOfferPreflight(q.proposalId, q.outputs, ctx.addr, p.tokenQuote, p.reservationAck, notes);
     if (refusal) return refusal;
     if (!this.signerUnchanged(ctx)) return ACCOUNT_CHANGED_REFUSAL();
-    const r = await node.fillOffer(this.rpc, q, ctx.priv);
+    const rep = notes.repeat;
+    const r = await node.fillOffer(this.rpc, q, ctx.priv, rep ? (txid) => repeatedFillRefusal(rep.unseen, rep.copy, txid) : undefined);
     const { total, to } = this.summarizeOutputs(Array.isArray(q.outputs) ? q.outputs : []);
     await this.hist.maybeRecord(ctx.histKey, r, { type: "fillOffer", target: q.proposalId, to, amount: total, fee: q.fee });
     return r.ok && notes.secondSource ? { ...r, secondSource: notes.secondSource } : r;
@@ -671,7 +677,7 @@ export class Wallet {
     recentOwnFills: (offerId, me) => this.hist.recentFillsOf(me, offerId, Date.now() - OWN_FILL_INDEX_WAIT_MS),
     makeFillSpvIo: (offerId, fclaimTxid, me, offerHeight) => this.makeFillSpvIo(offerId, fclaimTxid, me, offerHeight),
   };
-  private fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote?: TokenFillQuote, reservationAck?: string, notes?: FillNotes): Promise<FillRefusal | null> {
+  private fillOfferPreflight(proposalId: string, outputs: { to: string; value: number }[], me: string, reviewedQuote: TokenFillQuote | undefined, reservationAck: string | undefined, notes: FillNotes): Promise<FillRefusal | null> {
     return fillOfferPreflight(this.fillIo, proposalId, outputs, me, reviewedQuote, reservationAck, notes);
   }
 

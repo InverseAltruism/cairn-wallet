@@ -26,8 +26,10 @@ The release version lives only in `package.json`; the build stamps it into `dist
 ## Background (`src/background.ts`)
 
 The MV3 service worker. It owns the unlocked key, the dApp approval queue, per-origin consent, the `DAPP_METHODS`
-allowlist (enforced twice: before a request is queued and in `resolvePending`), the popup sender-origin gate, provider
-events and alarm-driven auto-lock.
+allowlist (enforced twice: before a request is queued and in `resolvePending`;
+test/resolve-allowlist-second-line.test.mjs drives the second line), the popup sender-origin gate, provider events and
+alarm-driven auto-lock, which a read on the popup channel does not extend (`READ_ONLY_METHODS`;
+test/readonly-no-touch.test.mjs).
 
 - Queue caps: `MAX_PENDING_GLOBAL` = 32, `MAX_PENDING_PER_ORIGIN` = 5. A request returned to its reservation confirm
   step is re-queued without re-checking them, so a site can sit one above its cap per such request.
@@ -53,7 +55,21 @@ events and alarm-driven auto-lock.
   outputs and the zero address), and a `sealClaim` by `signfields.ts` `sealFields`, which `wallet.sealClaim` signs
   from, and `proposeFeeRefusal`; one the signer would refuse is answered `BAD_REQUEST` with no window and no queue
   slot (test/propose-prequeue.test.mjs). The fee and zero-address helpers are the ones `assembleValueTx` and
-  `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there.
+  `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there. A `send` is checked by
+  `node.ts` `sendRefusal` and a `fillOffer` by `fillpreflight.ts` `fillRefusal`, which run the checks `node.send`,
+  `node.sendMany` and `node.fillOffer` run before they select a coin (the outputs and their caps of 500 and 100, an
+  element that is not an object, the amount, the fee checks that need no coins, the zero address) and, for a fill,
+  the preflight's checks that read nothing (the target's shape, output values that are integer numbers); one the
+  signer would refuse is answered `BAD_REQUEST` the same way (test/send-fill-prequeue.test.mjs). An `attest` is
+  checked by `fillpreflight.ts` `attestRequestRefusal` (as a fill at the token-fill confidence, else `node.ts`
+  `attestRefusal`, which `node.attest` runs), and a `revealClaim` by `signfields.ts` `revealFields`. The engine reads
+  an id or address only from a string, and the readers in `signfields.ts` name a score, confidence or seal txid that
+  is a JSON object or list in `shape`, which the pre-queue check and the signer both refuse
+  (test/request-shape-prequeue.test.mjs). The chain lives in `src/core/prequeue.ts` `prequeueRefusal`, which
+  `queueDappRequest` calls; every method on the allowlist is in it or takes no parameters, and a seeded fuzz finds no
+  request that passes it and makes the approval window's paint throw (test/request-shape-fuzz.test.mjs). Every
+  pre-queue check is a function of the request's parameters (and, for a sign-in, the origin): it reads nothing and
+  waits for nothing, so its answer carries no wallet state.
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the
   result.
 - `approvedOrigins` (storage key): `{ vault, origins: { [origin]: ms } }`, the origins the user has approved a request
@@ -237,7 +253,13 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   verdict is keyed by the request and the signer the paint shows (`armNfinalizeGate`); a repaint for another signer
   recomputes it from the record already read, chained on that one read, so a verdict for the signer shown before
   always lands first. A click (`resolve`) is bound to the paint generation and the signer it was made on and is
-  abandoned, signing nothing, when either has changed after one of its awaits.
+  abandoned, signing nothing, when either has changed after one of its awaits. A request whose paint throws, or whose
+  reads before the paint throw (caught and rethrown inside the paint's `try`), is shown as one the wallet could not
+  show: Approve stays off and Reject arms after the 700 ms floor, so it cannot hold the window or hide the requests
+  behind it (test/approve-paint-throw-dom.test.mjs, test/approve-paint-throw-preread-dom.test.mjs). `unpaintableShown` names the request
+  whose card that is: another request's paint clears it, so one that failed before and comes back to the head of the
+  queue is disabled and shown so again, never under the other request's card and buttons
+  (test/approve-paint-throw-requeue-dom.test.mjs).
 - `clearsign.ts`: pure formatters, among them `groupedAddr`, the one address-in-groups-of-four display both pages
   use, lookalike detection and the nfinalize approve gate: it re-fetches the reservation and runs
   `finalizeWinnerCheck` before allowing a fee-burning finalize.

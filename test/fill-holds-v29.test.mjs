@@ -13,7 +13,7 @@ import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import {
   deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs, myProvenFillClosedOffer, countOtherHoldsAtGrant,
-  V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, feeBpsAt, tradeFee,
+  V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, feeBpsAt, tradeFee, fclaimHoldEnd,
 } from "../src/vendor/cairnx-spv.js";
 import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.ts";
@@ -121,6 +121,28 @@ await test("honest path: three unfilled holds are still counted and the fourth i
   const v = await verifyFillSpv(s.mainOffer, s.fourth, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant });
   assert.equal(v.safe, false);
   assert.match(v.reason, /max active claims/);
+});
+
+// The source keeps only the other fclaims whose hold is live at the grant before it proves and counts them
+// (fillspv.ts: fclaimHoldEnd(...) >= grantHeight), as the vendored counter and the resolver read it. A hold that ends in
+// the grant block is live there: the resolver counts it and denies a fourth claim granted in that block, so the source
+// must keep it. RED-FIRST: make that filter `>` and the boundary grant counts 0 holds and verifies (a burn); before
+// this test no test turned red under that mutation (the audit of 2026-11-19).
+await test("hold-count boundary: holds ending in the grant block count, as the resolver counts them; one block later they do not", async () => {
+  const end = fclaimHoldEnd(eFor(H_C));
+  const at = fourBuys({ fills: {}, grantAt: end });
+  assert.equal(resolverGranted(at, end + 10), false, "fixture: the resolver counts three holds ending in the grant block and denies the fourth");
+  const io = await live(at, { tip: end + 10 });
+  assert.equal(io.myLiveHoldsAtGrant, 3);
+  const v = await verifyFillSpv(at.mainOffer, at.fourth, ME, io, { myLiveHoldsAtGrant: io.myLiveHoldsAtGrant });
+  assert.equal(v.safe, false);
+  assert.match(v.reason, /max active claims/);
+  const after = fourBuys({ fills: {}, grantAt: end + 1 });
+  assert.equal(resolverGranted(after, end + 11), true, "fixture: one block after the holds end the resolver grants the fourth");
+  const io2 = await live(after, { tip: end + 11 });
+  assert.equal(io2.myLiveHoldsAtGrant, 0);
+  const v2 = await verifyFillSpv(after.mainOffer, after.fourth, ME, io2, { myLiveHoldsAtGrant: io2.myLiveHoldsAtGrant });
+  assert.equal(v2.safe, true, v2.reason);
 });
 
 await test("a hold on an offer this wallet did not fill still counts", async () => {

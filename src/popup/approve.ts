@@ -1,7 +1,7 @@
 // MetaMask-style approval window: opened by the background when a site calls
 // window.cairn.*. Unlock if needed, review the request, approve/reject. Closes
 // itself when the queue is empty. The pure "what am I signing?" formatters live in ./clearsign (unit-tested).
-import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, originInitial, profileDropValue, APPROVE_LABELS, ACKNOWLEDGE_LABELS, APPROVE_STATE } from "./clearsign.js";
+import { describe, debitOf, checkRow, escapeHtml, groupedAddr, paidRecipients, requestRecipients, recipientFlags, warningChecks, marksRows, rowFlagHtml, recipientKey, fmtBalance, moreBelowText, nfinalizeApproveGate, tokenQuoteHtml, revealPreviewHtml, fillViewHtml, cairnxTokenTickers, reservationUnconfirmedHtml, secondSourceNote, balanceShortBox, nfinNoteBox, unpaintableBox, originInitial, profileDropValue, APPROVE_LABELS, ACKNOWLEDGE_LABELS, APPROVE_STATE } from "./clearsign.js";
 import { nameActApproveGate, nameRecordCaution, readNameRecord, NAME_READ_TIMEOUT_MS, type NameFetchResult } from "../core/namegate.js";
 import { decodeCairnxRecord, CAIRNX_DOMAIN, SCORE_CANCEL } from "../core/cairnx.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields } from "../core/signfields.js";
@@ -48,6 +48,10 @@ let current: any = null;
 const reviewState = new Map<string, { tokenPreview?: "loading" | "ready" | "error"; tokenQuoteDisplayed?: any; balShort?: boolean; unconfirmed?: { fclaimTxid: string; fclaimHeight: number; tipHeight: number }; nameAck?: true }>();
 const rs = (id: string) => { let v = reviewState.get(id); if (!v) { v = {}; reviewState.set(id, v); } return v; };
 let renderedId: string | null = null; // only rebuild the request view when the request changes
+// The request whose "could not show" card (render's catch) is the request view now, or null. It describes the screen,
+// not the request: another request's paint clears it, so a request that failed before and comes back to the head of
+// the queue is disabled and painted again like any other (test/approve-paint-throw-dom.test.mjs).
+let unpaintableShown: string | null = null;
 let renderedSigner: string | null = null; // M5: the account address DISPLAYED for the current request ("signing as …")
 // Bumped on every paint. The unlock repaint keeps the same request id, so renderedId alone cannot tell
 // a superseded paint's in-flight quote or arm timer from the current paint's; those check this instead.
@@ -106,38 +110,45 @@ async function render() {
   // click landing during that await cannot resolve the new request against the still-visible OLD paint. Split
   // from armButtons deliberately: hoisting armButtons ENTIRE would start its 700ms re-enable timer DURING the
   // ~2.5s await, re-enabling the buttons well before the new request paints (relocating the very window this
-  // closes). The re-enable timer still fires only from the armButtons call AFTER the paint below.
-  disableButtons();
-  // CX-35: decimals for the token amounts this record clear-signs, fetched in parallel with the reads below.
-  // Bounded and display only; a miss paints base units alone.
-  const p0 = proposeFields(current.params);
-  const tickers = current.method === "propose" && String(p0.domain) === CAIRNX_DOMAIN ? cairnxTokenTickers(p0.uri, p0.payloadHash) : [];
-  const metaP = tickers.length ? bounded(call("tokenDisplayMeta", tickers)) : null;
-  // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
-  // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
-  // before building the request HTML (not per ~1.2s tick; this block runs once per new request).
-  // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
-  if (current.method === "propose" && p0.expiresEpoch !== undefined) {
-    // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
-    // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
-    // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
-    const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
-    if (e != null) current.currentEpoch = e;
-    if (t != null) current.currentTip = t;
-    if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
-  } else if (current.method === "attest" && attestOf(current)?.score === 50 && attestOf(current)?.confidence === 0) {
-    // B5h (score-50 V28 truth): thread the PoW-backed tip floor so describe() can warn that a legacy
-    // SCORE_CLAIM past the V28 gate is a guaranteed on-chain no-op. tipFloor is a wallet-store read
-    // (READ_ONLY, no network), so the attest paint gains no network dependency; a miss degrades to no
-    // warning (today's behavior).
-    const f = await bounded(call("tipFloor"));
-    if (f != null) current.tipFloor = f;
-  } else if (current.method === "attest" && attestOf(current)?.score === SCORE_CANCEL) {
-    // A score-0 attest the signer signs as an attest (not at the token-fill confidence, which signs a fill) cancels the
-    // target when it is the signer's own CairnX offer or bid; the node's proposal read says whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
-    const t: any = await bounded(call("attestTarget", attestOf(current)?.proposalId));
-    current.attestTarget = t?.ok === true ? { kind: t.kind, mine: String(t.proposer) === String(st.addr || "").toLowerCase() } : { unknown: true };
-  }
+  // closes). The re-enable timer still fires only from the armButtons call AFTER the paint below. A request whose own
+  // "could not show" card is on screen (the catch below) keeps Approve off and its Reject live while its paint is retried.
+  if (unpaintableShown !== current.id) disableButtons();
+  // A throw in the reads below (a request field they read as text) lands in the paint's catch, which shows the request
+  // as one the wallet could not show, as a throw in the paint does: it is rethrown first inside that try.
+  let readThrew: { e: unknown } | null = null;
+  let metaP: Promise<unknown> | null = null;
+  try {
+    // CX-35: decimals for the token amounts this record clear-signs, fetched in parallel with the reads below.
+    // Bounded and display only; a miss paints base units alone.
+    const p0 = proposeFields(current.params);
+    const tickers = current.method === "propose" && String(p0.domain) === CAIRNX_DOMAIN ? cairnxTokenTickers(p0.uri, p0.payloadHash) : [];
+    metaP = tickers.length ? bounded(call("tokenDisplayMeta", tickers)) : null;
+    // A propose carries a dApp-supplied expiresEpoch; fetch the current epoch (node tip / 30) ONCE so
+    // the clear-signer can show the real remaining window from now + warn on a too-long horizon. Done
+    // before building the request HTML (not per ~1.2s tick; this block runs once per new request).
+    // Best-effort: offline leaves currentEpoch undefined → the raw signed epoch is still shown.
+    if (current.method === "propose" && p0.expiresEpoch !== undefined) {
+      // These and the token display read above are the only network awaits before the request paints. Bound (module-level `bounded`) and
+      // run in PARALLEL: healthy RPC ≈ one round-trip before paint (was two, unbounded), and a miss
+      // degrades exactly as before (raw signed epoch shown; fee-sufficiency hint skipped).
+      const [e, t, f] = await Promise.all([bounded(call("epoch")), bounded(call("tip")), bounded(call("tipFloor"))]);
+      if (e != null) current.currentEpoch = e;
+      if (t != null) current.currentTip = t;
+      if (f != null) current.tipFloor = f; // M11 (B5b): PoW-backed floor so the review-side fee warning prices from the same clamped tip as the build side
+    } else if (current.method === "attest" && attestOf(current)?.score === 50 && attestOf(current)?.confidence === 0) {
+      // B5h (score-50 V28 truth): thread the PoW-backed tip floor so describe() can warn that a legacy
+      // SCORE_CLAIM past the V28 gate is a guaranteed on-chain no-op. tipFloor is a wallet-store read
+      // (READ_ONLY, no network), so the attest paint gains no network dependency; a miss degrades to no
+      // warning (today's behavior).
+      const f = await bounded(call("tipFloor"));
+      if (f != null) current.tipFloor = f;
+    } else if (current.method === "attest" && attestOf(current)?.score === SCORE_CANCEL) {
+      // A score-0 attest the signer signs as an attest (not at the token-fill confidence, which signs a fill) cancels the
+      // target when it is the signer's own CairnX offer or bid; the node's proposal read says whether it is. Compared with the account this paint shows (renderedSigner below); a miss leaves it unknown.
+      const t: any = await bounded(call("attestTarget", attestOf(current)?.proposalId));
+      current.attestTarget = t?.ok === true ? { kind: t.kind, mine: String(t.proposer) === String(st.addr || "").toLowerCase() } : { unknown: true };
+    }
+  } catch (e) { readThrew = { e }; }
   if (metaP) { const m = await metaP; current.tokenMeta = m && typeof m === "object" ? m : {}; }
   await fontsLoaded;   // the density probe below measures text; resolved after the first paint
   if (seq !== renderSeq) { renderedId = null; return; }   // superseded during the pre-paint reads: the next render paints
@@ -154,6 +165,7 @@ async function render() {
     ? `<div class="req dim">Approving lets this site see your address until you disconnect it (Settings › Connected sites). It can’t move funds or sign anything without asking you each time.</div>`
     : "";
   try {
+    if (readThrew) throw readThrew.e;
     // W1 (AW-4): this assignment DESTROYS every element describe() emits (#send-warn, #token-sim,
     // #reveal-preview) and the #cost row. It runs on a new request AND on the unlock repaint after an
     // idle auto-lock (render() returns early while locked and nulls renderedId, and `status` is in
@@ -166,6 +178,7 @@ async function render() {
     rs(current.id).balShort = false;   // re-derived by the fillBalance below, which this rebuild re-runs
     $("ap-signer").innerHTML = `<span>Signing as</span>${acct ? `<b title="${escapeHtml(acct.label)}">${escapeHtml(acct.label)}</b>` : ""}<code class="addr">${groupedAddr(String(st.addr || ""))}</code>`;
     $("req").innerHTML = `${prior}${queued}<div class="req">${describe(current)}</div>${connectNote}`;
+    unpaintableShown = null;   // a retry that paints is an ordinary paint: armButtons below arms Approve as usual
     paintUnconfirmed(current.id);
     // Every paint starts at the top: a scroll kept from the previous request (or from this one before the confirm
     // step) would hide this paint's amount, fee, warnings and confirm warning above the view, which the line under the
@@ -186,7 +199,19 @@ async function render() {
     fillProfileDrop(current, String(st.tradeApi || ""));   // an nprofile: the current keys it removes (display only)
     armNfinalizeGate(current, st);
   } catch (e) {
-    renderedId = null;   // AW-1: a describe()/paint throw must NOT latch renderedId, or `if (renderedId === current.id) return` (above) leaves the request permanently unpaintable AND (disableButtons ran, armButtons did not) unapprovable/unrejectable. Reset so the next tick retries.
+    renderedId = null;   // AW-1: a describe()/paint throw must NOT latch renderedId: the next tick retries the paint.
+    // Until a retry paints it, the request must not hold the window or hide the requests behind it: a failure shows it
+    // as one the wallet could not show and arms Reject alone after the usual floor (armButtons keeps Approve off); a
+    // retry that fails again while that card is on screen leaves it as it is, Reject live, and does not restart the floor.
+    if (unpaintableShown !== current.id) {
+      unpaintableShown = current.id;
+      try { $("req").innerHTML = `${prior}${queued}<div class="req">${unpaintableBox()}</div>`; } catch { /* the request view itself failed: the buttons below still work */ }
+      paintLabels(current.id);
+      msg("");
+      held = null;
+      warnPainted = tokenPainted = Promise.resolve();
+      armButtons();
+    }
     throw e;
   }
 }
@@ -599,7 +624,7 @@ function armButtons() {
   Promise.all([base, Promise.resolve(tokenPainted).catch(() => { /* a failed preview is not "ready", so tokenNotReady keeps Approve disabled; Reject re-enables */ })]).then(() => {
     if (seq !== armSeq || current?.id !== armedId || armedGen !== paintGen) return;   // superseded: the latest arm re-enables
     approveArmedGen = armedGen;
-    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort; ($("btn-reject") as HTMLButtonElement).disabled = false;
+    ($("btn-approve") as HTMLButtonElement).disabled = nfinBlocked || tokenNotReady(current) || !!rs(armedId!).balShort || unpaintableShown === armedId; ($("btn-reject") as HTMLButtonElement).disabled = false;
   });
 }
 async function resolve(approve: boolean) {
@@ -616,6 +641,7 @@ async function resolve(approve: boolean) {
   // 0.2.71: no approval of a token-debiting fill without a ready preview (the signer also refuses).
   if (approve && tokenNotReady(current)) { msg("The token amount is not shown yet. Wait for it or reject.", "err"); return; }
   if (approve && rs(id).balShort) { msg("Your spendable balance does not cover this request. Reject it and retry once your pending transaction is mined.", "err"); return; }
+  if (approve && unpaintableShown === id) return;
   // An nfinalize approval first awaits the finalize-window verdict (bounded: ≤6s fetch + 2.5s tip, plus one
   // 2.5s tip read when the verdict is older than NFIN_CLICK_MAX_AGE_MS), then acts on the latest one recorded.
   // A blocking verdict REFUSES without consuming the request (Reject stays available); a warn-only

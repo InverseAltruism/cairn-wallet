@@ -68,6 +68,106 @@
   rows gets the same verdict and text on both paths, a good proposal's signed transaction is byte-identical to the one
   3350dff signed, and the site's 39 golden proposals, attests and fills all queue through the real background
   (test/propose-prequeue.test.mjs, test/golden-requests-cards.test.mjs).
+- A `send` or `fillOffer` the wallet would refuse on its parameters alone is answered `BAD_REQUEST` before it is
+  queued, by the checks its signer runs before it selects a coin (`node.ts` `sendRefusal`, run by `node.send` and
+  `node.sendMany`; `fillpreflight.ts` `fillRefusal`, the preflight's checks that read nothing and then `node.ts`
+  `fillTxRefusal`, run by `node.fillOffer`): an output that is not an object, more than 500 outputs on a send or 100
+  on a fill, an address, amount or fee the signer refuses, the zero address, a fill target that is not a txid, and a
+  fill value that is not an integer number. A page could queue a send or fill whose outputs held `null`: the approval
+  window's paint threw on every poll, both buttons stayed off and every request behind it, another site's included,
+  stayed hidden until the window was closed. A decimal-string `amount` on a one-recipient send was shown and then
+  refused after approval (`BAD_FEE`); it is now refused before the window. `validateOutputs` refuses an element that is
+  not an object (`BAD_OUTPUTS`) instead of throwing, so a `propose` with a `null` output is answered the `BAD_REQUEST`
+  the provider contract states (it read `INTERNAL` on master after 0.3.3; 0.3.3 queued it). The checks are functions of
+  the parameters: no read, no wait, the same answer locked or unlocked. In the test's table every request the signer
+  accepts queues and every refused one is refused by the signer with the same text, the caps hold at 500 and 501 outputs on a send
+  and 100 and 101 on a fill, and the 10% fee cap, the balance and the fill preflight's reads stay after approval
+  (test/send-fill-prequeue.test.mjs; test/golden-requests-cards.test.mjs unchanged). Two tests that used a request now
+  refused before the queue moved to an equivalent one: test/background-consent-outcome.test.mjs (B1) takes its signer
+  refusal from the balance (`INSUFFICIENT`) instead of the zero address, test/extension-boundary.ts (g) reads the
+  fractional fill value's refusal before the queue, and test/fill-reservation-confirm.test.mjs (10) checks the queue
+  cap with a send the signer accepts instead of one with no parameters.
+- A fill asked again after the first was sent no longer pays twice. The `FILL_IN_PROGRESS` hold ends when the first
+  request is answered, and until the first fill was mined (the reservation lane's block scan then proves it) or listed
+  by the offer service (the offer-id lane), the same request passed every other check and was signed again from other
+  coins: on a whole offer the resolver applies one fill and keeps the second payment, and a second partial fill on the
+  reservation lane is sized on what was left before the first. The own-fill history check that covered partial
+  offer-id offers since 0.3.2 (the owner's ruling of 2026-11-02: a short retryable refusal over an unrecoverable
+  overpayment) now covers whole offer-id offers and the reservation lane: while a fill of the same target in this
+  account's history from the last 30 minutes (`OWN_FILL_INDEX_WAIT_MS`) is not marked gone and not yet seen applied,
+  another payment refuses with the retryable `VERIFY_UNAVAILABLE`, and the text says the earlier fill was sent and is
+  not confirmed yet, to try again once it confirms, and that this lasts up to 30 minutes if that fill does not go
+  through. A retry after a submit whose answer was lost (a history row marked maybe) is not another payment when it
+  builds the same transaction from the same unspent coins: the rule then decides on the assembled transaction, just
+  before signing, and signs and sends the same txid again; any other transaction is refused. The node answers one it
+  already holds `SUBMIT_DUPLICATE`, and the history keeps one row, its maybe mark cleared by a definitive answer. A
+  fill the node accepted allows nothing and is refused in the preflight, before the offer-id lane's proof read and the
+  reservation lane's second-source checks. The rule is decided in one function, `fillpreflight.ts`
+  `repeatedFillRefusal`. A first fill makes the same fetches and signs the same bytes as before (the history read is
+  local); a fill marked gone or older than the wait lets the next one sign; a second partial reservation fill after
+  the first is mined signs, sized by the replay that includes it; the token lane is unchanged. The cost: while a fill
+  is unseen, a retry that would spend other coins (its submit reached the node, or the request differs) is refused for
+  up to 30 minutes after the first was last sent, which on the reservation lane can outlast the hold; so is a fill the
+  node accepted and then dropped (test/fill-refill-after-send.test.mjs). The 30 minutes count from the last time the
+  wallet submitted the fill's transaction: `history.ts` stores a later submit of a recorded txid (a definitive or
+  another lost answer, or `SUBMIT_DUPLICATE`) on its row as `resent`, keeping the row's `ts`, place and confirmed
+  latch, and `recentFillsOf` reads the later of the two. Counted from the first record, a lost submit retried and
+  accepted at minute 29 left the window at minute 30, and another payment for the target was signed while the retry
+  was one minute old (test/fill-refill-after-send.test.mjs section 6). A retry whose history write fails is parked in
+  memory, and `history()` reads a stored row with its parked twin folded in as the write will store it (the later send
+  time, and no maybe mark once a twin carries the node's acceptance), so it counts from that send as well; before, the
+  stored row hid its parked twin and another payment signed at minute 31. A re-send of a fill the node accepted,
+  answered `SUBMIT_DUPLICATE`, moves the time too. Two re-sends do not move it (SECURITY.md): one answered
+  `SUBMIT_DUPLICATE` while the wallet is locked, and one whose parked row is lost before it is written. Three tests
+  that signed one reservation
+  several times with one wallet for other reasons now use a wallet with the same key and no history
+  (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
+  the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
+- `test/run.mjs` refuses to run with fewer than 198 discovered test files (the floor was 142), so a dropped gate file
+  fails the runner.
+- Tests for six guards that held but that no test turned red when removed (found by the audit of 2026-11-19; no source
+  change): the offer-id lane's terms bind, which is the only check of a served fee rate, give or value there
+  (test/fill-offerid-terms-bind.test.mjs); `resolvePending`'s second allowlist line, driven by letting the first one
+  pass three privileged methods (test/resolve-allowlist-second-line.test.mjs); a read on the popup channel not
+  extending the idle auto-lock, with the clock moved between the unlock and the reads
+  (test/readonly-no-touch.test.mjs); the hold-count boundary, where the resolver counts a hold that ends in the grant
+  block, so the source's `>=` filter is load-bearing (test/fill-holds-v29.test.mjs); the per-source recovery's
+  agreed-winner rule, until now pinned by its source text (test/namespv-recovery-agree.test.mjs); and the name check
+  before any URL in `resolveName` and `verifyName` (test/names-check-before-url.test.mjs). Each turns red under the
+  mutation of its guard. The check in `confirmName` turns none red: a name it would refuse goes on to `resolveName`,
+  which refuses it before any request.
+- The approval window no longer hangs on a request it cannot draw: such a request is shown as one the wallet could not
+  show, Approve stays off, and Reject arms after the 700 ms floor, so the user can reject it and reach the requests
+  behind it. Each 1.2 s poll still retries the paint, so a paint that fails once draws on the next tick as before
+  (test/approve-guards-dom.test.mjs (5)); a retry that fails again leaves Reject live (test/approve-paint-throw-dom.test.mjs).
+  Before, the paint threw on every poll with both buttons off. The window keeps which request's "could not show" card
+  is on screen (`unpaintableShown`), not a mark on the request, so one that failed before and comes back to the head of
+  the queue after another request's paint (a reservation fill's confirm step puts the fill back in front of it) is
+  disabled and shown so again: with a mark on the request, the fill's card, "Sign anyway" and "Cancel" stayed on screen
+  for it with both buttons live, and only a check in `resolve` kept Approve from signing it
+  (test/approve-paint-throw-requeue-dom.test.mjs, which also pins that check). A throw in the reads the window makes
+  before it paints (a request field read as text, a read's answer) is caught and rethrown inside the paint's `try`, so
+  it lands in the same card: before, such a request left the card empty, both buttons off and Reject answering
+  nothing, and hid the requests behind it (test/approve-paint-throw-preread-dom.test.mjs). No request that passes the
+  pre-queue checks reaches it today; it is the window's second line.
+- An `attest` and a `revealClaim` the wallet would refuse on their parameters alone are answered `BAD_REQUEST` before
+  they are queued, like the other painted methods: an attest's proposalId that is not a txid or a fee outside the
+  bounds (`node.ts` `attestRefusal`, which `node.attest` runs), as a fill at the token-fill confidence, and a reveal
+  whose txid is not a string. Across the painted methods the engine reads an id or address only from a string, and the
+  readers in `signfields.ts` refuse a score, confidence or seal txid that is a JSON object or a list (`shape`) before
+  the queue and at the signer, instead of reading it as a number. Before, a page could queue an attest whose proposalId
+  or score was `{ "toString": 1 }` or a reveal of it, which the window could not draw; such a send `to`, propose
+  payloadHash or fill proposalId made the pre-queue check itself throw (`INTERNAL`); and a list holding one id or
+  address passed the checks through `String()`, then threw in the codec after approval or was signed as its one
+  element. No documented caller sends a list or object there (cairn-sdk types each field as a string or a number; the
+  site's 39 golden calls queue as before). A score or confidence sent as a digit string still signs as before. The
+  chain moved to `src/core/prequeue.ts` `prequeueRefusal`; `node.ts`'s range refusal is a fresh object per call. A
+  seeded fuzz of every allowlisted method (a grid of 20,506 shapes, among them 1,667 `cairnx:v1` records each committed
+  by its own payloadHash, 99 of which decode as records, and 200,000 random ones) finds no request that
+  passes the checks and makes the window's paint throw, and the real window paints a sample of them, every documented
+  shape and every golden call (test/request-shape-fuzz.test.mjs, test/request-shape-prequeue.test.mjs).
+  test/resolve-allowlist-second-line.test.mjs starts each row from a fresh wallet restored from a phrase, so each row
+  turns red on its own effect.
 - The approval window says what more records do, in text only: no request that could be approved before is refused,
   Approve still arms at its 700 ms floor, and that wording added no read (3 fetches before the click and 3 after it
   for a name transfer, and 4 and 3 for a profile write, as before it; the name check above then adds one read before

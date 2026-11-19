@@ -47,9 +47,11 @@ The transaction methods (`propose`, `attest`, `send`, `fillOffer`, `sealClaim`) 
 approved and then the wallet refused before signing or the submit did not succeed. Check both levels.
 `SUBMIT_MAYBE_INFLIGHT` and `SUBMIT_DUPLICATE` carry the `txid` of a transaction that may be on the network.
 
-Amounts and fees are integer base units of CSD (100,000,000 to one CSD); `fee` is a number. The wallet picks the
-inputs from coins it verified against the chain and returns change to its own address; a site can name outputs, never
-inputs or a change address.
+Amounts and fees are integer base units of CSD (100,000,000 to one CSD); `fee` is a number. Every id, txid, hash and
+address is a string; a `score` or `confidence` is a number (a digit string reads the same) and never an object or a
+list. A request with an object or a list in one of those fields is answered `BAD_REQUEST` before any window opens. The
+wallet picks the inputs from coins it verified against the chain and returns change to its own address; a site can
+name outputs, never inputs or a change address.
 
 ## Methods
 
@@ -80,24 +82,40 @@ inputs or a change address.
   an all-zero payload hash (nested `SUBMIT_REJECTED`, nothing spent), rules csd-sdk does not carry and the wallet
   does not repeat.
 - `attest`: `proposalId` is `0x` and 64 hex digits; `score` and `confidence` are signed as u32 (`>>> 0`); `fee`
-  defaults to 5,000,000 (0.05 CSD). An attest never carries outputs. At confidence 1,000,000 it is signed as a
-  token-priced fill and runs the fill checks below.
-- `send`: `to` is `0x` and 40 hex digits and `amount` a positive safe integer (a number); or `outputs`, 1 to 500
-  entries with `value` as on a proposal. `fee` defaults to 1,000,000 (0.01 CSD).
-- `fillOffer`: `proposalId` is the offer id or the reservation (fclaim) txid; `outputs` 0 to 100 entries, each
-  `value` an integer number. `score` may be absent, `null` or 100; any other score is refused before signing.
+  defaults to 5,000,000 (0.05 CSD) and is an integer number above zero and at most 100 CSD. An attest with any other
+  proposalId or fee is answered `BAD_REQUEST` before any window opens, by the checks the signer applies (nested at the
+  signer: `BAD_REQUEST`, `BAD_FEE`, `FEE_TOO_LOW` or `FEE_CAP`). An attest never carries outputs. At confidence
+  1,000,000 it is signed as a token-priced fill and runs the fill checks below.
+- `send`: `to` is `0x` and 40 hex digits and not the zero address, and `amount` a positive safe integer (a number);
+  or `outputs`, 1 to 500 objects `{ to, value }` with `to` and `value` as on a proposal. `fee` defaults to 1,000,000
+  (0.01 CSD) and is an integer number above zero and at most 100 CSD. A send with any other parameter (a decimal
+  string `amount` included) is answered `BAD_REQUEST` before any window opens, by the checks the signer applies (a
+  call that reaches the signer gets the nested `BAD_OUTPUTS`, `BAD_FEE`, `FEE_TOO_LOW`, `FEE_CAP` or
+  `ZERO_ADDR_REFUSED`). The 10% fee cap and the balance need the coins the wallet selects and are checked after
+  approval.
+- `fillOffer`: `proposalId` is the offer id or the reservation (fclaim) txid; `outputs` 0 to 100 objects, each `to`
+  as on a proposal and each `value` a positive integer number; `fee` as on a send. A fill with any other target,
+  outputs or fee is answered `BAD_REQUEST` before any window opens, by the checks the signer applies that read
+  nothing; everything else the wallet checks about a fill needs the offer and the chain and runs after approval.
+  `score` may be absent, `null` or 100; any other score is refused before signing.
   `confidence` defaults to 100; 1,000,000 marks a token-priced fill, which may carry no CSD output. `fee` defaults to
   5,000,000. The wallet checks the fill against the offer's proven record before signing
   (`docs/DESIGN-fill-lanes.md`); a CairnX that refuses the fill keeps the payment. While one fill request for a target
-  is open, another for it is refused `FILL_IN_PROGRESS`. On the reservation lane the outputs must pay exactly what the
-  offer needs, per address; on the offer-id lane outputs beyond the need are signed (section 12 of
+  is open, another for it is refused `FILL_IN_PROGRESS`. After a CSD-paid fill of a target was sent, another fill of
+  it is refused after approval with the nested `VERIFY_UNAVAILABLE` while the first was sent less than 30 minutes ago
+  (counted from its last send, so a lost submit's retry restarts the 30 minutes), not marked gone, and not yet seen
+  applied (listed by the offer service on the offer-id lane, mined on the reservation lane); ask again once it
+  confirms. The exception is a retry after a submit whose answer
+  was lost (`SUBMIT_MAYBE_INFLIGHT`): when it builds the same transaction (same coins, same txid) it is signed and
+  sent again, and the answer is the submit's (a node that already holds it answers `SUBMIT_DUPLICATE`). On the reservation lane the outputs must pay exactly
+  what the offer needs, per address; on the offer-id lane outputs beyond the need are signed (section 12 of
   `test/sign-display-parity.test.mjs`).
 - `sealClaim`: `claim` is a non-empty string, `domain` a string of at most 128 UTF-8 bytes once trimmed, with no
   unpaired surrogate (default `csd:sealed`), `fee` as on a proposal (default 25,000,000). The wallet makes the salt and
   keeps it; the commit expires 720 epochs after the current one. Any other claim, domain or fee is answered
   `BAD_REQUEST` before any window opens.
-- `revealClaim`: the txid of a seal this account made in this wallet. No transaction; refused `SEAL_NOT_MINED`
-  until the commit is mined. A txid the active account holds no seal for opens the window like any reveal, from every
+- `revealClaim`: the txid of a seal this account made in this wallet, a string (an object or a list is answered
+  `BAD_REQUEST` before any window opens). No transaction; refused `SEAL_NOT_MINED` until the commit is mined. A txid the active account holds no seal for opens the window like any reveal, from every
   site, and approving it answers `SEAL_UNKNOWN` (nested); nothing a site gets before the window depends on which seals
   the wallet holds.
 - `signInWithCsd`: `nonce` (required, 8 or more ASCII letters and digits), `statement` (one line, at most 256
@@ -114,18 +132,22 @@ inputs or a change address.
 
 ## Limits
 
-- Outputs: at most 8 on a proposal (`BAD_REQUEST` before the window), 500 on a send and 100 on a fill (nested
-  `BAD_OUTPUTS`). An output to the zero address is refused (`ZERO_ADDR_REFUSED`). A transaction spends at most 512
-  inputs (`TOO_MANY_INPUTS`).
+- Outputs: at most 8 on a proposal, 500 on a send and 100 on a fill; more is answered `BAD_REQUEST` before the window
+  (nested `BAD_OUTPUTS` at the signer). An output to the zero address is refused (`ZERO_ADDR_REFUSED`; from a page,
+  `BAD_REQUEST` before the window). A transaction spends at most 512 inputs (`TOO_MANY_INPUTS`).
 - Fees: above zero (`FEE_TOO_LOW`), at least 0.25 CSD on a proposal or a seal (`FEE_TOO_LOW`), at most 100 CSD, and
   at most the larger of 1 CSD and 10% of the verified inputs the wallet selects for that transaction (`FEE_CAP`). On a
-  proposal or a seal every fee rule but the last is answered `BAD_REQUEST` before the window. A cap refuses the
-  request; the wallet does not lower the fee and retry. The approval window marks a fee above 5 CSD as unusually large.
+  proposal, a seal, a send, a fill or an attest every fee rule but the last is answered `BAD_REQUEST` before the
+  window. A cap
+  refuses the request; the wallet does not lower the fee and retry. The approval window marks a fee above 5 CSD as
+  unusually large.
 - Queue: at most 5 pending requests per site and 32 in all; a request past either is refused `RATE_LIMITED` before it
   is queued. There is no limit over time.
 - One approval window shows the requests in arrival order, the first one first ("Request 1 of N"). Approve and Reject
   take no click for 700 ms after a request is shown. Closing the window answers every queued request
-  `APPROVAL_CLOSED`. A request that arrives while the wallet is locked waits behind an unlock form.
+  `APPROVAL_CLOSED`. A request that arrives while the wallet is locked waits behind an unlock form. A request the window
+  fails to draw is shown as one the wallet could not show, with Approve off and Reject live after the same 700 ms, so
+  it does not hold the requests behind it.
 
 ## Events
 
@@ -260,7 +282,8 @@ the defaults and the limits are not part of the contract; a change to a default 
 - The page match patterns and the top frame: `public/manifest.json` (`content_scripts`).
 - `rdns`, `name`, the per-load `uuid`, the event list and `getCapabilities().methods`: `src/inpage.ts`.
 - Output caps 8, 500, 100, the fee caps (`MAX_FEE` 100 CSD, `proportionalFeeCap`) and the address and hash shapes:
-  `src/core/node.ts`; the proposal checks made before the window, `proposeRefusal` there. The 128 and 512 byte caps on
+  `src/core/node.ts`; the checks made before the window, `proposeRefusal` and `sendRefusal` there and
+  `src/core/fillpreflight.ts` `fillRefusal` for a fill. The 128 and 512 byte caps on
   a proposal's domain and uri: the vendored `MAX_DOMAIN_BYTES` and `MAX_URI_BYTES`. 100,000,000 base units to one
   CSD: `src/core/cairnx.ts` `CSD_DECIMALS`.
 - Fee defaults: `src/core/cairnx.ts` `defaultFeeFor`; 0.25 and 0.05 CSD are the vendored `MIN_FEE_PROPOSE` and

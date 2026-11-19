@@ -608,6 +608,7 @@ async function assembleValueTx(
   app: App,
   priv: string,
   emptyError = "tx would have no outputs",
+  beforeSign?: (txid: string) => SubmitResult | null,
 ): Promise<SubmitResult> {
   // Reject a zero (or negative) fee at the SINGLE place every value tx is assembled; send, sendMany,
   // propose, attest and fillOffer all route through here. The node enforces a minimum feerate, so a
@@ -639,6 +640,9 @@ async function assembleValueTx(
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
   if (outs.length === 0) return { ok: false, error: emptyError, sighashMatch: false, code: "NO_OUTPUTS" };
   const tx: Tx = { version: 1, locktime: 0, app, inputs: sv.inputs.map((i) => ({ prevTxid: i.txid, vout: i.vout, scriptSig: "0x" })), outputs: outs };
+  // The txid leaves out the scriptSig, so this is the txid of the transaction signAndSubmit signs.
+  const held = beforeSign?.(codecTxid(tx));
+  if (held) return held;
   const r = await signAndSubmit(rpc, tx, priv);
   if (!r.txid) return r;
   return { ...r, inputs: sv.inputs.map((i) => opKey(i.txid, i.vout)), ...(r.ok ? { spentTxids: [...new Set(sv.inputs.map((i) => i.txid.toLowerCase()))] } : {}) };
@@ -654,21 +658,29 @@ async function assembleValueTx(
 // {sumOut, outputs} (safe-integer-guarded); the isSafeInteger(sumOut + fee) coupling STAYS at the call
 // site (buildSignSubmit intentionally lacks one). Each value is read with csdBase, the parse the approval
 // window prints it through (an integer number or a decimal-digit string), and the outputs are built from that
-// parse, so the window and the signed tx read one value (test/output-value-parse.test.mjs).
+// parse, so the window and the signed tx read one value (test/output-value-parse.test.mjs). An element that is not an
+// object is refused like any other bad output, so a page's `[null]` gets BAD_OUTPUTS here and BAD_REQUEST before the
+// queue, never a throw (test/send-fill-prequeue.test.mjs).
+// An id or an address is read only from a string: String() reads a JSON list as its elements' text and throws on an
+// object whose `toString` is not a function (signfields.ts `shape` guards a score or confidence the same way).
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/, TXID_RE = /^0x[0-9a-fA-F]{64}$/;
+const isText = (v: unknown, re: RegExp): v is string => typeof v === "string" && re.test(v);
 type ParsedOutputs = { sumOut: number; outputs: { value: number; scriptPubkey: string }[] };
-function validateOutputs(outs: { to: string; value: number }[], opts: { max: number; minOne: boolean }): SubmitResult | ParsedOutputs {
+function validateOutputs(outs: readonly unknown[], opts: { max: number; minOne: boolean }): SubmitResult | ParsedOutputs {
   if (opts.minOne && outs.length < 1) return { ok: false, error: "at least one output is required", sighashMatch: false, code: "BAD_OUTPUTS" };
   if (outs.length > opts.max) return { ok: false, error: `too many outputs (max ${opts.max})`, sighashMatch: false, code: "BAD_OUTPUTS" };
   let sumOut = 0;
   const outputs: ParsedOutputs["outputs"] = [];
-  for (const o of outs) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(String(o.to))) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
+  for (const el of outs) {
+    if (!el || typeof el !== "object") return { ok: false, error: "each output must be an object { to, value }", sighashMatch: false, code: "BAD_OUTPUTS" };
+    const o = el as { to?: unknown; value?: unknown };
+    if (!isText(o.to, ADDR_RE)) return { ok: false, error: "each recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
     const b = csdBase(o.value);
     const v = b !== null && b <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(b) : NaN;
     if (!(v > 0) || !Number.isSafeInteger(v)) return { ok: false, error: "each amount must be a positive safe integer", sighashMatch: false, code: "BAD_OUTPUTS" };
     sumOut += v;
     if (!Number.isSafeInteger(sumOut)) return { ok: false, error: "outputs exceed the safe integer range", sighashMatch: false, code: "BAD_OUTPUTS" };
-    outputs.push({ value: v, scriptPubkey: String(o.to) });
+    outputs.push({ value: v, scriptPubkey: o.to as string });
   }
   return { sumOut, outputs };
 }
@@ -702,6 +714,54 @@ function zeroAddrRefusal(outputs: { scriptPubkey: string }[]): Refusal | null {
   return outputs.some((o) => /^(0x)?0{40}$/i.test(o.scriptPubkey))
     ? { code: "ZERO_ADDR_REFUSED", error: "refusing to send to the zero address (0x000…0): these funds would be unrecoverable" } : null;
 }
+
+// The coin-free checks of a send, a multi-output send and a fill, in the order the engine runs them. send, sendMany and
+// fillOffer below run their own before they select a coin, and background.ts asks the same function before it queues a
+// page's request (sendRefusal, fillTxRefusal), so the approval window does not open for a request the signer refuses
+// on its parameters alone (test/send-fill-prequeue.test.mjs). What needs the selected coins (the proportional fee cap,
+// the balance) stays in assembleValueTx, which repeats the fee bounds and the zero address for every value tx.
+type Checked = SubmitResult | ParsedOutputs;
+const asRefusal = (c: Checked): Refusal | null => ("sumOut" in c ? null : { code: String(c.code), error: String(c.error) });
+const sumRange = (): SubmitResult => ({ ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" });
+const sumFits = (sumOut: number, fee: unknown): boolean => Number.isSafeInteger(fee) && (fee as number) >= 0 && Number.isSafeInteger(sumOut + (fee as number));
+function coinFree(fee: number, parsed: ParsedOutputs): Checked {
+  const bad = feeBoundsRefusal(fee) ?? zeroAddrRefusal(parsed.outputs);
+  return bad ? { ok: false, ...bad, sighashMatch: false } : parsed;
+}
+function sendChecks(p: { to: unknown; amount: unknown; fee: unknown }): Checked {
+  if (!isText(p.to, ADDR_RE)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
+  // `>` would coerce a JSON object, which throws when it carries a `toString` that is not a function
+  const amount = p.amount !== null && typeof p.amount === "object" ? Number.NaN : p.amount;
+  if (!((amount as number) > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false, code: "BAD_OUTPUTS" };
+  // CSD amounts are integer base units carried as JS numbers. Above 2^53 a Number silently loses precision, so the
+  // value signed could differ from the one meant: anything outside the exactly representable range is refused.
+  if (!Number.isSafeInteger(p.amount) || !sumFits(p.amount as number, p.fee)) return sumRange();
+  return coinFree(p.fee as number, { sumOut: p.amount as number, outputs: [{ value: p.amount as number, scriptPubkey: p.to as string }] });
+}
+function sendManyChecks(p: { outputs: unknown; fee: unknown }): Checked {
+  const chk = validateOutputs(Array.isArray(p.outputs) ? p.outputs : [], { max: 500, minOne: true });
+  if (!("sumOut" in chk)) return chk;
+  return sumFits(chk.sumOut, p.fee) ? coinFree(p.fee as number, chk) : sumRange();
+}
+function fillChecks(p: { proposalId: unknown; outputs: unknown; fee: unknown }): Checked {
+  if (!isText(p.proposalId, TXID_RE)) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
+  // outs MAY be empty: a token-priced fill pays in tokens (resolver-debited, marked by confidence 1e6) and carries no
+  // CSD payment; the tx is attest + change only.
+  const chk = validateOutputs(Array.isArray(p.outputs) ? p.outputs : [], { max: 100, minOne: false });
+  if (!("sumOut" in chk)) return chk;
+  return sumFits(chk.sumOut, p.fee) ? coinFree(p.fee as number, chk) : sumRange();
+}
+/** Why the engine refuses a page's send on its parameters alone, or null. `s` is signfields.ts sendFields: `outputs`
+ *  (signed by sendMany) when the page passed an array, else the one output from `to` and `amount` (signed by send). */
+export function sendRefusal(s: { many: boolean; outputs: readonly unknown[]; fee: unknown }): Refusal | null {
+  const one = s.outputs[0] as { to?: unknown; value?: unknown } | undefined;
+  return asRefusal(s.many || !one ? sendManyChecks({ outputs: s.outputs, fee: s.fee }) : sendChecks({ to: one.to, amount: one.value, fee: s.fee }));
+}
+/** Why the engine refuses a fill's transaction on its parameters alone (signfields.ts fillFields), or null. The fill's
+ *  preflight checks that read nothing come first (fillpreflight.ts fillRefusal). */
+export function fillTxRefusal(f: { proposalId: unknown; outputs: readonly unknown[]; fee: unknown }): Refusal | null {
+  return asRefusal(fillChecks(f));
+}
 /** A proposal's fee: the coin-free fee checks, and the node's proposal minimum (it rejects a Propose below
  *  MIN_FEE_PROPOSE, the floor csd-tx's buildPropose applies). background.ts asks it for a seal too. */
 export function proposeFeeRefusal(fee: unknown): Refusal | null {
@@ -718,7 +778,7 @@ export function proposeFeeRefusal(fee: unknown): Refusal | null {
  *  coins. The node's other Propose rules (an empty domain or uri, an all-zero payload hash) are not in csd-sdk, and the
  *  wallet does not re-declare consensus: the node refuses those at submit, with nothing spent. */
 export function proposeRefusal(p: { domain: unknown; payloadHash: unknown; uri: unknown; expiresEpoch: unknown; fee: unknown; outputs: { to: string; value: number }[] }): Refusal | null {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.payloadHash))) return { code: "BAD_REQUEST", error: "payloadHash must be a 0x… 32-byte hash" };
+  if (!isText(p.payloadHash, TXID_RE)) return { code: "BAD_REQUEST", error: "payloadHash must be a 0x… 32-byte hash" };
   if (!Number.isSafeInteger(p.expiresEpoch) || (p.expiresEpoch as number) < 0) return { code: "BAD_REQUEST", error: "expiresEpoch must be a non-negative safe integer" };
   const text = byteCapRefusal("domain", p.domain, MAX_DOMAIN_BYTES) ?? byteCapRefusal("uri", p.uri, MAX_URI_BYTES);
   if (text) return { code: "BAD_REQUEST", error: text };
@@ -733,29 +793,27 @@ export function propose(rpc: string, p: { domain: string; payloadHash: string; u
   if (bad) return Promise.resolve({ ok: false, error: bad.error, sighashMatch: false, code: bad.code });
   return buildSignSubmit(rpc, { type: "Propose", domain: p.domain, payloadHash: p.payloadHash, uri: p.uri, expiresEpoch: p.expiresEpoch }, p.fee, priv, outputs);
 }
-export function attest(rpc: string, p: { proposalId: string; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
-  // Validate the proposalId shape up front (parity with fillOffer) so a malformed dApp-supplied value fails
-  // closed instead of throwing a cryptic codec error inside bytesArr() (audit VAL-3). A proposalId is a txid.
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) {
-    return Promise.resolve({ ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" });
-  }
+/** Why the engine refuses an attest on its parameters alone, before it selects a coin, or null: the proposalId (a txid;
+ *  a malformed one would otherwise throw in the codec), then the coin-free fee checks buildSignSubmit and
+ *  assembleValueTx run. background.ts asks it before it queues a page's attest (test/request-shape-prequeue.test.mjs). */
+export function attestRefusal(p: { proposalId: unknown; fee: unknown }): Refusal | null {
+  if (!isText(p.proposalId, TXID_RE)) return { code: "BAD_REQUEST", error: "proposalId must be a 0x… 32-byte txid" };
+  return feeTypeRefusal(p.fee) ?? feeBoundsRefusal(p.fee as number);
+}
+export function attest(rpc: string, p: { proposalId: unknown; score: number; confidence: number; fee: number }, priv: string): Promise<SubmitResult> {
+  const bad = attestRefusal(p);
+  if (bad) return Promise.resolve({ ok: false, error: bad.error, sighashMatch: false, code: bad.code });
   // Clamp to u32 here (parity with fillOffer) so the signed bytes equal the displayed score/confidence.
-  return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, p.fee, priv);
+  return buildSignSubmit(rpc, { type: "Attest", proposalId: p.proposalId as string, score: p.score >>> 0, confidence: p.confidence >>> 0 }, p.fee, priv);
 }
 
 // Plain CSD transfer (app:None). Built + signed entirely client-side; sighash via
 // our golden-vector-validated codec, so no node template is needed; /tx/submit
 // validates the signature against the node's own (identical) sighash.
 export async function send(rpc: string, p: { to: string; amount: number; fee: number }, priv: string): Promise<SubmitResult> {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(p.to)) return { ok: false, error: "recipient must be a 0x… 20-byte address", sighashMatch: false, code: "BAD_OUTPUTS" };
-  if (!(p.amount > 0)) return { ok: false, error: "amount must be positive", sighashMatch: false, code: "BAD_OUTPUTS" };
-  // CSD amounts are integer base units carried as JS numbers. Above 2^53 a Number
-  // silently loses precision, so the value you sign could differ from what you meant.
-  // Refuse anything outside the exactly-representable range (well above total supply).
-  if (!Number.isSafeInteger(p.amount) || !Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(p.amount + p.fee))
-    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
-  const outputs = [{ value: p.amount, scriptPubkey: p.to }];
-  return assembleValueTx(rpc, outputs, p.fee, { type: "None" }, priv);
+  const chk = sendChecks(p);
+  if (!("sumOut" in chk)) return chk;
+  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "None" }, priv);
 }
 
 // Multi-output transfer (app:None). Same single-key / single-signature model as
@@ -764,11 +822,8 @@ export async function send(rpc: string, p: { to: string; amount: number; fee: nu
 // change always returns to this account's own address. Used by the Console's send card
 // for 1→many payments; send() above is the single-recipient convenience wrapper.
 export async function sendMany(rpc: string, p: { outputs: { to: string; value: number }[]; fee: number }, priv: string): Promise<SubmitResult> {
-  const outs = Array.isArray(p.outputs) ? p.outputs : [];
-  const chk = validateOutputs(outs, { max: 500, minOne: true });
+  const chk = sendManyChecks(p);
   if (!("sumOut" in chk)) return chk;
-  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
-    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
   return assembleValueTx(rpc, chk.outputs, p.fee, { type: "None" }, priv);
 }
 
@@ -920,20 +975,17 @@ export async function maxSendable(rpc: string, addr: string, fee: number): Promi
 // that carries an Attest app payload AND payment outputs. Same trust posture as sendMany:
 // recipients validated, sums safe-integer guarded, inputs selected INTERNALLY, change only
 // ever returns to this account's own address. The attest fee floor (0.05 CSD) applies.
+/** `beforeSign` sees the txid of the assembled transaction and may refuse it before it is signed (wallet.ts fillOffer:
+ *  the repeated-fill rule, fillpreflight.ts repeatedFillRefusal). */
 export async function fillOffer(
   rpc: string,
   p: { proposalId: string; score: number; confidence: number; outputs: { to: string; value: number }[]; fee: number },
   priv: string,
+  beforeSign?: (txid: string) => SubmitResult | null,
 ): Promise<SubmitResult> {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(String(p.proposalId))) return { ok: false, error: "proposalId must be a 0x… 32-byte txid", sighashMatch: false, code: "BAD_REQUEST" };
-  const outs = Array.isArray(p.outputs) ? p.outputs : [];
-  // outs MAY be empty: a CairnX v1.2 token-priced fill pays in tokens (resolver-debited,
-  // marked by confidence=1e6) and carries no CSD payment; the tx is attest + change only.
-  const chk = validateOutputs(outs, { max: 100, minOne: false });
+  const chk = fillChecks(p);
   if (!("sumOut" in chk)) return chk;
-  if (!Number.isSafeInteger(p.fee) || p.fee < 0 || !Number.isSafeInteger(chk.sumOut + p.fee))
-    return { ok: false, error: "amount/fee exceed the safe integer range", sighashMatch: false, code: "BAD_FEE" };
-  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs: add a payment or leave change");
+  return assembleValueTx(rpc, chk.outputs, p.fee, { type: "Attest", proposalId: p.proposalId, score: p.score >>> 0, confidence: p.confidence >>> 0 }, priv, "tx would have no outputs: add a payment or leave change", beforeSign);
 }
 
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:
