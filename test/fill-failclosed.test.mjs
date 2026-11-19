@@ -123,5 +123,23 @@ console.log("\nOffer expiry on the offer-id CSD lane:");
   check(`no readable tip and no floor, offer live past the anchor: the fill signs (${noTip.r?.code ?? "ok"})`, noTip.r?.ok === true && noTip.submits === 1);
 }
 
+// A served tip below the release anchor with floor 0: an offer anchored at 47,000 (above V22) whose last live block is
+// past that tip but below the anchor plus FILL_TIP_MARGIN is refused, because the chain is at least at the anchor. With
+// the anchor taken out of the bound this fill signs.
+{
+  const H1 = 47_000, E1 = Math.floor(SPV_NEWEST / EPOCH_LEN) - 1;
+  const EXP1 = offerExpiryHeightOf(E1, H1), LAST1 = EXP1 - 1, SERVED = 50_000;
+  check(`fixture: last live block ${LAST1.toLocaleString("en-US")} is past the served tip plus the margin and within the margin of the anchor ${SPV_NEWEST.toLocaleString("en-US")}`, LAST1 >= SERVED + 4 && LAST1 < SPV_NEWEST + 4);
+  const st = memoryStore();
+  const wx = new Wallet(st);
+  const { addr } = await wx.create("anchor-pw-12345");
+  wx.provenPaytoForTest = () => ({ payto: "0x" + "ce".repeat(20), seller: "0x" + "cd".repeat(20), expiresEpoch: E1, height: H1, terms: { height: H1, feeBps: 150, value: "5000000", taker: String(addr).toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "5", giveName: undefined, wantType: "csd" } });
+  const served = { ...offer, id: "0x" + "7f".repeat(32), expiresEpoch: E1, height: H1, taker: addr };
+  const outs = requiredFillOutputs(served, 5_000_000n).map(({ to, value }) => ({ to, value: Number(value) }));
+  const s = mkStub(() => ({ ok: true, status: 200, json: async () => served }), SERVED);
+  const r = await wx.fillOffer({ proposalId: served.id, outputs: outs });
+  check(`served tip 50,000, floor 0, offer whose last live block is within the margin of the anchor: refused (${r?.code ?? "signed"})`, r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
+}
+
 globalThis.fetch = origFetch;
 done("fill-failclosed");
