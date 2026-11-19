@@ -153,6 +153,13 @@ console.log("4. renew and set-primary results through the SUBMIT_* reading");
   t("4e a refused renew says 'Nothing was sent'", () => {
     assert.match(refused, /insufficient confirmed balance\. Nothing was sent\./);
   });
+  // SUBMIT_REJECTED says what the node that answered did: through a proxy with two backends an earlier attempt may have
+  // reached the other one, so it does not claim that nothing was sent.
+  const rejected = await nameAct("[data-nrenew]", "cairnxNameRenew", () => ({ ok: false, code: "SUBMIT_REJECTED", error: "missing utxo" }));
+  t("4f a renew the node refused (SUBMIT_REJECTED) names the answering node and does not say 'Nothing was sent'", () => {
+    assert.match(rejected, /missing utxo\. The node that answered refused this transaction\. Check your history before sending it again\./);
+    assert.doesNotMatch(rejected, /Nothing was sent/); assert.doesNotMatch(rejected, IN_FLIGHT);
+  });
 }
 
 console.log("5. post");

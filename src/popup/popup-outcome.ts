@@ -22,6 +22,9 @@ function inFlightCopy(prefix: string, what: string, txid?: string): Outcome {
 export function refusedCopy(r: any, what: string): Outcome {
   if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return inFlightCopy(r?.error ? clause(r.error) + ". " : "", what, r?.txid);
   if (r?.code === "SUBMIT_DUPLICATE") return { text: String(r?.error ?? "This transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again."), cls: "info", maybe: true };
+  // The node that answered (or the proxy, before forwarding) refused this request. Through a proxy with two backends an
+  // earlier attempt may have reached the other one, so this does not say "Nothing was sent".
+  if (r?.code === "SUBMIT_REJECTED") return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. The node that answered refused this transaction. Check your history before sending it again.`, cls: "err", maybe: false };
   return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. Nothing was sent.`, cls: "err", maybe: false };
 }
 export function thrownCopy(e: any, what: string): Outcome {

@@ -225,6 +225,12 @@
   (test/fill-refill-after-send.test.mjs, test/fill-taker-partial.test.mjs). One reservation-lane test that claimed to
   pin the retryable answer for an unprovable offer author was answered by this refusal instead (its wallet had signed a
   fill of the offer just before); it now uses a wallet with no history (test/fill-fclaim-preflight.test.mjs).
+- Submit: a `SUBMIT_REJECTED` result reads "<the node's reason>. The node that answered refused this transaction. Check
+  your history before sending it again." where it read "<reason>. Nothing was sent." The node answers every submit
+  with HTTP 200 and refuses with `ok:false`; a 4xx comes from a proxy before it forwards (400, 413, 429). Through a
+  proxy with two backends an earlier attempt of the same request may have reached the other backend and been
+  admitted, and an older proxy then relays the second backend's refusal. The `SUBMIT_REJECTED` row and the comments
+  in `node.ts` say the same (test/popup-outcome-dom.test.mjs 4f).
 - Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with
