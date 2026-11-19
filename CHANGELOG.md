@@ -105,6 +105,17 @@
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
+- Tests for six guards that held but that no test turned red when removed (found by the audit of 2026-11-19; no source
+  change): the offer-id lane's terms bind, which is the only check of a served fee rate, give or value there
+  (test/fill-offerid-terms-bind.test.mjs); `resolvePending`'s second allowlist line, driven by letting the first one
+  pass three privileged methods (test/resolve-allowlist-second-line.test.mjs); a read on the popup channel not
+  extending the idle auto-lock, with the clock moved between the unlock and the reads
+  (test/readonly-no-touch.test.mjs); the hold-count boundary, where the resolver counts a hold that ends in the grant
+  block, so the source's `>=` filter is load-bearing (test/fill-holds-v29.test.mjs); the per-source recovery's
+  agreed-winner rule, until now pinned by its source text (test/namespv-recovery-agree.test.mjs); and the name check
+  before any URL in `resolveName` and `verifyName` (test/names-check-before-url.test.mjs). Each turns red under the
+  mutation of its guard. The check in `confirmName` turns none red: a name it would refuse goes on to `resolveName`,
+  which refuses it before any request.
 - The approval window no longer hangs on a request it cannot draw: such a request is shown as one the wallet could not
   show, Approve stays off, and Reject arms after the 700 ms floor, so the user can reject it and reach the requests
   behind it. Each 1.2 s poll still retries the paint, so a paint that fails once draws on the next tick as before

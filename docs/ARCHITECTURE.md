@@ -26,8 +26,10 @@ The release version lives only in `package.json`; the build stamps it into `dist
 ## Background (`src/background.ts`)
 
 The MV3 service worker. It owns the unlocked key, the dApp approval queue, per-origin consent, the `DAPP_METHODS`
-allowlist (enforced twice: before a request is queued and in `resolvePending`), the popup sender-origin gate, provider
-events and alarm-driven auto-lock.
+allowlist (enforced twice: before a request is queued and in `resolvePending`;
+test/resolve-allowlist-second-line.test.mjs drives the second line), the popup sender-origin gate, provider events and
+alarm-driven auto-lock, which a read on the popup channel does not extend (`READ_ONLY_METHODS`;
+test/readonly-no-touch.test.mjs).
 
 - Queue caps: `MAX_PENDING_GLOBAL` = 32, `MAX_PENDING_PER_ORIGIN` = 5. A request returned to its reservation confirm
   step is re-queued without re-checking them, so a site can sit one above its cap per such request.

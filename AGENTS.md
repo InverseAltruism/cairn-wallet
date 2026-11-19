@@ -121,7 +121,8 @@ Keys and the dApp boundary:
   the vault or the header snapshot (test/storage-access-level.test.mjs).
 - Privileged methods (export, mnemonic, account management, settings, reset, consolidate) are popup-only, refused on
   the dApp channel even if approved. `reset` exists only as a background method; no screen offers it. The
-  `DAPP_METHODS` allowlist is enforced twice: before a request is queued and in `resolvePending`.
+  `DAPP_METHODS` allowlist is enforced twice: before a request is queued and in `resolvePending`
+  (test/extension-boundary.ts, test/resolve-allowlist-second-line.test.mjs).
 - export/exportMnemonic deliberately work while locked (password-gated direct vault decrypt); correct behaviour, do
   not "fix".
 - An open approval window is brought forward only by `focusApprovalWindow`, the one `chrome.windows.update` in
@@ -180,7 +181,7 @@ The incidents behind these are in `CHANGELOG.md`.
   union path are load-bearing; keep them.
 - rename/removeAccount take an address, not an index.
 - `sighashMatch` in SubmitResult is vestigial but dApp-visible; keep it.
-- A .csd recipient never reaches a URL unvalidated (NAME_RE first).
+- A .csd recipient never reaches a URL unvalidated (NAME_RE first; test/names-check-before-url.test.mjs).
 - Wallet distribution is the Chrome Web Store and GitHub releases only; the sites do not serve the zip.
 
 ## Release and deploy

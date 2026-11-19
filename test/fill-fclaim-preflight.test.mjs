@@ -660,7 +660,8 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   const r = await w.fillOffer({ proposalId: fcH, outputs: outs });
   // B7e: a deflated feeBps zeros the treasury leg, changing the per-address distribution, so the sums seam
   // catches it FIRST (proven fill progress) before the fee/rebate terms bind. Either is a correct FILL_UNSAFE
-  // refusal; the terms bind stays load-bearing and is still proven the SOLE rejecter by the legacy-lane F2 fee test.
+  // refusal. On the offer-id lane the terms bind is the only rejecter of a deflated fee rate:
+  // test/fill-offerid-terms-bind.test.mjs.
   check(`F2: a DEFLATED served feeBps (0 vs proven 150) is REFUSED (pay-without-delivery burn averted) (${r?.error})`, r?.ok === false && r?.code === "FILL_UNSAFE" && /fee\/rebate terms|proven fill progress/.test(r?.error ?? ""));
   check("…and nothing was submitted (the payment did not burn)", s.submits.length === 0);
 }
