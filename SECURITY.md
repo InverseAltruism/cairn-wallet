@@ -224,11 +224,34 @@ answered `BAD_REQUEST` before it is queued and uses no queue slot; none of the s
 (test/propose-prequeue.test.mjs, test/golden-requests-cards.test.mjs). Two kinds of refusal stay after approval:
 the 10% fee cap and the balance need the coins the wallet selects, and the node's own rules that csd-sdk does not
 carry (an empty domain or URI, an all-zero payload hash) are refused by the node at submit with nothing spent,
-because the wallet does not re-declare consensus. In the sign-in window, the site's
+because the wallet does not re-declare consensus. A `revealClaim` for a txid the active account holds no seal for
+opens the window as any reveal does, from every site, and approving it answers `SEAL_UNKNOWN`: nothing a page gets
+before the window depends on which seals the wallet holds, since such an answer would let a page test the public seal
+commits against the wallet and learn which address the visitor holds. In the sign-in window, the site's
 statement is labelled as text from that site, not from the wallet. The legacy `signIn()` is not listed in
 `getCapabilities()`: against the Cairn API it succeeds from no origin (that API no longer serves the `/auth/nonce` it
 uses; a self-hosted API that still serves it would work), and it
 stays refused off the first-party site.
+
+**What the wallet keeps about sites.** Two lists of origins, in `chrome.storage.local` on the user's device, written
+and read only by the background worker, which sends neither in any request: the connected sites above (each with the address it was shown),
+and the origins the user has approved a request from (`approvedOrigins`, stored with the identifier of the vault they
+were recorded under, its PBKDF2 salt), each with when, so the window can say "New site"
+when a site the user has approved nothing from asks. A connected site counts as approved. The second list is the
+user's own record of which sites they approved something from; it grants nothing, changes no button and adds no wait.
+It is display metadata kept apart from everything essential: each queued request carries its flag, decided from memory,
+the list is written after the page has its answer on its own queue, and a reset erases the wallet without waiting on
+it, so a slow or failing read, write or deletion delays and fails nothing (an unreadable list shows the line). A list
+belongs to one vault and reads as empty under any other, so a list from before a reset, whether or not its deletion
+succeeded, never marks a site as familiar in the next wallet, and an approval, a write or a load from before a reset
+records nothing there, including one that runs while the reset is still clearing the consent map
+(test/approve-first-request.test.mjs sections 7 to 9). It keeps the 500 origins approved last (an older one is dropped
+and reads as new again) and never holds an opaque origin (`"null"`, `"unknown"`; section 4). Removing the extension
+deletes both lists; no screen clears the second one (the wallet's internal reset does). A site cannot read either list
+beyond its own connection: storage is restricted to the wallet's own pages and worker
+(test/storage-access-level.test.mjs). Each sealed claim
+also keeps the origin that asked for it (none for an opaque origin), so the reveal card can say which site sealed it
+and caution when another site asks for the reveal.
 
 `send` moves funds to a page-supplied recipient, so the approval window **clear-signs the
 full (untruncated) recipient address(es), each amount, the total, the fee, and the

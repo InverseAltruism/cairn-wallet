@@ -1,6 +1,6 @@
 # Cairn Wallet: Privacy Policy
 
-_Last updated: 2026-11-02_
+_Last updated: 2026-11-18_
 
 Cairn Wallet ("the extension") is a non-custodial browser wallet for the Compute Substrate (CSD) network. The
 short version: **the extension does not collect, transmit, sell, or share your personal data, and your keys never
@@ -23,6 +23,9 @@ Only in your browser's local extension storage (`chrome.storage.local`) on your 
 - Your **public account list** (addresses and labels).
 - Your **local transaction history and sealed-claim records**, keyed by address.
 - Your **settings**, and a cache of block headers used to verify `.csd` names.
+- The **sites you used with your wallet**: the sites you connected, with the address each was shown, and the last 500
+  sites you approved a request from, with when, so the approval window can tell you when a site you have not used
+  before asks. A sealed claim also keeps the site that asked for it.
 
 **None of this is ever transmitted to us or to any third party.** We operate no servers that receive your wallet
 data, and there are no analytics, telemetry, or tracking of any kind.

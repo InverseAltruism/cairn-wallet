@@ -10,6 +10,7 @@ import { fillTargetOf } from "./core/fillpreflight.js";
 import { siwcParamsRefusal } from "./core/siwcparams.js";
 import { sendFields, revealFields, proposeFields, sealFields } from "./core/signfields.js";
 import { proposeRefusal, proposeFeeRefusal } from "./core/node.js";
+import { opaqueOrigin } from "./core/origin.js";
 
 const chrome: any = (globalThis as any).chrome;
 // session store (chrome.storage.session, in-RAM) lets an unlocked wallet survive MV3 SW idle-kills.
@@ -26,7 +27,7 @@ if ((globalThis as { __CAIRN_TEST__?: unknown }).__CAIRN_TEST__) (globalThis as 
 const ready = wallet.init();
 
 // pending dApp approvals: id -> {origin, method, params, resolve}
-type Pending = { origin: string; method: string; params: any; resolve: (v: any) => void };
+type Pending = { origin: string; method: string; params: any; resolve: (v: any) => void; first: boolean };
 const pending = new Map<string, Pending>();
 let reqSeq = 0;
 
@@ -43,12 +44,15 @@ type ConsentMap = Record<string, { addr: string; ts: number }>;
 async function getConsents(): Promise<ConsentMap> { return (await consentStore.get(CONSENT_KEY)) || {}; }
 // Every write of the consent map runs through this one queue, so a connect's read-modify-write cannot
 // interleave with a Disconnect's and write back an origin the user just removed.
-let consentChain: Promise<void> = Promise.resolve();
-function inConsentChain<T>(work: () => Promise<T>): Promise<T> {
-  const run = consentChain.then(work, work);
-  consentChain = run.then(() => {}, () => {});
-  return run;
+function serialQueue(): <T>(work: () => Promise<T>) => Promise<T> {
+  let chain: Promise<void> = Promise.resolve();
+  return (work) => {
+    const run = chain.then(work, work);
+    chain = run.then(() => {}, () => {});
+    return run;
+  };
 }
+const inConsentChain = serialQueue();
 function recordConsent(origin: string, addr: string): Promise<void> {
   // L2: an opaque origin (a sandboxed / data: / some file: page) sends sender.origin === "null"; a SHARED,
   // non-identifying string, not a site. Never store consent under it: every opaque page would collide on the
@@ -56,11 +60,12 @@ function recordConsent(origin: string, addr: string): Promise<void> {
   // opaque-origin page; a silent cross-site disclosure. Reject it alongside "unknown"; the fast-path + get-
   // Permissions then fall through to a fresh prompt for every opaque page (an opaque origin has no identity to
   // remember). Deliberately NOT a per-frame ephemeral bucket; more machinery for no legitimate use.
-  if (!origin || origin === "unknown" || origin === "null") return Promise.resolve();
+  if (opaqueOrigin(origin)) return Promise.resolve();
   return inConsentChain(async () => {
     const c = await getConsents();
     c[origin] = { addr, ts: Date.now() };
     await consentStore.set(CONSENT_KEY, c);
+    consentChanged((now) => now.add(origin));
   });
 }
 function revokeConsent(origin: string): Promise<{ removed: boolean }> {
@@ -69,6 +74,7 @@ function revokeConsent(origin: string): Promise<{ removed: boolean }> {
     if (!c[origin]) return { removed: false };
     delete c[origin];
     await consentStore.set(CONSENT_KEY, c);
+    consentChanged((now) => now.delete(origin));
     return { removed: true };
   });
 }
@@ -76,6 +82,96 @@ async function listConsents(): Promise<{ origin: string; addr: string; ts: numbe
   const c = await getConsents();
   return Object.entries(c).map(([origin, v]) => ({ origin, addr: v.addr, ts: v.ts })).sort((a, b) => b.ts - a.ts);
 }
+
+// The origins the user has approved a request from, kept on this device only so the window can say when a site the user
+// has approved nothing from asks; a connected site counts too, so a site connected before this list existed is not new.
+// Stored as { vault, origins: { [origin]: ms of the last approval } }: a list belongs to the vault it was recorded under
+// (Wallet.vaultId) and is read as empty under any other vault, with no vault id, or in the old plain shape, so a list
+// from before a reset is never the new wallet's, whatever happened to its deletion. The newest APPROVED_CAP by time stay;
+// an origin dropped past the cap reads as new again. It is display metadata, kept apart from everything a user waits
+// for: each queued request carries its flag (`first`), decided from memory (approvedNow, connectedNow) when it is queued
+// and refreshed whenever either changes or finishes loading. `pending` reads only the flag, and no request, approval,
+// consent change or reset awaits these lists or their storage.
+const APPROVED_KEY = "approvedOrigins";
+const APPROVED_CAP = 500;
+type ApprovedMap = Record<string, number>;
+// The stored list's origins when it belongs to `vault`, else none.
+async function getApproved(vault: string): Promise<ApprovedMap> {
+  const v = await consentStore.get(APPROVED_KEY);
+  return v && typeof v === "object" && v.vault === vault && v.origins && typeof v.origins === "object" ? { ...v.origins } : {};
+}
+const capApproved = (approved: ApprovedMap): ApprovedMap => Object.fromEntries(Object.entries(approved).sort((a, b) => b[1] - a[1]).slice(0, APPROVED_CAP));
+const inApprovedChain = serialQueue();
+// approvedNow is the current vault's list in memory: loaded only under the vault it was stored under, and emptied by reset.
+let approvedNow: ApprovedMap = {};
+let connectedNow = new Set<string>();
+// consentGen is bumped by every consent change: a load of the map that read before one is read again.
+let consentGen = 0;
+let approvedLoaded = false, connectedLoaded = false, approvedLoading = false, connectedLoading = false;
+const isNewOrigin = (origin: string): boolean => !opaqueOrigin(origin) && !Object.hasOwn(approvedNow, origin) && !connectedNow.has(origin);
+function refreshNew(): void { for (const p of pending.values()) p.first = isNewOrigin(p.origin); }
+const noted = (what: string) => (e: unknown) => console.warn(`[background] ${what}:`, e);
+// Reads what is stored into memory in the background, one read of each at a time; a read that fails is tried again
+// when the next request is queued. Until a list has loaded, an origin it would name reads as new. The approved list is
+// taken only if the vault it was read for is still the current one when the read answers.
+function loadKnown(): void {
+  const vault = wallet.vaultId();
+  if (!approvedLoaded && !approvedLoading && vault) {
+    approvedLoading = true;
+    getApproved(vault).then((stored) => {
+      if (approvedLoaded || wallet.vaultId() !== vault) return;
+      for (const [o, at] of Object.entries(stored)) if (!((approvedNow[o] ?? 0) >= at)) approvedNow[o] = at;
+      approvedNow = capApproved(approvedNow);
+      approvedLoaded = true;
+      refreshNew();
+    }, noted("the approved sites could not be read")).finally(() => { approvedLoading = false; });
+  }
+  if (!connectedLoaded && !connectedLoading) {
+    connectedLoading = true;
+    const gen = consentGen;
+    getConsents().then((c) => {
+      connectedLoading = false;
+      if (gen !== consentGen) { loadKnown(); return; }
+      connectedNow = new Set(Object.keys(c));
+      connectedLoaded = true;
+      refreshNew();
+    }, (e) => { connectedLoading = false; noted("the connected sites could not be read")(e); });
+  }
+}
+ready.then(loadKnown, () => { /* a wallet whose init failed answers every message WALLET_UNAVAILABLE */ });
+// Called by the consent writers once their write has landed.
+function consentChanged(change: (now: Set<string>) => void): void {
+  consentGen++;
+  change(connectedNow);
+  refreshNew();
+}
+// `vault` is Wallet.vaultId when the user approved. The origin is recorded only under that vault and only if it is still
+// the current one when the approval finishes; with no vault nothing is recorded. The stored write carries that vault,
+// so one that runs after a reset lands as a list bound to the erased vault, which every reader takes as empty: it is
+// queued only while its vault is current, so it runs before any write for the next vault, which then replaces it. Not
+// awaited by the approval: a write that fails leaves the origin new after a worker restart, and nothing else.
+function recordApproved(origin: string, vault: string | null): void {
+  if (opaqueOrigin(origin) || !vault || wallet.vaultId() !== vault) return;
+  const at = Date.now();
+  approvedNow[origin] = at;
+  if (Object.keys(approvedNow).length > APPROVED_CAP) approvedNow = capApproved(approvedNow);
+  refreshNew();
+  inApprovedChain(async () => {
+    const stored = await getApproved(vault);
+    stored[origin] = Math.max(stored[origin] ?? 0, at);
+    await consentStore.set(APPROVED_KEY, { vault, origins: capApproved(stored) });
+  }).catch(noted("the approved site was not recorded"));
+}
+// reset: the list is emptied in memory at once. Its stored copy is deleted after, on the list's own queue, as hygiene
+// only: neither step is awaited, and a deletion that fails leaves a list bound to a vault that no longer exists.
+function clearApproved(): void {
+  approvedNow = {};
+  approvedLoaded = false;
+  refreshNew();
+  inApprovedChain(() => consentStore.del(APPROVED_KEY)).catch(noted("the approved sites were not deleted; they belong to the erased vault"));
+}
+// This wallet's own pages' origin: what a seal made in the popup records as the site that asked.
+const ownOrigin = (): string => String(chrome.runtime.getURL("")).replace(/\/$/, "");
 
 // --- Provider events (doc 28 Phase 2): push accountsChanged/disconnect to connected dApp pages. ---
 // The CONTENT SCRIPT opens a long-lived port (it initiates, so no extra permission is needed); we track
@@ -89,7 +185,7 @@ chrome.runtime?.onConnect?.addListener((port: any) => {
   // L2: never register an event port for an opaque ("null") or unknown origin; it has no stable identity, so
   // bucketing them together would let one opaque page receive another opaque page's lock/account-switch events
   // (cross-frame timing). A page with a real origin re-establishes its port on the next connect().
-  if (origin === "null" || origin === "unknown") return;
+  if (opaqueOrigin(origin)) return;
   eventRegistry.add(origin, port);
   port.onDisconnect?.addListener(() => eventRegistry.remove(origin, port));
 });
@@ -156,14 +252,16 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "explorerList": return wallet.explorerList();
     case "addExplorer": return wallet.addExplorer(args[0]);
     case "removeExplorer": return wallet.removeExplorer(args[0]);
-    case "reset": { await inConsentChain(() => consentStore.set(CONSENT_KEY, {})); return wallet.reset(); }
+    // wallet.reset() drops the vault id before its first await and clearApproved() then empties the list with no vault
+    // current, so nothing can refill it; a consent write that throws leaves the wallet and its list untouched.
+    case "reset": { await inConsentChain(async () => { await consentStore.set(CONSENT_KEY, {}); consentChanged((now) => now.clear()); }); const erased = wallet.reset(); clearApproved(); return erased; }
     case "connectedSites": return listConsents();
     case "disconnectSite": { const r = await revokeConsent(args[0]); emitToOrigin(args[0], "accountsChanged", []); emitToOrigin(args[0], "disconnect", { reason: "disconnected" }); return r; } // tell the page it lost access (audit DISC-MISSING + EIP disconnect)
-    case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params }));
+    case "pending": return [...pending.entries()].map(([id, p]) => ({ id, origin: p.origin, method: p.method, params: p.params, first: p.first }));
     case "openApproval": return openApprovalWindow(); // raise the clear-signing window (toolbar-popup "Review")
     case "resolve": return resolvePending(args[0], args[1], args[2], args[3], args[4]); // (id, approve, displayedSigner?, displayedTokenQuote?, reservationAck?)
     case "history": return wallet.history();
-    case "sealClaim": return wallet.sealClaim(args[0]);
+    case "sealClaim": return wallet.sealClaim(args[0], ownOrigin());
     case "revealClaim": return wallet.revealClaim(args[0]);
     case "sealedClaims": return wallet.sealedClaims();
     case "unrevealedSeals": return wallet.unrevealedSeals(args[0]); // the account removal warning's count (popup-only, READ_ONLY)
@@ -214,6 +312,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   if (!p) return { done: false };
   pending.delete(id);
   showQueueBadge();
+  const approvedUnder = wallet.vaultId();   // an approval that completes under another vault, or none, records nothing
   // MACHINE ERROR CODES (Plan 57 B9, additive): every {ok:false} a dApp can see now also carries a
   // stable `code` (USER_REJECTED / WALLET_LOCKED / ACCOUNT_CHANGED / FIRST_PARTY_ONLY /
   // UNSUPPORTED_METHOD / RATE_LIMITED / APPROVAL_CLOSED / FORBIDDEN / UNKNOWN_KIND / INTERNAL) so
@@ -225,6 +324,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
   // `secondSource` is read from the wallet's result before pageResult strips it, and goes to the window only.
   const finish = (out: { ok: boolean; result?: any; error?: string; code?: string }, secondSource?: unknown): ResolveOutcome => {
     p.resolve(out);
+    if (approve) recordApproved(p.origin, approvedUnder);   // after the page's answer; never awaited
     const actionOk = out.ok && (out.result?.ok !== false);
     const soft = out.result?.ok === false;
     const notice: Pick<ResolveOutcome, "secondSource"> = actionOk && (secondSource === "pending" || secondSource === "failed") ? { secondSource } : {};
@@ -267,7 +367,7 @@ async function resolvePending(id: string, approve: boolean, displayedSigner?: st
     else if (p.method === "signinWithCsd") result = await wallet.signInWithCsd(p.params, p.origin);
     else if (p.method === "propose") result = await wallet.propose(p.params);
     else if (p.method === "attest") result = await wallet.attest({ ...(p.params || {}), expectSigner: typeof displayedSigner === "string" && displayedSigner ? displayedSigner : undefined, tokenQuote: displayedTokenQuote }); // W4 (B5d): thread the reviewed signer so a token-fill-confidence attest gets the fill path's ACCOUNT_CHANGED cross-check; RT-W2: + the reviewed quote
-    else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params);
+    else if (p.method === "sealClaim") result = await wallet.sealClaim(p.params, p.origin);
     else if (p.method === "revealClaim") result = await wallet.revealClaim(revealFields(p.params).txid);
     // Plain transfer. Reachable from a dApp ONLY through this approval path (the user
     // saw the recipient/amount/fee in the approve window). We read ONLY to/amount/fee
@@ -425,7 +525,8 @@ function queueDappRequest(origin: string, method: string, params: any): Promise<
       fillHolds.set(fillTarget, id);
       answer = (v) => { if (fillHolds.get(fillTarget) === id) fillHolds.delete(fillTarget); resolve(v); };
     }
-    pending.set(id, { origin, method, params, resolve: answer });
+    pending.set(id, { origin, method, params, resolve: answer, first: isNewOrigin(origin) });
+    loadKnown();   // a load that failed is tried again; never awaited
     showQueueBadge();
     // Raise the clear-signing window. If it can't open (rare), the request still sits in the
     // queue + badge; the user opens the toolbar popup and clicks "Review", which calls

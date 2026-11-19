@@ -29,6 +29,7 @@ import { SealedClaims, sealKey } from "./claims.js";
 import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
 import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, attestTargetView, type CairnxViewIo } from "./cairnxview.js";
 import { csdMarket } from "./market.js";
+import { opaqueOrigin } from "./origin.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
@@ -92,6 +93,9 @@ export class Wallet {
   private active = 0;
   private vaultKey: CryptoKey | null = null;
   private salt = "";
+  // The current vault's identifier: its PBKDF2 salt, 16 random bytes made with the vault (create, restore, import),
+  // kept by every re-seal and erased with it, so it never repeats across a reset. Null with no vault.
+  private vaultIdNow: string | null = null;
   private iter = 0;
   // HD state (memory only, while unlocked): the seed phrase + next free derivation
   // index. null mnemonic = a legacy/import-only wallet with no recovery phrase.
@@ -162,8 +166,11 @@ export class Wallet {
     this.api = (await this.store.get("api")) || DEFAULT_API;
     this.tradeApi = (await this.store.get("tradeApi")) || DEFAULT_TRADE_API;
     this.explorer = (await this.store.get("explorer")) || DEFAULT_EXPLORER;
+    this.vaultIdNow = ((await this.store.get("vault")) as Vault | null)?.salt ?? null;
     await this.rehydrateSession(); // restore an unlocked session across SW restarts (within idleMs)
   }
+  /** The current vault's identifier (see vaultIdNow), read with no await; null with no vault. */
+  vaultId(): string | null { return this.vaultIdNow; }
   // The SPV source reads block bodies from `rpc` and headers from `api`, so a changed endpoint drops it, and the
   // hint-set cache, whose header hashes came from it.
   async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this.endpointChanged(); this.rpc = u; await this.store.set("rpc", u); }
@@ -251,6 +258,7 @@ export class Wallet {
     await this.persistVault(() => this.writeVault(vault, mirrorOf(next.accts ?? []), next.active));
     this.mnemonic = next.mnemonic; this.nextIndex = next.nextIndex; this.accts = next.accts; this.active = next.active;
     this.vaultKey = key; this.salt = vault.salt; this.iter = vault.iter;
+    this.vaultIdNow = vault.salt;
     this.wiped = false;
     this.touch();
     await this.persistSession(); // a freshly created/restored wallet is unlocked → persist the session
@@ -939,7 +947,9 @@ export class Wallet {
   }
 
   // ── sealed claims (commit-reveal); isolated per active account ─────────────
-  async sealClaim(p: { domain?: string; claim: string; fee?: number }) {
+  // `origin` is the site that asked (background.ts: the page's origin, or the wallet's own for a popup seal); the record
+  // keeps it for the reveal card. Records sealed before this have none, nor does a seal asked by an opaque origin.
+  async sealClaim(p: { domain?: string; claim: string; fee?: number }, origin?: string) {
     // CSDTX-SIWC-01: a non-string claim would be hashed as-is into the on-chain commitment but
     // String()-normalized on reveal, so the paid commit could never be revealed. dApp-reachable,
     // so the .d.ts type cannot be trusted at runtime. Refuse BEFORE any fee is spent.
@@ -965,7 +975,7 @@ export class Wallet {
       // anchor may not have landed instead of listing it like a confirmed commit.
       // L5: the {claim, nonce} preimage is stored ENCRYPTED at rest (`enc`, fresh IV), so a parked
       // record is a pure store write needing no key.
-      const rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(r.ok ? {} : { maybe: true }) };
+      const rec = { txid: r.txid, domain, enc, committedTs: Date.now(), revealed: false, ...(origin && !opaqueOrigin(origin) ? { origin } : {}), ...(r.ok ? {} : { maybe: true }) };
       await this.claims.persistSeal({ k: sk, rec });
     }
     await this.hist.maybeRecord(hk, r, { type: "seal", domain, fee });
@@ -1097,6 +1107,7 @@ export class Wallet {
   // clear was already independent, which is why the deletion did not touch this property.)
   async reset(): Promise<void> {
     this.wiped = true;
+    this.vaultIdNow = null;
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
     const wipe = () => this.doReset(wallets);

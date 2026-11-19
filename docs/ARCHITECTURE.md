@@ -56,6 +56,30 @@ events and alarm-driven auto-lock.
   `buildSignSubmit` run; the 10% fee cap needs the selected coins and runs only there.
 - `spentTxids` and `inputs` on a submit result are internal: `resolvePending` strips both before a page receives the
   result.
+- `approvedOrigins` (storage key): `{ vault, origins: { [origin]: ms } }`, the origins the user has approved a request
+  from and when they last did, at most `APPROVED_CAP` = 500, the newest by that time (the oldest is dropped and reads as
+  new again). A list belongs to one vault: `vault` is `Wallet.vaultId()`, the vault's PBKDF2 salt (16 random bytes made
+  with the vault, kept by every re-seal, erased with it), and a list under another vault, with no vault or in the old
+  plain shape reads as empty and is replaced by the next write. It is
+  display metadata, kept apart from everything essential. Each queued request carries its flag (`first`), set from
+  memory when it is queued (`isNewOrigin`: in neither `approvedNow` nor `connectedNow`) and refreshed (`refreshNew`)
+  when either loads (`loadKnown`, in the background, one read of each at a time, tried again when a request is queued)
+  or changes (an approval, a consent write, a reset). `pending` reads only the flags and touches no storage; until a
+  list has loaded, or when it cannot be read, an origin reads as new. `resolvePending` updates `approvedNow` once the
+  page has its answer and queues the storage write on the list's own queue (`recordApproved`, `inApprovedChain`, never
+  awaited; a failed write is logged). An approval records its origin under the vault current when the user approved,
+  and only if that vault is still current when the approval finishes: in memory at once, and in storage by a queued
+  write that carries that vault, so one that runs after a reset lands as a list bound to the erased vault, which every
+  reader takes as empty. So an approval, a write or a load from before a reset never lands in the next wallet's
+  list (sections 7 to 9 of
+  test/approve-first-request.test.mjs). The reset clears the consent map, then calls `wallet.reset()`, which drops the
+  vault id before its first await, and only then empties the list: nothing that finishes during the consent write can
+  refill it, and a consent write that throws leaves the wallet and its list as they were. The stored copy's deletion is
+  queued as hygiene, awaited by nothing and relied on by nothing. Opaque origins (`src/core/origin.ts`
+  `opaqueOrigin`) are never written (test/approve-first-request.test.mjs).
+- A `revealClaim` for a seal the active account does not hold is queued like any reveal, from every site, and
+  `revealClaim` answers it `SEAL_UNKNOWN` after approval. A seal records the asking origin on its record (`origin`; the
+  extension's own for a popup seal, none for an opaque origin), which `clearsign.ts` `revealPreviewHtml` shows.
 
 ## Provider (`src/content.ts`, `src/inpage.ts`)
 
@@ -263,7 +287,8 @@ dir: both files must be byte-identical to the committed ones.
   `blockAt`): the front door marks a finalized one immutable for the edge and charges it no per-height budget, while
   `/block/height/<h>` is never cached. The merkle bind checks the body either way (test/block-by-hash.test.mjs).
 - Storage: `unlimitedStorage` because the namespv header store (IndexedDB, 84 bytes per header, about 60 KB per
-  chain-day) grows with the chain; `chrome.storage.local` holds the vault, history and settings.
+  chain-day) grows with the chain; `chrome.storage.local` holds the vault, history and settings, the connected sites
+  and the 500 origins the user approved a request from last (`approvedOrigins`).
 - Consensus caps: `MAX_TX_INPUTS` = 512, `MAX_TX_BYTES` = 100 KB; an all-coinbase holder tops out around 25,600 CSD
   per tx. `consolidate()` is the wallet-side answer. A proposal's domain and uri: `MAX_DOMAIN_BYTES` = 128 and
   `MAX_URI_BYTES` = 512 UTF-8 bytes, vendored from csd-codec.

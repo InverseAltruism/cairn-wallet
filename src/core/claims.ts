@@ -12,6 +12,7 @@ export const sealKey = (addr: string) => "sealedClaims:" + addr;
 // the wallet's own list of accounts no longer names them.
 const KEPT_SEALS = "keptSealAddrs";
 const revealed = (rec: any): boolean => !!rec?.revealed;
+const SEAL_UNKNOWN_TEXT = "no sealed claim with that txid in this account";
 
 // SEAL-EVICT-01 (P75-6 F2): the sealed-claims cap must never evict an UNREVEALED preimage; it is the only
 // copy of the reveal nonce for a PAID commit (unrecoverable from phrase or chain). Evict oldest REVEALED
@@ -47,7 +48,7 @@ export class SealedClaims {
   // L5: the {claim, nonce} pair is the reveal PREIMAGE + salt; a force-revealable front-running lever if it
   // is readable at rest. The vault key already lives only in memory (chrome.storage.session, not cold-disk-
   // readable), so encrypt ONLY these two fields under it (fresh IV per seal) before persisting; txid/domain/
-  // committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
+  // origin/committedTs/revealed/maybe stay plaintext (already on-chain / not the lever). Reuses the AES-GCM vault
   // primitives (keystore sealWith/openWith); no new crypto. history/labels stay the documented local-disk
   // residual (we do NOT encrypt all of chrome.storage.local; §5 constraint).
   async sealPreimage(claim: string, nonce: string): Promise<Vault> {
@@ -133,12 +134,15 @@ export class SealedClaims {
     for (const a of kept) await this.store.del(sealKey(a));
     await this.store.del(KEPT_SEALS);
   }
+  // The active account's record of the seal `txid`, stored or parked (a parked seal is revealable too).
+  private async findSeal(k: string, txid: string): Promise<any> {
+    const list: any[] = (await this.store.get(k)) || [];
+    return list.find((x) => x?.txid === txid) ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec;
+  }
   async revealClaim(txid: string) {
     const k = sealKey(this.w.addr());
-    const list: any[] = (await this.store.get(k)) || [];
-    const rec = list.find((x) => x.txid === txid)
-      ?? this.pendingSeals.find((p) => p.k === k && p.rec.txid === txid)?.rec; // a parked seal is revealable too
-    if (!rec) return { ok: false, error: "no sealed claim with that txid in this account" };
+    const rec = await this.findSeal(k, txid);
+    if (!rec) return refuse("SEAL_UNKNOWN", SEAL_UNKNOWN_TEXT);
     // The preimage goes public only once the commit is mined (flushPending's getProposal rule): a reveal
     // against a commit still in the mempool, or one that never lands, would publish the claim uncommitted.
     const commit = await node.getProposal(this.w.rpc(), txid);
