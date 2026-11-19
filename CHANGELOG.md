@@ -198,6 +198,21 @@
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with
   it; until then the caution on those names stays.
+- The csd-sdk bundle moves to csd-light 0.1.27 (the other packages unchanged: cairnx-core 0.2.4, csd-client 0.1.20,
+  csd-codec 0.1.18, csd-crypto 0.1.21, csd-tx 0.1.24). Its block bind refuses, as a body that does not match its
+  verified header, a served transaction that is not written as the node writes it: a `txid` field that is absent or
+  is not the id the body hashes to, a hash, address or script (`prev_txid`, `script_sig`, `script_pubkey`,
+  `payload_hash`, `proposal_id`) that is not `0x` and lower-case hex, or an app type other than `None`, `Propose` or
+  `Attest`. No hash commits the `txid` field and the codec reads either hex spelling to the same bytes, so such a body
+  matched the merkle root and the wallet then read the served text: a record whose hash was written in another
+  spelling no longer matched the `0x` lower-case id it was compared with and was dropped (a name transfer, an offer
+  cancel, a competing claim). The node writes every one of these fields in its own form, so no honest body changes
+  verdict. On such a body a reservation fill refuses `RPC_BLOCK_MISMATCH`, an offer-id fill `VERIFY_UNAVAILABLE` (as
+  for a body that fails the merkle compare), and a `.csd` name shows as not chain-verified; nothing is signed
+  (test/spv-node-form.test.mjs; on the 0.1.26 bundle the same bodies bound, and the fills signed and the name verified
+  in every case but a `payload_hash` written without `0x`, which the record parse refused). Apart from that check the bundle differs only in a local name
+  esbuild renamed inside @noble/curves. The test rigs now serve each transaction with its `txid` field
+  (`test/_spvrig.ts` `nodeTx`), and the filler transaction seven files copied is one export there.
 
 ## 0.3.3
 

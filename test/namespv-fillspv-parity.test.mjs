@@ -17,7 +17,7 @@ import path from "node:path";
 import { verifyNameUnion } from "../src/core/namespv.js";
 import { provenOfferPayto, liveFillSpvSource, feeBpsAt } from "../src/core/fillspv.js";
 import { offer, fclaim, epochOf, fclaimHoldEnd, V28_HEIGHT, EPOCH_LEN } from "../src/vendor/cairnx-spv.js";
-import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase, nodeBlockBody } from "./_spvrig.ts";
+import { buildNameClaim, proposeTx, world, source, feeOut, pick, signSighash, buildScriptSig, addrFromPriv, ctxid, vSighash, rpcTxToTx, merkleRoot, prevoutFor, mkFetch as mkFetchByBase, nodeBlockBody, FILLER } from "./_spvrig.ts";
 
 // D2 (2026-09-12): the single-source verifyName twin was deleted; the namespv leg now drives
 // verifyNameUnion with ONE source (the production shape) serving the case's claim + hints.
@@ -170,7 +170,6 @@ console.log("\nMPB-1 (producer mutation coverage: provenOfferPayto + liveFillSpv
   const E = epochOf(H0 + 3) + 2;
   const fcTx = proposeTx({ ...pick(fclaim({ offer: loid })), priv: meKey, expiresEpoch: E });
   const fid = ctxid(rpcTxToTx(fcTx)).toLowerCase();
-  const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
   const worldOf = (ps) => { const b = new Map(); for (const { height, tx } of ps) (b.get(height) ?? b.set(height, []).get(height)).push(tx); return b; };
   const blocks = worldOf([{ height: H0 + 2, tx: offTx }, { height: H0 + 3, tx: fcTx }]);
   const TIP2 = fclaimHoldEnd(E) - 5;

@@ -47,6 +47,18 @@ export const prevoutFor = (t: unknown): string | null => PREVOUTS.get(String(t).
 export const pick = (b: Built): Built => ({ uri: b.uri, payloadHash: b.payloadHash });
 export const feeOut = (v: number = REG_FEE): Output[] => [{ to: TREASURY_ADDR, value: v }];
 
+// A tx as the node writes it in a block body: with its `txid` field, the id its body hashes to. The bind refuses a
+// served tx without it, and a hex field not 0x and lower case, as a body mismatch. A body without `app` keeps none
+// and gets the id of its app-None rebuild, as the bind computes it.
+export function nodeTx(body: object): RpcTxJson {
+  const full = (body as { app?: unknown }).app ? body : { ...body, app: { type: "None" } };
+  return { txid: ctxid(rpcTxToTx(full as RpcTxJson)), ...body } as unknown as RpcTxJson;
+}
+
+// A padding tx with no `app` field beside the records under test (a hostile node may serve one; the bind rebuilds it
+// as app None and the merkle compare decides).
+export const FILLER = nodeTx({ version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] });
+
 // Build a SIGNED Propose tx in node-JSON (RpcTxJson) shape; exactly what a node block body carries. Each
 // tx references a UNIQUE prevout whose scriptPubkey is registered here; by default the signer spends their
 // OWN coin (the honest case), and `prevScriptPubkey` overrides it to simulate a swapped scriptSig.
@@ -63,12 +75,12 @@ export function proposeTx(p: { uri: string; payloadHash: string; expiresEpoch?: 
   };
   const { sig64, pub33 } = signSighash(vSighash(tx as any), priv); // sign the VENDORED sighash → verifyDigest accepts
   in0.scriptSig = buildScriptSig(sig64, pub33);
-  return {
+  return nodeTx({
     version: 1, locktime: 0,
     inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: in0.scriptSig }],
     outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
     app: { type: "Propose", domain, payload_hash: payloadHash, uri, expires_epoch: expiresEpoch },
-  } as unknown as RpcTxJson;
+  });
 }
 
 // Build a SIGNED Attest tx in node-JSON (RpcTxJson) shape; for the fill / legacy-claim scan scenarios.
@@ -87,12 +99,12 @@ export function attestTx(p: { proposalId: string; score: number; confidence?: nu
   };
   const { sig64, pub33 } = signSighash(vSighash(tx as any), priv);
   in0.scriptSig = buildScriptSig(sig64, pub33);
-  return {
+  return nodeTx({
     version: 1, locktime: 0,
     inputs: [{ prev_txid: prevTxid, vout: 0, script_sig: in0.scriptSig }],
     outputs: outputs.map((o) => ({ value: o.value, script_pubkey: o.to })),
     app: { type: "Attest", proposal_id: proposalId, score, confidence },
-  } as unknown as RpcTxJson;
+  });
 }
 
 // place txs into blocks at given heights; return {blocks, hints} (hints = txid+height+pos per placed tx)

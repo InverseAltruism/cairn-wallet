@@ -22,10 +22,10 @@ const { check, done } = checker("spv-poison-e2e");
 
 const priv = "0x" + "77".repeat(32);
 const signer = addrFromPriv(priv).toLowerCase();
-const POISON = 9007199254740993n; // 2^53 + 1 — an unbounded-u64 expiry (NOT a safe integer)
+const POISON = 9007199254740993n; // 2^53 + 1: an unbounded-u64 expiry (NOT a safe integer)
 
-// 1. Build + sign the poison Propose (the codec's u64 accepts a BigInt — the bytes are valid).
-//    The record is an OFFER — the real attack's target class (the fill lane): resolve()'s offer
+// 1. Build + sign the poison Propose (the codec's u64 accepts a BigInt: the bytes are valid).
+//    The record is an OFFER, the real attack's target class (the fill lane): resolve()'s offer
 //    branch is the one that denies "expiresEpoch out of safe-integer range".
 const rec = offer({ give: { ticker: "AAA", amount: "10" }, want: { value: "5000000", payto: signer } });
 const coreTx = {
@@ -40,9 +40,9 @@ const onChainTxid = ctxid(coreTx);
 
 // 2. Simulate the WIRE: the node serves the block body as JSON TEXT carrying the full u64 decimal.
 //    (JSON.stringify can't emit a BigInt literal, so route through a sentinel and unwrap to the raw
-//    decimal — exactly what the node's serializer emits for a u64.)
+//    decimal, exactly what the node's serializer emits for a u64.)
 const nodeJsonTx = {
-  version: 1, locktime: 0,
+  txid: onChainTxid, version: 1, locktime: 0,
   inputs: [{ prev_txid: "0x" + "42".repeat(32), vout: 0, script_sig: coreTx.inputs[0].scriptSig }],
   outputs: [{ value: REG_FEE, script_pubkey: TREASURY_ADDR }],
   app: { type: "Propose", domain: "cairnx:v1", payload_hash: rec.payloadHash, uri: rec.uri, expires_epoch: POISON },
@@ -92,9 +92,9 @@ check("RED control: plain parse rounds → u64 throws (the pre-M1 brick)", brick
 
 // 5. The record reaches resolve() as a CONSENSUS NO-OP: toChainEvent's Number(...) conversion yields
 //    the rounded non-safe-integer, which resolve()'s offer branch denies ("expiresEpoch out of
-//    safe-integer range") — the offer is never created.
+//    safe-integer range"), so the offer is never created.
 const ev = { kind: "propose", id: onChainTxid.toLowerCase(), proposer: signer, uri: rec.uri, payloadHash: String(rec.payloadHash).toLowerCase(), expiresEpoch: Number(parsed.txs[0].app.expires_epoch), height: V28_HEIGHT, pos: 0, paidTo: {} };
 const st = resolve([ev], V28_HEIGHT + 100);
-check("resolve() denies the poison record — the offer is never created (consensus no-op)", st.offers[onChainTxid.toLowerCase()] === undefined);
+check("resolve() denies the poison record: the offer is never created (consensus no-op)", st.offers[onChainTxid.toLowerCase()] === undefined);
 
 done();

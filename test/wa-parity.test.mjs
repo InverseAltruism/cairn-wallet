@@ -1,9 +1,9 @@
-// WA-PARITY (Plan 70 R2 / W-A defense-in-depth) — the SHARED fill-boundary corpus, SEAM 2 of 3: cairn-wallet.
+// WA-PARITY (Plan 70 R2 / W-A defense-in-depth): the SHARED fill-boundary corpus, SEAM 2 of 3: cairn-wallet.
 //
 // One canonical hostile-case corpus (test/vectors/wa-parity-corpus.json, byte-identity-checked against the
 // csd-sdk home copy) is fed to all three fill-boundary seams so a wallet-vs-site (or vs cairnx-core) divergence
 // can never re-open the F8 class silently. This is the WALLET adapter: it materializes each scenario as REAL
-// signed cairnx txs, places them in synthetic PoW-verified blocks, and drives the wallet's OWN production seam —
+// signed cairnx txs, places them in synthetic PoW-verified blocks, and drives the wallet's OWN production seam:
 // liveFillSpvSource (the tip-anchored block-body scan + prevout-ownership bind) feeding the vendored verifyFillSpv,
 // exactly the code path fclaimLanePreflight runs on the shipped artifact. NO chain-free injected event set: the
 // wallet re-derives the offer/grant/hold/cancel replay from block bodies it merkle-proves itself.
@@ -13,7 +13,7 @@
 //     REAL liveFillSpvSource + verifyFillSpv over real signed txs and asserts safe === (expect==='accept').
 //     withheld-cancel is the wallet-vs-cairnx-core DIVERGENCE the corpus locks: cairnx-core's verifyFillSpv trusts
 //     its io.offerEventIds (a resolver hint list) and ACCEPTS an event withheld from it; the wallet has NO hint
-//     list — offerEventIds is derived from its OWN PoW-verified block-body scan — so it FINDS the withheld cancel
+//     list (offerEventIds is derived from its OWN PoW-verified block-body scan), so it FINDS the withheld cancel
 //     and REFUSES. We demonstrate both halves: the real block-scan io REJECTS, and a synthetic hint-list io that
 //     omits the cancel ACCEPTS (which is exactly why the block scan is load-bearing).
 //   • 'terms' scenarios exercise the served-offer vs merkle-proven-offer bind that only the CALLER does. The
@@ -23,8 +23,8 @@
 //     nothing submitted. The honest controls are NOT refused (the no-false-refusal UX red line).
 //
 // MUTATION GATE (load-bearing): neutralising the F8 ocancel-scan line (MUTATE_OCANCEL_SCAN) in the REAL
-// fillspv.ts source makes the ocancel vanish from the replay, and the ocancel-before-grant reject FLIPS to accept
-// — proving the corpus reject is enforced by that exact guard, not passing for an unrelated reason.
+// fillspv.ts source makes the ocancel vanish from the replay, and the ocancel-before-grant reject FLIPS to accept,
+// proving the corpus reject is enforced by that exact guard, not passing for an unrelated reason.
 //
 // Run: tsx test/wa-parity.test.mjs   (offline; synthetic PoW, real signed txs, no live chain)
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
@@ -39,7 +39,7 @@ import {
   V28_HEIGHT, EPOCH_LEN, FCLAIM_MAX_EPOCH_AHEAD, CLAIM_COOLDOWN_BLOCKS, FILL_TIP_MARGIN,
   FEE_BPS_V16, TREASURY_ADDR, DEPLOY_FEE, epochOf, fclaimHoldEnd,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt, FILLER } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
@@ -88,7 +88,6 @@ const resolveEe = (ee) => { if (ee.kind === "epochOfPlus") return epochOf(resolv
 // A synthetic SpvSource whose blocks carry a REAL merkle root (so bindBlock genuinely passes) and returns a
 // filler-only block for empty heights (the fill scan iterates every height in the tip-anchored window). Identical
 // shape to fill-fclaim-preflight.test.mjs's fillSource, driving the SAME liveFillSpvSource production path.
-const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
 function fillSource(blocks, tip) {
   return {
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },
@@ -101,7 +100,7 @@ function fillSource(blocks, tip) {
 }
 const worldOf = (placements) => { const b = new Map(); for (const { height, tx } of placements) (b.get(height) ?? b.set(height, []).get(height)).push(tx); return b; };
 
-// Materialise ONE scenario as REAL signed txs placed in blocks (the honest, on-chain-truth event set — a 'terms'
+// Materialise ONE scenario as REAL signed txs placed in blocks (the honest, on-chain-truth event set: a 'terms'
 // attack lives in the SERVED offer only, which this SPV layer never sees, so the on-chain events are always honest).
 function materialise(s) {
   const placements = [];
@@ -170,7 +169,7 @@ check(`ran every replay-family scenario through the wallet seam (${replayRun})`,
 
 // ── 3. withheld-cancel DIVERGENCE lock: prove the wallet's block scan is what catches it, not a hint list. ──
 // The wallet io (real block scan) REJECTS; a hint-list io that OMITS the cancel from offerEventIds (the exact
-// completeness gap cairnx-core cannot close) ACCEPTS — so if the wallet ever regressed to trusting a hint list,
+// completeness gap cairnx-core cannot close) ACCEPTS, so if the wallet ever regressed to trusting a hint list,
 // this seam would go green where it must be red. Directly locks the wallet-vs-cairnx-core split the fixture exists for.
 console.log("\nwithheld-cancel divergence (block scan vs resolver hint list):");
 {
@@ -186,7 +185,7 @@ console.log("\nwithheld-cancel divergence (block scan vs resolver hint list):");
   // a resolver-hint-list io that OMITS the cancel from offerEventIds (cairnx-core's trust model) would ACCEPT.
   const hintListIo = { ...realIo, async offerEventIds() { return realIds.filter((x) => String(x).toLowerCase() !== cancelId); } };
   const vHint = await verifyFillSpv(m.offerId, m.fillFclaimTxid, m.me, hintListIo, { myLiveHoldsAtGrant: realIo.myLiveHoldsAtGrant });
-  check("a hint-list io that hides the cancel ACCEPTS — proving the wallet's independent block scan is load-bearing", vHint.safe === true);
+  check("a hint-list io that hides the cancel ACCEPTS, proving the wallet's independent block scan is load-bearing", vHint.safe === true);
 }
 
 // ── 4. TERMS family ─────────────────────────────────────────────────────────────────────────────────────────
@@ -207,7 +206,7 @@ const baseFor = () => [
 ];
 const fcFor = (txid, offerId, height, holder) => PE(txid, fclaim({ offer: offerId }), height, holder, E);
 const idOf = (e) => (e.kind === "propose" ? e.id : e.txid).toLowerCase();
-// The proven io — the fee/rebate terms + payment recipients derived from the PROVEN offer event, exactly as
+// The proven io: the fee/rebate terms + payment recipients derived from the PROVEN offer event, exactly as
 // liveFillSpvSource proves them (anchored to real SPV by the payto-strip control below, which asserts the REAL
 // provenOfferPayto yields the identical {height, feeBps, value, min} for the same honest offer).
 function makeIo(events, tip, me, fillFclaimHeight) {
@@ -253,7 +252,7 @@ async function driveTermsFclaim(pw, served, outsFrom) {
 
 console.log("\nTERMS family (served-offer vs merkle-proven-offer bind):");
 
-// 4a. payto-strip / payto-resign: the FUNDING-tx attacks — drive the REAL provenOfferPayto over the tampered offer
+// 4a. payto-strip / payto-resign: the FUNDING-tx attacks; drive the REAL provenOfferPayto over the tampered offer
 //     tx and assert it fails CLOSED (null). The corpus offer is payto-LESS (recipient = the proven prevout owner A).
 const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)); const sg = signSighash(vSighash(rpcTxToTx(rpcTx)), newPriv); t.inputs[0].script_sig = buildScriptSig(sg.sig64, sg.pub33); return t; };
 {
@@ -274,7 +273,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
   check("[payto-resign] a re-signed funding tx (prevout still A) fails CLOSED (provenOfferPayto null; recipient bound to prevout OWNER, not scriptSig)", rResign === null);
 }
 
-// 4b. seller-swap / spurious-min / deflated-feeBps: the SERVED-FIELD attacks — drive the REAL fclaimLanePreflight.
+// 4b. seller-swap / spurious-min / deflated-feeBps: the SERVED-FIELD attacks; drive the REAL fclaimLanePreflight.
 {
   const honest = await driveTermsFclaim("wa-terms-honest", servedOffer());
   check(`terms honest-control: an untampered served offer is NOT refused and submits (${honest.r?.error ?? "ok"})`, honest.r?.ok === true && honest.submits === 1);
@@ -299,7 +298,7 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
 }
 
 // ── 5. MUTATION GATE (load-bearing): neutralise the F8 ocancel-scan line in the REAL fillspv.ts source and confirm
-// the ocancel-before-grant corpus reject FLIPS to accept — proving the corpus reject rides that exact guard. ──
+// the ocancel-before-grant corpus reject FLIPS to accept, proving the corpus reject rides that exact guard. ──
 console.log("\nMUTATION GATE (the corpus reject is enforced by the real guard, not an unrelated reason):");
 const FILLSPV_SRC = path.join(coreDir, "fillspv.ts");
 async function withFillspvMutant(marker, run) {

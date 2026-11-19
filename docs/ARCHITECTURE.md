@@ -212,11 +212,13 @@ Beside it:
     states it).
   - Store, sync, migration and the union's lapse and badge rules: `docs/DESIGN-namespv-scaling.md`.
 - `spvbind.ts`: the SPV primitives `namespv.ts` and `fillspv.ts` share: the block bind (`bindBlock` over csd-light
-  `bindBlockBody`: exact parse of the served `/block` text, the repeated-txid refusal before the merkle compare,
-  test/merkle-dup-txid.test.mjs), the author bind (`bindSigner` over csd-crypto `authorOf`: the owner of the coin
+  `bindBlockBody`: exact parse of the served `/block` text, a transaction not written as the node writes it refused
+  as a body mismatch (its `txid` field absent or not the id the body hashes to, a hash, address or script not `0x`
+  and lower-case hex, an app type other than `None`, `Propose` or `Attest`; test/spv-node-form.test.mjs), the
+  repeated-txid refusal before the merkle compare, test/merkle-dup-txid.test.mjs), the author bind (`bindSigner` over csd-crypto `authorOf`: the owner of the coin
   input 0 spends, test/namespv-fillspv-parity.test.mjs), signer recovery, the coinbase test, `paidTo` and the event
   mapping. Both binds return their refusal; a body that does not decode throws. namespv turns a refusal into a reason
-  and fillspv into a throw (`BodyMismatchError` for a merkle mismatch) or a null.
+  and fillspv into a throw (`BodyMismatchError` for a body mismatch of either kind) or a null.
 
 SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
 

@@ -13,7 +13,7 @@ import { serveFixture, serveOffer, splitSource, memStore, legacyOf, OFFER, FIX_T
 import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { liveFillSpvSource, provenOfferPayto } from "../src/core/fillspv.ts";
 import { fclaim, epochOf, feeBpsAt, V29_HEIGHT } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, FILLER } from "./_spvrig.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { mkCoin, txReply } from "./_coin.ts";
@@ -36,7 +36,6 @@ const chunk7Pages = () => net.log.filter((p) => Number(p.split("/")[0]) < 32768)
 // The fclaim window: my fclaim on the real offer, ten blocks below a synthetic tip past V29.
 const meKey = "0x" + "1a".repeat(32), ME = addrFromPriv(meKey).toLowerCase();
 const TIP = V29_HEIGHT + 60;
-const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
 const blocks = new Map();
 const claimTx = proposeTx({ ...pick(fclaim({ offer: OFFER.offerId })), priv: meKey, expiresEpoch: epochOf(TIP - 10) + 2 });
 blocks.set(TIP - 10, [claimTx]);

@@ -15,7 +15,7 @@ import {
   deploy, mint, offer, fclaim, resolve, verifyFillSpv, requiredFillOutputs, paidToFromOutputs, myProvenFillClosedOffer, countOtherHoldsAtGrant,
   V29_HEIGHT, MAX_ACTIVE_CLAIMS, SCORE_FILL, TREASURY_ADDR, DEPLOY_FEE, epochOf, feeBpsAt, tradeFee, fclaimHoldEnd,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
+import { proposeTx, attestTx, addrFromPriv, ctxid, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt, FILLER } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.ts";
 import { serveFixture, serveOffer, splitSource, memStore, legacyOf, OFFER, FIX_ANCHORS } from "./helpers/spvfixture.mjs";
 import { liveSpvSource } from "../src/core/namespv.ts";
@@ -30,7 +30,6 @@ const H_BACK = 86_000, H_OFF = 87_000;               // backing and offers sit b
 const H_C = V29_HEIGHT + 30, H_F = V29_HEIGHT + 40, H_G = V29_HEIGHT + 50, TIP = V29_HEIGHT + 60;
 const eFor = (h) => epochOf(h) + 2;
 
-const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
 function fillSource(blocks, tip) {
   return {
     async prepare() { return { verifiedTip: tip, nodeTip: tip }; },

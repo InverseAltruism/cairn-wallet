@@ -10,7 +10,7 @@ import { checker } from "./_check.ts";
 import {
   buildNameClaim, buildNameSet, buildNameXfer, buildNameProfile, TREASURY_ADDR,
   addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, resolve,
-  REG_FEE, proposeTx, attestTx, world, source, feeOut, pick, prevoutFor, nodeBlockBody, mkFetch as mkFetchByBase,
+  REG_FEE, proposeTx, attestTx, world, source, feeOut, pick, prevoutFor, nodeBlockBody, mkFetch as mkFetchByBase, FILLER,
 } from "./_spvrig.ts";
 import { nameCommit, nameCommitRecord, nameFinalize, V25_HEIGHT, V28_HEIGHT, REG_COMMIT_MAX_BLOCKS, offer, fclaim, deploy, mint, tradeFee, makerRebate, epochOf, SCORE_FILL, CONF_TOKEN_FILL, DEPLOY_FEE } from "../src/vendor/cairnx-spv.js";
 
@@ -113,7 +113,7 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
 // 9. DoS-RESISTANCE; a hostile node pads a hinted block with an app-LESS filler tx (no `app` field).
 //    rpcTxToTx must not throw on it (the fix); the hinted record still verifies. (review finding #2)
 {
-  const filler = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] }; // NO app
+  const filler = FILLER; // NO app
   const txs = [claimTx, filler];
   const merkle = merkleRoot(txs.map((t) => ctxid(rpcTxToTx(t.app ? t : { ...t, app: { type: "None" } }))));
   const blocks = new Map([[33700, txs]]);

@@ -47,7 +47,11 @@ from the node, so a node that follows another chain fails the merkle check and n
 on its blocks: a reservation fill refuses with `RPC_BLOCK_MISMATCH`, naming the block, the RPC and
 the header source (a header source that serves a false header with valid proof of work gives the
 same mismatch, so the message does not blame the node); an offer-id fill refuses as
-`VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified.
+`VERIFY_UNAVAILABLE`; a `.csd` name shows as not chain-verified. A body whose transactions hash to
+the verified root but are not written as the node writes them (a `txid` field absent or not the id
+the body hashes to, a hash, address or script not `0x` and lower-case hex) is refused the same way:
+the codec reads either spelling to the same bytes, so the merkle check alone would pass it while the
+wallet compares the served text (test/spv-node-form.test.mjs).
 
 The approval window's title for a score-0 attestation (how a site cancels a CairnX offer or bid) also comes from that
 RPC: it reads the target proposal, and says "Cancel your offer" or "Cancel your bid" only when the node reports the
