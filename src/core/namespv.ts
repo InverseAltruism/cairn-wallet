@@ -252,7 +252,8 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   // tip, monotonic-floored) drives the lease-lapse epoch fail-closed.
   const scoped = nameScopedEvents(name, events);
   const state = resolve(scoped, lapseTip);
-  const rec = state.names[name];
+  // An own property only: `names` is a plain object, so a name such as "constructor" would read a built-in.
+  const rec = Object.hasOwn(state.names, name) ? state.names[name] : undefined;
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
   if (rec.expired) {
     // WALLET-LAPSE-TIP-1: corroborate the lapse against the persisted tip FLOOR (a tip already trusted BEFORE
@@ -261,7 +262,8 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     // is confident. If it is expired ONLY at the current (claimed) nodeTip, the caller degrades it to caution
     // unless a second source corroborates; so an inflated fresh-install tip can't assert a false lapse.
     const floor = Number.isFinite(floorTip as number) ? Number(floorTip) : 0;
-    const floorCorroborated = floor > 0 && resolve(scoped, floor).names[name]?.expired === true;
+    const atFloor = resolve(scoped, floor).names;
+    const floorCorroborated = floor > 0 && Object.hasOwn(atFloor, name) && atFloor[name]?.expired === true;
     return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain); refusing to send` };
   }
   // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized:
