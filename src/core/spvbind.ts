@@ -83,7 +83,9 @@ export function toChainEvent(tx: Tx, id: string, height: number, pos: number, si
   return { kind: "attest", txid: id.toLowerCase(), proposalId: String(tx.app.proposalId).toLowerCase(), attester: signer, score: Number(tx.app.score), confidence: Number.isSafeInteger(conf) && conf >= 0 ? conf : 0, height, pos, paidTo };
 }
 
-/** The refusal for a block body whose transactions do not hash to the verified header's merkle root. */
+/** The refusal text for a body-mismatch bind: a body whose transactions do not hash to the verified header's merkle
+ *  root, or one that hashes to it but does not write a transaction as the node writes it (csd-light 0.1.27). The
+ *  text names the merkle root in both cases. */
 export function bodyMismatchReason(height: number, bodySource: string | undefined): string {
   return bodySource
     ? `block ${height} from ${bodySource} does not match its verified merkle root: that RPC may be on another chain, or the read was altered`
@@ -111,15 +113,17 @@ export type BlockBind =
   | { ok: false; kind: "duplicate-txid" | "body-mismatch"; reason: string };
 
 /**
- * Fetch a block and bind it with csd-light `bindBlockBody`: every tx rebuilt from the exactly parsed body, a
+ * Fetch a block and bind it with csd-light `bindBlockBody`: every tx rebuilt from the exactly parsed body and
+ * required to be written as the node writes it (a `txid` field equal to the id the body hashes to, hashes, addresses
+ * and scripts in `0x` lower-case hex, an app type of None, Propose or Attest; test/spv-node-form.test.mjs), a
  * repeated txid refused before the merkle compare (test/merkle-dup-txid.test.mjs), and the txids required to hash
  * to the verified root, so a lying node cannot omit, alter or add a committed body. A failed read or a body that
  * does not decode throws; a body that fails the bind is returned as a refusal.
  */
 export async function bindBlock(src: BlockReader, height: number): Promise<BlockBind> {
   const { merkle, body } = await src.blockAt(height);
-  // bindBlockBody reads `height` and `header.merkle` of the verified header (csd-light 0.1.25 bind.ts); the
-  // header store keeps no chainwork, so the other fields are placeholders.
+  // bindBlockBody reads `height` and `header.merkle` of the verified header (csd-light bind.ts, unchanged in
+  // 0.1.27); the header store keeps no chainwork, so the other fields are placeholders.
   const b = bindBlockBody(body, { height, hash: "", header: { merkle } as BlockHeader, chainwork: 0n });
   if (b.ok) return { ok: true, ids: b.txs.map((t) => t.txid), rebuilt: b.txs.map((t) => t.tx) };
   if (b.kind === "malformed") throw new Error(b.reason);

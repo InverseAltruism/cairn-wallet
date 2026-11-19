@@ -66,7 +66,9 @@ function giveBacking(offerRec: OfferRecord | null, seller: string, verifiedTip: 
 }
 
 // The fill boundary's bind contract: a body that fails the shared bind throws, so every read here fails closed;
-// a merkle mismatch throws BodyMismatchError so fillpreflight.ts can name the RPC and the header source.
+// a body mismatch (a merkle mismatch, or a body not written as the node writes it) throws BodyMismatchError, which
+// the reservation lane answers RPC_BLOCK_MISMATCH naming the RPC and the header source; the offer-id lanes' proof
+// read (provenOfferPayto) answers null for it, as for any failure, and refuses VERIFY_UNAVAILABLE.
 async function bindBlockOrThrow(spv: SpvSource, height: number): Promise<{ ids: string[]; rebuilt: Tx[] }> {
   const b = await bindBlock(spv, height);
   if (b.ok) return { ids: b.ids, rebuilt: b.rebuilt };

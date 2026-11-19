@@ -123,7 +123,7 @@
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
-- `test/run.mjs` refuses to run with fewer than 198 discovered test files (the floor was 142), so a dropped gate file
+- `test/run.mjs` refuses to run with fewer than 199 discovered test files (the floor was 142), so a dropped gate file
   fails the runner.
 - Tests for six guards that held but that no test turned red when removed (found by the audit of 2026-11-19; no source
   change): the offer-id lane's terms bind, which is the only check of a served fee rate, give or value there
@@ -231,6 +231,9 @@
   proxy with two backends an earlier attempt of the same request may have reached the other backend and been
   admitted, and an older proxy then relays the second backend's refusal. The `SUBMIT_REJECTED` row and the comments
   in `node.ts` say the same (test/popup-outcome-dom.test.mjs 4f).
+- Release: `store/PUBLISH-RUNBOOK.md` step 4 and AGENTS.md "Release and deploy" step 4 check, before the tag is pushed,
+  that the tagged commit is on `master`'s first-parent line (`release.yml` builds whatever commit a pushed `v*` tag
+  names).
 - Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with

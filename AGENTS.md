@@ -197,7 +197,10 @@ and a maintainer handles versioning and release.
 3. `npm test && npm run package` green. scripts/package.mjs emits byte-reproducible zips and sha256s (the store
    upload file `cairn-wallet-store-X.Y.Z.zip` and the two the release carries; the runbook's step 5). node_modules
    must be a real `npm ci` directory: a symlinked one changes esbuild's path comments and the hash.
-4. Tag and push (maintainers only). release.yml runs `anchors` (re-walks the table against the public chain; the
+4. Tag and push (maintainers only). Before the push, check that the tagged commit is on `master`'s first-parent line
+   (release.yml builds whatever commit a pushed `v*` tag names); it prints `on-master` or nothing:
+   `git rev-list --first-parent origin/master | grep -qx "$(git rev-parse 'vX.Y.Z^{commit}')" && echo on-master`.
+   release.yml runs `anchors` (re-walks the table against the public chain; the
    newest entry must be 1,000 to 6,000 below the public tip), `build` (npm ci, typecheck, test, verify:vendor,
    package) and `release` (checks the zips' sha256, writes the SLSA attestation, creates the GitHub release). Only
    `release` holds write permissions, and it checks nothing out and installs nothing, so tests and dev dependencies
