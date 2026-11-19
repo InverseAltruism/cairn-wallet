@@ -25,7 +25,7 @@ import {
   SCORE_CLAIM, SCORE_CANCEL, CLAIM_WINDOW_BLOCKS_V20, CLAIM_FILL_GRACE_BLOCKS, EPOCH_LEN, FCLAIM_MAX_HOLD_SPAN,
   countOtherHoldsAtGrant, LEGACY_HOLD_SUNSET_HEIGHT,
 } from "../src/vendor/cairnx-spv.js";
-import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt } from "./_spvrig.ts";
+import { proposeTx, attestTx, addrFromPriv, signSighash, buildScriptSig, ctxid, vSighash, merkleRoot, rpcTxToTx, prevoutFor, pick, nodeBlockBody, holdCountAt, FILLER } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 import { withWalletMutant } from "./helpers/mutant.mjs";
 
@@ -313,7 +313,6 @@ const meKey = "0x" + "1a".repeat(32), foreignKey = "0x" + "2b".repeat(32);
 const ME = addrFromPriv(meKey).toLowerCase();
 const Hfc = H0 + 3, TIP = H0 + 10;
 const LEGACY_HOLD = CLAIM_WINDOW_BLOCKS_V20 + CLAIM_FILL_GRACE_BLOCKS;
-const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
 // A synthetic SpvSource whose blocks carry a REAL merkle root (so bindBlock genuinely passes) and returns a
 // filler-only block for empty heights (the fill scan iterates every height in the tip-anchored window).
 function fillSource(blocks, tip) {

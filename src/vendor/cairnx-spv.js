@@ -948,6 +948,22 @@ function expectedBitsFromWindow(window, height) {
   if (bitsToTargetBigInt(bits) > POW_LIMIT_TARGET2) return POW_LIMIT_BITS;
   return bits;
 }
+var HASH = /^0x[0-9a-f]{64}$/;
+var ADDR = /^0x[0-9a-f]{40}$/;
+var BYTES = /^0x(?:[0-9a-f]{2})*$/;
+var offForm = (v, form) => typeof v !== "string" || !form.test(v);
+function nonCanonicalField(j, id) {
+  if (j.txid !== id) return "txid";
+  for (const [k, i] of j.inputs.entries()) {
+    if (offForm(i.prev_txid, HASH)) return `inputs[${k}].prev_txid`;
+    if (offForm(i.script_sig, BYTES)) return `inputs[${k}].script_sig`;
+  }
+  for (const [k, o] of j.outputs.entries()) if (offForm(o.script_pubkey, ADDR)) return `outputs[${k}].script_pubkey`;
+  const app = j.app, type = app.type;
+  if (app.type === "Propose") return offForm(app.payload_hash, HASH) ? "app.payload_hash" : null;
+  if (app.type === "Attest") return offForm(app.proposal_id, HASH) ? "app.proposal_id" : null;
+  return type === "None" ? null : "app.type";
+}
 function bindBlockTxs(txs, verified) {
   const h = verified.height;
   if (!Array.isArray(txs)) return { ok: false, kind: "malformed", reason: `block ${h}: the body has no tx list` };
@@ -962,6 +978,8 @@ function bindBlockTxs(txs, verified) {
     } catch (e) {
       return { ok: false, kind: "malformed", reason: `block ${h}: tx ${pos} does not decode (${e?.message ?? e})` };
     }
+    const field = nonCanonicalField(json, id);
+    if (field !== null) return { ok: false, kind: "body-mismatch", reason: `block ${h}: tx ${pos} serves ${field} not as the node writes it` };
     out.push({ pos, txid: id, tx, json });
   }
   const ids = out.map((t) => t.txid.toLowerCase());
@@ -1903,15 +1921,15 @@ function Field(ORDER, bitLenOrOpts, isLE = false, opts = {}) {
     if (opts.sqrt)
       _sqrt = opts.sqrt;
   }
-  const { nBitLength: BITS, nByteLength: BYTES } = nLength(ORDER, _nbitLength);
-  if (BYTES > 2048)
+  const { nBitLength: BITS, nByteLength: BYTES2 } = nLength(ORDER, _nbitLength);
+  if (BYTES2 > 2048)
     throw new Error("invalid field: expected ORDER of <= 2048 bytes");
   let sqrtP;
   const f = Object.freeze({
     ORDER,
     isLE,
     BITS,
-    BYTES,
+    BYTES: BYTES2,
     MASK: bitMask(BITS),
     ZERO: _0n2,
     ONE: _1n2,
@@ -1945,18 +1963,18 @@ function Field(ORDER, bitLenOrOpts, isLE = false, opts = {}) {
         sqrtP = FpSqrt(ORDER);
       return sqrtP(f, n);
     }),
-    toBytes: (num) => isLE ? numberToBytesLE(num, BYTES) : numberToBytesBE(num, BYTES),
+    toBytes: (num) => isLE ? numberToBytesLE(num, BYTES2) : numberToBytesBE(num, BYTES2),
     fromBytes: (bytes, skipValidation = true) => {
       if (allowedLengths) {
-        if (!allowedLengths.includes(bytes.length) || bytes.length > BYTES) {
+        if (!allowedLengths.includes(bytes.length) || bytes.length > BYTES2) {
           throw new Error("Field.fromBytes: expected " + allowedLengths + " bytes, got " + bytes.length);
         }
-        const padded = new Uint8Array(BYTES);
+        const padded = new Uint8Array(BYTES2);
         padded.set(bytes, isLE ? 0 : padded.length - bytes.length);
         bytes = padded;
       }
-      if (bytes.length !== BYTES)
-        throw new Error("Field.fromBytes: expected " + BYTES + " bytes, got " + bytes.length);
+      if (bytes.length !== BYTES2)
+        throw new Error("Field.fromBytes: expected " + BYTES2 + " bytes, got " + bytes.length);
       let scalar = isLE ? bytesToNumberLE(bytes) : bytesToNumberBE(bytes);
       if (modFromBytes)
         scalar = mod(scalar, ORDER);

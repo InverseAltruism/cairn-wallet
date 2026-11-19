@@ -21,7 +21,7 @@ import { requiredFillOutputs } from "../src/core/cairnx.js";
 import { liveFillSpvSource } from "../src/core/fillspv.js";
 import { offer, fclaim, verifyFillSpv, V28_HEIGHT, EPOCH_LEN, epochOf, fclaimHoldEnd, MAX_ACTIVE_CLAIMS } from "../src/vendor/cairnx-spv.js";
 import { tipDependentFillReason } from "../src/core/fillpreflight.js";
-import { proposeTx, addrFromPriv, ctxid, rpcTxToTx, merkleRoot, prevoutFor, pick, nodeBlockBody } from "./_spvrig.ts";
+import { proposeTx, addrFromPriv, ctxid, rpcTxToTx, merkleRoot, prevoutFor, pick, nodeBlockBody, FILLER } from "./_spvrig.ts";
 import { mkCoin, txReply } from "./_coin.js";
 
 let pass = 0, fail = 0;
@@ -43,7 +43,6 @@ const LOID = ctxid(rpcTxToTx(offTx)).toLowerCase();
 const fcTx = proposeTx({ ...pick(fclaim({ offer: LOID })), priv: meKey, expiresEpoch: E });
 const FID = ctxid(rpcTxToTx(fcTx)).toLowerCase();
 
-const FILLER = { version: 1, locktime: 0, inputs: [{ prev_txid: "0x" + "00".repeat(32), vout: 1, script_sig: "0x" }], outputs: [{ value: 1, script_pubkey: "0x" + "77".repeat(20) }] };
 const worldOf = (placements) => { const b = new Map(); for (const { height, tx } of placements) (b.get(height) ?? b.set(height, []).get(height)).push(tx); return b; };
 const blocks = worldOf([{ height: H0 + 2, tx: offTx }, { height: grantH, tx: fcTx }]);
 // A synthetic SpvSource whose prepare() carries an explicit {verifiedTip, nodeTip, floorTip} so the tip-floor

@@ -13,7 +13,7 @@ import { verifyDigest, sighash as bundleSighash, addrFromPub } from "../src/vend
 import { sighash as twinSighash } from "../src/core/csdtx.js";
 import { recoverSigner, bindSigner } from "../src/core/spvbind.js";
 import { verifyNameUnion } from "../src/core/namespv.js";
-import { world, source, mkFetch } from "./_spvrig.ts";
+import { world, source, mkFetch, nodeTx } from "./_spvrig.ts";
 
 const { check, done } = checker("signature vectors (csd-vectors SIG_VECTORS) through the wallet's signature checks:");
 const ROOT = join(import.meta.dirname, "..");
@@ -22,7 +22,7 @@ const { vectors } = JSON.parse(readFileSync(join(ROOT, "test/vectors/sig-vectors
 check("the vectors hold signatures the node accepts and one it refuses", vectors.some((v) => v.nodeAccepts) && vectors.some((v) => !v.nodeAccepts));
 
 // The node's /block JSON shape for a vector tx (what the SPV source serves and bindBlockBody parses).
-const rpcJson = (t) => ({
+const rpcJson = (t) => nodeTx({
   version: t.version, locktime: t.locktime,
   inputs: t.inputs.map((i) => ({ prev_txid: i.prevTxid, vout: i.vout, script_sig: i.scriptSig })),
   outputs: t.outputs.map((o) => ({ value: o.value, script_pubkey: o.scriptPubkey })),

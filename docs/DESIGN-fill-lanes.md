@@ -108,7 +108,9 @@ lane can outlast the hold; so is a fill the node accepted and then dropped (test
   The scan exempts the offer from its domain filter, so this is the check that reads its domain.
   A refusal is `FILL_UNSAFE` (test/fill-fclaim-preflight.test.mjs, "admission").
 - A block body that contradicts its verified header refuses as `RPC_BLOCK_MISMATCH`, naming the block, the RPC and
-  the header source without blaming either.
+  the header source without blaming either. So does a body that hashes to the root but does not write a transaction
+  as the node writes it (its `txid` field absent or another id, a hex field not `0x` and lower case): csd-light's
+  bind refuses it as the same body mismatch (test/spv-node-form.test.mjs).
 
 Pre-window withholding (a cancel or consuming fill older than the scan window) is covered by a second-source read:
 beside the scan the preflight reads the offer by id from clarvis and refuses with `OFFER_SOURCE_CONFLICT` when clarvis

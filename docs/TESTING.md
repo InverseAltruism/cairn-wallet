@@ -31,6 +31,7 @@ middle file fails: the remaining files still run and the exit is non-zero.
 | `extension-boundary.ts` | the real background message gate |
 | `cairnx.ts` | the record builders, byte for byte against cairnx-core |
 | `namespv.test.mjs` | SPV name verification, with PoCs: union withholding, stale-tip lapse, srs escape, v23 burn guard |
+| `spv-node-form.test.mjs` | a block body that hashes to the verified root but does not write a transaction as the node writes it, through the bind, both fill lanes and name verification, and the same blocks served honestly |
 | `ghostcoin.test.mjs` | the per-coin verify verdicts on the send path |
 | `consolidate.test.mjs` | the maybe-inflight record, clear and reconcile matrix and account-switch filing |
 | `resolve-fallback.test.mjs` | clarvis base-claim source selection |
