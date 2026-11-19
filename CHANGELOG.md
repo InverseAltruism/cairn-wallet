@@ -194,6 +194,16 @@
   Approve arms at its 700 ms floor whether or not it has answered and a click never waits for it. The empty-map "Clears"
   card is unchanged, and the same card shows for every origin (test/clearsign.ts, test/sign-display-parity.test.mjs
   section 8, the "profile row" cases in test/approve-layout-chrome.test.mjs).
+- Fills: the two offer-id checks that depend on the chain's height, the V28 sunset refusal (`FILL_LEGACY_SUNSET`) and
+  the offer expiry refusal (`FILL_UNSAFE`), compare the largest of the RPC's tip, the stored tip floor and the
+  release's newest anchor height (`fillpreflight.ts` `offerIdChainBound`). They compared the larger of the tip and the
+  floor, and the floor is 0 on a fresh install, so a front door that served a tip below 60,045 together with forged
+  claim fields got an offer-id fill of an open CSD offer signed, which the resolver rejects after the payment has
+  moved. Every offer-id fill of an open CSD offer is now refused on every install; before, it was refused once the
+  served tip or the floor reached 60,045, which the chain passed before the release's anchor. Taker-bound and
+  token-priced fills and the reservation (fclaim) lane are unchanged, and so is fee pricing. The expiry copy reads
+  "the chain is at or past block N", since N is a lower bound (test/fill-legacy-sunset.test.mjs,
+  test/fill-failclosed.test.mjs).
 - Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with

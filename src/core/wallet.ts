@@ -597,10 +597,11 @@ export class Wallet {
   // CLEARSIGN-FEE-1: exact tip for the clear-sign fee-sufficiency check on a dApp-built name registration/
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
-  // M9/M11/W5 (B5b): the persisted PoW-backed tip floor (advanced only by namespv floorAdvance after a
-  // successful sync; see B5a). Guards clamp the raw served tip UP with it so a deflating RPC cannot roll
-  // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE; stated
-  // coverage limit, not assumed away). Popup-only read; never a dApp method.
+  // The persisted tip floor, advanced only by namespv floorAdvance after a successful sync. Guards clamp the
+  // served tip up with it so a deflating RPC cannot roll the wallet's view of the chain back below a height
+  // it synced. A fresh install reads 0, so the floor raises nothing until the first sync; the offer-id fill
+  // checks also clamp with the release's newest anchor (fillpreflight.ts offerIdChainBound). Popup-only
+  // read; never a dApp method.
   async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee?: number; outputs?: { to: string; value: number }[] }) {
     // B9: an omitted fee signs defaultFeeFor("propose"); the node-enforced MIN_FEE_PROPOSE floor the

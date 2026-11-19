@@ -455,9 +455,11 @@ export interface LiveSpvOpts {
 // verifiedTip + FLOOR_SLACK: the floor may never exceed PoW-verified evidence by more than the sync
 // cushion the client already targets. Callers advance the floor only AFTER a successful LC.sync (a
 // failed or lying sync advances nothing; a lying-high header chain throws in LC.sync, fail-closed).
-// Coverage limit, stated not assumed away: the floor advances only inside prepare(), so a fresh install
-// has floor 0 and any guard clamped by it is disarmed until the first successful verify; fail-open in
-// the SAFE direction (no false refusal), same posture as WALLET-LAPSE-TIP-1.
+// The floor advances only inside prepare(), so a fresh install has floor 0 and a guard clamped by the floor
+// alone does not see past a deflated served tip until the first successful verify. That causes no false
+// refusal, but it is not safe everywhere: the offer-id fill checks also clamp with the release's newest
+// anchor (fillpreflight.ts offerIdChainBound), because there an unarmed guard signs a payment that the
+// resolver rejects.
 export const FLOOR_SLACK = CONF_BUFFER;
 export function floorAdvance(seenFloor: number, nodeTip: number, verifiedTip: number): number {
   const raw = Number.isFinite(nodeTip) ? nodeTip : 0;

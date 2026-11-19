@@ -223,19 +223,23 @@ async function main() {
   const fillerAddr = (await popup("status")).result.addr as string;
   // The proven terms are offer-id-aware (provenPaytoForTest receives the offerId): the SMOKE offer OFFER_ID is a
   // CSD-priced TAKER-BOUND offer (XR-1/N26: a token-priced offer may carry NO CSD outputs, so a DvP smoke that
-  // pays the seller a CSD leg must be a CSD offer), and every other CSD fixture (MY_CLAIM_ID etc.: payto/seller
-  // = SELLER, height 34000 feeBps 150, value 40000000, no taker) gets the CSD terms the F2 amount-bind mirrors.
+  // pays the seller a CSD leg must be a CSD offer), as is MY_TAKER_ID (the need-map cases), and every other CSD
+  // fixture (MY_CLAIM_ID etc.: payto/seller = SELLER, height 47000 feeBps 150, value 40000000, no taker) gets the CSD
+  // terms the F2 amount-bind mirrors. Fixtures sit at or above V22 (41,300), so an expiresEpoch of 9e15 is never
+  // capped: an offer anchored lower expired by 46,350, below the release anchor the expiry check compares.
+  const MY_TAKER_ID = "0x" + "27".repeat(32);
+  const takerBound = new Set([OFFER_ID.toLowerCase(), MY_TAKER_ID.toLowerCase()]);
   if (bgWallet) bgWallet.provenPaytoForTest = (offerId: string) =>
-    String(offerId).toLowerCase() === OFFER_ID.toLowerCase()
-      ? ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), expiresEpoch: 9e15, height: 34000, terms: { height: 34000, feeBps: 150, value: "40000000", taker: fillerAddr.toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } })
-      : ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), expiresEpoch: 9e15, height: 34000, terms: { height: 34000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } });   // B7e: give matches the CSD fixtures (give TKN/1) so the flipped give leg passes on the honest need-map fill
+    takerBound.has(String(offerId).toLowerCase())
+      ? ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), expiresEpoch: 9e15, height: 47000, terms: { height: 47000, feeBps: 150, value: "40000000", taker: fillerAddr.toLowerCase(), bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } })
+      : ({ payto: SELLER.toLowerCase(), seller: SELLER.toLowerCase(), expiresEpoch: 9e15, height: 47000, terms: { height: 47000, feeBps: 150, value: "40000000", taker: undefined, bid: undefined, giveTicker: "TKN", giveAmount: "1", giveName: undefined, wantType: "csd" } });   // B7e: give matches the CSD fixtures (give TKN/1) so the flipped give leg passes on the honest need-map fill
   // B1 (0.2.57): the preflight now fails CLOSED unless the resolver positively parses to an open
   // offer; the old "unseeded id returns a status-less {ok:true} and the gate skips it" harness
   // assumption models exactly the hole B1 closed. Seed a REAL open offer for the smoke: CSD-priced
   // (want.value, XR-1/N26 requires a token offer to move NO CSD) + taker-bound to this wallet, so the
   // approved outputs are the honest whole-fill need-map (seller payment + treasury fee).
   const SMOKE_TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR; the whole-fill fee leg
-  offerFixtures.set(OFFER_ID.toLowerCase(), { id: OFFER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: fillerAddr, height: 34000, feeBps: 150 });
+  offerFixtures.set(OFFER_ID.toLowerCase(), { id: OFFER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: fillerAddr, height: 47000, feeBps: 150 });
   const winBeforeFill = windowsOpened;
   // hostile extras (inputs/change) must be ignored exactly like send
   const freq = dappAsync("fillOffer", {
@@ -269,57 +273,52 @@ async function main() {
   };
   // (a) a FILLED offer → refuse before any payment (no fill submit)
   const FILLED_ID = "0x" + "23".repeat(32);
-  offerFixtures.set(FILLED_ID.toLowerCase(), { id: FILLED_ID, seller: SELLER, status: "filled", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 34000, feeBps: 150 });
+  offerFixtures.set(FILLED_ID.toLowerCase(), { id: FILLED_ID, seller: SELLER, status: "filled", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 47000, feeBps: 150 });
   lastSubmit = null;
   const rFilled = await approveFill({ proposalId: FILLED_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES a filled offer (no payment signed)", rFilled?.result?.ok === false && /filled|no-op/i.test(String(rFilled?.result?.error)) && lastSubmit === null);
   check("WS5: the preflight refusal carries the FILL_UNSAFE code on the nested result", rFilled?.result?.code === "FILL_UNSAFE");
   // (b) an OPEN CSD offer taker-bound to SOMEONE ELSE → refuse (taker mismatch; no tip needed)
   const TAKER_OTHER_ID = "0x" + "24".repeat(32);
-  offerFixtures.set(TAKER_OTHER_ID.toLowerCase(), { id: TAKER_OTHER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: "0x" + "9a".repeat(20), height: 34000, feeBps: 150 });
+  offerFixtures.set(TAKER_OTHER_ID.toLowerCase(), { id: TAKER_OTHER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: "0x" + "9a".repeat(20), height: 47000, feeBps: 150 });
   lastSubmit = null;
   const rTaker = await approveFill({ proposalId: TAKER_OTHER_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES a taker-bound offer bound to someone else (no payment signed)", rTaker?.result?.ok === false && /taker-bound|refusing/i.test(String(rTaker?.result?.error)) && lastSubmit === null);
   // (c) an OPEN (untaken) CSD offer with NO live claim by me → refuse (C2/C4 whole-payment-loss)
   const OPEN_UNCLAIMED_ID = "0x" + "25".repeat(32);
-  offerFixtures.set(OPEN_UNCLAIMED_ID.toLowerCase(), { id: OPEN_UNCLAIMED_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 34000, feeBps: 150 });
+  offerFixtures.set(OPEN_UNCLAIMED_ID.toLowerCase(), { id: OPEN_UNCLAIMED_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 47000, feeBps: 150 });
   lastSubmit = null;
   const rOpen = await approveFill({ proposalId: OPEN_UNCLAIMED_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES an open CSD offer with no live claim by me (C2/C4)", rOpen?.result?.ok === false && /claim/i.test(String(rOpen?.result?.error)) && lastSubmit === null);
 
-  // ── review F1/F2/F4 follow-ups: tip-down fail-closed, fee/rebate need-map, integer-only money ──
-  // an OPEN CSD offer where *I* hold the live claim (claimUntilHeight past tip 34000): the fill is mine
-  // to make; the remaining ways it can still burn are a missing fee/rebate output or an unknown tip.
+  // ── review F1/F2/F4 follow-ups: the open-CSD offer-id lane at any served tip, fee need-map, integer-only money ──
+  // An OPEN CSD offer where the served fields say *I* hold a live legacy claim (claimUntilHeight past the served tip
+  // 34000). The resolver rejects every offer-id fill of an open CSD offer from 60,045, and the wallet compares the
+  // served tip, its floor and the release anchor, which is past that height: the full need-map fill is refused
+  // FILL_LEGACY_SUNSET whatever the RPC serves, including a tip that cannot be read or one below V13 (31,100).
   const MY_CLAIM_ID = "0x" + "26".repeat(32);
   const TREASURY = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016"; // TREASURY_ADDR (types.ts:79); the fee sink
   const myAddr = (await popup("status")).result.addr as string;
-  offerFixtures.set(MY_CLAIM_ID.toLowerCase(), { id: MY_CLAIM_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 34000, feeBps: 150, claimedBy: myAddr, claimUntilHeight: 34100 });
-  // (d) F1: node-RPC /tip blip → tip reads 0 → the claim gate CANNOT be evaluated → fail CLOSED (retryable)
-  tipDown = true; lastSubmit = null;
-  const rTipDown = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
-  check("fillOffer REFUSES an open-CSD fill when the tip cannot be fetched (F1 fail-closed, no payment signed)", rTipDown?.result?.ok === false && /chain tip/i.test(String(rTipDown?.result?.error)) && lastSubmit === null);
-  check("WS5: the tip-unavailable refusal carries the retryable VERIFY_UNAVAILABLE code", rTipDown?.result?.code === "VERIFY_UNAVAILABLE");
-  tipDown = false;
-  // (d2) RED-TEAM 2026-07-06: a stale/hostile RPC reporting a POSITIVE tip BELOW V13_HEIGHT (31,100)
-  // used to DISARM the open-CSD claim gate (isOpenClaimLane false → fillIsSafe skips the check), letting
-  // a fill through that the real chain (~47k) no-ops → whole payment lost. Even the LIVE CLAIMANT here
-  // must be refused, because the gate cannot be evaluated at a sub-V13 tip. The old `!(tip > 0)` guard
-  // missed this band; the fix fails closed on `!isOpenClaimLane(offer, tip)` for the open-CSD lane.
-  for (const staleTip of [1, 30000, 31099]) {
-    tipHeight = staleTip; lastSubmit = null;
-    const rStale = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
-    check(`fillOffer REFUSES an open-CSD fill at a sub-V13 reported tip (${staleTip}): claim gate disarm closed, no payment`,
-      rStale?.result?.ok === false && /chain tip/i.test(String(rStale?.result?.error)) && rStale?.result?.code === "VERIFY_UNAVAILABLE" && lastSubmit === null);
+  offerFixtures.set(MY_CLAIM_ID.toLowerCase(), { id: MY_CLAIM_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, height: 47000, feeBps: 150, claimedBy: myAddr, claimUntilHeight: 34100 });
+  const openFill = { proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 };
+  // (d) the served tip 34000, a /tip blip (tip reads 0) and stale or hostile tips below V13: refused, nothing signed
+  for (const [label, down, h] of [["34000", false, 34000], ["unreadable", true, 34000], ["1", false, 1], ["30000", false, 30000], ["31099", false, 31099]] as const) {
+    tipDown = down; tipHeight = h; lastSubmit = null;
+    const r = await approveFill(openFill);
+    check(`fillOffer REFUSES an open-CSD offer-id fill at served tip ${label} with FILL_LEGACY_SUNSET, no payment (${r?.result?.code})`,
+      r?.result?.ok === false && r?.result?.code === "FILL_LEGACY_SUNSET" && lastSubmit === null);
   }
-  tipHeight = 34000; // restore a healthy open-lane tip
+  tipDown = false; tipHeight = 34000;
+  // The need-map cases run on the offer-id CSD lane that remains: a CSD offer taker-bound to me (no maker rebate).
+  offerFixtures.set(MY_TAKER_ID.toLowerCase(), { id: MY_TAKER_ID, seller: SELLER, status: "open", give: { ticker: "TKN", amount: "1" }, want: { value: "40000000", payto: SELLER }, taker: myAddr, height: 47000, feeBps: 150 });
   // (e) F2: resolver need-map; treasury fee output missing → on-chain "protocol fee unpaid" AFTER payment; refuse
   lastSubmit = null;
-  const rNoFee = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }], fee: 5_000_000 });
+  const rNoFee = await approveFill({ proposalId: MY_TAKER_ID, outputs: [{ to: SELLER, value: 40_000_000 }], fee: 5_000_000 });
   check("fillOffer REFUSES a fill missing the protocol-fee output (F2, no payment signed)", rNoFee?.result?.ok === false && /protocol fee/i.test(String(rNoFee?.result?.error)) && lastSubmit === null);
-  // (f) F2 SUM rule: payto==seller, so the seller output must cover price+rebate SUMMED (40M+25.2M); 40M alone underpays
+  // (f) an underpaid seller leg (39.9M of 40M) delivers nothing; refuse
   lastSubmit = null;
-  const rNoRebate = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 40_000_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
-  check("fillOffer REFUSES when price+rebate at the same address underpays the SUM (F2)", rNoRebate?.result?.ok === false && /underpaid|missing/i.test(String(rNoRebate?.result?.error)) && lastSubmit === null);
+  const rShort = await approveFill({ proposalId: MY_TAKER_ID, outputs: [{ to: SELLER, value: 39_900_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
+  check("fillOffer REFUSES an underpaid seller payment (no payment signed)", rShort?.result?.ok === false && rShort?.result?.code === "FILL_UNSAFE" && lastSubmit === null);
   // (g) F4: a fractional output value is a structured refusal, never a raw BigInt throw. It is refused before the queue
   // by the preflight's own check (fillpreflight.ts fillRefusal); the signer's nested BAD_OUTPUTS for the same row is
   // pinned in test/send-fill-prequeue.test.mjs.
@@ -329,10 +328,10 @@ async function main() {
   await tick(); await tick();
   check("fillOffer REFUSES a fractional output value with the structured error shape (F4)", frac.get()?.ok === false && /integer/i.test(String(frac.get()?.error)) && lastSubmit === null && (await popup("pending")).result.length === fracQueued);
   check("WS5: the bad-output refusal is answered BAD_REQUEST before it is queued", frac.get()?.code === "BAD_REQUEST");
-  // (h) CONTROL: the correctly-built fill (price+rebate summed at payto==seller, fee to treasury) SIGNS
+  // (h) CONTROL: the correctly-built taker-bound fill (price to the seller, fee to the treasury) SIGNS
   lastSubmit = null;
-  const rGood = await approveFill({ proposalId: MY_CLAIM_ID, outputs: [{ to: SELLER, value: 65_200_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
-  check("fillOffer with the full need-map (price 40M + rebate 25.2M summed + fee 0.6) SIGNS: no false refusal", rGood?.result?.ok === true && !!rGood?.result?.txid && lastSubmit !== null);
+  const rGood = await approveFill({ proposalId: MY_TAKER_ID, outputs: [{ to: SELLER, value: 40_000_000 }, { to: TREASURY, value: 600_000 }], fee: 5_000_000 });
+  check("fillOffer with the full need-map (price 40M + fee 0.6) SIGNS: no false refusal", rGood?.result?.ok === true && !!rGood?.result?.txid && lastSubmit !== null);
   offerFixtures.clear();
 
   console.log("\n=== dApp `propose` with fee outputs (CairnX deploy/name-reg): approval-gated, anti-smuggle, capped ===");

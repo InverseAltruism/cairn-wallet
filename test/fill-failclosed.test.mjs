@@ -11,10 +11,12 @@
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";
+import { SPV_NEWEST } from "../src/core/namespv.js";
+import { EPOCH_LEN, offerExpiryHeightOf } from "../src/vendor/cairnx-spv.js";
 import { mkCoin, txReply } from "./_coin.js";
+import { checker } from "./helpers/check.mjs";
 
-let pass = 0, fail = 0;
-const check = (n, c) => { c ? pass++ : (fail++, console.error("  ✗ " + n)); if (c) console.log("  ✓ " + n); };
+const { check, done } = checker();
 const origFetch = globalThis.fetch;
 
 const w = new Wallet(memoryStore());
@@ -80,14 +82,17 @@ console.log("B1: fail-closed fill preflight:");
   check("a positively-parsed open offer still proceeds and submits (no over-refusal)", r?.ok === true && s.submits.length === 1);
 }
 
-// Offer expiry on the offer-id lane. A taker-bound offer anchored at 120,000 with expiresEpoch 4,000 expires at
-// block 120,030 (the first block of epoch 4,001): the node refuses the fill's attest from there, so a fill not mined
-// by 120,029 strands. The resolver serves the offer open until its own tip reaches 120,029, so the wallet checks
-// the merkle-proven expiry itself against the floor-clamped tip, refusing when the last live block is below
-// tip + FILL_TIP_MARGIN (4), the bundle's margin for the same strand on the fclaim lane.
+// Offer expiry on the offer-id lane. A taker-bound offer created at H0 expires at EXP (offerExpiryHeightOf): the node
+// refuses the fill's attest from there, so a fill not mined by LAST = EXP - 1 strands. The resolver serves the offer
+// open until its own tip reaches LAST, so the wallet checks the merkle-proven expiry itself, refusing when LAST is
+// below the compared height + FILL_TIP_MARGIN (4), the bundle's margin for the same strand on the fclaim lane. The
+// compared height is offerIdChainBound (served tip, stored floor, release anchor), so every height here sits above
+// the release's newest anchor, written against SPV_NEWEST so a newer anchor table changes no expectation.
 console.log("\nOffer expiry on the offer-id CSD lane:");
 {
-  const H0 = 120_000, E = 4_000;
+  const H0 = (Math.floor(SPV_NEWEST / EPOCH_LEN) + 1_000) * EPOCH_LEN, E = H0 / EPOCH_LEN + 1;
+  const EXP = offerExpiryHeightOf(E, H0), LAST = EXP - 1;
+  const n = (v) => v.toLocaleString("en-US");
   const expOffer = { ...offer, id: "0x" + "7e".repeat(32), expiresEpoch: E, height: H0 };
   const expOuts = requiredFillOutputs(expOffer, 5_000_000n).map(({ to, value }) => ({ to, value: Number(value) }));
   const fresh = async (floor = 0) => {
@@ -104,19 +109,19 @@ console.log("\nOffer expiry on the offer-id CSD lane:");
     const r = await wx.fillOffer({ proposalId: expOffer.id, outputs: expOuts });
     return { r, submits: s.submits.length };
   };
-  const past = await run(120_030);
+  check(`fixture: the offer is created above the release's newest anchor (${n(H0)} > ${n(SPV_NEWEST)})`, H0 > SPV_NEWEST && LAST > H0);
+  const past = await run(EXP);
   check(`tip in the epoch after expiry, offer still served open: refused (${past.r?.code})`, past.r?.ok === false && past.r?.code === "FILL_UNSAFE" && past.submits === 0);
-  const edge = await run(120_026);
-  check(`tip 120,026, last live block 120,029 below tip + 4: refused (${edge.r?.code})`, edge.r?.ok === false && edge.r?.code === "FILL_UNSAFE" && edge.submits === 0);
-  const ok25 = await run(120_025);
-  check(`tip 120,025, last live block 120,029 at tip + 4: signs and submits (${ok25.r?.code ?? "ok"})`, ok25.r?.ok === true && ok25.submits === 1);
-  const deflated = await run(119_000, 120_027);
-  check(`a deflated tip (119,000) with the PoW floor at 120,027: refused (${deflated.r?.code})`, deflated.r?.ok === false && deflated.r?.code === "FILL_UNSAFE" && deflated.submits === 0);
-  // With no readable tip and no floor the check is skipped: the worst outcome is a strand, and no payment moves.
+  const edge = await run(LAST - 3);
+  check(`tip ${n(LAST - 3)}, last live block ${n(LAST)} below tip + 4: refused (${edge.r?.code})`, edge.r?.ok === false && edge.r?.code === "FILL_UNSAFE" && edge.submits === 0);
+  const ok25 = await run(LAST - 4);
+  check(`tip ${n(LAST - 4)}, last live block ${n(LAST)} at tip + 4: signs and submits (${ok25.r?.code ?? "ok"})`, ok25.r?.ok === true && ok25.submits === 1);
+  const deflated = await run(H0 - 1_000, LAST - 2);
+  check(`a deflated tip (${n(H0 - 1_000)}) with the stored floor at ${n(LAST - 2)}: refused (${deflated.r?.code})`, deflated.r?.ok === false && deflated.r?.code === "FILL_UNSAFE" && deflated.submits === 0);
+  // With no readable tip and no floor the release anchor alone is compared: an offer that expires after it signs.
   const noTip = await run(null);
-  check(`no readable tip and no floor: the expiry check is skipped and the fill signs (${noTip.r?.code ?? "ok"})`, noTip.r?.ok === true && noTip.submits === 1);
+  check(`no readable tip and no floor, offer live past the anchor: the fill signs (${noTip.r?.code ?? "ok"})`, noTip.r?.ok === true && noTip.submits === 1);
 }
 
 globalThis.fetch = origFetch;
-console.log(`\nfill-failclosed: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+done("fill-failclosed");

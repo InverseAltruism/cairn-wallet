@@ -53,6 +53,12 @@ the body hashes to, a hash, address or script not `0x` and lower-case hex) is re
 the codec reads either spelling to the same bytes, so the merkle check alone would pass it while the
 wallet compares the served text (test/spv-node-form.test.mjs).
 
+The RPC's tip is served as well. The offer-id fill checks that depend on the chain's height (the V28 sunset
+refusal `FILL_LEGACY_SUNSET` and the offer expiry check) compare the largest of that tip, the tip floor the wallet
+stored after its last header sync, and the height of the release's newest built-in block hash, which the chain is
+past whatever is served. A tip served too low therefore cannot get an offer-id fill of an open CSD offer signed, nor
+one of an offer that expired below that height. On a fresh install the stored floor is 0 until the first sync.
+
 The approval window's title for a score-0 attestation (how a site cancels a CairnX offer or bid) also comes from that
 RPC: it reads the target proposal, and says "Cancel your offer" or "Cancel your bid" only when the node reports the
 account on screen as its proposer. When the read fails, the window keeps "Support / review" and says that score 0
