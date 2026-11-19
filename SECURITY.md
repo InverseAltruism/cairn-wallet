@@ -213,7 +213,7 @@ the recipients and records the fill, and CairnX then decides delivery; if it ref
 returned. The wallet checks the fill against the offer's proven record before anything is signed, and holds one
 fill request per offer target at a time: a second one, from any site, is refused `FILL_IN_PROGRESS` before it is
 queued, until the first is answered. Once the first was sent, another CSD-paid fill of the same target is refused
-after approval as retryable (`VERIFY_UNAVAILABLE`, "was sent and is not confirmed yet") while the first is in this
+after approval (`FILL_ALREADY_SENT`, "was sent and is not confirmed yet") while the first is in this
 account's history, sent in the last 30 minutes (counted from its last send, so a lost submit's retry restarts them),
 not marked gone, and not yet seen applied: listed by the offer service on the offer-id lane, proven by the block scan
 on the reservation lane. A retry after a submit whose answer was lost builds the same transaction from the same

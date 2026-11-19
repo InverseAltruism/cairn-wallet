@@ -92,8 +92,8 @@ Signing and funds:
 - Offer fills: every lane merkle-proves the offer and binds the served terms to it before signing; the remaining
   resolver trust (give-backing, the completeness of a partial offer's fill list on the offer-id lane) and the
   second-source reads with their gaps are in `docs/DESIGN-fill-lanes.md`. One fill request per fill target at a time:
-  another is refused `FILL_IN_PROGRESS` before it is queued (test/fill-one-request-per-offer.test.mjs). After the
-  first was sent, another CSD-paid fill of the same target refuses retryably while the first is recent (30 minutes),
+  another is refused `FILL_IN_PROGRESS` before it is queued (test/fill-one-request-per-offer.test.mjs). After the first
+  was sent, another CSD-paid fill of the same target refuses `FILL_ALREADY_SENT` while the first is recent (30 minutes),
   not gone and not seen applied, except a lost submit's retry that builds the same transaction; the rule is decided in
   one function, `fillpreflight.ts` `repeatedFillRefusal`, which for such a retry runs on the assembled transaction
   (test/fill-refill-after-send.test.mjs).

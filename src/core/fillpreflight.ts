@@ -267,7 +267,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
  *  lane, proven in the block scan on the reservation lane); `txid` is the transaction about to be signed (node.ts
  *  codecTxid, which the signature does not change), or null before one is assembled. An unseen fill may still land,
  *  and another payment before it does pays twice: a whole offer delivers once and keeps the second, and a partial one
- *  is sized on what was left before the first. That is refused as retryable, until the fill is seen, is marked gone,
+ *  is sized on what was left before the first. That is refused FILL_ALREADY_SENT, until the fill is seen, is marked gone,
  *  or leaves the window. One exception: the very transaction of an unseen fill whose submit answer was lost (`maybe`),
  *  which a retry builds again from the same coins while they are unspent; sending the same bytes again cannot pay
  *  twice. A fill the node accepted needs no re-send, so it allows nothing. `copy` names the partial offer-id case,
@@ -278,7 +278,7 @@ export function repeatedFillRefusal(unseen: readonly RecentFill[], copy: Repeate
   const key = (x: string): string => String(x).toLowerCase().replace(/^0x/, "");
   if (txid !== null && unseen.some((f) => f.maybe && key(f.txid) === key(txid))) return null;
   const t = first.txid.slice(0, 12), waitMin = OWN_FILL_INDEX_WAIT_MS / 60_000;
-  return refuse("VERIFY_UNAVAILABLE", copy === "unlisted-partial"
+  return refuse("FILL_ALREADY_SENT", copy === "unlisted-partial"
     ? `refusing to sign for now: your earlier fill of this offer (${t}…) was sent and is not listed as applied by the offer service yet, so the amount it lists as left may be too high and the surplus would go to the seller; try again in a few minutes (if the service rejected that fill, this lasts up to ${waitMin} minutes)`
     : `refusing to sign for now: your earlier fill of this offer (${t}…) was sent and is not confirmed yet, and another payment for it before then could lose some or all of what it pays. Try again once the earlier fill confirms. If it does not go through, this lasts up to ${waitMin} minutes after it was sent.`);
 }

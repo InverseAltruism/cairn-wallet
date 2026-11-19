@@ -217,6 +217,14 @@
   record, for the legacy reservation's V28 warning (now shown on a fresh install too) and for a fill card's blocks left
   (test/fee-tier-clamp.test.mjs, test/display-truth.test.mjs, test/sign-display-parity.test.mjs section 3,
   test/approve-card-honesty.test.mjs section 6).
+- Fills: the repeated-fill refusal (an earlier fill of the same target from this account, sent in the last 30 minutes,
+  not marked gone and not yet seen applied) has its own code, `FILL_ALREADY_SENT`, in place of `VERIFY_UNAVAILABLE`,
+  which a page or the SDK may retry on a timer: each retry is another approval window, and the one that succeeds can
+  pay twice. Both texts are unchanged. In 0.3.2 and 0.3.3 only the partial offer-id case existed, under
+  `VERIFY_UNAVAILABLE`. An honest first fill and the lost-submit retry of the same transaction sign as before
+  (test/fill-refill-after-send.test.mjs, test/fill-taker-partial.test.mjs). One reservation-lane test that claimed to
+  pin the retryable answer for an unprovable offer author was answered by this refusal instead (its wallet had signed a
+  fill of the offer just before); it now uses a wallet with no history (test/fill-fclaim-preflight.test.mjs).
 - Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with

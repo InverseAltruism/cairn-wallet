@@ -70,8 +70,9 @@ not marked gone (an ambiguous submit whose inputs another mined transaction spen
 applied: on the offer-id lane the fills the offer service lists (a partial offer's listed fills are then proven; a
 whole offer that applied a fill is no longer served open, so nothing served counts for it), on the fclaim lane the
 attests of this reservation the block scan proved. One that is
-recent and unseen refuses another payment with the retryable `VERIFY_UNAVAILABLE`, the rule the owner set for partial
-offers on 2026-11-02 (a short retryable refusal over an unrecoverable overpayment): the copy says the earlier fill was
+recent and unseen refuses another payment with `FILL_ALREADY_SENT`, the rule the owner set for partial offers on
+2026-11-02 (a short refusal over an unrecoverable overpayment; the code is its own, so a program does not retry it on
+a timer, and the retry that would succeed is the one that can pay twice): the copy says the earlier fill was
 sent and is not confirmed yet, to try again once it confirms, and that the refusal lasts up to 30 minutes after it
 was sent if that fill does not go through; a partial offer-id fill keeps its copy about the amount listed as left.
 The refusal ends when the fill is seen (listed, or mined and proven), is marked gone, or leaves the window.

@@ -635,12 +635,15 @@ const swapSig = (rpcTx, newPriv) => { const t = JSON.parse(JSON.stringify(rpcTx)
     const r = await w.fillOffer({ proposalId: OID, outputs: outs });
     check(`F2-legacy: an honest partial offer (min matches on-chain) signs, one submit (${r?.code ?? "ok"})`, r?.ok === true && s.submits.length === 1);
   }
-  // (b) UNPROVABLE author (null) -> retryable VERIFY_UNAVAILABLE, NOT a hard decline (the transient valve)
+  // (b) UNPROVABLE author (null) -> retryable VERIFY_UNAVAILABLE, NOT a hard decline (the transient valve). A wallet
+  // with no history: the one above signed a fill of this offer in (a3), which the repeated-fill rule refuses first.
   {
-    const served = taker();
-    w.provenPaytoForTest = () => null;
+    const { w: wb, addr: WB } = await freshWallet("pw-legacy-f2b");
+    const served = taker({ taker: WB });
+    const outs = requiredFillOutputs(served, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
+    wb.provenPaytoForTest = () => null;
     const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => served }), tip: 100_100 });
-    const r = await w.fillOffer({ proposalId: OID, outputs });
+    const r = await wb.fillOffer({ proposalId: OID, outputs: outs });
     check(`F2-legacy: an UNPROVABLE author fails SOFT (retryable VERIFY_UNAVAILABLE, not a hard decline) (${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE");
     check("…and nothing was submitted", s.submits.length === 0);
   }
