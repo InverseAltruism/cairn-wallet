@@ -53,6 +53,18 @@ the body hashes to, a hash, address or script not `0x` and lower-case hex) is re
 the codec reads either spelling to the same bytes, so the merkle check alone would pass it while the
 wallet compares the served text (test/spv-node-form.test.mjs).
 
+The RPC's tip is served as well. The offer-id fill checks that depend on the chain's height (the V28 sunset refusal
+`FILL_LEGACY_SUNSET` and the offer expiry check) compare the largest of that tip, the tip floor the wallet stored
+after its last header sync, and the height of the release's newest built-in block hash, which the chain is past
+whatever is served. A tip served too low therefore cannot get an offer-id fill of an open CSD offer signed, nor one of
+an offer that expired below that height. The wallet's own name renewal is priced at the same height, and so is the
+approval window's warning about an underpaid name fee, so a tip served too low cannot price a cheaper fee tier while
+the name fee gates are below the release's newest anchor (test/height-integer.test.mjs checks it); with no usable tip
+and no stored floor the renewal is still refused, and the window's warning prices at the release's newest anchor,
+which the window holds without a read. A served tip or a stored floor that is not a positive whole number counts as
+absent, so it can neither be stored as the floor nor take the anchor out of the price (test/height-integer.test.mjs,
+test/fee-tier-clamp.test.mjs). On a fresh install the stored floor is 0 until the first sync.
+
 The approval window's title for a score-0 attestation (how a site cancels a CairnX offer or bid) also comes from that
 RPC: it reads the target proposal, and says "Cancel your offer" or "Cancel your bid" only when the node reports the
 account on screen as its proposer. When the read fails, the window keeps "Support / review" and says that score 0
@@ -204,7 +216,7 @@ the recipients and records the fill, and CairnX then decides delivery; if it ref
 returned. The wallet checks the fill against the offer's proven record before anything is signed, and holds one
 fill request per offer target at a time: a second one, from any site, is refused `FILL_IN_PROGRESS` before it is
 queued, until the first is answered. Once the first was sent, another CSD-paid fill of the same target is refused
-after approval as retryable (`VERIFY_UNAVAILABLE`, "was sent and is not confirmed yet") while the first is in this
+after approval (`FILL_ALREADY_SENT`, "was sent and is not confirmed yet") while the first is in this
 account's history, sent in the last 30 minutes (counted from its last send, so a lost submit's retry restarts them),
 not marked gone, and not yet seen applied: listed by the offer service on the offer-id lane, proven by the block scan
 on the reservation lane. A retry after a submit whose answer was lost builds the same transaction from the same

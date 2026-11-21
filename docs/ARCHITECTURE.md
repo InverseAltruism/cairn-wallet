@@ -198,7 +198,7 @@ Beside it:
 - `VERIFY_UNAVAILABLE` also covers a `/utxos` body without a `utxos` array and a selection that used its three rounds
   on coins the node could not prove yet (both refuse before signing).
 
-### SPV (`namespv.ts`, `headerstore.ts`, `spvanchors.ts`, `spvpin.ts`, `spvbind.ts`, `fillspv.ts`)
+### SPV (`namespv.ts`, `headerstore.ts`, `spvanchors.ts`, `spvnewest.ts`, `chainbound.ts`, `spvpin.ts`, `spvbind.ts`, `fillspv.ts`)
 
 - `namespv.ts`: SPV name verification over the header store (`headerstore.ts`: IndexedDB, 84-byte records in
   4,096-height chunks) anchored by the release table `spvanchors.ts` (one block hash per chunk from the names floor
@@ -211,6 +211,10 @@ Beside it:
     primary and clarvis). A disagreeing source is a warning, not a refusal (the warn-over-block rule; `SECURITY.md`
     states it).
   - Store, sync, migration and the union's lapse and badge rules: `docs/DESIGN-namespv-scaling.md`.
+- `spvnewest.ts`: the anchor table's newest height alone, written by the generator beside `spvanchors.ts`.
+  `chainbound.ts`: `heightOf` (a served tip or stored floor counts only as a positive safe integer) and
+  `lowestChainHeight` (the stored floor or that height); a leaf, so the approval window uses it without the table
+  (test/chainbound.test.mjs, test/height-integer.test.mjs).
 - `spvbind.ts`: the SPV primitives `namespv.ts` and `fillspv.ts` share: the block bind (`bindBlock` over csd-light
   `bindBlockBody`: exact parse of the served `/block` text, a transaction not written as the node writes it refused
   as a body mismatch (its `txid` field absent or not the id the body hashes to, a hash, address or script not `0x`

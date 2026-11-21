@@ -73,35 +73,20 @@ export { nameRegFee };
 // the core owns the gate list, so a future fee tier (V28+) arrives by re-vendoring instead of a hand edit
 // here + in the trade UI. A local copy of the gates + margin lived here until 2026-07-06.
 export { buildFeeHeight } from "../vendor/cairnx-spv.js";
-// M11 (B5b): ONE tip clamp for name-fee pricing, used at BUILD time (wallet.ts renew/renewFee) AND at
-// REVIEW time (clearsign.ts fee warning) so the two sides can never disagree; a clamp applied at build
-// but not review (or the reverse) manufactures spurious FEE_CHANGED refusals / false fee warnings at a
-// fee-gate boundary. The raw tip is an unauthenticated RPC read a hostile proxy can DEFLATE so the wallet
-// prices an obsolete cheaper tier: the resolver then rejects the record and the fee BURNS, while the
-// deflated tip simultaneously silences the CLEARSIGN-FEE-1 underpayment warning. Clamp UP with the
-// PoW-backed persisted floor (M9/B5a bounds its inflation to verifiedTip + slack); an over-tier fee only
-// ever overpays (accepted on-chain), never burns. NOT consensus math; a policy compose over the vendored
-// buildFeeHeight/nameRegFee, which stay the only fee authorities.
-// W5 (Q-02): each input is normalized with Number.isSafeInteger, not Number.isFinite, and the helper
-// returns null when NEITHER input is usable. A served tip of 65100.5 or 1e16 is finite but is not a
-// height: it reached the vendored buildFeeHeight, which threw RangeError, which clearsign.ts swallowed in
-// a bare catch, so the CLEARSIGN-FEE-1 underpayment warning went silently absent on a third-party-built
-// nrenew/nfinalize. NORMALIZING TO 0 WOULD BE WORSE THAN THE BUG, at both kinds of call site, which is
-// why the return type is `number | null` and every caller is forced to handle it:
-//   review side  (clearsign): tipNow 0 keeps feeBearing true, prices the CHEAPEST tier, paid < need is
-//                             false, and the dialog affirmatively shows NO warning on a genuinely
-//                             underpaid record.
-//   build sides  (wallet.ts renew/renewFee): buildFeeHeight(0) does NOT throw, so the wallet's own Renew
-//                             button would build an underpaid record and BURN the fee. Today a hostile
-//                             non-integer tip makes buildFeeHeight throw, i.e. it fails closed; the only
-//                             input whose behavior changes is the degenerate "no usable tip at all",
-//                             where refusing beats burning.
-export function feePricingTip(rawTip: number | null | undefined, floor: number | null | undefined): number | null {
-  const t = Number(rawTip), f = Number(floor);
+// The one tip for name-fee pricing, used at build time (wallet.ts renew and renewFee) and at review time (clearsign.ts
+// fee warning) so the two sides price the same tier. A served tip is an unauthenticated read: one served too low
+// prices an obsolete cheaper tier, the resolver rejects the record and the fee leaves the wallet. So the tip is
+// raised to the stored floor and to `lowest`, chainbound.ts lowestChainHeight (the floor and the release's newest
+// anchor), which callers pass in. An over-tier fee only overpays. Each input counts only as a positive safe integer:
+// 65100.5 or 1e16 is not a height. The answer is null when neither the served tip nor the stored floor is usable,
+// whatever `lowest` is: the build sites refuse to price then, because a height of 0 would price the cheapest tier and
+// burn the fee. The review warning, which signs nothing, prices at `lowest` instead (clearsign.ts).
+export function feePricingTip(rawTip: number | null | undefined, floor: number | null | undefined, lowest: number): number | null {
+  const t = Number(rawTip), f = Number(floor), l = Number(lowest);
   const rt = Number.isSafeInteger(t) && t > 0 ? t : null;
   const fl = Number.isSafeInteger(f) && f > 0 ? f : null;
   if (rt === null && fl === null) return null;
-  return Math.max(rt ?? 0, fl ?? 0);
+  return Math.max(rt ?? 0, fl ?? 0, Number.isSafeInteger(l) && l > 0 ? l : 0);
 }
 
 // Single source of truth for the .csd name syntax. `isPlainName` is the syntax-only check used before a name

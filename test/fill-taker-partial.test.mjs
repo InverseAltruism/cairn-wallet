@@ -3,7 +3,7 @@
 // wallet's account). The real Wallet.fillOffer; the one seam is provenPaytoForTest, which answers as provenOfferPayto
 // does: the proven offer terms and, for the fills the served offer lists, the running state the vendored resolver
 // replays from the chain's events (test/fill-offer-progress.test.mjs proves that part over real signed blocks).
-//   A. the account's own earlier fill is on chain but not indexed yet (served paid 0): a retryable refusal, where the
+//   A. the account's own earlier fill is on chain but not indexed yet (served paid 0): refused FILL_ALREADY_SENT, where the
 //      wallet signed "buy the rest" and the resolver kept the 30,450,000 surplus; after OWN_FILL_INDEX_WAIT_MS the own
 //      history no longer refuses (the availability valve, run last);
 //   B. indexed: buying exactly what is left signs, and the proof was asked for the one listed fill;
@@ -85,7 +85,7 @@ check("setup: fill 1 is on chain (paid 30,000,000), the stale served state says 
 served = stale;
 let proofs = seen.length;
 ({ r, submitted } = await fillWith(off, outsOf(stale, W)));
-check(`A. own fill not indexed yet: a retryable refusal, nothing sent (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && /is not listed as applied by the offer service yet/.test(String(r?.error)) && submitted === 0);
+check(`A. own fill not indexed yet: refused FILL_ALREADY_SENT, nothing sent (${r?.code}: ${r?.error})`, r?.ok === false && r?.code === "FILL_ALREADY_SENT" && /is not listed as applied by the offer service yet/.test(String(r?.error)) && submitted === 0);
 check(`A. ...decided from the local history before any proof read (${seen.length - proofs} proof calls)`, seen.length === proofs);
 // The refusal lasts up to OWN_FILL_INDEX_WAIT_MS when the service read the fill and rejected it, so the copy names that
 // wait from the constant instead of promising "a minute or two".
@@ -120,7 +120,7 @@ check(`B. indexed: exactly what is left signs (${r?.ok}, ${submitted} submit), t
 // The fill B signed is not listed yet; with fill 1 listed, refusing must not first bind fill 1's block (k-1 reads).
 proofs = seen.length;
 ({ r, submitted } = await fillWith(off, outsOf(honest, 10_000_000n)));
-check(`A. a later own fill not yet listed beside a listed one refuses before the listed fill is proven (${r?.code}, ${seen.length - proofs} proof calls)`, r?.ok === false && r?.code === "VERIFY_UNAVAILABLE" && seen.length === proofs && submitted === 0);
+check(`A. a later own fill not yet listed beside a listed one refuses before the listed fill is proven (${r?.code}, ${seen.length - proofs} proof calls)`, r?.ok === false && r?.code === "FILL_ALREADY_SENT" && seen.length === proofs && submitted === 0);
 
 served = stateOf(whole);
 ({ r, submitted } = await fillWith(whole, outsOf(served, W)));

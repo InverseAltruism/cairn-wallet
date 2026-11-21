@@ -26,6 +26,7 @@ import { fillOfferView, tokenFillQuote } from "../src/core/cairnxview.ts";
 import { buildNameSet, CAIRNX_DOMAIN, PINNED_TOKENS } from "../src/core/cairnx.ts";
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { APPROVE_IDS } from "./helpers/approve-dom.mjs";
+import { SPV_NEWEST_HEIGHT } from "../src/core/spvnewest.ts";
 
 let pass = 0, fail = 0;
 const t = (name, fn) => { try { fn(); pass++; console.log("  ✓ " + name); } catch (e) { fail++; console.error("  ✗ " + name + "\n    " + String(e?.message || e).split("\n")[0]); } };
@@ -61,10 +62,10 @@ t("1f the card says the wallet will refuse a fill only when it will", () => {
   // chain accepts a fill through it. At tip 120,000 (inside epoch 4,000) the expiry block is 30 blocks away and a fill
   // can still be mined in 29 of them.
   const at = (tip) => fillViewHtml({ ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "1", expiresAt: 120_030 }, LIST, tip);
-  assert.match(at(120_000), /Offer expires at block 120,030, 30 blocks after the current tip \(~1 h\)/); assert.doesNotMatch(at(120_000), /refuse/);
-  assert.match(at(120_020), /10 blocks after the current tip \(~20 min\)/);
-  assert.match(at(120_025), /Offer expires at block 120,030, 5 blocks after the current tip \(~10 min\)/); assert.doesNotMatch(at(120_025), /refuse/);
-  assert.match(at(120_026), /Offer expires at block 120,030, 4 blocks after the current tip <span class="err">\(too close to be mined in time: the wallet will refuse this fill\)<\/span>/);
+  assert.match(at(120_000), /Offer expires at block 120,030, in 30 blocks \(~1 h\)/); assert.doesNotMatch(at(120_000), /refuse/);
+  assert.match(at(120_020), /in 10 blocks \(~20 min\)/);
+  assert.match(at(120_025), /Offer expires at block 120,030, in 5 blocks \(~10 min\)/); assert.doesNotMatch(at(120_025), /refuse/);
+  assert.match(at(120_026), /Offer expires at block 120,030, in 4 blocks <span class="err">\(too close to be mined in time: the wallet will refuse this fill\)<\/span>/);
   assert.match(at(120_029), /Offer expires at block 120,030, the next block <span class="err">\(the wallet will refuse this fill\)<\/span>/);
   assert.match(at(120_030), /Offer expired at block 120,030 <span class="err">\(the wallet will refuse this fill\)<\/span>/);
 });
@@ -76,7 +77,7 @@ t("1f the card says the wallet will refuse a fill only when it will", () => {
   const view = await fillOfferView(io, LIST), quote = await tokenFillQuote(io, LIST);
   t("1g the fill view and the token quote carry the listed offer's expiry block", () => {
     assert.equal(view.expiresAt, 117_330); assert.equal(quote.expiresAt, 117_330);
-    assert.match(tokenQuoteHtml(quote, 117_000), /Offer expires at block 117,330, 330 blocks after the current tip \(~11 h\)/);
+    assert.match(tokenQuoteHtml(quote, 117_000), /Offer expires at block 117,330, in 330 blocks \(~11 h\)/);
   });
 }
 
@@ -117,6 +118,9 @@ t("5d honest: Cairn's own CAIRN gets neither the warning nor the mark", () => {
 }
 
 // ── the real approval window ──────────────────────────────────────────────────────────────────────────
+// Heights above the release anchor: the window raises the served tip to it (chainbound.ts), as the preflight does.
+const TIP = SPV_NEWEST_HEIGHT + 1_000, EXP = TIP + 330;
+const fmtN = (v) => v.toLocaleString("en-US");
 const { byId, registry, El } = installFakeDom();
 for (const id of APPROVE_IDS) registry.set(id, new El(id));
 const state = { pending: [], balance: 100e8, resolves: 0, views: 0, view: null };
@@ -126,8 +130,8 @@ const h = {
   balance: () => ({ confirmed: state.balance }),
   history: () => [],
   sealedClaims: () => [],
-  tip: () => 117_000, epoch: () => 3_900, tipFloor: () => 0,
-  fillOfferView: (id) => { state.views++; return state.view ?? { ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "18401371902", giveDecimals: 8, expiresAt: 117_330, _id: id }; },
+  tip: () => TIP, epoch: () => Math.floor(TIP / 30), tipFloor: () => 0,
+  fillOfferView: (id) => { state.views++; return state.view ?? { ok: true, offerId: LIST, giveTicker: "CAIRN", giveAmount: "18401371902", giveDecimals: 8, expiresAt: EXP, _id: id }; },
   resolve: () => { state.resolves++; return { ok: true, txid: "0x" + "ee".repeat(32) }; },
 };
 installBridge(h);
@@ -151,7 +155,7 @@ t("2b on the reservation lane the card names the listing", () => {
   assert.match(byId("fill-view").innerHTML, new RegExp(`<dt>Listing</dt><dd><code>${LIST}</code></dd>`));
 });
 t("2d the card shows when the listed offer expires, from the tip", () => {
-  assert.match(byId("fill-view").innerHTML, /Offer expires at block 117,330, 330 blocks after the current tip \(~11 h\)/);
+  assert.match(byId("fill-view").innerHTML, new RegExp(`Offer expires at block ${fmtN(EXP)}, in 330 blocks \\(~11 h\\)`));
 });
 t("3c honest: a covered request arms Approve after the click-through delay", () => {
   assert.equal(byId("btn-approve").disabled, false);
@@ -189,7 +193,7 @@ t("4a the warning says where sends to the name will go, not that payments are ir
 
 
 console.log("5. the look-alike listing ticker in the window");
-state.view = { ok: true, offerId: LIST, giveTicker: "USDT", giveAmount: "5000000", giveDecimals: 6, giveDeployId: DEP, expiresAt: 117_330 };
+state.view = { ok: true, offerId: LIST, giveTicker: "USDT", giveAmount: "5000000", giveDecimals: 6, giveDeployId: DEP, expiresAt: EXP };
 state.pending = [fillReq("f5", LIST)];
 await tick(); await flush();
 const offAt = byId("btn-approve").disabled;
@@ -199,6 +203,16 @@ t("5f the window's fill card shows the look-alike warning, and Approve arms afte
   assert.equal(offAt, true); assert.equal(byId("btn-approve").disabled, false);
 });
 state.view = null;
+
+console.log("6. a stored floor above the served tip: the card does not count from a tip it does not have");
+h.tipFloor = () => EXP - 30;              // a floor above the served tip (the release-anchor case: test/approve-bound-dom)
+state.pending = [fillReq("f6", LIST)];
+await tick(); await flush();
+await new Promise((r) => setTimeout(r, 800)); await flush();
+t("6a with a stored floor 300 blocks above the served tip the card shows the expiry block alone", () => {
+  assert.ok(byId("fill-view").innerHTML.includes(`Offer expires at block ${fmtN(EXP)}.`)); assert.doesNotMatch(byId("fill-view").innerHTML, /in \d+ blocks|refuse/);
+});
+h.tipFloor = () => 0;
 
 console.log(`\napprove-card-honesty: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

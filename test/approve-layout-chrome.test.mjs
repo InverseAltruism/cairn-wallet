@@ -25,6 +25,7 @@
 import * as cx from "../src/core/cairnx.ts";
 import * as v from "../src/vendor/cairnx-spv.js";
 import { APPROVE_FRAME_PX, APPROVE_WINDOW } from "../src/approve-window.ts";
+import { SPV_NEWEST_HEIGHT } from "../src/core/spvnewest.ts";
 import { checker } from "./helpers/check.mjs";
 import { launchOrSkip, openWalletPage } from "./helpers/walletpage.mjs";
 import { measure, settle, windowFixed, buttonsAt, STATE, cueText } from "./helpers/approve-measure.mjs";
@@ -52,14 +53,17 @@ const req = (id, method, origin, params) => ({ id, method, origin, params });
 const sendTo = (outs, fee = 1_000_000) => ({ outputs: outs.map(([to, value]) => ({ to, value })), fee });
 const fill = (outs, extra = {}) => ({ proposalId: PID, outputs: outs.map(([to, value]) => ({ to, value })), fee: 1_000_000, score: 100, confidence: 100, ...extra });
 
-const view = { ok: true, giveTicker: "CAIRN", giveAmount: "100000000", giveDecimals: 8, giveDeployId: cx.PINNED_TOKENS.CAIRN.deployId, expiresAt: nfinTip + 300 };
+// The window raises the served tip to the release's newest anchor (chainbound.ts), as the preflight does, so a listing's
+// expiry is placed after that height.
+const CARD_TIP = Math.max(nfinTip, SPV_NEWEST_HEIGHT);
+const view = { ok: true, giveTicker: "CAIRN", giveAmount: "100000000", giveDecimals: 8, giveDeployId: cx.PINNED_TOKENS.CAIRN.deployId, expiresAt: CARD_TIP + 300 };
 // a listing whose token is a look-alike ticker: the CSD-paid card warns as the token-priced card does
-const viewLookalike = { ok: true, giveTicker: "USDT", giveAmount: "100000000", giveDecimals: 6, giveDeployId: "0x" + "d1".repeat(32), expiresAt: nfinTip + 300 };
+const viewLookalike = { ok: true, giveTicker: "USDT", giveAmount: "100000000", giveDecimals: 6, giveDeployId: "0x" + "d1".repeat(32), expiresAt: CARD_TIP + 300 };
 // a reservation of a listing (the claim lane) whose expiry is too close to mine: the longest listing block
-const viewReserved = { ok: true, offerId: "0x" + "ab".repeat(32), giveName: "satoshi", expiresAt: nfinTip + 2 };
-const quote = { ok: true, ticker: "CAIRN", amount: "150000000000", fee: "1500000000", total: "151500000000", wantDecimals: 8, giveName: "quay", expiresAt: nfinTip + 300 };
+const viewReserved = { ok: true, offerId: "0x" + "ab".repeat(32), giveName: "satoshi", expiresAt: CARD_TIP + 2 };
+const quote = { ok: true, ticker: "CAIRN", amount: "150000000000", fee: "1500000000", total: "151500000000", wantDecimals: 8, giveName: "quay", expiresAt: CARD_TIP + 300 };
 const seen = { history: [{ type: "send", to: RCPT, amount: 1, txid: "0x" + "a1".repeat(32) }] };
-const unconfirmed = { resolve: { ok: false, code: "RESERVATION_UNCONFIRMED", error: "reservation unconfirmed", unconfirmed: { fclaimTxid: "0x" + "f1".repeat(32), fclaimHeight: nfinTip - 3, tipHeight: nfinTip } } };
+const unconfirmed = { resolve: { ok: false, code: "RESERVATION_UNCONFIRMED", error: "reservation unconfirmed", unconfirmed: { fclaimTxid: "0x" + "f1".repeat(32), fclaimHeight: CARD_TIP - 3, tipHeight: CARD_TIP } } };
 
 // [name, the queue, extra answers, what must render (each is also weight, so above the buttons), an action]
 const CASES = [
@@ -113,7 +117,7 @@ const CASES = [
   ["token-bid", [req("bi", "propose", O, prop(v.bid({ give: { value: "5000000000" }, want: { ticker: "TKN", amount: "4638" } })))], {}, ["cost"]],
   ["offer-cancel", [req("oc", "propose", O, prop(v.offerCancelAll({ ticker: "TKN" })))], {}, ["cost"]],
   ["token-meta", [req("tm", "propose", O, prop(v.tokenMeta({ ticker: "TKN", hash: "0x" + "ab".repeat(32) })))], {}, ["cost"]],
-  ["reserve-legacy", [req("rs", "attest", O, { proposalId: "0x" + "ef".repeat(32), score: 50, confidence: 0, fee: 1_000_000 })], { tipFloor: cx.V28_HEIGHT + 10 }, ["legacy reservation type is", "cost"]],
+  ["reserve-legacy", [req("rs", "attest", O, { proposalId: "0x" + "ef".repeat(32), score: 50, confidence: 0, fee: 1_000_000 })], {}, ["legacy reservation type is", "cost"]],
   ["reserve-fclaim", [req("fc", "propose", O, prop(v.fclaim({ offer: "0x" + "ab".repeat(32) })))], {}, ["cost"]],
   ["queue", [req("q1", "send", D, sendTo([[RCPT, 100_000_000], [R2, 200_000_000], [R3, 300_000_000]])), req("q2", "connect", D, {}), req("q3", "send", D, { to: RCPT, amount: 1, fee: 1_000_000 })], {}, ["Request 1 of 3", "warn:3", "to:3", "cost"]],
 ];

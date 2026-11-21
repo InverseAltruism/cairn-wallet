@@ -59,8 +59,10 @@ name makes a stale local file self-evident.
    node scripts/update-spv-anchors.mjs /tmp/anchor.json --write    # rewrites src/core/spvanchors.ts
    ```
    The generator refuses, and writes nothing, when the anchor JSON fails any check, a header page is short or
-   out of order, the walk from the floor pin does not reach the corroborated hash, or the new table does not
-   extend the committed one. Commit the table on its own and keep the anchor JSON line with the release record.
+   out of order, the walk from the floor pin does not reach the corroborated hash, or the new table does not extend the
+   committed one. With `--write` it also writes `src/core/spvnewest.ts`, the newest entry's height alone, which the
+   approval window uses without the table (`test/chainbound.test.mjs` fails when the two disagree). Commit the table and
+   that file on their own and keep the anchor JSON line with the release record.
    The `anchors` job in `release.yml` runs on that PR and on the tag (the release job needs it): it re-walks the
    chain from clarvis's public `/api/headers`, requires every entry to equal the walk, requires
    `https://cairn-substrate.com/api/rpc/block/height/<h>` to answer with that hash at every entry, and requires
@@ -93,7 +95,12 @@ name makes a stale local file self-evident.
    package-lock.json records) and requires both to be byte-identical to the committed files, and it checks the
    sha256, package and `@noble` pins in `PROVENANCE.json`. No csd-sdk checkout is needed. CI runs the same gate in
    the `test` job of `ci.yml` and the `build` job of `release.yml`.
-4. **Green gate:** `npm run typecheck && npm test` (full suite) must pass; CI must be green on the tag.
+4. **Green gate:** `npm run typecheck && npm test` (full suite) must pass; CI must be green on the tag. Before the
+   tag is pushed, check that the commit it names is on `master`'s first-parent line (`release.yml` builds whatever
+   commit a pushed `v*` tag names); the command prints `on-master` or nothing:
+   ```bash
+   git rev-list --first-parent origin/master | grep -qx "$(git rev-parse 'vX.Y.Z^{commit}')" && echo on-master
+   ```
 5. **Reproducible build.** Run `npm ci && npm run package`. This writes the version-stamped upload file
    `cairn-wallet-store-X.Y.Z.zip` + its `.sha256`, the byte-identical `cairn-wallet-store.zip`, and
    `cairn-wallet.zip`, via a deterministic (fixed-timestamp, sorted, STORE) zip writer, byte-identical across

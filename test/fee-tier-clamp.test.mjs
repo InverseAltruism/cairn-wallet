@@ -1,25 +1,24 @@
-// M11 (B5b, REBIND): name-fee pricing is floor-CLAMPED, identically at build time and review time.
+// Name-fee pricing is raised to the stored floor and to the lowest chain height (chainbound.ts lowestChainHeight: the
+// floor or the release's newest anchor), identically at build time and review time.
 //
-// The fee tier was priced from `node.tip(rpc)`, an unvalidated read of the hostile proxy. A reported
-// tip below V24 makes the wallet build a treasury output at an obsolete cheaper tier, which the
-// resolver rejects - the fee LEAVES the wallet and the lease is NOT renewed (a burn) - while the same
-// deflated tip simultaneously silences the CLEARSIGN-FEE-1 underpayment warning (the review side used
-// the same raw read). Fix: ONE shared helper, feePricingTip(rawTip, floor) = max(raw, PoW-backed
-// floor), used by BOTH wallet build sites AND the clearsign review warning, so the two sides can never
-// disagree (a clamp on one side only manufactures spurious FEE_CHANGED refusals at a fee-gate
-// boundary). Expected values are computed THROUGH the vendored nameRegFee/buildFeeHeight - no fee
-// tier is re-declared here.
+// A served tip is an unvalidated read. One served too low prices an obsolete cheaper tier: the resolver rejects the
+// record after the fee left, and the review warning priced at the same tip stays silent. One helper,
+// feePricingTip(rawTip, floor, lowest), prices both wallet build sites and the review warning, null when neither the
+// served tip nor the floor is usable. Expected values are computed through the vendored nameRegFee and buildFeeHeight;
+// no fee tier is re-declared here.
 //
 // Run: node --import tsx test/fee-tier-clamp.test.mjs   (offline)
 import { readFileSync } from "node:fs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { feePricingTip, nameRegFee, buildFeeHeight, buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
+import { SPV_NEWEST } from "../src/core/namespv.js";
+import { lowestChainHeight } from "../src/core/chainbound.js";
 import { describe } from "../src/popup/clearsign.js";
 import { mkCoin, txReply } from "./_coin.js";
+import { checker } from "./helpers/check.mjs";
 
-let pass = 0, fail = 0;
-const check = (n, c) => { c ? (pass++, console.log("  ✓ " + n)) : (fail++, console.error("  ✗ " + n)); };
+const { check, done } = checker();
 const origFetch = globalThis.fetch;
 
 console.log("M11 (B5b) - floor-clamped name-fee pricing:");
@@ -33,6 +32,11 @@ check("null/failed tip read falls back to the floor alone", feePricingTip(null, 
 // path at both kinds of call site; the callers' offline-skip behavior is unchanged because null is the
 // value they skip on.
 check("both absent -> null (no usable tip; callers skip)", feePricingTip(null, 0) === null);
+// The lowest chain height raises a usable answer and never turns a null into a height.
+check("lowestChainHeight: floor 0 gives the release anchor; a higher floor is kept", lowestChainHeight(0) === SPV_NEWEST && lowestChainHeight(SPV_NEWEST + 7) === SPV_NEWEST + 7);
+check("a served tip below the anchor with floor 0 prices at the anchor", feePricingTip(39_000, 0, lowestChainHeight(0)) === SPV_NEWEST);
+check("a served tip above the anchor is kept", feePricingTip(SPV_NEWEST + 10, 0, lowestChainHeight(0)) === SPV_NEWEST + 10);
+check("no usable tip and no floor stays null whatever the lowest height", feePricingTip(null, 0, lowestChainHeight(0)) === null && feePricingTip(65100.5, 0, lowestChainHeight(0)) === null);
 
 // ── build side: cairnxNameRenewFee prices from the clamped tip ─────────────────────────────────────
 // V24 (46,400) is the length-graded fee gate. A deflated tip (40,000) prices the obsolete pre-V24
@@ -61,9 +65,18 @@ function tipStub(height) {
 }
 {
   const st = memoryStore(); const w = new Wallet(st); await w.create("pw-fresh-12345");
-  tipStub(40_000); // fresh install: no floor -> raw tip governs (stated coverage limit, fail-open-safe)
+  tipStub(40_000); // fresh install: no floor; the release anchor still raises the served tip
   const got = await w.cairnxNameRenewFee(NAME);
-  check("fresh install (floor 0) keeps pricing from the raw tip (no behavior change)", got === feeDeflated);
+  const atAnchor = Number(nameRegFee(NAME, buildFeeHeight(SPV_NEWEST)));
+  check(`fresh install (floor 0) at a served tip of 40,000 prices at the release anchor (got ${got}, want ${atAnchor})`, got === atAnchor);
+}
+// The wallet's own Renew of "abc" on a fresh install at a served tip of 39,000: 15 CSD at any height this release can
+// see, 5 CSD at 39,000, which the resolver refuses after the fee left.
+{
+  const st = memoryStore(); const w = new Wallet(st); await w.create("pw-abc-12345");
+  tipStub(39_000);
+  const got = await w.cairnxNameRenewFee("abc");
+  check(`"abc" at a served tip of 39,000, floor 0, is priced 1,500,000,000 base units (got ${got})`, got === 1_500_000_000 && got === Number(nameRegFee("abc", buildFeeHeight(SPV_NEWEST))));
 }
 
 // ── review side: the clearsign fee warning prices from the SAME clamped tip ────────────────────────
@@ -76,17 +89,18 @@ function tipStub(height) {
   check("review: deflated tip + floor 47,000 WARNS on an underpaying pre-V24-tier payment", /below the current price/i.test(mk(feeDeflated, 40_000, 47_000)));
   check("review: paying the V24 tier under the same deflated tip does NOT warn", !/below the current price/i.test(mk(feeAtFloor, 40_000, 47_000)));
   check("review: floor-only (tip read failed) still arms the warning", /below the current price/i.test(mk(feeDeflated, undefined, 47_000)));
-  check("review: fully offline (no tip, no floor) still skips the check (no false warning)", !/below the current price/i.test(mk(feeDeflated, undefined, 0)));
+  check("review: fully offline (no tip, no floor) prices at the release anchor and warns on the pre-V24 tier", /below the current price/i.test(mk(feeDeflated, undefined, 0)));
+  check("review: ...and does not warn on the anchor's tier", !/below the current price/i.test(mk(Number(nameRegFee(NAME, buildFeeHeight(SPV_NEWEST))), undefined, 0)));
 }
 
 // ── source pins: ONE helper at every pricing site (build AND review) ───────────────────────────────
 const wsrc = readFileSync(new URL("../src/core/wallet.ts", import.meta.url), "utf8");
 const csrc = readFileSync(new URL("../src/popup/clearsign.ts", import.meta.url), "utf8");
 const wCalls = (wsrc.match(/buildFeeHeight\(/g) || []).length;
-const wClamped = (wsrc.match(/buildFeeHeight\(feePricingTip\(/g) || []).length;
-const wClampedVar = (wsrc.match(/= feePricingTip\(/g) || []).length;
-check(`wallet.ts: every buildFeeHeight call prices a feePricingTip-clamped tip (${wClamped}+${wClampedVar} of ${wCalls})`, wCalls >= 2 && wClamped + wClampedVar >= wCalls);
-check("clearsign.ts: the review tip is the shared feePricingTip clamp", /feePricingTip\(r\.currentTip, r\.tipFloor\)/.test(csrc));
+const wPriced = (wsrc.match(/= await this\.pricingTip\(\)/g) || []).length;
+check(`wallet.ts: every buildFeeHeight call prices pricingTip's tip (${wPriced} of ${wCalls})`, wCalls >= 2 && wPriced >= wCalls);
+check("wallet.ts: pricingTip is feePricingTip over the served tip, the floor and the lowest chain height", /return feePricingTip\(raw, floor, lowestChainHeight\(floor\)\)/.test(wsrc));
+check("clearsign.ts: the review tip is the shared feePricingTip with the lowest chain height, and the bound where it is null", /feePricingTip\(r\.currentTip, r\.tipFloor, lowest\) \?\? lowest/.test(csrc));
 check("clearsign.ts: no raw currentTip reaches buildFeeHeight", !/buildFeeHeight\(\s*Number\(r\.currentTip/.test(csrc));
 
 // ══ W5 (Q-02): a served non-integer or oversize tip must not silently disarm the fee guards ═══════════
@@ -143,11 +157,11 @@ check("a negative tip is not a height -> null", feePricingTip(-1, 0) === null);
 // ── W5 PAIRED HAPPY-PATH: production's exact shape, a fresh install at the live tip ────────────────────
 // floor 0 is the fresh-install shape (no PoW floor persisted yet). The fee must be priced through the
 // vendored functions exactly as before the fix, and the wallet's own Renew must sign that exact value.
-console.log("\nPAIRED HAPPY-PATH (W5): fresh install, live tip 67,500, floor 0:");
+const LIVE_TIP = SPV_NEWEST + 5_000;   // an honest tip: above the release anchor
+console.log(`\nPAIRED HAPPY-PATH (W5): fresh install, live tip ${LIVE_TIP}, floor 0:`);
 {
-  const LIVE_TIP = 67_500;
   const expectFee = Number(nameRegFee(NAME, buildFeeHeight(LIVE_TIP)));
-  check("the clamp is a pass-through at a healthy live tip", feePricingTip(LIVE_TIP, 0) === LIVE_TIP);
+  check("the clamp is a pass-through at a healthy live tip", feePricingTip(LIVE_TIP, 0, lowestChainHeight(0)) === LIVE_TIP);
   const st = memoryStore(); const w = new Wallet(st); await w.create("pw-live-tip-12345");
   const coins = [mkCoin(30_00000000)];   // funds the 15 CSD lease + the 0.25 CSD anchor
   const submits = [];
@@ -174,7 +188,6 @@ console.log("\nPAIRED HAPPY-PATH (W5): fresh install, live tip 67,500, floor 0:"
 }
 // and the review side still warns on an underpaid third-party record at the same live tip.
 {
-  const LIVE_TIP = 67_500;
   const ren = buildNameRenew({ name: NAME });
   const mk = (treasuryVal) => describe({ method: "propose", currentTip: LIVE_TIP, tipFloor: 0,
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
@@ -185,9 +198,17 @@ console.log("\nPAIRED HAPPY-PATH (W5): fresh install, live tip 67,500, floor 0:"
   const mkTip = (treasuryVal, tip, floor) => describe({ method: "propose", currentTip: tip, tipFloor: floor,
     params: { domain: CAIRNX_DOMAIN, uri: ren.uri, payloadHash: ren.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: treasuryVal }] } });
   check("review: a fractional served tip WITH a PoW floor still warns (the floor governs)", /below the current price/i.test(mkTip(need - 1, 65100.5, LIVE_TIP)));
-  check("review: a fractional served tip with NO floor skips rather than showing a false clean bill", !/below the current price/i.test(mkTip(need - 1, 65100.5, 0)));
+  // With no usable tip and no floor feePricingTip is null (the build sites refuse); the review prices at the bound.
+  check("review: a fractional served tip with NO floor prices at the release bound and warns", /below the current price/i.test(mkTip(need - 1, 65100.5, 0)));
+  check("review: ...and a correct payment at that bound does not warn", !/below the current price/i.test(mkTip(need, 65100.5, 0)));
+  // describe() raises a served tip of 39,000 with floor 0 to the bound itself: an "abc" renewal paying the 39,000 tier
+  // warns. The approval window's own path, with its reads failing or timing out: test/approve-bound-dom.test.mjs.
+  const abc = buildNameRenew({ name: "abc" });
+  const low = Number(nameRegFee("abc", buildFeeHeight(39_000)));
+  const mkAbc = () => describe({ method: "propose", currentTip: 39_000, tipFloor: 0,
+    params: { domain: CAIRNX_DOMAIN, uri: abc.uri, payloadHash: abc.payloadHash, fee: 25000000, expiresEpoch: 2000, outputs: [{ to: TREASURY_ADDR, value: low }] } });
+  check(`review: "abc" paying the 39,000 tier (${low}) at a served tip of 39,000 with floor 0 warns`, /below the current price/i.test(mkAbc()));
 }
 
 globalThis.fetch = origFetch;
-console.log(`\nfee-tier-clamp: ${pass} passed, ${fail} failed`);
-if (fail > 0) process.exit(1);
+done("fee-tier-clamp");

@@ -3,7 +3,7 @@
 // offer service (offer-id lane), the same request passed every other preflight check and was signed again from other
 // coins: two payments, and the resolver keeps the second (a whole offer delivers once; a partial one is sized on what
 // was left before the first). The wallet already has the first fill in its history, so the rule the owner set for partial offers
-// on 2026-11-02 now covers these cases too: a short retryable VERIFY_UNAVAILABLE while a fill of the same target from
+// on 2026-11-02 now covers these cases too: a refusal (FILL_ALREADY_SENT) while a fill of the same target from
 // the last OWN_FILL_INDEX_WAIT_MS, not marked gone, is not seen applied. The real Wallet.fillOffer throughout; coins are
 // served as the proxy's mempool-filtered /utxos?available=true serves them (a submitted transaction's coin drops out).
 //   1. Offer-id CSD lane, a whole taker-bound offer: the second fill is refused, decided from the local history before
@@ -16,7 +16,7 @@
 //      the replay (sized on the old state it is refused FILL_UNSAFE by the scan's sums bind); the token lane does not
 //      consult the history and signs a second fill as before (accepted: a repeated token fill costs its network fee).
 //   4. Through the real background: the second request queues (the hold ended with the first's answer), and after
-//      approval the page gets the nested VERIFY_UNAVAILABLE and the window the text that says what to do.
+//      approval the page gets the nested FILL_ALREADY_SENT and the window the text that says what to do.
 //   5. A fill whose submit answer was lost (a maybe row) may be sent again as the same transaction, decided on the
 //      assembled transaction; any other is refused at signing. A first submit that never reached the node leaves its
 //      coin free, so the retry builds the same transaction, which is signed and sent (the node then holds one, and the
@@ -144,7 +144,7 @@ const firstReads = {};
   const r2 = await X.w.fillOffer({ proposalId: whole.id, outputs: outs });
   const rows = (await X.w.history()).filter((e) => e.type === "fillOffer" && String(e.target).toLowerCase() === whole.id);
   check(`1. whole offer: the first fill signs (${r1?.ok}, ${X.st.submits.length} submit)`, r1?.ok === true && X.st.submits.length === 1);
-  check(`1. whole offer: the same fill again is refused retryably (${r2?.code}), nothing submitted, one history row (${rows.length})`, r2?.ok === false && r2?.code === "VERIFY_UNAVAILABLE" && X.st.submits.length === 1 && rows.length === 1);
+  check(`1. whole offer: the same fill again is refused (${r2?.code}), nothing submitted, one history row (${rows.length})`, r2?.ok === false && r2?.code === "FILL_ALREADY_SENT" && X.st.submits.length === 1 && rows.length === 1);
   check(`1. ...the copy says the earlier fill was sent and is not confirmed yet, and when to try again (${r2?.error})`, CONFIRMING.test(String(r2?.error)) && String(r2?.error).includes(AGAIN) && String(r2?.error).includes(`this lasts up to ${WAIT_MIN} minutes after it was sent`));
   check(`1. ...decided from the local history before any proof read (${X.proofs.length - p0} proof calls)`, X.proofs.length === p0);
 
@@ -153,7 +153,7 @@ const firstReads = {};
   X.serve(X.stateOf(part));
   const q1 = await X.w.fillOffer({ proposalId: part.id, outputs: X.outsOf(X.stateOf(part), 30_000_000n) });
   const q2 = await X.w.fillOffer({ proposalId: part.id, outputs: X.outsOf(X.stateOf(part), 30_000_000n) });
-  check(`1. a partial offer: the first fill signs and the second is refused with the partial copy (${q2?.code})`, q1?.ok === true && q2?.ok === false && q2?.code === "VERIFY_UNAVAILABLE" && /was sent and is not listed as applied by the offer service yet/.test(String(q2?.error)) && X.st.submits.length === 2);
+  check(`1. a partial offer: the first fill signs and the second is refused with the partial copy (${q2?.code})`, q1?.ok === true && q2?.ok === false && q2?.code === "FILL_ALREADY_SENT" && /was sent and is not listed as applied by the offer service yet/.test(String(q2?.error)) && X.st.submits.length === 2);
 
   // 3. The history read itself makes no fetch.
   const f0 = X.st.log.length;
@@ -170,7 +170,7 @@ const firstReads = {};
   const r4 = await X.w.fillOffer({ proposalId: whole.id, outputs: outs });
   await X.w.hist.annotate(histKey(X.w.addr()), r3.txid, { ts: ago(OWN_FILL_INDEX_WAIT_MS + 1_000) });
   const r5 = await X.w.fillOffer({ proposalId: whole.id, outputs: outs });
-  check(`3. a fill sent ${WAIT_MIN - 1} minutes ago still refuses (${r4?.code}); one sent past ${WAIT_MIN} minutes lets the next sign (${r5?.ok})`, r4?.ok === false && r4?.code === "VERIFY_UNAVAILABLE" && r5?.ok === true && X.st.submits.length === 4);
+  check(`3. a fill sent ${WAIT_MIN - 1} minutes ago still refuses (${r4?.code}); one sent past ${WAIT_MIN} minutes lets the next sign (${r5?.ok})`, r4?.ok === false && r4?.code === "FILL_ALREADY_SENT" && r5?.ok === true && X.st.submits.length === 4);
 }
 
 // ── 2. Reservation (fclaim) lane, two coins ─────────────────────────────────────────────────────────────
@@ -230,7 +230,7 @@ async function fclaimWallet(pw, store = memoryStore()) {
   firstReads.fclaim = { log: [...st.log.slice(l0)].sort(), tx: digest(st.submits.at(-1)) };
   const c2 = await w.fillOffer({ proposalId: world.fc.id, outputs: outs });
   check(`2. reservation lane: the first fill signs (${c1?.ok}, inputs ${JSON.stringify(inputsOf(st.submits[0]))})`, c1?.ok === true && st.submits.length === 1);
-  check(`2. reservation lane: the same fill again, with another coin free to spend, is refused retryably (${c2?.code}) and no second transaction exists (${st.submits.length} submit)`, c2?.ok === false && c2?.code === "VERIFY_UNAVAILABLE" && st.submits.length === 1);
+  check(`2. reservation lane: the same fill again, with another coin free to spend, is refused (${c2?.code}) and no second transaction exists (${st.submits.length} submit)`, c2?.ok === false && c2?.code === "FILL_ALREADY_SENT" && st.submits.length === 1);
   check(`2. ...the copy says the earlier fill was sent and is not confirmed yet (${c2?.error})`, CONFIRMING.test(String(c2?.error)));
   // 3. The first fill marked gone: the next signs, from the other coin.
   await w.hist.annotate(histKey(w.addr()), c1.txid, { gone: true });
@@ -242,7 +242,7 @@ async function fclaimWallet(pw, store = memoryStore()) {
   const c4 = await w.fillOffer({ proposalId: world.fc.id, outputs: outs });
   await w.hist.annotate(histKey(w.addr()), c3.txid, { ts: ago(OWN_FILL_INDEX_WAIT_MS + 1_000) });
   const c5 = await w.fillOffer({ proposalId: world.fc.id, outputs: outs });
-  check(`3. reservation lane: a fill sent ${WAIT_MIN - 1} minutes ago refuses (${c4?.code}); past ${WAIT_MIN} minutes the next signs (${c5?.ok})`, c4?.ok === false && c4?.code === "VERIFY_UNAVAILABLE" && c5?.ok === true && st.submits.length === 3);
+  check(`3. reservation lane: a fill sent ${WAIT_MIN - 1} minutes ago refuses (${c4?.code}); past ${WAIT_MIN} minutes the next signs (${c5?.ok})`, c4?.ok === false && c4?.code === "FILL_ALREADY_SENT" && c5?.ok === true && st.submits.length === 3);
 }
 
 // ── 3. A second reservation-lane partial fill after the first is mined ─────────────────────────────────
@@ -256,7 +256,7 @@ async function fclaimWallet(pw, store = memoryStore()) {
   const p1 = await w.fillOffer({ proposalId: world.fc.id, outputs: first });
   const staleOuts = world.outsFor(BigInt(1000e8));   // "buy the rest", sized on the state before the first fill
   const p2 = await w.fillOffer({ proposalId: world.fc.id, outputs: staleOuts });
-  check(`3. partial reservation: before the first fill is mined the second is refused (${p2?.code})`, p1?.ok === true && p2?.ok === false && p2?.code === "VERIFY_UNAVAILABLE" && st.submits.length === 1);
+  check(`3. partial reservation: before the first fill is mined the second is refused (${p2?.code})`, p1?.ok === true && p2?.ok === false && p2?.code === "FILL_ALREADY_SENT" && st.submits.length === 1);
   world.mine(p1.txid, first);
   const truth = world.truth();
   const p3 = await w.fillOffer({ proposalId: world.fc.id, outputs: staleOuts.map((o) => ({ ...o })) });
@@ -332,8 +332,8 @@ for (const lane of ["offerId", "fclaim"]) {
   const qb = (await popup("pending")).result;
   check("4. the hold ended with the first answer: the second request queues", b.reply === undefined && qb.length === 1);
   const ob = (await popup("resolve", qb.at(-1)?.id, true, me)).result; await settle();
-  check(`4. approved, the page gets the nested VERIFY_UNAVAILABLE (${JSON.stringify(b.reply?.result?.code)}) and nothing is sent (${st.submits.length} submit)`, b.reply?.ok === true && b.reply?.result?.ok === false && b.reply?.result?.code === "VERIFY_UNAVAILABLE" && st.submits.length === 1);
-  check(`4. the window gets the code and the text that says what to do (${ob?.code}: ${ob?.error})`, ob?.ok === false && ob?.code === "VERIFY_UNAVAILABLE" && CONFIRMING.test(String(ob?.error)) && String(ob?.error).includes(AGAIN));
+  check(`4. approved, the page gets the nested FILL_ALREADY_SENT (${JSON.stringify(b.reply?.result?.code)}) and nothing is sent (${st.submits.length} submit)`, b.reply?.ok === true && b.reply?.result?.ok === false && b.reply?.result?.code === "FILL_ALREADY_SENT" && st.submits.length === 1);
+  check(`4. the window gets the code and the text that says what to do (${ob?.code}: ${ob?.error})`, ob?.ok === false && ob?.code === "FILL_ALREADY_SENT" && CONFIRMING.test(String(ob?.error)) && String(ob?.error).includes(AGAIN));
 }
 
 // ── 5. A lost submit's retry: the same transaction is sent again, another one is refused ────────────────
@@ -351,7 +351,7 @@ for (const lane of ["offerId", "fclaim"]) {
     ["the lost one of a lost and an accepted fill", [...sent.map((f) => ({ ...f, txid: TX2 })), ...lost], TX1, true],
   ]) {
     const r = repeatedFillRefusal(unseen, "confirming", txid);
-    check(`5. the rule: ${label}: ${r === null ? "allowed" : r.code}`, allowed ? r === null : r?.code === "VERIFY_UNAVAILABLE");
+    check(`5. the rule: ${label}: ${r === null ? "allowed" : r.code}`, allowed ? r === null : r?.code === "FILL_ALREADY_SENT");
   }
 }
 // `rows` are the account's fill rows of the target; `maybe` the rows still marked as possibly in flight.
@@ -375,14 +375,14 @@ async function fclaimRetry(pw, base, opts, store) {
   const before = await fillRows(R.w, R.world.fc.id);
   const rFee = await R.ask({ fee: 6_000_000 });
   check(`5. reservation lane, the first submit lost (${r1?.code}, rows ${rowsText(before)}): a retry with another fee is refused (${rFee?.code}) with nothing sent (${R.st.submits.length} submit)`,
-    r1?.code === "SUBMIT_MAYBE_INFLIGHT" && before.length === 1 && before[0].maybe === true && rFee?.ok === false && rFee?.code === "VERIFY_UNAVAILABLE" && CONFIRMING.test(String(rFee?.error)) && R.st.submits.length === 1);
+    r1?.code === "SUBMIT_MAYBE_INFLIGHT" && before.length === 1 && before[0].maybe === true && rFee?.ok === false && rFee?.code === "FILL_ALREADY_SENT" && CONFIRMING.test(String(rFee?.error)) && R.st.submits.length === 1);
   const r2 = await R.ask();
   const after = await fillRows(R.w, R.world.fc.id);
   check(`5. ...the same request again signs (${r2?.ok}${r2?.error ? `: ${r2.code} ${r2.error}` : ""}): the same transaction (txid ${String(r2?.txid).slice(0, 12)} = ${String(r1?.txid).slice(0, 12)}, identical bytes ${digest(R.st.submits[0]) === digest(R.st.submits[1])}), and the node holds ${R.st.ingested.length}`,
     r2?.ok === true && r2?.txid === r1?.txid && R.st.submits.length === 2 && digest(R.st.submits[0]) === digest(R.st.submits[1]) && R.st.ingested.length === 1);
   check(`5. ...one history row, its maybe mark cleared by the definitive answer (${rowsText(after)})`, after.length === 1 && after[0].txid === r1?.txid && !after[0].maybe);
   const r3 = await R.ask();
-  check(`5. ...asked once more, now that the node accepted it, refused at once (${r3?.code}), nothing more sent (${R.st.submits.length})`, r3?.ok === false && r3?.code === "VERIFY_UNAVAILABLE" && R.st.submits.length === 2);
+  check(`5. ...asked once more, now that the node accepted it, refused at once (${r3?.code}), nothing more sent (${R.st.submits.length})`, r3?.ok === false && r3?.code === "FILL_ALREADY_SENT" && R.st.submits.length === 2);
 }
 {
   // The first submit was taken by the node and its answer lost: its coin drops out, the retry would spend the other
@@ -392,7 +392,7 @@ async function fclaimRetry(pw, base, opts, store) {
   const r2 = await R.ask();
   const rows = await fillRows(R.w, R.world.fc.id);
   check(`5. reservation lane, the first submit taken and its answer lost (${r1?.code}), another coin free: the retry is refused (${r2?.code}) and nothing is signed (${R.st.submits.length} submit, the node holds ${R.st.ingested.length})`,
-    r1?.code === "SUBMIT_MAYBE_INFLIGHT" && r2?.ok === false && r2?.code === "VERIFY_UNAVAILABLE" && R.st.submits.length === 1 && R.st.ingested.length === 1);
+    r1?.code === "SUBMIT_MAYBE_INFLIGHT" && r2?.ok === false && r2?.code === "FILL_ALREADY_SENT" && R.st.submits.length === 1 && R.st.ingested.length === 1);
   check(`5. ...the copy states only what the wallet knows: sent, not confirmed, and this would be another transaction (${r2?.error})`, CONFIRMING.test(String(r2?.error)) && String(r2?.error).includes(AGAIN));
   check(`5. ...the row keeps its maybe mark (${rowsText(rows)})`, rows.length === 1 && rows[0].maybe === true);
 }
@@ -426,7 +426,7 @@ async function fclaimRetry(pw, base, opts, store) {
   const r2 = await R.ask();
   const rows = await fillRows(R.w, R.world.fc.id);
   check(`5. reservation lane, a fill the node accepted, asked again with its coin still served: refused (${r2?.code}), nothing re-sent (${R.st.submits.length} submit), one row, not marked maybe (${rowsText(rows)})`,
-    r1?.ok === true && r2?.ok === false && r2?.code === "VERIFY_UNAVAILABLE" && R.st.submits.length === 1 && rows.length === 1 && !rows[0].maybe);
+    r1?.ok === true && r2?.ok === false && r2?.code === "FILL_ALREADY_SENT" && R.st.submits.length === 1 && rows.length === 1 && !rows[0].maybe);
 }
 {
   // The offer-id lane, a whole and a partial offer: a lost submit's retry is the same transaction and is sent.
@@ -476,7 +476,7 @@ for (const [base, label, opts, retryCode] of [
     r1?.ok === false && r1?.code === "SUBMIT_MAYBE_INFLIGHT" && retried && r2?.txid === r1?.txid && R.st.submits.length === 2 && rows.length === 1 && rows[0].ts === t0);
   const r3 = await atMinutes(t0, 31, () => R.ask(sixFee));
   check(`6. ${label}: at minute 31 another fill of the target is refused (${r3?.ok ? "signed" : r3?.code}), nothing more sent (${R.st.submits.length} submits)`,
-    r3?.ok === false && r3?.code === "VERIFY_UNAVAILABLE" && CONFIRMING.test(String(r3?.error)) && R.st.submits.length === 2);
+    r3?.ok === false && r3?.code === "FILL_ALREADY_SENT" && CONFIRMING.test(String(r3?.error)) && R.st.submits.length === 2);
   if (retryCode === undefined) {
     // The valve still holds: past 30 minutes after the retry, the row still unseen, another fill signs.
     const r4 = await atMinutes(t0, 29 + WAIT_MIN + 1, () => R.ask(sixFee));
@@ -508,7 +508,7 @@ for (const [base, label, opts, retryCode] of [
     read.length === 1 && read[0].ts === t0 && read[0].resent === t0 + 29 * MIN && !read[0].maybe && (await store.get(k)).find((e) => e.txid === r1?.txid)?.resent === undefined);
   const r3 = await atMinutes(t0, 31, () => R.ask(sixFee));
   check(`6. ...at minute 31 another fill of the target is refused (${r3?.ok ? "signed" : r3?.code}), nothing more sent (${R.st.submits.length} submits)`,
-    r3?.ok === false && r3?.code === "VERIFY_UNAVAILABLE" && R.st.submits.length === 2);
+    r3?.ok === false && r3?.code === "FILL_ALREADY_SENT" && R.st.submits.length === 2);
   // The read is what the drain writes: after the next history write the stored row equals the row read before it.
   await atMinutes(t0, 32, () => R.w.hist.maybeRecord(k, { ok: true, txid: "0x" + "e9".repeat(32) }, { type: "send" }));
   await R.w.hist.histChain;
@@ -530,7 +530,7 @@ for (const [base, label, opts, retryCode] of [
     r1?.ok === true && r2?.ok === false && r2?.code === "SUBMIT_DUPLICATE" && r2?.txid === r1?.txid && rows.length === 1 && rows[0].ts === t0 && rows[0].resent === t0 + 31 * MIN);
   const r3 = await atMinutes(t0, 32, () => R.ask(sixFee));
   check(`6. ...at minute 32 another fill of the target is refused (${r3?.ok ? "signed" : r3?.code}), nothing more sent (${R.st.submits.length} submits)`,
-    r3?.ok === false && r3?.code === "VERIFY_UNAVAILABLE" && R.st.submits.length === 2);
+    r3?.ok === false && r3?.code === "FILL_ALREADY_SENT" && R.st.submits.length === 2);
 }
 {
   // A first fill with no retry: the window counts from its ts, as before.
@@ -540,7 +540,7 @@ for (const [base, label, opts, retryCode] of [
   const r2 = await atMinutes(t0, WAIT_MIN - 1, () => R.ask(sixFee));
   const r3 = await atMinutes(t0, WAIT_MIN + 1, () => R.ask(sixFee));
   check(`6. no retry: sent at minute 0 (${r1?.ok}); another fill at minute ${WAIT_MIN - 1} is refused (${r2?.code}), at minute ${WAIT_MIN + 1} it signs (${r3?.ok}, ${R.st.submits.length} submits)`,
-    r1?.ok === true && r2?.ok === false && r2?.code === "VERIFY_UNAVAILABLE" && r3?.ok === true && R.st.submits.length === 2);
+    r1?.ok === true && r2?.ok === false && r2?.code === "FILL_ALREADY_SENT" && r3?.ok === true && R.st.submits.length === 2);
 }
 {
   // The history row itself: a later record of the same txid keeps its ts, its position and a consolidate's confirmed

@@ -123,7 +123,7 @@
   several times with one wallet for other reasons now use a wallet with the same key and no history
   (test/fill-fclaim-preflight.test.mjs), a reservation of their own (test/fill-reservation-confirm.test.mjs), or age
   the earlier fills past the wait (test/fill-one-request-per-offer.test.mjs).
-- `test/run.mjs` refuses to run with fewer than 198 discovered test files (the floor was 142), so a dropped gate file
+- `test/run.mjs` refuses to run with fewer than 203 discovered test files (the floor was 142), so a dropped gate file
   fails the runner.
 - Tests for six guards that held but that no test turned red when removed (found by the audit of 2026-11-19; no source
   change): the offer-id lane's terms bind, which is the only check of a served fee rate, give or value there
@@ -194,6 +194,72 @@
   Approve arms at its 700 ms floor whether or not it has answered and a click never waits for it. The empty-map "Clears"
   card is unchanged, and the same card shows for every origin (test/clearsign.ts, test/sign-display-parity.test.mjs
   section 8, the "profile row" cases in test/approve-layout-chrome.test.mjs).
+- Fills: the two offer-id checks that depend on the chain's height, the V28 sunset refusal (`FILL_LEGACY_SUNSET`) and
+  the offer expiry refusal (`FILL_UNSAFE`), compare the largest of the RPC's tip, the stored tip floor and the
+  release's newest anchor height (`fillpreflight.ts` `offerIdChainBound`). They compared the larger of the tip and the
+  floor, and the floor is 0 on a fresh install, so a front door that served a tip below 60,044 together with forged
+  claim fields got an offer-id fill of an open CSD offer signed, which the resolver rejects after the payment has
+  moved. Every offer-id fill of an open CSD offer is now refused on every install; before, it was refused once the
+  served tip or the floor reached the sunset, which the chain passed before the release's anchor. The sunset is the
+  bundle's `LEGACY_HOLD_SUNSET_HEIGHT` (60,044, from which no legacy hold is live); the wallet's own constant was one
+  block later. The check that answered `VERIFY_UNAVAILABLE` ("couldn't fetch the chain tip to verify your claim on this
+  open offer") for an open CSD offer at a served tip below V13 is removed: the sunset refusal answers first at every
+  height the wallet can compare. The expiry refusal at the same bound also covers an offer anchored below V22 whose
+  capped expiry has passed while its proposal has not: the node would admit that fill and the resolver refuse it.
+  Taker-bound and token-priced fills and the reservation (fclaim) lane are unchanged. The expiry copy reads "the chain
+  is at or past block N", since N is a lower bound (test/fill-legacy-sunset.test.mjs, test/fill-failclosed.test.mjs).
+- Names: the wallet's own renewal is priced at the served tip raised to the lowest height the chain can be at for this
+  release and install (`chainbound.ts` `lowestChainHeight`: the stored floor or the release's newest anchor), the bound
+  the offer-id fill checks use. Before, a fresh install at a served tip of 39,000 priced a renewal of "abc" at
+  500,000,000 base units, which the resolver refuses after the fee has left; it is now 1,500,000,000, the price at any
+  height this release can see. With no usable tip and no stored floor the renewal is still refused. The approval window
+  holds the same bound itself (`src/core/spvnewest.ts`, the newest anchor's height, which the anchor generator writes
+  beside the table, and `chainbound.ts`, neither of which brings the table into its bundle), combined with the floor read
+  when it answers. So its underpaid-fee warning on a site's name record prices at the bound even when the tip and floor
+  reads fail or time out (where the renewal itself refuses), the legacy reservation's V28 warning is shown on every
+  install with no read, and a fill card never counts its blocks left from below the bound (test/approve-bound-dom.test.mjs,
+  test/chainbound.test.mjs, test/fee-tier-clamp.test.mjs, test/display-truth.test.mjs, test/clearsign.ts,
+  test/sign-display-parity.test.mjs section 3, test/approve-card-honesty.test.mjs).
+- Fills: the repeated-fill refusal (an earlier fill of the same target from this account, sent in the last 30 minutes,
+  not marked gone and not yet seen applied) has its own code, `FILL_ALREADY_SENT`, in place of `VERIFY_UNAVAILABLE`,
+  which a page or the SDK may retry on a timer: each retry is another approval window, and the one that succeeds can
+  pay twice. Both texts are unchanged. In 0.3.2 and 0.3.3 only the partial offer-id case existed, under
+  `VERIFY_UNAVAILABLE`. An honest first fill and the lost-submit retry of the same transaction sign as before
+  (test/fill-refill-after-send.test.mjs, test/fill-taker-partial.test.mjs). One reservation-lane test that claimed to
+  pin the retryable answer for an unprovable offer author was answered by this refusal instead (its wallet had signed a
+  fill of the offer just before); it now uses a wallet with no history (test/fill-fclaim-preflight.test.mjs).
+- Submit: a `SUBMIT_REJECTED` result reads "<reason>. The submit was refused; nothing was recorded in this wallet. If
+  you already tried this same payment and that try's outcome was unclear, look that one up before sending again."
+  where it read "<reason>. Nothing was sent." A rejected submit leaves no history row and no txid, and the proxy's own
+  400, 413 and 429 come from no node, so the line names neither. The node answers every submit
+  with HTTP 200 and refuses with `ok:false`; a 4xx comes from a proxy before it forwards (400, 413, 429). Through a
+  proxy with two backends an earlier attempt of the same request may have reached the other backend and been
+  admitted, and an older proxy then relays the second backend's refusal. The `SUBMIT_REJECTED` row and the comments
+  in `node.ts` say the same (test/popup-outcome-dom.test.mjs 4f).
+- Approval window: a fill card's expiry line reads "Offer expires at block N, in K blocks (~X)." where it read "..., K
+  blocks after the current tip (~X)." At the six-digit heights the card now counts from (the served tip raised to the
+  release's newest anchor), the longer line wrapped in the compact window of a reservation fill awaiting confirmation
+  and put a recipient row 14 px under the buttons; it now keeps 3 px above them in both themes
+  (test/approve-layout-chrome.test.mjs `fill-unconfirmed`, whose reservation heights also move above the anchor).
+- Heights: a served tip or a stored floor counts only as a positive safe integer (`chainbound.ts` `heightOf`), at each
+  place one enters: what `prepare()` stores as the floor, `Wallet.tipFloor()`, `lowestChainHeight`, the offer-id bound,
+  the name lapse tip and the reservation lane's floor. A served tip of 139263.5 was stored as the floor, and a floor that
+  is not an integer made `feePricingTip` drop both it and the release anchor: at a served tip of 39,000 the wallet's own
+  renewal of "abc" signed 500,000,000 base units, which the resolver refuses after the fee has left, and the window's
+  warning was silent. It now prices 1,500,000,000 and warns, and a non-integer floor stored by an earlier version reads as
+  0 (test/height-integer.test.mjs).
+- Approval window: a fill card counts the blocks left only from a served tip at or above the release bound. When the tip
+  read gives no height, or a lower one, the card shows the expiry block alone, as before this release, and names only the
+  refusals the bound proves (an expiry at or below it, or within 4 blocks of it), where it had counted from the bound
+  (test/approve-bound-dom.test.mjs, test/approve-card-honesty.test.mjs 6a).
+- Names: a name the verified records do not register is not verified when it is the name of a property every object
+  inherits. The replay read `names[name]` from a plain object, so for "constructor" (the one such name the name grammar
+  accepts) it found Object's constructor and answered verified with owner and address the text "undefined"; both reads
+  now take an own property only (test/namespv-proto-name.test.mjs, which also drives `__proto__`, `toString` and
+  `hasOwnProperty` through `verifyNameUnion`).
+- Release: `store/PUBLISH-RUNBOOK.md` step 4 and AGENTS.md "Release and deploy" step 4 check, before the tag is pushed,
+  that the tagged commit is on `master`'s first-parent line (`release.yml` builds whatever commit a pushed `v*` tag
+  names).
 - Docs: the decision of 2026-11-18 for names bought on the market is recorded in `SECURITY.md` and
   `docs/DESIGN-viafill.md`: name verification for them will move from per-name replay to a full replay of the `cairnx:v1`
   domain from a pinned record log plus the complete blocks above the pin, and the per-name verifier will be retired with

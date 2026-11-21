@@ -6,6 +6,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checker } from "./helpers/check.mjs";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import { generate, check, renderTable, parseTable, getJson } from "../scripts/update-spv-anchors.mjs";
 import { SPV_FLOOR } from "../src/core/spvanchors.ts";
 
@@ -52,7 +54,7 @@ async function refuses(name, tablePath, run, msgRe) {
   let err = null;
   try { await run(); } catch (e) { err = e; }
   t.check(`${name}: refused (${err?.message ?? "no error"})`, !!err && msgRe.test(err.message));
-  t.check(`${name}: table bytes unchanged`, readFileSync(tablePath).equals(before));
+  t.check(`${name}: table bytes unchanged, and no spvnewest.ts written`, readFileSync(tablePath).equals(before) && !existsSync(join(dirname(tablePath), "spvnewest.ts")));
 }
 
 // Honest path: the real walk writes both chunk tops, and the file round-trips through the strict parser.
@@ -63,10 +65,12 @@ async function refuses(name, tablePath, run, msgRe) {
   t.check("honest: 2 entries written, newest 30079", r.entries === 2 && r.newest === TOP2);
   t.check("honest: entries are the walked hashes at 30015 and 30079", back.anchors[0] === at(TOP1).hash && back.anchors[1] === at(TOP2).hash);
   t.check("honest: floor carried forward from the committed table", back.floor.hash === SPV_FLOOR.hash && back.floor.height === SPV_FLOOR.height);
+  const newest = readFileSync(join(dirname(p), "spvnewest.ts"), "utf8");
+  t.check("honest: spvnewest.ts beside the table holds the newest entry's height, 30079", newest.includes("export const SPV_NEWEST_HEIGHT = 30079;"));
   const dry = table();
   const before = readFileSync(dry);
   await generate({ c1Text: c1(), tablePath: dry, base: "http://h.test", chunk: CHUNK, pageSize: PAGE, paceMs: 0, io: { ...quiet, fetch: headersFetch() } });
-  t.check("honest dry run (no --write): nothing written", readFileSync(dry).equals(before));
+  t.check("honest dry run (no --write): nothing written", readFileSync(dry).equals(before) && !existsSync(join(dirname(dry), "spvnewest.ts")));
 }
 
 // Each C1 JSON rule.

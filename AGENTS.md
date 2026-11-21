@@ -92,8 +92,8 @@ Signing and funds:
 - Offer fills: every lane merkle-proves the offer and binds the served terms to it before signing; the remaining
   resolver trust (give-backing, the completeness of a partial offer's fill list on the offer-id lane) and the
   second-source reads with their gaps are in `docs/DESIGN-fill-lanes.md`. One fill request per fill target at a time:
-  another is refused `FILL_IN_PROGRESS` before it is queued (test/fill-one-request-per-offer.test.mjs). After the
-  first was sent, another CSD-paid fill of the same target refuses retryably while the first is recent (30 minutes),
+  another is refused `FILL_IN_PROGRESS` before it is queued (test/fill-one-request-per-offer.test.mjs). After the first
+  was sent, another CSD-paid fill of the same target refuses `FILL_ALREADY_SENT` while the first is recent (30 minutes),
   not gone and not seen applied, except a lost submit's retry that builds the same transaction; the rule is decided in
   one function, `fillpreflight.ts` `repeatedFillRefusal`, which for such a retry runs on the assembled transaction
   (test/fill-refill-after-send.test.mjs).
@@ -192,12 +192,16 @@ and a maintainer handles versioning and release.
 
 1. Bump the version in package.json only (`npm version X.Y.Z --no-git-tag-version`, which also updates
    package-lock.json). build.mjs stamps it into dist/manifest.json and window.cairn.
-2. Regenerate the SPV anchor table (`src/core/spvanchors.ts`) per store/PUBLISH-RUNBOOK.md step 2. Between releases,
-   a table-only release is cut once the public tip is more than 14,400 blocks above the newest entry.
+2. Regenerate the SPV anchor table (`src/core/spvanchors.ts`, and with it `src/core/spvnewest.ts`) per
+   store/PUBLISH-RUNBOOK.md step 2. Between releases, a table-only release is cut once the public tip is more than
+   14,400 blocks above the newest entry.
 3. `npm test && npm run package` green. scripts/package.mjs emits byte-reproducible zips and sha256s (the store
    upload file `cairn-wallet-store-X.Y.Z.zip` and the two the release carries; the runbook's step 5). node_modules
    must be a real `npm ci` directory: a symlinked one changes esbuild's path comments and the hash.
-4. Tag and push (maintainers only). release.yml runs `anchors` (re-walks the table against the public chain; the
+4. Tag and push (maintainers only). Before the push, check that the tagged commit is on `master`'s first-parent line
+   (release.yml builds whatever commit a pushed `v*` tag names); it prints `on-master` or nothing:
+   `git rev-list --first-parent origin/master | grep -qx "$(git rev-parse 'vX.Y.Z^{commit}')" && echo on-master`.
+   release.yml runs `anchors` (re-walks the table against the public chain; the
    newest entry must be 1,000 to 6,000 below the public tip), `build` (npm ci, typecheck, test, verify:vendor,
    package) and `release` (checks the zips' sha256, writes the SLSA attestation, creates the GitHub release). Only
    `release` holds write permissions, and it checks nothing out and installs nothing, so tests and dev dependencies

@@ -46,9 +46,9 @@ async function post(rpc: string, path: string, body: unknown): Promise<any> {
   let j: any;
   try { j = await r.json(); } catch { j = undefined; }
   if (!r.ok) {
-    // A non-2xx is NOT automatically "definitively rejected". A 4xx IS definitive: a node rejection
-    // (feerate/duplicate/etc.), a pre-forward proxy 400/413 body cap, or a 429 rate limit; the tx never
-    // reached the mempool, so "nothing was sent" is truthful. But a 5xx / gateway failure is AMBIGUOUS:
+    // A non-2xx is NOT automatically "definitively rejected". The node answers every submit with HTTP 200 and
+    // refuses with ok:false, so a 4xx comes from a proxy before it forwards (a 400, a 413 body cap, a 429 rate
+    // limit): this request reached no node. But a 5xx / gateway failure is AMBIGUOUS:
     // the cairn proxy gives the node only ~4s (fallback ~6s) and returns a 502 "node unreachable" if both
     // time out, yet a busy node can INGEST the POST and then be too slow to answer within that window, so
     // the tx MAY be in the mempool. An unparseable error body (a Cloudflare/nginx HTML 5xx page) is the
@@ -557,8 +557,10 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // depends on it; Plans/66 B4).
   const localTxid = codecTxid(tx);
   const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = a DEFINITIVE 4xx rejection (node said no,
-  // or a pre-forward proxy 400/413/429), so the tx is not in the mempool (safe to say "nothing was sent");
+  // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = the answering node refused this request (a 200
+  // ok:false) or a proxy refused it before forwarding (400/413/429). It says what the node or proxy that answered did: through a
+  // proxy with two backends an earlier attempt may have reached the other one, so the copy does not say "nothing
+  // was sent";
   // SUBMIT_MAYBE_INFLIGHT = the request threw / timed out / hit a 5xx gateway failure / had an unreadable
   // body AFTER signing, so the tx MAY have been ingested; the only case where the popup's "may already be
   // in flight" caution is truthful. post() sets maybeInflight on exactly those ambiguous branches (a 5xx is

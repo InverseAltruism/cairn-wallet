@@ -153,6 +153,16 @@ console.log("4. renew and set-primary results through the SUBMIT_* reading");
   t("4e a refused renew says 'Nothing was sent'", () => {
     assert.match(refused, /insufficient confirmed balance\. Nothing was sent\./);
   });
+  // SUBMIT_REJECTED: a node, or the proxy's own 400, 413 or 429, refused the submit; the wallet recorded nothing. Through
+  // a proxy with two backends an earlier try may have reached the other one, so it does not claim that nothing was sent,
+  // and it names neither the node (a 429 is the proxy's) nor the history (a refused submit leaves no row).
+  for (const reason of ["missing utxo", "rate limit exceeded"]) {
+    const rejected = await nameAct("[data-nrenew]", "cairnxNameRenew", () => ({ ok: false, code: "SUBMIT_REJECTED", error: reason }));
+    t(`4f a renew refused SUBMIT_REJECTED (${reason}) says the submit was refused and nothing was recorded`, () => {
+      assert.ok(rejected.includes(`${reason}. The submit was refused; nothing was recorded in this wallet. If you already tried this same payment and that try's outcome was unclear, look that one up before sending again.`), rejected);
+      assert.doesNotMatch(rejected, /Nothing was sent/); assert.doesNotMatch(rejected, IN_FLIGHT); assert.doesNotMatch(rejected, /the node that answered|check your history/i);
+    });
+  }
 }
 
 console.log("5. post");

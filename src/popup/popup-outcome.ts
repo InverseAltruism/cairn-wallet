@@ -22,6 +22,10 @@ function inFlightCopy(prefix: string, what: string, txid?: string): Outcome {
 export function refusedCopy(r: any, what: string): Outcome {
   if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return inFlightCopy(r?.error ? clause(r.error) + ". " : "", what, r?.txid);
   if (r?.code === "SUBMIT_DUPLICATE") return { text: String(r?.error ?? "This transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again."), cls: "info", maybe: true };
+  // A node or the proxy (its own 400, 413 or 429, before forwarding) refused this request, and the wallet recorded no row
+  // and no txid for it. Through a proxy with two backends an earlier try may have reached the other one, so this does not
+  // say "Nothing was sent"; it points at an earlier try whose outcome was unclear, the only place the answer can be.
+  if (r?.code === "SUBMIT_REJECTED") return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. The submit was refused; nothing was recorded in this wallet. If you already tried this same payment and that try's outcome was unclear, look that one up before sending again.`, cls: "err", maybe: false };
   return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. Nothing was sent.`, cls: "err", maybe: false };
 }
 export function thrownCopy(e: any, what: string): Outcome {

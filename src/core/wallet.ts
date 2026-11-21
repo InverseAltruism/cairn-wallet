@@ -13,6 +13,7 @@ import { siwcDigest, CSD_CHAIN_MAINNET } from "./siwc.js";
 import { siwcMessageFor, type SiwcParams } from "./siwcparams.js";
 import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
+import { heightOf, lowestChainHeight } from "./chainbound.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
 import { openHeaderStore } from "./headerstore.js";
@@ -597,11 +598,19 @@ export class Wallet {
   // CLEARSIGN-FEE-1: exact tip for the clear-sign fee-sufficiency check on a dApp-built name registration/
   // renewal (epoch*30 is too coarse near a fee-gate boundary). Best-effort; null when offline.
   async tip(): Promise<number | null> { try { return await node.tip(this.rpc); } catch { return null; } }
-  // M9/M11/W5 (B5b): the persisted PoW-backed tip floor (advanced only by namespv floorAdvance after a
-  // successful sync; see B5a). Guards clamp the raw served tip UP with it so a deflating RPC cannot roll
-  // the wallet's view of the chain backwards. Fresh install = 0 (guards disarmed, fail-open-SAFE; stated
-  // coverage limit, not assumed away). Popup-only read; never a dApp method.
-  async tipFloor(): Promise<number> { try { return Number(await this.store.get("spvNodeTipFloor")) || 0; } catch { return 0; } }
+  // The persisted tip floor, advanced only by namespv floorAdvance after a successful sync. Guards clamp the
+  // served tip up with it so a deflating RPC cannot roll the wallet's view of the chain back below a height
+  // it synced. A fresh install reads 0, so the floor raises nothing until the first sync; the offer-id fill
+  // checks and fee pricing also count the release's newest anchor (chainbound.ts lowestChainHeight). Popup-only
+  // read; never a dApp method.
+  async tipFloor(): Promise<number> { try { return heightOf(Number(await this.store.get("spvNodeTipFloor"))); } catch { return 0; } }
+  // The name-fee pricing tip at both build sites: cairnx.ts feePricingTip over the served tip, the stored floor and the
+  // lowest chain height; null when neither the served tip nor the floor is usable (the sites refuse then).
+  private async pricingTip(): Promise<number | null> {
+    const raw = await node.tip(this.rpc);
+    const floor = await this.tipFloor();
+    return feePricingTip(raw, floor, lowestChainHeight(floor));
+  }
   async propose(p: { domain: string; payloadHash: string; uri: string; expiresEpoch: number; fee?: number; outputs?: { to: string; value: number }[] }) {
     // B9: an omitted fee signs defaultFeeFor("propose"); the node-enforced MIN_FEE_PROPOSE floor the
     // clear-sign screen displayed (was: the build ERRORED BadFee AFTER the user approved a screen that
@@ -870,15 +879,9 @@ export class Wallet {
   // v1.8: the height-gated renewal fee priced at the CURRENT tip; for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.
   async cairnxNameRenewFee(name: string): Promise<number> {
-    // M11 (B5b): price from the floor-CLAMPED tip (feePricingTip); a deflated RPC tip must not price an
-    // obsolete cheaper tier the resolver rejects (fee burns). Same clamp at BOTH build sites + the
-    // clearsign review warning, through the ONE shared helper, so build and review can never disagree.
-    // W5 (Q-02): feePricingTip returns null when NEITHER the served tip nor the persisted floor is a
-    // usable height. Refuse rather than price: a zero tip does NOT throw inside the vendored fee-height
-    // helper, it prices the CHEAPEST tier, so a norm-to-0 would quote (and, at the sign site below,
-    // build) an underpaid record whose fee LEAVES the wallet while the resolver no-ops it. This is the
-    // same refusal class the vendored helper already throws for a non-integer tip.
-    const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
+    // Priced at pricingTip (feePricingTip), as the sign site below and the review warning are. With no usable tip it
+    // refuses: a height of 0 prices the cheapest tier, and the resolver rejects an underpaid record after the fee left.
+    const tip = await this.pricingTip();
     if (tip == null) throw new RangeError("cannot price this renewal: no usable chain tip (the node returned no valid height). Nothing was signed.");
     const fee = nameRegFee(name, buildFeeHeight(tip));
     return fee > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(fee);
@@ -896,8 +899,8 @@ export class Wallet {
     const me = this.addr();
     const nameRead = this.readNameForAct(name);   // in flight beside the tip read below
     const built = buildNameRenew({ name });
-    // M11 (B5b): same floor-clamped pricing as cairnxNameRenewFee; the ONE shared helper (see there).
-    const tip = feePricingTip(await node.tip(this.rpc), await this.tipFloor());
+    // The same pricing as cairnxNameRenewFee.
+    const tip = await this.pricingTip();
     // W5 (Q-02): the null refusal at the BUILD site is the one that matters. Without it a degenerate tip
     // read prices the cheapest tier and this method signs a treasury output the resolver rejects: the fee
     // burns. See cairnxNameRenewFee above and the helper's own comment for why 0 is not an option.

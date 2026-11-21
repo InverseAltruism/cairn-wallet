@@ -3,6 +3,7 @@
 import { decodeCairnxRecord, type TokenDisplayMeta, isPinnedDeploy, displayDecimals, CAIRNX_DOMAIN, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, isTokenDecimals, csdBase, fmtCsd, fmtBalance, TREASURY_ADDR, V25_HEIGHT, V28_HEIGHT, CLAIM_WINDOW_BLOCKS_V20, FEE_BPS_V16, CONF_TOKEN_FILL, SCORE_CANCEL, finalizeWinnerCheck } from "../core/cairnx.js";
 import { EPOCH_LEN, MAX_DOMAIN_BYTES, MAX_URI_BYTES, PROFILE_MAX_KEYS, offerFillTooLate, previewFill, type OfferState } from "../vendor/cairnx-spv.js";
 import type { FillListing } from "../core/cairnxview.js";
+import { heightOf, lowestChainHeight } from "../core/chainbound.js";
 import type { NameFetchResult } from "../core/namegate.js";
 import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFields, sealFields, sendFields } from "../core/signfields.js";
 import { siwcFieldsFor, ANY_ACCOUNT } from "../core/siwcparams.js";
@@ -107,7 +108,7 @@ export function tokenAmountBothScales(base: unknown, decimals: unknown, ticker: 
 // ATTRIBUTE the number to the offer service, never assert it as a first-person debit ("You will pay").
 // Re-framing only, by decision: a second price source for a display string was DECLINED as
 // disproportionate (Plan 71 section 8, decline 6); the real number is bound at the fund boundary.
-export function tokenQuoteHtml(q: any, tip?: unknown): string {
+export function tokenQuoteHtml(q: any, tip?: unknown, bound?: unknown): string {
   if (!(q && q.ok)) return danger(`Could not compute the token debit (${escapeHtml(String(q?.error || "offer unavailable"))}). The wallet will not sign this fill until the amount can be shown; try again in a moment or reject.`);
   const amt = (base: unknown, served: unknown, tk: unknown, deployId: unknown) => {
     const b = String(base ?? "");
@@ -120,7 +121,7 @@ export function tokenQuoteHtml(q: any, tip?: unknown): string {
     ? ` You receive ${q.giveName ? `<b>${escapeHtml(String(q.giveName))}.csd</b>` : amt(q.giveAmount, q.giveDecimals, q.giveTicker, q.giveDeployId)}.`
     : "";
   const warn = [tickerWarning(q.ticker, q.wantDeployId), q.giveTicker ? tickerWarning(q.giveTicker, q.giveDeployId) : ""].filter(Boolean).join(" ");
-  const exp = offerExpiryLine(q.expiresAt, tip);
+  const exp = offerExpiryLine(q.expiresAt, tip, bound);
   return `Filling this debits ${amt(q.total, q.wantDecimals, q.ticker, q.wantDeployId)} <span class="dim">(${escapeHtml(String(q.amount))} ask + ${escapeHtml(String(q.fee))} fee${q.estimated ? ", estimated" : ""})</span>.${giveBit} Quoted by the offer service; the wallet refuses to sign if the offer's on-chain record differs from what is shown here.${exp ? `<br>${exp}` : ""}${warn ? danger(warn) : ""}`;
 }
 
@@ -486,28 +487,25 @@ export function describe(r: any): string {
         // silent fund-loss-with-no-benefit (the fee leaves the wallet, but the resolver no-ops the underpaid
         // record so the name is NOT registered/renewed). Warn loudly when the treasury fee output is below the
         // current price. The wallet's OWN Renew button always prices correctly (WL-FEE-FREEZE-1); this guards
-        // the third-party-built path. Needs the live tip (threaded from approve.ts); skipped when offline.
+        // the third-party-built path. The tip and floor come from approve.ts; with neither, it prices at the bound.
         // under v2.5 the `name` reveal is PAYMENT-FREE (the fee moves to `nfinalize`), so the fee-bearing record
         // is nrenew, nfinalize, or a PRE-v2.5 `name`. An underpaid nfinalize burns exactly like an underpaid
         // pre-v2.5 registration (the fee leaves, the name is not registered), so it gets the same loud warning.
-        // M11 (B5b): the review-side tip is clamped with the PoW-backed floor via the ONE shared helper
-        // (cairnx.ts feePricingTip), the same clamp the build sites apply, so a deflating RPC cannot
-        // price a cheaper tier here while silencing this very warning. Floor-only (tip read failed but a
-        // floor exists) still arms the warning; both absent keeps today's skip-when-offline behavior.
-        // W5 (Q-02): the outer "is there anything to price with" gate is GONE, because feePricingTip now
-        // owns that question and answers it with null. It also answers null for a served tip that is
-        // finite but not a height (65100.5, 1e16), which previously slipped through to buildFeeHeight and
-        // threw into the bare catch below, silently disarming this very warning.
-        const tipNow = feePricingTip(r.currentTip, r.tipFloor);
+        // Priced at cairnx.ts feePricingTip over the served tip, the stored floor and chainbound.ts lowestChainHeight, as
+        // the build sites price, so a tip served too low cannot price a cheaper tier and silence this warning. Where
+        // feePricingTip answers null (no usable tip or floor; the build sites refuse there) it prices at the bound: the
+        // warning signs nothing, and the chain is at least that high.
+        const lowest = lowestChainHeight(Number(r.tipFloor) || 0);
+        const tipNow = feePricingTip(r.currentTip, r.tipFloor, lowest) ?? lowest;
         const rec = decodeCairnxRecord(q.uri, q.payloadHash);
-        const feeBearing = !!rec && typeof rec.name === "string" && tipNow != null &&
+        const feeBearing = !!rec && typeof rec.name === "string" &&
           (rec.t === "nrenew" || rec.t === "nfinalize" || (rec.t === "name" && tipNow < V25_HEIGHT));
         let feeWarn = "";
         if (feeBearing && rec) {
           try {
             const paid = outs.filter((o: any) => String(o.to).toLowerCase() === String(TREASURY_ADDR).toLowerCase())
               .reduce((a: number, o: any) => a + baseVal(o.value), 0);
-            const need = Number(nameRegFee(rec.name as string, buildFeeHeight(tipNow!)));
+            const need = Number(nameRegFee(rec.name as string, buildFeeHeight(tipNow)));
             const noun = rec.t === "nrenew" ? "renewal" : "registration";
             const verb = rec.t === "nrenew" ? "renewed" : "registered";
             if (need > 0 && paid < need) feeWarn = danger(`The ${noun} fee here (${fmtCsd(paid)}) is below the current price (${fmtCsd(need)}). If you sign this, the fee <b>leaves</b> your wallet but the name is <b>not</b> ${verb}: an underpaid record is rejected on-chain. Use the wallet's own button (it prices this correctly).`);
@@ -552,11 +550,10 @@ export function describe(r: any): string {
     const score = af.score, conf = af.confidence;
     // CairnX v1.7: score 50 / confidence 0 is a claim-to-fill reservation on an open CSD offer, a payment-free attest
     // that reserves the offer for the legacy claim window (CLAIM_WINDOW_BLOCKS_V20). From V28 the chain rejects every
-    // new legacy SCORE_CLAIM, so when the PoW-backed floor proves the gate has passed, warn that this is an on-chain
-    // no-op that still costs the network fee (warn, never block; the floor is a local read threaded by approve.ts,
-    // and when it is absent or below the gate the warning stays silent).
+    // new legacy SCORE_CLAIM, so when chainbound.ts lowestChainHeight is past the gate (the release's newest anchor
+    // is past V28), warn that this is an on-chain no-op that still costs the network fee (warn, never block).
     if (score === 50 && conf === 0) {
-      const v28warn = (Number(r.tipFloor) || 0) >= V28_HEIGHT
+      const v28warn = lowestChainHeight(Number(r.tipFloor) || 0) >= V28_HEIGHT
         ? danger(`The chain has passed the v2.8 upgrade (block ${V28_HEIGHT}): this legacy reservation type is <b>rejected</b> on-chain, so approving would be a no-op that still costs the network fee. Use the site's current buy flow instead.`)
         : "";
       return title("Reserve an open offer") + cost + v28warn + lede(`v1.7 claim-to-fill. This <b>moves no money</b>: it reserves the offer so only you can fill it for ~${CLAIM_WINDOW_BLOCKS_V20} blocks. You pay only when you complete the purchase.`)
@@ -624,19 +621,27 @@ export function describe(r: any): string {
   return title(escapeHtml(r.method)) + cost;
 }
 
-// The listed offer's expiry on a fill card, against the tip (the wallet's floor-clamped tip when approve.ts has it).
+// The listed offer's expiry on a fill card. `tip` is the served tip, `bound` chainbound.ts lowestChainHeight (approve.ts
+// cardTip). The card counts blocks only from a served tip at or above the bound; without one it does not know the tip,
+// so it shows the block alone, and names a refusal only where the bound already proves it (an expiry at or below the
+// bound, or within FILL_TIP_MARGIN of it). One line in the compact window at six-digit heights
+// (test/approve-layout-chrome.test.mjs), so the distance reads "in N blocks".
 // Served by the offer service, so display only; the preflight decides on the proven record with the same
-// offerFillTooLate, so the card names a refusal exactly when the wallet will make it.
-export function offerExpiryLine(expiresAt: unknown, tip?: unknown): string {
+// offerFillTooLate at a height never below the bound, so every refusal the card names, the wallet makes.
+export function offerExpiryLine(expiresAt: unknown, tip?: unknown, bound?: unknown): string {
   const h = Number(expiresAt);
   if (!Number.isSafeInteger(h) || h < 1) return "";
-  const at = Number(tip);
+  const at = heightOf(Number(tip)), lo = heightOf(Number(bound));
   const block = h.toLocaleString("en-US");
-  if (!Number.isSafeInteger(at) || at <= 0) return `Offer expires at block ${block}.`;
+  if (at === 0 || at < lo) {
+    if (lo > 0 && h <= lo) return `Offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>.`;
+    if (lo > 0 && offerFillTooLate(h, lo)) return `Offer expires at block ${block} <span class="err">(too close to be mined in time: the wallet will refuse this fill)</span>.`;
+    return `Offer expires at block ${block}.`;
+  }
   const dist = h - at;   // blocks from the tip to the expiry block; the refusal itself is offerFillTooLate's
   if (dist <= 0) return `Offer expired at block ${block} <span class="err">(the wallet will refuse this fill)</span>.`;
   if (dist === 1) return `Offer expires at block ${block}, the next block <span class="err">(the wallet will refuse this fill)</span>.`;
-  const where = `Offer expires at block ${block}, ${dist} blocks after the current tip`;
+  const where = `Offer expires at block ${block}, in ${dist} blocks`;
   if (offerFillTooLate(h, at)) return `${where} <span class="err">(too close to be mined in time: the wallet will refuse this fill)</span>.`;
   return `${where} (${humanBlocks(dist)}).`;
 }
@@ -675,14 +680,14 @@ function noPartialEstimate(view: FillView): string {
   return danger(`Could not calculate what this payment receives from the offer service's listing, so it is not shown here. Check the listing on the site before approving.`) + whole;
 }
 
-export function fillViewHtml(view: FillView | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown): string {
+export function fillViewHtml(view: FillView | null | undefined, proposalId: string, tip?: unknown, outputs?: unknown, bound?: unknown): string {
   if (!view || !view.ok) return danger(`Could not load this listing from the offer service, so what you receive is not shown here. Check the listing on the site before approving.`);
   const reserved = !!view.offerId && view.offerId.toLowerCase() !== String(proposalId).toLowerCase();
   const gets = view.giveName !== undefined ? `<b>${escapeHtml(view.giveName)}.csd</b>`
     : view.giveTicker !== undefined && view.giveAmount !== undefined
       ? `<b>${giveFigure(view, view.giveAmount)}</b>${giveMark(view)}`
       : "";
-  const exp = offerExpiryLine(view.expiresAt, tip);
+  const exp = offerExpiryLine(view.expiresAt, tip, bound);
   const partial = partialReceive(view, outputs);
   const tickerWarn = view.giveTicker !== undefined ? tickerWarning(view.giveTicker, view.giveDeployId) : "";
   return (partial ?? (gets ? rows([["You receive", `${gets} <span class="dim">(as listed by the offer service)</span>`]]) : danger(`The offer service did not say what this listing gives. Check the listing on the site before approving.`)))
