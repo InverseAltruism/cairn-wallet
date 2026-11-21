@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.4
 
 - The approval window says when a site is new to the wallet: when the user has approved no request from the origin and
   has not connected it, the ask line under the origin reads "New site, which asks ..." (tooltip: "You have not approved
@@ -279,6 +279,15 @@
   in every case but a `payload_hash` written without `0x`, which the record parse refused). Apart from that check the bundle differs only in a local name
   esbuild renamed inside @noble/curves. The test rigs now serve each transaction with its `txid` field
   (`test/_spvrig.ts` `nodeTx`), and the filler transaction seven files copied is one export there.
+- Docs: `docs/PROVIDER.md` states the `window.cairn` contract for the developers of other sites: who gets the provider
+  and how to find it, every method with its parameters, defaults and result, the envelope, the limits, the events, the
+  consent model, what the approval window shows, what is not offered, what is stable, and the file that holds each
+  number it states. README links it, and SECURITY.md's list of actions that always open the approval window gains
+  `signinWithCsd` and `fillOffer`. Tests through the real background and approval window pin what it describes
+  (test/sign-display-parity.test.mjs, test/provider-discovery.test.mjs). AGENTS.md keeps the rules; the per-module
+  detail and the runtime footprint moved to `docs/ARCHITECTURE.md`, the runner, CI and release jobs to
+  `docs/TESTING.md`.
+- The SPV anchor table's newest entry is 143,359 (28 entries; it was 139,263).
 
 ## 0.3.3
 
