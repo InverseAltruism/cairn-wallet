@@ -13,7 +13,7 @@ export function extensionCall(chrome: any, method: string, ...args: any[]): Prom
   }));
 }
 // Only SUBMIT_MAYBE_INFLIGHT and a broken channel may say "may already be in flight".
-import { BACKUP_NOT_ANSWERED, MAIN_REFUSED_REASON } from "./sentences.js";
+import { sentenceKeyOf, sentenceOf } from "./sentences.js";
 export type Outcome = { text: string; cls: "err" | "info"; maybe: boolean };
 const clause = (s: unknown): string => String(s).replace(/[.\s]+$/, "");
 function inFlightCopy(prefix: string, what: string, txid?: string): Outcome {
@@ -22,7 +22,7 @@ function inFlightCopy(prefix: string, what: string, txid?: string): Outcome {
 }
 export function refusedCopy(r: any, what: string): Outcome {
   // the main server refused and the backup server had not answered: what is known first, no server text
-  if (r?.code === "SUBMIT_MAYBE_INFLIGHT" && typeof r?.reason === "string") return { text: `${MAIN_REFUSED_REASON[r.reason] ?? MAIN_REFUSED_REASON.UNKNOWN} ${BACKUP_NOT_ANSWERED}`, cls: "err", maybe: true };
+  if (r?.code === "SUBMIT_MAYBE_INFLIGHT" && typeof r?.reason === "string") return { text: sentenceOf(sentenceKeyOf(r) ?? "R2").text, cls: "err", maybe: true };
   if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return inFlightCopy(r?.error ? clause(r.error) + ". " : "", what, r?.txid);
   if (r?.code === "SUBMIT_DUPLICATE") return { text: String(r?.error ?? "This transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again."), cls: "info", maybe: true };
   // A node or the proxy (its own 400, 413 or 429, before forwarding) refused this request, and the wallet recorded no row

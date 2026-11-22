@@ -20,7 +20,7 @@ import { memoryStore } from "../src/core/storage.js";
 import { DEFAULT_RPC, BACKUP_RPC } from "../src/core/endpoints.js";
 import { submitEach, MAIN_REFUSED_WAIT_MS } from "../src/core/hosts.js";
 import { refusedCopy } from "../src/popup/popup-outcome.ts";
-import { BACKUP_NOT_ANSWERED, MAIN_REFUSED_REASON } from "../src/popup/sentences.ts";
+import { SENTENCES } from "../src/popup/sentences.ts";
 import { mkCoin, txReply } from "./_coin.js";
 import { checker } from "./helpers/check.mjs";
 
@@ -124,7 +124,7 @@ check(`W4: main refuses (fee), the second host hangs: unclear at the cap (${w4.m
   w4.r.code === "SUBMIT_MAYBE_INFLIGHT" && w4.ms >= MAIN_REFUSED_WAIT_MS - 50 && w4.ms < MAIN_REFUSED_WAIT_MS + 1_000 && w4.r.reason === "FEE" && w4.hist.length === 1 && w4.hist[0].maybe === true);
 const w4t = refusedCopy(w4.r, "send");
 check(`W4: the line leads with what is known and says the backup has not answered ("${w4t.text}")`,
-  w4t.text === `${MAIN_REFUSED_REASON.FEE} ${BACKUP_NOT_ANSWERED}` && w4t.maybe === true && !/fail/i.test(w4t.text));
+  w4t.text === SENTENCES.MR_FEE.text && w4t.maybe === true && !/fail/i.test(w4t.text));
 for (const b of ["E502", "N", "U"]) {
   const x = await sendWith({ main: "R", backup: b });
   check(`W5: main refuses, the second host ${b === "N" ? "throws" : "answers 502"}: unclear at once (${x.ms} ms), reason FEE, a maybe row`, x.r.code === "SUBMIT_MAYBE_INFLIGHT" && x.ms < 1_000 && x.r.reason === "FEE" && x.hist.length === 1 && x.hist[0].maybe === true);
