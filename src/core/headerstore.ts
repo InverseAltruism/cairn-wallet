@@ -224,6 +224,8 @@ export interface ChunkAcquirer {
   acquire(height: number): Promise<{ spec: ChunkSpec; records: Uint8Array }>;
   /** Settles when the detached store writes issued so far have finished. */
   writes(): Promise<void>;
+  /** Caches records the caller verified against `spec` (the restore's seed chunk, a migrated anchor chunk). */
+  cache(spec: ChunkSpec, records: Uint8Array): void;
 }
 
 export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
@@ -247,14 +249,26 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
       return null;
     }
   };
+  const specOf = (height: number): ChunkSpec => {
+    const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height), anchors) ?? deps.sealedSpec?.(chunkOf(height)) ?? null : null;
+    if (!spec) throw new Error(`height ${height} is outside the release-anchored range ${SPV_FLOOR.height} to ${FIRST_CHUNK * SPV_CHUNK + anchors.length * SPV_CHUNK - 1}`);
+    return spec;
+  };
+  // An LRU entry answers only the spec it was verified against: a sealed chunk's spec changes when an adoption
+  // replaces the remembered tops (test/headerstore-adoption.test.mjs).
+  const verifiedAs = new Map<number, string>();
+  const tagOf = (spec: ChunkSpec) => `${spec.firstHash ?? spec.prevHash}:${spec.lastHash}`;
+  const hitFor = (spec: ChunkSpec) => { const r = lru.get(spec.k); return r && verifiedAs.get(spec.k) === tagOf(spec) ? r : undefined; };
+  const cache = (spec: ChunkSpec, records: Uint8Array) => { lru.set(spec.k, records); verifiedAs.set(spec.k, tagOf(spec)); };
   return {
     async acquire(height) {
-      const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height), anchors) ?? deps.sealedSpec?.(chunkOf(height)) ?? null : null;
-      if (!spec) throw new Error(`height ${height} is outside the release-anchored range ${SPV_FLOOR.height} to ${FIRST_CHUNK * SPV_CHUNK + anchors.length * SPV_CHUNK - 1}`);
-      const hit = lru.get(spec.k);
-      if (hit) return { spec, records: hit };
+      const first = specOf(height);
+      const hit = hitFor(first);
+      if (hit) return { spec: first, records: hit };
       return deps.serialize(async () => {
-        const again = lru.get(spec.k);
+        // The spec in force when the read runs, not when it was queued: an adoption may have run in between.
+        const spec = specOf(height);
+        const again = hitFor(spec);
         if (again) return { spec, records: again };
         let records = await tryStored(spec);
         if (!records) {
@@ -264,10 +278,11 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
           records = fetched;
           detachWrite({ put: [{ k: spec.k, records }] });
         }
-        lru.set(spec.k, records);
+        cache(spec, records);
         return { spec, records };
       });
     },
     writes: () => writeTail,
+    cache,
   };
 }
