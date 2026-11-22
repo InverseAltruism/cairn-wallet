@@ -211,6 +211,7 @@ assert.match(String(pageOk.result?.txid), /^0x[0-9a-f]{64}$/, "(E2) paired: the 
 assert.equal("inputs" in pageOk.result, false, "(E1) the page result carries no spent outpoints");
 assert.equal("spentTxids" in pageOk.result, false, "(E1) ...and no spent source txids");
 assert.equal("hosts" in pageOk.result, false, "(E1) ...and no log of each host's submit answer (a server's text)");
+assert.equal("mainHolds" in pageOk.result, false, "(E1) ...and not whether the main server holds it");
 globalThis.fetch = baseFetch;
 // ── (D) a popup send while locked answers WALLET_LOCKED, not INTERNAL (Plan 85 7.3a, E1.lock) ────────
 // RED-FIRST: use "INTERNAL" again in the popup listener's catch in background.ts and (D1) fails.

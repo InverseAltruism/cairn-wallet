@@ -11,18 +11,18 @@
   test/hosts-spend-pin.test.mjs). A node on this computer set as the RPC has no second server.
 - Every send goes to both of Cairn's servers at once, the same signed bytes, so one signing and one txid. It is sent
   when either accepts it, at the first acceptance: with both healthy the time to "sent" is the main server's answer.
-  It is refused only when both refuse; a refusal now waits for the slower server, up to the 20 s submit timeout, and
-  a server that does not answer makes it "may already be in flight" (`SUBMIT_MAYBE_INFLIGHT`) where one server's
-  refusal was final in 0.3.4 (SECURITY.md says why; test/submit-two-hosts.test.mjs).
+  It is refused only when both refuse; after the main server's refusal the wallet waits for the second server at most
+  4 s (SECURITY.md says why; test/submit-two-hosts.test.mjs).
 - A send that only the second server took when it was reported sent gets a "sent, not yet included" history row,
   reconciled like an unclear one, so unmined after 10 blocks it says to check the explorer before sending again; the
   main server's later "accepted" or "already present" turns it into a plain sent row. The result line is unchanged
   (test/submit-main-late.test.mjs).
 - When the second server answers a read the main server has not answered within 1.5 s, later reads ask the second
   server first for 60 s, as after a main failure, so with the main server hanging only the first read waits 1.5 s.
-- Behaviour change: when the main server refuses a send and the second server does not answer (unreachable or past
-  the 20 s timeout), the result is "may already be in flight" with a history row, where 0.3.4 showed the main
-  server's refusal at once.
+- Behaviour change: when the main server refuses a send and the second server has not answered within 4 s, or
+  answers unclear, the result is "may already be in flight" with a history row and a line that leads with the main
+  server's reason, where 0.3.4 showed the main server's refusal at once. The second server's refusal after those 4 s
+  removes the row the send made (no server took it).
 - A send's history row loses its "sent, not yet included" mark only when the main server holds the transaction (its
   own "accepted" or "already present"); the second server's "already present" alone leaves it. A coin one server
   could not prove is checked again when the other server lists it (the session skip caches are per server). A

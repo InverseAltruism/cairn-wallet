@@ -2,10 +2,12 @@
 // BACKUP_RPC, a constant of the release; any other RPC (a node on this computer) is the only host. The second host is
 // chosen here only, never from a setting or a page: rpcAllowed refuses it as an RPC (endpoints.ts).
 import { DEFAULT_RPC, BACKUP_RPC } from "./endpoints.js";
-import { decideSubmit, type HostVerdict, type SubmitOutcome } from "./submitverdict.js";
+import { decideSubmit, mainRefusedOr, type HostVerdict, type SubmitOutcome } from "./submitverdict.js";
 
 /** A read goes to the second host when the first has not answered this long after it was asked. */
 export const HEDGE_MS = 1_500;
+/** After the main host's definite refusal, the other host is waited for this long, then the result is unclear. */
+export const MAIN_REFUSED_WAIT_MS = 4_000;
 /** After the main host failed a read, or the second host answered one first, reads ask the second host first for this
  *  long. */
 export const BACKUP_FIRST_MS = 60_000;
@@ -49,7 +51,7 @@ export function firstAnswer<T>(rpc: string, read: (host: string) => Promise<T>):
         errors.set(host, e);
         if (settled) return;
         if (started < order.length) return startNext();
-        if (errors.size === order.length) { settled = true; reject(errors.get(order[0]!)); }
+        if (errors.size === order.length) { settled = true; reject(errors.get(DEFAULT_RPC)); }
       });
     };
     startNext();
@@ -62,22 +64,33 @@ export type HostAnswer = { host: string; verdict: HostVerdict };
  * One signed transaction sent to every host of `rpc` at once, and its outcome (submitverdict.ts decideSubmit) as soon
  * as it is decided: at the first acceptance, else once every host has answered (each POST ends at its own timeout).
  * `answers` holds the verdicts known at that moment, in host order. A host that answers later is passed to `onLate`
- * only: it never changes the outcome. A `send` that rejects counts as that host's unclear answer.
+ * only: it never changes the outcome. A `send` that rejects counts as that host's unclear answer. Once the main host
+ * has refused, the others get `capMs`: then the outcome is unclear, carrying the main host's refusal, and `capped`.
  */
-export function submitEach(rpc: string, send: (host: string) => Promise<HostVerdict>, onLate?: (a: HostAnswer) => void): Promise<{ outcome: SubmitOutcome; answers: HostAnswer[] }> {
+export function submitEach(rpc: string, send: (host: string) => Promise<HostVerdict>, onLate?: (a: HostAnswer, capped: boolean) => void, capMs = MAIN_REFUSED_WAIT_MS): Promise<{ outcome: SubmitOutcome; answers: HostAnswer[]; capped: boolean }> {
   const hosts = hostsFor(rpc);
   const verdicts: (HostVerdict | undefined)[] = hosts.map(() => undefined);
   return new Promise((resolve) => {
-    let decided = false;
+    let decided = false, capped = false;
+    let cap: ReturnType<typeof setTimeout> | undefined;
+    const answered = () => hosts.flatMap((h, k) => (verdicts[k] ? [{ host: h, verdict: verdicts[k]! }] : []));
     hosts.forEach((host, i) => {
       // a send that rejects is that host's unclear answer, so no failure can leave its slot empty and the send waiting
       void send(host).catch((): HostVerdict => ({ kind: "unclear", text: "/tx/submit -> unreadable response" })).then((v) => {
-        if (decided) { onLate?.({ host, verdict: v }); return; }
+        if (decided) { onLate?.({ host, verdict: v }, capped); return; }
         verdicts[i] = v;
         const outcome = decideSubmit(verdicts);
-        if (!outcome) return;
+        if (!outcome) {
+          if (i === 0 && v.kind === "refused") cap = setTimeout(() => {
+            if (decided) return;
+            decided = capped = true;
+            resolve({ outcome: mainRefusedOr(v, { kind: "unclear", text: v.text }), answers: answered(), capped: true });
+          }, capMs);
+          return;
+        }
         decided = true;
-        resolve({ outcome, answers: hosts.flatMap((h, k) => (verdicts[k] ? [{ host: h, verdict: verdicts[k]! }] : [])) });
+        if (cap !== undefined) clearTimeout(cap);
+        resolve({ outcome, answers: answered(), capped: false });
       });
     });
   });

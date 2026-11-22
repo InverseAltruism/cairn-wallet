@@ -20,7 +20,7 @@ export type HostVerdict =
 export type SubmitOutcome =
   | { kind: "sent" }
   | { kind: "duplicate" }
-  | { kind: "unclear"; text: string }
+  | { kind: "unclear"; text: string; mainRefused?: RefusalReason }
   | { kind: "refused"; reason: RefusalReason; text: string };
 
 // The node's duplicate text, "already present in mempool" at the fork and "already present or mempool conflict"
@@ -94,8 +94,12 @@ export function decideSubmit(vs: readonly (HostVerdict | undefined)[]): SubmitOu
   if (vs.some((v) => v === undefined)) return null;
   const all = vs as readonly HostVerdict[];
   const unclear = all.find((v) => v.kind === "unclear");
-  if (unclear) return { kind: "unclear", text: unclear.text };
+  if (unclear) return mainRefusedOr(all[0], { kind: "unclear", text: unclear.text });
   if (all.some((v) => v.kind === "duplicate")) return { kind: "duplicate" };
   const r = all.find((v) => v.kind === "refused") as Extract<HostVerdict, { kind: "refused" }>;
   return { kind: "refused", reason: r.reason, text: r.text };
+}
+/** Unclear, carrying the main host's refusal when it refused: what is known leads the text (popup/sentences.ts). */
+export function mainRefusedOr(main: HostVerdict | undefined, o: Extract<SubmitOutcome, { kind: "unclear" }>): SubmitOutcome {
+  return main?.kind === "refused" ? { ...o, text: main.text, mainRefused: main.reason } : o;
 }

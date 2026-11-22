@@ -87,9 +87,9 @@ export class TxHistory {
     // the mark only when it holds; any other answer, or none (a worker that stopped), leaves it. A result without the
     // field comes from one host, which is the main host.
     if (r && r.ok && r.txid && r.mainHolds === false) {
-      const txid = r.txid, later = node.mainHostHeldLater(txid);
+      const txid = r.txid, later = node.laterFact(txid);
       await this.recordTx(k, { txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
-      if (later) void later.then((held) => (held ? this.clearMaybe(k, txid, false) : undefined));
+      if (later) void later.then((f) => (f === "mainHolds" ? this.clearMaybe(k, txid, false) : undefined));
     }
     else if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
     // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool; a timeout / gateway
@@ -103,7 +103,13 @@ export class TxHistory {
     // clear-signed once; entries only originate from the user's own reviewed sends, no poisoning
     // vector.
     else if (r && !r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
-      await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
+      const txid = r.txid, later = node.laterFact(txid);
+      const fresh = !!later && !(await this.hasRow(k, txid));
+      await this.recordTx(k, { txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
+      // Unclear only because the other host had not answered within the cap on the main host's refusal: its later
+      // refusal means no host took it, so the row this send created goes, as a refused send keeps none. A row an earlier
+      // attempt of the same transaction created stays: that attempt may have landed (a resend of mined bytes is refused).
+      if (later) void later.then((f) => (f === "noneTook" && fresh ? this.dropMaybe(k, txid) : undefined));
     }
     // A duplicate answer RESOLVES an earlier ambiguity; a tx spending these coins IS pending, and
     // a deterministic retry of an ingested submit is byte-identical, so this is the common way a
@@ -140,6 +146,23 @@ export class TxHistory {
         const e = h.find((x) => x?.txid === txid);
         if (e && mark(e)) await this.store.set(k, h);
       } catch { /* flag hygiene only: a stale maybe marker self-heals via the pendingMerge reconcile and the spend latch */ }
+    });
+  }
+  private hasRow(k: string, txid: string): Promise<boolean> {
+    return this.inHistChain(async () => this.pendingHist.some((p) => p.k === k && p.entry.txid === txid)
+      || ((await this.store.get(k)) || []).some((x: any) => x?.txid === txid));
+  }
+  // Removes the row of `txid` while it is still maybe, stored (only while unlocked) and parked; a row the reconcile or
+  // the main host settled stays.
+  private dropMaybe(k: string, txid: string): Promise<void> {
+    this.pendingHist = this.pendingHist.filter((p) => !(p.k === k && p.entry.txid === txid && p.entry.maybe));
+    return this.inHistChain(async () => {
+      if (!this.w.unlocked()) return;
+      try {
+        const h: any[] = (await this.store.get(k)) || [];
+        const kept = h.filter((x) => !(x?.txid === txid && x.maybe));
+        if (kept.length !== h.length) await this.store.set(k, kept);
+      } catch { /* a failed write leaves the row maybe, the cautious side; the reconcile still settles it */ }
     });
   }
   private latchSpentMerges(k: string, spent: string[]): Promise<void> {

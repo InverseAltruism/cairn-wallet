@@ -105,14 +105,19 @@ history reconcile pass stays on the host that answered its tip.
 
 Submits (`hosts.ts` `submitEach`, `submitverdict.ts` `decideSubmit`): every signed transaction goes to both hosts at
 once, the same bytes from one signing, so the txid is one. The result comes at the first host that accepts it, and
-nothing waits on the other host. A later answer from the second host is logged and changes neither the result nor the
-history row; a later answer from the main host can only clear a row's maybe mark (below), never the result.
+nothing waits on the other host. A later answer never changes the result: from the main host it can only clear a row's
+maybe mark (below), and from the second host only its refusal after the cap described next removes a maybe row.
 Any other answer waits for both hosts: a host that may hold the transaction (a timeout, a 5xx, an unreadable answer)
 makes the result `SUBMIT_MAYBE_INFLIGHT`, then an "already present" answer `SUBMIT_DUPLICATE`, and only a refusal from
-both is `SUBMIT_REJECTED` (test/submit-two-hosts.test.mjs has every pair). A refusal therefore waits for the slower
-host, up to the 20 s submit timeout, where one host refused at once; the send keeps its "Sending..." state meanwhile.
-The reason: a refusal reported while the other host may still accept and relay the payment invites the user to pay
-again, with other coins once the first are seen as spent.
+both is `SUBMIT_REJECTED` (test/submit-two-hosts.test.mjs has every pair). After the main host's refusal the wallet
+waits for the second host at most 4 s (`MAIN_REFUSED_WAIT_MS`); the send keeps its "Sending..." state meanwhile. When
+the second host has not answered by then, or answers unclear, the result is `SUBMIT_MAYBE_INFLIGHT` with the main
+host's `reason` and a maybe row, and the line says the main server refused and the backup server has not answered.
+The reason for waiting at all: a refusal reported while the other host may still accept and relay the payment invites
+the user to pay again, with other coins once the first are seen as spent. The second host's refusal after the cap means
+no host took it, and the row that send made is removed, as a refused send keeps none; a row an earlier attempt of the
+same transaction made stays, since that attempt may have landed. Its acceptance or "already present" after the cap
+leaves the row maybe.
 
 A send reported sent before the main host had taken it (only the second host had) is recorded as an unclear history
 row: the wallet reconciles it, and unmined after 10 blocks it says to check the explorer before sending again. The

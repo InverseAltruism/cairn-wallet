@@ -13,12 +13,14 @@
 // host's answer.
 // The late answer of the slower host changes neither the result nor the history row (L1, L2).
 //
-// Run: node --import tsx test/submit-two-hosts.test.mjs   (offline; about 25 s, one case waits for the 20 s POST timeout)
+// Run: node --import tsx test/submit-two-hosts.test.mjs   (offline; about 40 s, the cap and late cases wait in real time)
 // routes the second host itself
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { DEFAULT_RPC, BACKUP_RPC } from "../src/core/endpoints.js";
-import { submitEach } from "../src/core/hosts.js";
+import { submitEach, MAIN_REFUSED_WAIT_MS } from "../src/core/hosts.js";
+import { refusedCopy } from "../src/popup/popup-outcome.ts";
+import { BACKUP_NOT_ANSWERED, MAIN_REFUSED_REASON } from "../src/popup/sentences.ts";
 import { mkCoin, txReply } from "./_coin.js";
 import { checker } from "./helpers/check.mjs";
 
@@ -115,13 +117,51 @@ const w3 = await sendWith({ main: "R", backup: { a: "A", after: 500 } });
 check(`W3: main refuses at once, the second host accepts at 500 ms: sent (${w3.r.ok ? "ok" : w3.r.code}) after ${w3.ms} ms, not refused`, w3.r.ok === true && w3.ms >= 450 && w3.hist.length === 1);
 const w3b = await sendWith({ main: "R", backup: { a: "R", after: 500 } });
 check(`W3: main refuses at once, the second host refuses at 500 ms: refused after ${w3b.ms} ms, not at the first answer`, w3b.r.code === "SUBMIT_REJECTED" && w3b.ms >= 450);
+// ── the cap on the main host's refusal (hosts.ts MAIN_REFUSED_WAIT_MS) ──
+// RED-FIRST: before the cap the wait ran to the 20 s POST timeout (W4) and the result did not carry the main host's reason.
 const w4 = await sendWith({ main: "R", backup: "hang" });
-check(`W4: main refuses, the second host hangs: unclear at the 20 s POST timeout (${w4.ms} ms, ${w4.r.code}), with a maybe row`,
-  w4.r.code === "SUBMIT_MAYBE_INFLIGHT" && w4.ms >= 19_000 && w4.hist.length === 1 && w4.hist[0].maybe === true);
+check(`W4: main refuses (fee), the second host hangs: unclear at the cap (${w4.ms} ms, cap ${MAIN_REFUSED_WAIT_MS}), reason FEE, a maybe row`,
+  w4.r.code === "SUBMIT_MAYBE_INFLIGHT" && w4.ms >= MAIN_REFUSED_WAIT_MS - 50 && w4.ms < MAIN_REFUSED_WAIT_MS + 1_000 && w4.r.reason === "FEE" && w4.hist.length === 1 && w4.hist[0].maybe === true);
+const w4t = refusedCopy(w4.r, "send");
+check(`W4: the line leads with what is known and says the backup has not answered ("${w4t.text}")`,
+  w4t.text === `${MAIN_REFUSED_REASON.FEE} ${BACKUP_NOT_ANSWERED}` && w4t.maybe === true && !/fail/i.test(w4t.text));
+for (const b of ["E502", "N", "U"]) {
+  const x = await sendWith({ main: "R", backup: b });
+  check(`W5: main refuses, the second host ${b === "N" ? "throws" : "answers 502"}: unclear at once (${x.ms} ms), reason FEE, a maybe row`, x.r.code === "SUBMIT_MAYBE_INFLIGHT" && x.ms < 1_000 && x.r.reason === "FEE" && x.hist.length === 1 && x.hist[0].maybe === true);
+}
+const w6 = await sendWith({ main: "R", backup: { a: "R", after: MAIN_REFUSED_WAIT_MS - 1_500 } });
+check(`W6: the second host refuses inside the cap: refused (${w6.r.code}) after ${w6.ms} ms, no row`, w6.r.code === "SUBMIT_REJECTED" && w6.hist.length === 0);
+const w7 = await sendWith({ main: "R", backup: { a: "A", after: MAIN_REFUSED_WAIT_MS - 1_500 } });
+check(`W7: the second host accepts inside the cap: sent (${w7.r.ok ? "ok" : w7.r.code}), a maybe row (the main host refused)`, w7.r.ok === true && w7.hist.length === 1 && w7.hist[0].maybe === true);
+// the second host's answer after the cap settles the row: a refusal removes the row this send made (no host took it)
+const late = async (a) => { const x = await sendWith({ main: "R", backup: { a, after: MAIN_REFUSED_WAIT_MS + 400 } }); const at = x.hist.length; await sleep(900); return { x, at, after: await x.w.history() }; };
+const lr = await late("R");
+check(`L3: the second host refuses after the cap: the result stays unclear, the row it made goes (${lr.at} then ${lr.after.length})`, lr.x.r.code === "SUBMIT_MAYBE_INFLIGHT" && lr.at === 1 && lr.after.length === 0);
+const la = await late("A");
+check("L3: the second host accepts after the cap: the row stays maybe (only the main host holding it makes it plain)", la.after.length === 1 && la.after[0].maybe === true);
+const ld = await late("D");
+check("L3: the second host says already present after the cap: the row stays maybe", ld.after.length === 1 && ld.after[0].maybe === true);
+const lu = await late("U");
+check("L3: the second host is unclear after the cap: the row stays maybe", lu.after.length === 1 && lu.after[0].maybe === true);
+// a row an earlier attempt made stays: that attempt may have landed
+plan = { main: "U", backup: "U" };
+const wE = new Wallet(memoryStore()); await wE.create("super-secret-pw");
+const e1r = await wE.send(RCPT, 1e8, 1e6);
+plan = { main: "R", backup: { a: "R", after: MAIN_REFUSED_WAIT_MS + 400 } };
+await wE.send(RCPT, 1e8, 1e6);
+await sleep(900);
+const eh = await wE.history();
+check(`L3: paired: a row an earlier unclear attempt made survives the later refusal (${eh.length}, ${eh[0]?.maybe})`, e1r.code === "SUBMIT_MAYBE_INFLIGHT" && eh.length === 1 && eh[0].maybe === true);
 
 // ── the order the reviewer found missing: the second host refuses first, the main host accepts later ──
 const o1 = await sendWith({ main: { a: "A", after: 300 }, backup: "R" });
 check(`O1: the second host refuses at once, the main host accepts at 300 ms: sent after ${o1.ms} ms, one plain row`, o1.r.ok === true && o1.ms >= 250 && o1.hist.length === 1 && !o1.hist[0].maybe);
+
+// ── the second host answers first, the main host accepts later: sent, a plain row ──
+for (const first of ["D", "C", "U"]) {
+  const o = await sendWith({ main: { a: "A", after: 300 }, backup: first });
+  check(`O2: the second host answers ${first} at once, the main host accepts at 300 ms: sent after ${o.ms} ms, one plain row`, o.r.ok === true && o.ms >= 250 && o.hist.length === 1 && !o.hist[0].maybe);
+}
 
 // ── a hostile or unreadable answer ends the send (RED-FIRST: before the fix the second host's {"error":{"toString":1}}
 // left the send waiting with no row) ──

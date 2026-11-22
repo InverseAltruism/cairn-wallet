@@ -190,11 +190,13 @@ send)` sends to every host at once and resolves with the outcome as soon as `dec
 4. the ghost re-select loop, then the proportional fee cap max(1 CSD, 10% of verified inputs), change to self only,
    and `signAndSubmit`: one signing, the bytes to every host of the RPC at once (`hosts.ts` `submitEach`), each answer
    read by `submitverdict.ts` `classifyAnswer` (accepted, duplicate, refused with a `reason`, unclear) and the outcome
-   by `decideSubmit`: sent at the first acceptance, else once every host answered, unclear before duplicate before
+   by `decideSubmit`: sent at the first acceptance, else once every host answered (after the main host's refusal the
+   others get `MAIN_REFUSED_WAIT_MS`, 4 s, then the outcome is unclear carrying its reason), unclear before duplicate before
    refused (`SUBMIT_MAYBE_INFLIGHT`, `SUBMIT_DUPLICATE`, `SUBMIT_REJECTED`). The result's `hosts` logs each answer
    and is stripped before a page receives it. `mainHolds` (stripped too) says whether the main host answered accepted
    or already present: `history.ts` records a sent row maybe while it does not, clears a mark only on it (a duplicate
-   result included), and on the main host's later answer (`mainHostHeldLater`). `classifyAnswer` is total: text is
+   result included), and on a later answer kept as one fact (`laterFact`): the main host's hold clears the mark, the
+   other host's refusal after the cap removes the row that send made. `classifyAnswer` is total: text is
    read only from string fields, and anything it cannot read is unclear; a host's rejected send counts as unclear in
    `submitEach`. A 200 `ok:false` whose text is neither the duplicate text nor the panic text is refused with reason
    `UNKNOWN`, so a node that rewords one of those reads as a refusal: reading unknown text as unclear would leave a

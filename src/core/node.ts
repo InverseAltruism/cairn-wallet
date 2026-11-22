@@ -532,7 +532,7 @@ const DUPLICATE_TEXT = "this transaction, or one spending the same coins, is alr
 function submitResult(o: SubmitOutcome, localTxid: string): Omit<SubmitResult, "hosts"> {
   if (o.kind === "sent") return { ok: true, txid: localTxid, error: undefined, sighashMatch: true, code: undefined };
   if (o.kind === "duplicate") return { ok: false, txid: localTxid, error: DUPLICATE_TEXT, sighashMatch: true, code: "SUBMIT_DUPLICATE" };
-  if (o.kind === "unclear") return { ok: false, txid: localTxid, error: o.text, sighashMatch: true, code: "SUBMIT_MAYBE_INFLIGHT" };
+  if (o.kind === "unclear") return { ok: false, txid: localTxid, error: o.mainRefused ? `${o.text}; the other server has not answered, so it may still go through` : o.text, sighashMatch: true, code: "SUBMIT_MAYBE_INFLIGHT", ...(o.mainRefused ? { reason: o.mainRefused } : {}) };
   return { ok: false, txid: undefined, error: o.text, sighashMatch: true, code: "SUBMIT_REJECTED", reason: o.reason };
 }
 
@@ -552,42 +552,46 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // echo would otherwise dedupe later sends out of history and point the explorer link at another transaction).
   const localTxid = codecTxid(tx);
   // The same bytes to every host of the RPC at once (hosts.ts submitEach): one signing, one txid. The result comes at
-  // the first acceptance; another host's later answer is logged and changes nothing in the result. The main host's
-  // later answer is also kept for the history row (mainHostHeldLater).
+  // the first acceptance; another host's later answer is logged and changes nothing in the result. A later answer
+  // that settles the history row is kept for it (laterFact).
   const body = { tx: txToNodeJson(tx) };
   const main = hostsFor(rpc)[0]!;
-  let mainLater: (held: boolean) => void = () => undefined;
-  const later = new Promise<boolean>((res) => { mainLater = res; });
-  const { outcome, answers } = await submitEach(rpc, (h) => submitTo(h, body), (a) => {
+  let settle: (f: LaterFact) => void = () => undefined;
+  const later = new Promise<LaterFact>((res) => { settle = res; });
+  const { outcome, answers, capped } = await submitEach(rpc, (h) => submitTo(h, body), (a, afterCap) => {
     console.info("[node] a later submit answer", localTxid, hostLog(a));
-    if (a.host === main) mainLater(holds(a.verdict));
+    if (a.host === main) settle(holds(a.verdict) ? "mainHolds" : "open");
+    else settle(afterCap && a.verdict.kind === "refused" ? "noneTook" : "open");
   });
   for (const { verdict: v } of answers)
     if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
       console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
   // One fact for the history row: whether the main host holds the transaction (it answered "accepted" or "already
   // present"). A row recorded while it does not stays maybe until it does (history.ts maybeRecord); when the result
-  // came before the main host answered, its later answer is kept for that (mainHostHeldLater).
+  // came before the main host answered, its later answer is kept for that; after the cap on the main host's refusal,
+  // the other host's later refusal is kept as "no host took it" (laterFact).
   const mainAnswer = answers.find((a) => a.host === main);
   const mainHolds = !!mainAnswer && holds(mainAnswer.verdict);
-  if (!mainAnswer && outcome.kind === "sent") keepMainLater(localTxid, later);
+  if ((!mainAnswer && outcome.kind === "sent") || capped) keepLater(localTxid, later);
   return { ...submitResult(outcome, localTxid), hosts: answers.map(hostLog), mainHolds };
 }
+/** What a host's answer after the result says for the history row: the main host holds it, no host took it (the
+ *  other host refused after the cap on the main host's refusal), or nothing settled. */
+export type LaterFact = "mainHolds" | "noneTook" | "open";
 const holds = (v: HostVerdict): boolean => v.kind === "accepted" || v.kind === "duplicate";
-// The main host's answer to a submit the result reported sent before that host answered, by txid, until history
+// The later fact of a submit whose result came before the host that settles its row answered, by txid, until history
 // takes it. Bounded: an entry no flow takes is dropped with the oldest; module state dies with the worker, and the row
 // then stays maybe.
-const mainHeld = new Map<string, Promise<boolean>>();
-const MAIN_HELD_MAX = 64;
-function keepMainLater(txid: string, p: Promise<boolean>): void {
-  mainHeld.set(txid, p);
-  if (mainHeld.size > MAIN_HELD_MAX) mainHeld.delete(mainHeld.keys().next().value!);
+const laterFacts = new Map<string, Promise<LaterFact>>();
+const LATER_MAX = 64;
+function keepLater(txid: string, p: Promise<LaterFact>): void {
+  laterFacts.set(txid, p);
+  if (laterFacts.size > LATER_MAX) laterFacts.delete(laterFacts.keys().next().value!);
 }
-/** Whether the main host later held a transaction whose result was sent before that host answered: true on its
- *  "accepted" or "already present", false on any other answer; undefined when none is kept. Taken once. */
-export function mainHostHeldLater(txid: string): Promise<boolean> | undefined {
-  const p = mainHeld.get(txid);
-  mainHeld.delete(txid);
+/** The later fact kept for `txid`, taken once; undefined when none is kept. */
+export function laterFact(txid: string): Promise<LaterFact> | undefined {
+  const p = laterFacts.get(txid);
+  laterFacts.delete(txid);
   return p;
 }
 

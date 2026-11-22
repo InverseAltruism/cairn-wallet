@@ -108,6 +108,12 @@ nextMinute();
 route(async () => json(502, { ok: false, error: "node unreachable" }), down);
 b = await timed(() => w.balance());
 check(`F7: both fail: balance() throws the main host's error (${String(b.err?.message)})`, b.err && /\/utxos\/.* -> 502/.test(String(b.err.message)));
+// after the flip (the second host asked first) both fail: still the main host's error
+route(down, healthy());
+await w.balance().catch(() => null);
+route(async () => json(502, { ok: false, error: "node unreachable" }), async () => json(503, {}));
+b = await timed(() => w.balance());
+check(`F7: both fail with the second host asked first: the main host's error (${String(b.err?.message)})`, b.err && /\/utxos\/.* -> 502/.test(String(b.err.message)));
 const tipBoth = await w.tip();
 check("F7: tip() of both failing is null, as with one host", tipBoth === null);
 
