@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- After a browser start, the restore of the stored block headers starts from the newest stored 4,096-header chunk
+  that the wallet verified earlier and sealed under a key derived from the unlocked vault, and checks only the headers
+  above it with every rule. Before, it checked every stored header above the newest built-in hash, a cost that grew
+  with the release's age. A seal that does not match is ignored and those headers are checked in full; locked, the
+  seals are ignored, and while seals are stored the restore waits for the unlock before it requests anything. A reset
+  drops the header source, and a source still running from before it seals nothing under the next vault. The header
+  database keeps its version, so 0.3.4 and 0.3.5 still open a store this build wrote. Sends are unchanged
+  (docs/DESIGN-namespv-scaling.md, "Sealed chunks"; SECURITY.md).
+
 ## 0.3.5
 
 Every send goes to both of Cairn's servers, so a send goes through while one of them is down, and a refused send says

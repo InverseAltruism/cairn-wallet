@@ -775,7 +775,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   if (rawSeals !== null && opts.unlocked && !(await opts.sealKey!())) await opts.unlocked();
   const anchor = (await acquire(newest)).records;
   // The key is fetched for this one check; without it (locked, no getter) the seals are ignored and the restore
-  // verifies everything.
+  // verifies everything. The session that migrates a pre-store snapshot restores as 0.3.4 does, from the table: a seal
+  // seed there serves the same headers and only saves time, so no test tells the two apart.
   const proven = !legacy && rawSeals !== null ? await opts.sealKey!().then((key) => (key ? checkSeals(key, rawSeals, table) : null)) : null;
   // The restore seeds at the highest sealed chunk whose stored bytes walk to its seal, else at the table (invariant 1).
   const read = async (k: number) => (store && keys.includes(k) ? store.getChunk(k).catch((e) => { console.warn(`[namespv] stored chunk ${k} unreadable:`, e); return null; }) : null);
@@ -1053,6 +1054,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           walked = new Uint8Array(0);
           walkFrom = newest + 1;
           base = tableBase;
+          // The remembered tops are the replaced chain's: kept, a read below a later rebase would walk against them and
+          // the next list would seal them over the adopted bytes (a restore skips and rewrites it, namespv-seal-restore 5).
+          // No offline fixture holds a second chain above a release checkpoint, so no test tells this line apart.
           tops = [];
           workBase = 0n;
           persistedTip = newest;

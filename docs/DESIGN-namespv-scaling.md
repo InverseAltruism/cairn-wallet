@@ -165,7 +165,8 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
   current vault key at each use and held across no `await` (`sealKeyGetter`; the wallet passes it as
   `opts.sealKey`). Locked, there is none. A new vault has a new key, under which old seals fail and are ignored; a
   reset drops the header source, its name hints and the session pin, and a source seals only under the vault it was
-  built for, so a new vault in the same worker starts from a new source (test/namespv-seal-restore.test.mjs 7).
+  built for, so a new vault in the same worker starts from a new source, and a source still running from before the
+  reset writes no list under the new vault's key (test/namespv-seal-restore.test.mjs 7 and 7b).
 - A seal is a MAC over 145 bytes: a tag, the chunk index, the previous chunk's top hash (the table hash for the first
   chunk above the anchor), the chunk's top hash, its chainwork as u128 and the table's newest entry and hash. The
   record is `meta` key `seals`, `{ v: 1, newest, list: [{ k, top, work, mac }] }`, contiguous from the chunk above the
@@ -185,6 +186,9 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
   "could not verify" for that one call. The spec a read walks against is the one in force when the read runs, and an
   LRU entry answers only the spec it was verified against, so a read across an adoption never serves or caches the
   replaced chain; an adoption queues its rewrite after the acquirer's pending writes (test/headerstore-adoption.test.mjs).
+  A read that waited behind an adoption finds no remembered tops, since the adopted client holds every height above
+  the table; it is decided again once and answers from that client, as 0.3.4 does (test/namespv-seal-restore.test.mjs
+  13). A read no adoption crosses takes the same path and makes the same requests as before.
 - A seal never refuses. An entry whose chunk is missing or holds other bytes is absent: a list a 0.3.4 install left
   behind after it rewrote chunks, a write made while locked over sealed chunks, a write that was dropped. A stored
   value that is no list at all (any structured-cloneable junk) proves nothing and is rewritten. Only the

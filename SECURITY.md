@@ -44,7 +44,8 @@ rule; a seal whose chunk is missing or holds other headers counts as absent. Loc
 are ignored and every check runs, and while seals are stored the restore waits for unlock before
 it requests anything. Whoever can write the profile but cannot unlock the vault cannot make a
 seal, so tampering, any stored value in place of the seals included, still costs at worst a
-re-fetch and a rewrite. A reset drops the header source and the session pin with the vault. Whoever holds the unlocked vault (its key is
+re-fetch and a rewrite. A reset drops the header source and the session pin with the vault, and a source still
+running from before the reset writes no seal under the next vault's key. Whoever holds the unlocked vault (its key is
 in session storage while unlocked) can seal headers of their choice that a later restore trusts;
 that party can already spend.
 

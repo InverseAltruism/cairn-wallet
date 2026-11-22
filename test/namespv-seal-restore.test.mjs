@@ -265,6 +265,83 @@ console.log("7. a reset and a new vault in the same worker drop the source and t
   check("  and the list stored after it verifies under B's key only", checkSeals(kB, st.seals, TABLE)?.length === 2 && checkSeals(kA, st.seals, TABLE) === null);
 }
 
+console.log("7b. a source superseded by a reset seals only under the vault it was built for:");
+{
+  // Every write per source build; the store is shared, as the IndexedDB header store is across a reset.
+  const built = (w, st, writes) => {
+    const sources = [];
+    w.spvBuildForTest = (o) => {
+      const id = sources.length + 1;
+      const own = { ...st, listChunks: () => st.listChunks(), getChunk: (k) => st.getChunk(k), getHead: () => st.getHead(), getSeals: () => st.getSeals(), write: (x) => { writes.push({ id, x }); return st.write(x); }, close() {} };
+      const src = liveSpvSource({ ...o, rpcBase: `${API}/api/rpc`, headersBase: API, anchors: SEAL_ANCHORS, store: async () => own, legacy: undefined });
+      sources.push(src);
+      return src;
+    };
+    return sources;
+  };
+  const sealedUnder = (k, writes, id) => writes.filter((e) => e.id === id && e.x.seals && checkSeals(k, e.x.seals, TABLE)).length;
+
+  // Mid-sync: vault A's source waits on its first header page while a reset and vault B happen, then finishes.
+  {
+    const w = new Wallet(memoryStore(), memoryStore());
+    const st = honestStore(142000);
+    const writes = [];
+    const sources = built(w, st, writes);
+    await w.create("correct horse battery");
+    st.seals = sealRecord(await w.sealKey(), TABLE, honestTops.slice(0, 1));
+    net.tip = SEAL_TOP;
+    let release, arrived;
+    const gate = new Promise((r) => { release = r; });
+    const atGate = new Promise((r) => { arrived = r; });
+    const inner = globalThis.fetch;
+    let gated = false;
+    globalThis.fetch = async (url, init) => { if (!gated && String(url).includes("/api/headers/")) { gated = true; arrived(); await gate; } return inner(url, init); };
+    const pA = (await w.spvSource()).prepare(SEAL_TOP - 12);
+    await atGate;
+    await w.reset();
+    await w.create("another battery staple");
+    const kB = await w.sealKey();
+    const n = writes.length;
+    await (await w.spvSource()).prepare(SEAL_TOP - 12);
+    await flushSpvStoreWrites();
+    const bSealed = sealedUnder(kB, writes, 2);
+    const mark = writes.length;
+    release();
+    const p = await pA;
+    await tick(); await flushSpvStoreWrites();
+    globalThis.fetch = inner;
+    const aWrites = writes.slice(mark).filter((e) => e.id === 1);
+    check(`A's source finishes its sync after the reset (${p.verifiedTip}, ${aWrites.length} writes) and none of its writes carries a list under B's key (${sealedUnder(kB, writes, 1)})`,
+      sources.length === 2 && p.verifiedTip === SEAL_TOP && aWrites.length > 0 && sealedUnder(kB, writes, 1) === 0);
+    check(`  B's own source seals under B's key (${bSealed} of ${writes.length - n} writes before A resumed) and the store's list verifies under B`,
+      bSealed > 0 && checkSeals(kB, st.seals, TABLE)?.length === 2);
+  }
+
+  // Parked locked: vault A's source waits for the unlock, a reset and vault B happen, and B's balance wakes it.
+  {
+    const w = new Wallet(memoryStore(), memoryStore());
+    const st = honestStore();
+    const writes = [];
+    const sources = built(w, st, writes);
+    await w.create("correct horse battery");
+    st.seals = sealRecord(await w.sealKey(), TABLE, honestTops);
+    await w.lock();
+    w.prewarmSpv();
+    await tick(); await tick();
+    const parked = sources.length === 1;
+    await w.reset();
+    await w.create("another battery staple");
+    const kB = await w.sealKey();
+    await w.balance().catch(() => null);
+    await (await w.spvSource()).prepare(SEAL_TOP - 12);
+    // A's catch-up runs in its serializer after its restore; a no-op prepare queued behind it settles once it has run.
+    await (await sources[0]).prepare(0);
+    await flushSpvStoreWrites();
+    check(`the parked source (${parked}) woken by B's unlock writes no list under B's key (${sealedUnder(kB, writes, 1)}); B's source does (${sealedUnder(kB, writes, 2)})`,
+      parked && sources.length === 2 && sealedUnder(kB, writes, 1) === 0 && sealedUnder(kB, writes, 2) > 0 && checkSeals(kB, st.seals, TABLE)?.length === 2);
+  }
+}
+
 console.log("8. a source parked while locked makes no header request before the balance answer (invariant 10):");
 {
   const fetchLog = [];
