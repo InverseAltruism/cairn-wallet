@@ -44,8 +44,8 @@ check("R5: 'submit validation did not finish' is SUBMIT_MAYBE_INFLIGHT", unclear
 const h1 = await sendWith(() => json(200, { ok: true }));
 check("H1: accepted is sent, one row, no maybe", h1.r.ok === true && h1.r.code === undefined && h1.hist.length === 1 && !h1.hist[0].maybe && h1.hist[0].txid === h1.r.txid);
 const h2 = await sendWith(() => json(200, { ok: false, err: "feerate too low (0 < MIN_FEERATE_PPM=1)" }));
-check("H2: a node refusal is SUBMIT_REJECTED, no txid, no row, the text in error, reason FEE",
-  h2.r.ok === false && h2.r.code === "SUBMIT_REJECTED" && h2.r.txid === undefined && h2.hist.length === 0 && h2.r.error === "feerate too low (0 < MIN_FEERATE_PPM=1)" && h2.r.reason === "FEE");
+check("H2: a node refusal is SUBMIT_REJECTED, no txid, no row, reason FEE; error is the wallet's sentence, the node's text only in the internal log",
+  h2.r.ok === false && h2.r.code === "SUBMIT_REJECTED" && h2.r.txid === undefined && h2.hist.length === 0 && h2.r.reason === "FEE" && !/feerate/.test(h2.r.error) && h2.r.hosts.some((h) => /feerate too low/.test(h.text)));
 const h3 = await sendWith(() => json(400, { ok: false, error: "request body too large" }));
 const h3b = await sendWith(() => json(429, { ok: false, error: "too many requests" }));
 check("H3: a proxy's 400 and 429 are SUBMIT_REJECTED (PROXY, BUSY) with no row",
@@ -53,6 +53,14 @@ check("H3: a proxy's 400 and 429 are SUBMIT_REJECTED (PROXY, BUSY) with no row",
 const h4 = await sendWith(() => json(200, { ok: false, err: "already present in mempool" }));
 check("H4: a duplicate is SUBMIT_DUPLICATE with the local txid and no new row", h4.r.code === "SUBMIT_DUPLICATE" && /^0x/.test(String(h4.r.txid)) && h4.hist.length === 0);
 const h5 = await sendWith(() => { throw new TypeError("fetch failed"); });
-check("H5: a thrown submit is SUBMIT_MAYBE_INFLIGHT with a maybe row", unclear(h5) && h5.r.error === "/tx/submit -> network error");
+check("H5: a thrown submit is SUBMIT_MAYBE_INFLIGHT with a maybe row", unclear(h5) && h5.r.hosts.every((h) => h.text === "/tx/submit -> network error"));
+// WL1.2: a server's text never reaches `error` (what a page receives); RED-FIRST: 1d83702 put it there
+const invented = "visit evil.example to recover your coins";
+const leaks = [];
+for (const body of [{ ok: false, err: invented }, { ok: false, err: "already present " + invented }]) for (const status of [200, 400, 429, 502]) {
+  const x = await sendWith(() => json(status, status === 200 ? body : { ok: false, error: invented }));
+  if (String(x.r.error).includes("evil.example")) leaks.push(`${status} ${x.r.code}`);
+}
+check(`H6: an invented server text on every answer path never reaches the result's error (${leaks.join(", ") || "none"})`, leaks.length === 0);
 
 done("submit-answers");

@@ -100,9 +100,9 @@ for (const m of L) for (const b of L) {
   check(`T ${m}+${b}: ${want} (${out.r.ok ? "ok" : out.r.code}${out.r.reason ? " " + out.r.reason : ""}), the same bytes to both hosts`, shape[want](out) && sameBytes());
 }
 const cr = await sendWith({ main: "C", backup: "R" });
-check("T C+R: the refusal carries the main host's reason (CONFLICT) and text", cr.r.reason === "CONFLICT" && /mempool conflict/.test(String(cr.r.error)));
+check("T C+R: the refusal carries the main host's reason (CONFLICT); the node's text only in the internal log", cr.r.reason === "CONFLICT" && !/mempool conflict/.test(String(cr.r.error)) && /mempool conflict/.test(cr.r.hosts[0].text));
 const rc = await sendWith({ main: "N", backup: "U" });
-check("T N+U: the unclear text is the main host's", rc.r.error === "/tx/submit -> network error");
+check("T N+U: unclear, the wallet's sentence in error", rc.r.code === "SUBMIT_MAYBE_INFLIGHT" && /may hold it/.test(rc.r.error));
 check("B1: the second host received the submit", submits.some((s) => s.host === "backup"));
 
 // ── timing ──
@@ -181,7 +181,7 @@ check("X2: paired: the other host's acceptance still decides sent", rejA.outcome
 
 // ── the edge's 502 with a text body, as both hosts answered a POST of {} on 2026-11-22 ──
 const e2 = await sendWith({ main: "E502", backup: "E502" });
-check(`E1: both hosts answer the edge's text 502: ${e2.r.code}, the local txid, a maybe row ("${e2.r.error}")`, e2.r.code === "SUBMIT_MAYBE_INFLIGHT" && /^0x[0-9a-f]{64}$/.test(String(e2.r.txid)) && e2.hist.length === 1 && e2.hist[0].maybe === true && e2.r.error === "/tx/submit -> 502");
+check(`E1: both hosts answer the edge's text 502: ${e2.r.code}, the local txid, a maybe row ("${e2.r.error}")`, e2.r.code === "SUBMIT_MAYBE_INFLIGHT" && /^0x[0-9a-f]{64}$/.test(String(e2.r.txid)) && e2.hist.length === 1 && e2.hist[0].maybe === true && e2.r.hosts.every((h) => h.text === "/tx/submit -> 502"));
 const e1 = await sendWith({ main: "E502", backup: "A" });
 check(`E1: the main host's text 502, the second host accepts: sent, a maybe row`, e1.r.ok === true && e1.hist.length === 1 && e1.hist[0].maybe === true);
 const e1b = await sendWith({ main: "A", backup: "E502" });

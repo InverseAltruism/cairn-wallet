@@ -198,7 +198,7 @@ try {
     globalThis.fetch = fetch;
     const { w } = await mkWallet();
     const r = await w.consolidate(FEE);
-    check("node 4xx rejection → SUBMIT_REJECTED with the server's reason (definitive, not in mempool)", r.ok === false && r.code === "SUBMIT_REJECTED" && /feerate/.test(r.error));
+    check("node 4xx rejection → SUBMIT_REJECTED with the reason classed (definitive, not in mempool); the server's text only in the internal log", r.ok === false && r.code === "SUBMIT_REJECTED" && r.reason === "PROXY" && !/feerate/.test(r.error) && r.hosts.some((h) => /feerate/.test(h.text)));
   }
   {
     // Fable-5 audit fix: a GATEWAY 5xx is AMBIGUOUS — the cairn proxy 502s the node after 4s, but the node

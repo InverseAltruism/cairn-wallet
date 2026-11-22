@@ -28,6 +28,9 @@
   could not prove is checked again when the other server lists it (the session skip caches are per server). A
   server's answer whose error text is not a string no longer stops the send from ending
   (test/submit-classify.test.mjs, test/submit-two-hosts.test.mjs X1, X2).
+- A submit refusal's or unclear answer's `error` is the wallet's own sentence naming the reason; a server's text no
+  longer reaches a page or the screen through it and stays in the wallet's internal log (test/submit-answers.test.mjs
+  H6).
 - Submit answers are read by one classifier (`src/core/submitverdict.ts`). A refusal carries a new `reason` (FEE, BUSY,
   SPENT, CONFLICT, PROXY, INVALID, UNKNOWN; additive, WALLET-ERROR-CODES.md). Answers that may follow a node taking the
   transaction are now `SUBMIT_MAYBE_INFLIGHT` with the local txid and a history row, where 0.3.4 read them otherwise:

@@ -528,12 +528,13 @@ const DUPLICATE_TEXT = "this transaction, or one spending the same coins, is alr
 // duplicate, unclear); a refusal carries none, since a txid would read as "it went through". SUBMIT_REJECTED: every
 // host refused (a node's 200 ok:false, or a proxy's 400, 413 or 429 before forwarding); SUBMIT_MAYBE_INFLIGHT: a host
 // may hold it (a throw, a timeout, a 5xx, an unreadable answer); SUBMIT_DUPLICATE: a host holds this transaction, or
-// one spending the same coins, so "nothing was sent" would be false. `reason` classes a refusal (additive).
+// one spending the same coins, so "nothing was sent" would be false. `reason` classes a refusal (additive). `error` is
+// the wallet's own sentence, never a server's text, which stays in the internal `hosts` log.
 function submitResult(o: SubmitOutcome, localTxid: string): Omit<SubmitResult, "hosts"> {
   if (o.kind === "sent") return { ok: true, txid: localTxid, error: undefined, sighashMatch: true, code: undefined };
   if (o.kind === "duplicate") return { ok: false, txid: localTxid, error: DUPLICATE_TEXT, sighashMatch: true, code: "SUBMIT_DUPLICATE" };
-  if (o.kind === "unclear") return { ok: false, txid: localTxid, error: o.mainRefused ? `${o.text}; the other server has not answered, so it may still go through` : o.text, sighashMatch: true, code: "SUBMIT_MAYBE_INFLIGHT", ...(o.mainRefused ? { reason: o.mainRefused } : {}) };
-  return { ok: false, txid: undefined, error: o.text, sighashMatch: true, code: "SUBMIT_REJECTED", reason: o.reason };
+  if (o.kind === "unclear") return { ok: false, txid: localTxid, error: o.mainRefused ? `the main server refused this transaction (${o.mainRefused}) and the other server has not answered, so it may still go through; check before sending again` : "no server accepted this transaction and one may hold it; check before sending again", sighashMatch: true, code: "SUBMIT_MAYBE_INFLIGHT", ...(o.mainRefused ? { reason: o.mainRefused } : {}) };
+  return { ok: false, txid: undefined, error: `every server refused this transaction (${o.reason})`, sighashMatch: true, code: "SUBMIT_REJECTED", reason: o.reason };
 }
 
 // Build the FULL tx locally (we set the app ourselves), sign OUR OWN codec sighash,
@@ -563,6 +564,8 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
     if (a.host === main) settle(holds(a.verdict) ? "mainHolds" : "open");
     else settle(afterCap && a.verdict.kind === "refused" ? "noneTook" : "open");
   });
+  // A server's own text goes to the worker's log only: the result's `error` is the wallet's sentence (submitResult).
+  console.info("[node] submit answers", localTxid, answers.map(hostLog));
   for (const { verdict: v } of answers)
     if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
       console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
