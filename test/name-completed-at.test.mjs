@@ -13,7 +13,7 @@ import { verifyNameUnion } from "../src/core/namespv.ts";
 import { resolveName } from "../src/core/names.ts";
 import { SPV_NEWEST_HEIGHT } from "../src/core/spvnewest.ts";
 import { buildNameClaim, buildNameSet, buildNameXfer, addrFromPriv, proposeTx, world, source, feeOut, pick, mkFetch } from "./_spvrig.ts";
-import { nameCommit, nameCommitRecord, nameFinalize } from "../src/vendor/cairnx-spv.js";
+import { nameCommit, nameCommitRecord, nameFinalize, REG_COMMIT_MAX_BLOCKS } from "../src/vendor/cairnx-spv.js";
 import { checker } from "./helpers/check.mjs";
 
 const { check, done } = checker("=== the height that completed a name's holding ===");
@@ -35,6 +35,9 @@ console.log("1. what completes a holding");
   const w = world([{ height: C, tx: reg.commit }, { height: R, tx: reg.reveal }, { height: F, tx: reg.finalize }]);
   const r = await union("dora", { addr: A, owner: A }, w, F + 40);
   check(`(1a) a registration completes at its nfinalize, ${F}, not its commit ${C} (${r.completedAt})`, r.verified === true && r.completedAt === F);
+  // with the tip still inside the reservation's window the reveal's prefix holds a pending record of the same claim
+  const live = await union("dora", { addr: A, owner: A }, w, C + REG_COMMIT_MAX_BLOCKS + 10);
+  check(`(1a) the same with the tip inside the reservation's window: the pending reveal does not count (${live.completedAt})`, live.verified === true && live.completedAt === F);
   const xfer = proposeTx({ ...pick(buildNameXfer({ name: "dora", to: B })), priv: keyA });
   const nset = proposeTx({ ...pick(buildNameSet({ name: "dora", addr: TARGET })), priv: keyB });
   const w2 = world([{ height: C, tx: reg.commit }, { height: R, tx: reg.reveal }, { height: F, tx: reg.finalize }, { height: F + 20, tx: xfer }, { height: F + 30, tx: nset }]);
