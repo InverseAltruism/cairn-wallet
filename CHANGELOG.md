@@ -14,6 +14,12 @@
   It is refused only when both refuse; a refusal now waits for the slower server, up to the 20 s submit timeout, and
   a server that does not answer makes it "may already be in flight" (`SUBMIT_MAYBE_INFLIGHT`) where one server's
   refusal was final in 0.3.4 (SECURITY.md says why; test/submit-two-hosts.test.mjs).
+- A send that only the second server took when it was reported sent gets a "sent, not yet included" history row,
+  reconciled like an unclear one, so unmined after 10 blocks it says to check the explorer before sending again; the
+  main server's later "accepted" or "already present" turns it into a plain sent row. The result line is unchanged
+  (test/submit-main-late.test.mjs).
+- When the second server answers a read the main server has not answered within 1.5 s, later reads ask the second
+  server first for 60 s, as after a main failure, so with the main server hanging only the first read waits 1.5 s.
 - Submit answers are read by one classifier (`src/core/submitverdict.ts`). A refusal carries a new `reason` (FEE, BUSY,
   SPENT, CONFLICT, PROXY, INVALID, UNKNOWN; additive, WALLET-ERROR-CODES.md). Answers that may follow a node taking the
   transaction are now `SUBMIT_MAYBE_INFLIGHT` with the local txid and a history row, where 0.3.4 read them otherwise:

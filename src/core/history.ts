@@ -77,11 +77,19 @@ export class TxHistory {
   // removeAccount: the reset discipline is exactly "clear the array".
   pendingHist: { k: string; entry: Record<string, unknown> }[] = [];
 
-  async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[] }, meta: Record<string, unknown>) {
+  async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[]; mainPending?: boolean }, meta: Record<string, unknown>) {
     // PCD-2: every branch below is non-rejecting (chained + guarded), so an awaiting flow can never report a succeeded broadcast as a failure.
     // Rows pendingMerge may settle keep a few input outpoints for its "gone" verdict.
     const inputs = Array.isArray(r?.inputs) && r.inputs.length ? { inputs: r.inputs.slice(0, INCLUSION_INPUTS_KEPT) } : {};
-    if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
+    // Sent before the main host had taken it (node.ts mainPending: only the second host had): recorded maybe, so the
+    // reconcile tracks it and an unmined row says to check before sending again. The main host's later "accepted" or
+    // "already present" clears the mark; any other answer, or none (a worker that stopped), leaves it.
+    if (r && r.ok && r.txid && r.mainPending) {
+      const txid = r.txid, later = node.mainHostHeldLater(txid);
+      await this.recordTx(k, { txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
+      if (later) void later.then((held) => (held ? this.clearMaybe(k, txid, false) : undefined));
+    }
+    else if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
     // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool; a timeout / gateway
     // 5xx / unreadable answer AFTER signing. Record it maybe:true under the LOCALLY computed txid
     // so the failure copy's "check history before resending" is actionable: this entry is what
@@ -101,7 +109,7 @@ export class TxHistory {
     // (on the current node's conflated error a dup can also mean a DIFFERENT tx spends the coins,
     // and a fresh entry under the local txid would then claim a send that never landed).
     else if (r && !r.ok && r.code === "SUBMIT_DUPLICATE" && r.txid) {
-      await this.clearMaybe(k, r.txid);
+      await this.clearMaybe(k, r.txid, true);
     }
     // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
     // this spend just consumed (Plans/66 review finding; the final combining pass spends earlier
@@ -109,15 +117,16 @@ export class TxHistory {
     // deriving a false "merging" line until a balance refresh saw them).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
   }
-  // The duplicate answer is a submit of the transaction now: `resent` moves to now on every parked twin (one can be the
-  // only copy, recorded while locked; history() reads it) and, while unlocked, on the stored row. While locked the
-  // stored row is not written, so its time stays (SECURITY.md states it).
-  private clearMaybe(k: string, txid: string): Promise<void> {
+  // Clears the maybe mark on every parked twin (one can be the only copy, recorded while locked; history() reads it) and,
+  // while unlocked, on the stored row; it never adds one and never inserts a row. While locked the stored row is not
+  // written, so it keeps its mark and its time (SECURITY.md states it). `resent`: the duplicate answer is a submit of
+  // the transaction now, so `resent` moves to now; the main host's late answer to the same submit moves nothing.
+  private clearMaybe(k: string, txid: string, resent: boolean): Promise<void> {
     const now = Date.now();
     const mark = (e: any): boolean => {
       const was = !!e.maybe;
       delete e.maybe;
-      if (now > lastSent(e)) { e.resent = now; return true; }
+      if (resent && now > lastSent(e)) { e.resent = now; return true; }
       return was;
     };
     for (const p of this.pendingHist) if (p.k === k && p.entry.txid === txid) mark(p.entry);

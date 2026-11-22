@@ -274,13 +274,13 @@ const thrownCode = (e: unknown): string => ((e as { message?: unknown })?.messag
 
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
-// spentTxids and inputs are the wallet's history bookkeeping and hosts its log of each host's submit answer (node.ts
-// SubmitResult), and secondSource is the approval window's notice for a fill (fillpreflight.ts FillNotes): kept off
+// spentTxids, inputs and mainPending are the wallet's history bookkeeping and hosts its log of each host's submit answer
+// (node.ts SubmitResult), and secondSource is the approval window's notice for a fill (fillpreflight.ts FillNotes): kept off
 // what a page receives.
 function pageResult(r: any): any {
   if (!r || typeof r !== "object" || Array.isArray(r)) return r;
   const out = { ...r };
-  delete out.spentTxids; delete out.inputs; delete out.secondSource; delete out.hosts;
+  delete out.spentTxids; delete out.inputs; delete out.secondSource; delete out.hosts; delete out.mainPending;
   return out;
 }
 // The approval window's "Sign anyway" acknowledgement after RESERVATION_UNCONFIRMED: honoured only for this

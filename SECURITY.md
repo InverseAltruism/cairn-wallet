@@ -93,7 +93,8 @@ and the same DNS zone as the main host, so it is not an independent party.
 
 Reads (`src/core/hosts.ts` `firstAnswer`): the main host is asked first; the second host is asked 1.5 s later if the
 main host has not answered, or at once when it fails, and the first answer wins. The main host's request is never cut
-short. After a main failure the second host is asked first for 60 s. With both hosts healthy the second host gets no
+short. After a main failure, or a read the second host answered first, the second host is asked first for 60 s; a
+main answer ends that window. With both hosts healthy the second host gets no
 read at all. The popup says "Using Cairn's backup server." under a balance it answered. One spend reads one host: the
 host that answered its coin list answers every source transaction read, so the coin-value check above runs on that
 host exactly as on the main host, and a forged body there refuses `VERIFY_TAMPER` (test/hosts-spend-pin.test.mjs). A
@@ -109,6 +110,14 @@ host, up to the 20 s submit timeout, where one host refused at once; the send ke
 The reason: a refusal reported while the other host may still accept and relay the payment invites the user to pay
 again, with other coins once the first are seen as spent.
 
+A send reported sent before the main host had taken it (only the second host had) is recorded as an unclear history
+row: the wallet reconciles it, and unmined after 10 blocks it says to check the explorer before sending again. The
+wallet keeps no record that excludes a pending send's coins from the next send: the server that lists the coins leaves
+out the ones its own pending pool spends, so a main host that never received the send lists them as free, and a second
+payment with other coins could confirm beside the first. The row's mark is what warns. The main host's later
+"accepted" or "already present" for the same transaction clears it; any other answer, or none (a worker stopped before
+it came), leaves it (test/submit-main-late.test.mjs). The result shown is the same in every case.
+
 What it can do when it answers: what a lying RPC can do, as listed above (a wrong balance, withheld coins, a refusal, a
 false Activity marker), and no more: it cannot change what is signed or the value of a coin. It answers a read only
 while the main host is slower than 1.5 s or failing, so a party that holds it alone must also slow or stop the main
@@ -120,9 +129,8 @@ is reported sent. It sees the address whose balance is read and every signed tra
 Where the two hosts honestly disagree: a host a block behind lists a coin this wallet spent in the newest block, or a
 send of this wallet sits in one host's pending pool and not the other's. A spend of that coin is accepted by the one
 and refused as a conflict or a spent coin by the other; the wallet reports it sent, with a history row, because the
-accepting host may relay it and a refusal could prompt a second payment. If it never confirms, the coins it spent
-were spent by the other transaction, and the row is not marked (a row the wallet recorded as sent is not reconciled;
-only an unclear one is). On a reorg between the hosts the coin-value check is unchanged: values are bound to the
+accepting host may relay it and a refusal could prompt a second payment. When the main host is the one that refused, the row
+is recorded unclear (above), so if it never confirms the reconcile marks it. On a reorg between the hosts the coin-value check is unchanged: values are bound to the
 txid, and a source transaction off the answering host's branch reads as not found and is skipped.
 
 ### Sending to a `.csd` name

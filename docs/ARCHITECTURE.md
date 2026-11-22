@@ -191,7 +191,9 @@ send)` sends to every host at once and resolves with the outcome as soon as `dec
    read by `submitverdict.ts` `classifyAnswer` (accepted, duplicate, refused with a `reason`, unclear) and the outcome
    by `decideSubmit`: sent at the first acceptance, else once every host answered, unclear before duplicate before
    refused (`SUBMIT_MAYBE_INFLIGHT`, `SUBMIT_DUPLICATE`, `SUBMIT_REJECTED`). The result's `hosts` logs each answer
-   and is stripped before a page receives it.
+   and is stripped before a page receives it. A send reported sent before the main host had accepted it carries
+   `mainPending` (stripped too): `history.ts` records its row maybe and clears the mark on the main host's later
+   accepted or already-present answer (`mainHostHeldLater`).
 
 Beside it:
 
@@ -320,8 +322,8 @@ dir: both files must be byte-identical to the committed ones.
 - Node RPC: the Cairn proxy https://cairn-substrate.com/api/rpc or a loopback node only. GET 12 s, POST 20 s. Every
   outer timeout sits above its server-side worst case; do not lower one without re-deriving the inner chain. The
   default RPC's second host, https://clarvis.cairn-substrate.com/api/rpc (`hosts.ts`): a read goes there 1.5 s
-  (`HEDGE_MS`) after the main host if it has not answered, or at once when it failed; after a main failure the second
-  host is asked first for 60 s (`BACKUP_FIRST_MS`). With both healthy it gets no reads. Every submit goes to both at
+  (`HEDGE_MS`) after the main host if it has not answered, or at once when it failed; after a main failure or a read
+  the second host answered first, the second host is asked first for 60 s (`BACKUP_FIRST_MS`). With both healthy it gets no reads. Every submit goes to both at
   once. A loopback RPC has no second host.
 - Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15 s with
   Retry-After-aware 429 and 502/503 backoff.

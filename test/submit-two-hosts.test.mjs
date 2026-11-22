@@ -69,15 +69,18 @@ async function sendWith(p) {
 const sameBytes = () => submits.length === 2 && submits[0].body === submits[1].body && new Set(submits.map((s) => s.host)).size === 2;
 
 // ── the table: every pair of answers, both immediate ──
+// Sent with a maybe row when the main host had not taken it (test/submit-main-late.test.mjs has that rule); its
+// "already present" counts as taken.
 const expect = (m, b) => {
   const vs = [m, b];
-  if (vs.includes("A")) return "sent";
+  if (vs.includes("A")) return m === "A" || m === "D" ? "sent" : "sentMaybe";
   if (vs.includes("U") || vs.includes("N")) return "unclear";
   if (vs.includes("D")) return "duplicate";
   return "refused";
 };
 const shape = {
   sent: ({ r, hist }) => r.ok === true && r.code === undefined && hist.length === 1 && !hist[0].maybe && hist[0].txid === r.txid,
+  sentMaybe: ({ r, hist }) => r.ok === true && r.code === undefined && hist.length === 1 && hist[0].maybe === true && hist[0].txid === r.txid,
   duplicate: ({ r, hist }) => r.code === "SUBMIT_DUPLICATE" && /^0x[0-9a-f]{64}$/.test(String(r.txid)) && hist.length === 0,
   unclear: ({ r, hist }) => r.code === "SUBMIT_MAYBE_INFLIGHT" && /^0x[0-9a-f]{64}$/.test(String(r.txid)) && hist.length === 1 && hist[0].maybe === true,
   refused: ({ r, hist }) => r.code === "SUBMIT_REJECTED" && r.txid === undefined && hist.length === 0,
@@ -101,7 +104,7 @@ check(`H1: both accept: sent at the main host's answer (${h1.ms} ms, the second 
 const w1 = await sendWith({ main: "A", backup: "hang" });
 check(`W1: main accepts, the second host hangs: sent at once (${w1.ms} ms), nothing waits on the second host`, w1.r.ok === true && w1.ms < 400 && w1.hist.length === 1);
 const w2 = await sendWith({ main: "hang", backup: "A" });
-check(`W2: the second host accepts, the main host hangs: sent at once (${w2.ms} ms)`, w2.r.ok === true && w2.ms < 400 && w2.hist.length === 1 && !w2.hist[0].maybe);
+check(`W2: the second host accepts, the main host hangs: sent at once (${w2.ms} ms), the row maybe`, w2.r.ok === true && w2.ms < 400 && w2.hist.length === 1 && w2.hist[0].maybe === true);
 const w3 = await sendWith({ main: "R", backup: { a: "A", after: 500 } });
 check(`W3: main refuses at once, the second host accepts at 500 ms: sent (${w3.r.ok ? "ok" : w3.r.code}) after ${w3.ms} ms, not refused`, w3.r.ok === true && w3.ms >= 450 && w3.hist.length === 1);
 const w3b = await sendWith({ main: "R", backup: { a: "R", after: 500 } });
@@ -118,6 +121,6 @@ check("L1: a later refusal from the second host changes neither the result nor t
 const l2 = await sendWith({ main: "U", backup: { a: "A", after: 300 } });
 await sleep(500);
 const l2h = await l2.w.history();
-check("L2: main unclear, the second host accepts at 300 ms: sent, one row without maybe", l2.r.ok === true && l2h.length === 1 && !l2h[0].maybe);
+check("L2: main unclear, the second host accepts at 300 ms: sent, one row, maybe (the main host never took it)", l2.r.ok === true && l2h.length === 1 && l2h[0].maybe === true);
 
 done("submit-two-hosts");

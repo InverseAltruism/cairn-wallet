@@ -8,7 +8,7 @@ import { fmtCsd, csdBase } from "./cairnx.js";
 import type { TxInclusion } from "./inclusion.js";
 import { selectInputs, strip0x, MAX_TX_INPUTS, MAX_DOMAIN_BYTES, MAX_URI_BYTES, MIN_FEE_PROPOSE } from "../vendor/cairnx-spv.js";
 import { byteCapRefusal } from "./signfields.js";
-import { firstAnswer, isBackup, submitEach, type HostAnswer } from "./hosts.js";
+import { firstAnswer, hostsFor, isBackup, submitEach, type HostAnswer } from "./hosts.js";
 import { classifyAnswer, isSubmitDuplicateErr, type HostVerdict, type RefusalReason, type SubmitAnswer, type SubmitOutcome } from "./submitverdict.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
@@ -469,9 +469,9 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
 // on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
 // spentTxids (successful submits: the source txids of the inputs spent, so the merge rows they consumed
 // latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
-// rows for the "gone" check) and hosts (each host's answer to the submit, a server's text included) are internal;
-// background.ts strips them before a result reaches a page.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[] }
+// rows for the "gone" check), hosts (each host's answer to the submit, a server's text included) and mainPending (sent
+// before the main host had taken it) are internal; background.ts strips them before a result reaches a page.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[]; mainPending?: boolean }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 
@@ -544,13 +544,44 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // echo would otherwise dedupe later sends out of history and point the explorer link at another transaction).
   const localTxid = codecTxid(tx);
   // The same bytes to every host of the RPC at once (hosts.ts submitEach): one signing, one txid. The result comes at
-  // the first acceptance; another host's later answer is logged and changes nothing.
+  // the first acceptance; another host's later answer is logged and changes nothing in the result. The main host's
+  // later answer is also kept for the history row (mainHostHeldLater).
   const body = { tx: txToNodeJson(tx) };
-  const { outcome, answers } = await submitEach(rpc, (h) => submitTo(h, body), (a) => console.info("[node] a later submit answer", localTxid, hostLog(a)));
+  const main = hostsFor(rpc)[0]!;
+  let mainLater: (held: boolean) => void = () => undefined;
+  const later = new Promise<boolean>((res) => { mainLater = res; });
+  const { outcome, answers } = await submitEach(rpc, (h) => submitTo(h, body), (a) => {
+    console.info("[node] a later submit answer", localTxid, hostLog(a));
+    if (a.host === main) mainLater(holds(a.verdict));
+  });
   for (const { verdict: v } of answers)
     if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
       console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
-  return { ...submitResult(outcome, localTxid), hosts: answers.map(hostLog) };
+  const mainAnswer = answers.find((a) => a.host === main);
+  if (mainAnswer) mainLater(holds(mainAnswer.verdict));
+  // Sent, but the main host had not taken it at that moment (only the second host had): the history row is recorded
+  // maybe, so it is reconciled and an unmined row says so; the main host's later "accepted" or "already present"
+  // clears that (history.ts maybeRecord).
+  const mainPending = outcome.kind === "sent" && !(mainAnswer && mainAnswer.verdict.kind === "accepted");
+  if (mainPending) keepMainLater(localTxid, later);
+  return { ...submitResult(outcome, localTxid), hosts: answers.map(hostLog), ...(mainPending ? { mainPending: true } : {}) };
+}
+const holds = (v: HostVerdict): boolean => v.kind === "accepted" || v.kind === "duplicate";
+// The main host's answer to a submit the result reported sent before that host had taken it, by txid, until history
+// takes it. Bounded: an entry no flow takes is dropped with the oldest; module state dies with the worker, and the row
+// then stays maybe.
+const mainHeld = new Map<string, Promise<boolean>>();
+const MAIN_HELD_MAX = 64;
+function keepMainLater(txid: string, p: Promise<boolean>): void {
+  mainHeld.set(txid, p);
+  if (mainHeld.size > MAIN_HELD_MAX) mainHeld.delete(mainHeld.keys().next().value!);
+}
+/** Whether the main host later held a transaction whose result was `mainPending`: true on its "accepted" or "already
+ *  present", false on any other answer; undefined when none is kept. Taken once. */
+export function mainHostHeldLater(txid: string): Promise<boolean> | undefined {
+  const p = mainHeld.get(txid);
+  mainHeld.delete(txid);
+  return p;
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).
