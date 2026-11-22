@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.5
+
+Every send goes to both of Cairn's servers, so a send goes through while one of them is down, and a refused send says
+why in plain words, with no server's text on screen. A send to a name says that its check is running ("Checking
+alice.csd...") and offers "Send without check" from 10 s. A name paid before that now points to another address, a
+new name only partly verified, and a lapse the wallet could not confirm each get their own amber line. At Confirm, a
+name check that could not run again asks for a second click on the reviewed address instead of refusing.
 
 - A send to a name no longer waits silently for the name check. From 0.3 s the send sheet says "Checking
   alice.csd..." with the share of headers synced while they sync, and from 10 s, once the name service has answered,
@@ -130,6 +136,13 @@
   verified. Check the address before a large payment." in amber in place of the plain line. The name proof returns
   the height of the event that completed the holding (its `nfinalize`, not the commit that the record's height
   names); a transfer or an address change above the entry leaves the plain line (test/name-completed-at.test.mjs).
+- The SPV anchor table is 0.3.4's: regenerated for this release on 2026-11-22 at the node tip 147,472, its newest
+  entry is still 143,359 (28 entries), the newest chunk top at least 1,000 blocks below the tip.
+- Known limits: while Cairn's second server does not answer submits, every refusal by the main server reads "may
+  still go through" with a "sent, not yet included" row, and a buy of the same offer retried with other bytes (another
+  fee, other coins) is refused `FILL_ALREADY_SENT` for up to 30 minutes from that transaction's last send; a retry
+  with the same bytes is sent. A `lapsed` flag that the name service first sends at Confirm, on a review that was not
+  verified, adds no second click: that Confirm signs the reviewed address.
 
 ## 0.3.4
 
