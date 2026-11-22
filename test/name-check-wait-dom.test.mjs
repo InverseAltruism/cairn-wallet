@@ -4,7 +4,9 @@
 // "Send anyway" / "Wait"; its Confirm signs the reviewed address without waiting for the check and asks nothing again.
 // The address signed equals the address reviewed in every case: the check passed before Confirm, failed before it,
 // still running at Confirm, ended at D12's limit unverified, and another answer arriving after the review was shown.
-// RED-FIRST: on the commit before this one, 2 to 8 fail (no line, no choice); 1 passes there (the honest path).
+// RED-FIRST: on the commit before this one (with only the new sentences added so the file loads), 2b to 2e, 3a to 3c,
+// 6a, 7, 9a, 9b and 10a to 10c fail; 1 passes there (the honest path), and so do the cases the old wait reaches after
+// the check answers.
 // Mutations: the line from 0 s fails (1b); the choice before 10 s fails (2d); Confirm on the choice re-running the
 // check (nameStillPointsTo) fails (3c); Confirm signing the check's later answer instead of the review fails (6b);
 // the choice armed with the default buttons fails (3b).
