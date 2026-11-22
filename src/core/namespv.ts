@@ -757,7 +757,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
         let recs: Uint8Array;
         try { recs = legacy.records(spec.firstHeight, spec.lastHeight); verifyChunk(recs, spec); }
         catch (e) { await dropLegacy(opts.legacy!, `failed at chunk ${k}, the wallet seeds from the table`, e); legacy = null; break; }
-        if (k === newestK) lru.set(k, recs);
+        if (k === newestK) acq.cache(spec, recs);
         if (store && !keys.includes(k)) await store.write({ put: [{ k, records: recs }] });
         await yieldTask();
       }
@@ -780,7 +780,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     tops = proven!.slice(0, seal.i + 1);
     const e = tops[seal.i]!;
     base = { height: chunkTop(e.k), hash: e.top, work: e.work, tail: seal.records.subarray(seal.records.length - SEED * HB) };
-    lru.set(e.k, seal.records);
+    acq.cache(sealedSpec(e.k)!, seal.records);
   }
   const stored: Uint8Array[] = [];
   for (let k = chunkOf(base.height) + 1; store && keys.includes(k); k++) {
@@ -864,9 +864,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     }
     return out;
   };
-  // One pass with every check over the walked run (a pin restore), for the tops and work of the chunks it holds.
-  const walkedTops = async (): Promise<void> => {
-    if (!walked.length || chunkTop(newestK + 1 + tops.length) >= LC.baseHeight) return;
+  // One pass with every check over the walked run (a pin restore), for the tops and work of its chunks up to maxK;
+  // none when those are known already.
+  const walkedTops = async (maxK: number): Promise<void> => {
+    if (!walked.length || newestK + tops.length >= maxK || chunkTop(newestK + 1 + tops.length) >= LC.baseHeight) return;
     const pass = await seededClient(concatBytes([base.tail, walked]), base.height, base.hash, base.work, lcOpts);
     for (let k = newestK + 1 + tops.length; chunkTop(k) - pass.client.baseHeight < pass.client.chain.length; k++) {
       const vh = pass.client.chain[chunkTop(k) - pass.client.baseHeight]!;
@@ -883,9 +884,11 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   };
   // Moves the light client's base to the highest sealable chunk top it knows, re-ingesting the records above with
   // every check, so it holds 4,096 to 8,191 headers; the dropped chunks keep their tops (the shared helper's work base).
+  // The base stays at or below the persisted tip: the records it drops must already be in the store.
   const rebase = async (): Promise<void> => {
-    await walkedTops();
-    const list = knownTops(sealableK(tipOf(LC)));
+    const maxK = sealableK(Math.min(tipOf(LC), persistedTip));
+    await walkedTops(maxK);
+    const list = knownTops(maxK);
     const e = list[list.length - 1];
     if (!e || chunkTop(e.k) - SEED + 1 <= LC.baseHeight) return;
     const next = await seededClient(LC.toRecords(chunkTop(e.k) - SEED + 1), chunkTop(e.k), e.top, e.work, lcOpts);
@@ -932,11 +935,17 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // alone when it differs from the stored one, then the light client rebased to the tail. This is what rewrites a
   // stale or missing list (invariant 1) and seals a store a locked session or 0.3.4 wrote.
   if (store && opts.sealKey) {
-    let storedSeals = JSON.stringify(rawSeals);
+    // What the stored record proves (null for anything else, junk included), compared by chunk, so the catch-up
+    // rewrites it unless it already seals exactly these tops.
+    let storedTops: SealedChunk[] | null = proven;
+    const sameTops = (a: readonly SealedChunk[] | null, b: readonly SealedChunk[]) => !!a && a.length === b.length && a.every((e, i) => e.k === b[i]!.k && e.top === b[i]!.top && e.work === b[i]!.work);
     const catchUp = async () => {
-      await walkedTops();
-      const w = await withSeals({}, persistedTip);
-      if (w.seals && JSON.stringify(w.seals) !== storedSeals) { storedSeals = JSON.stringify(w.seals); detachStoreWrite(store, w); }
+      await walkedTops(sealableK(persistedTip));
+      const list = knownTops(sealableK(persistedTip));
+      if (list.length && !sameTops(storedTops, list)) {
+        const w = await withSeals({}, persistedTip);
+        if (w.seals) { storedTops = list; detachStoreWrite(store, w); }
+      }
       await rebase();
     };
     const run = () => serializeSync(catchUp).catch((e) => console.warn("[namespv] seal catch-up failed; the next write seals:", e));
@@ -1021,8 +1030,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           // A valid chain with no more work than the one held (a fork decayed to low difficulty with spread
           // timestamps) is not adopted; the held chain and its stored suffix stay.
           if (!reseedAdopts(heldWork(), fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC)); // MUTATE_RESEED_WORK
+          // The acquirer's detached writes, decided under the replaced tops, land before this chain's rewrite is queued:
+          // after it, both writers write only this chain's bytes for a chunk.
+          await acq.writes();
           LC = fresh;
-          // The sealed chunks of the replaced chain leave with their tops; the LRU answers a hit unchecked.
           for (const k of lru.keys()) if (k > newestK) lru.delete(k);
           walked = new Uint8Array(0);
           walkFrom = newest + 1;

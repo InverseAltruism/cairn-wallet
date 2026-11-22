@@ -16,13 +16,14 @@ export const chunkTop = (k: number): number => k * SPV_CHUNK + SPV_CHUNK - 1;
 export const sealableK = (tip: number): number => Math.floor((tip - 2 * SPV_CHUNK + 1) / SPV_CHUNK);
 
 /**
- * A light client seeded at `top` (its hash `topHash`, the seed checked against it) from `records`, the SEED records
+ * A light client seeded at `top` (its hash `topHash`, the seed checked against it; a release table entry at `top` wins
+ * over it) from `records`, the SEED records
  * ending at `top` followed by the records above it, which are ingested with every check. `work` is the chainwork at
  * `top` counted from the table seed, as seals and the session pin carry it; null when `top` is the table's newest
  * entry itself, whose own count is that base. The client's held work is `client.chainwork + workBase`.
  */
 export async function seededClient(records: Uint8Array, top: number, topHash: string, work: bigint | null, opts: LcOpts): Promise<Seeded> {
-  const r = await LightClient.fromRecords(records, { firstHeight: top - SEED + 1, anchorHeight: top }, { ...opts, checkpoints: { ...opts.checkpoints, [top]: topHash } });
+  const r = await LightClient.fromRecords(records, { firstHeight: top - SEED + 1, anchorHeight: top }, { ...opts, checkpoints: { [top]: topHash, ...opts.checkpoints } });
   const atTop = r.client.chain[SEED - 1]!.chainwork;
   return { client: r.client, ...(r.failed ? { failed: r.failed } : {}), workBase: work === null ? 0n : work - atTop };
 }
