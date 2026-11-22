@@ -900,8 +900,8 @@ export class Wallet {
         attempts: { get: async () => Number(await this.store.get("spvMigrateAttempts")) || 0, set: (n) => (n ? this.store.set("spvMigrateAttempts", n) : this.store.del("spvMigrateAttempts")) },
       },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
-      ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => session.set("spvPin", p) } } : {}),
-      // The source seals only under the vault it was built for: a new vault gets a new source (spvSource).
+      // The source pins and seals only under the vault it was built for: a new vault gets a new source (spvSource).
+      ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => (this.vaultIdNow === vault ? session.set("spvPin", p) : Promise.resolve()) } } : {}),
       sealKey: () => (this.vaultIdNow === vault ? this.sealKey() : Promise.resolve(null)),
       unlocked: () => (this.headersReleased ? Promise.resolve() : new Promise<void>((r) => this.unlockWaiters.push(r))),
     };
