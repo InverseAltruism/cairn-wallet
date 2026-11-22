@@ -733,6 +733,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // contiguous from newestK + 1: from a verified seal list, a rebase or a pass over walked records. A chunk read below
   // the client's base walks against them.
   let tops: SealedChunk[] = [];
+  let adoptions = 0;
   const sealedSpec = (k: number): ChunkSpec | null => {
     const e = tops[k - newestK - 1];
     return e ? { k, firstHeight: k * SPV_CHUNK, lastHeight: chunkTop(k), prevHash: k === newestK + 1 ? table.newestHash : tops[k - newestK - 2]!.top, lastHash: e.top } : null;
@@ -961,8 +962,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const seedFromAnchor = async () => (await seededClient(tableBase.tail, newest, table.newestHash, null, lcOpts)).client;
 
   // The verified header at `h`: from a walked chunk at or below the newest anchor, from the light client above it,
-  // from the walked run below a pin-seeded client, or from a sealed chunk below that.
-  const headerAt = async (h: number): Promise<{ hash: string; merkle: string } | null> => {
+  // from the walked run below a pin-seeded client, or from a sealed chunk below that. A sealed-chunk read that waited
+  // behind an adoption is decided again once: the adopted client holds the height and remembers no tops
+  // (test/namespv-seal-restore.test.mjs 13).
+  const headerAt = async (h: number, again = true): Promise<{ hash: string; merkle: string } | null> => {
     if (!Number.isSafeInteger(h) || h < SPV_FLOOR.height) return null;
     if (h > newest) {
       if (h >= LC.baseHeight) {
@@ -971,8 +974,14 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       }
       if (h >= walkFrom) return chunkHeader(walked, { firstHeight: walkFrom, lastHash: String(LC.chain[0]!.header.prev) }, h);
     } else if (chunkOf(h) === newestK) return chunkHeader(anchor, anchorSpec, h);
-    const { spec, records } = await acquire(h);
-    return chunkHeader(records, spec, h);
+    const seen = adoptions;
+    try {
+      const { spec, records } = await acquire(h);
+      return chunkHeader(records, spec, h);
+    } catch (e) {
+      if (again && adoptions !== seen) return headerAt(h, false);
+      throw e;
+    }
   };
   const headerOrNull = async (h: number) => {
     try { return await headerAt(h); }
@@ -1038,6 +1047,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           // The acquirer's detached writes, decided under the replaced tops, land before this chain's rewrite is queued:
           // after it, both writers write only this chain's bytes for a chunk.
           await acq.writes();
+          adoptions++;
           LC = fresh;
           for (const k of lru.keys()) if (k > newestK) lru.delete(k);
           walked = new Uint8Array(0);

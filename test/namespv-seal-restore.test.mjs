@@ -6,7 +6,7 @@
 // wiring. Run: npx tsx test/namespv-seal-restore.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
-import { serveFixture, memStore, records, hashOf, legacyOf, v1Snapshot, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
+import { serveFixture, memStore, records, hashOf, headerOf, legacyOf, v1Snapshot, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
 import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { checkSeals, sealKeyGetter, sealRecord } from "../src/core/spvseal.ts";
 import { importKeyRaw } from "../src/core/keystore.ts";
@@ -355,6 +355,32 @@ console.log("12. an adoption's rewrite is queued after the acquirer's pending wr
   await flushSpvStoreWrites();
   check(`while the acquirer's write is pending, the adoption queues no rewrite (${beforeOpen.join(", ")}); after it lands the rewrite follows (${order.join(", ")}), verified to ${p.verifiedTip}`,
     beforeOpen.length === 1 && order[0] === "acquirer put 32" && order.some((o) => o.startsWith("suffix write")) && p.verifiedTip === SEAL_TOP);
+}
+
+console.log("13. a read in a sealed chunk below the base, queued behind an adoption, answers from the adopted client:");
+{
+  // Seeded at seal 33 (base 139,218): a read at 131,372 (chunk 32, not cached) waits on the serializer while the
+  // prepare adopts a reseeded chain, whose client holds every height above the table and remembers no tops.
+  const st = honestStore(145000);
+  net.tip = SEAL_TOP;
+  const src = await liveSpvSource(opts(st));
+  const h = 32 * CH + 300;
+  let calls = 0, reading = null, queuedAtTops = false;
+  net.tamper = (from, rows) => {
+    if (from === 144896 && ++calls === 1) {
+      reading = Promise.all([src.hashAt(h), src.merkleAt(h)]);
+      queuedAtTops = true;
+      return rows.map((x) => (x.height === 145001 ? { ...x, header: { ...x.header, nonce: x.header.nonce + 1 } } : x));
+    }
+    return rows;
+  };
+  const p = await src.prepare(SEAL_TOP - 12);
+  net.tamper = undefined;
+  const [hash, merkle] = await reading;
+  check(`the read issued mid-sync (${queuedAtTops}) answers the honest header after the adoption (${hash === hashOf(h)}, verified to ${p.verifiedTip})`,
+    queuedAtTops && calls >= 2 && p.verifiedTip === SEAL_TOP && hash === hashOf(h) && merkle === headerOf(h).merkle);
+  net.log.length = 0;
+  check("  a read after the adoption answers from the client with no request", (await src.hashAt(h + 1)) === hashOf(h + 1) && net.log.length === 0);
 }
 
 check(`the header database stays at version 1 (a bump makes 0.3.4 delete it) (${DB_VERSION})`, DB_VERSION === 1);
