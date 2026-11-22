@@ -15,6 +15,8 @@
 // Sections 13 and 14 (d): on 68cce65 (13a), (13b) and (14d) fail: a check left while its progress read was in flight
 // showed its line over the next review, and the line outlived its closed sheet. The rest of 14 pins edges that already
 // held (a served zero address, a check rejecting after the choice, a broken channel, Confirm after "Wait").
+// Section 15 pins popup-send.ts's first `reviewCurrent` after the lookup: without it a replaced Review's late answer
+// writes its refusal into the status line or its name row over the review on screen.
 // Run: node --import tsx test/name-check-wait-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { SENTENCES, sentenceOf, UNCHECKED_BUTTONS, LAPSE_BUTTONS, REDIRECT_BUTTONS, SKIP_CHECK } from "../src/popup/sentences.ts";
@@ -320,5 +322,21 @@ console.log("14. the check's edges");
   const c0 = count("confirmName"); s0 = sends.length;
   await confirm();
   check(`(14e) Confirm after "Wait" runs the confirm-time re-check and signs the reviewed address (confirmName +${count("confirmName") - c0})`, count("confirmName") === c0 + 1 && sends.length === s0 + 1 && sends.at(-1)?.[0] === SERVED);
+}
+
+console.log("15. a Review replaced while its lookup runs writes nothing when that lookup answers");
+{
+  const BOB = "0x" + "b0".repeat(20);
+  for (const [label, late] of [["a refusal", { ok: false, error: "alice.csd is not registered" }], ["an address", verified(SERVED)]]) {
+    await startReview("alice.csd");
+    const first = pending;
+    await advance(100);
+    byId("s-to").value = "bob.csd"; byId("btn-send").click(); await flush();
+    pending.res({ ...verified(BOB), name: "bob" }); pending.settled = true; await flush(); await advance(50);
+    const name0 = byId("c-name").textContent, msg0 = byId("msg").textContent;
+    first.res(late); await flush(); await advance(50);
+    check(`(15) the replaced Review's lookup answering ${label} leaves bob.csd's review as it was (name row "${byId("c-name").textContent}", status "${byId("msg").textContent}")`,
+      review().shown && review().to === BOB && byId("c-name").textContent === name0 && /bob\.csd/.test(name0) && byId("msg").textContent === msg0);
+  }
 }
 done("name-check-wait-dom");

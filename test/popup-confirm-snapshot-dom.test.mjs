@@ -15,8 +15,9 @@
 //   E. Two clicks on the token Confirm transfer once. F. Two clicks on the name action's Confirm sign once (it consumed
 //      its snapshot before any await already; pinned so the class stays closed). G. A name that re-points between review
 //      and Confirm sends nothing and tears the review down, keeping the draft.
-//   H. A Confirm overtaken during its re-check by a later Confirm that sent writes nothing over that outcome. RED-FIRST:
-//      drop the `gen !== confirmGen` return in runConfirm and H1 sees "Nothing was sent" over "Sent 1 CSD".
+//   H. A Confirm overtaken during its re-check by a later Confirm writes nothing: over that outcome (H1), and while the
+//      later one is still in its re-check (H3). RED-FIRST: drop the `gen !== confirmGen` return in runConfirm and H3
+//      sees "The review was closed..." (H1 is also held by the statusWrites condition of M).
 //   I. A Review the user leaves while it awaits the name lookup primes nothing: another token's sheet (the amount was
 //      parsed with the first token's decimals), or Cancel on the CSD sheet. RED-FIRST: drop the `left()` checks in the
 //      token Review and I1 shows a "100000000 ZZZ" card whose Confirm signs; drop `reviewCurrent` in the CSD Review and
@@ -183,6 +184,23 @@ console.log("H. a Confirm overtaken during its re-check by a later Confirm that 
   release(); await p1; await flush(40);
   check(`H1 the later Confirm's outcome stays on screen ("${text().slice(0, 60)}")`, /^Sent 1 CSD/.test(text()) && text() === sent && !/Nothing was sent/.test(text()));
   check(`H2 honest: one send, the later review's (${sends.length - before}, ${JSON.stringify(sends.at(-1))})`, sends.length - before === 1 && JSON.stringify(sends.at(-1)) === JSON.stringify([EXTERNAL, 1e8, 1_000_000, ME]));
+}
+{
+  // H3: the overtaken Confirm answers while the later one is still in its own re-check (nothing written yet)
+  await csdReview("alice.csd");
+  let release1, release2;
+  confirmGate = new Promise((r) => (release1 = r));
+  const p1 = byId("btn-send-confirm").click(); await flush();
+  await byId("btn-send-back").click(); await flush();
+  await csdReview("alice.csd");
+  confirmGate = new Promise((r) => (release2 = r));
+  const before = sends.length;
+  const p2 = byId("btn-send-confirm").click(); await flush();
+  release1(); await p1; await flush(10);
+  const mid = text();
+  check(`H3 the overtaken Confirm writes nothing while the later one runs ("${mid}")`, !/review was closed|Nothing was sent/.test(mid));
+  confirmGate = null; release2(); await p2; await flush(40);
+  check(`H3 honest: the later Confirm sends once ("${text().slice(0, 30)}")`, sends.length - before === 1 && /^Sent 1 CSD/.test(text()));
 }
 
 console.log("I. a Review left while it awaits the name lookup");

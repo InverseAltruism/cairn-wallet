@@ -86,6 +86,9 @@ check("a 5xx carrying the duplicate text is unclear", kind(ans(502, { error: NOD
 check("a non-JSON 400 is unclear (no proxy answer to read)", kind(ans(400, undefined)) === "unclear");
 check("a 502 is unclear, with its text", (() => { const v = classifyAnswer(ans(502, { ok: false, error: "node unreachable" })); return v.kind === "unclear" && v.text === "node unreachable"; })());
 check("a 2xx non-JSON body is unclear", kind(ans(200, undefined)) === "unclear");
+// fetch follows a redirect, so a 3xx reaches the classifier only as a final answer (a 300 or 304, or a proxy's own);
+// it is not a node's acceptance however its body reads (drop the 2xx bound to 399 and this fails)
+check("a 3xx with an accepting body is unclear, never accepted", [300, 304, 399].every((st) => kind(ans(st, { ok: true, txid: "0xab" })) === "unclear"));
 check("a 2xx null, array or number is unclear", [null, [], 7].every((b) => kind(ans(200, b)) === "unclear"));
 // register row 212: the three readings that differed from cairn-sdk's classifySubmit
 check("row 212: a JSON 408 is unclear (0.3.4 read it as refused)", kind(ans(408, { ok: false, error: "timeout" })) === "unclear");
