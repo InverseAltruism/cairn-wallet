@@ -244,12 +244,13 @@ warns and lets you decide:
   that ownership depends on state outside the name's own history; it gets an explicit caution. The replay shows it
   only when the records it replays include the sale: the stale-seller residual above is the case where they do not.
 
-Decided on 2026-11-18 for names bought on the market: the base of name verification will move from a replay of one
-name's records to a full replay of the `cairnx:v1` domain, from a pinned record log plus the complete blocks above the
-pin, and the per-name verifier will be retired with that change. The reason is a principle: some resolver rules read
-state outside the name, and a replay of one name's records cannot evaluate them, so it can undercount and accept what the
-chain refused. Until that change ships, the caution on such names stays as described above
-(`docs/DESIGN-viafill.md`, "Decision").
+The wallet keeps this per-name proof (decided 2026-11-22, changing a decision of 2026-11-18 to move the wallet to a
+full replay of the `cairnx:v1` domain from a pinned record log). Full replay is the base for servers and pages, not for
+the wallet: there its one gain is against a party that holds every name source and holds a record back, while its
+cost, catching up on the blocks above the pin, grows with the age of a release, and the wallet has to keep working on
+an old release. Some resolver rules read state outside the name, and a replay of one name's records cannot evaluate
+them, so a name the replay shows was bought through an offer fill or re-claimed after a lapse keeps the caution
+described above (`docs/DESIGN-viafill.md`, "Decision").
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
 refuse: a lease the chain shows has lapsed (or that a resolver reports lapsed and the chain cannot show
