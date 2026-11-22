@@ -63,12 +63,15 @@ export interface NameVerification {
   // were deleted; nothing in production read them; the badge reads sources/disagree/soleSource/viaFill.)
   sources?: number;
   disagree?: boolean;
-  // WALLET-LAPSE-TIP-1: a lease-LAPSED verdict is only CONFIDENT (`lapsed:true`) when corroborated; a second
-  // name source, or the persisted monotonic tip floor (a tip trusted across prior sessions) also
-  // past expiry. An UNCORROBORATED single-source lapse degrades to CAUTION: `verified:false` + `lapsed` falsy
-  // + a "may have lapsed" reason, so a fresh-install + MITM inflating the node tip cannot assert a false
-  // confident lapse that hard-blocks a legit send. Fail-soft (availability valve), never a false green.
+  // A lease-LAPSED verdict is CONFIDENT (`lapsed:true`, a refusal) only when the lease is expired at a height the
+  // wallet verified: its own PoW-verified header tip, or the persisted floor from prior sessions. Expired only at
+  // the served tip, it is `lapseUnconfirmed` (verified false, `lapsed` falsy): a caution, since whoever answers
+  // for the tip can move it past a live lease (test/name-lapse-tip.test.mjs).
   lapsed?: boolean;
+  lapseUnconfirmed?: boolean;
+  // With `lapseUnconfirmed`: the address the name's own verified records give its last holding, when they give one
+  // a name-scoped replay proves (not a fill, no source reporting the replay insufficient).
+  lastAddr?: string;
   // NS-1 (HIGH, RESIDUAL; not a closed defense): true when the union failed and only ONE source solo-
   // recovered the winner, so a lone (possibly hostile) source alone decided the send target; NOT
   // corroborated by another source. Surfaced so the badge stops asserting multi-source "chain-verified"; the
@@ -175,9 +178,10 @@ const fail = (reason: string): NameVerification => ({ verified: false, reason })
 // via the AUDITED resolver. Shared by the single-source verifyName and the multi-source verifyNameUnion.
 type Replay =
   | { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number; viaFill: boolean; completedAt: number }
-  // WALLET-LAPSE-TIP-1: a lease-lapse failure carries `lapsed` + whether the persisted floor corroborated it,
-  // so the caller can present a confident lapse vs a single-source caution. Other failures leave both unset.
-  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean };
+  // A lease-lapse failure carries `lapsed`, whether it holds at a verified height (`verifiedCorroborated`: the
+  // verified header tip; `floorCorroborated`: the persisted floor) and the last holding's address. Other failures
+  // leave them unset.
+  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string };
 // Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
 // unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
 // is far above any honest history. The cap is per replay: verifyNameUnion's per-source recovery replays each source's
@@ -279,15 +283,14 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   const rec = Object.hasOwn(state.names, name) ? state.names[name] : undefined;
   if (!rec) return { ok: false, reason: "the verified records don't establish ownership of this name" };
   if (rec.expired) {
-    // WALLET-LAPSE-TIP-1: corroborate the lapse against the persisted tip FLOOR (a tip already trusted BEFORE
-    // this; possibly MITM'd; session). Re-running the AUDITED resolver at floorTip re-derives "expired"
-    // without any consensus math here; if the lease is expired even at that trusted lower-bound tip, the lapse
-    // is confident. If it is expired ONLY at the current (claimed) nodeTip, the caller degrades it to caution
-    // unless a second source corroborates; so an inflated fresh-install tip can't assert a false lapse.
+    // The vendored resolver re-run at a verified height says whether the lease is over there too; expired only at
+    // the served tip, the caller cautions instead of refusing.
+    const expiredAt = (h: number) => { const n = resolve(scoped, h).names; return Object.hasOwn(n, name) && n[name]?.expired === true; };
     const floor = heightOf(floorTip);
-    const atFloor = resolve(scoped, floor).names;
-    const floorCorroborated = floor > 0 && Object.hasOwn(atFloor, name) && atFloor[name]?.expired === true;
-    return { ok: false, lapsed: true, floorCorroborated, reason: `${name}.csd lease has lapsed (per the chain); refusing to send` };
+    const floorCorroborated = floor > 0 && expiredAt(floor);
+    const verifiedCorroborated = expiredAt(verifiedTip);
+    const lastAddr = rec.viaFill ? undefined : String(rec.addr ?? rec.owner).toLowerCase();
+    return { ok: false, lapsed: true, floorCorroborated, verifiedCorroborated, lastAddr, reason: `${name}.csd lease has lapsed (per the chain); refusing to send` };
   }
   // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized:
   // it confers no address and is not an owned name yet. Fail CLOSED (never resolve it to the owner) so a name
@@ -359,15 +362,13 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
     const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     if (!rep.ok) {
-      // WALLET-LAPSE-TIP-1: a lapse is CONFIDENT when corroborated; ≥2 name sources served the
-      // events establishing the lease, OR the persisted tip floor is also past expiry. A lone usable source
-      // with an uncorroborated (current-tip-only) lapse degrades to CAUTION, never a false confident lapse
-      // from a fresh-install + MITM-inflated tip. Fail-soft (availability valve), never a false green.
+      // A lapse refuses only when it holds at a height the wallet verified. The name sources do not count: the tip
+      // comes from neither of them, and the default two share one operator.
       if (rep.lapsed) {
-        const confident = usable.length >= 2 || rep.floorCorroborated === true;
-        return confident
-          ? { ...fail(rep.reason), sources: usable.length, disagree: false, lapsed: true }
-          : { ...fail(`${name}.csd may have lapsed, but only one name source is available to confirm the chain tip; confirm out-of-band before sending`), sources: usable.length, disagree: false, lapsed: false };
+        const confident = rep.verifiedCorroborated === true || rep.floorCorroborated === true;
+        if (confident) return { ...fail(rep.reason), sources: usable.length, disagree: false, lapsed: true };
+        const lastAddr = !scopeInsufficient && rep.lastAddr ? { lastAddr: rep.lastAddr } : {};
+        return { ...fail(`${name}.csd may have lapsed: its lease ends below the served tip, above the headers the wallet verified`), sources: usable.length, disagree: false, lapsed: false, lapseUnconfirmed: true, ...lastAddr };
       }
       // M12 (B5e): the UNIONED replay failed. A single hostile source can poison the combined hint set
       // with ONE junk hint (a txid not in its claimed block, an unauthenticated record), aborting the whole

@@ -8,7 +8,7 @@ import { CLARVIS_TRADE_API } from "./endpoints.js";
 
 // What resolveName and confirmName answer: a refusal (ok false, with error), or the address to send to and how
 // far it was verified.
-export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; lapseUnconfirmed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
 // What name resolution reads through the wallet. verifyName is called through the wallet so an instance override
 // applies (test/resolve-lapse-corroborate replaces it to test the resolve logic without SPV). spvGen is bumped on
 // every endpoint change: a verification that began under an older value caches nothing.
@@ -25,8 +25,8 @@ export interface NameIo {
 // Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
 const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
 
-// Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
-// popup never routes funds to a name's stale address. Returns the nset addr if set, else the
+// Forward resolution for "send to a .csd name". Refuses a lease the wallet proves expired; a lapse it does not settle
+// comes back as a caution (`lapseUnconfirmed`). Returns the nset addr if set, else the
 // owner (so a name works as a recipient even before its holder sets a resolver record).
 export async function resolveName(wallet: NameIo, name: string): Promise<NameResolution> {
   const nm = normName(name);
@@ -56,19 +56,13 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
     const j = await r.json();
     if (j?.lapsed) {
-      // N19 (B5b): do NOT hard-refuse on a single source's SERVED `lapsed` flag; that short-circuit
-      // fired BEFORE the SPV union, so the two-source lapse corroboration (WALLET-LAPSE-TIP-1) could
-      // never see the claim it exists to corroborate, and one hostile/buggy primary could permanently
-      // block sends to a healthy name. Consult the union: chain proves the lease CURRENT -> serve the
-      // PROVEN answer (the served flag was false); union corroborates the lapse -> refuse with
-      // confidence; union unavailable -> keep today's fail-closed refusal, with honest uncorroborated
-      // copy. A real lapse still refuses exactly as before; this only removes the FALSE refusal.
+      // A served `lapsed` flag is not a refusal by itself: the chain proves the lease current -> the proven answer;
+      // the lapse holds at a verified height -> refuse; anything else -> the unconfirmed-lapse caution.
       const lv = await wallet.verifyName(nm).catch(() => null);
       if (lv?.verified && lv.addr)
         return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, completedAt: lv.completedAt, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
-      return lv?.lapsed === true
-        ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed: can't send to it` }
-        : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain; refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
+      if (lv?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed: can't send to it` };
+      return unconfirmedLapse(nm, j, lv);
     }
     if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
     const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
@@ -83,14 +77,25 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     // NS-2: gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but serves an
     // address for a genuinely-lapsed name reaches here; verifyName's union already computed the lapse
     // (resolve(events, lapseTip).expired, corroborated by the persisted floor at namespv.ts). Refuse a
-    // CONFIDENT lapse exactly as the served-flag branch does. An UNCORROBORATED lapse is left to the
-    // fall-through caution below (the WALLET-LAPSE-TIP-1 availability valve: never hard-block on an
-    // uncorroborated lapse that could be a MITM-inflated tip on a fresh install).
+    // CONFIDENT lapse exactly as the served-flag branch does; a lapse expired only at the served tip is the
+    // unconfirmed-lapse caution.
     if (v?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd has lapsed, so we did not send. Send to the owner's 0x address directly, or ask them to renew the name before sending again.` }; // MUTATE_NS2_PROVEN_LAPSE
+    if (v?.lapseUnconfirmed === true) return unconfirmedLapse(nm, j, v);
     // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill; not name-scope
     // provable" caution rather than the generic "couldn't verify" one. Still verified:false (fail-closed).
     return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable", viaFill: v?.viaFill === true };
   } catch { return { ok: false, error: "name lookup failed" }; }
+}
+
+// A lapse the wallet could not settle (the served flag, or a lease expired only at the served tip): a caution, not a
+// refusal ([A4]). The address is the last holding's from the name's own verified records when the replay gave one, so
+// a tip moved past a live lease does not also move the send (test/name-lapse-tip.test.mjs [T3]); the served one only
+// when nothing was replayed.
+function unconfirmedLapse(nm: string, j: { addr?: unknown; via?: string; owner?: string }, v: NameVerification | null): NameResolution {
+  const served = typeof j?.addr === "string" && /^0x[0-9a-f]{40}$/.test(j.addr.toLowerCase()) ? j.addr.toLowerCase() : null;
+  const addr = v?.lastAddr ?? served;
+  if (!addr) return { ok: false, error: `${nm}.csd has no address` };
+  return { ok: true, name: nm, addr, via: j.via, owner: j.owner, lapsed: false, lapseUnconfirmed: true, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable" };
 }
 
 // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies

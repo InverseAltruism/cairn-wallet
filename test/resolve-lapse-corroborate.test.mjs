@@ -5,9 +5,8 @@
 // cheap half (one hostile/buggy primary permanently blocks sends to a healthy name by serving
 // lapsed:true) stayed open while the expensive half shipped unconsumed. Now the served flag is
 // CORROBORATED: chain proves the lease CURRENT -> the send proceeds on the PROVEN address (the served
-// flag was a lie); the union corroborates the lapse -> refuse with confidence; union unavailable ->
-// keep the fail-closed refusal with honest uncorroborated copy. A REAL lapse refuses exactly as
-// before - the change only removes the FALSE refusal (the standing no-UX-regression rule).
+// flag was a lie); the union proves the lapse -> refuse; anything else -> the [A4] caution, on the
+// proven last address when the replay gave one (cases 3 to 4c, 7b).
 //
 // MUTATION CONTRACT: reverting the resolveName lapsed branch to the pre-B5b one-liner
 // (`if (j?.lapsed) return { ok:false, ... }`) REDS case 1 (the false-lapse route-around).
@@ -61,21 +60,40 @@ console.log("N19 (B5b) - served-lapse corroboration in resolveName:");
   check("...and carries lapsed:true for the UI", r.lapsed === true);
 }
 
-// 3. UNION UNAVAILABLE: fail-closed refusal kept, with HONEST uncorroborated copy (not the confident claim).
+// 3. UNION UNAVAILABLE: the served flag alone is not a refusal ([A4]): a caution on the served address, which is all
+//    there is, and the Confirm that follows is the second click.
 {
   lapsedStub();
   const w = await freshWallet(async () => { throw new Error("spv offline"); });
   const r = await w.resolveName("alice");
-  check("uncorroborated lapse still refuses (fail-closed)", r.ok === false);
-  check("...with honest copy that the claim was NOT confirmed on-chain", /couldn't be confirmed on-chain/.test(r.error || ""));
+  check("served lapse, union unavailable: the caution (ok, not verified, lapseUnconfirmed) on the served address", r.ok === true && r.verified === false && r.lapseUnconfirmed === true && r.addr === ADDR);
 }
 
-// 4. Union answers but neither verifies nor corroborates (e.g. degraded single source): fail-closed, honest copy.
+// 4. Union answers but neither verifies nor settles the lapse: the same caution.
 {
   lapsedStub();
   const w = await freshWallet(async () => ({ verified: false, reason: "only one name source reachable", scope: "as-shown" }));
   const r = await w.resolveName("alice");
-  check("non-corroborating union keeps the fail-closed refusal with the uncorroborated copy", r.ok === false && /couldn't be confirmed on-chain/.test(r.error || ""));
+  check("served lapse, union not settling it: the caution on the served address", r.ok === true && r.lapseUnconfirmed === true && r.addr === ADDR);
+}
+
+// 4b. The union replayed the name and found the lease over only at the served tip: the caution goes to the address the
+//     verified records give, not the served one.
+{
+  lapsedStub();
+  const w = await freshWallet(async () => ({ verified: false, lapsed: false, lapseUnconfirmed: true, lastAddr: SPV_ADDR, reason: "may have lapsed" }));
+  const r = await w.resolveName("alice");
+  check("served lapse + unconfirmed replay: the caution on the PROVEN address, not the served one", r.ok === true && r.lapseUnconfirmed === true && r.addr === SPV_ADDR);
+}
+
+// 4c. A served lapse with no well-formed address and nothing replayed: no address to send to ([A5]).
+{
+  globalThis.fetch = async (url) => String(url).includes("/cairnx/resolve/")
+    ? { ok: true, status: 200, json: async () => ({ owner: ADDR, lapsed: true }) }
+    : { ok: false, status: 500, json: async () => ({}) };
+  const w = await freshWallet(async () => { throw new Error("spv offline"); });
+  const r = await w.resolveName("alice");
+  check("served lapse, no address, nothing replayed: refused as having no address", r.ok === false && /has no address/.test(r.error || ""));
 }
 
 // ── NS-2 (Plan 75 P75-7): gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but
@@ -110,6 +128,13 @@ console.log("\nNS-2 - proven-lapse gate on the OMITTED served flag:");
   const w = await freshWallet(async () => ({ verified: false, lapsed: false, reason: "may have lapsed, but only one name source is available", scope: "as-shown" }));
   const r = await w.resolveName("alice");
   check("omitted flag + UNCORROBORATED lapse -> caution ok:true (fresh-install valve NOT regressed)", r.ok === true && r.verified === false && r.addr === ADDR);
+}
+// 7b. Omitted flag + a lapse expired only at the served tip: the [A4] caution on the proven address.
+{
+  omittedLapseStub();
+  const w = await freshWallet(async () => ({ verified: false, lapsed: false, lapseUnconfirmed: true, lastAddr: SPV_ADDR, reason: "may have lapsed" }));
+  const r = await w.resolveName("alice");
+  check("omitted flag + unconfirmed lapse -> the caution on the proven address", r.ok === true && r.verified === false && r.lapseUnconfirmed === true && r.addr === SPV_ADDR);
 }
 // 8. RED-FIRST: removing MUTATE_NS2_PROVEN_LAPSE makes the omitted-flag proven-lapse input route to the STALE
 //    served address (ok:true) -- the exact attacker-recapturable burn the gate prevents.

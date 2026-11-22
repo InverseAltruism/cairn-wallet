@@ -6,7 +6,7 @@ import { $, msg, val } from "./popup-dom.js";
 import { balanceState, beginReview, curAddr, reviewCurrent, reviewState } from "./popup-state.js";
 import { openPanel } from "./popup-panels.js";
 import { resolveRecipient, setNameRow, recipientChecks } from "./popup-recipient.js";
-import { CSD_FLOW, teardownReview, armReview, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
+import { CSD_FLOW, teardownReview, armReview, reviewButtons, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
 
 $("btn-send-t").addEventListener("click", () => { openPanel("send-form"); resetMax(); updateSendEstimate(); });
 
@@ -104,7 +104,7 @@ $("btn-send").addEventListener("click", async () => {
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
   reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
-  armReview(CSD_FLOW, short, !!redirectName);
+  armReview(CSD_FLOW, short, reviewButtons(!!redirectName, rr.lapseUnconfirmed));
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));

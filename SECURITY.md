@@ -260,8 +260,12 @@ them, so a name the replay shows was bought through an offer fill or re-claimed 
 described above (`docs/DESIGN-viafill.md`, "Decision").
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
-refuse: a lease the chain shows has lapsed (or that a resolver reports lapsed and the chain cannot show
-current), and a change between review and confirm. At confirm the wallet **re-resolves and
+refuse: a lease that has lapsed at a height the wallet verified (its own proof-of-work header tip, or the floor kept
+from earlier sessions), and a change between review and confirm. A lapse at the served tip alone, or one a resolver
+reports and the wallet cannot settle, is a caution with a second click ("Send anyway"), not a refusal: whoever answers
+for both default hosts could otherwise serve a tip past a live name's lease and stop every send to it. The caution's
+address is the one the name's own verified records give its last holding, when the replay gives one, so a moved tip
+does not also move the send (test/name-lapse-tip.test.mjs). At confirm the wallet **re-resolves and
 re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not
 verified. The recipient you confirm is always the **full, untruncated address**.
 

@@ -334,10 +334,14 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 - A green badge needs a successful replay. A disagreeing source is a warning, not a refusal: the send goes to the
   proven winner with `disagree` or `soleSource` set. When nothing can be proven, `resolveName` returns the served
   address with `verified: false` and the popup lets the user send after a caution.
-- A lapse refuses when it is corroborated (a second source or the persisted tip floor is also past expiry), and when
-  a resolver reports the lease lapsed and the chain cannot show it current (`src/core/names.ts`). A lapse seen only
-  against one source's tip is a caution (`verified: false`, "may have lapsed"), so an inflated node tip cannot
-  block a send (test/resolve-lapse-corroborate.test.mjs). A name the replay shows decided by an offer fill or a
+- A lapse refuses only when the lease is over at a height the wallet verified: its PoW-verified header tip or the
+  persisted tip floor. A second name source does not count, since neither source serves the tip. Expired only at the
+  served tip, or reported lapsed by a resolver while the chain cannot show the lease current, it is
+  `lapseUnconfirmed` (`verified: false`): the popup's caution with "Send anyway", on the last holding's proven
+  address (`lastAddr`) when the replay gave one, else the served one (`src/core/names.ts`;
+  test/name-lapse-tip.test.mjs, test/resolve-lapse-corroborate.test.mjs). Headers synced only to a name's last
+  record plus 12 trail the tip, so an honest lapse of an old name is a caution until the headers reach past its
+  lease end. A name the replay shows decided by an offer fill or a
   re-claim after a lapse (`viaFill`) is not shown green; the stale-seller residual above is the case the replay
   cannot see.
 - A long sync persists its verified progress every `SYNC_PERSIST_WINDOW` (8,192) headers, so an interrupted sync

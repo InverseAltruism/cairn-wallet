@@ -1,7 +1,7 @@
 // The review-and-confirm engine the CSD and token sends share.
 import { checkRow, type Check, escapeHtml } from "./clearsign.js";
 import { fmtCsd } from "../core/cairnx.js";
-import { REDIRECT_BUTTONS, sentenceOf } from "./sentences.js";
+import { LAPSE_BUTTONS, REDIRECT_BUTTONS, type ReviewButtons, sentenceOf } from "./sentences.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
 import { $, busy, msg, msgAction, msgOutcome, statusWrites } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
@@ -36,17 +36,17 @@ export function teardownReview(f: SendFlow, clearValues: boolean) {
   dropReviews();
   for (const flow of [CSD_FLOW, TOKEN_FLOW]) {
     ($(flow.ids.confirm) as HTMLElement).hidden = true;
-    labelButtons(flow, false);
+    labelButtons(flow, null);
     for (const id of [flow.ids.to, flow.ids.amt]) { const el = $(id) as HTMLInputElement; el.disabled = false; if (clearValues && flow === f) el.value = ""; }
   }
 }
 // Arm the review: disable the inputs the snapshot was read from and show the confirm card (editing
 // the form after "Review" must not let displayed values diverge from signed ones). Confirm is live unless `hold`
 // (a balance that does not cover the send) or a send is still in flight; a Confirm click disarms it until the next
-// review. `redirected`: the name now points elsewhere than when last paid ([A19]), so Confirm and Back name what they
-// do; the click on "Send to new address" is the second click after Review.
-export function armReview(f: SendFlow, hold = false, redirected = false) {
-  labelButtons(f, redirected);
+// review. `buttons`: a caution that asks for a second click ([A19] REDIRECT_BUTTONS, [A4] LAPSE_BUTTONS) names what
+// Confirm and Back do; that Confirm is the second click after Review.
+export function armReview(f: SendFlow, hold = false, buttons: ReviewButtons | null = null) {
+  labelButtons(f, buttons);
   ($(f.ids.to) as HTMLInputElement).disabled = true;
   ($(f.ids.amt) as HTMLInputElement).disabled = true;
   ($(f.ids.button) as HTMLButtonElement).disabled = hold || submitting;
@@ -94,8 +94,12 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
 }
 
 const DEFAULT_BUTTONS = { confirm: "Confirm send", back: "Back" } as const;
-function labelButtons(f: SendFlow, redirected: boolean) {
-  const l = redirected ? REDIRECT_BUTTONS : DEFAULT_BUTTONS;
+/** The review's buttons for a send's cautions: [A19]'s first, then [A4]'s, else the default pair. */
+export function reviewButtons(redirected: boolean, lapseUnconfirmed: boolean | undefined): ReviewButtons | null {
+  return redirected ? REDIRECT_BUTTONS : lapseUnconfirmed ? LAPSE_BUTTONS : null;
+}
+function labelButtons(f: SendFlow, buttons: ReviewButtons | null) {
+  const l = buttons ?? DEFAULT_BUTTONS;
   $(f.ids.button).textContent = l.confirm; $(f.ids.back).textContent = l.back;
 }
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two

@@ -6,7 +6,7 @@ import { $, msg, val } from "./popup-dom.js";
 import { beginReview, curAddr, reviewCurrent, reviewState, type ViewBind, bindView, viewCurrent } from "./popup-state.js";
 import { dropStaleView, openPanel } from "./popup-panels.js";
 import { resolveRecipient, setNameRow, recipientChecks } from "./popup-recipient.js";
-import { TOKEN_FLOW, teardownReview, armReview, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
+import { TOKEN_FLOW, teardownReview, armReview, reviewButtons, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
 
 // ── send a CairnX token: recipient + amount → review (ticker/amount/to/fee) → sign ──
 // The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
@@ -76,7 +76,7 @@ $("btn-tsend").addEventListener("click", async () => {
   // the switched-to account (the recipient stays correct but the WRONG account would pay).
   // The token and its decimals ride in the snapshot: the sheet's live `tsend` can be another token by the time Confirm signs.
   reviewState.reviewed = { to, base, ticker: sheet.ticker, decimals: sheet.decimals, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
-  armReview(TOKEN_FLOW, false, !!redirectName);
+  armReview(TOKEN_FLOW, false, reviewButtons(!!redirectName, rr.lapseUnconfirmed));
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-tsend-back").addEventListener("click", () => teardownReview(TOKEN_FLOW, false));

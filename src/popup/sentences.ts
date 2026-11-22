@@ -16,7 +16,7 @@ export const M11_BACKUP_SERVER = "Using Cairn's backup server.";
 // main server refused and the backup server had not answered (core/hosts.ts MAIN_REFUSED_WAIT_MS), so the result is
 // "may be in flight" with what is known first; the sheet's R4 to R6 say "Nothing was sent", which is not known there.
 export const SENTENCES = {
-  R1: { text: "Something went wrong, so nothing was sent. Try again, or see Details.", tone: "red", details: "The refusal's code, and the wallet's own reason." },
+  R1: { text: "Something went wrong, so nothing was sent. Try again, or see Details.", tone: "red", details: "The refusal's own text and code, or the thrown message." },
   R2: { text: "This may have been sent. Check your history before you send again.", tone: "amber", details: "SUBMIT_MAYBE_INFLIGHT: no server accepted it and one may hold it (no answer, a timeout, a 5xx, an unreadable answer)." },
   R3: { text: "This payment, or one using the same coins, is already on its way. Check your history once it confirms.", tone: "grey", details: "SUBMIT_DUPLICATE: already present or a conflict in the pending pool." },
   R4: { text: "Fee too low for the network right now. Nothing was sent.", tone: "red", details: "SUBMIT_REJECTED, classed as fee." },
@@ -32,6 +32,7 @@ export const SENTENCES = {
   S5: { text: "A coin merge of {amount} is still confirming. Try again once it is.", tone: "grey", details: "Added to INSUFFICIENT or TOO_MANY_INPUTS while a consolidation is pending." },
   S8: { text: "This amount needs more coins than one payment can use, so nothing was sent. Send less, or merge coins first.", tone: "red", details: "TOO_MANY_INPUTS: more than the 512-input per-transaction limit." },
   S12: { text: "The fee is above what the wallet allows ({cap} here). Nothing was sent.", tone: "red", details: "FEE_CAP: fee above max(1 CSD, 10% of the inputs)." },
+  A4: { text: "{name} may have expired; the wallet could not check. If it has, this address belongs to its last owner.", tone: "amber", details: "Served lapsed flag; the SPV check did not settle the lapse." },
   A18: { text: "New name, only partly verified. Check the address before a large payment.", tone: "amber", details: "Registered after this release's newest table entry; Cairn's 2 servers agree and the wallet has no older record to check them against." },
   A19: { text: "{name} points to a different address than when you last paid it. Continue only if you expected this.", tone: "amber", details: "The address differs from the one in this wallet's last send to the name." },
   Q3: { text: "Could not publish the reveal. Try again later.", tone: "grey", details: "The core's code, or the content API's HTTP status." },
@@ -46,6 +47,9 @@ export const SENTENCES = {
 export type SentenceKey = keyof typeof SENTENCES;
 /** [A19]'s two buttons in a send review: the review's Confirm and Back, relabelled while the line is shown. */
 export const REDIRECT_BUTTONS = { confirm: "Send to new address", back: "Cancel" } as const;
+/** [A4]'s two buttons, the same way. */
+export const LAPSE_BUTTONS = { confirm: "Send anyway", back: "Cancel" } as const;
+export type ReviewButtons = { readonly confirm: string; readonly back: string };
 
 // The codes worded wherever they appear; any other code keeps the engine's own text in a flow whose lines are not built
 // yet (names, merges, posts, seals, fills).
