@@ -85,7 +85,8 @@ export function sealRecord(key: SealKey, table: SealTable, chunks: readonly Seal
 /**
  * The sealed chunks of a stored record, when it is well formed for `table` and every entry's MAC holds under `key`
  * with prevTop read from the entry below it (the table hash for the first). Else null: the caller ignores the whole
- * list and verifies as without seals. Throws nothing on any stored value.
+ * list and verifies as without seals. A stored value is validated before it reaches the message, so only a malformed
+ * `table` throws.
  */
 export function checkSeals(key: SealKey, raw: unknown, table: SealTable): SealedChunk[] | null {
   const r = raw as SealRecord | null;
@@ -94,20 +95,15 @@ export function checkSeals(key: SealKey, raw: unknown, table: SealTable): Sealed
   if (r.list.length > MAX_CHUNK - first + 1) return null;
   const out: SealedChunk[] = [];
   let prevTop = table.newestHash;
-  try {
-    for (let i = 0; i < r.list.length; i++) {
-      const e = r.list[i] as SealEntry | null;
-      if (!e || typeof e !== "object" || e.k !== first + i || typeof e.top !== "string" || !HASH_RE.test(e.top)) return null;
-      if (typeof e.work !== "string" || !WORK_RE.test(e.work) || typeof e.mac !== "string" || !MAC_RE.test(e.mac)) return null;
-      const work = BigInt(e.work);
-      if (work > WORK_MAX) return null;
-      if (macHex(key, sealMessage(e.k, prevTop, e.top, work, table)) !== e.mac) return null; // MUTATE_SEAL_MAC
-      out.push({ k: e.k, top: e.top, work });
-      prevTop = e.top;
-    }
-  } catch (e) {
-    console.warn("[spvseal] seal list unreadable; ignored:", e);
-    return null;
+  for (let i = 0; i < r.list.length; i++) {
+    const e = r.list[i] as SealEntry | null;
+    if (!e || typeof e !== "object" || e.k !== first + i || typeof e.top !== "string" || !HASH_RE.test(e.top)) return null;
+    if (typeof e.work !== "string" || !WORK_RE.test(e.work) || typeof e.mac !== "string" || !MAC_RE.test(e.mac)) return null;
+    const work = BigInt(e.work);
+    if (work > WORK_MAX) return null;
+    if (macHex(key, sealMessage(e.k, prevTop, e.top, work, table)) !== e.mac) return null; // MUTATE_SEAL_MAC
+    out.push({ k: e.k, top: e.top, work });
+    prevTop = e.top;
   }
   return out;
 }
