@@ -135,7 +135,8 @@ console.log("3. locked with a list stored, nothing is built or requested until u
   // Unlocked, the wait is not taken: an unlock signal that never settles changes nothing.
   const st3 = honestStore();
   const t0 = performance.now();
-  const src3 = await liveSpvSource(opts(st3, { unlocked: () => new Promise(() => {}) }));
+  const never = new Promise((resolve) => { void resolve; /* never called: an unlock that does not come */ });
+  const src3 = await liveSpvSource(opts(st3, { unlocked: () => never }));
   check(`unlocked, the restore never waits on the signal (built in ${Math.round(performance.now() - t0)} ms, reads ${st3.readKeys.join(",")})`, !!src3 && st3.readKeys.join(",") === "31,33,34,35");
 }
 
