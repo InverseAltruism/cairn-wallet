@@ -94,7 +94,7 @@ for (let n = 0; n < RUNS; n++) {
   for (const s of steps) OPS[s](st);
   net.log.length = 0;
   try {
-    const src = await liveSpvSource({ rpcBase: `${API}/api/rpc`, headersBase: API, anchors: SEAL_ANCHORS, store: async () => st, sealKey, unlocked: async () => {} });
+    const src = await liveSpvSource({ rpcBase: `${API}/api/rpc`, headersBase: API, anchors: SEAL_ANCHORS, store: async () => st, sealKey, unlocked: () => Promise.resolve() });
     const p = await src.prepare(SEAL_TOP - 12);
     const bad = [];
     for (const h of SAMPLE) if ((await src.hashAt(h)) !== hashOf(h)) bad.push(h);

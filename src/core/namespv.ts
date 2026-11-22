@@ -32,7 +32,7 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason; never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, parseRecord, isNameGive, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, type BlockHeader, type CairnXRecord } from "../vendor/cairnx-spv.js";
+import { CsdClient, rpcTxToTx, txid as ctxid, resolve, parseRecord, isNameGive, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, type BlockHeader, type CairnXRecord } from "../vendor/cairnx-spv.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
