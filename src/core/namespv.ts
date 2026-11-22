@@ -954,18 +954,25 @@ const storeWriters = new Map<HeaderStore, { tail: Promise<void>; busy: boolean; 
 const acquirers = new Map<HeaderStore, { writes(): Promise<void> }>();
 
 /**
- * `newer` after `older` as one write: newer's puts, head and seal list win, and older's puts and seal entries above
- * newer's deleteAbove are dropped (a seal list cut from the top still verifies).
+ * `newer` after `older` as one write, with the effect of the two in order: newer's puts and head win, older's puts
+ * above newer's deleteAbove are dropped, and the lower deleteAbove applies (puts land after it). The seal list is
+ * newer's, else older's cut below the lowest chunk newer puts or deletes; either is cut at the first entry for a chunk
+ * the merged write deletes. So the list stays contiguous from below and the merge leaves no entry over a chunk it
+ * deletes or newer rewrites (test/spvseal.test.mjs, the merge property).
  */
 export function mergeStoreWrites(older: StoreWrite, newer: StoreWrite): StoreWrite {
   if (older.del?.length || newer.del?.length) throw new Error("mergeStoreWrites: suffix writes carry no del");
-  const below = (k: number) => newer.deleteAbove === undefined || k <= newer.deleteAbove;
   const put = new Map<number, Uint8Array>();
-  for (const p of older.put ?? []) if (below(p.k)) put.set(p.k, p.records);
+  for (const p of older.put ?? []) if (newer.deleteAbove === undefined || p.k <= newer.deleteAbove) put.set(p.k, p.records);
   for (const p of newer.put ?? []) put.set(p.k, p.records);
-  const deleteAbove = newer.deleteAbove ?? older.deleteAbove;
+  const bounds = [older.deleteAbove, newer.deleteAbove].filter((d): d is number => d !== undefined);
+  const deleteAbove = bounds.length ? Math.min(...bounds) : undefined;
   const head = newer.head ?? older.head;
-  const seals = newer.seals ?? (older.seals && { ...older.seals, list: older.seals.list.filter((e) => below(e.k)) });
+  const source = newer.seals ?? older.seals;
+  const newerLow = Math.min(...(newer.put ?? []).map((p) => p.k), newer.deleteAbove === undefined ? Infinity : newer.deleteAbove + 1);
+  const kept = (k: number) => (deleteAbove === undefined || k <= deleteAbove || put.has(k)) && (newer.seals !== undefined || k < newerLow);
+  const cut = source ? source.list.findIndex((e) => !kept(e.k)) : -1;
+  const seals = source && cut >= 0 ? { ...source, list: source.list.slice(0, cut) } : source;
   return { put: [...put].map(([k, records]) => ({ k, records })), ...(deleteAbove !== undefined ? { deleteAbove } : {}), ...(head ? { head } : {}), ...(seals ? { seals } : {}) };
 }
 
