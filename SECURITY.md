@@ -148,8 +148,12 @@ txid, and a source transaction off the answering host's branch reads as not foun
 
 A server's own text no longer reaches the screen or a page through a send's result: the result's `error` is the
 wallet's sentence and the popup and approval window show the sentence module's line for the code and reason
-(`src/popup/sentences.ts`; test/submit-answers.test.mjs H6, test/popup-outcome-dom.test.mjs 4f). The other places a
-server's text reaches the screen are listed for later slices in the copy sheet's List 3.
+(`src/popup/sentences.ts`; test/submit-answers.test.mjs H6, test/popup-outcome-dom.test.mjs 4f). Nor through the
+other refusals that carried it: the content server's refusal of a reveal, the first-party sign-in check's refusal,
+the second server's note on a denied reservation and the offer service's status string (mapped onto a fixed list of
+words, `src/core/servedtext.ts`); the name service's "via" field is off the send review. Each such text goes to the
+worker's console (test/served-text-off-screen.test.mjs). What a server serves as data under review (tickers, amounts,
+profile keys) stays on screen, escaped, and the cards say where it comes from.
 
 ### Sending to a `.csd` name
 

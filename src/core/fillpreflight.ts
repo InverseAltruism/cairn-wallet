@@ -12,6 +12,7 @@ import { secondSourceOfferConflict, reservationRecordVerdict, secondSourceUnansw
 import { CLARVIS_TRADE_API } from "./endpoints.js";
 import { OWN_FILL_INDEX_WAIT_MS } from "./history.js";
 import { heightOf, lowestChainHeight } from "./chainbound.js";
+import { offerStatusWord } from "./servedtext.js";
 
 // F2 (amount leg): does the resolver-served offer's fee/rebate-relevant fields match the MERKLE-PROVEN offer?
 // requiredFillOutputs sizes the treasury fee from feeBps (= feeBpsAt(creation height)), the maker rebate from
@@ -192,7 +193,7 @@ export async function fillOfferPreflight(wallet: FillPreflightIo, proposalId: st
     else if (r0.status !== 404) fetchFailed = true;   // 5xx/garbled ≠ a definitive "gone"
   } catch { fetchFailed = true; }
   if (offer && typeof offer.status === "string") {
-    if (offer.status !== "open") return { ok: false, error: `offer is ${offer.status}: refusing to pay into a no-op fill (review again)`, sighashMatch: false, code: "FILL_UNSAFE" };
+    if (offer.status !== "open") return { ok: false, error: `offer is ${offerStatusWord(offer.status)}: refusing to pay into a no-op fill (review again)`, sighashMatch: false, code: "FILL_UNSAFE" };
     // Exact per-recipient output sums, BigInt end-to-end (money never rides Number arithmetic here).
     // A non-integer or ≤0 value can never build a valid tx, so refuse with the structured error shape
     // instead of letting BigInt() throw raw out of the preflight.
@@ -534,7 +535,8 @@ async function fclaimLanePreflight(wallet: FillPreflightIo, offer: any, fclaimTx
   // chain denies it. The second resolver's replay of the real chain shows the denial.
   const recordReply = second.record.answer();
   const rv = reservationRecordVerdict(recordReply, { fclaimTxid, provenHeight: fcEv?.height });
-  if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer${rv.note ? ` (${rv.note})` : ""}. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
+  if (rv?.kind === "denied" && rv.note) console.info("[fill] the second source's note on the denied reservation", fclaimTxid, rv.note);
+  if (rv?.kind === "denied") return refuse("RESERVATION_DENIED", `refusing to sign: the second source (clarvis) reports that the chain did not grant your reservation for this offer. The chain would take your payment and deliver nothing. Your resolver may be hiding a competing reservation; check the offer on the explorer before trying again.`); // MUTATE_RESERVATION_VERDICT
   // "unknown" goes back to the approval window as a confirm step; the user's acknowledgement for this fclaim signs.
   if (rv?.kind === "unknown" && typeof fcEv?.height === "number" && String(reservationAck ?? "").toLowerCase() !== fclaimTxid.toLowerCase()) // MUTATE_RESERVATION_CONFIRM
     return { ...refuse("RESERVATION_UNCONFIRMED", `the second source has read the chain to block ${rv.tipHeight} and has no record of your reservation (block ${fcEv.height}); confirm in the approval window to sign anyway`), unconfirmed: { fclaimTxid: fclaimTxid.toLowerCase(), fclaimHeight: fcEv.height, tipHeight: rv.tipHeight } };

@@ -1069,7 +1069,7 @@ export class Wallet {
           if (rr && rr.ok) continue;
           if (node.contentRefusedForGood(rr)) {
             // Its history row says the post was not published (popup-history.ts); a queue entry from before 0.3.3 has no hk.
-            console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}: ${String(rr?.error ?? "")}); it is not retried`);
+            console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}); it is not retried`);
             if (typeof x.hk === "string") await this.hist.annotate(x.hk, x.txid, { bodyRefused: Number(rr?.status) });
             continue;
           }

@@ -45,6 +45,12 @@
   a JSON 4xx other than 400, 413 and 429, a 2xx `{}` or an `ok:false` without an `err` text (were `SUBMIT_REJECTED`), a
   truthy `ok` that is not `true` (was sent), and the node's "submit validation did not finish" (was `SUBMIT_REJECTED`)
   (test/submit-answers.test.mjs).
+- No other server text reaches a refusal on screen either: a reveal the content server refused says
+  `/api/content -> <HTTP status>`; a failed first-party sign-in says "sign-in failed"; the second server's note on a
+  denied reservation is left out of RESERVATION_DENIED's text; the offer service's status in a fill refusal or the
+  token price line is one of open, filled, cancelled, expired, locked, closed, else "not open"; the send review's Name
+  row no longer shows the name service's "via" field. Each server text goes to the worker's console
+  (test/served-text-off-screen.test.mjs).
 
 ## 0.3.4
 

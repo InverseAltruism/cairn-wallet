@@ -245,8 +245,8 @@ Beside the clarvis offer read, the fclaim-lane preflight asks clarvis for its re
 by the front door do not change its answer. The read starts with the scan, on the same terms as the offer read (the
 same base and timeout), and counts only if it answered before the scan finished, so an honest fill waits for nothing.
 
-- A 200 for this fclaim with `applied: false`: refuse with `RESERVATION_DENIED`, with clarvis's reason when it gives
-  a short printable one. The chain clarvis follows denies the reservation, which is where the payment would burn.
+- A 200 for this fclaim with `applied: false`: refuse with `RESERVATION_DENIED`; clarvis's reason, when it gives a
+  short printable one, goes to the wallet's console, not on screen. The chain clarvis follows denies the reservation, which is where the payment would burn.
 - A 404 whose `tipHeight` is at least the buyer's proven fclaim height plus 12: clarvis has scanned past the
   reservation and does not know it. The wallet signs nothing yet and returns `RESERVATION_UNCONFIRMED` with both
   heights to the approval window, which keeps the request queued and shows it again with a warning and two buttons,

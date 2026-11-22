@@ -994,14 +994,16 @@ export async function fillOffer(
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:
 // a hung request would otherwise hold flushPending's in-flight latch and a revealClaim approval.
 // Never throws. A non-2xx answer resolves { ok: false, error, status } with the HTTP status, so the content queue can
-// tell the server's lasting refusal (contentRefusedForGood) from an outage.
+// tell the server's lasting refusal (contentRefusedForGood) from an outage. `error` is the wallet's label with the
+// status; the server's own text goes to the worker's console only, since a refused reveal shows `error`.
 export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<any> {
   return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r) => {
     let j: any;
     try { j = await r.json(); } catch { j = undefined; }
     if (r.ok) return j && typeof j === "object" ? j : { ok: false, error: "/api/content -> unreadable response" };
     const body = j && typeof j === "object" && !Array.isArray(j) ? j : {};
-    return { ...body, ok: false, error: String(body.error ?? body.err ?? `/api/content -> ${r.status}`), status: r.status };
+    if (body.error !== undefined || body.err !== undefined) console.info("[content] the server's answer", r.status, String(body.error ?? body.err));
+    return { ...body, ok: false, error: `/api/content -> ${r.status}`, status: r.status };
   }).catch((e) => ({ ok: false, error: String(e) }));
 }
 /** 400, 413 and 422 are the server refusing this body for good (a malformed request, a body over its cap, content it
@@ -1022,7 +1024,9 @@ export async function signIn(apiBase: string, priv: string): Promise<{ ok: boole
   // valid spend signature from the login flow (see test/poc-signin-oracle.ts).
   const { sig64, pub33 } = signSighash(loginDigest(String(n.nonce)), priv);
   const v = await post(apiBase, "/auth/verify", { nonce: n.nonce, pub33, sig64 });
-  // Normalize the failure shape to this function's declared `error` key; post() returns {ok:false,err}
-  // on a non-2xx body (VAL-2), and this legacy path's callers read `.error`.
-  return v?.ok ? v : { ok: false, error: v?.error ?? v?.err ?? "sign-in failed" };
+  // The failure's `error` is the wallet's words: the approval window shows the result, and the server's own text
+  // (post() returns it as `err` on a non-2xx body) goes to the worker's console only.
+  if (v?.ok) return v;
+  if (v?.error !== undefined || v?.err !== undefined) console.info("[sign-in] the server's answer", String(v.error ?? v.err));
+  return { ok: false, error: "sign-in failed" };
 }

@@ -4,6 +4,7 @@
 import { cairnxTradeFee, FEE_BPS_V16, isTicker, decodeCairnxRecord, CAIRNX_DOMAIN, type TokenDisplayMeta } from "./cairnx.js";
 import { getProposal } from "./node.js";
 import { offerExpiryHeightOf } from "../vendor/cairnx-spv.js";
+import { offerStatusWord } from "./servedtext.js";
 
 // The block at which the served offer expires, for the fill cards. Display only: the fill preflight checks the
 // merkle-proven record's expiry before it signs.
@@ -79,7 +80,7 @@ async function servedOpenOffer(wallet: CairnxViewIo, proposalId: string): Promis
   const r = await wallet.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default)
   if (!r.ok) return { ok: false, error: "offer not found" };
   const o: any = await r.json().catch(() => null);
-  if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+  if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${offerStatusWord(o.status)}` : "offer unavailable" };
   return { ok: true, offer: o };
 }
 

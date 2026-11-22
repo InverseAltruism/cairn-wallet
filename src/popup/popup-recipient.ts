@@ -42,7 +42,7 @@ export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr
       : (res.sources ?? 1) >= 2
         ? (lowDepth ? `Chain-backed, ${res.sources} servers agree, only${conf}: it could still reorg.` : `Chain-backed, ${res.sources} name servers agree (same operator)${conf}.`)
         : `Chain-backed, but only 1 source answered: the second server is unreachable, a weaker guarantee${conf}.`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, label: `${nm}.csd → ${short(res.addr)} (via ${res.via ?? "owner"})`, badge };
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, label: `${nm}.csd → ${short(res.addr)}`, badge };
   }
   return { ok: false, error: "Enter a 0x… address or a name.csd." };
 }

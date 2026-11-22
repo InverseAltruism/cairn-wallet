@@ -256,11 +256,11 @@ console.log("8. copy the account address");
 
 console.log("9. the send review's Name row");
 {
-  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "visit evil.example" };
   await review("alice.csd");
   const name = String(byId("c-name").textContent);
   const badge = "Chain-backed, 2 name servers agree (same operator) (14 conf).";
-  check(`9a the Name row is the name and the short address (${name})`, name === "alice.csd → 0x313131…3131 (via owner)");
+  check(`9a the Name row is the name and the short address, without the name service's "via" field (${name})`, name === "alice.csd → 0x313131…3131");
   check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("Chain-backed"));
   check("9c the To address is grouped in fours and its text is the raw address", String(byId("c-to").innerHTML).replace(/<[^>]*>/g, "") === PAID && (String(byId("c-to").innerHTML).match(/<span>/g) || []).length === 10);
 }
