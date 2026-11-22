@@ -16,6 +16,7 @@ import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { heightOf, lowestChainHeight } from "./chainbound.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
+import { sealKeyGetter } from "./spvseal.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -94,7 +95,13 @@ export class Wallet {
   // derived AES key (so we can re-seal on changes without retaining the password).
   private accts: Acct[] | null = null;
   private active = 0;
-  private vaultKey: CryptoKey | null = null;
+  private heldVaultKey: CryptoKey | null = null;
+  // Setting the vault key (create, restore, import, unlock, a session rehydrate) wakes whatever waits for unlock.
+  private get vaultKey(): CryptoKey | null { return this.heldVaultKey; }
+  private set vaultKey(key: CryptoKey | null) { this.heldVaultKey = key; if (key) for (const wake of this.unlockWaiters.splice(0)) wake(); }
+  private unlockWaiters: (() => void)[] = [];
+  /** The header seal key, derived from the current vault key at each call (spvseal.ts). */
+  private readonly sealKey = sealKeyGetter(() => this.heldVaultKey);
   private salt = "";
   // The current vault's identifier: its PBKDF2 salt, 16 random bytes made with the vault (create, restore, import),
   // kept by every re-seal and erased with it, so it never repeats across a reset. Null with no vault.
@@ -852,8 +859,9 @@ export class Wallet {
   tokenDisplayMeta(tickers: unknown) { return tokenDisplayMeta(this.viewIo, tickers); }
 
   // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates
-  // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, and the
-  // session pin in chrome.storage.session that lets a worker restart walk the stored suffix instead of re-verifying it.
+  // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, the
+  // session pin in chrome.storage.session that lets a worker restart walk the stored suffix instead of re-verifying it,
+  // and the seal key getter with the unlock signal a sealed store waits for.
   private spvOpts(): LiveSpvOpts {
     const session = this.session;
     return {
@@ -867,6 +875,8 @@ export class Wallet {
       },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
       ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => session.set("spvPin", p) } } : {}),
+      sealKey: this.sealKey,
+      unlocked: () => (this.heldVaultKey ? Promise.resolve() : new Promise<void>((r) => this.unlockWaiters.push(r))),
     };
   }
   // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after

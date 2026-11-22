@@ -24,26 +24,26 @@ export async function readPin(slot: PinSlot): Promise<SpvPin | null> {
 }
 
 /**
- * When the records of `suffix` from height newest + 1 up to `pin.tip` hash-link from the table hash at `newest` to
- * `pin.hash`, and `checkpoints` holds no entry in that range (the walk checks none): the height of the walked record
- * with the latest timestamp (the first such), for `latestTimeHolds`. Else null, and the caller runs the full
- * restore. One run of SPV_CHUNK records per task.
+ * When the records of `suffix` from height from.height + 1 up to `pin.tip` hash-link from `from.hash` (the table hash
+ * at `newest`, or a sealed chunk's top the restore seeds at) to `pin.hash`, and `checkpoints` holds no entry in that
+ * range (the walk checks none): the height of the walked record with the latest timestamp (the first such), for
+ * `latestTimeHolds`. Else null, and the caller seeds at `from`. One run of SPV_CHUNK records per task.
  */
-export async function walkToPin(suffix: Uint8Array, newest: number, pin: SpvPin, checkpoints: Readonly<Record<number, string>>, yieldTask: () => Promise<void>): Promise<number | null> {
+export async function walkToPin(suffix: Uint8Array, newest: number, pin: SpvPin, checkpoints: Readonly<Record<number, string>>, yieldTask: () => Promise<void>,
+  from: { height: number; hash: string | undefined } = { height: newest, hash: checkpoints[newest] }): Promise<number | null> {
   const HB = HEADER_BYTES;
-  const n = pin.tip - newest;
-  const anchorHash = checkpoints[newest];
-  if (pin.newest !== newest || !anchorHash || n < 1 || suffix.length < n * HB) return null;
-  if (Object.keys(checkpoints).some((h) => Number(h) > newest && Number(h) <= pin.tip)) return null;
-  let prev = anchorHash, latest = newest + 1, latestTime = -1;
+  const base = from.height, n = pin.tip - base;
+  if (pin.newest !== newest || !from.hash || n < 1 || suffix.length < n * HB) return null;
+  if (Object.keys(checkpoints).some((h) => Number(h) > base && Number(h) <= pin.tip)) return null;
+  let prev = from.hash, latest = base + 1, latestTime = -1;
   for (let i = 0; i < n; i += SPV_CHUNK) {
     const end = Math.min(n, i + SPV_CHUNK);
     const lastHash = end === n ? pin.hash : deserializeHeader(suffix.subarray(end * HB, (end + 1) * HB)).prev;
-    try { verifyLinkedRecords(suffix.subarray(i * HB, end * HB), { firstHeight: newest + 1 + i, prevHash: prev, lastHash }); }
+    try { verifyLinkedRecords(suffix.subarray(i * HB, end * HB), { firstHeight: base + 1 + i, prevHash: prev, lastHash }); }
     catch (e) { console.warn("[namespv] stored headers do not walk to the session pin; full restore:", e); return null; }
     for (let j = i; j < end; j++) {
       const t = Number(deserializeHeader(suffix.subarray(j * HB, (j + 1) * HB)).time);
-      if (t > latestTime) { latestTime = t; latest = newest + 1 + j; }
+      if (t > latestTime) { latestTime = t; latest = base + 1 + j; }
     }
     prev = lastHash;
     await yieldTask();

@@ -209,6 +209,8 @@ export interface AcquireDeps {
   /** The anchor table; SPV_ANCHORS unless the caller narrowed it to a prefix. */
   anchors?: readonly string[];
   lru: ChunkLru;
+  /** The spec of a chunk above the table that a verified seal names (its seal's top and the top below), else null. */
+  sealedSpec?: (k: number) => ChunkSpec | null;
   /** The caller's sync serializer, so concurrent proofs fetch one chunk once. */
   serialize: <T>(op: () => Promise<T>) => Promise<T>;
   /** Throws with a reason unless the records walk from the spec's first hash or prev hash to its last hash. */
@@ -217,7 +219,7 @@ export interface AcquireDeps {
 }
 
 export interface ChunkAcquirer {
-  /** The verified chunk holding `height`; rejects outside the anchored range or for a failing chunk. The bytes are the LRU's own: callers must not mutate them. */
+  /** The verified chunk holding `height`; rejects outside the anchored and sealed range or for a failing chunk. The bytes are the LRU's own: callers must not mutate them. */
   acquire(height: number): Promise<{ spec: ChunkSpec; records: Uint8Array }>;
   /** Settles when the detached store writes issued so far have finished. */
   writes(): Promise<void>;
@@ -246,7 +248,7 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
   };
   return {
     async acquire(height) {
-      const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height), anchors) : null;
+      const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height), anchors) ?? deps.sealedSpec?.(chunkOf(height)) ?? null : null;
       if (!spec) throw new Error(`height ${height} is outside the release-anchored range ${SPV_FLOOR.height} to ${FIRST_CHUNK * SPV_CHUNK + anchors.length * SPV_CHUNK - 1}`);
       const hit = lru.get(spec.k);
       if (hit) return { spec, records: hit };

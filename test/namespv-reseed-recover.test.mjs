@@ -51,7 +51,8 @@ const finalPersistIdx = prep.lastIndexOf("persist();");
 check("the reseed does not write the store between seeding and adoption (no clear-before-reseed nuke)",
   reseedIdx > 0 && adoptIdx > reseedIdx && !/persist\(|detachStoreWrite|store\.|deleteAbove/.test(prep.slice(reseedIdx, adoptIdx)));
 check("the reseed builds the fresh client from the anchor chunk held in memory: no request, every pin enforced by seedTrusted",
-  /const seedFromAnchor = async \(\) => \(await LightClient\.fromRecords\(anchor\.subarray\(anchor\.length - SEED \* HB\), \{ firstHeight: newest - SEED \+ 1, anchorHeight: newest \}, lcOpts\)\)\.client;/.test(src));
+  /const seedFromAnchor = async \(\) => \(await seededClient\(tableBase\.tail, newest, table\.newestHash, null, lcOpts\)\)\.client;/.test(src)
+  && /const tableBase = \{ height: newest, hash: table\.newestHash, work: null as bigint \| null, tail: anchor\.subarray\(anchor\.length - SEED \* HB\) \};/.test(src));
 const seedDef = src.slice(src.indexOf("const seedFromAnchor ="), src.indexOf("\n", src.indexOf("const seedFromAnchor =")));
 check("seedFromAnchor makes no request (no fetch, header batch or chunk acquisition)", seedDef.length > 40 && !/fetch|Batch|acquire|client\./.test(seedDef));
 check("the reseed re-syncs to `want` BEFORE adopting the client (a lying-high header still throws -> fail-closed)",
