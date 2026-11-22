@@ -62,7 +62,7 @@ export type HostAnswer = { host: string; verdict: HostVerdict };
  * One signed transaction sent to every host of `rpc` at once, and its outcome (submitverdict.ts decideSubmit) as soon
  * as it is decided: at the first acceptance, else once every host has answered (each POST ends at its own timeout).
  * `answers` holds the verdicts known at that moment, in host order. A host that answers later is passed to `onLate`
- * only: it never changes the outcome. `send` must return a verdict for any failure, as node.ts submitTo does.
+ * only: it never changes the outcome. A `send` that rejects counts as that host's unclear answer.
  */
 export function submitEach(rpc: string, send: (host: string) => Promise<HostVerdict>, onLate?: (a: HostAnswer) => void): Promise<{ outcome: SubmitOutcome; answers: HostAnswer[] }> {
   const hosts = hostsFor(rpc);
@@ -70,7 +70,8 @@ export function submitEach(rpc: string, send: (host: string) => Promise<HostVerd
   return new Promise((resolve) => {
     let decided = false;
     hosts.forEach((host, i) => {
-      void send(host).then((v) => {
+      // a send that rejects is that host's unclear answer, so no failure can leave its slot empty and the send waiting
+      void send(host).catch((): HostVerdict => ({ kind: "unclear", text: "/tx/submit -> unreadable response" })).then((v) => {
         if (decided) { onLate?.({ host, verdict: v }); return; }
         verdicts[i] = v;
         const outcome = decideSubmit(verdicts);

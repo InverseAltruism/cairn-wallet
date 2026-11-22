@@ -77,14 +77,16 @@ export class TxHistory {
   // removeAccount: the reset discipline is exactly "clear the array".
   pendingHist: { k: string; entry: Record<string, unknown> }[] = [];
 
-  async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[]; mainPending?: boolean }, meta: Record<string, unknown>) {
+  async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[]; mainHolds?: boolean }, meta: Record<string, unknown>) {
     // PCD-2: every branch below is non-rejecting (chained + guarded), so an awaiting flow can never report a succeeded broadcast as a failure.
     // Rows pendingMerge may settle keep a few input outpoints for its "gone" verdict.
     const inputs = Array.isArray(r?.inputs) && r.inputs.length ? { inputs: r.inputs.slice(0, INCLUSION_INPUTS_KEPT) } : {};
-    // Sent before the main host had taken it (node.ts mainPending: only the second host had): recorded maybe, so the
-    // reconcile tracks it and an unmined row says to check before sending again. The main host's later "accepted" or
-    // "already present" clears the mark; any other answer, or none (a worker that stopped), leaves it.
-    if (r && r.ok && r.txid && r.mainPending) {
+    // Only the main host holding it clears or spares the maybe mark (node.ts mainHolds: its own "accepted" or "already
+    // present", at the result or later). Sent while it does not (only the second host took it): recorded maybe, so the
+    // reconcile tracks it and an unmined row says to check before sending again; the main host's later answer clears
+    // the mark only when it holds; any other answer, or none (a worker that stopped), leaves it. A result without the
+    // field comes from one host, which is the main host.
+    if (r && r.ok && r.txid && r.mainHolds === false) {
       const txid = r.txid, later = node.mainHostHeldLater(txid);
       await this.recordTx(k, { txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
       if (later) void later.then((held) => (held ? this.clearMaybe(k, txid, false) : undefined));
@@ -108,7 +110,8 @@ export class TxHistory {
     // maybe:true entry turns out to have landed. Clear the flag in place; never INSERT on a dup
     // (on the current node's conflated error a dup can also mean a DIFFERENT tx spends the coins,
     // and a fresh entry under the local txid would then claim a send that never landed).
-    else if (r && !r.ok && r.code === "SUBMIT_DUPLICATE" && r.txid) {
+    // The main host's own "already present" is the main host holding it; another host's alone leaves the mark.
+    else if (r && !r.ok && r.code === "SUBMIT_DUPLICATE" && r.txid && r.mainHolds !== false) {
       await this.clearMaybe(k, r.txid, true);
     }
     // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid

@@ -320,28 +320,33 @@ async function verifyInputValues(
 // or endpoint switch the coins are re-checked from scratch.
 const MAX_SELECT_ROUNDS = 3;      // bounds /tx traffic: at most 3 selections per spend attempt
 const GHOST_TTL_MS = 120_000;
-const ghostSeen = new Map<string, number>(); // outpoint -> expiry
+const ghostSeen = new Map<string, number>(); // skipKey(host, outpoint) -> expiry
 // BN0w: horizon outpoints (real coins the node's bounded scan could not reach; see verifyInputValues)
 // are cached like ghosts so an immediate retry pre-excludes them without re-probing, but tracked
 // SEPARATELY: the refusal copy for a horizon coin must say the node cannot look back far enough,
 // never that the coin "could not be verified". An outpoint lives in exactly ONE of the two caches
 // (each classification event moves it), so the honest counts below cannot double-book a coin.
-const horizonSeen = new Map<string, number>(); // outpoint -> expiry
+const horizonSeen = new Map<string, number>(); // skipKey(host, outpoint) -> expiry
 // Unrepresentable outpoints (W6, see verifyInputValues) are cached the same way, in their own map for their own
 // copy, and an outpoint lives in exactly one of the three. Without the cache each selection round rediscovers them
 // one largest-first layer at a time, so three layers spend all MAX_SELECT_ROUNDS and every retry refuses
 // VERIFY_UNAVAILABLE (test/maxsendable.test.mjs case 11). The verdict is a property of the served body; a node
 // that serves another body for the txid is the same class as one that answers not-found, which ghostSeen already
 // caches.
-const unrepSeen = new Map<string, number>(); // outpoint -> expiry
+const unrepSeen = new Map<string, number>(); // skipKey(host, outpoint) -> expiry
 const SKIP_CACHE_MAX = 2048; // per map: a hostile RPC cannot grow one unboundedly
-/** Drops expired entries and returns every outpoint a cache still excludes. */
-function sessionExclusions(now: number): Set<string> {
+// The caches hold a verdict of the host that gave it: keyed by host and outpoint, so a coin one host could not prove
+// is checked again when another host lists it (hosts.ts: the main host and the second host).
+const skipKey = (host: string, op: string): string => `${host} ${op}`;
+/** Drops expired entries and returns every outpoint a cache still excludes for `host`. */
+function sessionExclusions(host: string, now: number): Set<string> {
   for (const m of [ghostSeen, horizonSeen, unrepSeen]) for (const [k, exp] of m) if (exp <= now) m.delete(k);
-  return new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys(), ...unrepSeen.keys()]);
+  const pre = skipKey(host, "");
+  return new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys(), ...unrepSeen.keys()].filter((k) => k.startsWith(pre)).map((k) => k.slice(pre.length)));
 }
-/** Files `k` under `into` (one of the three caches) and out of the other two. */
-function rememberSkip(into: Map<string, number>, k: string, now: number): void {
+/** Files outpoint `op` of `host` under `into` (one of the three caches) and out of the other two. */
+function rememberSkip(into: Map<string, number>, host: string, op: string, now: number): void {
+  const k = skipKey(host, op);
   for (const m of [ghostSeen, horizonSeen, unrepSeen]) if (m !== into) m.delete(k);
   into.set(k, now + GHOST_TTL_MS);
   if (into.size > SKIP_CACHE_MAX) into.clear();
@@ -352,7 +357,7 @@ function roundsExhausted(count: number, value: number): { error: string; code: s
 // `needOf` is what the spend must cover (amount plus fee), or for maxSendable a function of the utxo set and the coins
 // excluded so far, evaluated at the start of every round so the target follows the exclusions this loop makes. With a
 // number every round uses that number, exactly as a send passes it.
-type NeedOf = (utxos: any[], exclude: ReadonlySet<string>, truncated: boolean) => number;
+type NeedOf = (utxos: any[], exclude: ReadonlySet<string>, truncated: boolean, host: string) => number;
 // `verified` lets maxSendable's final pass reuse the verdicts its first pass fetched (a txid commits to its output
 // values, so a verified value cannot change); a send passes none and fetches every coin it selects.
 async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf, verified: Map<string, number> = new Map()): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
@@ -366,7 +371,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   try { ({ value: { utxos, truncated, confirmed }, host } = await firstAnswer(rpc, (h) => balanceAt(h, addr))); }
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
-  const exclude = sessionExclusions(now);
+  const exclude = sessionExclusions(host, now);
   const reportedVal = new Map<string, number>(utxos.map((u: any) => [opKey(u.txid, u.vout), Number(u.value) || 0]));
   // ghosts already known from the session cache that are present in THIS utxo set count toward the
   // honest error (they are why the reported balance overstates what is spendable); BN0w counts the
@@ -374,13 +379,16 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   let ghostCount = 0, ghostValue = 0;
   let horizonCount = 0, horizonValue = 0;
   let unrepCount = 0, unrepValue = 0;   // W6 (ND-1): booked separately so the final copy stays honest
-  for (const k of ghostSeen.keys()) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
-  for (const k of horizonSeen.keys()) if (reportedVal.has(k)) { horizonCount++; horizonValue += reportedVal.get(k)!; }
-  for (const k of unrepSeen.keys()) if (reportedVal.has(k)) { unrepCount++; unrepValue += reportedVal.get(k)!; }
+  for (const [k, v] of reportedVal) {
+    const sk = skipKey(host, k);
+    if (ghostSeen.has(sk)) { ghostCount++; ghostValue += v; }
+    if (horizonSeen.has(sk)) { horizonCount++; horizonValue += v; }
+    if (unrepSeen.has(sk)) { unrepCount++; unrepValue += v; }
+  }
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
   let need = typeof needOf === "number" ? needOf : 0;
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
-    if (typeof needOf === "function") need = needOf(utxos, exclude, truncated);
+    if (typeof needOf === "function") need = needOf(utxos, exclude, truncated, host);
     const sel = selectInputs(utxos, need, exclude);
     if (!sel) { selExhausted = true; break; } // remaining verifiable coins can't cover `need`, or can't within the input cap (diagnosed below)
     const ver = await verifyInputValues(host, sel.inputs, verified);
@@ -398,7 +406,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
       for (const h of ver.horizons) {
         const k = opKey(h.txid, h.vout);
         if (!exclude.has(k)) { horizonCount++; horizonValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k); rememberSkip(horizonSeen, k, now);
+        exclude.add(k); rememberSkip(horizonSeen, host, k, now);
       }
     }
     // W6 (ND-1): unrepresentable coins exclude-and-retry per coin exactly like ghosts and horizons (an
@@ -407,13 +415,13 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
       for (const u of ver.unrepresentables) {
         const k = opKey(u.txid, u.vout);
         if (!exclude.has(k)) { unrepCount++; unrepValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k); rememberSkip(unrepSeen, k, now);
+        exclude.add(k); rememberSkip(unrepSeen, host, k, now);
       }
     }
     for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
       const k = opKey(g.txid, g.vout);
       if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
-      exclude.add(k); rememberSkip(ghostSeen, k, now);
+      exclude.add(k); rememberSkip(ghostSeen, host, k, now);
     }
   }
   // TOO_MANY_INPUTS vs INSUFFICIENT (2026-07-09): selectInputs returns null BOTH when the balance
@@ -469,9 +477,9 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
 // on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
 // spentTxids (successful submits: the source txids of the inputs spent, so the merge rows they consumed
 // latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
-// rows for the "gone" check), hosts (each host's answer to the submit, a server's text included) and mainPending (sent
-// before the main host had taken it) are internal; background.ts strips them before a result reaches a page.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[]; mainPending?: boolean }
+// rows for the "gone" check), hosts (each host's answer to the submit, a server's text included) and mainHolds (the main
+// host answered "accepted" or "already present") are internal; background.ts strips them before a result reaches a page.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[]; mainHolds?: boolean }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 
@@ -557,17 +565,16 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   for (const { verdict: v } of answers)
     if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
       console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
+  // One fact for the history row: whether the main host holds the transaction (it answered "accepted" or "already
+  // present"). A row recorded while it does not stays maybe until it does (history.ts maybeRecord); when the result
+  // came before the main host answered, its later answer is kept for that (mainHostHeldLater).
   const mainAnswer = answers.find((a) => a.host === main);
-  if (mainAnswer) mainLater(holds(mainAnswer.verdict));
-  // Sent, but the main host had not taken it at that moment (only the second host had): the history row is recorded
-  // maybe, so it is reconciled and an unmined row says so; the main host's later "accepted" or "already present"
-  // clears that (history.ts maybeRecord).
-  const mainPending = outcome.kind === "sent" && !(mainAnswer && mainAnswer.verdict.kind === "accepted");
-  if (mainPending) keepMainLater(localTxid, later);
-  return { ...submitResult(outcome, localTxid), hosts: answers.map(hostLog), ...(mainPending ? { mainPending: true } : {}) };
+  const mainHolds = !!mainAnswer && holds(mainAnswer.verdict);
+  if (!mainAnswer && outcome.kind === "sent") keepMainLater(localTxid, later);
+  return { ...submitResult(outcome, localTxid), hosts: answers.map(hostLog), mainHolds };
 }
 const holds = (v: HostVerdict): boolean => v.kind === "accepted" || v.kind === "duplicate";
-// The main host's answer to a submit the result reported sent before that host had taken it, by txid, until history
+// The main host's answer to a submit the result reported sent before that host answered, by txid, until history
 // takes it. Bounded: an entry no flow takes is dropped with the oldest; module state dies with the worker, and the row
 // then stays maybe.
 const mainHeld = new Map<string, Promise<boolean>>();
@@ -576,8 +583,8 @@ function keepMainLater(txid: string, p: Promise<boolean>): void {
   mainHeld.set(txid, p);
   if (mainHeld.size > MAIN_HELD_MAX) mainHeld.delete(mainHeld.keys().next().value!);
 }
-/** Whether the main host later held a transaction whose result was `mainPending`: true on its "accepted" or "already
- *  present", false on any other answer; undefined when none is kept. Taken once. */
+/** Whether the main host later held a transaction whose result was sent before that host answered: true on its
+ *  "accepted" or "already present", false on any other answer; undefined when none is kept. Taken once. */
 export function mainHostHeldLater(txid: string): Promise<boolean> | undefined {
   const p = mainHeld.get(txid);
   mainHeld.delete(txid);
@@ -841,7 +848,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   // ghosts exclude-and-retry within the same bounded round budget, and no coin is EVER spent
   // unverified. tamper/transient verdicts refuse exactly as a send would.
   const now = Date.now();
-  const exclude = sessionExclusions(now);
+  const exclude = sessionExclusions(host, now);
   const verified = new Map<string, number>();
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
@@ -852,12 +859,12 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
       if (ver.kind === "transient") return { ok: false, error: "couldn't fetch source transactions to verify coin values (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
       // BN0w: both skip classes (ghost + horizon) exclude-and-retry alike here; consolidate simply
       // merges what THIS node can prove today (the send path owns the distinct honest refusal copy).
-      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); rememberSkip(horizonSeen, k, now); }
+      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); rememberSkip(horizonSeen, host, k, now); }
       // W6 (ND-1): the same exclude-and-retry, and THIS is the line that unbricks consolidate() against a
       // single dust coin from a stranger. The pool is smallest-first, so the poison coin was in every
       // round and its "tamper" verdict refused the whole merge, permanently.
-      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) { const k = opKey(u.txid, u.vout); exclude.add(k); rememberSkip(unrepSeen, k, now); }
-      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); rememberSkip(ghostSeen, k, now); }
+      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) { const k = opKey(u.txid, u.vout); exclude.add(k); rememberSkip(unrepSeen, host, k, now); }
+      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); rememberSkip(ghostSeen, host, k, now); }
       continue;
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
@@ -929,15 +936,15 @@ export async function maxSendable(rpc: string, addr: string, fee: number): Promi
   let eligible = 0, skipped = 0, target = 0, truncated = false;
   const skippedBy = { ghost: 0, horizon: 0, unrep: 0 };
   const verified = new Map<string, number>();
-  const found = await selectVerified(rpc, addr, (utxos, exclude, cut) => {
+  const found = await selectVerified(rpc, addr, (utxos, exclude, cut, host) => {
     truncated = cut;
     const coins = spendableCoins(utxos, exclude).sort((a, b) => b.value - a.value);
     eligible = coins.length;
     const left = spendableCoins(utxos).filter((c) => exclude.has(opKey(c.txid, c.vout)));
     skipped = left.length;
-    skippedBy.ghost = left.filter((c) => ghostSeen.has(opKey(c.txid, c.vout))).length;
-    skippedBy.horizon = left.filter((c) => horizonSeen.has(opKey(c.txid, c.vout))).length;
-    skippedBy.unrep = left.filter((c) => unrepSeen.has(opKey(c.txid, c.vout))).length;
+    skippedBy.ghost = left.filter((c) => ghostSeen.has(skipKey(host, opKey(c.txid, c.vout)))).length;
+    skippedBy.horizon = left.filter((c) => horizonSeen.has(skipKey(host, opKey(c.txid, c.vout)))).length;
+    skippedBy.unrep = left.filter((c) => unrepSeen.has(skipKey(host, opKey(c.txid, c.vout)))).length;
     target = coins.slice(0, MAX_TX_INPUTS).reduce((s, c) => s + c.value, 0);
     // nothing eligible: a positive target makes the selection fail cleanly (INSUFFICIENT, or the skip reason)
     return target > 0 ? target : 1;

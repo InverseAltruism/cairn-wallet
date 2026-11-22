@@ -87,8 +87,11 @@ own transaction scan was complete (it has no mempool view to add).
 
 With the default RPC (Cairn's proxy at cairn-substrate.com) the wallet has a second host, Cairn's server at
 clarvis.cairn-substrate.com (`BACKUP_RPC`, `src/core/endpoints.ts`). It is a constant of the release: no setting and
-no page can name it (`rpcAllowed` refuses it as an RPC), and a node on this computer set as the RPC has no second host,
-so the wallet sends it nothing (test/hosts-fallback.test.mjs L1 to L4). It runs its own node, and has the same operator
+no page can name it (`rpcAllowed` refuses it as an RPC). A node on this computer set as the RPC has no second host: no
+node read and no submit goes to the second server's `/api/rpc` (test/hosts-fallback.test.mjs L1 to L4). The name
+checks and the fill's offer cross-check read the second server's trade API whatever the RPC (`names.ts`
+`nameSources` and its resolve fallback, `fillpreflight.ts`), as 0.3.4 did; they send a name or an offer id, never a
+transaction. It runs its own node, and has the same operator
 and the same DNS zone as the main host, so it is not an independent party.
 
 Reads (`src/core/hosts.ts` `firstAnswer`): the main host is asked first; the second host is asked 1.5 s later if the
@@ -102,7 +105,8 @@ history reconcile pass stays on the host that answered its tip.
 
 Submits (`hosts.ts` `submitEach`, `submitverdict.ts` `decideSubmit`): every signed transaction goes to both hosts at
 once, the same bytes from one signing, so the txid is one. The result comes at the first host that accepts it, and
-nothing waits on the other host; a later answer from it is logged and changes neither the result nor the history row.
+nothing waits on the other host. A later answer from the second host is logged and changes neither the result nor the
+history row; a later answer from the main host can only clear a row's maybe mark (below), never the result.
 Any other answer waits for both hosts: a host that may hold the transaction (a timeout, a 5xx, an unreadable answer)
 makes the result `SUBMIT_MAYBE_INFLIGHT`, then an "already present" answer `SUBMIT_DUPLICATE`, and only a refusal from
 both is `SUBMIT_REJECTED` (test/submit-two-hosts.test.mjs has every pair). A refusal therefore waits for the slower
@@ -114,14 +118,18 @@ A send reported sent before the main host had taken it (only the second host had
 row: the wallet reconciles it, and unmined after 10 blocks it says to check the explorer before sending again. The
 wallet keeps no record that excludes a pending send's coins from the next send: the server that lists the coins leaves
 out the ones its own pending pool spends, so a main host that never received the send lists them as free, and a second
-payment with other coins could confirm beside the first. The row's mark is what warns. The main host's later
-"accepted" or "already present" for the same transaction clears it; any other answer, or none (a worker stopped before
-it came), leaves it (test/submit-main-late.test.mjs). The result shown is the same in every case.
+payment with other coins could confirm beside the first. The row's mark is what warns. Only the main host holding the
+transaction clears it: its own "accepted" or "already present" for the same txid, late or on a resend. The second
+host's "already present" alone, any other answer, or none (a worker stopped before it came) leaves it
+(test/submit-main-late.test.mjs S2). The result shown is the same in every case.
 
 What it can do when it answers: what a lying RPC can do, as listed above (a wrong balance, withheld coins, a refusal, a
-false Activity marker), and no more: it cannot change what is signed or the value of a coin. It answers a read only
-while the main host is slower than 1.5 s or failing, so a party that holds it alone must also slow or stop the main
-host. On a submit it can answer "accepted" to everything and turn a main host's refusal into "sent"; the transaction
+false Activity marker), and no more. It cannot change the value of a coin the wallet spends, the outputs, the fee or
+where the change goes. The tip it serves, like the main host's, sets the expiry epoch of the records the wallet builds
+(a tip served too high makes a record live longer than meant; one too low makes it expire sooner, or the network
+refuses it before anything is spent) and the height a name fee is priced at, which is never below the stored tip floor and the release's newest
+anchor (above). It answers a read only when the main host has not answered within 1.5 s or failed, so a party that
+holds it alone must also slow or stop the main host. On a submit it can answer "accepted" to everything and turn a main host's refusal into "sent"; the transaction
 then never confirms and its coins stay unspent, as when a lying main host answers so today. It cannot hide the main
 host's acceptance: its refusal, its duplicate answer or its silence do not end the wait, so a send the main host took
 is reported sent. It sees the address whose balance is read and every signed transaction, as the main host does.

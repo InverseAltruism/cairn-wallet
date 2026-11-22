@@ -97,6 +97,35 @@ check("ok:false without an err string is unclear", kind(ans(200, { ok: false }))
 check("an inherited ok is not the answer's own", kind(ans(200, Object.create({ ok: true }))) === "unclear");
 check("a body's maybeInflight field is not read", kind(ans(200, { ok: false, err: "nope", maybeInflight: true })) === "refused");
 
+// ── total: a hostile body gets a verdict from the closed set and never throws (cairn-sdk classifySubmit is total too) ──
+// RED-FIRST: before the fix, String() of {"error":{"toString":1}} threw out of classifyAnswer on a non-2xx answer.
+const throwing = { toString: 1 };
+const throwingValueOf = { valueOf() { throw new Error("valueOf"); }, toString() { throw new Error("toString"); } };
+const getterThrows = Object.defineProperty({}, "err", { get() { throw new Error("getter"); }, enumerable: true });
+const okGetterThrows = Object.defineProperty({}, "ok", { get() { throw new Error("ok getter"); }, enumerable: true });
+const proxy = new Proxy({}, { get() { throw new Error("proxy get"); }, has() { throw new Error("proxy has"); }, getOwnPropertyDescriptor() { throw new Error("proxy gopd"); } });
+let deep = { err: "x" }; for (let i = 0; i < 10_000; i++) deep = { err: deep };
+const big = "a".repeat(5 * 1024 * 1024);
+const HOSTILE = [
+  { error: throwing }, { err: throwing }, { ok: false, err: throwing }, { ok: false, error: throwing },
+  { error: throwingValueOf }, { ok: false, err: throwingValueOf }, { txid: throwing, ok: true },
+  getterThrows, okGetterThrows, proxy, deep, [], [1, 2], 7, -1, null, true, "text", big, { err: big }, { ok: false, err: big },
+  { ok: true, txid: throwing }, Object.create(null), { ok: false, err: ["already present"] }, { error: { err: "already present" } },
+];
+const KINDS = new Set(["accepted", "duplicate", "refused", "unclear"]);
+let totalOk = 0, totalCases = 0;
+for (const status of [200, 400, 404, 413, 429, 502]) for (const body of HOSTILE) {
+  totalCases++;
+  try { const v = classifyAnswer(ans(status, body)); if (KINDS.has(v.kind) && typeof v.text !== "number") totalOk++; else console.log("  bad verdict", status, v); }
+  catch (e) { console.log("  threw on", status, String(e?.message ?? e).slice(0, 60)); }
+}
+check(`every hostile body on every status gets a verdict and none throws (${totalOk} of ${totalCases})`, totalOk === totalCases);
+check("a non-2xx body whose error is not a string has no served text: 400 with {error:{toString:1}} is refused PROXY with the status label",
+  (() => { const v = classifyAnswer(ans(400, { error: throwing })); return v.kind === "refused" && v.reason === "PROXY" && v.text === "/tx/submit -> 400"; })());
+check("502 with {error:{toString:1}} is unclear", kind(ans(502, { error: throwing })) === "unclear");
+check("a 4xx whose err is an array holding the duplicate text is not a duplicate", kind(ans(400, { ok: false, err: ["already present"] })) !== "duplicate");
+check("the edge's 502 with a text body (not JSON) is unclear, with the status label", (() => { const v = classifyAnswer(ans(502, undefined)); return v.kind === "unclear" && v.text === "/tx/submit -> 502"; })());
+
 // ── the outcome of several hosts (the full table end to end: test/submit-two-hosts.test.mjs) ──
 const A = { kind: "accepted" }, D = { kind: "duplicate", text: NODE_DUPLICATE };
 const C = { kind: "refused", reason: "CONFLICT", text: NODE_CONFLICT }, R = { kind: "refused", reason: "FEE", text: "feerate too low" };

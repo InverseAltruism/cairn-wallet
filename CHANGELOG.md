@@ -20,6 +20,14 @@
   (test/submit-main-late.test.mjs).
 - When the second server answers a read the main server has not answered within 1.5 s, later reads ask the second
   server first for 60 s, as after a main failure, so with the main server hanging only the first read waits 1.5 s.
+- Behaviour change: when the main server refuses a send and the second server does not answer (unreachable or past
+  the 20 s timeout), the result is "may already be in flight" with a history row, where 0.3.4 showed the main
+  server's refusal at once.
+- A send's history row loses its "sent, not yet included" mark only when the main server holds the transaction (its
+  own "accepted" or "already present"); the second server's "already present" alone leaves it. A coin one server
+  could not prove is checked again when the other server lists it (the session skip caches are per server). A
+  server's answer whose error text is not a string no longer stops the send from ending
+  (test/submit-classify.test.mjs, test/submit-two-hosts.test.mjs X1, X2).
 - Submit answers are read by one classifier (`src/core/submitverdict.ts`). A refusal carries a new `reason` (FEE, BUSY,
   SPENT, CONFLICT, PROXY, INVALID, UNKNOWN; additive, WALLET-ERROR-CODES.md). Answers that may follow a node taking the
   transaction are now `SUBMIT_MAYBE_INFLIGHT` with the local txid and a history row, where 0.3.4 read them otherwise:

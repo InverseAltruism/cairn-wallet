@@ -1,6 +1,6 @@
 // A send reported sent before the main host had taken it (only the second host had) is recorded as a maybe row, so the
 // reconcile tracks it and an unmined row says to check before sending again (src/core/history.ts maybeRecord, node.ts
-// mainPending). The main host's later "accepted" or "already present" for the same txid clears the mark; nothing else
+// mainHolds). The main host's own "accepted" or "already present" for the same txid, late or on a resend, clears the mark; nothing else
 // does, nothing adds it back, and the result given to the popup or the page never changes.
 //
 // RED-FIRST against the previous commit: M1 (the second host accepts, the main host never answers), M3 (the main host
@@ -83,6 +83,26 @@ check("M4: the main host's answer never processed (a stopped worker): the row st
 const m5 = await sendWith({ main: { a: "A" }, backup: { a: "A", after: 50 } });
 await sleep(200);
 check(`M5: both healthy, the main host first: sent at its answer (${m5.ms} ms), one plain row`, sentShape(m5.r) && m5.ms < 400 && !(await m5.row())?.maybe && (await m5.rows()) === 1);
+
+// ── S2: only the main host holding it clears the mark ──
+// RED-FIRST: before the fix any SUBMIT_DUPLICATE cleared it, so the second host's "already present" alone (main refused
+// or unclear) turned the maybe row plain.
+async function again(w, p) { plan = p; const r = await w.send(RCPT, 1e8, 1e6); await sleep(100); return { r, row: (await w.history())[0], rows: (await w.history()).length }; }
+const s1 = await sendWith({ main: { a: "R" }, backup: { a: "A" } });
+await sleep(100);
+const s1b = await again(s1.w, { main: { a: "R" }, backup: { a: "D" } });
+check(`S2.1: sent by the second host only (maybe), sent again with main refusing and the second host "already present": ${s1b.r.code}, the row stays maybe`,
+  (await s1.row())?.maybe === true && s1b.r.code === "SUBMIT_DUPLICATE" && s1b.r.txid === s1.r.txid && s1b.row?.maybe === true && s1b.rows === 1);
+const s2 = await sendWith({ main: { a: "U" }, backup: { a: "U" } });
+const s2b = await again(s2.w, { main: { a: "R" }, backup: { a: "D" } });
+check(`S2.2: unclear on both (maybe), retried with main refusing and the second host "already present": the row stays maybe`, s2.r.code === "SUBMIT_MAYBE_INFLIGHT" && s2b.r.code === "SUBMIT_DUPLICATE" && s2b.row?.maybe === true);
+const s3 = await sendWith({ main: { a: "R" }, backup: { a: "A" } });
+await sleep(100);
+const s3b = await again(s3.w, { main: { a: "D" }, backup: { a: "R" } });
+check(`S2.3: paired: the main host's own "already present" on a retry clears it (${s3b.r.code})`, s3b.r.code === "SUBMIT_DUPLICATE" && s3b.row && !s3b.row.maybe);
+const s4 = await sendWith({ main: { a: "U" }, backup: { a: "U" } });
+const s4b = await again(s4.w, { main: { a: "D" }, backup: { a: "D" } });
+check("S2.3: paired: unclear on both, then both 'already present': cleared", s4b.r.code === "SUBMIT_DUPLICATE" && s4b.row && !s4b.row.maybe);
 
 const m6 = await sendWith({ main: { a: "A" }, backup: { a: "C", after: 50 } });
 await sleep(200);

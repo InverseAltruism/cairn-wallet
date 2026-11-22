@@ -185,15 +185,20 @@ send)` sends to every host at once and resolves with the outcome as soon as `dec
    classified on the raw body before the txid recompute when a serialized number cannot survive `JSON.parse` exactly
    (test/unrepresentable-coin.test.mjs). Both are skipped per coin like notfound and add no rung to the decisive
    tamper/transient fold; all three skip classes are remembered for the session (`ghostSeen`, `horizonSeen`,
-   `unrepSeen`, 120 s, 2,048 each), so a retry starts without the coins an attempt already skipped;
+   `unrepSeen`, 120 s, 2,048 each), keyed by host and outpoint, so a retry on the same host starts without the coins
+   an attempt already skipped and another host checks them again;
 4. the ghost re-select loop, then the proportional fee cap max(1 CSD, 10% of verified inputs), change to self only,
    and `signAndSubmit`: one signing, the bytes to every host of the RPC at once (`hosts.ts` `submitEach`), each answer
    read by `submitverdict.ts` `classifyAnswer` (accepted, duplicate, refused with a `reason`, unclear) and the outcome
    by `decideSubmit`: sent at the first acceptance, else once every host answered, unclear before duplicate before
    refused (`SUBMIT_MAYBE_INFLIGHT`, `SUBMIT_DUPLICATE`, `SUBMIT_REJECTED`). The result's `hosts` logs each answer
-   and is stripped before a page receives it. A send reported sent before the main host had accepted it carries
-   `mainPending` (stripped too): `history.ts` records its row maybe and clears the mark on the main host's later
-   accepted or already-present answer (`mainHostHeldLater`).
+   and is stripped before a page receives it. `mainHolds` (stripped too) says whether the main host answered accepted
+   or already present: `history.ts` records a sent row maybe while it does not, clears a mark only on it (a duplicate
+   result included), and on the main host's later answer (`mainHostHeldLater`). `classifyAnswer` is total: text is
+   read only from string fields, and anything it cannot read is unclear; a host's rejected send counts as unclear in
+   `submitEach`. A 200 `ok:false` whose text is neither the duplicate text nor the panic text is refused with reason
+   `UNKNOWN`, so a node that rewords one of those reads as a refusal: reading unknown text as unclear would leave a
+   "sent, not yet included" row for a transaction no host took, and 0.3.4 and cairn-sdk read it the same way.
 
 Beside it:
 

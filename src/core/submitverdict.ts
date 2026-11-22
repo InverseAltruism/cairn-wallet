@@ -48,14 +48,23 @@ const NOT_FINISHED = /^submit validation did not finish/i;
  *  (`undefined` when it was not JSON). */
 export type SubmitAnswer = { thrown: true } | { status: number; body: unknown };
 
+// A field's text only when it is a string: a server's body is data, and String() of an object can throw.
+const textOf = (j: Record<string, unknown> | null, k: string): string => (j && typeof j[k] === "string" ? (j[k] as string) : "");
+
+/** Total: every answer, however hostile its body, gets a verdict, and an answer the wallet cannot read is unclear. */
 export function classifyAnswer(a: SubmitAnswer, path = "/tx/submit"): HostVerdict {
+  try { return classify(a, path); }
+  catch { return { kind: "unclear", text: `${path} -> unreadable response` }; }
+}
+function classify(a: SubmitAnswer, path: string): HostVerdict {
   if ("thrown" in a) return { kind: "unclear", text: `${path} -> network error` };
   const { status, body } = a;
   const j = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
   if (status < 200 || status > 299) {
-    const text = String((j && (j.err ?? j.error)) || `${path} -> ${status}`);
+    const served = textOf(j, "err") || textOf(j, "error");
+    const text = served || `${path} -> ${status}`;
     // A 4xx carrying the duplicate text is read as the duplicate it names, as in 0.3.4.
-    if (status < 500 && j && isSubmitDuplicateErr(j.err ?? j.error)) return { kind: "duplicate", text };
+    if (status < 500 && isSubmitDuplicateErr(served)) return { kind: "duplicate", text };
     // A proxy answers its body cap (400, 413) and its rate limit (429) before forwarding: this request reached no
     // node. Any other status, a 5xx and an unparseable body included, may follow a node taking the transaction.
     if (body !== undefined && (status === 400 || status === 413)) return { kind: "refused", reason: "PROXY", text };
@@ -65,8 +74,8 @@ export function classifyAnswer(a: SubmitAnswer, path = "/tx/submit"): HostVerdic
   if (body === undefined) return { kind: "unclear", text: `${path} -> non-JSON response` };
   if (!j) return { kind: "unclear", text: `${path} -> unreadable response` };
   const ok = Object.hasOwn(j, "ok") ? j.ok : undefined;
-  if (ok === true) return { kind: "accepted", ...(typeof j.txid === "string" ? { txid: j.txid } : {}) };
-  const err = ok === false && typeof j.err === "string" ? j.err : "";
+  if (ok === true) return { kind: "accepted", ...(textOf(j, "txid") ? { txid: textOf(j, "txid") } : {}) };
+  const err = ok === false ? textOf(j, "err") : "";
   if (!err) return { kind: "unclear", text: `${path} -> answer without the node's verdict` };
   if (isSubmitDuplicateErr(err)) return { kind: "duplicate", text: err };
   if (NOT_FINISHED.test(err)) return { kind: "unclear", text: err };

@@ -18,6 +18,7 @@
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { DEFAULT_RPC, BACKUP_RPC } from "../src/core/endpoints.js";
+import { submitEach } from "../src/core/hosts.js";
 import { mkCoin, txReply } from "./_coin.js";
 import { checker } from "./helpers/check.mjs";
 
@@ -35,6 +36,11 @@ const ANSWER = {
   R: () => json(200, { ok: false, err: "feerate too low (0 < MIN_FEERATE_PPM=1)" }),
   U: () => json(502, { ok: false, error: "node unreachable" }),
   N: () => { throw new TypeError("fetch failed"); },
+  // a body whose error String() cannot read: a non-callable own toString (JSON can carry it)
+  H400: () => json(400, JSON.parse('{"ok":false,"error":{"toString":1}}')),
+  H502: () => json(502, JSON.parse('{"ok":false,"error":{"toString":1}}')),
+  // the edge's own 502: a text/plain body, not JSON
+  E502: () => ({ ok: false, status: 502, json: async () => { throw new SyntaxError("Unexpected token e in JSON"); } }),
 };
 // submit answers per host: a letter, or { a: letter, after: ms }, or "hang" (ends at the wallet's own timeout)
 let plan = { main: "A", backup: "A" };
@@ -112,6 +118,34 @@ check(`W3: main refuses at once, the second host refuses at 500 ms: refused afte
 const w4 = await sendWith({ main: "R", backup: "hang" });
 check(`W4: main refuses, the second host hangs: unclear at the 20 s POST timeout (${w4.ms} ms, ${w4.r.code}), with a maybe row`,
   w4.r.code === "SUBMIT_MAYBE_INFLIGHT" && w4.ms >= 19_000 && w4.hist.length === 1 && w4.hist[0].maybe === true);
+
+// ── the order the reviewer found missing: the second host refuses first, the main host accepts later ──
+const o1 = await sendWith({ main: { a: "A", after: 300 }, backup: "R" });
+check(`O1: the second host refuses at once, the main host accepts at 300 ms: sent after ${o1.ms} ms, one plain row`, o1.r.ok === true && o1.ms >= 250 && o1.hist.length === 1 && !o1.hist[0].maybe);
+
+// ── a hostile or unreadable answer ends the send (RED-FIRST: before the fix the second host's {"error":{"toString":1}}
+// left the send waiting with no row) ──
+// a send that does not settle within 5 s reads as { r: {}, ms: 5000 } so the case fails instead of hanging the file
+const settles = (p) => Promise.race([sendWith(p), sleep(5_000).then(() => ({ r: {}, ms: 5_000, hist: [] }))]);
+for (const bad of ["H400", "H502"]) {
+  const h = await settles({ main: "R", backup: bad });
+  check(`X1: main refuses, the second host answers ${bad.slice(1)} with an unreadable error: ${h.r.code} after ${h.ms} ms (400: refused, no row; 502: unclear, a maybe row)`,
+    h.ms < 2_000 && (bad === "H400" ? h.r.code === "SUBMIT_REJECTED" && h.hist.length === 0 : h.r.code === "SUBMIT_MAYBE_INFLIGHT" && h.hist.length === 1 && h.hist[0].maybe === true));
+}
+const hm = await settles({ main: "H502", backup: "R" });
+check(`X1: the same from the main host: ${hm.r.code} after ${hm.ms} ms`, hm.ms < 2_000 && hm.r.code === "SUBMIT_MAYBE_INFLIGHT" && hm.hist.length === 1);
+const rej = await submitEach(DEFAULT_RPC, (h) => (h === BACKUP_RPC ? Promise.reject(new Error("boom")) : Promise.resolve({ kind: "refused", reason: "FEE", text: "feerate too low" })));
+check(`X2: a host whose send rejects counts as unclear: the outcome is ${rej.outcome.kind}, not a wait`, rej.outcome.kind === "unclear");
+const rejA = await submitEach(DEFAULT_RPC, (h) => (h === DEFAULT_RPC ? Promise.reject(new Error("boom")) : Promise.resolve({ kind: "accepted" })));
+check("X2: paired: the other host's acceptance still decides sent", rejA.outcome.kind === "sent");
+
+// ── the edge's 502 with a text body, as both hosts answered a POST of {} on 2026-11-22 ──
+const e2 = await sendWith({ main: "E502", backup: "E502" });
+check(`E1: both hosts answer the edge's text 502: ${e2.r.code}, the local txid, a maybe row ("${e2.r.error}")`, e2.r.code === "SUBMIT_MAYBE_INFLIGHT" && /^0x[0-9a-f]{64}$/.test(String(e2.r.txid)) && e2.hist.length === 1 && e2.hist[0].maybe === true && e2.r.error === "/tx/submit -> 502");
+const e1 = await sendWith({ main: "E502", backup: "A" });
+check(`E1: the main host's text 502, the second host accepts: sent, a maybe row`, e1.r.ok === true && e1.hist.length === 1 && e1.hist[0].maybe === true);
+const e1b = await sendWith({ main: "A", backup: "E502" });
+check("E1: the main host accepts, the second host's text 502: sent, a plain row", e1b.r.ok === true && e1b.hist.length === 1 && !e1b.hist[0].maybe);
 
 // ── late answers ──
 const l1 = await sendWith({ main: "A", backup: { a: "R", after: 300 } });

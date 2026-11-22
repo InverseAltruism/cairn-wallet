@@ -138,4 +138,19 @@ const passHosts = new Set(log.filter((e) => /\/status$|\/utxos-all\//.test(e.u))
 check(`P7: main host down: the tip from the second host, and the pass's status and mined set reads there only (${[...passHosts]})`,
   passHosts.size === 1 && passHosts.has("backup") && log.some((e) => e.u.includes("/status")) && log.some((e) => e.u.includes("/utxos-all/")) && log.some((e) => e.host === "backup" && e.u.endsWith("/tip")));
 
+// ── P8: a coin the second host could not prove is checked again when the main host lists it ──
+// RED-FIRST: the skip caches were keyed by outpoint only, so the next spend from the healthy main host refused
+// GHOST_INPUTS_SKIPPED with no source read there (probe skip-cache, 2ba9c99).
+nextMinute();
+w = await wallet();
+route(down, nodeOf([A], { missing: new Set([A.coin.txid.toLowerCase()]) }));
+r = await w.send(RCPT, 1e8, 1e6);
+check(`P8: main down, the second host cannot find the coin's source: ${r.code}`, r.code === "GHOST_INPUTS_SKIPPED");
+route(nodeOf([A]), down);
+r = await w.send(RCPT, 1e8, 1e6);
+check(`P8: the next send, the main host healthy: the coin is read there (${srcReads("main")}) and the send goes through (${r.ok ? "ok" : r.code})`, r.ok === true && srcReads("main") >= 1);
+route(down, nodeOf([A], { missing: new Set([A.coin.txid.toLowerCase()]) }));
+r = await w.send(RCPT, 1e8, 1e6);
+check(`P8: paired: the second host again, inside the 120 s: the coin stays skipped there without a new source read (${srcReads("backup")}, ${r.code})`, r.code === "GHOST_INPUTS_SKIPPED" && srcReads("backup") === 0);
+
 done("hosts-spend-pin");
