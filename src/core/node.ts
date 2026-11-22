@@ -8,11 +8,12 @@ import { fmtCsd, csdBase } from "./cairnx.js";
 import type { TxInclusion } from "./inclusion.js";
 import { selectInputs, strip0x, MAX_TX_INPUTS, MAX_DOMAIN_BYTES, MAX_URI_BYTES, MIN_FEE_PROPOSE } from "../vendor/cairnx-spv.js";
 import { byteCapRefusal } from "./signfields.js";
+import { classifyAnswer, decideSubmit, isSubmitDuplicateErr, type HostVerdict, type RefusalReason, type SubmitAnswer, type SubmitOutcome } from "./submitverdict.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever; the popup's "sending…" spinner never settled and there was no in-popup
 // recovery. A timeout converts the stall into the existing fail-closed error paths (get() throws →
-// caller catch; post() returns the maybeInflight-flagged failure below). Reads are short; submit is
+// caller catch; a submit that timed out reads as unclear, submitverdict.ts). Reads are short; submit is
 // generous (the node can be busy validating a 512-input tx).
 // 12s, not 8s: the cairn proxy's failover chain worst-cases at 4s (routed backend) + 6s (fallback)
 // = 10s of legitimate inner wait; an 8s outer abort raced that chain and turned a survivable
@@ -24,52 +25,24 @@ async function get(rpc: string, path: string): Promise<any> {
   const r = await fetch(`${rpc}${path}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`); return r.json();
 }
-// Symmetric with get(): a POST must NEVER throw out of the caller after a tx is already signed:
-// otherwise a non-JSON 4xx/5xx (e.g. an HTML error page from a proxy) on /tx/submit would surface as an
-// uncaught rejection AFTER signing, leaving send/sendMany/fillOffer/propose with an ambiguous outcome
-// (audit VAL-2). Read the body as text, parse if we can, and return a structured {ok:false,err} on any
-// non-2xx / network error / unparseable body. Every caller already reads {ok,txid,err}, so a 2xx JSON
-// body is returned unchanged; this only converts the failure path from "throw" to "fail-closed value".
-async function post(rpc: string, path: string, body: unknown): Promise<any> {
+// One POST, never a throw: a request that failed or timed out is `thrown`, any answer is its status and parsed body
+// (`undefined` when it is not JSON). submitverdict.ts reads a submit's answer; post() below reads sign-in's.
+async function postRaw(base: string, path: string, body: unknown): Promise<SubmitAnswer> {
   let r: Response;
-  try { r = await fetch(`${rpc}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
-  // `maybeInflight` classifies the AMBIGUITY of a failure, not its severity: a thrown fetch
-  // (network error / timeout) means the request may or may not have reached the server; a
-  // /tx/submit could already be in the mempool. signAndSubmit maps this flag to SUBMIT_MAYBE_INFLIGHT
-  // vs SUBMIT_REJECTED so the popup only shows the scary "may already be in flight" copy when it is
-  // actually true (the old copy claimed it for EVERY failure).
-  catch { return { ok: false, err: `${path} -> network error`, maybeInflight: true }; }
-  // Symmetric with get(): never let a non-JSON 4xx/5xx (e.g. an HTML proxy error page) throw out of a
-  // caller AFTER a tx is already signed; parse defensively and return a structured {ok:false,err} on any
-  // non-2xx or unparseable body (audit VAL-2). A 2xx JSON body is returned unchanged; every caller reads
-  // {ok,txid,err}, so this only converts the failure path from "throw" to a fail-closed value.
-  let j: any;
+  try { r = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
+  catch { return { thrown: true }; }
+  let j: unknown;
   try { j = await r.json(); } catch { j = undefined; }
-  if (!r.ok) {
-    // A non-2xx is NOT automatically "definitively rejected". The node answers every submit with HTTP 200 and
-    // refuses with ok:false, so a 4xx comes from a proxy before it forwards (a 400, a 413 body cap, a 429 rate
-    // limit): this request reached no node. But a 5xx / gateway failure is AMBIGUOUS:
-    // the cairn proxy gives the node only ~4s (fallback ~6s) and returns a 502 "node unreachable" if both
-    // time out, yet a busy node can INGEST the POST and then be too slow to answer within that window, so
-    // the tx MAY be in the mempool. An unparseable error body (a Cloudflare/nginx HTML 5xx page) is the
-    // same class. Flag those maybeInflight so the popup shows the cautious "may already be in flight, check
-    // before resending" copy instead of a false "nothing was sent" that could drive a double-pay on resend
-    // (a resend re-reads /utxos, and if the ingested tx's inputs are now excluded it signs a DIFFERENT tx).
-    // Fable-5 money-path audit, 2026-07-09 (this was a 0.2.55 regression: 0.2.54 cautioned on every failure).
-    const ambiguous = r.status >= 500 || j === undefined;
-    return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${r.status}`, ...(ambiguous ? { maybeInflight: true } : {}) };
-  }
-  // a 2xx we couldn't parse: the server DID process the request; a submit may have been ingested
-  // even though we can't read the answer, so this is ambiguous too.
-  if (j === undefined) return { ok: false, err: `${path} -> non-JSON response`, maybeInflight: true };
-  // A 2xx body that is not a JSON object (null, an array, a bare number) carries no readable answer
-  // either. Returned as a value so signAndSubmit never throws after a submit (test/submit-outcome.test.mjs).
-  if (j === null || typeof j !== "object" || Array.isArray(j)) return { ok: false, err: `${path} -> unreadable response`, maybeInflight: true };
-  // W6 (B5c): `maybeInflight` is THIS function's transport-ambiguity classification, set only on the
-  // branches above. Never accept it off a parsed 2xx body; a hostile proxy answering HTTP 200 with
-  // {ok:false, maybeInflight:true} could otherwise steer the caller's SUBMIT_MAYBE_INFLIGHT copy and
-  // history dedupe. Body fields stay body fields; the flag stays ours.
-  if (j && typeof j === "object" && "maybeInflight" in j) delete j.maybeInflight;
+  return { status: r.status, body: j };
+}
+// Sign-in's POST: a 2xx JSON object is returned as it is, anything else as {ok:false, err}.
+async function post(base: string, path: string, body: unknown): Promise<any> {
+  const a = await postRaw(base, path, body);
+  if ("thrown" in a) return { ok: false, err: `${path} -> network error` };
+  const j: any = a.body;
+  if (a.status < 200 || a.status > 299) return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${a.status}` };
+  if (j === undefined) return { ok: false, err: `${path} -> non-JSON response` };
+  if (j === null || typeof j !== "object" || Array.isArray(j)) return { ok: false, err: `${path} -> unreadable response` };
   return j;
 }
 
@@ -485,7 +458,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
 // spentTxids (successful submits: the source txids of the inputs spent, so the merge rows they consumed
 // latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
 // rows for the "gone" check) are internal; background.ts strips both before a result reaches a page.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[]; inputs?: string[] }
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[] }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 
@@ -518,27 +491,25 @@ export function spendableCoins(utxos: any[], exclude?: ReadonlySet<string>): Sel
   return out;
 }
 
-// N18 (B8w): the SUBMIT_DUPLICATE classification couples to the NODE's tx_submit error wording, a
-// string this wallet does not control. The coupling is deliberate but was inlined as a bare
-// `/already present/i` at the classification site, so a reword (here OR in the node) would silently
-// reopen the failure class it fixes. Make it EXPLICIT (named + documented) and pin it with a test.
-//
-// The node contract (compute-substrate api/mod.rs tx_submit) returns TWO distinct Ok(false) strings and
-// downstream consumers MUST tell them apart (the node's own comment documents this and pins the
-// substring for exactly this match):
-//   • "already present in mempool"  -> this EXACT tx is held (a byte-identical resubmit after an
-//     ambiguous failure; deterministic signing makes the retry identical). A tx spending these coins IS
-//     pending, so "nothing was sent" would be FALSE -> SUBMIT_DUPLICATE.
-//   • "mempool conflict: a different pending transaction spends these coins" -> a DIFFERENT tx already
-//     spends an input. This is a real, definitive rejection; classifying it as a duplicate would tell
-//     the user their payment "should settle" when it never will -> must fall through to SUBMIT_REJECTED.
-// Matching the NARROW substring "already present" (not the whole phrase) keeps older / re-wrapped
-// proxies matching, and is why the node pins that exact token. A match MISS is fail-safe here: a real
-// duplicate misclassified as REJECTED shows the honest "submit rejected" copy for a byte-identical tx
-// whose eventual resubmit is itself idempotent (same txid), never a double-spend or fund loss. The
-// dangerous direction (a CONFLICT read as a duplicate) is closed by the node emitting a string that does
-// NOT contain "already present". Pinned by test/submit-classify.test.mjs (reds on either drift).
-export const isSubmitDuplicateErr = (err: unknown): boolean => /already present/i.test(String(err ?? ""));
+// The duplicate rule's home is submitverdict.ts; cairn-sdk's classifySubmit names it here.
+export { isSubmitDuplicateErr };
+
+/** One host's verdict on a submit (submitverdict.ts classifyAnswer). */
+async function submitTo(host: string, body: unknown): Promise<HostVerdict> {
+  return classifyAnswer(await postRaw(host, "/tx/submit", body));
+}
+const DUPLICATE_TEXT = "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again";
+// The result of a submit for the sender. The txid is the local one whenever a host may hold the transaction (sent,
+// duplicate, unclear); a refusal carries none, since a txid would read as "it went through". SUBMIT_REJECTED: every
+// host refused (a node's 200 ok:false, or a proxy's 400, 413 or 429 before forwarding); SUBMIT_MAYBE_INFLIGHT: a host
+// may hold it (a throw, a timeout, a 5xx, an unreadable answer); SUBMIT_DUPLICATE: a host holds this transaction, or
+// one spending the same coins, so "nothing was sent" would be false. `reason` classes a refusal (additive).
+function submitResult(o: SubmitOutcome, localTxid: string): SubmitResult {
+  if (o.kind === "sent") return { ok: true, txid: localTxid, error: undefined, sighashMatch: true, code: undefined };
+  if (o.kind === "duplicate") return { ok: false, txid: localTxid, error: DUPLICATE_TEXT, sighashMatch: true, code: "SUBMIT_DUPLICATE" };
+  if (o.kind === "unclear") return { ok: false, txid: localTxid, error: o.text, sighashMatch: true, code: "SUBMIT_MAYBE_INFLIGHT" };
+  return { ok: false, txid: undefined, error: o.text, sighashMatch: true, code: "SUBMIT_REJECTED", reason: o.reason };
+}
 
 // Build the FULL tx locally (we set the app ourselves), sign OUR OWN codec sighash,
 // and submit. We never sign a hash a server handed us; so a malicious or MITM'd RPC
@@ -551,50 +522,14 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
   const scriptSig = buildScriptSig(sig64, pub33);
   for (const i of tx.inputs) i.scriptSig = scriptSig;
-  // The consensus txid is known LOCALLY before submit (txid = sha256d over the scriptSig-stripped
-  // tx). On an ambiguous outcome the server's answer was lost, so this local txid is the only
-  // handle the caller has to later check whether the tx landed (the popup's pending-merge line
-  // depends on it; Plans/66 B4).
+  // The txid leaves out the scriptSig (sha256d over the stripped tx), so it is known before submit and is the
+  // answer, not a fallback: a host's echo is only a cross-check of the codec copy, logged and never used (a constant
+  // echo would otherwise dedupe later sends out of history and point the explorer link at another transaction).
   const localTxid = codecTxid(tx);
-  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = the answering node refused this request (a 200
-  // ok:false) or a proxy refused it before forwarding (400/413/429). It says what the node or proxy that answered did: through a
-  // proxy with two backends an earlier attempt may have reached the other one, so the copy does not say "nothing
-  // was sent";
-  // SUBMIT_MAYBE_INFLIGHT = the request threw / timed out / hit a 5xx gateway failure / had an unreadable
-  // body AFTER signing, so the tx MAY have been ingested; the only case where the popup's "may already be
-  // in flight" caution is truthful. post() sets maybeInflight on exactly those ambiguous branches (a 5xx is
-  // ambiguous because the cairn proxy 502s the node after only 4s, which can outrace a slow-but-successful
-  // mempool ingest).
-  // "already present or mempool conflict" is NOT a plain rejection: the node's answer string
-  // conflates "this exact tx is already in the mempool" (a resubmit after an ambiguous failure:
-  // deterministic signing makes the retry byte-identical, so this is the COMMON resubmit outcome)
-  // with "a different tx spends these coins". Either way "nothing was sent" would be FALSE; a tx
-  // spending these coins IS pending. Own code (additive, per the error-contract rule) + hedged
-  // copy that is true in both cases; txid = the local txid (in the duplicate case that is exactly
-  // the pending tx).
-  const dup = !sub.ok && !sub.maybeInflight && isSubmitDuplicateErr(sub.err);
-  // W6 (B5c): signing is deterministic and the txid does not even depend on the signature (sha256d over
-  // the scriptSig-stripped serialization), so localTxid is not a fallback; it IS the answer, and the
-  // server echo carries no information the wallet does not already hold with certainty. Preferring the
-  // echo let a hostile/buggy proxy answering a constant txid dedupe every later send out of history,
-  // file sealed-claim reveal preimages under the wrong key, poison flushPending/pendingMerge, and point
-  // the explorer link (the user's one independent check) at an attacker-chosen transaction. The echo is
-  // kept only as a FREE CROSS-CHECK on the deliberately forked codec: a mismatch logs loudly, is never
-  // trusted.
-  if (sub.txid && String(sub.txid).toLowerCase() !== localTxid.toLowerCase())
-    console.warn(`[node] submit echoed txid ${sub.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
-  return {
-    ok: !!sub.ok,
-    // LOCAL txid whenever a tx may exist on the network (ok / ambiguous / duplicate). Definitive
-    // rejections keep txid undefined: providing one would read as "it went through".
-    txid: sub.ok || sub.maybeInflight || dup ? localTxid : undefined,
-    error: dup
-      ? "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again"
-      : (sub.err ?? (sub.ok ? undefined : "submit rejected")),
-    sighashMatch: true,
-    code: sub.ok ? undefined : (dup ? "SUBMIT_DUPLICATE" : (sub.maybeInflight ? "SUBMIT_MAYBE_INFLIGHT" : "SUBMIT_REJECTED")),
-  };
+  const v = await submitTo(rpc, { tx: txToNodeJson(tx) });
+  if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
+    console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
+  return submitResult(decideSubmit([v]) as SubmitOutcome, localTxid);
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).

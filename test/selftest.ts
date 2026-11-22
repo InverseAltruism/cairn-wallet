@@ -255,10 +255,10 @@ async function main() {
     (globalThis as any).fetch = txStub(true, "0x" + "ff".repeat(32));
     await w.send(RCPT, 1e8, 1e6); await w.send(RCPT, 1e8, 1e6);
     check("history idempotent on a byte-identical resubmit (same local txid)", (await w.history()).length === 1);
-    // W6 (B5c) second half: `maybeInflight` is post()'s OWN transport classification; a parsed 2xx
-    // body cannot inject it. A hostile proxy answering HTTP 200 {ok:false, maybeInflight:true} must
-    // classify as a DEFINITIVE rejection (no txid, no scary "may be in flight" copy). REDS if the
-    // post() strip is removed.
+    // W6 (B5c) second half: whether a submit may be in flight is the wallet's own reading of the transport
+    // (submitverdict.ts classifyAnswer); a parsed 2xx body cannot inject it. A hostile proxy answering HTTP 200
+    // {ok:false, maybeInflight:true} must classify as a DEFINITIVE rejection (no txid, no scary "may be in
+    // flight" copy). REDS if classifyAnswer reads a body's maybeInflight.
     w = new Wallet(memoryStore()); await w.create("super-secret-pw");
     (globalThis as any).fetch = (async (url: any) => {
       const u = String(url);

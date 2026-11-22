@@ -14,6 +14,9 @@ export const DEFAULT_TRADE_API = "https://cairn-substrate.com/trade/api";
 // can make both withhold (SECURITY.md). Fail-soft: if clarvis is unreachable the verify falls back to
 // single-source (with caution).
 export const CLARVIS_TRADE_API = "https://clarvis.cairn-substrate.com/trade/api";
+// The second host of the default RPC (core/hosts.ts): node reads fall back to it and every submit also goes to it.
+// A constant of the release: rpcAllowed refuses it as a setting, so no page or setting can name it.
+export const BACKUP_RPC = "https://clarvis.cairn-substrate.com/api/rpc";
 
 // L5 (CSP-LOCALHOST / setRpc validation): a custom RPC/API endpoint must be an https:// origin (or a
 // loopback http for local dev) with NO embedded credentials; otherwise `setRpc("https://user:pass@evil")`
