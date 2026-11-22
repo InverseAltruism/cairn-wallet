@@ -9,6 +9,7 @@
 // it and [2v] fails; prefer the served address over `lastAddr` and [T3],
 // [T6] fail; judge the lapse at the served tip again (`expiredAt(lapseTip)`) and [1], [3], [4] fail.
 // Run: tsx test/name-lapse-tip.test.mjs
+import "./helpers/backup-host.mjs";
 import { verifyNameUnion } from "../src/core/namespv.ts";
 import { checker } from "./_check.ts";
 import { buildNameClaim, buildNameSet, addrFromPriv, proposeTx, world, source, feeOut, pick, mkFetch } from "./_spvrig.ts";
