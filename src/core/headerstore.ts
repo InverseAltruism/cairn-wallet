@@ -151,6 +151,7 @@ function wrap(db: IDBDatabase): HeaderStore {
       const tx = db.transaction([CHUNKS, META], "readwrite");
       const done = txDone(tx);
       const chunks = tx.objectStore(CHUNKS);
+      // Puts follow the range delete: a merged write (namespv mergeStoreWrites) can put above its own deleteAbove.
       if (w.deleteAbove !== undefined) chunks.delete(IDBKeyRange.lowerBound(w.deleteAbove, true));
       for (const k of w.del ?? []) chunks.delete(k);
       for (const p of w.put ?? []) chunks.put(p.records.slice().buffer, p.k);

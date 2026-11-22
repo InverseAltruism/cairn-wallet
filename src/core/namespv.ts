@@ -1093,7 +1093,8 @@ const acquirers = new Map<HeaderStore, { writes(): Promise<void> }>();
  * above newer's deleteAbove are dropped, and the lower deleteAbove applies (puts land after it). The seal list is
  * newer's, else older's cut below the lowest chunk newer puts or deletes; either is cut at the first entry for a chunk
  * the merged write deletes. So the list stays contiguous from below and the merge leaves no entry over a chunk it
- * deletes or newer rewrites (test/spvseal.test.mjs, the merge property).
+ * deletes, nor an older entry over a chunk newer rewrites; newer's own list is kept over the chunks newer puts, since
+ * a write's list describes the store once that write lands (test/spvseal.test.mjs, the merge property).
  */
 export function mergeStoreWrites(older: StoreWrite, newer: StoreWrite): StoreWrite {
   if (older.del?.length || newer.del?.length) throw new Error("mergeStoreWrites: suffix writes carry no del");

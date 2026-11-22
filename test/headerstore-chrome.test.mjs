@@ -78,6 +78,17 @@ const trunc = await scenario("truncation", async (H) => {
 }, H);
 t.check("a truncation rewrites the top chunk and deletes those above in one write", trunc?.keys.join() === "7,8" && trunc.len === 168 && trunc.b === 80 && trunc.tip === 32769);
 
+// A merged write can put above its own deleteAbove (two suffix writes across a chunk boundary merge to the lower
+// bound); the range delete runs before the puts, so the put chunk survives.
+const above = await scenario("put above deleteAbove", async () => {
+  const s = await HS.openHeaderStore();
+  await s.write({ put: [7, 8, 9, 10].map((k) => ({ k, records: new Uint8Array(84).fill(k) })) });
+  await s.write({ put: [{ k: 9, records: new Uint8Array(168).fill(90) }], deleteAbove: 8 });
+  const c9 = await s.getChunk(9);
+  return { keys: await s.listChunks(), len: c9?.length ?? 0, b: c9?.[0] ?? null };
+});
+t.check(`a write putting above its own deleteAbove keeps the put chunk: keys 7, 8, 9 with 9's new bytes (${JSON.stringify(above)})`, above?.keys.join() === "7,8,9" && above.len === 168 && above.b === 90);
+
 const onetx = await scenario("one transaction per write", async (H) => {
   const s = await HS.openHeaderStore();
   await s.write({ put: [7, 8, 9].map((k) => ({ k, records: new Uint8Array(84).fill(k) })) });
