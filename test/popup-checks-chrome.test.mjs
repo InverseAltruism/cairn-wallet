@@ -33,7 +33,7 @@ const readRows = () => {
   return [...document.querySelectorAll("#c-warn > .check")].map((el) => {
     const tier = ["ok", "caution", "danger"].find((x) => el.classList.contains(x));
     const r = el.getBoundingClientRect();
-    return { tier, text: el.textContent.trim().slice(0, 40), tinted: getComputedStyle(el).backgroundColor === tint[tier], icon: !!el.querySelector(":scope > svg.i"), visible: r.height > 0, aboveConfirm: r.bottom <= confirm.top };
+    return { tier, text: el.textContent.trim().slice(0, 40), full: el.textContent.trim(), tinted: getComputedStyle(el).backgroundColor === tint[tier], icon: !!el.querySelector(":scope > svg.i"), visible: r.height > 0, aboveConfirm: r.bottom <= confirm.top };
   });
 };
 
@@ -47,8 +47,9 @@ async function review(theme, resolveName, to, extra = {}) {
   await page.waitForSelector("#send-confirm:not([hidden])");
   await page.waitForTimeout(500);
   const rows = await page.evaluate(readRows);
+  const buttons = await page.evaluate(() => [document.getElementById("btn-send-confirm"), document.getElementById("btn-send-back")].map((b) => ({ text: b.textContent, fits: b.scrollWidth <= b.clientWidth + 1 })));
   await ctx.close();
-  return { rows, errors };
+  return { rows, buttons, errors };
 }
 
 // The entrance plays once: rows stagger in on the list's first fill, a refresh rewrites them in place, and the 1.5 s
@@ -308,7 +309,11 @@ try {
     const PAID = "0x" + "31".repeat(20), LOOK = "0x313131" + "9".repeat(30) + "3131";
     const c = await review(theme, null, LOOK, { history: [{ type: "send", to: PAID, amount: 1, txid: "0x" + "a1".repeat(32) }] });
     t.check(`${theme}: a look-alike renders a danger row in the down tint (${JSON.stringify(c.rows[0])})`, c.rows.length === 1 && c.rows[0].tier === "danger" && c.rows[0].tinted && c.rows[0].icon && /address-poisoning/.test(c.rows[0].text) && c.rows[0].aboveConfirm);
-    t.check(`${theme}: no page error (${[...a.errors, ...b.errors, ...c.errors].join(" | ") || "none"})`, a.errors.length + b.errors.length + c.errors.length === 0);
+    // [A4]: a lapse the wallet could not settle: an amber row, and Confirm and Back read "Send anyway" and "Cancel", whole.
+    const d = await review(theme, { ok: true, addr: NEW, name: "alice", lapseUnconfirmed: true, verified: false }, "alice.csd");
+    t.check(`${theme}: an unsettled lapse renders [A4] as a caution row in the warn tint, above Confirm (${JSON.stringify({ ...d.rows[0], full: undefined })})`, d.rows[0]?.tier === "caution" && d.rows[0].full.includes("alice.csd may have expired; the wallet could not check.") && d.rows[0].tinted && d.rows[0].visible && d.rows[0].aboveConfirm);
+    t.check(`${theme}: ...with "Send anyway" and "Cancel", each shown whole (${JSON.stringify(d.buttons)})`, d.buttons[0].text === "Send anyway" && d.buttons[1].text === "Cancel" && d.buttons.every((x) => x.fits));
+    t.check(`${theme}: no page error (${[...a.errors, ...b.errors, ...c.errors, ...d.errors].join(" | ") || "none"})`, a.errors.length + b.errors.length + c.errors.length + d.errors.length === 0);
   }
 } finally {
   await browser.close();

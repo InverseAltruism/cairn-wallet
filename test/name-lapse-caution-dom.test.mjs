@@ -3,7 +3,8 @@
 // signs the reviewed address (the second click after Review). Untouched beside it: a verified name keeps its line and
 // "Confirm send" / "Back"; a proven lapse is still refused before any review.
 // RED-FIRST: on the commit before this one the file does not load (no [A4] entry, no LAPSE_BUTTONS). Mutations:
-// reviewButtons without its [A4] branch fails (1c) and (3a); the badge without [A4] fails (1a), (1b) and (3a).
+// reviewButtons without its [A4] branch fails (1c) and (3a); the recipient without the flag fails (1a) to (1c) and
+// (3a).
 // Run: node --import tsx test/name-lapse-caution-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { sentenceOf, LAPSE_BUTTONS } from "../src/popup/sentences.ts";

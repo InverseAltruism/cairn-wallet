@@ -5,8 +5,9 @@
 // not settle it, since neither serves the tip.
 // RED-FIRST: on the commit before this one, [1], [2v], [3], [T3], [T4] and [T6] fail (no `lapseUnconfirmed`, two
 // sources made the served tip's lapse a refusal, the wallet's own headers did not count). Mutations: put
-// `usable.length >= 2 ||` back in verifyNameUnion's `confident` and [3], [T3] fail; drop `verifiedCorroborated` from
-// it and [2v] fails; prefer the served address over `lastAddr` and [T3] fails.
+// `usable.length >= 2 ||` back in verifyNameUnion's `confident` and [3], [T3], [T4], [T6] fail; drop `verifiedCorroborated` from
+// it and [2v] fails; prefer the served address over `lastAddr` and [T3],
+// [T6] fail; judge the lapse at the served tip again (`expiredAt(lapseTip)`) and [1], [3], [4] fail.
 // Run: tsx test/name-lapse-tip.test.mjs
 import { verifyNameUnion } from "../src/core/namespv.ts";
 import { checker } from "./_check.ts";
