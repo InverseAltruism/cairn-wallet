@@ -103,6 +103,13 @@ host that answered its coin list answers every source transaction read, so the c
 host exactly as on the main host, and a forged body there refuses `VERIFY_TAMPER` (test/hosts-spend-pin.test.mjs). A
 history reconcile pass stays on the host that answered its tip.
 
+The name check of a send to a name does not use the second host for its node and header reads in this release: the
+chain tip, the headers and the name's blocks come from the main host only (`src/core/namespv.ts`), as in 0.3.4. With
+the main host hanging, each of those reads waits for its own time limit (12 s for the tip), so the check is slow; its
+name service answer comes from the second server after the main one's 12 s limit, and from then (10 s at the
+earliest) the send sheet offers "Send without check" (described under the name checks below). A send to a 0x address
+is not affected.
+
 Submits (`hosts.ts` `submitEach`, `submitverdict.ts` `decideSubmit`): every signed transaction goes to both hosts at
 once, the same bytes from one signing, so the txid is one. The result comes at the first host that accepts it, and
 nothing waits on the other host. A later answer never changes the result: from the main host it can only clear a row's

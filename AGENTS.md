@@ -83,10 +83,11 @@ Signing and funds:
 - Fee caps refuse, never rebuild.
 - What you see is what you sign: frozen review snapshots; confirm-time name re-resolve (another address or a proven
   lapse refuses; a look-up that cannot check again or a verified-regression asks a second click that signs the
-  reviewed address, test/name-recheck-dom.test.mjs); account-switch-mid-approval refusal (ACCOUNT_CHANGED); fee-gate crossing refusal (FEE_CHANGED); bidi- and
-  zero-width-hardened escapeHtml. The approval window reads every request field it shows or uses from
-  `src/core/signfields.ts`, which the sign path builds from (test/sign-display-parity.test.mjs), and it re-fetches
-  the reservation and runs `finalizeWinnerCheck` before allowing a fee-burning finalize.
+  reviewed address, test/name-recheck-dom.test.mjs); account-switch-mid-approval refusal (ACCOUNT_CHANGED); fee-gate
+  crossing refusal (FEE_CHANGED); bidi- and zero-width-hardened escapeHtml. The approval window reads every request
+  field it shows or uses from `src/core/signfields.ts`, which the sign path builds from
+  (test/sign-display-parity.test.mjs), and it re-fetches the reservation and runs `finalizeWinnerCheck` before
+  allowing a fee-burning finalize.
 - No unattended transaction broadcast, in any form. Deferred finalize (sign upfront, broadcast later) was built and
   deliberately reverted; the wallet does not initiate a background broadcast. Automated flows may at most raise an
   approval prompt while the tab is visible.

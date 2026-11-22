@@ -147,8 +147,10 @@ after confirming it out-of-band; a hostile name service can redirect funds in th
 lease that has lapsed at the floor the wallet kept from earlier sessions, or at the wallet's own verified headers with
 both name sources behind it, or an address that changes between review and confirm, is refused; any other lapse is a caution with "Send
 anyway". If the second source is
-unreachable the wallet works from the first, with a caution. Sending to a `0x` address never involves a name
-service. Details are in [SECURITY.md](SECURITY.md).
+unreachable the wallet works from the first, with a caution. If Cairn's main server hangs, a send to a name is slow in
+this release, since the name check reads the chain from that server only; once the name service has answered (from
+the second server after the main one's 12 s limit) the send sheet offers "Send without check". Sending to a `0x`
+address never involves a name service. Details are in [SECURITY.md](SECURITY.md).
 
 ## Configuration
 

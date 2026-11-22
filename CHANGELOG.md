@@ -32,18 +32,26 @@
   served one, when the wallet replayed them. When it shows the served one (nothing replayed, both sources down or
   answering not found, a source reporting the replay insufficient, a reservation, a bought name), "Not verified. Check
   the address yourself." (for a bought name "Bought name: the wallet can only partly verify it. Check the address
-  yourself.") comes first (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs section 12). Nothing that was a caution in 0.3.4 is refused: a lapse one source's
-  records show at the wallet's own tip stays a caution, since that source can withhold a renewal; with the kept floor
+  yourself.") comes first (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs section 12).
+  Nothing that was a caution in 0.3.4 is refused: a lapse one source's records show at the wallet's own tip stays a
+  caution, since that source can withhold a renewal; with the kept floor
   past the old lease end, a source that withholds a renewal still causes the refusal, as in 0.3.4
   (test/name-lapse-tip.test.mjs [W1], [W2], test/name-lapse-caution-dom.test.mjs).
 
-- The wallet keeps working when Cairn's main server is down. With the default RPC, a node read that the main host has
+- The wallet keeps working when Cairn's main server is down (a send to a name is slower, as below). With the default
+  RPC, a node read that the main host has
   not answered within 1.5 s, or that it failed, goes to Cairn's second server (clarvis.cairn-substrate.com), and the
   first answer wins; after a main failure the second server is asked first for 60 s. With the main host accepting
   connections and never answering, 0.3.4 showed "Balance unavailable" after 12.5 s. A balance the second server
   answered carries the grey line "Using Cairn's backup server.". A spend reads all its coins from the one host that
   listed them, so the coin-value check is the same on either (test/hosts-fallback.test.mjs,
   test/hosts-spend-pin.test.mjs). A node on this computer set as the RPC has no second server.
+  A send to a name is slower than that with the main server hanging: the name check reads the chain tip, the headers
+  and the name's blocks from the main server only in this release, so each such read waits for its own time limit
+  (12 s for the tip, `src/core/namespv.ts`). The name service's answer comes from the second server after the main
+  one's 12 s limit, and from then (10 s at the earliest) the send sheet offers "Send without check", whose review
+  signs that answer's address with "This name could not be checked. Make sure the address is right.". A send to a 0x
+  address does not run the name check and is not slowed.
 - Every send goes to both of Cairn's servers at once, the same signed bytes, so one signing and one txid. It is sent
   when either accepts it, at the first acceptance: with both healthy the time to "sent" is the main server's answer.
   It is refused only when both refuse; after the main server's refusal the wallet waits for the second server at most
