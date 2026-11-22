@@ -13,9 +13,9 @@
   answers within 0.3 s shows nothing new, and the lookup makes the same requests as 0.3.4
   (test/name-check-wait-dom.test.mjs, test/name-check-progress.test.mjs).
 
-- Behaviour change: a send to a name is refused as lapsed only when the lease is over at a height the wallet verified
-  itself (its own proof-of-work header tip, or the floor kept from earlier sessions) and 0.3.4's corroboration holds
-  (two name sources, or the floor). 0.3.4 also refused when two
+- Behaviour change: a send to a name is refused as lapsed only when the lease is over at the floor kept from earlier
+  sessions, or over at the wallet's own proof-of-work header tip with two name sources; that is 0.3.4's rule without
+  its served-tip case. 0.3.4 also refused when two
   name sources answered and the served chain tip was past the lease, though the tip comes from neither source, so
   whoever answered for both default hosts could stop every send to a live name. Such a lapse, and one the name
   service reports while the wallet cannot check it (0.3.4 refused it with "couldn't be confirmed on-chain"), now show
@@ -25,8 +25,9 @@
   answering not found, a source reporting the replay insufficient, a reservation, a bought name), "Not verified. Check
   the address yourself." (for a bought name "Bought name: the wallet can only partly verify it. Check the address
   yourself.") comes first (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs section 12). Nothing that was a caution in 0.3.4 is refused: a lapse one source's
-  records show stays a caution, since that source can withhold a renewal (test/name-lapse-tip.test.mjs,
-  test/name-lapse-caution-dom.test.mjs).
+  records show at the wallet's own tip stays a caution, since that source can withhold a renewal; with the kept floor
+  past the old lease end, a source that withholds a renewal still causes the refusal, as in 0.3.4
+  (test/name-lapse-tip.test.mjs [W1], [W2], test/name-lapse-caution-dom.test.mjs).
 
 - The wallet keeps working when Cairn's main server is down. With the default RPC, a node read that the main host has
   not answered within 1.5 s, or that it failed, goes to Cairn's second server (clarvis.cairn-substrate.com), and the

@@ -7,7 +7,8 @@
 // lapse a refusal). [2v], [W1] and [T7] fail on 2fd66a8 (one source at the verified tip refused there). Mutations: drop the
 // source-count condition (`usable.length >= 2 ||`) from `corroborated` and [2v], [W1] fail; drop `atVerifiedHeight`
 // from `confident` and [3], [T3], [T4], [T6] fail; drop `verifiedCorroborated` and [3v], [T2] fail; prefer the served
-// address over `lastAddr` and [T3], [T6] fail. On 68cce65 [T3] and [T8a] to [T8n] fail (no `addrProven`); drop
+// address over `lastAddr` and [T3], [T6] fail. [W1r] and [3r] fail on 68cce65 (one reason for both branches); drop the
+// floor from `corroborated` and [W2] fails. On 68cce65 [T3] and [T8a] to [T8n] fail (no `addrProven`); drop
 // `!scopeInsufficient &&` from namespv.ts's `lastAddr` and [T8m], [T8n] fail.
 // Run: tsx test/name-lapse-tip.test.mjs
 import "./helpers/backup-host.mjs";
@@ -84,6 +85,13 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   check(`[W0] honest: with the renewal served the name is live at ${REAL_TIP} (verified ${honest.verified})`, honest.verified === true && honest.addr === TARGET);
   const r = await unionOne(NAME, CLAIM, withheld, atTip);
   check("[W1] one source withholding the renewal, lease over at the wallet's verified tip: a caution on the proven address, not a refusal", r.verified === false && r.lapsed !== true && r.lapseUnconfirmed === true && r.lastAddr === TARGET);
+  check(`[W1r] its reason names the one source, not the served tip (${r.reason})`, /only one name source/.test(r.reason) && !/served tip/.test(r.reason));
+  // The predicate is 0.3.4's, F || (V && U): with the floor kept from earlier sessions past the old lease end, one
+  // source that withholds the renewal still makes the refusal (SECURITY.md, README.md say so).
+  const r2 = await unionOne(NAME, CLAIM, withheld, source(w.blocks, REAL_TIP, { verifiedTip: REAL_TIP, nodeTip: REAL_TIP, floorTip: REAL_TIP }));
+  check("[W2] the kept floor past the old lease end and one source withholding the renewal: refused, as in 0.3.4", r2.verified === false && r2.lapsed === true && r2.lapseUnconfirmed !== true);
+  const r2h = await unionOne(NAME, CLAIM, w.hints, source(w.blocks, REAL_TIP, { verifiedTip: REAL_TIP, nodeTip: REAL_TIP, floorTip: REAL_TIP }));
+  check("[W2h] honest: the same floor with the renewal served verifies the live name", r2h.verified === true && r2h.addr === TARGET);
 }
 
 // ── Case 3: TWO sources both serve the events, the served tip is past the lease, the headers are not → CAUTION ──
@@ -95,6 +103,7 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   const r = await verifyNameUnion(NAME, sources, srcNoFloor(REAL_TIP), mkFetch({ [PRIM]: history, [CLAR]: history }));
   console.log("[3] two sources, served tip past the lease: verified=%s lapsed=%s unconfirmed=%s sources=%s", r.verified, r.lapsed, r.lapseUnconfirmed, r.sources);
   check("[3] two sources do not make a served-tip lapse a refusal: unconfirmed, on the proven address", r.verified === false && r.lapsed !== true && r.lapseUnconfirmed === true && r.lastAddr === TARGET && r.sources === 2);
+  check(`[3r] its reason names the served tip (${r.reason})`, /below the served tip, above the headers the wallet verified/.test(r.reason));
 }
 
 // ── Case 4: only ONE usable union source (clarvis network-blocked) + no floor → CAUTION ──

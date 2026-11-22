@@ -336,7 +336,9 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   address with `verified: false` and the popup lets the user send after a caution.
 - A lapse refuses only when both hold: the lease is over at a height the wallet verified (its PoW-verified header tip
   or the persisted tip floor), so a served tip cannot make it; and 0.3.4's corroboration, two usable sources or the
-  floor, since one source can withhold a renewal. Expired only at the served tip, seen in one source's records only,
+  floor, since one source can withhold a renewal. Together that is 0.3.4's predicate without the served tip: the floor
+  alone, or the verified tip with two sources. With the floor past the old lease end, one source withholding a renewal
+  still makes the refusal (test/name-lapse-tip.test.mjs [W2]). Expired only at the served tip, seen in one source's records only,
   or reported lapsed by a resolver while the chain cannot show the lease current, it is
   `lapseUnconfirmed` (`verified: false`): the popup's caution with "Send anyway", on the last holding's proven
   address (`lastAddr`) when the replay gave one, else the served one under the popup's not-verified line

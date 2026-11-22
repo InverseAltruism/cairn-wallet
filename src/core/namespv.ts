@@ -369,7 +369,8 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     if (!rep.ok) {
       // A lapse refuses only when both hold: the lease is over at a height the wallet verified (its header tip or the
       // kept floor), so a served tip cannot make it; and 0.3.4's corroboration (two usable sources or the floor), since
-      // one source can withhold a renewal or a recapture (test/name-lapse-tip.test.mjs [2v], [W1]).
+      // one source can withhold a renewal or a recapture (test/name-lapse-tip.test.mjs [2v], [W1]). With the floor past
+      // the old lease end that withholding still refuses, as in 0.3.4 ([W2]).
       if (rep.lapsed) {
         const atVerifiedHeight = rep.verifiedCorroborated === true || rep.floorCorroborated === true;
         const corroborated = usable.length >= 2 || rep.floorCorroborated === true;

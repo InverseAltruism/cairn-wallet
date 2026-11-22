@@ -263,12 +263,14 @@ them, so a name the replay shows was bought through an offer fill or re-claimed 
 described above (`docs/DESIGN-viafill.md`, "Decision").
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
-refuse: a lease that has lapsed at a height the wallet verified (its own proof-of-work header tip, or the floor kept
-from earlier sessions) with the corroboration 0.3.4 required (two name sources served the records, or the floor), and
-a change between review and confirm. Any other lapse is a caution with a second click ("Send anyway"), not a refusal:
-a lapse at the served tip alone (whoever answers for both default hosts could otherwise serve a tip past a live name's
-lease and stop every send to it), one that a single source's records show (that source can withhold a renewal or a
-recapture), and one a resolver reports and the wallet cannot settle. The caution's
+refuse: a lapsed lease, and a change between review and confirm. A lease counts as lapsed, as in 0.3.4, when it is
+over at the floor kept from earlier sessions, or over at the wallet's own proof-of-work header tip with two name
+sources serving the records. Any other lapse is a caution with a second click ("Send anyway"), not a refusal: a lapse
+at the served tip alone (whoever answers for both default hosts could otherwise serve a tip past a live name's lease
+and stop every send to it), one at the wallet's own tip that a single source's records show (that source can withhold
+a renewal or a recapture), and one a resolver reports and the wallet cannot settle. With the kept floor past the old
+lease end, one source that withholds a renewal still causes the refusal, as in 0.3.4 (test/name-lapse-tip.test.mjs
+[W2]). The caution's
 address is the one the name's own verified records give its last holding, when the replay gives one, so a moved tip
 does not also move the send (test/name-lapse-tip.test.mjs). When it gives none (nothing could be replayed, both
 sources are down or answer not found, a source reports the replay insufficient, the name is a reservation not yet
