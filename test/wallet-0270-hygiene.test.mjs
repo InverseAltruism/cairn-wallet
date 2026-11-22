@@ -31,7 +31,7 @@ ok("popup has no side-effect import of core/wallet.js", !/^import\s*["']\.\.\/co
 ok("popup explorer comes from explorer.ts", /from "\.\.\/core\/explorer\.js"/.test(popup));
 ok("popup dynamically imports devshim", /import\("\.\/devshim\.js"\)/.test(popup));
 ok("CSD Review parallelizes recipientChecks+balance",
-  /const \[b, checks\] = await Promise\.all\(\[call\("balance"\)\.catch\(\(\) => null\), recipientChecks\(to\)\]\)/.test(popup));
+  /const \[b, checks\] = await Promise\.all\(\[call\("balance"\)\.catch\(\(\) => null\), recipientChecks\(to, rr\.name\)\]\)/.test(popup));
 
 const fillspv = src("src/core/fillspv.ts");
 ok("proveEventAt fan-out uses mapPool at SCAN_POOL", /await mapPool\(liveOthers, SCAN_POOL/.test(fillspv) && /await mapPool\(scanned, SCAN_POOL/.test(fillspv));
@@ -82,6 +82,6 @@ const shim = src("src/popup/devshim.ts");
 ok("devshim throws when chrome.runtime.sendMessage exists",
   /chromeRef\?\.runtime\?\.sendMessage/.test(shim) && /must not load in the extension/.test(shim));
 ok("devshim forwards removeAccount password (args[1])", /removeAccount\(args\[0\], args\[1\]\)/.test(shim));
-ok("devshim forwards send expectSigner (args[3])", /w\.send\(args\[0\], args\[1\], args\[2\], args\[3\]\)/.test(shim));
+ok("devshim forwards send expectSigner (args[3]) and the name for the history row (args[4])", /w\.send\(args\[0\], args\[1\], args\[2\], args\[3\], args\[4\]\)/.test(shim));
 
 done("wallet-0270-hygiene");

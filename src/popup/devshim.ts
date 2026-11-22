@@ -38,7 +38,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "epoch": return w.epoch();
     case "tip": return w.tip();
     case "tipFloor": return w.tipFloor();
-    case "send": return w.send(args[0], args[1], args[2], args[3]);
+    case "send": return w.send(args[0], args[1], args[2], args[3], args[4]);
     case "consolidate": return w.consolidate(args[0]);
     case "consolidatePreview": return w.consolidatePreview(args[0]);
     case "maxSendable": return w.maxSendable(args[0]);
@@ -49,6 +49,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "cairnxTransfer": return w.cairnxTransfer(args[0]);
     case "resolveName": return w.resolveName(args[0]);
     case "confirmName": return w.confirmName(args[0]);
+    case "nameCheck": return w.nameCheck(args[0]);
     case "tokenFillQuote": return w.tokenFillQuote(args[0]);
     case "tokenDisplayMeta": return w.tokenDisplayMeta(args[0]);
     case "fillOfferView": return w.fillOfferView(args[0]);

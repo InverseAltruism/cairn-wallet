@@ -8,6 +8,7 @@ import { call } from "./popup-bridge.js";
 import { $ } from "./popup-dom.js";
 import { renderHistory } from "./popup-history.js";
 import { balanceState, knownNames } from "./popup-state.js";
+import { M11_BACKUP_SERVER } from "./sentences.js";
 
 // Send-success moment: the balance settles once (popup.css `.bal-hero.sent`), `delay` ms from now (once the closing sheet
 // has cleared the hero); display only, reduced-motion aware.
@@ -105,7 +106,9 @@ export async function refreshBalance(settleIn = 0) {
     if (seq !== balSeq) return;                // a newer refresh superseded this one
     void updateMergePending(b.utxos);          // piggybacks the utxos this fetch already carried
     el.classList.remove("loading", "stale", "failed");
-    ($("bal-note") as HTMLElement).hidden = true;
+    const note = $("bal-note") as HTMLElement;
+    note.textContent = b.via === "backup" ? M11_BACKUP_SERVER : "";
+    note.hidden = b.via !== "backup";
     const next = Number(b.confirmed);
     const from = balanceState.last;
     balanceState.last = next; balanceState.stale = false;

@@ -15,8 +15,9 @@
 //   E. Two clicks on the token Confirm transfer once. F. Two clicks on the name action's Confirm sign once (it consumed
 //      its snapshot before any await already; pinned so the class stays closed). G. A name that re-points between review
 //      and Confirm sends nothing and tears the review down, keeping the draft.
-//   H. A Confirm overtaken during its re-check by a later Confirm that sent writes nothing over that outcome. RED-FIRST:
-//      drop the `gen !== confirmGen` return in runConfirm and H1 sees "Nothing was sent" over "Sent 1 CSD".
+//   H. A Confirm overtaken during its re-check by a later Confirm writes nothing: over that outcome (H1), and while the
+//      later one is still in its re-check (H3). RED-FIRST: drop the `gen !== confirmGen` return in runConfirm and H3
+//      sees "The review was closed..." (H1 is also held by the statusWrites condition of M).
 //   I. A Review the user leaves while it awaits the name lookup primes nothing: another token's sheet (the amount was
 //      parsed with the first token's decimals), or Cancel on the CSD sheet. RED-FIRST: drop the `left()` checks in the
 //      token Review and I1 shows a "100000000 ZZZ" card whose Confirm signs; drop `reviewCurrent` in the CSD Review and
@@ -117,8 +118,9 @@ console.log("C. the token sheet switched to another token during the name re-che
   check(`C1 nothing is signed, and the popup says so (${transfers.length - before} transfers, "${text()}")`, transfers.length - before === 0 && text() === GONE);
   await tokenReview("CAIRN", "alice.csd", "1");
   await byId("btn-tsend-confirm").click(); await flush(40);
+  // a send to a name carries the name for its history row (WL1.1, wallet.ts namedRow); the signed fields are the review's
   check(`C2 honest: an undisturbed token Confirm signs exactly the review (${JSON.stringify(transfers.at(-1))})`,
-    JSON.stringify(transfers.at(-1)) === JSON.stringify({ ticker: "CAIRN", amount: "100000000", to: ALICE, decimals: 8, fee: 25_000_000, expectSigner: ME })
+    JSON.stringify(transfers.at(-1)) === JSON.stringify({ ticker: "CAIRN", amount: "100000000", to: ALICE, decimals: 8, fee: 25_000_000, expectSigner: ME, name: "alice" })
     && /^Sent 1 CAIRN = 100000000 base units/.test(text()));
 }
 
@@ -133,7 +135,7 @@ console.log("D. Back during the CSD name re-check");
   check(`D1 Back during the re-check sends nothing (${sends.length - before}, "${text()}")`, sends.length - before === 0 && text() === GONE);
   await csdReview("alice.csd");
   await byId("btn-send-confirm").click(); await flush(40);
-  check(`D2 honest: a name send left alone sends once to the reviewed address (${JSON.stringify(sends.at(-1))})`, sends.length - before === 1 && JSON.stringify(sends.at(-1)) === JSON.stringify([ALICE, 1e8, 1_000_000, ME]));
+  check(`D2 honest: a name send left alone sends once to the reviewed address (${JSON.stringify(sends.at(-1))})`, sends.length - before === 1 && JSON.stringify(sends.at(-1)) === JSON.stringify([ALICE, 1e8, 1_000_000, ME, "alice"]));
 }
 
 console.log("E. two clicks on the token Confirm");
@@ -163,7 +165,7 @@ console.log("G. a name that re-points between review and Confirm");
   confirmAddr = MOVED;
   await byId("btn-send-confirm").click(); await flush(40);
   confirmAddr = ALICE;
-  check(`G1 nothing is sent, with the exact refusal (${sends.length - before}, "${text()}")`, sends.length - before === 0 && text() === "alice.csd changed where it points. Nothing was sent: review it again.");
+  check(`G1 nothing is sent, with the exact refusal (${sends.length - before}, "${text()}")`, sends.length - before === 0 && text() === "alice.csd now points to a different address. Nothing was sent; review it again.");
   check("G2 the review is torn down and the draft kept for a re-review", byId("send-confirm").hidden === true && byId("s-to").value === "alice.csd" && byId("s-to").disabled === false);
 }
 
@@ -182,6 +184,23 @@ console.log("H. a Confirm overtaken during its re-check by a later Confirm that 
   release(); await p1; await flush(40);
   check(`H1 the later Confirm's outcome stays on screen ("${text().slice(0, 60)}")`, /^Sent 1 CSD/.test(text()) && text() === sent && !/Nothing was sent/.test(text()));
   check(`H2 honest: one send, the later review's (${sends.length - before}, ${JSON.stringify(sends.at(-1))})`, sends.length - before === 1 && JSON.stringify(sends.at(-1)) === JSON.stringify([EXTERNAL, 1e8, 1_000_000, ME]));
+}
+{
+  // H3: the overtaken Confirm answers while the later one is still in its own re-check (nothing written yet)
+  await csdReview("alice.csd");
+  let release1, release2;
+  confirmGate = new Promise((r) => (release1 = r));
+  const p1 = byId("btn-send-confirm").click(); await flush();
+  await byId("btn-send-back").click(); await flush();
+  await csdReview("alice.csd");
+  confirmGate = new Promise((r) => (release2 = r));
+  const before = sends.length;
+  const p2 = byId("btn-send-confirm").click(); await flush();
+  release1(); await p1; await flush(10);
+  const mid = text();
+  check(`H3 the overtaken Confirm writes nothing while the later one runs ("${mid}")`, !/review was closed|Nothing was sent/.test(mid));
+  confirmGate = null; release2(); await p2; await flush(40);
+  check(`H3 honest: the later Confirm sends once ("${text().slice(0, 30)}")`, sends.length - before === 1 && /^Sent 1 CSD/.test(text()));
 }
 
 console.log("I. a Review left while it awaits the name lookup");

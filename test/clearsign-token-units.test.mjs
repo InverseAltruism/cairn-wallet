@@ -9,6 +9,7 @@
 //   PAIRED HAPPY-PATH: section 4 signs the same bid request through the real propose engine and compares the
 //   submitted bytes against a digest captured from the unmodified 0.2.72 tree (master 8ce3ed7).
 // Run: node --import tsx test/clearsign-token-units.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { cairnxDescribe, cairnxTokenTickers, describe, tokenQuoteHtml } from "../src/popup/clearsign.js";
 import { canonicalJson, cairnxPayloadHash, CAIRNX_DOMAIN } from "../src/core/cairnx.js";

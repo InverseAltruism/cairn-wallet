@@ -8,7 +8,7 @@ import { CLARVIS_TRADE_API } from "./endpoints.js";
 
 // What resolveName and confirmName answer: a refusal (ok false, with error), or the address to send to and how
 // far it was verified.
-export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; lapseUnconfirmed?: boolean; addrProven?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
 // What name resolution reads through the wallet. verifyName is called through the wallet so an instance override
 // applies (test/resolve-lapse-corroborate replaces it to test the resolve logic without SPV). spvGen is bumped on
 // every endpoint change: a verification that began under an older value caches nothing.
@@ -20,13 +20,19 @@ export interface NameIo {
   tradeApi(): string;
   spvGen(): number;
   nameHints(): Map<string, HintSetEntry>;
+  /** A resolve of `name` starts: the name's earlier served answer is forgotten, and the note returned records this
+   *  resolve's answer as it arrives (the served address, a well-formed one else null, and its lapsed flag), unless a
+   *  newer resolve of the name started or the answers were cleared since. The send review offers it after D12's 10 s
+   *  (`nameCheck`). */
+  beginServed?(name: string): (served: ServedName) => void;
 }
+export type ServedName = { addr: string | null; lapsed: boolean };
 
 // Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
 const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
 
-// Forward resolution for "send to a .csd name". Fail-CLOSED on a lapsed/expired lease so the
-// popup never routes funds to a name's stale address. Returns the nset addr if set, else the
+// Forward resolution for "send to a .csd name". Refuses a lease the wallet proves expired; a lapse it does not settle
+// comes back as a caution (`lapseUnconfirmed`). Returns the nset addr if set, else the
 // owner (so a name works as a recipient even before its holder sets a resolver record).
 export async function resolveName(wallet: NameIo, name: string): Promise<NameResolution> {
   const nm = normName(name);
@@ -34,6 +40,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
   // interpolating it into the resolver URL; a name with `/`, `..`, `%`, or query chars must never
   // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
   if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
+  const noteServed = wallet.beginServed?.(nm);
   try {
     // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
     // EVERY name send with "name lookup failed" even though clarvis, the second source, could
@@ -55,20 +62,15 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     }
     if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
     const j = await r.json();
+    noteServed?.({ addr: servedAddr(j), lapsed: j?.lapsed === true });
     if (j?.lapsed) {
-      // N19 (B5b): do NOT hard-refuse on a single source's SERVED `lapsed` flag; that short-circuit
-      // fired BEFORE the SPV union, so the two-source lapse corroboration (WALLET-LAPSE-TIP-1) could
-      // never see the claim it exists to corroborate, and one hostile/buggy primary could permanently
-      // block sends to a healthy name. Consult the union: chain proves the lease CURRENT -> serve the
-      // PROVEN answer (the served flag was false); union corroborates the lapse -> refuse with
-      // confidence; union unavailable -> keep today's fail-closed refusal, with honest uncorroborated
-      // copy. A real lapse still refuses exactly as before; this only removes the FALSE refusal.
+      // A served `lapsed` flag is not a refusal by itself: the chain proves the lease current -> the proven answer;
+      // the lapse holds at a verified height -> refuse; anything else -> the unconfirmed-lapse caution.
       const lv = await wallet.verifyName(nm).catch(() => null);
       if (lv?.verified && lv.addr)
-        return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
-      return lv?.lapsed === true
-        ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed: can't send to it` }
-        : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain; refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
+        return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, completedAt: lv.completedAt, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
+      if (lv?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed: can't send to it` };
+      return unconfirmedLapse(nm, j, lv);
     }
     if (!j?.addr || !/^0x[0-9a-f]{40}$/.test(String(j.addr).toLowerCase())) return { ok: false, error: `${nm}.csd has no address` };
     const base = { ok: true as const, name: nm, addr: String(j.addr).toLowerCase(), via: j.via, owner: j.owner, lapsed: false };
@@ -79,18 +81,34 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     // "does NOT match / hostile resolver" refusal branch is deleted; the union replaced that
     // refusal with serve-the-proven-winner + disagree, so no emitted reason ever matched it.)
     const v = await wallet.verifyName(nm).catch(() => null);
-    if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, disagree: v.disagree, soleSource: v.soleSource };
+    if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, completedAt: v.completedAt, sources: v.sources, disagree: v.disagree, soleSource: v.soleSource };
     // NS-2: gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but serves an
     // address for a genuinely-lapsed name reaches here; verifyName's union already computed the lapse
     // (resolve(events, lapseTip).expired, corroborated by the persisted floor at namespv.ts). Refuse a
-    // CONFIDENT lapse exactly as the served-flag branch does. An UNCORROBORATED lapse is left to the
-    // fall-through caution below (the WALLET-LAPSE-TIP-1 availability valve: never hard-block on an
-    // uncorroborated lapse that could be a MITM-inflated tip on a fresh install).
+    // CONFIDENT lapse exactly as the served-flag branch does; any other lapse (at the served tip only, or with one
+    // source) is the unconfirmed-lapse caution.
     if (v?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd has lapsed, so we did not send. Send to the owner's 0x address directly, or ask them to renew the name before sending again.` }; // MUTATE_NS2_PROVEN_LAPSE
+    if (v?.lapseUnconfirmed === true) return unconfirmedLapse(nm, j, v);
     // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill; not name-scope
     // provable" caution rather than the generic "couldn't verify" one. Still verified:false (fail-closed).
     return { ...base, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable", viaFill: v?.viaFill === true };
   } catch { return { ok: false, error: "name lookup failed" }; }
+}
+
+// The served record's address when it is a well-formed one, lower case.
+const servedAddr = (j: { addr?: unknown } | null | undefined): string | null =>
+  typeof j?.addr === "string" && /^0x[0-9a-f]{40}$/.test(j.addr.toLowerCase()) ? j.addr.toLowerCase() : null;
+
+// A lapse the wallet could not settle (the served flag, a lease expired only at the served tip, or one source): a caution, not a
+// refusal ([A4]). The address is the last holding's from the name's own verified records when the replay gave one, so
+// a tip moved past a live lease does not also move the send (test/name-lapse-tip.test.mjs [T3]); the served one only
+// when nothing was replayed. `addrProven` says which: the review shows [A4] alone only on a proven address, and the
+// served one under [A9] (or [A10] for a bought name) as well (popup-recipient.ts, test/name-lapse-tip.test.mjs [T8]).
+function unconfirmedLapse(nm: string, j: { addr?: unknown; via?: string; owner?: string }, v: NameVerification | null): NameResolution {
+  const proven = v?.lastAddr;
+  const addr = proven ?? servedAddr(j);
+  if (!addr) return { ok: false, error: `${nm}.csd has no address` };
+  return { ok: true, name: nm, addr, via: j.via, owner: j.owner, lapsed: false, lapseUnconfirmed: true, addrProven: proven !== undefined, verified: false, viaFill: v?.viaFill === true, verifyReason: v?.reason ?? "on-chain verification unavailable" };
 }
 
 // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies
@@ -149,12 +167,12 @@ async function rememberHintSet(wallet: NameIo, nm: string, res: NameVerification
   const tip = await wallet.tip();
   if (tip == null || !Number.isFinite(tip) || gen !== wallet.spvGen()) return;
   wallet.nameHints().set(nm, {
-    name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
+    name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth, completedAt: res.completedAt,
     ts: Date.now(), epoch: Math.floor(tip / EPOCH_LEN),
   });
 }
 
-async function tryConfirmHintSet(wallet: NameIo, nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
+async function tryConfirmHintSet(wallet: NameIo, nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; completedAt?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
   const gen = wallet.spvGen();
   const cache = wallet.nameHints().get(nm);
   if (!cache) return null;
@@ -177,7 +195,7 @@ async function tryConfirmHintSet(wallet: NameIo, nm: string): Promise<{ ok: true
   if (!verdict.skip || gen !== wallet.spvGen()) return null;
   return {
     ok: true, name: nm, addr: cache.addr, via: cache.via, owner: cache.owner, lapsed: false,
-    verified: true, depth: cache.depth, sources: verdict.sources, disagree: verdict.disagree,
+    verified: true, depth: cache.depth, completedAt: cache.completedAt, sources: verdict.sources, disagree: verdict.disagree,
     soleSource: false, viaFill: false,
   };
 }

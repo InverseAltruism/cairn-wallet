@@ -13,6 +13,7 @@
 //   RED-FIRST: tier a taker with the first-time notice (drop the LOOKALIKE_ONLY test in recipientFlags) and the two
 //   golden answers to a bid and the token-priced offer fail the taker check.
 // Run: npx tsx test/golden-requests-cards.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { checker } from "./helpers/check.mjs";

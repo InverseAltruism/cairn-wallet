@@ -15,6 +15,7 @@
 //   ONE HOME: chrome.windows.update appears once in src/, inside focusApprovalWindow (10).
 // test/approve-raise-chrome.test.mjs runs the same raise in Chromium with the built extension loaded.
 // Run: npx tsx test/approve-raise-rearm.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { checker } from "./helpers/check.mjs";

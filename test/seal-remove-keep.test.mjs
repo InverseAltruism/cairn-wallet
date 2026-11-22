@@ -7,6 +7,7 @@
 //   a removal refused by a failing seal store goes through once the store works (6);
 //   reset() still leaves no sealed-claim list (5); the remove step's count reads 0 for an account with none (1).
 // Run: npx tsx test/seal-remove-keep.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";

@@ -10,6 +10,7 @@
 //   - through the real Wallet.fillOffer: a listed fill whose spent coin cannot be read is missing evidence, a
 //     retryable VERIFY_UNAVAILABLE, and the retry signs; a listed fill not signed by its coin's owner is FILL_UNSAFE.
 // Run: npx tsx test/fill-offer-progress.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { provenOfferPayto } from "../src/core/fillspv.js";
 import { toChainEvent } from "../src/core/spvbind.js";

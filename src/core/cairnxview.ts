@@ -1,9 +1,10 @@
 // Display reads of the CairnX resolver for the popup and the approval cards: balances and names, the token list,
 // a token fill's quoted debit, a fill's listed asset, token decimals. Resolver-served and never bound to a
 // signature; the fill preflight makes its own reads and binds what it signs (fillpreflight.ts).
-import { cairnxTradeFee, FEE_BPS_V16, isTicker, decodeCairnxRecord, CAIRNX_DOMAIN, type TokenDisplayMeta } from "./cairnx.js";
+import { cairnxTradeFee, FEE_BPS_V16, isTicker, isPlainName, decodeCairnxRecord, CAIRNX_DOMAIN, type TokenDisplayMeta } from "./cairnx.js";
 import { getProposal } from "./node.js";
 import { offerExpiryHeightOf } from "../vendor/cairnx-spv.js";
+import { offerStatusWord } from "./servedtext.js";
 
 // The block at which the served offer expires, for the fill cards. Display only: the fill preflight checks the
 // merkle-proven record's expiry before it signs.
@@ -11,6 +12,10 @@ function servedExpiryHeight(o: { expiresEpoch?: unknown; height?: unknown }): nu
   const e = Number(o?.expiresEpoch), h = Number(o?.height);
   return Number.isSafeInteger(e) && e >= 0 && Number.isSafeInteger(h) && h >= 0 ? offerExpiryHeightOf(e, h) : undefined;
 }
+
+// A served base-unit amount as digits, or undefined. Served tickers, names and amounts pass the codec's own checks
+// (isTicker, isPlainName, this) at the door, and one that fails is dropped, so no served text is shown as one.
+const digits = (v: unknown): string | undefined => (typeof v === "string" && /^\d+$/.test(v)) || (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ? String(v) : undefined;
 
 // What the CairnX display reads use of the wallet: its read API and the active address.
 export interface CairnxViewIo { tradeGet(path: string, timeoutMs?: number): Promise<Response>; addr(): string }
@@ -22,12 +27,18 @@ export async function cairnxAssets(wallet: CairnxViewIo): Promise<{ ok: boolean;
     const r = await wallet.tradeGet(`/cairnx/address/${wallet.addr()}`, 12000); // display read: 12s bounded (was untimed)
     if (!r.ok) return { ok: false };
     const j = await r.json();
-    const balances = (j && typeof j.balances === "object" && j.balances) || {};
-    const names = Array.isArray(j?.names) ? j.names.filter((n: unknown) => typeof n === "string") : [];
+    // A token row needs a ticker and digit amounts (a missing `locked` reads as 0); any other entry is not shown.
+    const served = (j && typeof j.balances === "object" && j.balances) || {};
+    const balances: Record<string, { available: string; locked: string }> = {};
+    for (const [t, b] of Object.entries(served as Record<string, any>)) {
+      const available = digits(b?.available), locked = b?.locked == null ? "0" : digits(b.locked);
+      if (isTicker(t) && available !== undefined && locked !== undefined) balances[t] = { available, locked };
+    }
+    const names = Array.isArray(j?.names) ? j.names.filter(isPlainName) : [];
     // nameDetails (lease/expiry/addr per name) + the server-computed primary name (reverse record).
     // Older services omit these → empty/null, and the popup falls back to plain name chips.
-    const nameDetails = Array.isArray(j?.nameDetails) ? j.nameDetails : [];
-    const primaryName = typeof j?.primaryName === "string" ? j.primaryName : null;
+    const nameDetails = Array.isArray(j?.nameDetails) ? j.nameDetails.filter((d: any) => isPlainName(d?.name)) : [];
+    const primaryName = isPlainName(j?.primaryName) ? j.primaryName : null;
     // tip rides along so the popup can turn a pending reservation's finalizeBy into a live countdown
     const tipHeight = Number(j?.tipHeight) || 0;
     return { ok: true, balances, names, nameDetails, primaryName, tipHeight };
@@ -46,7 +57,7 @@ export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): 
     if (!so.ok) return so;
     const o = so.offer;
     const w = o.want;
-    if (!w || typeof w.ticker !== "string" || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
+    if (!w || !isTicker(w.ticker) || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
     let amount: bigint;
     try { amount = BigInt(String(w.amount)); } catch { return { ok: false, error: "bad amount" }; }
     if (amount < 0n) return { ok: false, error: "bad amount" };
@@ -57,11 +68,11 @@ export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): 
     const bps = hasBps ? Number(o.feeBps) : FEE_BPS_V16;
     const fee = cairnxTradeFee(amount, bps);
     const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
-    const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
+    const giveTicker = isTicker(g?.ticker) ? g.ticker : undefined;
     // Served amount:null must stay absent; String(null) is "null", and the vendor give-leg
     // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
-    const giveAmount = g?.amount != null ? String(g.amount) : undefined;
-    const giveName = typeof g?.name === "string" ? g.name : undefined;
+    const giveAmount = digits(g?.amount);
+    const giveName = isPlainName(g?.name) ? g.name : undefined;
     const meta = await tokenDisplayMeta(wallet, [w.ticker, giveTicker]);
     return {
       ok: true, ticker: w.ticker, amount: amount.toString(), fee: fee.toString(), total: (amount + fee).toString(), estimated: !hasBps, giveTicker, giveAmount, giveName,
@@ -79,7 +90,7 @@ async function servedOpenOffer(wallet: CairnxViewIo, proposalId: string): Promis
   const r = await wallet.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default)
   if (!r.ok) return { ok: false, error: "offer not found" };
   const o: any = await r.json().catch(() => null);
-  if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+  if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${offerStatusWord(o.status)}` : "offer unavailable" };
   return { ok: true, offer: o };
 }
 
@@ -91,7 +102,6 @@ export type FillListing = { status: "open"; give: { ticker: string; amount: stri
 // fillViewHtml); `partial` holds when those fields are missing, so such a listing's card does not show the whole give as
 // received. A served answer without its minimum reads as a whole listing, attributed to the service.
 // Display only.
-const digits = (v: unknown): string | undefined => (typeof v === "string" && /^\d+$/.test(v)) || (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ? String(v) : undefined;
 // The served listing as previewFill reads it, or undefined when a field it needs is missing or malformed.
 function listingOf(o: any, giveTicker?: string, giveAmount?: string, giveName?: string): FillListing | undefined {
   const value = digits(o?.want?.value), payto = typeof o?.want?.payto === "string" ? o.want.payto.toLowerCase() : undefined;
@@ -111,9 +121,9 @@ export async function fillOfferView(wallet: CairnxViewIo, proposalId: string): P
     const offerId = String(o.id ?? "").toLowerCase();
     if (!/^0x[0-9a-f]{64}$/.test(offerId)) return { ok: false, error: "offer unavailable" };
     const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
-    const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
-    const giveAmount = g?.amount != null ? String(g.amount) : undefined;
-    const giveName = typeof g?.name === "string" ? g.name : undefined;
+    const giveTicker = isTicker(g?.ticker) ? g.ticker : undefined;
+    const giveAmount = digits(g?.amount);
+    const giveName = isPlainName(g?.name) ? g.name : undefined;
     const meta = giveTicker ? await tokenDisplayMeta(wallet, [giveTicker]) : {};
     const partial = o.min != null && giveName === undefined;
     return { ok: true, offerId, giveTicker, giveAmount, giveName, giveDecimals: giveTicker ? meta[giveTicker]?.decimals : undefined, giveDeployId: giveTicker ? meta[giveTicker]?.deployId : undefined, expiresAt: servedExpiryHeight(o), partial, listing: listingOf(o, giveTicker, giveAmount, giveName) };

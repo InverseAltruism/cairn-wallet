@@ -41,11 +41,13 @@
 //   RED-FIRST: drop the tokenMeta threading in approve.ts render() and (9a) goes red.
 //
 // Run: node --import tsx test/approve-repaint-dom.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { bid } from "../src/vendor/cairnx-spv.js";
 import { checker } from "./helpers/check.mjs";
+import { SENTENCES } from "../src/popup/sentences.ts";
 import { mountApproveWindow, loadApprove, flush } from "./helpers/approve-dom.mjs";
 
 const { check, done } = checker();
@@ -315,12 +317,15 @@ assert.equal(registry.get("msg").textContent, "Approving\u2026");
 const REFUSAL = "refusing to sign: the second source (clarvis) reports that this offer is cancelled, while your resolver shows it open.";
 releaseOutcome({ done: true, ok: false, error: REFUSAL, code: "OFFER_SOURCE_CONFLICT" });
 await flush();
-assert.equal(registry.get("msg").textContent, `Failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the refusal and its code are painted");
+// A page's send shows the sentence module's line ([R1] for a code without its own), the engine's text and the code
+// under Details (WL1.2; test/approve-outcome-dom.test.mjs (7)).
+const painted = () => { const html = String(registry.get("msg").innerHTML); return html.startsWith(SENTENCES.R1.text.replace(/'/g, "&#39;")) && html.includes("(OFFER_SOURCE_CONFLICT)") && html.includes("refusing to sign: the second source (clarvis) reports"); };
+assert.ok(painted(), "(10a) the refusal and its code are painted");
 assert.equal(registry.get("msg").className, "msg err");
 for (let i = 0; i < 5; i++) { await tick(); await flush(3); }
 assert.equal(closes(), closesBefore, "(10a) the window stays open on the failure after further polls");
 assert.equal(registry.get("view-req").hidden, true, "(10a) the spent request's buttons are hidden");
-assert.equal(registry.get("msg").textContent, `Failed: ${REFUSAL} (OFFER_SOURCE_CONFLICT)`, "(10a) the failure text is still there");
+assert.ok(painted(), "(10a) the failure text is still there");
 console.log("  ok (10a)");
 
 state.pending = [sendReq("o2", RCPT_B, 2_00000000)];

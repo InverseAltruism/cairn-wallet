@@ -2,6 +2,7 @@
 // under-reports a coin would otherwise make the change short by the difference, which the miner takes as fee.
 // One coin reported at 4 CSD whose source tx proves 5 CSD: the change is 5 - amount - fee.
 // Run: npx tsx test/change-proven-total.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { send, sendMany } from "../src/core/node.js";
 import { addrFromPriv } from "../src/core/csdtx.js";

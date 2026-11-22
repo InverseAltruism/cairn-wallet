@@ -5,6 +5,7 @@
 // registered"). The SPV verifyName step stays the trust anchor either way; here it is offline in
 // every case, so every result must carry verified:false — these tests pin the SOURCE-SELECTION
 // logic, not the trust. Money path: a wrong answer here routes a send.
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 
@@ -87,13 +88,18 @@ try {
     const r = await w.resolveName("alice");
     check("both sources down → 'name lookup failed'", r.ok === false && /name lookup failed/.test(String(r.error)));
   }
-  // 7. fail-closed lease semantics survive the fallback path: a lapsed answer from clarvis refuses
+  // 7. a served lapse via the fallback, with the wallet's check offline: no address is a refusal ([A5]); with one, the
+  //    [A4] caution on it (the wallet could not check the lapse; a caution with a second click, not a refusal)
   {
-    const { fetch } = mkResolveStub({ primary: s500, clarvis: () => okBody({ lapsed: true }) });
+    const { fetch } = mkResolveStub({ primary: s500, clarvis: () => okBody({ lapsed: true, addr: undefined }) });
     globalThis.fetch = fetch;
     const w = await mkWallet();
     const r = await w.resolveName("alice");
-    check("lapsed lease via the fallback still refuses (fail-closed)", r.ok === false && /lapsed/.test(String(r.error)));
+    check("lapsed lease via the fallback without an address refuses", r.ok === false && /has no address/.test(String(r.error)));
+    const s2 = mkResolveStub({ primary: s500, clarvis: () => okBody({ lapsed: true, addr: ADDR }) });
+    globalThis.fetch = s2.fetch;
+    const r2 = await (await mkWallet()).resolveName("alice");
+    check("lapsed lease via the fallback with an address: the unconfirmed-lapse caution on it, not verified", r2.ok === true && r2.lapseUnconfirmed === true && r2.verified === false && r2.addr === ADDR.toLowerCase());
   }
   // 8. a fallback answer with no usable address refuses (no silent empty-addr acceptance)
   {

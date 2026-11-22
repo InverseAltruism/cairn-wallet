@@ -245,8 +245,8 @@ Beside the clarvis offer read, the fclaim-lane preflight asks clarvis for its re
 by the front door do not change its answer. The read starts with the scan, on the same terms as the offer read (the
 same base and timeout), and counts only if it answered before the scan finished, so an honest fill waits for nothing.
 
-- A 200 for this fclaim with `applied: false`: refuse with `RESERVATION_DENIED`, with clarvis's reason when it gives
-  a short printable one. The chain clarvis follows denies the reservation, which is where the payment would burn.
+- A 200 for this fclaim with `applied: false`: refuse with `RESERVATION_DENIED`; clarvis's reason, when it gives a
+  short printable one, goes to the wallet's console, not on screen. The chain clarvis follows denies the reservation, which is where the payment would burn.
 - A 404 whose `tipHeight` is at least the buyer's proven fclaim height plus 12: clarvis has scanned past the
   reservation and does not know it. The wallet signs nothing yet and returns `RESERVATION_UNCONFIRMED` with both
   heights to the approval window, which keeps the request queued and shows it again with a warning and two buttons,
@@ -334,10 +334,18 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 - A green badge needs a successful replay. A disagreeing source is a warning, not a refusal: the send goes to the
   proven winner with `disagree` or `soleSource` set. When nothing can be proven, `resolveName` returns the served
   address with `verified: false` and the popup lets the user send after a caution.
-- A lapse refuses when it is corroborated (a second source or the persisted tip floor is also past expiry), and when
-  a resolver reports the lease lapsed and the chain cannot show it current (`src/core/names.ts`). A lapse seen only
-  against one source's tip is a caution (`verified: false`, "may have lapsed"), so an inflated node tip cannot
-  block a send (test/resolve-lapse-corroborate.test.mjs). A name the replay shows decided by an offer fill or a
+- A lapse refuses only when both hold: the lease is over at a height the wallet verified (its PoW-verified header tip
+  or the persisted tip floor), so a served tip cannot make it; and 0.3.4's corroboration, two usable sources or the
+  floor, since one source can withhold a renewal. Together that is 0.3.4's predicate without the served tip: the floor
+  alone, or the verified tip with two sources. With the floor past the old lease end, one source withholding a renewal
+  still makes the refusal (test/name-lapse-tip.test.mjs [W2]). Expired only at the served tip, seen in one source's records only,
+  or reported lapsed by a resolver while the chain cannot show the lease current, it is
+  `lapseUnconfirmed` (`verified: false`): the popup's caution with "Send anyway", on the last holding's proven
+  address (`lastAddr`) when the replay gave one, else the served one under the popup's not-verified line
+  (`addrProven` false; a source flagging `scopedReplaySufficient: false` leaves no `lastAddr`) (`src/core/names.ts`;
+  test/name-lapse-tip.test.mjs, test/resolve-lapse-corroborate.test.mjs). Headers synced only to a name's last
+  record plus 12 trail the tip, so an honest lapse of an old name is a caution until the headers reach past its
+  lease end. A name the replay shows decided by an offer fill or a
   re-claim after a lapse (`viaFill`) is not shown green; the stale-seller residual above is the case the replay
   cannot see.
 - A long sync persists its verified progress every `SYNC_PERSIST_WINDOW` (8,192) headers, so an interrupted sync

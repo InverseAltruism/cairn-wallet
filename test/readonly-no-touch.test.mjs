@@ -5,10 +5,13 @@
 //   1. Unlock at t, poll reads at t + 10 min, fire the alarm at t + 16 min: the wallet locks (16 min idle).
 //   2. Paired: the same with a user action at t + 10 min (a resolve, as the window's Reject sends) instead: the wallet
 //      stays unlocked at t + 16 min (6 min idle) and locks at t + 26 min.
+//   3. `nameCheck` (the send review's poll) answers the popup only: refused from a page and from a content script
+//      posing as the popup. Take it out of READ_ONLY_METHODS and 1 fails.
 //   RED-FIRST: make every popup method touch the timer (`if (true) wallet.touch()`) and 1 fails. The check in
 //   test/extension-boundary.ts polls without moving the clock, so it stays green under that mutation (the audit of
 //   2026-11-19), and test/pentest.ts pins it by the source text only.
 // Run: npx tsx test/readonly-no-touch.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { PRIV } from "./helpers/fillworld.mjs";
 import { AUTO_LOCK_MS } from "../src/core/wallet.ts";
@@ -38,7 +41,8 @@ const autolock = async () => { alarm({ name: "cairn-autolock" }); await settle()
 check(`setup: the idle window is 15 minutes (${AUTO_LOCK_MS / MIN})`, AUTO_LOCK_MS === 15 * MIN);
 check("setup: a wallet from a known key", (await popup("import", PRIV, PW)).ok === true);
 // The approval window's poll and the popup's reads, each one of READ_ONLY_METHODS.
-const READS = [["status"], ["pending"], ["history"], ["tipFloor"], ["sealedClaims"], ["connectedSites"], ["rpcList"]];
+// `nameCheck` is the send review's 250 ms poll while a name check runs (popup-namecheck.ts).
+const READS = [["status"], ["pending"], ["history"], ["tipFloor"], ["sealedClaims"], ["connectedSites"], ["rpcList"], ["nameCheck", "alice"]];
 
 // 1. Reads ten minutes after the unlock do not move the idle start.
 {
@@ -61,5 +65,18 @@ const READS = [["status"], ["pending"], ["history"], ["tipFloor"], ["sealedClaim
   NOW += 10 * MIN;
   await autolock();
   check("2. ...and it locks 16 minutes after that action", !(await unlocked()));
+}
+// 3. The name check's read is the popup's only: a page's request for it (through the content script, kind "dapp") is
+//    not a dApp method, and a content script posing as the popup is refused by its sender; the popup's own call answers.
+{
+  const page = { id: "cairnwallettestid", url: "https://dapp.test/", origin: "https://dapp.test", tab: { id: 3 } };
+  const send = (msg, sender) => new Promise((res) => chrome.listener(msg, sender, res));
+  // a dApp method would be queued for approval and not answer; 500 ms of no answer reads as that
+  const viaPage = await Promise.race([send({ kind: "dapp", method: "nameCheck", params: ["alice"] }, page), new Promise((r) => setTimeout(() => r({ queued: true }), 500))]);
+  check(`3. a page's nameCheck is refused as no dApp method (${viaPage.code})`, viaPage.ok === false && viaPage.code === "UNSUPPORTED_METHOD");
+  const forged = await send({ kind: "popup", method: "nameCheck", args: ["alice"] }, page);
+  check(`3. a content script's forged popup nameCheck is refused (${forged.code})`, forged.ok === false && forged.code === "FORBIDDEN" && forged.result === undefined);
+  const own = await popup("nameCheck", "alice");
+  check(`3. honest: the popup's nameCheck answers the served answer and progress (${JSON.stringify(own.result)})`, own.ok === true && own.result.served === null && "progress" in own.result);
 }
 done("readonly-no-touch");

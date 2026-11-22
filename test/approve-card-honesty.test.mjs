@@ -20,6 +20,7 @@
 // line), 3c (a covered request arms Approve after the click-through delay).
 //
 // Run: node --import tsx test/approve-card-honesty.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { sendWarnings, fillViewHtml, tokenQuoteHtml, tickerWarning } from "../src/popup/clearsign.ts";
 import { fillOfferView, tokenFillQuote } from "../src/core/cairnxview.ts";

@@ -33,7 +33,7 @@ const readRows = () => {
   return [...document.querySelectorAll("#c-warn > .check")].map((el) => {
     const tier = ["ok", "caution", "danger"].find((x) => el.classList.contains(x));
     const r = el.getBoundingClientRect();
-    return { tier, text: el.textContent.trim().slice(0, 40), tinted: getComputedStyle(el).backgroundColor === tint[tier], icon: !!el.querySelector(":scope > svg.i"), visible: r.height > 0, aboveConfirm: r.bottom <= confirm.top };
+    return { tier, text: el.textContent.trim().slice(0, 40), full: el.textContent.trim(), tinted: getComputedStyle(el).backgroundColor === tint[tier], icon: !!el.querySelector(":scope > svg.i"), visible: r.height > 0, aboveConfirm: r.bottom <= confirm.top };
   });
 };
 
@@ -47,8 +47,9 @@ async function review(theme, resolveName, to, extra = {}) {
   await page.waitForSelector("#send-confirm:not([hidden])");
   await page.waitForTimeout(500);
   const rows = await page.evaluate(readRows);
+  const buttons = await page.evaluate(() => [document.getElementById("btn-send-confirm"), document.getElementById("btn-send-back")].map((b) => ({ text: b.textContent, fits: b.scrollWidth <= b.clientWidth + 1 })));
   await ctx.close();
-  return { rows, errors };
+  return { rows, buttons, errors };
 }
 
 // The entrance plays once: rows stagger in on the list's first fill, a refresh rewrites them in place, and the 1.5 s
@@ -210,6 +211,41 @@ async function sendSheet(theme) {
   return { form, review, sent, errors };
 }
 
+// WL1.3 (D12): a held name check. The sheet's line from 0.3 s, the share while headers sync, the choice from 10 s, all
+// inside the sheet and above its buttons; the choice arms the review with [A17] in the warn tint and "Send anyway" /
+// "Wait", each whole. The check never answers here (resolveName is held); nameCheck answers from the page.
+async function heldCheck(theme) {
+  const { page, ctx, errors } = await openWalletPage(browser, "popup", { ...base }, { viewport: { width: 360, height: 600 }, colorScheme: theme });
+  await page.waitForSelector("#view-main:not([hidden])");
+  await page.evaluate((addr) => {
+    const send = chrome.runtime.sendMessage;
+    window.__progress = { done: 650, total: 1000 };
+    chrome.runtime.sendMessage = (m, cb) => m.method === "resolveName" ? undefined
+      : m.method === "nameCheck" ? setTimeout(() => cb({ ok: true, result: { served: { addr, lapsed: false }, progress: window.__progress } }), 5) : send(m, cb);
+  }, NEW);
+  await page.click("#btn-send-t");
+  await page.fill("#s-to", "alice.csd");
+  await page.fill("#s-amt", "1.5");
+  await page.click("#btn-send");
+  const geo = () => page.evaluate(() => {
+    const l = document.getElementById("s-check"), sk = document.getElementById("s-check-skip"), act = document.querySelector("#send-form .step-actions"), sheet = document.getElementById("send-form");
+    const lr = l.getBoundingClientRect(), ar = act.getBoundingClientRect(), sr = sheet.getBoundingClientRect();
+    return { shown: !l.hidden && lr.height > 0, text: document.getElementById("s-check-text").textContent, inside: lr.left >= sr.left && lr.right <= sr.right + 0.5, above: lr.bottom <= ar.top + 0.5,
+      skip: !sk.hidden && sk.getClientRects().length > 0, skipText: sk.textContent, skipFits: sk.scrollWidth <= sk.clientWidth + 1, sideways: document.documentElement.scrollWidth > innerWidth };
+  });
+  await page.waitForTimeout(900);
+  const early = await geo();
+  await page.waitForTimeout(9_800);
+  const late = await geo();
+  await page.click("#s-check-skip");
+  await page.waitForSelector("#send-confirm:not([hidden])");
+  await page.waitForTimeout(400);
+  const rows = await page.evaluate(readRows);
+  const buttons = await page.evaluate(() => [document.getElementById("btn-send-confirm"), document.getElementById("btn-send-back")].map((b) => ({ text: b.textContent, fits: b.scrollWidth <= b.clientWidth + 1 })));
+  await ctx.close();
+  return { early, late, rows, buttons, errors };
+}
+
 // W-7: a failed balance read. With no earlier read the caption takes the amount's place at the caption scale, muted;
 // over an earlier read the amount stays, dimmed, with the caption under it; the refresh button beside it is the retry,
 // and a good read clears both. RED-FIRST: put back `el.textContent = "unavailable"` in refreshBalance's catch and the
@@ -297,6 +333,12 @@ try {
     t.check(`entrances: no page error (${e.errors.join(" | ") || "none"})`, e.errors.length === 0);
   }
   for (const theme of ["light", "dark"]) {
+    const h = await heldCheck(theme);
+    t.check(`${theme}: a held check shows [A16] with the share inside the sheet, above its buttons, no choice yet (${JSON.stringify(h.early)})`, h.early.shown && h.early.text === "Checking alice.csd... 65%" && h.early.inside && h.early.above && !h.early.skip && !h.early.sideways);
+    t.check(`${theme}: from 10 s "Send without check", whole (${JSON.stringify({ skip: h.late.skip, text: h.late.skipText, fits: h.late.skipFits })})`, h.late.skip && h.late.skipText === "Send without check" && h.late.skipFits && h.late.above && !h.late.sideways);
+    t.check(`${theme}: the choice arms [A17] as a caution row in the warn tint, above Confirm (${JSON.stringify({ ...h.rows[0], full: undefined })})`, h.rows[0]?.tier === "caution" && h.rows[0].full.includes("This name could not be checked. Make sure the address is right.") && h.rows[0].tinted && h.rows[0].aboveConfirm);
+    t.check(`${theme}: ...with "Send anyway" and "Wait", each whole (${JSON.stringify(h.buttons)})`, h.buttons[0].text === "Send anyway" && h.buttons[1].text === "Wait" && h.buttons.every((x) => x.fits));
+    t.check(`${theme}: held check: no page error (${h.errors.join(" | ") || "none"})`, h.errors.length === 0);
     const a = await review(theme, { ok: true, addr: NEW, verified: true, sources: 2, depth: 14, via: "owner" }, "alice.csd");
     const [name, first] = a.rows;
     t.check(`${theme}: a two-source name renders a positive row in the up tint (${JSON.stringify(name)})`, name?.tier === "ok" && name.tinted && name.icon && name.visible);
@@ -308,7 +350,11 @@ try {
     const PAID = "0x" + "31".repeat(20), LOOK = "0x313131" + "9".repeat(30) + "3131";
     const c = await review(theme, null, LOOK, { history: [{ type: "send", to: PAID, amount: 1, txid: "0x" + "a1".repeat(32) }] });
     t.check(`${theme}: a look-alike renders a danger row in the down tint (${JSON.stringify(c.rows[0])})`, c.rows.length === 1 && c.rows[0].tier === "danger" && c.rows[0].tinted && c.rows[0].icon && /address-poisoning/.test(c.rows[0].text) && c.rows[0].aboveConfirm);
-    t.check(`${theme}: no page error (${[...a.errors, ...b.errors, ...c.errors].join(" | ") || "none"})`, a.errors.length + b.errors.length + c.errors.length === 0);
+    // [A4]: a lapse the wallet could not settle: an amber row, and Confirm and Back read "Send anyway" and "Cancel", whole.
+    const d = await review(theme, { ok: true, addr: NEW, name: "alice", lapseUnconfirmed: true, addrProven: true, verified: false }, "alice.csd");
+    t.check(`${theme}: an unsettled lapse renders [A4] as a caution row in the warn tint, above Confirm (${JSON.stringify({ ...d.rows[0], full: undefined })})`, d.rows[0]?.tier === "caution" && d.rows[0].full.includes("alice.csd may have expired; the wallet could not check.") && d.rows[0].tinted && d.rows[0].visible && d.rows[0].aboveConfirm);
+    t.check(`${theme}: ...with "Send anyway" and "Cancel", each shown whole (${JSON.stringify(d.buttons)})`, d.buttons[0].text === "Send anyway" && d.buttons[1].text === "Cancel" && d.buttons.every((x) => x.fits));
+    t.check(`${theme}: no page error (${[...a.errors, ...b.errors, ...c.errors, ...d.errors].join(" | ") || "none"})`, a.errors.length + b.errors.length + c.errors.length + d.errors.length === 0);
   }
 } finally {
   await browser.close();

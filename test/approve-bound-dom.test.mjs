@@ -10,6 +10,7 @@
 // bound. RED-FIRST: drop the bound from describe()'s fee or V28 line, or from cardTip, and the matching cases fail.
 //
 // Run: TSX_DISABLE_CACHE=1 node --import tsx test/approve-bound-dom.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { APPROVE_IDS } from "./helpers/approve-dom.mjs";

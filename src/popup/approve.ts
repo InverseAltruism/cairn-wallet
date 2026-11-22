@@ -9,7 +9,7 @@ import { attestFields, fillFields, fillOf, isTokenFill, proposeFields, revealFie
 import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
-import { extensionCall, HANDLED_ELSEWHERE, refusedCopy, rejectCopy, thrownCopy } from "./popup-outcome.js";
+import { detailsHtml, extensionCall, HANDLED_ELSEWHERE, type Outcome, refusedCopy, rejectCopy, sentenceOutcome, thrownCopy } from "./popup-outcome.js";
 import { APPROVE_REARM } from "../approve-window.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -29,7 +29,22 @@ const call = (method: string, ...args: any[]): Promise<any> => extensionCall(chr
 // What the window reads before and after the paint comes from the fields the signer signs (signfields.ts): an attest's
 // (null when the signer signs it as a fill), a proposal's, a fill's.
 const attestOf = (r: any): { proposalId: unknown; score: number; confidence: number } | null => { const a = attestFields(r?.params); return a.route === "attest" ? a : null; };
-function msg(t: string, cls = "info") { const m = $("msg"); m.textContent = t; m.className = "msg " + cls; }
+function msg(t: string, cls = "info", details?: string) {
+  const m = $("msg");
+  if (details) m.innerHTML = `${escapeHtml(t)}${detailsHtml(details)}`; else m.textContent = t;
+  m.className = "msg " + cls;
+}
+const msgOutcome = (o: Outcome): void => msg(o.text, o.cls, o.details);
+// A refusal of a request: a page's send is worded in full (R1 for a code without its own line); a sign-in the check
+// refused is R11 and a reveal the content server did not take is Q3 (neither carries a code); any other request keeps
+// "Failed: <engine text> (<code>)" for a code its slice has not worded yet.
+function refusalOutcome(method: string, r: any): Outcome | null {
+  if (method === "send") return refusedCopy(r, "transaction", "send");
+  if (!r.code && method === "signin") return sentenceOutcome("R11");
+  if (!r.code && method === "revealClaim") return sentenceOutcome("Q3", undefined, Number.isSafeInteger(r.status) ? `(HTTP ${r.status})` : undefined);
+  const o = refusedCopy(r, "transaction");
+  return o.key ? o : null;
+}
 const NEW_SITE = "New site";
 const NEW_SITE_TITLE = "You have not approved a request from this site with this wallet before.";
 // What each request type asks for, under the requesting origin in the header.
@@ -626,6 +641,7 @@ function armButtons() {
 async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
+  const method = String(current.method ?? "");
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
   // The click belongs to the paint it was made on: its generation and its signer. Every await below is followed by
   // `moved()`, and a click whose paint moved (a repaint, which may show another signer, or another request) is
@@ -674,21 +690,23 @@ async function resolve(approve: boolean) {
   // The popup's reading of an outcome (popup-outcome.ts): an ambiguous or duplicate submit and a broken channel may be in
   // flight, so they never read "Failed"; any other refusal keeps "Failed: <error> (<code>)".
   if (thrown) {
-    const o = thrownCopy(thrown, "transaction");
-    msg(o.maybe ? o.text : "Failed: " + ((thrown as Error)?.message || "?"), o.maybe ? o.cls : "err"); hold();
+    const o = thrownCopy(thrown, "transaction", method === "send" ? "send" : "other");
+    if (o.key) msgOutcome(o); else msg("Failed: " + ((thrown as Error)?.message || "?"), "err");
+    hold();
   } else if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
   } else if (r && r.ok === false) {
-    const o = refusedCopy(r, "transaction");
-    msg(o.maybe ? o.text : "Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), o.maybe ? o.cls : "err"); hold();
+    const o = refusalOutcome(method, r);
+    if (o) msgOutcome(o); else msg("Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err");
+    hold();
   }
   else if (r && r.txid) {
     msg("Sent " + String(r.txid).slice(0, 10) + "…", "ok");
     const note = secondSourceNote(r.secondSource);
     if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); hold(); }
   }
-  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "info"); hold(); }
+  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "err"); hold(); }
   else msg("Approved.", "ok");
   render();
 }

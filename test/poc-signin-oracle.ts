@@ -11,6 +11,7 @@
 //   VULNERABLE  → emitted sig verifies against the drain-tx sighash (theft).
 //   SAFE        → it does not (wallet derived the login digest from the nonce),
 //                 AND a legitimate login still verifies.
+import "./helpers/backup-host.mjs";
 import { signIn } from "../src/core/node.js";
 import { generate } from "../src/core/account.js";
 import { sighash as codecSighash, pubFromPriv, type Tx } from "../src/core/csdtx.js";

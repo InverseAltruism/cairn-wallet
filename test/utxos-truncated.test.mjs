@@ -6,6 +6,7 @@
 //   PAIRED HONEST PATHS: an uncut answer (no field, as 0.1.16 and every answer under the bound send) reads as before,
 //   with exact counts (1, 2, 3).
 // Run: npx tsx test/utxos-truncated.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { balance, consolidatePreview, maxSendable, consolidate, send } from "../src/core/node.ts";
 import { mkCoin, txReply } from "./_coin.ts";

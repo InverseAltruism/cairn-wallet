@@ -7,6 +7,7 @@
 //   RED-FIRST: drop the check in resolveName (names.ts, the first `isPlainName`) or in verifyName (the second) and 1
 //   fails for that method (the audit of 2026-11-19 found no test red under either).
 // Run: npx tsx test/names-check-before-url.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";

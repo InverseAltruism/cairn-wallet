@@ -21,6 +21,7 @@
 //      RED-FIRST: drop the migration block in Wallet.init and G1-G4 fail. HONEST PATH: G5-G7.
 //
 // Run: node --import tsx test/signer-display-73b.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { fmtCsd, fmtBalance, describe, costBlock, feeValue, tokenQuoteHtml, tokenAmountBothScales, fillViewHtml, expiryValue, FILL_PAYS } from "../src/popup/clearsign.ts";
 import { registerContent } from "../src/core/node.ts";
@@ -77,9 +78,11 @@ console.log("E. registerContent timeout");
   p0.catch(() => {});
   const r = await Promise.race([registerContent("https://api.example", { v: 1 }, PID, 50), new Promise((res) => setTimeout(() => res("hung"), 2000))]);
   check("E2 a hung POST resolves {ok:false} once the timeout fires", r !== "hung" && r?.ok === false);
-  globalThis.fetch = async (_u, init) => ({ ok: true, json: async () => ({ ok: true, echo: JSON.parse(init.body).txid }) });
+  let posted = null;
+  globalThis.fetch = async (_u, init) => { posted = JSON.parse(init.body); return { ok: true, status: 200, json: async () => ({ ok: true, echo: posted.txid }) }; };
   const good = await registerContent("https://api.example", { v: 1 }, PID);
-  check("E3 honest: a prompt answer passes through unchanged", good?.ok === true && good.echo === PID);
+  // the result is the wallet's { ok: true } alone (served-text-off-screen 1d); the POST carries the txid
+  check("E3 honest: a prompt answer resolves ok, and the POST carried the txid", JSON.stringify(good) === '{"ok":true}' && posted?.txid === PID);
   globalThis.fetch = orig;
 }
 

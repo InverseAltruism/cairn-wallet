@@ -2,6 +2,7 @@
 // reads it back; nothing here signs.
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
+import { firstAnswer } from "./hosts.js";
 import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
 
 // Per-account storage namespaces; keep each account's activity + secrets separate.
@@ -76,11 +77,21 @@ export class TxHistory {
   // removeAccount: the reset discipline is exactly "clear the array".
   pendingHist: { k: string; entry: Record<string, unknown> }[] = [];
 
-  async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[] }, meta: Record<string, unknown>) {
+  async maybeRecord(k: string, r: { ok?: boolean; txid?: string; code?: string; spentTxids?: string[]; inputs?: string[]; mainHolds?: boolean }, meta: Record<string, unknown>) {
     // PCD-2: every branch below is non-rejecting (chained + guarded), so an awaiting flow can never report a succeeded broadcast as a failure.
     // Rows pendingMerge may settle keep a few input outpoints for its "gone" verdict.
     const inputs = Array.isArray(r?.inputs) && r.inputs.length ? { inputs: r.inputs.slice(0, INCLUSION_INPUTS_KEPT) } : {};
-    if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
+    // Only the main host holding it clears or spares the maybe mark (node.ts mainHolds: its own "accepted" or "already
+    // present", at the result or later). Sent while it does not (only the second host took it): recorded maybe, so the
+    // reconcile tracks it and an unmined row says to check before sending again; the main host's later answer clears
+    // the mark only when it holds; any other answer, or none (a worker that stopped), leaves it. A result without the
+    // field comes from one host, which is the main host.
+    if (r && r.ok && r.txid && r.mainHolds === false) {
+      const txid = r.txid, later = node.laterFact(txid);
+      await this.recordTx(k, { txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
+      if (later) void later.then((f) => (f === "mainHolds" ? this.clearMaybe(k, txid, false) : undefined));
+    }
+    else if (r && r.ok && r.txid) await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...(meta.type === "consolidate" ? inputs : {}) });
     // Ambiguous outcome (0.2.56, review F1): the tx MAY be in the mempool; a timeout / gateway
     // 5xx / unreadable answer AFTER signing. Record it maybe:true under the LOCALLY computed txid
     // so the failure copy's "check history before resending" is actionable: this entry is what
@@ -92,15 +103,22 @@ export class TxHistory {
     // clear-signed once; entries only originate from the user's own reviewed sends, no poisoning
     // vector.
     else if (r && !r.ok && r.code === "SUBMIT_MAYBE_INFLIGHT" && r.txid) {
-      await this.recordTx(k, { txid: r.txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
+      const txid = r.txid, later = node.laterFact(txid);
+      const fresh = !!later && !(await this.hasRow(k, txid));
+      await this.recordTx(k, { txid, ts: Date.now(), ...meta, ...inputs, maybe: true });
+      // Unclear only because the other host had not answered within the cap on the main host's refusal: its later
+      // refusal means no host took it, so the row this send created goes, as a refused send keeps none. A row an earlier
+      // attempt of the same transaction created stays: that attempt may have landed (a resend of mined bytes is refused).
+      if (later) void later.then((f) => (f === "noneTook" && fresh ? this.dropMaybe(k, txid) : undefined));
     }
     // A duplicate answer RESOLVES an earlier ambiguity; a tx spending these coins IS pending, and
     // a deterministic retry of an ingested submit is byte-identical, so this is the common way a
     // maybe:true entry turns out to have landed. Clear the flag in place; never INSERT on a dup
     // (on the current node's conflated error a dup can also mean a DIFFERENT tx spends the coins,
     // and a fresh entry under the local txid would then claim a send that never landed).
-    else if (r && !r.ok && r.code === "SUBMIT_DUPLICATE" && r.txid) {
-      await this.clearMaybe(k, r.txid);
+    // The main host's own "already present" is the main host holding it; another host's alone leaves the mark.
+    else if (r && !r.ok && r.code === "SUBMIT_DUPLICATE" && r.txid && r.mainHolds !== false) {
+      await this.clearMaybe(k, r.txid, true);
     }
     // Spending an output PROVES its source tx confirmed: latch any pending-merge entry whose txid
     // this spend just consumed (Plans/66 review finding; the final combining pass spends earlier
@@ -108,15 +126,16 @@ export class TxHistory {
     // deriving a false "merging" line until a balance refresh saw them).
     if (r && r.ok && Array.isArray(r.spentTxids) && r.spentTxids.length) await this.latchSpentMerges(k, r.spentTxids);
   }
-  // The duplicate answer is a submit of the transaction now: `resent` moves to now on every parked twin (one can be the
-  // only copy, recorded while locked; history() reads it) and, while unlocked, on the stored row. While locked the
-  // stored row is not written, so its time stays (SECURITY.md states it).
-  private clearMaybe(k: string, txid: string): Promise<void> {
+  // Clears the maybe mark on every parked twin (one can be the only copy, recorded while locked; history() reads it) and,
+  // while unlocked, on the stored row; it never adds one and never inserts a row. While locked the stored row is not
+  // written, so it keeps its mark and its time (SECURITY.md states it). `resent`: the duplicate answer is a submit of
+  // the transaction now, so `resent` moves to now; the main host's late answer to the same submit moves nothing.
+  private clearMaybe(k: string, txid: string, resent: boolean): Promise<void> {
     const now = Date.now();
     const mark = (e: any): boolean => {
       const was = !!e.maybe;
       delete e.maybe;
-      if (now > lastSent(e)) { e.resent = now; return true; }
+      if (resent && now > lastSent(e)) { e.resent = now; return true; }
       return was;
     };
     for (const p of this.pendingHist) if (p.k === k && p.entry.txid === txid) mark(p.entry);
@@ -127,6 +146,23 @@ export class TxHistory {
         const e = h.find((x) => x?.txid === txid);
         if (e && mark(e)) await this.store.set(k, h);
       } catch { /* flag hygiene only: a stale maybe marker self-heals via the pendingMerge reconcile and the spend latch */ }
+    });
+  }
+  private hasRow(k: string, txid: string): Promise<boolean> {
+    return this.inHistChain(async () => this.pendingHist.some((p) => p.k === k && p.entry.txid === txid)
+      || ((await this.store.get(k)) || []).some((x: any) => x?.txid === txid));
+  }
+  // Removes the row of `txid` while it is still maybe, stored (only while unlocked) and parked; a row the reconcile or
+  // the main host settled stays.
+  private dropMaybe(k: string, txid: string): Promise<void> {
+    this.pendingHist = this.pendingHist.filter((p) => !(p.k === k && p.entry.txid === txid && p.entry.maybe));
+    return this.inHistChain(async () => {
+      if (!this.w.unlocked()) return;
+      try {
+        const h: any[] = (await this.store.get(k)) || [];
+        const kept = h.filter((x) => !(x?.txid === txid && x.maybe));
+        if (kept.length !== h.length) await this.store.set(k, kept);
+      } catch { /* a failed write leaves the row maybe, the cautious side; the reconcile still settles it */ }
     });
   }
   private latchSpentMerges(k: string, spent: string[]): Promise<void> {
@@ -286,15 +322,18 @@ export class TxHistory {
   // The tip once, a status read for each open row not yet read at this tip (newest first, capped), and the
   // mined utxo set once if any status came back unknown. No tip: no chain-derived step this pass.
   // A mined set the node cut (`complete` false) still proves a listed tx included, never an input spent elsewhere.
+  // The pass stays on the host that answered the tip (hosts.ts firstAnswer), so its tip, statuses and mined set are one
+  // host's view.
   private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string>; complete: boolean } | null }> {
     const states = new Map<string, TxInclusion>();
-    const t = await node.tip(this.w.rpc()).catch(() => 0);
+    const got0 = await firstAnswer(this.w.rpc(), node.tipAt).catch(() => null);
+    const t = got0?.value ?? 0, host = got0?.host ?? "";
     if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
     const due = open.filter((x) => !(Number(x.chkTip) >= t) && !(x.gone && t - Number(x.chkTip) < INCLUSION_GONE_READ_INTERVAL)).slice(0, INCLUSION_READS_MAX);
-    const got = await Promise.all(due.map((x) => node.txInclusion(this.w.rpc(), String(x.txid))));
+    const got = await Promise.all(due.map((x) => node.txInclusion(host, String(x.txid))));
     due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
     if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
-    const list = await node.confirmedUtxos(this.w.rpc(), addr);
+    const list = await node.confirmedUtxos(host, addr);
     const live = (list?.utxos || []).filter((u) => u && u.txid != null);
     const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())), complete: list.complete } : null;
     return { tip: t, states, mined };

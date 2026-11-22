@@ -13,7 +13,14 @@ export function clearSendDrafts() {
   // unlock would sign the stale snapshot). Drop the snapshots + hide both confirm panels.
   dropReviews();
   for (const id of ["send-confirm", "tsend-confirm"]) { const el = document.getElementById(id); if (el) (el as HTMLElement).hidden = true; }
+  hideCheckLines();
   { const el = document.getElementById("name-action-form"); if (el) (el as HTMLElement).hidden = true; }   // the name renew/primary review panel signs real CSD; never let a primed one survive a lock
+}
+
+// The sends' name-check lines ([A16] and "Send without check") close with their sheets; the wait behind them ends at
+// its next tick (popup-namecheck.ts, the Review was left).
+function hideCheckLines() {
+  for (const id of ["s-check", "s-check-skip", "ts-check", "ts-check-skip"]) { const el = document.getElementById(id); if (el) (el as HTMLElement).hidden = true; }
 }
 
 export function dropStaleView() { closeAllPanels(); syncNav(); }
@@ -31,6 +38,7 @@ export function closeAllPanels() {
   for (const p of PANELS) ($(p) as HTMLElement).hidden = true;
   ($("send-confirm") as HTMLElement).hidden = true;
   ($("tsend-confirm") as HTMLElement).hidden = true;
+  hideCheckLines();
   // switching views drops any primed name renew/set-primary snapshot, and armed send/token reviews
   // die with their panels: drop the frozen snapshots AND re-enable the inputs that only
   // btn-send-back/btn-tsend-back used to re-enable (a back/home exit otherwise left the forms

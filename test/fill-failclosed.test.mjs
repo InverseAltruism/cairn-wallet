@@ -8,6 +8,7 @@
 // pinned unchanged.
 //
 // MUTATION CONTRACT: the 404 and garbled-200 cases FAIL on 0.2.56 (they submit).
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";

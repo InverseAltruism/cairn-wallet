@@ -11,6 +11,7 @@
 // Every height below is written against the constants, so a newer anchor table changes no expectation.
 //
 // Run: TSX_DISABLE_CACHE=1 node --import tsx test/fill-legacy-sunset.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";

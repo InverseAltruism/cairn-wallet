@@ -15,6 +15,7 @@
 // for an all-unprovable wallet and case 13 fails; take Max's all-skipped branch without `skipped > 0` and cases 15 and
 // 16 fail (a node that cannot be read is not a wallet of unprovable coins).
 // Run: npx tsx test/maxsendable.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Wallet } from "../src/core/wallet.js";

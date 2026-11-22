@@ -272,6 +272,10 @@ console.log("XREPO-1 name verifier (real signed txs + synthetic PoW-verified blo
   for (const [h, txs] of t2.blocks) tok.blocks.set(h, txs);
   const rt = await unionOne("quay", { addr: B, owner: B, via: "owner" }, [...tok.hints, ...t2.hints], source(tok.blocks, 35100));
   ok(`viaFill gate: a name bought for a token replays to the buyer and is NOT verified (${rt.reason ?? "verified"})`, rt.verified === false && rt.viaFill === true);
+  // A bought name whose lease ran out at a tip the wallet did not verify: the unconfirmed lapse says it came through a fill
+  // and gives no last address (a fill is not name-scope provable), so the review shows [A10] with [A4] on the served one.
+  const rtl = await unionOne("quay", { addr: B, owner: B, via: "owner", lapsed: true }, [...tok.hints, ...t2.hints], source(tok.blocks, 2_000_000, { verifiedTip: 35_100, nodeTip: 2_000_000 }));
+  ok(`viaFill gate: a bought name's unconfirmed lapse carries viaFill and no lastAddr (${rtl.lapseUnconfirmed}, ${rtl.viaFill}, ${rtl.lastAddr})`, rtl.lapseUnconfirmed === true && rtl.viaFill === true && rtl.lastAddr === undefined);
 }
 
 // 17. S-B6 (2026-09-09; REPLACES the H1 union backstop): a REGISTERED-vs-UNREGISTERED source split no

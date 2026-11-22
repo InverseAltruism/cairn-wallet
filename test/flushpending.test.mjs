@@ -19,6 +19,7 @@
 //   drop the history mark and "the post's history row says it was not published" fails.
 //   PAIRED HONEST PATHS: a 503, a 429, a 403, a 404 and a 200 {ok:false} keep the entry; the first 15 attempts
 //   run on every alarm, so a post mined within 15 minutes registers at the next alarm as before.
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";

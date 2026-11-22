@@ -7,6 +7,7 @@
 //   floor(tip / 30) from a mocked /tip; every expiresEpoch in wallet.ts uses the same floor(tip / EPOCH_LEN).
 //
 // Run: node --import tsx test/epoch-len-vendored.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { EPOCH_LEN } from "../src/vendor/cairnx-spv.js";

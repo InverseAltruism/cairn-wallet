@@ -12,6 +12,7 @@
 //   exportMnemonic answer carries the phrase. Before this file no test turned red under that mutation
 //   (extension-boundary 106/0, pentest 96/0).
 // Run: npx tsx test/resolve-allowlist-second-line.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 
 const { check, done } = checker("resolvePending runs only the dApp methods it names:");

@@ -88,7 +88,8 @@ export function startSecondSourceRead(base: string, route: "offer" | "record", i
 // shallow reorg that re-mines our fclaim higher and the race between its indexer and the node it reads from.
 export const RECORD_LAG_MARGIN = 12;
 
-// A note is shown to the user, so only short printable ASCII is kept (every vendored fclaim denial reason is).
+// A note goes to the worker's console, never on screen (servedtext.ts); only short printable ASCII is kept (every
+// vendored fclaim denial reason is).
 const NOTE_RE = /^[\x20-\x7e]{1,160}$/;
 
 /** What the approval window shows for an "unknown" verdict, and what its acknowledgement is bound to. */

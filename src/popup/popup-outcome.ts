@@ -13,36 +13,50 @@ export function extensionCall(chrome: any, method: string, ...args: any[]): Prom
   }));
 }
 // Only SUBMIT_MAYBE_INFLIGHT and a broken channel may say "may already be in flight".
-export type Outcome = { text: string; cls: "err" | "info"; maybe: boolean };
-const clause = (s: unknown): string => String(s).replace(/[.\s]+$/, "");
-function inFlightCopy(prefix: string, what: string, txid?: string): Outcome {
-  const where = txid ? ` It's in your history as ${String(txid).slice(0, 12)}…` : "";
-  return { text: `${prefix}The ${what} didn't confirm; it may already be in flight. Check your history before trying again.${where}`, cls: "err", maybe: true };
+import { fmtCsd } from "../core/cairnx.js";
+import { escapeHtml } from "./clearsign.js";
+import { sentenceKeyOf, sentenceOf, type Flow, type SentenceKey, type Vars } from "./sentences.js";
+// `details`: the technical sentence and the code (sentences.ts); for R1 also the engine's own text, which is the
+// wallet's (a server's text does not reach a result's `error`: test/served-text-off-screen.test.mjs, submit-answers H6).
+export type Outcome = { text: string; cls: "err" | "info"; maybe: boolean; details?: string; key?: SentenceKey };
+const MAYBE_SENT: ReadonlySet<SentenceKey> = new Set(["R2", "R3", "MR_FEE", "MR_BUSY", "MR_OTHER"]);
+/** The outcome of a sentence: grey reads as information, amber and red as a warning. */
+export function sentenceOutcome(key: SentenceKey, code?: unknown, details?: string, vars?: Vars): Outcome {
+  const s = sentenceOf(key, code, vars);
+  return { text: s.text, cls: s.tone === "grey" ? "info" : "err", maybe: MAYBE_SENT.has(key), details: details ? `${s.details} ${details}` : s.details, key };
 }
-export function refusedCopy(r: any, what: string): Outcome {
-  if (r?.code === "SUBMIT_MAYBE_INFLIGHT") return inFlightCopy(r?.error ? clause(r.error) + ". " : "", what, r?.txid);
-  if (r?.code === "SUBMIT_DUPLICATE") return { text: String(r?.error ?? "This transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again."), cls: "info", maybe: true };
-  // A node or the proxy (its own 400, 413 or 429, before forwarding) refused this request, and the wallet recorded no row
-  // and no txid for it. Through a proxy with two backends an earlier try may have reached the other one, so this does not
-  // say "Nothing was sent"; it points at an earlier try whose outcome was unclear, the only place the answer can be.
-  if (r?.code === "SUBMIT_REJECTED") return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. The submit was refused; nothing was recorded in this wallet. If you already tried this same payment and that try's outcome was unclear, look that one up before sending again.`, cls: "err", maybe: false };
+/** The Details disclosure under a result line, in the popup and the approval window. */
+export const detailsHtml = (d: string): string => `<details class="msg-details"><summary>Details</summary><small>${escapeHtml(d)}</small></details>`;
+/** A sentence as a review row's content: its line, and its technical sentence behind Details. */
+export const sentenceHtml = (s: { text: string; details: string }): string => escapeHtml(s.text) + detailsHtml(s.details);
+const clause = (s: unknown): string => String(s).replace(/[.\s]+$/, "");
+const capOf = (r: any): Vars => (Number.isSafeInteger(r?.feeCap) ? { cap: fmtCsd(r.feeCap) } : {});
+// A result whose code the sentence module words shows its line (sentences.ts). In a send every refusal is worded (R1
+// with the engine's text under Details); in any other flow an unworded code keeps the engine's own text until its slice.
+export function refusedCopy(r: any, what: string, flow: Flow = "other"): Outcome {
+  const key = sentenceKeyOf(r, flow);
+  if (key === "R1") return sentenceOutcome("R1", r?.code, r?.error ? `${clause(r.error)}.` : undefined);
+  if (key) return sentenceOutcome(key, r?.code, undefined, capOf(r));
   return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. Nothing was sent.`, cls: "err", maybe: false };
 }
-export function thrownCopy(e: any, what: string): Outcome {
-  if (!(e instanceof AnsweredError)) return inFlightCopy(e?.message ? clause(e.message) + ". " : "", what);
-  if (e.message === "locked") return { text: "The wallet locked before anything was signed. Nothing was sent. Unlock and try again.", cls: "err", maybe: false };
+// A broken channel may hide a send ([R2]); a lock before signing is [R8]; any other throw submitted nothing: in a send it
+// is R1 with the engine's text (the wallet's) under Details, in any other flow it keeps that text until its slice.
+export function thrownCopy(e: any, _what: string, flow: Flow = "other"): Outcome {
+  if (!(e instanceof AnsweredError)) return sentenceOutcome("R2", undefined, e?.message ? `(${clause(e.message)})` : undefined);
+  if (e.message === "locked" || e.message === "wallet locked") return sentenceOutcome("R8");
+  if (flow === "send") return sentenceOutcome("R1", undefined, `${clause(e.message)}.`);
   return { text: `${clause(e.message)}. Nothing was sent.`, cls: "err", maybe: false };
 }
 // A view's Approve or Reject gets { done: false } when the request left the queue before that view resolved it:
 // rejected in another view, answered in another approval view (which may have signed it), or dropped when a worker
 // restart emptied the queue. The view signed nothing, and cannot tell which.
-export const HANDLED_ELSEWHERE = "This request was already handled or closed (possibly in another window), and may have been approved and sent. Check your history before sending again.";
+export const HANDLED_ELSEWHERE = sentenceOf("R2").text;
 // The reading of a Reject's answer, for the approval window and the toolbar popup; `r` is null when the call threw.
 // Nothing was signed only when the background confirms it took the request off the queue as a rejection
 // (resolvePending's reject path: done true, USER_REJECTED). A request already off the queue may be signing in another
 // view, and a lost reply leaves the rejection unknown: both are `maybe`.
 export function rejectCopy(r: any): Outcome {
-  if (r?.done === true && r.code === "USER_REJECTED") return { text: "Rejected. Nothing was signed.", cls: "info", maybe: false };
-  if (r?.done === false) return { text: HANDLED_ELSEWHERE, cls: "info", maybe: true };
-  return { text: "The rejection could not be confirmed. Check your history before sending again.", cls: "err", maybe: true };
+  if (r?.done === true && r.code === "USER_REJECTED") return sentenceOutcome("R7", r.code);
+  if (r?.done === false) return sentenceOutcome("R2");
+  return sentenceOutcome("R2");
 }

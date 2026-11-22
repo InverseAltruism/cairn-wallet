@@ -15,6 +15,7 @@
 //   rows disagree. Before the fee, zero-address and unpaired-surrogate checks joined proposeRefusal, those rows queued and
 //   were refused only at signing (or, below the proposal minimum and for a surrogate, signed for the node to reject).
 // Run: npx tsx test/propose-prequeue.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
 import { mkCoin, txReply } from "./_coin.ts";

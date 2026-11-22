@@ -12,6 +12,7 @@
 //   parked or written, so a wallet created afterwards starts with an empty history.
 //
 // Run: node --import tsx test/lock-midflight-history.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

@@ -8,6 +8,7 @@
 // no fee tier is re-declared here.
 //
 // Run: node --import tsx test/fee-tier-clamp.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

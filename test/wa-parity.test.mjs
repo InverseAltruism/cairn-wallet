@@ -27,6 +27,7 @@
 // proving the corpus reject is enforced by that exact guard, not passing for an unrelated reason.
 //
 // Run: tsx test/wa-parity.test.mjs   (offline; synthetic PoW, real signed txs, no live chain)
+import "./helpers/backup-host.mjs";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";

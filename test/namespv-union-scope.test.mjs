@@ -5,12 +5,13 @@
 // later rival registration win. Real signed txs in synthetic PoW-verified blocks (test/_spvrig.ts), the production
 // verifyNameUnion and the vendored resolver; section 5 drives the Wallet's own resolveName and confirmName.
 // Run: npx tsx test/namespv-union-scope.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { verifyNameUnion } from "../src/core/namespv.js";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { DEFAULT_RPC, DEFAULT_TRADE_API, CLARVIS_TRADE_API } from "../src/core/endpoints.ts";
-import { reresolveUnchanged } from "../src/popup/clearsign.ts";
+import { reresolveUnchanged, recheckOutcome } from "../src/popup/clearsign.ts";
 import { toChainEvent } from "../src/core/spvbind.js";
 import { proposeTx, attestTx, world, source, feeOut, pick, mkFetch, addrFromPriv, buildNameClaim, ctxid, rpcTxToTx, resolve, TREASURY_ADDR } from "./_spvrig.ts";
 import { nameCommit, nameCommitRecord, nameFinalize, V26_HEIGHT, MAX_PENDING_REG, offer, tradeFee, makerRebate, epochOf, SCORE_FILL } from "../src/vendor/cairnx-spv.js";
@@ -214,7 +215,7 @@ function capWorld(V, h0, heldPrefix, extra = []) {
     const conf = await w.confirmName(V);
     check(`a returning source's scopedReplaySufficient:false is not answered from the review's cache (verified ${conf.verified}, ${who(conf.addr)}: ${conf.verifyReason ?? conf.error ?? ""})`,
       conf.ok === true && conf.verified === false && /cannot be name-scope-proven/.test(String(conf.verifyReason)));
-    check(`...so the popup's re-resolve guard refuses the send (${reresolveUnchanged(H, conf, rev.verified)})`, reresolveUnchanged(H, conf, rev.verified) === false);
+    check(`...so the popup's re-resolve guard refuses the send as another address ([A14]: ${recheckOutcome(H, conf, rev.verified)})`, reresolveUnchanged(H, conf, rev.verified) === false && recheckOutcome(H, conf, rev.verified) === "moved");
     // paired honest path: both sources answer W the same at review and at confirm
     const both = body(claim(G), wHints, true);
     globalThis.fetch = serve(both, both);

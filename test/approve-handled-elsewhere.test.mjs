@@ -20,6 +20,8 @@
 //   toolbar Reject sends resolve(id, false) and reads "Rejected. Nothing was signed." (f), also on a double click (g); a
 //   confirmed Reject carries nothing to the next request, whose line is empty as before (h).
 // Run: npx tsx test/approve-handled-elsewhere.test.mjs   (offline)
+import { SENTENCES } from "../src/popup/sentences.ts";
+import "./helpers/backup-host.mjs";
 import vm from "node:vm";
 import { build } from "esbuild";
 import { checker } from "./helpers/check.mjs";
@@ -114,7 +116,8 @@ check("view 2 approved while view 1 was still signing", concurrent);
 check(`view 1 signed and submitted the send (${out1?.ok}, ${submits.length} submit)`, out1?.done === true && out1?.ok === true && /^0x[0-9a-f]{64}$/.test(String(out1?.txid)) && submits.length === 1);
 check(`the page received the txid (${(await page).result?.txid})`, (await page).result?.txid === out1.txid);
 check(`view 2 does not say nothing was signed (${text})`, !/nothing was signed/i.test(text));
-check(`view 2 says the request was handled elsewhere and to check the history (${text})`, /already handled or closed/.test(text) && /Check your history before/.test(text) && registry.get("msg").className === "msg info");
+// WL1.2: handled elsewhere and an unconfirmed rejection both read [R2] (src/popup/sentences.ts), amber (the error style).
+check(`view 2 says it may have been sent and to check the history: [R2] (${text})`, text === SENTENCES.R2.text && registry.get("msg").className === "msg err");
 
 // The site asks for something; returns the page's promise and the queued request (the newest of that method).
 async function request(method, params) {
@@ -150,7 +153,7 @@ check("(a) view 2 sent the rejection as the production call: resolve(id, false, 
 check(`(a) view 1 signed and submitted the send (${out1a?.ok}, ${submits.length} submits)`, out1a?.done === true && out1a?.ok === true && /^0x[0-9a-f]{64}$/.test(String(out1a?.txid)) && submits.length === 2);
 check(`(a) the page received the txid (${(await a.pageP).result?.txid})`, (await a.pageP).result?.txid === out1a.txid);
 check(`(a) view 2 does not say nothing was signed (${textA})`, !/nothing was signed/i.test(textA));
-check(`(a) view 2 shows the Approve branch's handled-elsewhere text (${textA})`, textA === text && registry.get("msg").className === "msg info");
+check(`(a) view 2 shows the Approve branch's handled-elsewhere text (${textA})`, textA === text && registry.get("msg").className === "msg err");
 await pollTick(); await flush();
 check(`(a) the window stays open over it, as after Approve (${closes() - closesA} closes)`, closes() === closesA && registry.get("msg").textContent === textA);
 
@@ -165,7 +168,7 @@ const textB = registry.get("msg").textContent;
 const pageB = await b.pageP;
 check(`(b) the background took the rejection: the page received USER_REJECTED (${pageB?.code})`, pageB?.ok === false && pageB?.code === "USER_REJECTED" && submits.length === submitsB);
 check(`(b) view 2 does not say nothing was signed (${textB})`, !/nothing was signed/i.test(textB));
-check(`(b) view 2 says the rejection could not be confirmed and to check the history (${textB})`, textB === "The rejection could not be confirmed. Check your history before sending again." && registry.get("msg").className === "msg err");
+check(`(b) view 2 says the rejection could not be confirmed: [R2] (${textB})`, textB === SENTENCES.R2.text && registry.get("msg").className === "msg err");
 await pollTick(); await flush();
 check(`(b) the window stays open over it (${closes() - closesB} closes)`, closes() === closesB && registry.get("msg").textContent === textB);
 
@@ -257,7 +260,7 @@ await flush(20);
 const bandD = band.msg.textContent;
 check("(d) the popup sent the rejection as its production call: resolve(id, false)", sameCall(bandRejects(sentD), [d.r.id, false]));
 check(`(d) the popup does not say nothing was signed (${bandD})`, !/nothing was signed/i.test(bandD));
-check(`(d) the popup shows the approval window's handled-elsewhere text (${bandD})`, bandD === text && band.msg.className === "msg info");
+check(`(d) the popup shows the approval window's handled-elsewhere text (${bandD})`, bandD === text && band.msg.className === "msg err");
 releaseSubmit(); submitGate = null;
 const pageD = await d.pageP;
 await flush(20);
@@ -335,7 +338,8 @@ registry.get("btn-reject")._listeners.click();
 await flush(20); await sleep(760); await pollTick(); await flush();
 check("(h) the user rejected the second; its reply was lost", sameCall(rejectsSent(sentHB), [hB.r.id, false, me]) && (await hB.pageP)?.code === "USER_REJECTED");
 check("(h) the third send is on screen", reqHtml().includes("Request 1 of 2") && reqHtml().includes(">1.3 CSD<"));
-check(`(h) above it, the second's could-not-be-confirmed text, in the error colour, and no longer the first's (${reqHtml().slice(0, 220)})`, reqHtml().includes(`Previous request: ${textB}`) && /class="req dim prior err"/.test(reqHtml()) && !reqHtml().includes(text));
+// the sheet gives the first's handled-elsewhere text and the second's unconfirmed rejection the same line ([R2])
+check(`(h) above it, the second's could-not-be-confirmed text, in the error colour (${reqHtml().slice(0, 220)})`, reqHtml().includes(`Previous request: ${textB}`) && /class="req dim prior err"/.test(reqHtml()));
 const sentHC = sent.length, closesH = closes();
 registry.get("btn-reject")._listeners.click();
 await flush(20); await sleep(760); await pollTick(); await flush();

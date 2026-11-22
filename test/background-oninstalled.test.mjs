@@ -9,6 +9,7 @@
 // throws, an alarm leaves no unhandled rejection; on a ready wallet each alarm still runs its method once.
 //
 // Run: npx tsx test/background-oninstalled.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.ts";
 import { checker } from "./helpers/check.mjs";
 
