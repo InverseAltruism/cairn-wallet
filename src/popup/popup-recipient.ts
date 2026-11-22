@@ -1,7 +1,7 @@
 // A send's recipient: an address or a .csd name resolved and badged, the confirm-time re-check, and the first-time
 // and look-alike reads.
 import { isPlainName } from "../core/cairnx.js";
-import { NAME_SAFE_DEPTH, reresolveUnchanged, recipientStatus, paidRecipients, isZeroAddr, short } from "./clearsign.js";
+import { NAME_SAFE_DEPTH, reresolveUnchanged, recipientStatus, paidRecipients, lastPaidTo, isZeroAddr, short } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
@@ -63,10 +63,12 @@ export function setNameRow(rowId: string, valId: string, label: string | null | 
 
 // First-time-recipient + address-poisoning look-alike, computed by the same clearsign.recipientStatus
 // as the approval window: paid recipients plus this wallet's own accounts (sending to your own other
-// account is not a first send). History unavailable → treat as first time.
-export async function recipientChecks(to: string): Promise<{ firstTime: boolean; lookalike: string | null }> {
+// account is not a first send). History unavailable → treat as first time. For a send to a name, `redirected` is the
+// address this account last paid the name at when it now resolves elsewhere ([A19]), from the same history read.
+export async function recipientChecks(to: string, name?: string | null): Promise<{ firstTime: boolean; lookalike: string | null; redirected: string | null }> {
   try {
     const [h, st] = await Promise.all([call("history"), call("status")]);
-    return recipientStatus(to, paidRecipients(h), (st.accounts || []).map((a: any) => String(a.addr)));
-  } catch { return { firstTime: true, lookalike: null }; }
+    const before = name ? lastPaidTo(h, name) : null;
+    return { ...recipientStatus(to, paidRecipients(h), (st.accounts || []).map((a: any) => String(a.addr))), redirected: before && before !== to.toLowerCase() ? before : null };
+  } catch { return { firstTime: true, lookalike: null, redirected: null }; }
 }

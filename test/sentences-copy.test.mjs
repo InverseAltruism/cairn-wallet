@@ -11,7 +11,7 @@ const { check, done } = checker("=== the wallet's sentences against the copy rul
 const FORBIDDEN = /\b(chain|block|blocks|header|headers|node|nodes|resolver|proof|proofs|registrar|safe|guaranteed|always|never)\b/i;
 const sentences = (t) => t.split(/(?<=[.!?])\s+(?=[A-Z])/).filter(Boolean).length;
 // A line with variable parts is checked as shown with the sheet's example values and with long ones.
-const EXAMPLES = [{ amount: "12.5 CSD", cap: "1 CSD" }, { amount: "92,233,720,368.54775807 CSD", cap: "100 CSD" }];
+const EXAMPLES = [{ amount: "12.5 CSD", cap: "1 CSD", name: "alice.csd" }, { amount: "92,233,720,368.54775807 CSD", cap: "100 CSD", name: "a".repeat(32) + ".csd" }];
 const shown = (k) => [...new Set(EXAMPLES.map((v) => sentenceOf(k, undefined, v).text))];
 const entries = [...Object.keys(SENTENCES).flatMap((k) => shown(k).map((text) => [k, { ...SENTENCES[k], text }])), ["M11", { text: M11_BACKUP_SERVER, tone: "grey", details: "x" }]];
 for (const [k, s] of entries) {
@@ -43,6 +43,7 @@ const SEND = { INSUFFICIENT: "S4", TOO_MANY_INPUTS: "S8", ZERO_ADDR_REFUSED: "S2
 for (const [code, key] of Object.entries(SEND)) check(`(4) a send refused ${code || "without a code"} reads ${key} (${sentenceKeyOf({ ok: false, code }, "send")})`, sentenceKeyOf({ ok: false, code }, "send") === key);
 check("(4) a send's FEE_CAP with its cap reads S12, without one R1", sentenceKeyOf({ ok: false, code: "FEE_CAP", feeCap: 1e8 }, "send") === "S12" && sentenceKeyOf({ ok: false, code: "FEE_CAP" }, "send") === "R1");
 check("(4) the sheet's example: S12 with a 1 CSD cap", sentenceOf("S12", undefined, { cap: "1 CSD" }).text === "The fee is above what the wallet allows (1 CSD here). Nothing was sent.");
+check("(4) the sheet's example: A19 for alice.csd", sentenceOf("A19", undefined, { name: "alice.csd" }).text === "alice.csd points to a different address than when you last paid it. Continue only if you expected this.");
 check("(4) an accepted send has no refusal line", sentenceKeyOf({ ok: true, txid: "0x" }, "send") === null);
 // (5) Outside a send the send's own lines do not apply: a merge's INSUFFICIENT means the coins are smaller than the fee.
 check("(5) a merge's INSUFFICIENT keeps its own text (no key outside a send)", sentenceKeyOf({ ok: false, code: "INSUFFICIENT" }) === null && sentenceKeyOf({ ok: false, code: "FEE_CAP", feeCap: 1 }) === null);

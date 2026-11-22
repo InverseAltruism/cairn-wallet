@@ -1,7 +1,7 @@
 // The review-and-confirm engine the CSD and token sends share.
 import { checkRow, type Check, escapeHtml } from "./clearsign.js";
 import { fmtCsd } from "../core/cairnx.js";
-import { sentenceOf } from "./sentences.js";
+import { REDIRECT_BUTTONS, sentenceOf } from "./sentences.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
 import { $, busy, msg, msgAction, msgOutcome, statusWrites } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
@@ -21,11 +21,11 @@ import { nameStillPointsTo } from "./popup-recipient.js";
 //   • snapshot shape: reviewState.reviewed (token, base-unit string) vs .reviewedSend (CSD, number).
 // Only the SUCCESS path clears the typed recipient/amount (fail/catch keep the draft for a re-Review);
 // Back clears nothing and never refreshes. `sent` is the sent toast's second line.
-type SendFlow = { ids: { confirm: string; button: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: (txid: string) => string };
+type SendFlow = { ids: { confirm: string; button: string; back: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: (txid: string) => string };
 const pending = (txid: string) => `Transaction ${String(txid).slice(0, 12)}… is waiting for inclusion in a block.`;
-export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", button: "btn-tsend-confirm", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
+export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", button: "btn-tsend-confirm", back: "btn-tsend-back", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
   sent: (txid) => `${pending(txid)} The token balance updates once it is mined.` };
-export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn-send-confirm", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
+export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn-send-confirm", back: "btn-send-back", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
   sent: pending };
 // A Confirm whose review was dropped (Back, a sheet switch, a lock, an account switch) or replaced while it waited.
 export const REVIEW_GONE = "The review was closed before it was signed. Nothing was sent.";
@@ -36,14 +36,17 @@ export function teardownReview(f: SendFlow, clearValues: boolean) {
   dropReviews();
   for (const flow of [CSD_FLOW, TOKEN_FLOW]) {
     ($(flow.ids.confirm) as HTMLElement).hidden = true;
+    labelButtons(flow, false);
     for (const id of [flow.ids.to, flow.ids.amt]) { const el = $(id) as HTMLInputElement; el.disabled = false; if (clearValues && flow === f) el.value = ""; }
   }
 }
 // Arm the review: disable the inputs the snapshot was read from and show the confirm card (editing
 // the form after "Review" must not let displayed values diverge from signed ones). Confirm is live unless `hold`
 // (a balance that does not cover the send) or a send is still in flight; a Confirm click disarms it until the next
-// review.
-export function armReview(f: SendFlow, hold = false) {
+// review. `redirected`: the name now points elsewhere than when last paid ([A19]), so Confirm and Back name what they
+// do; the click on "Send to new address" is the second click after Review.
+export function armReview(f: SendFlow, hold = false, redirected = false) {
+  labelButtons(f, redirected);
   ($(f.ids.to) as HTMLInputElement).disabled = true;
   ($(f.ids.amt) as HTMLInputElement).disabled = true;
   ($(f.ids.button) as HTMLButtonElement).disabled = hold || submitting;
@@ -90,13 +93,20 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   else sendRefused(f, r);                            // structured refusal: show the REAL reason (FOOT-3 teardown inside)
 }
 
+const DEFAULT_BUTTONS = { confirm: "Confirm send", back: "Back" } as const;
+function labelButtons(f: SendFlow, redirected: boolean) {
+  const l = redirected ? REDIRECT_BUTTONS : DEFAULT_BUTTONS;
+  $(f.ids.button).textContent = l.confirm; $(f.ids.back).textContent = l.back;
+}
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
 // otherwise the historical ones byte-for-byte. A look-alike is danger, a first send caution, as in the approval window
 // (clearsign.warningChecks). Empty return = nothing to warn about (box hidden).
-export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments"): Check[] {
+// `redirected`: the .csd name of a send whose address differs from the one this account last paid it at ([A19], first).
+export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments", redirected: string | null = null): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
-  const out: Check[] = nameCaution ? [nameCaution] : [];
+  const out: Check[] = redirected ? [{ tier: "caution", html: escapeHtml(sentenceOf("A19", undefined, { name: redirected }).text) }] : [];
+  if (nameCaution) out.push(nameCaution);
   if (lookalike) out.push({ tier: "danger", html: `<b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is <b>not</b> the same address. Verify every character. ${Noun} are irreversible.` });
   else if (firstTime) out.push({ tier: "caution", html: `First time sending to this address: check every character. ${Noun} are irreversible.` });
   return out;

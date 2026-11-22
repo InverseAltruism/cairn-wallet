@@ -219,7 +219,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "tipFloor": return wallet.tipFloor(); // M11/B5b: PoW-backed floor for review-side fee clamping (popup-only; READ_ONLY so it never extends the idle lock)
-    case "send": return wallet.send(args[0], args[1], args[2], args[3]); // args[3] = expectSigner (A1 popup snapshot)
+    case "send": return wallet.send(args[0], args[1], args[2], args[3], args[4]); // args[3] = expectSigner (A1 popup snapshot), args[4] = the name
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS; a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
     case "consolidatePreview": return wallet.consolidatePreview(args[0]);

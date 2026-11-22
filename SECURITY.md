@@ -258,6 +258,14 @@ current), and a change between review and confirm. At confirm the wallet **re-re
 re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not
 verified. The recipient you confirm is always the **full, untruncated address**.
 
+A name this account paid before that now resolves to another address gets a caution in the review, whatever the
+cause (a sale, a new address set by its owner, a forged answer): "alice.csd points to a different address than when
+you last paid it. Continue only if you expected this.", and the review's Confirm reads "Send to new address". It is
+not a refusal. The wallet compares with the newest send or token send of this account to that name, which keeps the
+name on its history row from this release on (rows from earlier releases carry none, so a name last paid with one of
+them gets no caution until it is paid again); a page's request carries no name and is not compared
+(test/name-redirect-dom.test.mjs, test/name-redirect-history.test.mjs).
+
 The honest residual: "verified" means **chain-backed as shown** by records the two sources returned; for a
 sizable transfer, confirm the `0x…` address out-of-band. (As with every send, the wallet selects its own
 inputs and returns change only to your own address.) Not built yet: a name source run by someone else on a

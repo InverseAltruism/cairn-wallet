@@ -11,7 +11,7 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { siwcDigest, CSD_CHAIN_MAINNET } from "./siwc.js";
 import { siwcMessageFor, type SiwcParams } from "./siwcparams.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor, isPlainName } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { heightOf, lowestChainHeight } from "./chainbound.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
@@ -64,6 +64,8 @@ export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
 interface SignerCtx { active: number; addr: string; priv: string; histKey: string }
 // Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
 // pre-dispatch M5 guard copy; same machine code, WALLET-ERROR-CODES.md).
+// The name a popup send resolved its recipient from, for its history row: a plain .csd name, lower-cased, else nothing.
+const namedRow = (name: unknown): { name?: string } => (isPlainName(typeof name === "string" ? name.toLowerCase() : name) ? { name: (name as string).toLowerCase() } : {});
 const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => refuse("ACCOUNT_CHANGED",
   "the active account changed since you reviewed this request: reopen it and review again before approving");
 // XR-1/FL-1: a fill whose on-chain score is present but is not the marketplace-required SCORE_FILL (100).
@@ -745,14 +747,15 @@ export class Wallet {
     return { account: a.addr, pub33, sig64, message, chainId: CSD_CHAIN_MAINNET };
   }
 
-  // Plain CSD transfer to any address. fee default 0.01 CSD.
-  async send(to: string, amount: number, fee?: number, expectSigner?: string) {
+  // Plain CSD transfer to any address. fee default 0.01 CSD. `name`: the .csd name the popup resolved `to` from; it is
+  // kept on the history row only (namedRow), so the next review of that name can see where it pointed when paid.
+  async send(to: string, amount: number, fee?: number, expectSigner?: string, name?: unknown) {
     const f = fee ?? defaultFeeFor("send"); // B9: the table, not a local literal (was a param default)
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(expectSigner, ctx.addr);
     if (early) return early;
     const r = await node.send(this.rpc, { to, amount, fee: f }, ctx.priv);
-    await this.hist.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee: f });
+    await this.hist.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee: f, ...namedRow(name) });
     return r;
   }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
@@ -939,7 +942,7 @@ export class Wallet {
   // Token transfer = a cairnx:v1 Propose whose uri is the canonical transfer record,
   // payload_hash = sha256(uri), fee 0.25 CSD, NO value outputs. The record is built
   // LOCALLY (core/cairnx.ts) and validated before signing; `amount` is base units.
-  async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number; expectSigner?: string }) {
+  async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number; expectSigner?: string; name?: unknown }) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
     const early = this.expectSignerRefusal(p.expectSigner, this.addr());
@@ -951,7 +954,7 @@ export class Wallet {
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
     await this.hist.maybeRecord(hk, r, {
       type: "tokenSend", ticker: p.ticker, to: String(p.to).toLowerCase(), amount: p.amount,
-      human: typeof p.decimals === "number" ? formatUnits(p.amount, p.decimals) : p.amount, fee,
+      human: typeof p.decimals === "number" ? formatUnits(p.amount, p.decimals) : p.amount, fee, ...namedRow(p.name),
     });
     return r;
   }

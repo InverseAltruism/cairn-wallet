@@ -5,8 +5,9 @@
 
 export type Tone = "grey" | "amber" | "red";
 export type Sentence = { text: string; tone: Tone; details: string };
-/** The variable parts a line names, already formatted by the caller: `{amount}` and `{cap}` are "12.5 CSD" style. */
-export type Vars = { amount?: string; cap?: string };
+/** The variable parts a line names, already formatted by the caller: `{amount}` and `{cap}` are "12.5 CSD" style,
+ *  `{name}` is "alice.csd". */
+export type Vars = { amount?: string; cap?: string; name?: string };
 
 /** [M11] grey, under the balance: the balance was read from Cairn's second server. */
 export const M11_BACKUP_SERVER = "Using Cairn's backup server.";
@@ -31,6 +32,7 @@ export const SENTENCES = {
   S5: { text: "A coin merge of {amount} is still confirming. Try again once it is.", tone: "grey", details: "Added to INSUFFICIENT or TOO_MANY_INPUTS while a consolidation is pending." },
   S8: { text: "This amount needs more coins than one payment can use, so nothing was sent. Send less, or merge coins first.", tone: "red", details: "TOO_MANY_INPUTS: more than the 512-input per-transaction limit." },
   S12: { text: "The fee is above what the wallet allows ({cap} here). Nothing was sent.", tone: "red", details: "FEE_CAP: fee above max(1 CSD, 10% of the inputs), at most 100 CSD." },
+  A19: { text: "{name} points to a different address than when you last paid it. Continue only if you expected this.", tone: "amber", details: "The address differs from the one in this wallet's last send to the name." },
   Q3: { text: "Could not publish the reveal. Try again later.", tone: "grey", details: "The content API did not take the reveal." },
   Q4: { text: "This account has no matching sealed claim. Check you are on the account that sealed it.", tone: "red", details: "SEAL_UNKNOWN: no local seal with that txid in this account." },
   S9: { text: "Could not load your coins, so nothing was sent. Try again in a moment.", tone: "grey", details: "VERIFY_UNAVAILABLE: the coin list, the source transactions, or proofs for enough coins could not be read from the node." },
@@ -41,6 +43,8 @@ export const SENTENCES = {
   MR_OTHER: { text: "Cairn's server refused this payment. The backup server has not answered, so it may still go through: check your history.", tone: "amber", details: "SUBMIT_MAYBE_INFLIGHT: the main server refused and the backup server had not answered in 4 s." },
 } as const satisfies Record<string, Sentence>;
 export type SentenceKey = keyof typeof SENTENCES;
+/** [A19]'s two buttons in a send review: the review's Confirm and Back, relabelled while the line is shown. */
+export const REDIRECT_BUTTONS = { confirm: "Send to new address", back: "Cancel" } as const;
 
 // The codes worded wherever they appear; any other code keeps the engine's own text in a flow whose lines are not built
 // yet (names, merges, posts, seals, fills).
@@ -70,6 +74,6 @@ export function sentenceKeyOf(r: { ok?: unknown; code?: unknown; reason?: unknow
  *  server's text. */
 export function sentenceOf(key: SentenceKey, code?: unknown, vars: Vars = {}): Sentence {
   const s: Sentence = SENTENCES[key];
-  const text = s.text.replace(/\{(amount|cap)\}/g, (_m, k: keyof Vars) => vars[k] ?? "?");
+  const text = s.text.replace(/\{(amount|cap|name)\}/g, (_m, k: keyof Vars) => vars[k] ?? "?");
   return { ...s, text, details: code ? `${s.details} (${String(code)})` : s.details };
 }

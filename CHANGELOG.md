@@ -63,6 +63,10 @@
   token price line is one of open, filled, cancelled, expired, locked, closed, else "not open"; the send review's Name
   row no longer shows the name service's "via" field. Each server text goes to the worker's console
   (test/served-text-off-screen.test.mjs).
+- A send review to a `.csd` name this account paid before, which now points to another address, says so in amber
+  ("alice.csd points to a different address than when you last paid it. Continue only if you expected this.") and
+  its buttons read "Send to new address" and "Cancel". The history row of a popup send or token send to a name keeps
+  the name; the transaction is the same (test/name-redirect-dom.test.mjs, test/name-redirect-history.test.mjs).
 
 ## 0.3.4
 

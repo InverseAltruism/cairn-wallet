@@ -38,7 +38,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "epoch": return w.epoch();
     case "tip": return w.tip();
     case "tipFloor": return w.tipFloor();
-    case "send": return w.send(args[0], args[1], args[2], args[3]);
+    case "send": return w.send(args[0], args[1], args[2], args[3], args[4]);
     case "consolidate": return w.consolidate(args[0]);
     case "consolidatePreview": return w.consolidatePreview(args[0]);
     case "maxSendable": return w.maxSendable(args[0]);

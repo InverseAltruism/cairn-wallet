@@ -151,7 +151,9 @@ test/provider-discovery.test.mjs pins the discovery part.
 - `history.ts`: `TxHistory`, the per-account history. `maybeRecord` is the single history chokepoint: ok records,
   `SUBMIT_MAYBE_INFLIGHT` records `maybe: true` under the local txid, `SUBMIT_DUPLICATE` clears an earlier maybe in
   place (never inserts). It also holds the write chain, the rows parked in RAM when a write fails or the wallet is
-  locked, and the inclusion reconcile (`pendingMerge`, `docs/DESIGN-inclusion-reconcile.md`).
+  locked, and the inclusion reconcile (`pendingMerge`, `docs/DESIGN-inclusion-reconcile.md`). A popup send or token
+  send to a `.csd` name keeps the name on its row (`wallet.ts` `namedRow`), which the next review of that name
+  compares with where it resolves now (`clearsign.ts` `lastPaidTo`, the `[A19]` caution).
 - `claims.ts`: `SealedClaims`, the per-account sealed claims: reveal preimages encrypted under the vault key, the
   write chain and parked records, `revealClaim` (refuses with `SEAL_NOT_MINED` until the node shows the commit mined)
   and the list. `sealClaim`, which signs the commit, is a `Wallet` method. An unrevealed record is never deleted except

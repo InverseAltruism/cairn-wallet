@@ -85,9 +85,10 @@ $("btn-send").addEventListener("click", async () => {
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
   setNameRow("c-name-row", "c-name", rr.label);
-  const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to)]);
+  const [b, checks] = await Promise.all([call("balance").catch(() => null), recipientChecks(to, rr.name)]);
   if (!reviewCurrent(gen)) return;          // left, or the account changed: `curAddr` below must be the reviewed signer
-  const { firstTime, lookalike } = checks;
+  const { firstTime, lookalike, redirected } = checks;
+  const redirectName = redirected && rr.name ? `${rr.name}.csd` : null;
   const after = b ? fmtBalance(b.confirmed - amt - SEND_FEE) + " CSD" : "";
   $("c-to").innerHTML = groupedAddr(to);           // FULL address, not truncated
   $("c-amt").textContent = fmtCsd(amt);
@@ -98,17 +99,17 @@ $("btn-send").addEventListener("click", async () => {
   // Same rule as the approval window: a negative balance-after keeps Confirm down (the engine's
   // INSUFFICIENT refusal stays the backstop). An unreadable balance does not block.
   const short = !!b && Number(b.confirmed) - amt - SEND_FEE < 0;
-  const warn = composeSendWarning(lookalike, firstTime, nameCheck(rr), CSD_FLOW.noun);
+  const warn = composeSendWarning(lookalike, firstTime, nameCheck(rr), CSD_FLOW.noun, redirectName);
   setWarn($("c-warn") as HTMLElement, short ? [{ tier: "danger", html: escapeHtml(balanceShortNote("Go back")) }, ...warn] : warn);
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
   reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
-  armReview(CSD_FLOW, short);
+  armReview(CSD_FLOW, short, !!redirectName);
 });
 // Back: keep the draft, refresh nothing (only success clears/refreshes)
 $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
 // Confirm signs the frozen review and nothing else (popup-sendflow runConfirm).
 $("btn-send-confirm").addEventListener("click", () => runConfirm(CSD_FLOW,
   { read: () => reviewState.reviewedSend, consume: () => { reviewState.reviewedSend = null; } },
-  ({ to, amt, signer }) => call("send", to, amt, SEND_FEE, signer ?? undefined),
+  ({ to, amt, signer, name }) => call("send", to, amt, SEND_FEE, signer ?? undefined, name ?? undefined),
   ({ amt }) => "Sent " + fmtCsd(amt)));

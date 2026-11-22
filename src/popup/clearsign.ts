@@ -62,6 +62,18 @@ export function paidRecipients(history: unknown): string[] {
     .filter(Boolean);
 }
 
+// The address this account last paid a .csd name at: the newest send or token send row that carries the name (popup
+// sends keep it, core/wallet.ts namedRow), else null. A row from before rows kept the name gives nothing to compare.
+export function lastPaidTo(history: unknown, name: string): string | null {
+  let best: { to: string; ts: number } | null = null;
+  for (const t of Array.isArray(history) ? history : []) {
+    if (!t || (t.type !== "send" && t.type !== "tokenSend") || t.name !== name || typeof t.to !== "string") continue;
+    const ts = Number(t.ts) || 0;
+    if (!best || ts > best.ts) best = { to: t.to.toLowerCase(), ts };
+  }
+  return best?.to ?? null;
+}
+
 // Surface a fee in CSD and flag an unusually large one so a phishing site can't slip a huge fee past
 // a user skimming the dialog. propose min is 0.25 CSD; >5 CSD is odd.
 const FEE_WARN = 5n * 100_000_000n;
