@@ -20,7 +20,11 @@ export interface NameIo {
   tradeApi(): string;
   spvGen(): number;
   nameHints(): Map<string, HintSetEntry>;
+  /** The name service's answer as it arrives, before the check: null when a resolve starts, then the served address
+   *  (a well-formed one, else null) and its lapsed flag. The send review offers it after D12's 10 s (`nameCheck`). */
+  noteServed?(name: string, served: ServedName | null): void;
 }
+export type ServedName = { addr: string | null; lapsed: boolean };
 
 // Normalize a .csd name for lookup/verify: lowercase and strip a trailing ".csd".
 const normName = (name: unknown): string => String(name || "").toLowerCase().replace(/\.csd$/, "");
@@ -34,6 +38,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
   // interpolating it into the resolver URL; a name with `/`, `..`, `%`, or query chars must never
   // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
   if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
+  wallet.noteServed?.(nm, null);
   try {
     // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
     // EVERY name send with "name lookup failed" even though clarvis, the second source, could
@@ -55,6 +60,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     }
     if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
     const j = await r.json();
+    wallet.noteServed?.(nm, { addr: servedAddr(j), lapsed: j?.lapsed === true });
     if (j?.lapsed) {
       // A served `lapsed` flag is not a refusal by itself: the chain proves the lease current -> the proven answer;
       // the lapse holds at a verified height -> refuse; anything else -> the unconfirmed-lapse caution.
@@ -87,13 +93,16 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
   } catch { return { ok: false, error: "name lookup failed" }; }
 }
 
+// The served record's address when it is a well-formed one, lower case.
+const servedAddr = (j: { addr?: unknown } | null | undefined): string | null =>
+  typeof j?.addr === "string" && /^0x[0-9a-f]{40}$/.test(j.addr.toLowerCase()) ? j.addr.toLowerCase() : null;
+
 // A lapse the wallet could not settle (the served flag, or a lease expired only at the served tip): a caution, not a
 // refusal ([A4]). The address is the last holding's from the name's own verified records when the replay gave one, so
 // a tip moved past a live lease does not also move the send (test/name-lapse-tip.test.mjs [T3]); the served one only
 // when nothing was replayed.
 function unconfirmedLapse(nm: string, j: { addr?: unknown; via?: string; owner?: string }, v: NameVerification | null): NameResolution {
-  const served = typeof j?.addr === "string" && /^0x[0-9a-f]{40}$/.test(j.addr.toLowerCase()) ? j.addr.toLowerCase() : null;
-  const addr = v?.lastAddr ?? served;
+  const addr = v?.lastAddr ?? servedAddr(j);
   if (!addr) return { ok: false, error: `${nm}.csd has no address` };
   return { ok: true, name: nm, addr, via: j.via, owner: j.owner, lapsed: false, lapseUnconfirmed: true, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable" };
 }

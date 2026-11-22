@@ -6,7 +6,8 @@ import { $, msg, val } from "./popup-dom.js";
 import { balanceState, beginReview, curAddr, reviewCurrent, reviewState } from "./popup-state.js";
 import { openPanel } from "./popup-panels.js";
 import { resolveRecipient, setNameRow, recipientChecks } from "./popup-recipient.js";
-import { CSD_FLOW, teardownReview, armReview, reviewButtons, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
+import { CSD_FLOW, teardownReview, armReview, reviewButtons, composeSendWarning, setWarn, runConfirm, watchUncheckedReview } from "./popup-sendflow.js";
+import { CSD_CHECK_UI, type NameCheck } from "./popup-namecheck.js";
 
 $("btn-send-t").addEventListener("click", () => { openPanel("send-form"); resetMax(); updateSendEstimate(); });
 
@@ -69,7 +70,9 @@ balanceState.onChange = updateSendEstimate;
 // clipboard-swap; the user verifies exactly what will be signed), warns on a
 // never-seen-before recipient, and hard-flags a poisoning lookalike.
 export const SEND_FEE = 1_000_000; // 0.01 CSD
-$("btn-send").addEventListener("click", async () => {
+$("btn-send").addEventListener("click", () => reviewSend(null));
+// `check`: the name check a "Wait" goes back to; a new Review starts its own.
+async function reviewSend(check: NameCheck | null) {
   const gen = beginReview();   // a Review the user leaves during its reads below primes nothing (popup-state reviewCurrent)
   const raw = val("s-to").trim();
   // Strict base-unit parse (audit AMT-1): the lax Math.round(parseFloat()) accepted "1e3" (→1000 CSD),
@@ -80,7 +83,7 @@ $("btn-send").addEventListener("click", async () => {
   if (amtStr === null || amtStr === "0") return msg("Enter a valid amount (up to 8 decimal places).", "err");
   const amt = Number(amtStr);
   if (!Number.isSafeInteger(amt) || amt <= 0) return msg("Amount out of range.", "err");
-  const rr = await resolveRecipient(raw);   // 0x… as-is, or alice.csd → resolved address (refuse lapsed)
+  const rr = await resolveRecipient(raw, { ui: CSD_CHECK_UI, left: () => !reviewCurrent(gen), check });   // 0x… as-is, or alice.csd (D12's wait)
   if (!reviewCurrent(gen)) return;
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
@@ -103,11 +106,18 @@ $("btn-send").addEventListener("click", async () => {
   setWarn($("c-warn") as HTMLElement, short ? [{ tier: "danger", html: escapeHtml(balanceShortNote("Go back")) }, ...warn] : warn);
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
-  reviewState.reviewedSend = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
-  armReview(CSD_FLOW, short, reviewButtons(!!redirectName, rr.lapseUnconfirmed));
+  const snap = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr, check: rr.unchecked ?? null }; // verified for the L7 confirm-time regression check
+  reviewState.reviewedSend = snap;
+  armReview(CSD_FLOW, short, reviewButtons(!!redirectName, rr.lapseUnconfirmed, !!rr.unchecked));
+  if (snap.check) watchUncheckedReview(CSD_FLOW, () => reviewState.reviewedSend, snap);
+}
+// Back: keep the draft, refresh nothing (only success clears/refreshes). On a review armed by "Send without check" it
+// reads "Wait" and goes back to the same check.
+$("btn-send-back").addEventListener("click", () => {
+  const check = reviewState.reviewedSend?.check ?? null;
+  teardownReview(CSD_FLOW, false);
+  if (check) void reviewSend(check);
 });
-// Back: keep the draft, refresh nothing (only success clears/refreshes)
-$("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, false));
 // Confirm signs the frozen review and nothing else (popup-sendflow runConfirm).
 $("btn-send-confirm").addEventListener("click", () => runConfirm(CSD_FLOW,
   { read: () => reviewState.reviewedSend, consume: () => { reviewState.reviewedSend = null; } },

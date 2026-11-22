@@ -49,6 +49,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "cairnxTransfer": return w.cairnxTransfer(args[0]);
     case "resolveName": return w.resolveName(args[0]);
     case "confirmName": return w.confirmName(args[0]);
+    case "nameCheck": return w.nameCheck(args[0]);
     case "tokenFillQuote": return w.tokenFillQuote(args[0]);
     case "tokenDisplayMeta": return w.tokenDisplayMeta(args[0]);
     case "fillOfferView": return w.fillOfferView(args[0]);

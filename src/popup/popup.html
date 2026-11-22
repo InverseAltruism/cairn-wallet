@@ -197,6 +197,8 @@
         </div>
         <!-- what Max worked out, when it is less than the balance or it could not be worked out (popup-send.ts) -->
         <p id="s-max-note" class="note" aria-live="polite" hidden></p>
+        <!-- the name check while Review waits for it, and D12's choice (popup-namecheck.ts) -->
+        <div id="s-check" class="check-status" aria-live="polite" hidden><span id="s-check-text"></span><button id="s-check-skip" type="button" hidden></button></div>
         <div class="row sheet-actions step-actions">
           <button class="panel-back" type="button">Cancel</button>
           <button id="btn-send" class="primary">Review send</button>
@@ -223,6 +225,7 @@
         <label>Recipient <input id="ts-to" placeholder="0x… address or alice.csd" autocomplete="off" /></label>
         <label>Amount <input id="ts-amt" type="text" inputmode="decimal" placeholder="0.0" autocomplete="off" /></label>
         <div id="ts-avail" class="note"></div>
+        <div id="ts-check" class="check-status" aria-live="polite" hidden><span id="ts-check-text"></span><button id="ts-check-skip" type="button" hidden></button></div>
         <div class="row sheet-actions step-actions">
           <button class="panel-back" type="button">Cancel</button>
           <button id="btn-tsend" class="primary">Review send</button>

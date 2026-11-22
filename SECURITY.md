@@ -272,6 +272,13 @@ does not also move the send (test/name-lapse-tip.test.mjs). At confirm the walle
 re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not
 verified. The recipient you confirm is always the **full, untruncated address**.
 
+While the name check runs, the send sheet says "Checking alice.csd..." from 0.3 s and, from 10 s once the name
+service has answered, offers "Send without check". That review shows the name service's address, unverified, with
+"This name could not be checked. Make sure the address is right." and "Send anyway" / "Wait"; its Confirm signs that
+address without waiting for the check and without asking again. The check keeps running: if it ends with that address
+nothing changes; if it ends with another address or a refusal before Confirm, the review is taken down and nothing is
+signed. Confirm signs only the reviewed address in every case (test/name-check-wait-dom.test.mjs).
+
 A name this account paid before that now resolves to another address gets a caution in the review, whatever the
 cause (a sale, a new address set by its owner, a forged answer): "alice.csd points to a different address than when
 you last paid it. Continue only if you expected this.", and the review's Confirm reads "Send to new address". It is

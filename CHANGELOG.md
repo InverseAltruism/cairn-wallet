@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A send to a name no longer waits silently for the name check. From 0.3 s the send sheet says "Checking
+  alice.csd..." with the share of headers synced while they sync, and from 10 s, once the name service has answered,
+  offers "Send without check". It arms the review on the name service's address, unverified, with "This name could
+  not be checked. Make sure the address is right." and "Send anyway" / "Wait"; that Confirm signs the reviewed
+  address without waiting for the check or asking again, and "Wait" goes back to the same check. A check that ends
+  after the choice with the same address refuses nothing; with another address or a refusal it takes the review down
+  before Confirm ("alice.csd now points to a different address. Nothing was sent; review it again."). A check that
+  answers within 0.3 s shows nothing new, and the lookup makes the same requests as 0.3.4
+  (test/name-check-wait-dom.test.mjs, test/name-check-progress.test.mjs).
+
 - Behaviour change: a send to a name is refused as lapsed only when the lease is over at a height the wallet verified
   itself (its own proof-of-work header tip, or the floor kept from earlier sessions). 0.3.4 also refused when two
   name sources answered and the served chain tip was past the lease, though the tip comes from neither source, so

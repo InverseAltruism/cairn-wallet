@@ -6,7 +6,8 @@ import { $, msg, val } from "./popup-dom.js";
 import { beginReview, curAddr, reviewCurrent, reviewState, type ViewBind, bindView, viewCurrent } from "./popup-state.js";
 import { dropStaleView, openPanel } from "./popup-panels.js";
 import { resolveRecipient, setNameRow, recipientChecks } from "./popup-recipient.js";
-import { TOKEN_FLOW, teardownReview, armReview, reviewButtons, composeSendWarning, setWarn, runConfirm } from "./popup-sendflow.js";
+import { TOKEN_FLOW, teardownReview, armReview, reviewButtons, composeSendWarning, setWarn, runConfirm, watchUncheckedReview } from "./popup-sendflow.js";
+import { TOKEN_CHECK_UI, type NameCheck } from "./popup-namecheck.js";
 
 // ── send a CairnX token: recipient + amount → review (ticker/amount/to/fee) → sign ──
 // The transfer record is built INSIDE the wallet (core/cairnx.ts) and anchored through
@@ -24,7 +25,9 @@ export function openTokenSend(ticker: string, decimals: number, available: strin
   ($("tsend-confirm") as HTMLElement).hidden = true;
   msg("");
 }
-$("btn-tsend").addEventListener("click", async () => {
+$("btn-tsend").addEventListener("click", () => reviewTokenSend(null));
+// `check`: the name check a "Wait" goes back to; a new Review starts its own.
+async function reviewTokenSend(check: NameCheck | null) {
   // The sheet this Review is for, captured before any await: the amount is parsed with its decimals, and the card and the
   // snapshot are built from it alone. A Review the user leaves (another token's sheet, Back, a lock, an account switch)
   // primes nothing (popup-state reviewCurrent).
@@ -35,7 +38,7 @@ $("btn-tsend").addEventListener("click", async () => {
   const left = () => !reviewCurrent(gen) || tsend !== sheet || !viewCurrent(sheet.bind);
   const base = parseUnits(val("ts-amt").trim(), sheet.decimals);
   if (base === null || base === "0") return msg(sheet.decimals ? `Enter an amount (up to ${sheet.decimals} decimal places).` : "Enter a whole-number amount (this token has 0 decimals).", "err");
-  const rr = await resolveRecipient(val("ts-to").trim());   // 0x… or alice.csd (refuse lapsed)
+  const rr = await resolveRecipient(val("ts-to").trim(), { ui: TOKEN_CHECK_UI, left, check });   // 0x… or alice.csd (D12's wait)
   if (left()) return;
   if (!rr.ok) return msg(rr.error!, "err");
   const to = rr.addr!;
@@ -75,11 +78,18 @@ $("btn-tsend").addEventListener("click", async () => {
   // account switch; expectSigner makes the background refuse at the sign tick instead of signing from
   // the switched-to account (the recipient stays correct but the WRONG account would pay).
   // The token and its decimals ride in the snapshot: the sheet's live `tsend` can be another token by the time Confirm signs.
-  reviewState.reviewed = { to, base, ticker: sheet.ticker, decimals: sheet.decimals, name: rr.name ?? null, verified: rr.verified, signer: curAddr }; // snapshot verified for the L7 confirm-time regression check
-  armReview(TOKEN_FLOW, false, reviewButtons(!!redirectName, rr.lapseUnconfirmed));
+  const snap = { to, base, ticker: sheet.ticker, decimals: sheet.decimals, name: rr.name ?? null, verified: rr.verified, signer: curAddr, check: rr.unchecked ?? null }; // verified for the L7 confirm-time regression check
+  reviewState.reviewed = snap;
+  armReview(TOKEN_FLOW, false, reviewButtons(!!redirectName, rr.lapseUnconfirmed, !!rr.unchecked));
+  if (snap.check) watchUncheckedReview(TOKEN_FLOW, () => reviewState.reviewed, snap);
+}
+// Back: keep the draft, refresh nothing (only success clears/refreshes). On a review armed by "Send without check" it
+// reads "Wait" and goes back to the same check.
+$("btn-tsend-back").addEventListener("click", () => {
+  const check = reviewState.reviewed?.check ?? null;
+  teardownReview(TOKEN_FLOW, false);
+  if (check) void reviewTokenSend(check);
 });
-// Back: keep the draft, refresh nothing (only success clears/refreshes)
-$("btn-tsend-back").addEventListener("click", () => teardownReview(TOKEN_FLOW, false));
 // Confirm signs the frozen review and nothing else (popup-sendflow runConfirm): every field of the call from the snapshot.
 $("btn-tsend-confirm").addEventListener("click", () => runConfirm(TOKEN_FLOW,
   { read: () => reviewState.reviewed, consume: () => { reviewState.reviewed = null; } },

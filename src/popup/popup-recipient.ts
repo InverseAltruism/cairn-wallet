@@ -6,10 +6,15 @@ import { call } from "./popup-bridge.js";
 import { SPV_NEWEST_HEIGHT } from "../core/spvnewest.js";
 import { sentenceOf } from "./sentences.js";
 import { sentenceHtml } from "./popup-outcome.js";
+import { awaitCheck, startNameCheck, type CheckUi, type NameCheck, type Served } from "./popup-namecheck.js";
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
-export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean; partly?: boolean; lapseUnconfirmed?: boolean; lineHtml?: string }> {
+export type Recipient = { ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean; partly?: boolean; lapseUnconfirmed?: boolean; lineHtml?: string; unchecked?: NameCheck };
+/** A Review's wait for a name: the sheet's line ([A16]) and whether the Review was left; `check` is the running check
+ *  "Wait" goes back to. Without it the lookup is awaited as one call (the token and CSD reviews pass it). */
+export type ReviewWait = { ui: CheckUi; left: () => boolean; check?: NameCheck | null };
+export async function resolveRecipient(raw: string, wait?: ReviewWait): Promise<Recipient> {
   const r = (raw || "").trim();
   // Refuse the zero address outright: a send there is an irrecoverable burn. Defense-in-depth for the V23
   // transition: a wallet that CARRIES this guard but whose vendored core still lacked the v23 branch would
@@ -23,7 +28,14 @@ export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr
   }
   if (looksLikeName(r)) {
     const nm = r.toLowerCase().replace(/\.csd$/, "");
-    const res = await call("resolveName", nm).catch(() => ({ ok: false, error: "Name lookup failed." }));
+    let res: any;
+    if (wait) {
+      const check = wait.check?.name === nm ? wait.check : startNameCheck(nm);
+      const w = await awaitCheck(check, wait.ui, wait.left);
+      if (w.kind === "left") return { ok: false, error: "" };
+      if (w.kind === "chose") return uncheckedRecipient(nm, w.served, check);
+      res = w.res;
+    } else res = await call("resolveName", nm).catch(() => ({ ok: false, error: "Name lookup failed." }));
     // resolveName SPV-verifies the name over two name sources (primary and clarvis, same operator). A disagreeing
     // source warns rather than refuses: the target is the proven winner with `disagree` set, and an unprovable
     // name comes back verified:false for the badge to caution. res.ok is false only for an invalid, unregistered,
@@ -57,6 +69,14 @@ export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr
   }
   return { ok: false, error: "Enter a 0x… address or a name.csd." };
 }
+// "Send without check": the review on the name service's answer, unverified, with [A17] (or [A4] when the service calls
+// the name expired) in place of the name's paragraph; `unchecked` is the check still running, which Confirm reads.
+function uncheckedRecipient(nm: string, served: Served, check: NameCheck): Recipient {
+  if (isZeroAddr(served.addr)) return { ok: false, error: `${nm}.csd points at the zero address: refusing (sends would be burned)` };
+  const line = served.lapsed ? sentenceOf("A4", undefined, { name: `${nm}.csd` }) : sentenceOf("A17");
+  return { ok: true, addr: served.addr, name: nm, verified: false, unchecked: check, lapseUnconfirmed: served.lapsed, lineHtml: sentenceHtml(line), badge: line.text, label: `${nm}.csd → ${short(served.addr)}` };
+}
+
 // XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time and REFUSE unless it still
 // returns EXACTLY the reviewed address. Fail-closed on any error / network failure. The equality +
 // shape check lives in clearsign.reresolveUnchanged (pure, unit-tested); this only wires the live call.

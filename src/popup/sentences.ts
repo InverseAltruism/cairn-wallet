@@ -6,15 +6,16 @@
 export type Tone = "grey" | "amber" | "red";
 export type Sentence = { text: string; tone: Tone; details: string };
 /** The variable parts a line names, already formatted by the caller: `{amount}` and `{cap}` are "12.5 CSD" style,
- *  `{name}` is "alice.csd". */
-export type Vars = { amount?: string; cap?: string; name?: string };
+ *  `{name}` is "alice.csd", `{pct}` is "" or " 65%". */
+export type Vars = { amount?: string; cap?: string; name?: string; pct?: string };
 
 /** [M11] grey, under the balance: the balance was read from Cairn's second server. */
 export const M11_BACKUP_SERVER = "Using Cairn's backup server.";
 
-// The results of a send and the coin checks before it (sheet sections 2 and 8). MR_* are drafts the sheet lacks: the
-// main server refused and the backup server had not answered (core/hosts.ts MAIN_REFUSED_WAIT_MS), so the result is
-// "may be in flight" with what is known first; the sheet's R4 to R6 say "Nothing was sent", which is not known there.
+// The results of a send and the coin checks before it (sheet sections 2 and 8). MR_* are not in the sheet's tables;
+// the owner approved their words on 2026-11-22: the main server refused and the backup server had not answered
+// (core/hosts.ts MAIN_REFUSED_WAIT_MS), so the result is "may be in flight" with what is known first; the sheet's R4
+// to R6 say "Nothing was sent", which is not known there.
 export const SENTENCES = {
   R1: { text: "Something went wrong, so nothing was sent. Try again, or see Details.", tone: "red", details: "The refusal's own text and code, or the thrown message." },
   R2: { text: "This may have been sent. Check your history before you send again.", tone: "amber", details: "SUBMIT_MAYBE_INFLIGHT: no server accepted it and one may hold it (no answer, a timeout, a 5xx, an unreadable answer)." },
@@ -33,6 +34,9 @@ export const SENTENCES = {
   S8: { text: "This amount needs more coins than one payment can use, so nothing was sent. Send less, or merge coins first.", tone: "red", details: "TOO_MANY_INPUTS: more than the 512-input per-transaction limit." },
   S12: { text: "The fee is above what the wallet allows ({cap} here). Nothing was sent.", tone: "red", details: "FEE_CAP: fee above max(1 CSD, 10% of the inputs)." },
   A4: { text: "{name} may have expired; the wallet could not check. If it has, this address belongs to its last owner.", tone: "amber", details: "Served lapsed flag; the SPV check did not settle the lapse." },
+  A14: { text: "{name} now points to a different address. Nothing was sent; review it again.", tone: "red", details: "The confirm-time re-resolution returned a different address." },
+  A16: { text: "Checking {name}...{pct}", tone: "grey", details: "Header sync progress of the name check." },
+  A17: { text: "This name could not be checked. Make sure the address is right.", tone: "amber", details: "The SPV check had not finished when the user chose to go on." },
   A18: { text: "New name, only partly verified. Check the address before a large payment.", tone: "amber", details: "Registered after this release's newest table entry; Cairn's 2 servers agree and the wallet has no older record to check them against." },
   A19: { text: "{name} points to a different address than when you last paid it. Continue only if you expected this.", tone: "amber", details: "The address differs from the one in this wallet's last send to the name." },
   Q3: { text: "Could not publish the reveal. Try again later.", tone: "grey", details: "The core's code, or the content API's HTTP status." },
@@ -49,6 +53,10 @@ export type SentenceKey = keyof typeof SENTENCES;
 export const REDIRECT_BUTTONS = { confirm: "Send to new address", back: "Cancel" } as const;
 /** [A4]'s two buttons, the same way. */
 export const LAPSE_BUTTONS = { confirm: "Send anyway", back: "Cancel" } as const;
+/** [A17]'s: Back is "Wait", which goes back to the check still running. */
+export const UNCHECKED_BUTTONS = { confirm: "Send anyway", back: "Wait" } as const;
+/** [A16]'s button, shown from D12's 10 s while the check runs and the name service has answered. */
+export const SKIP_CHECK = "Send without check";
 export type ReviewButtons = { readonly confirm: string; readonly back: string };
 
 // The codes worded wherever they appear; any other code keeps the engine's own text in a flow whose lines are not built
@@ -82,7 +90,7 @@ export function sentenceKeyOf(r: { ok?: unknown; code?: unknown; reason?: unknow
  *  machine code's shape, never a server's text. */
 export function sentenceOf(key: SentenceKey, code?: unknown, vars: Vars = {}): Sentence {
   const s: Sentence = SENTENCES[key];
-  const text = s.text.replace(/\{(amount|cap|name)\}/g, (_m, k: keyof Vars) => vars[k] ?? "?");
+  const text = s.text.replace(/\{(amount|cap|name|pct)\}/g, (_m, k: keyof Vars) => vars[k] ?? "?");
   return { ...s, text, details: typeof code === "string" && CODE_SHAPE.test(code) ? `${s.details} (${code})` : s.details };
 }
 const CODE_SHAPE = /^[A-Z][A-Z0-9_]{0,47}$/;

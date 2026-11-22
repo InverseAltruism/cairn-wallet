@@ -166,6 +166,9 @@ export interface SpvSource {
   bodySource?: string;
   /** Where the verified headers come from (the Cairn API this source was built on), named beside bodySource. */
   headerSource?: string;
+  /** The forward header sync in progress, as headers verified of those it needs, or null when none runs. A read of
+   *  memory only, for the send review's status line ([A16]). */
+  syncProgress?(): { done: number; total: number } | null;
 }
 
 // Headers to sync past the last record so its inclusion proof has a confirmation cushion. The verifier
@@ -868,6 +871,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // verdict (replayName re-runs the audited resolver at it). On a fresh install it is 0 → a lapse rests on
   // the current node tip alone → caution; on an established install it is high → a genuine lapse is confident.
   const persistedFloor = seenFloor;
+  let syncing: { from: number; want: number } | null = null;
 
   return {
     async prepare(maxEventHeight: number) {
@@ -882,6 +886,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       await serializeSync(async () => {
         const cur = tipOf(LC);
         if (want <= cur) return;
+        syncing = { from: cur, want };
         try {
           await syncWithPartialPersist(LC, want, persist);
           await syncAligned(LC, want);                  // a lying-high header THROWS here (fail-closed)
@@ -919,7 +924,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           walked = new Uint8Array(0);
           workBase = 0n;
           persistedTip = newest;
-        }
+        } finally { syncing = null; }
         persist();
       });
       // M9 (B5a): advance + persist the floor ONLY after the sync above succeeded (a throw skips this),
@@ -945,6 +950,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     },
     bodySource: opts.rpcBase.replace(/\/$/, ""),
     headerSource: headersBase,
+    syncProgress() { return syncing ? { done: Math.max(0, Math.min(tipOf(LC), syncing.want) - syncing.from), total: syncing.want - syncing.from } : null; },
     async hashAt(height: number) { return (await headerOrNull(height))?.hash ?? null; },
     async merkleAt(height: number) { return (await headerOrNull(height))?.merkle ?? null; },
     // NSPV-SIGSUB-1 (H3): fetch a record's spent prevout and bind it to its txid exactly as verifyInputValues

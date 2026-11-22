@@ -11,7 +11,7 @@ const { check, done } = checker("=== the wallet's sentences against the copy rul
 const FORBIDDEN = /\b(chain|block|blocks|header|headers|node|nodes|resolver|proof|proofs|registrar|safe|guaranteed|always|never)\b/i;
 const sentences = (t) => t.split(/(?<=[.!?])\s+(?=[A-Z])/).filter(Boolean).length;
 // A line with variable parts is checked as shown with the sheet's example values and with long ones.
-const EXAMPLES = [{ amount: "12.5 CSD", cap: "1 CSD", name: "alice.csd" }, { amount: "92,233,720,368.54775807 CSD", cap: "100 CSD", name: "a".repeat(32) + ".csd" }];
+const EXAMPLES = [{ amount: "12.5 CSD", cap: "1 CSD", name: "alice.csd", pct: "" }, { amount: "92,233,720,368.54775807 CSD", cap: "100 CSD", name: "a".repeat(32) + ".csd", pct: " 100%" }];
 const shown = (k) => [...new Set(EXAMPLES.map((v) => sentenceOf(k, undefined, v).text))];
 const entries = [...Object.keys(SENTENCES).flatMap((k) => shown(k).map((text) => [k, { ...SENTENCES[k], text }])), ["M11", { text: M11_BACKUP_SERVER, tone: "grey", details: "x" }]];
 for (const [k, s] of entries) {

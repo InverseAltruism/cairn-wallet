@@ -1,7 +1,8 @@
 // The review-and-confirm engine the CSD and token sends share.
 import { checkRow, type Check, escapeHtml } from "./clearsign.js";
 import { fmtCsd } from "../core/cairnx.js";
-import { LAPSE_BUTTONS, REDIRECT_BUTTONS, type ReviewButtons, sentenceOf } from "./sentences.js";
+import { LAPSE_BUTTONS, REDIRECT_BUTTONS, UNCHECKED_BUTTONS, type ReviewButtons, sentenceOf } from "./sentences.js";
+import type { NameCheck } from "./popup-namecheck.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
 import { sentenceHtml } from "./popup-outcome.js";
 import { $, busy, msg, msgAction, msgOutcome, statusWrites } from "./popup-dom.js";
@@ -69,7 +70,8 @@ export function armReview(f: SendFlow, hold = false, buttons: ReviewButtons | nu
 //     the first one's outcome lands.
 let confirmGen = 0;
 let submitting = false;
-type Snapshot = { to: string; name?: string | null; verified?: boolean };
+// `check`: the review was armed by "Send without check" on the name service's answer, while this check ran.
+type Snapshot = { to: string; name?: string | null; verified?: boolean; check?: NameCheck | null };
 export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read: () => S | null; consume: () => void }, submit: (s: S) => Promise<any>, sentText: (s: S) => string) {
   const snap = review.read();
   const btn = $(f.ids.button) as HTMLButtonElement;
@@ -79,10 +81,10 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   const writes = statusWrites();
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7); fail-closed to a re-review either way.
-  const stillPoints = !snap.name || (await nameStillPointsTo(snap.name, snap.to, snap.verified));
+  const stillPoints = !snap.name || (snap.check ? uncheckedStillPoints(snap.check, snap.to) : await nameStillPointsTo(snap.name, snap.to, snap.verified));
   if (gen !== confirmGen) return;                    // a later Confirm owns the outcome line; this one sent nothing
   if (review.read() !== snap) { if (statusWrites() === writes) msg(REVIEW_GONE, "err"); return; }
-  if (!stillPoints) { teardownReview(f, false); return msg(`${snap.name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
+  if (!stillPoints) { teardownReview(f, false); return msg(snap.check ? sentenceOf("A14", undefined, { name: `${snap.name}.csd` }).text : `${snap.name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
   review.consume();                                  // a second click finds no review
   submitting = true;
   // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
@@ -95,9 +97,27 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
 }
 
 const DEFAULT_BUTTONS = { confirm: "Confirm send", back: "Back" } as const;
-/** The review's buttons for a send's cautions: [A19]'s first, then [A4]'s, else the default pair. */
-export function reviewButtons(redirected: boolean, lapseUnconfirmed: boolean | undefined): ReviewButtons | null {
-  return redirected ? REDIRECT_BUTTONS : lapseUnconfirmed ? LAPSE_BUTTONS : null;
+/** The review's buttons for a send's cautions: [A17]'s while the check runs ("Wait" goes back to it), then [A19]'s,
+ *  then [A4]'s, else the default pair. */
+export function reviewButtons(redirected: boolean, lapseUnconfirmed: boolean | undefined, unchecked = false): ReviewButtons | null {
+  return unchecked ? UNCHECKED_BUTTONS : redirected ? REDIRECT_BUTTONS : lapseUnconfirmed ? LAPSE_BUTTONS : null;
+}
+
+// A review armed on the name service's answer signs that address without waiting for the check (D12): while the check
+// runs, Confirm signs it; once the check answered, only an answer that sends to the same address lets it through.
+// Nothing here changes the address a Confirm signs, which is the snapshot's (test/name-check-wait-dom.test.mjs).
+export function uncheckedStillPoints(check: NameCheck, to: string): boolean {
+  const v = check.settled?.value;
+  return !check.settled || (v?.ok === true && typeof v.addr === "string" && v.addr.toLowerCase() === to.toLowerCase());
+}
+// When that check answers while its review is still on screen: the same address refuses nothing; another address, or a
+// refusal, takes the review down before any Confirm, with [A14] or the check's own refusal.
+export function watchUncheckedReview<S extends Snapshot>(f: SendFlow, read: () => S | null, snap: S) {
+  void snap.check?.result.then((res: any) => {
+    if (read() !== snap || uncheckedStillPoints(snap.check!, snap.to)) return;
+    teardownReview(f, false);
+    msg(res?.ok === true ? sentenceOf("A14", undefined, { name: `${snap.name}.csd` }).text : String(res?.error || `Couldn't resolve ${snap.name}.csd.`), "err");
+  });
 }
 function labelButtons(f: SendFlow, buttons: ReviewButtons | null) {
   const l = buttons ?? DEFAULT_BUTTONS;
