@@ -117,8 +117,9 @@ console.log("C. the token sheet switched to another token during the name re-che
   check(`C1 nothing is signed, and the popup says so (${transfers.length - before} transfers, "${text()}")`, transfers.length - before === 0 && text() === GONE);
   await tokenReview("CAIRN", "alice.csd", "1");
   await byId("btn-tsend-confirm").click(); await flush(40);
+  // a send to a name carries the name for its history row (WL1.1, wallet.ts namedRow); the signed fields are the review's
   check(`C2 honest: an undisturbed token Confirm signs exactly the review (${JSON.stringify(transfers.at(-1))})`,
-    JSON.stringify(transfers.at(-1)) === JSON.stringify({ ticker: "CAIRN", amount: "100000000", to: ALICE, decimals: 8, fee: 25_000_000, expectSigner: ME })
+    JSON.stringify(transfers.at(-1)) === JSON.stringify({ ticker: "CAIRN", amount: "100000000", to: ALICE, decimals: 8, fee: 25_000_000, expectSigner: ME, name: "alice" })
     && /^Sent 1 CAIRN = 100000000 base units/.test(text()));
 }
 
@@ -133,7 +134,7 @@ console.log("D. Back during the CSD name re-check");
   check(`D1 Back during the re-check sends nothing (${sends.length - before}, "${text()}")`, sends.length - before === 0 && text() === GONE);
   await csdReview("alice.csd");
   await byId("btn-send-confirm").click(); await flush(40);
-  check(`D2 honest: a name send left alone sends once to the reviewed address (${JSON.stringify(sends.at(-1))})`, sends.length - before === 1 && JSON.stringify(sends.at(-1)) === JSON.stringify([ALICE, 1e8, 1_000_000, ME]));
+  check(`D2 honest: a name send left alone sends once to the reviewed address (${JSON.stringify(sends.at(-1))})`, sends.length - before === 1 && JSON.stringify(sends.at(-1)) === JSON.stringify([ALICE, 1e8, 1_000_000, ME, "alice"]));
 }
 
 console.log("E. two clicks on the token Confirm");
