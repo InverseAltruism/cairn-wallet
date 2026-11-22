@@ -83,8 +83,8 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     // NS-2: gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but serves an
     // address for a genuinely-lapsed name reaches here; verifyName's union already computed the lapse
     // (resolve(events, lapseTip).expired, corroborated by the persisted floor at namespv.ts). Refuse a
-    // CONFIDENT lapse exactly as the served-flag branch does; a lapse expired only at the served tip is the
-    // unconfirmed-lapse caution.
+    // CONFIDENT lapse exactly as the served-flag branch does; any other lapse (at the served tip only, or with one
+    // source) is the unconfirmed-lapse caution.
     if (v?.lapsed === true) return { ok: false, lapsed: true, error: `${nm}.csd has lapsed, so we did not send. Send to the owner's 0x address directly, or ask them to renew the name before sending again.` }; // MUTATE_NS2_PROVEN_LAPSE
     if (v?.lapseUnconfirmed === true) return unconfirmedLapse(nm, j, v);
     // Surface viaFill (NSPV-CLAIMCAP-1 / H1) so the UI shows the specific "acquired by fill; not name-scope
@@ -97,7 +97,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
 const servedAddr = (j: { addr?: unknown } | null | undefined): string | null =>
   typeof j?.addr === "string" && /^0x[0-9a-f]{40}$/.test(j.addr.toLowerCase()) ? j.addr.toLowerCase() : null;
 
-// A lapse the wallet could not settle (the served flag, or a lease expired only at the served tip): a caution, not a
+// A lapse the wallet could not settle (the served flag, a lease expired only at the served tip, or one source): a caution, not a
 // refusal ([A4]). The address is the last holding's from the name's own verified records when the replay gave one, so
 // a tip moved past a live lease does not also move the send (test/name-lapse-tip.test.mjs [T3]); the served one only
 // when nothing was replayed.

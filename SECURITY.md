@@ -264,9 +264,11 @@ described above (`docs/DESIGN-viafill.md`, "Decision").
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
 refuse: a lease that has lapsed at a height the wallet verified (its own proof-of-work header tip, or the floor kept
-from earlier sessions), and a change between review and confirm. A lapse at the served tip alone, or one a resolver
-reports and the wallet cannot settle, is a caution with a second click ("Send anyway"), not a refusal: whoever answers
-for both default hosts could otherwise serve a tip past a live name's lease and stop every send to it. The caution's
+from earlier sessions) with the corroboration 0.3.4 required (two name sources served the records, or the floor), and
+a change between review and confirm. Any other lapse is a caution with a second click ("Send anyway"), not a refusal:
+a lapse at the served tip alone (whoever answers for both default hosts could otherwise serve a tip past a live name's
+lease and stop every send to it), one that a single source's records show (that source can withhold a renewal or a
+recapture), and one a resolver reports and the wallet cannot settle. The caution's
 address is the one the name's own verified records give its last holding, when the replay gives one, so a moved tip
 does not also move the send (test/name-lapse-tip.test.mjs). At confirm the wallet **re-resolves and
 re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not

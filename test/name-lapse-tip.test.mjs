@@ -1,17 +1,18 @@
-// A lease-lapse verdict refuses a send only when the lease is over at a height the wallet verified: its own
-// PoW-verified header tip, or the persisted floor from prior sessions (a tip it trusted before). Expired only at the
-// served tip, the verdict is `lapseUnconfirmed`, a caution with the last holding's chain-proven address: whoever
-// answers for the tip (both default hosts have one operator) can serve one past a live lease. Two name sources do
-// not settle it, since neither serves the tip.
-// RED-FIRST: on the commit before this one, [1], [2v], [3], [T3], [T4] and [T6] fail (no `lapseUnconfirmed`, two
-// sources made the served tip's lapse a refusal, the wallet's own headers did not count). Mutations: put
-// `usable.length >= 2 ||` back in verifyNameUnion's `confident` and [3], [T3], [T4], [T6] fail; drop `verifiedCorroborated` from
-// it and [2v] fails; prefer the served address over `lastAddr` and [T3],
-// [T6] fail; judge the lapse at the served tip again (`expiredAt(lapseTip)`) and [1], [3], [4] fail.
+// A lease-lapse verdict refuses a send only when both hold: the lease is over at a height the wallet verified (its own
+// PoW-verified header tip, or the persisted floor from prior sessions), and 0.3.4's corroboration holds (two usable
+// name sources, or the floor). Anything else that looks lapsed is `lapseUnconfirmed`, a caution with the last holding's
+// chain-proven address: whoever answers for the tip can serve one past a live lease, and one source can withhold a
+// renewal so that a live name replays as lapsed at the wallet's own tip ([W1]).
+// RED-FIRST: on 2d910ab, [1], [3], [T3], [T4] and [T6] fail (no `lapseUnconfirmed`; two sources made the served tip's
+// lapse a refusal). [2v] and [W1] fail on 2fd66a8 (one source at the verified tip refused there). Mutations: drop the
+// source-count condition (`usable.length >= 2 ||`) from `corroborated` and [2v], [W1] fail; drop `atVerifiedHeight`
+// from `confident` and [3], [T3], [T4], [T6] fail; drop `verifiedCorroborated` and [3v], [T2] fail; prefer the served
+// address over `lastAddr` and [T3], [T6] fail.
 // Run: tsx test/name-lapse-tip.test.mjs
 import "./helpers/backup-host.mjs";
 import { verifyNameUnion } from "../src/core/namespv.ts";
 import { checker } from "./_check.ts";
+import { buildNameRenew } from "../src/core/cairnx.ts";
 import { buildNameClaim, buildNameSet, addrFromPriv, proposeTx, world, source, feeOut, pick, mkFetch } from "./_spvrig.ts";
 
 // D2 (2026-09-12): the single-source verifyName twin was deleted; the single-source lapse cases now
@@ -57,10 +58,31 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   check("[2] the confident-lapse reason refuses the send", /lapsed[\s\S]*refusing|refusing[\s\S]*lapsed/i.test(r.reason || ""));
 }
 
-// ── Case 2v: one source, no floor, but the wallet's OWN verified headers reach past the lease end → CONFIDENT ──
+// ── Case 2v: one source, no floor, the wallet's OWN verified headers past the lease end → still a CAUTION ──
 {
   const r = await unionOne(NAME, CLAIM, hints, source(blocks, REAL_TIP, { verifiedTip: REAL_TIP, nodeTip: REAL_TIP }));
-  check("[2v] a lapse at the wallet's own verified tip refuses (lapsed===true), with one source and no floor", r.verified === false && r.lapsed === true && r.lapseUnconfirmed !== true);
+  check("[2v] one source, lease over at the wallet's verified tip: a caution (lapseUnconfirmed), not a refusal", r.verified === false && r.lapsed !== true && r.lapseUnconfirmed === true && r.lastAddr === TARGET);
+}
+
+// ── Case 3v: two sources, the wallet's own verified headers past the lease end → CONFIDENT (refused, as 0.3.4) ──
+{
+  const PRIM = "https://cairn-substrate.com/trade/api", CLAR = "https://clarvis.cairn-substrate.com/trade/api";
+  const history = { ok: true, events: hints, resolve: CLAIM, scopedReplaySufficient: true };
+  const r = await verifyNameUnion(NAME, [{ label: "primary", base: PRIM }, { label: "clarvis", base: CLAR }], source(blocks, REAL_TIP, { verifiedTip: REAL_TIP, nodeTip: REAL_TIP }), mkFetch({ [PRIM]: history, [CLAR]: history }));
+  check("[3v] two sources, lease over at the wallet's verified tip: refused (lapsed===true)", r.verified === false && r.lapsed === true && r.lapseUnconfirmed !== true);
+}
+
+// ── Case W: the withheld renewal. The owner renewed at 300,000 (in grace, so the lease runs past 320,000); the record is
+//    in its block on the chain, and a lone source serves the history without it. ──
+{
+  const renewTx = proposeTx({ ...pick(buildNameRenew({ name: NAME })), priv: keyA, outputs: feeOut() });
+  const w = world([{ height: 33700, tx: claimTx }, { height: 33710, tx: nsetTx }, { height: 300_000, tx: renewTx }]);
+  const withheld = w.hints.filter((h) => h.height !== 300_000);
+  const atTip = source(w.blocks, REAL_TIP, { verifiedTip: REAL_TIP, nodeTip: REAL_TIP });
+  const honest = await unionOne(NAME, CLAIM, w.hints, atTip);
+  check(`[W0] honest: with the renewal served the name is live at ${REAL_TIP} (verified ${honest.verified})`, honest.verified === true && honest.addr === TARGET);
+  const r = await unionOne(NAME, CLAIM, withheld, atTip);
+  check("[W1] one source withholding the renewal, lease over at the wallet's verified tip: a caution on the proven address, not a refusal", r.verified === false && r.lapsed !== true && r.lapseUnconfirmed === true && r.lastAddr === TARGET);
 }
 
 // ── Case 3: TWO sources both serve the events, the served tip is past the lease, the headers are not → CAUTION ──
@@ -101,9 +123,9 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   const ATTACKER = "0x" + "ee".repeat(20);
   const origFetch = globalThis.fetch;
   // Both hosts answer alike: the served resolve record and the name history of the same events.
-  const run = async ({ served, spv }) => {
+  const run = async ({ served, spv, clarvis = true }) => {
     const history = { ok: true, events: hints, resolve: { addr: served.addr, owner: A, via: "nset", lapsed: served.lapsed }, scopedReplaySufficient: true };
-    const f = mkFetch({ [PRIM]: history, [CLARVIS_TRADE_API]: history });
+    const f = mkFetch({ [PRIM]: history, [CLARVIS_TRADE_API]: clarvis ? history : "throw" });
     globalThis.fetch = (url, init) => String(url).includes("/cairnx/resolve/") ? Promise.resolve({ ok: true, status: 200, json: async () => served }) : f(url, init);
     const io = {
       tradeGet: (path) => globalThis.fetch(PRIM + path), tip: async () => spv.nodeTip, spvSource: async () => spv,
@@ -126,6 +148,9 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   // (T4) a newer tip the wallet has not verified, no served flag (also an honest lapse with headers trailing): caution.
   r = await run({ served: { addr: TARGET, owner: A, via: "nset" }, spv: srcNoFloor(REAL_TIP) });
   check("[T4] a served tip past the lease, no flag: caution on the proven address", r.ok === true && r.lapseUnconfirmed === true && r.verified === false && r.addr === TARGET);
+  // (T7) one source (clarvis unreachable), lease over at the wallet's verified tip: the caution, as 0.3.4 had it.
+  r = await run({ served: { addr: TARGET, owner: A, via: "nset", lapsed: true }, spv: source(blocks, REAL_TIP, { verifiedTip: REAL_TIP, nodeTip: REAL_TIP }), clarvis: false });
+  check("[T7] one source, lease over at the verified tip: caution (ok, lapseUnconfirmed) on the proven address", r.ok === true && r.lapseUnconfirmed === true && r.addr === TARGET);
   // (T5) the persisted floor past the lease: the refusal as today.
   r = await run({ served: { addr: TARGET, owner: A, via: "nset", lapsed: true }, spv: srcWithFloor(REAL_TIP, REAL_TIP) });
   check("[T5] the floor past the lease: refused", r.ok === false && r.lapsed === true);

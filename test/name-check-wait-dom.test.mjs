@@ -42,7 +42,7 @@ async function advance(ms) {
 const { byId } = installFakeDom({ autoCreate: true });
 const { check, done } = checker("=== the name check while a send's Review waits (real popup.ts) ===");
 const ME = "0x" + "ab".repeat(20), SERVED = "0x" + "31".repeat(20), OTHER = "0x" + "42".repeat(20), TXID = "0x" + "7e".repeat(32);
-let pending = null, served = null, progress = null;
+let pending = null, served = null, progress = null, history = [];
 const deferred = () => { let res; const p = new Promise((r) => { res = r; }); return { p, res }; };
 const sends = [];
 const { calls } = installBridge({
@@ -51,7 +51,7 @@ const { calls } = installBridge({
   pendingMerge: () => ({ pending: false, amount: 0, maybe: false }),
   cairnxAssets: () => ({ ok: true, balances: { CAIRN: { available: "100000000000", locked: "0" } }, names: [], nameDetails: [], primaryName: null, tipHeight: 1 }),
   cairnxTokens: () => ({ ok: true, tokens: [{ ticker: "CAIRN", decimals: 8 }] }),
-  prewarmSpv: () => ({ ok: true }), pending: () => [], sealedClaims: () => [], history: () => [],
+  prewarmSpv: () => ({ ok: true }), pending: () => [], sealedClaims: () => [], history: () => history,
   resolveName: () => { pending = deferred(); return pending.p; },
   nameCheck: () => ({ served, progress }),
   confirmName: () => ({ ok: true, addr: SERVED, verified: true }),
@@ -194,5 +194,17 @@ console.log("10. the token send");
   const s0 = sends.length;
   byId("btn-tsend-confirm").click(); await flush(); await advance(50);
   check("(10c) Send anyway sends the token to the reviewed address", sends.length === s0 + 1 && sends.at(-1)?.[0]?.to === SERVED);
+}
+console.log("11. [A17] and [A19] together: both lines on the review, [A17]'s buttons");
+{
+  byId("btn-tsend-back").click(); await flush();
+  history = [{ type: "send", to: OTHER, amount: 1e8, fee: 1e6, txid: "0x" + "0a".repeat(32), ts: 10, name: "alice" }];   // last paid at OTHER
+  await chooseAt10();
+  const r = review();
+  const A19 = sentenceOf("A19", undefined, { name: "alice.csd" }).text;
+  check(`(11a) the review shows [A19] first and [A17] beside it (${r.warn.indexOf(A19)} < ${r.warn.indexOf(A17)})`, r.shown && r.warn.indexOf(A19) >= 0 && r.warn.indexOf(A17) > r.warn.indexOf(A19));
+  check(`(11b) with "Send anyway" / "Wait" (${r.confirm} / ${r.back})`, r.confirm === UNCHECKED_BUTTONS.confirm && r.back === UNCHECKED_BUTTONS.back);
+  history = [];
+  pending.res(verified(SERVED)); await flush();
 }
 done("name-check-wait-dom");

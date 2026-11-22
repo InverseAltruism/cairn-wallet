@@ -334,9 +334,10 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 - A green badge needs a successful replay. A disagreeing source is a warning, not a refusal: the send goes to the
   proven winner with `disagree` or `soleSource` set. When nothing can be proven, `resolveName` returns the served
   address with `verified: false` and the popup lets the user send after a caution.
-- A lapse refuses only when the lease is over at a height the wallet verified: its PoW-verified header tip or the
-  persisted tip floor. A second name source does not count, since neither source serves the tip. Expired only at the
-  served tip, or reported lapsed by a resolver while the chain cannot show the lease current, it is
+- A lapse refuses only when both hold: the lease is over at a height the wallet verified (its PoW-verified header tip
+  or the persisted tip floor), so a served tip cannot make it; and 0.3.4's corroboration, two usable sources or the
+  floor, since one source can withhold a renewal. Expired only at the served tip, seen in one source's records only,
+  or reported lapsed by a resolver while the chain cannot show the lease current, it is
   `lapseUnconfirmed` (`verified: false`): the popup's caution with "Send anyway", on the last holding's proven
   address (`lastAddr`) when the replay gave one, else the served one (`src/core/names.ts`;
   test/name-lapse-tip.test.mjs, test/resolve-lapse-corroborate.test.mjs). Headers synced only to a name's last

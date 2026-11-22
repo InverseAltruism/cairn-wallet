@@ -13,14 +13,15 @@
   (test/name-check-wait-dom.test.mjs, test/name-check-progress.test.mjs).
 
 - Behaviour change: a send to a name is refused as lapsed only when the lease is over at a height the wallet verified
-  itself (its own proof-of-work header tip, or the floor kept from earlier sessions). 0.3.4 also refused when two
+  itself (its own proof-of-work header tip, or the floor kept from earlier sessions) and 0.3.4's corroboration holds
+  (two name sources, or the floor). 0.3.4 also refused when two
   name sources answered and the served chain tip was past the lease, though the tip comes from neither source, so
   whoever answered for both default hosts could stop every send to a live name. Such a lapse, and one the name
   service reports while the wallet cannot check it (0.3.4 refused it with "couldn't be confirmed on-chain"), now show
   the amber line "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
   owner." with "Send anyway" and "Cancel". The address is the one the name's own verified records give, not the
-  served one, when the wallet replayed them. A lapse the wallet's own headers prove is now refused also when only one
-  name source answered (0.3.4 showed a caution there) (test/name-lapse-tip.test.mjs,
+  served one, when the wallet replayed them. Nothing that was a caution in 0.3.4 is refused: a lapse one source's
+  records show stays a caution, since that source can withhold a renewal (test/name-lapse-tip.test.mjs,
   test/name-lapse-caution-dom.test.mjs).
 
 - The wallet keeps working when Cairn's main server is down. With the default RPC, a node read that the main host has

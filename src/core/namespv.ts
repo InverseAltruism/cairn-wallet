@@ -64,9 +64,10 @@ export interface NameVerification {
   sources?: number;
   disagree?: boolean;
   // A lease-LAPSED verdict is CONFIDENT (`lapsed:true`, a refusal) only when the lease is expired at a height the
-  // wallet verified: its own PoW-verified header tip, or the persisted floor from prior sessions. Expired only at
-  // the served tip, it is `lapseUnconfirmed` (verified false, `lapsed` falsy): a caution, since whoever answers
-  // for the tip can move it past a live lease (test/name-lapse-tip.test.mjs).
+  // wallet verified (its own PoW-verified header tip, or the persisted floor from prior sessions) and two usable
+  // sources or the floor corroborate it. Otherwise it is `lapseUnconfirmed` (verified false, `lapsed` falsy): a
+  // caution, since whoever answers for the tip can move it past a live lease and one source can withhold a renewal
+  // (test/name-lapse-tip.test.mjs).
   lapsed?: boolean;
   lapseUnconfirmed?: boolean;
   // With `lapseUnconfirmed`: the address the name's own verified records give its last holding, when they give one
@@ -365,10 +366,13 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
     const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     if (!rep.ok) {
-      // A lapse refuses only when it holds at a height the wallet verified. The name sources do not count: the tip
-      // comes from neither of them, and the default two share one operator.
+      // A lapse refuses only when both hold: the lease is over at a height the wallet verified (its header tip or the
+      // kept floor), so a served tip cannot make it; and 0.3.4's corroboration (two usable sources or the floor), since
+      // one source can withhold a renewal or a recapture (test/name-lapse-tip.test.mjs [2v], [W1]).
       if (rep.lapsed) {
-        const confident = rep.verifiedCorroborated === true || rep.floorCorroborated === true;
+        const atVerifiedHeight = rep.verifiedCorroborated === true || rep.floorCorroborated === true;
+        const corroborated = usable.length >= 2 || rep.floorCorroborated === true;
+        const confident = atVerifiedHeight && corroborated;
         if (confident) return { ...fail(rep.reason), sources: usable.length, disagree: false, lapsed: true };
         const lastAddr = !scopeInsufficient && rep.lastAddr ? { lastAddr: rep.lastAddr } : {};
         return { ...fail(`${name}.csd may have lapsed: its lease ends below the served tip, above the headers the wallet verified`), sources: usable.length, disagree: false, lapsed: false, lapseUnconfirmed: true, ...lastAddr };
