@@ -176,6 +176,19 @@ console.log("5. stale lists are a normal store state (invariant 1):");
   check(`a list naming chunks 0.3.4 truncated: seeded at the table, verified to ${p2.verifiedTip}, list rewritten`, p2.verifiedTip === SEAL_TOP && storedWork(st2).length === 2 && storedWork(st2).every((e) => e.ok));
 }
 
+{
+  // Chunk 32 holds other bytes under an intact seal 33: the restore seeds at 33, and a read in 32 refetches the chunk.
+  const st = honestStore();
+  const r = st.chunks.get(32).slice(); r[84 * 300 + 40] ^= 0xff; st.chunks.set(32, r);
+  net.log.length = 0;
+  const src = await liveSpvSource(opts(st));
+  await src.prepare(SEAL_TOP - 12);
+  const h = 32 * CH + 300;
+  const honest = (await src.hashAt(h)) === hashOf(h) && (await src.hashAt(h - 1)) === hashOf(h - 1);
+  check(`a sealed chunk below the seed with other bytes: the read at ${h} answers the honest header from a refetch of its 8 pages (${net.log.length} requests)`,
+    honest && net.log.length === 8);
+}
+
 console.log("6. the Wallet hands the source its seal key getter and the unlock signal:");
 {
   const w = new Wallet(memoryStore(), memoryStore());
