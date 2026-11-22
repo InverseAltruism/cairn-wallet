@@ -144,11 +144,13 @@ the union covers one source being stale or broken, not that operator hiding a tr
 A disagreeing source is a **warning, not a refusal**. When the records cannot be proven at all, the wallet
 shows the address the name service served, marked **not chain-verified**, and you decide whether to send
 after confirming it out-of-band; a hostile name service can redirect funds in that case if you confirm. A
-lease that has lapsed at a height the wallet's own headers verified, with both name sources (or its kept floor) behind
-it, or an address that changes between review and confirm, is refused; any other lapse is a caution with "Send
+lease that has lapsed at the floor the wallet kept from earlier sessions, or at the wallet's own verified headers with
+both name sources behind it, or an address that changes between review and confirm, is refused; any other lapse is a caution with "Send
 anyway". If the second source is
-unreachable the wallet works from the first, with a caution. Sending to a `0x` address never involves a name
-service. Details are in [SECURITY.md](SECURITY.md).
+unreachable the wallet works from the first, with a caution. If Cairn's main server hangs, a send to a name is slow in
+this release, since the name check reads the chain from that server only; once the name service has answered (from
+the second server after the main one's 12 s limit) the send sheet offers "Send without check". Sending to a `0x`
+address never involves a name service. Details are in [SECURITY.md](SECURITY.md).
 
 ## Configuration
 

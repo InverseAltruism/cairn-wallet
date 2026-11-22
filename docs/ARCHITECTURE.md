@@ -274,7 +274,8 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
 
 - `popup.ts`: the popup's entry. It loads one `popup-*.ts` module per view or concern, such as `popup-send.ts`,
   `popup-sendflow.ts` for the review engine the CSD and token sends share, `popup-namecheck.ts` for a Review's wait for
-  a name check (the status line, D12's choice; it reads the background's `nameCheck`, memory only), `popup-panels.ts` for the sheets and their
+  a name check (the status line, D12's choice; it reads the background's `nameCheck`, memory only, which holds the
+  served answer of a name's latest lookup and is cleared on an endpoint change and on lock), `popup-panels.ts` for the sheets and their
   teardown, `popup-state.ts` for the state several views read. Source scans read the whole set through
   `scriptSource("popup.ts")` in `scripts/popup-ids.mjs`; `popup-outcome.ts` is one of them.
 - `popup-outcome.ts`: the extension channel to the background, the one reading of a submit outcome and the one

@@ -351,7 +351,7 @@ try {
     const c = await review(theme, null, LOOK, { history: [{ type: "send", to: PAID, amount: 1, txid: "0x" + "a1".repeat(32) }] });
     t.check(`${theme}: a look-alike renders a danger row in the down tint (${JSON.stringify(c.rows[0])})`, c.rows.length === 1 && c.rows[0].tier === "danger" && c.rows[0].tinted && c.rows[0].icon && /address-poisoning/.test(c.rows[0].text) && c.rows[0].aboveConfirm);
     // [A4]: a lapse the wallet could not settle: an amber row, and Confirm and Back read "Send anyway" and "Cancel", whole.
-    const d = await review(theme, { ok: true, addr: NEW, name: "alice", lapseUnconfirmed: true, verified: false }, "alice.csd");
+    const d = await review(theme, { ok: true, addr: NEW, name: "alice", lapseUnconfirmed: true, addrProven: true, verified: false }, "alice.csd");
     t.check(`${theme}: an unsettled lapse renders [A4] as a caution row in the warn tint, above Confirm (${JSON.stringify({ ...d.rows[0], full: undefined })})`, d.rows[0]?.tier === "caution" && d.rows[0].full.includes("alice.csd may have expired; the wallet could not check.") && d.rows[0].tinted && d.rows[0].visible && d.rows[0].aboveConfirm);
     t.check(`${theme}: ...with "Send anyway" and "Cancel", each shown whole (${JSON.stringify(d.buttons)})`, d.buttons[0].text === "Send anyway" && d.buttons[1].text === "Cancel" && d.buttons.every((x) => x.fits));
     t.check(`${theme}: no page error (${[...a.errors, ...b.errors, ...c.errors, ...d.errors].join(" | ") || "none"})`, a.errors.length + b.errors.length + c.errors.length + d.errors.length === 0);

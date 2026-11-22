@@ -8,11 +8,19 @@
 // 6a, 7, 9a, 9b and 10a to 10c fail; 1 passes there (the honest path), and so do the cases the old wait reaches after
 // the check answers.
 // Mutations: the line from 0 s fails (1b); the choice before 10 s fails (2d); Confirm on the choice re-running the
-// check (nameStillPointsTo) fails (3c); Confirm signing the check's later answer instead of the review fails (6b);
+// check (nameRecheck) fails (3c); Confirm signing the check's later answer instead of the review fails (6b);
 // the choice armed with the default buttons fails (3b).
+// Section 12 is the table of the lines that apply together; on 68cce65 (the new sentences added so the file loads) the
+// six rows with [A9], [A10] or [A17] beside [A4] fail, since [A4] stood alone there.
+// Sections 13 and 14 (d): on 68cce65 (13a), (13b) and (14d) fail: a check left while its progress read was in flight
+// showed its line over the next review, and the line outlived its closed sheet. The rest of 14 pins edges that already
+// held (a served zero address, a check rejecting after the choice, a broken channel, Confirm after "Wait").
+// Section 15 pins popup-send.ts's first `reviewCurrent` after the lookup: without it a replaced Review's late answer
+// writes its refusal into the status line or its name row over the review on screen.
 // Run: node --import tsx test/name-check-wait-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
-import { SENTENCES, sentenceOf, UNCHECKED_BUTTONS, SKIP_CHECK } from "../src/popup/sentences.ts";
+import { SENTENCES, sentenceOf, UNCHECKED_BUTTONS, LAPSE_BUTTONS, REDIRECT_BUTTONS, SKIP_CHECK } from "../src/popup/sentences.ts";
+import { SPV_NEWEST_HEIGHT } from "../src/core/spvnewest.ts";
 import { checker } from "./helpers/check.mjs";
 
 // The virtual clock: a timer of 0 ms runs on the real loop (flush), any longer one only when `advance` passes it.
@@ -43,9 +51,11 @@ const { byId } = installFakeDom({ autoCreate: true });
 const { check, done } = checker("=== the name check while a send's Review waits (real popup.ts) ===");
 const ME = "0x" + "ab".repeat(20), SERVED = "0x" + "31".repeat(20), OTHER = "0x" + "42".repeat(20), TXID = "0x" + "7e".repeat(32);
 let pending = null, served = null, progress = null, history = [];
-const deferred = () => { let res; const p = new Promise((r) => { res = r; }); return { p, res }; };
+const deferred = () => { let res, rej; const p = new Promise((r, j) => { res = r; rej = j; }); return { p, res, rej }; };
+let ncHold = null;   // { name, d }: that name's progress reads wait for d (the read in flight while the user moves on)
+const servedFor = {};   // a served answer per name for the progress read; `served` for any other
 const sends = [];
-const { calls } = installBridge({
+const { calls, breakChannel } = installBridge({
   status: () => ({ hasVault: true, unlocked: true, addr: ME, accounts: [{ label: "A1", addr: ME }], active: 0, rpc: "https://x", api: "https://x", tradeApi: "https://x/trade/api", explorer: "cairn", hasMnemonic: true }),
   balance: () => ({ confirmed: 100e8, utxos: [] }),
   pendingMerge: () => ({ pending: false, amount: 0, maybe: false }),
@@ -53,7 +63,7 @@ const { calls } = installBridge({
   cairnxTokens: () => ({ ok: true, tokens: [{ ticker: "CAIRN", decimals: 8 }] }),
   prewarmSpv: () => ({ ok: true }), pending: () => [], sealedClaims: () => [], history: () => history,
   resolveName: () => { pending = deferred(); return pending.p; },
-  nameCheck: () => ({ served, progress }),
+  nameCheck: async (nm) => { if (ncHold && ncHold.name === nm) await ncHold.d.p; return { served: servedFor[nm] ?? served, progress }; },
   confirmName: () => ({ ok: true, addr: SERVED, verified: true }),
   send: (...args) => { sends.push(args); return { ok: true, txid: TXID }; },
   cairnxTransfer: (p) => { sends.push([p]); return { ok: true, txid: TXID }; },
@@ -206,5 +216,127 @@ console.log("11. [A17] and [A19] together: both lines on the review, [A17]'s but
   check(`(11b) with "Send anyway" / "Wait" (${r.confirm} / ${r.back})`, r.confirm === UNCHECKED_BUTTONS.confirm && r.back === UNCHECKED_BUTTONS.back);
   history = [];
   pending.res(verified(SERVED)); await flush();
+}
+
+console.log("12. every line that can apply together: all on screen, in one order, with the strictest buttons");
+{
+  const nm = { name: "alice.csd" };
+  const T = { A4: sentenceOf("A4", undefined, nm).text, A9: SENTENCES.A9.text, A10: SENTENCES.A10.text, A17, A18: SENTENCES.A18.text, A19: sentenceOf("A19", undefined, nm).text };
+  const ORDER = ["A19", "A17", "A9", "A10", "A4", "A18"];
+  const lapse = (extra) => ({ ok: true, addr: SERVED, name: "alice", lapsed: false, lapseUnconfirmed: true, verified: false, ...extra });
+  const rows = [
+    // [lines from the check, how the review is reached, its answer or the served flag, the buttons without [A19]]
+    [["A4"], "answer", lapse({ addrProven: true }), LAPSE_BUTTONS],
+    [["A9", "A4"], "answer", lapse({ addrProven: false }), LAPSE_BUTTONS],
+    [["A10", "A4"], "answer", lapse({ addrProven: false, viaFill: true }), LAPSE_BUTTONS],
+    [["A18"], "answer", { ...verified(SERVED), completedAt: SPV_NEWEST_HEIGHT + 1 }, null],
+    [["A17"], "choose", false, UNCHECKED_BUTTONS],
+    [["A17", "A4"], "choose", true, UNCHECKED_BUTTONS],
+  ];
+  const DEFAULT = { confirm: "Confirm send", back: "Back" };
+  for (const redirect of [false, true]) for (const [lines, how, arg, buttons] of rows) {
+    if (pending && !pending.settled) { pending.res(verified(SERVED)); pending.settled = true; await flush(); }
+    history = redirect ? [{ type: "send", to: OTHER, amount: 1e8, fee: 1e6, txid: "0x" + "0b".repeat(32), ts: 10, name: "alice" }] : [];
+    await startReview();
+    if (how === "answer") { pending.res(arg); pending.settled = true; await flush(); await advance(50); }
+    else { served = { addr: SERVED, lapsed: arg }; await advance(10_300); await choose(); }
+    const want = [...(redirect ? ["A19"] : []), ...lines];
+    const r = review();
+    const at = ORDER.map((k) => [k, r.warn.indexOf(T[k])]).filter(([, i]) => i >= 0);
+    const shown = at.sort((a, b) => a[1] - b[1]).map(([k]) => k);
+    const exp = buttons === UNCHECKED_BUTTONS ? UNCHECKED_BUTTONS : redirect ? REDIRECT_BUTTONS : buttons ?? DEFAULT;
+    check(`(12) ${want.join(" + ")}: on screen ${shown.join(", ")}; buttons "${r.confirm}" / "${r.back}"`, r.shown && shown.join() === want.join() && r.confirm === exp.confirm && r.back === exp.back);
+  }
+  if (pending && !pending.settled) { pending.res(verified(SERVED)); await flush(); }
+  history = [];
+}
+
+console.log("13. a check left while its progress read is in flight shows nothing over the next review");
+{
+  const BOB = "0x" + "b0".repeat(20);
+  // (a) the next Review answers at once and arms; the left check's read then returns
+  ncHold = { name: "alice", d: deferred() };
+  await startReview("alice.csd");
+  await advance(300);                                    // alice's first progress read is in flight
+  byId("s-to").value = "bob.csd"; byId("btn-send").click(); await flush();
+  pending.res({ ...verified(BOB), name: "bob" }); pending.settled = true; await flush(); await advance(50);
+  ncHold.d.res(); await flush(); await advance(0);
+  check(`(13a) the armed review of bob.csd has no checking line over it (${line().shown ? line().text : "hidden"})`, review().shown && review().to === BOB && !line().shown);
+  // (b) the next Review is itself waiting with its choice offered; the left check's read then returns
+  ncHold = { name: "alice", d: deferred() };
+  await startReview("alice.csd");
+  await advance(300);
+  byId("s-to").value = "bob.csd"; servedFor.bob = { addr: BOB, lapsed: false };
+  byId("btn-send").click(); await flush();
+  await advance(10_300);
+  const before = line();
+  ncHold.d.res(); await flush(); await advance(0);
+  const after = line();
+  check(`(13b) bob.csd's line and choice stay ("${before.text}" -> "${after.text}", choice ${after.skip})`, before.shown && /bob\.csd/.test(before.text) && after.shown && after.text === before.text && after.skip);
+  await choose();
+  check(`(13c) its choice arms bob.csd's review on bob's served address (${review().to.slice(0, 10)})`, review().shown && review().to === BOB);
+  pending.res({ ...verified(BOB), name: "bob" }); pending.settled = true; await flush(); await advance(50);
+  ncHold = null; delete servedFor.bob;
+  byId("btn-send-back").click(); await flush(); await advance(50);   // "Wait": the settled check arms a checked review
+  byId("btn-send-back").click(); await flush();
+}
+
+console.log("14. the check's edges");
+{
+  const ZERO = "0x" + "00".repeat(20);
+  // (a) the name service serves the zero address: "Send without check" refuses it, nothing is armed
+  await startReview(); served = { addr: ZERO, lapsed: false };
+  await advance(10_300); await choose();
+  check(`(14a) a served zero address is refused at the choice (${byId("msg").textContent.slice(0, 40)})`, !review().shown && /zero address/.test(byId("msg").textContent));
+  pending.res(verified(SERVED)); pending.settled = true; await flush(); await advance(50);
+
+  // (b) the check rejects (the service worker restarted, or resolveName threw) after the choice: down, nothing signed
+  await chooseAt10();
+  let s0 = sends.length;
+  pending.rej(new Error("The message port closed before a response was received.")); pending.settled = true; await flush(); await advance(50);
+  check(`(14b) a check that rejects after the choice takes the review down (${byId("msg").textContent})`, !review().shown && byId("msg").textContent === "Name lookup failed.");
+  await confirm();
+  check("(14b) and Confirm signs nothing", sends.length === s0);
+
+  // (c) the channel breaks at the lookup itself: no review
+  byId("btn-send-back").click(); await flush();
+  breakChannel.add("resolveName");
+  byId("s-to").value = "alice.csd"; byId("s-amt").value = "1"; byId("btn-send").click(); await flush(); await advance(50);
+  check(`(14c) a lookup whose channel broke arms nothing (${byId("msg").textContent})`, !review().shown && byId("msg").textContent === "Name lookup failed.");
+
+  // (d) the sheet closes while the line shows: the line goes with it, and the answer then arms nothing
+  await startReview();
+  await advance(400);
+  const shownBefore = line().shown;
+  const { closeAllPanels } = await import("../src/popup/popup-panels.ts");
+  closeAllPanels(); await flush();
+  check(`(14d) the line closes with the sheet (${shownBefore} -> ${line().shown})`, shownBefore && !line().shown);
+  pending.res(verified(SERVED)); pending.settled = true; await flush(); await advance(300);
+  check("(14d) the check's answer after that arms no review and shows no line", !review().shown && !line().shown);
+  byId("btn-send-t").click(); await flush();
+
+  // (e) Confirm after "Wait": the check finishes, the review arms as a checked one, and its Confirm re-checks as 0.3.4
+  await chooseAt10();
+  byId("btn-send-back").click(); await flush(); await advance(0);   // "Wait"
+  pending.res(verified(SERVED)); pending.settled = true; await flush(); await advance(50);
+  const c0 = count("confirmName"); s0 = sends.length;
+  await confirm();
+  check(`(14e) Confirm after "Wait" runs the confirm-time re-check and signs the reviewed address (confirmName +${count("confirmName") - c0})`, count("confirmName") === c0 + 1 && sends.length === s0 + 1 && sends.at(-1)?.[0] === SERVED);
+}
+
+console.log("15. a Review replaced while its lookup runs writes nothing when that lookup answers");
+{
+  const BOB = "0x" + "b0".repeat(20);
+  for (const [label, late] of [["a refusal", { ok: false, error: "alice.csd is not registered" }], ["an address", verified(SERVED)]]) {
+    await startReview("alice.csd");
+    const first = pending;
+    await advance(100);
+    byId("s-to").value = "bob.csd"; byId("btn-send").click(); await flush();
+    pending.res({ ...verified(BOB), name: "bob" }); pending.settled = true; await flush(); await advance(50);
+    const name0 = byId("c-name").textContent, msg0 = byId("msg").textContent;
+    first.res(late); await flush(); await advance(50);
+    check(`(15) the replaced Review's lookup answering ${label} leaves bob.csd's review as it was (name row "${byId("c-name").textContent}", status "${byId("msg").textContent}")`,
+      review().shown && review().to === BOB && byId("c-name").textContent === name0 && /bob\.csd/.test(name0) && byId("msg").textContent === msg0);
+  }
 }
 done("name-check-wait-dom");

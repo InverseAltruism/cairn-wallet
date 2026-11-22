@@ -3,7 +3,9 @@
 //       and nothing once it ended; the sync itself is unchanged (the same request, the same tip);
 //   (2) the wallet's nameCheck gives the name service's answer once it arrived, before the check ends, and forgets it
 //       when a new lookup of the name starts; a served lapse carries its flag;
-//   (3) nameCheck sends nothing (no fetch).
+//   (3) nameCheck sends nothing (no fetch);
+//   (4) only the latest lookup of a name notes its answer (a late answer of an earlier one is dropped), and the answers
+//       are cleared when the name service or an endpoint changes, on lock and on reset.
 // RED-FIRST: on the commit before this one, the source has no syncProgress and the wallet no nameCheck: all fail.
 // Run: node --import tsx test/name-check-progress.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
@@ -60,5 +62,57 @@ console.log("2. the served answer before the check ends");
   check(`(2d) a served lapse carries its flag (${JSON.stringify(w.nameCheck("alice").served)})`, w.nameCheck("alice").served?.lapsed === true);
   release(); await run2;
   check("(2e) another name has nothing", w.nameCheck("bob").served === null);
+}
+
+console.log("4. lookups in order, and the answers cleared");
+{
+  const OLD = "0x" + "a1".repeat(20), NEW = "0x" + "b2".repeat(20);
+  const held = [];
+  // Each resolve answers when its turn is released; `addr` is what that lookup's answer serves.
+  const queue = [];
+  globalThis.fetch = (u) => {
+    if (!String(u).includes("/cairnx/resolve/")) return Promise.resolve(new Response("{}", { status: 500 }));
+    const next = queue.shift();
+    return new Promise((res) => { held.push(() => res(Response.json({ addr: next, owner: next, via: "owner" }))); });
+  };
+  const w = new Wallet(memoryStore());
+  await w.create("pw-namecheck-12345");
+  w.verifyName = () => new Promise(() => undefined);   // the check does not end here; only the served answers are read
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+  queue.push(OLD, NEW);
+  void w.resolveName("alice"); await tick();     // lookup 1: its answer is held
+  void w.resolveName("alice"); await tick();     // lookup 2 of the same name
+  held[1](); await tick();
+  check(`(4a) lookup 2's answer is noted (${w.nameCheck("alice").served?.addr})`, w.nameCheck("alice").served?.addr === NEW);
+  held[0](); await tick();
+  check(`(4b) lookup 1 answering late does not replace it (${w.nameCheck("alice").served?.addr})`, w.nameCheck("alice").served?.addr === NEW);
+  const clears = [
+    ["another name service (setTradeApi)", (i) => w.setTradeApi(`https://other${i}.example/trade/api`)],
+    ["another API (setApi)", (i) => w.setApi(`https://api${i}.example`)],
+    ["lock", () => w.lock()],
+  ];
+  for (const [label, act] of clears) {
+    queue.push(NEW);
+    void w.resolveName("alice"); await tick(); held.at(-1)(); await tick();
+    const before = w.nameCheck("alice").served?.addr;
+    await act(1);
+    const after = w.nameCheck("alice").served;
+    queue.push(OLD);
+    void w.resolveName("alice"); await tick();
+    const late = held.at(-1);
+    await act(2);
+    late(); await tick();
+    check(`(4c) ${label}: the answer is cleared (${before} -> ${after}), and a lookup that began before it notes nothing (${w.nameCheck("alice").served})`, before === NEW && after === null && w.nameCheck("alice").served === null);
+  }
+  await w.unlock("pw-namecheck-12345");
+  queue.push(NEW);
+  void w.resolveName("alice"); await tick(); held.at(-1)(); await tick();
+  const before = w.nameCheck("alice").served?.addr;
+  await w.reset();
+  check(`(4d) reset: the answer is cleared (${before} -> ${w.nameCheck("alice").served})`, before === NEW && w.nameCheck("alice").served === null);
+  w.setTradeApi("");   // honest: the default again
+  queue.push(NEW);
+  void w.resolveName("alice"); await tick(); held.at(-1)(); await tick();
+  check("(4e) honest: a lookup after the clear notes its answer as before", w.nameCheck("alice").served?.addr === NEW);
 }
 done("name-check-progress");

@@ -40,8 +40,7 @@ export function awaitCheck(c: NameCheck, ui: CheckUi, left: () => boolean): Prom
       if (done) return;
       done = true;
       clearTimeout(timer);
-      skip.onclick = null;
-      if (line.dataset.owner === String(me)) { line.hidden = true; skip.hidden = true; }
+      if (line.dataset.owner === String(me)) { line.hidden = true; skip.hidden = true; skip.onclick = null; }
       resolve(w);
     };
     const paint = (pct: string) => { text.textContent = sentenceOf("A16", undefined, { name: `${c.name}.csd`, pct }).text; };
@@ -52,6 +51,7 @@ export function awaitCheck(c: NameCheck, ui: CheckUi, left: () => boolean): Prom
       if (at >= STATUS_AFTER_MS) {
         const st = await call("nameCheck", c.name).catch(() => null);
         if (done) return;
+        if (left()) return end({ kind: "left" });   // left while the read was in flight: show nothing
         if (st?.served?.addr) served = { addr: String(st.served.addr), lapsed: st.served.lapsed === true };
         const p = st?.progress;
         const pct = p && p.total > 0 ? ` ${Math.min(99, Math.floor((p.done / p.total) * 100))}%` : "";

@@ -8,7 +8,7 @@ import { CLARVIS_TRADE_API } from "./endpoints.js";
 
 // What resolveName and confirmName answer: a refusal (ok false, with error), or the address to send to and how
 // far it was verified.
-export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; lapseUnconfirmed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; lapseUnconfirmed?: boolean; addrProven?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
 // What name resolution reads through the wallet. verifyName is called through the wallet so an instance override
 // applies (test/resolve-lapse-corroborate replaces it to test the resolve logic without SPV). spvGen is bumped on
 // every endpoint change: a verification that began under an older value caches nothing.
@@ -20,9 +20,11 @@ export interface NameIo {
   tradeApi(): string;
   spvGen(): number;
   nameHints(): Map<string, HintSetEntry>;
-  /** The name service's answer as it arrives, before the check: null when a resolve starts, then the served address
-   *  (a well-formed one, else null) and its lapsed flag. The send review offers it after D12's 10 s (`nameCheck`). */
-  noteServed?(name: string, served: ServedName | null): void;
+  /** A resolve of `name` starts: the name's earlier served answer is forgotten, and the note returned records this
+   *  resolve's answer as it arrives (the served address, a well-formed one else null, and its lapsed flag), unless a
+   *  newer resolve of the name started or the answers were cleared since. The send review offers it after D12's 10 s
+   *  (`nameCheck`). */
+  beginServed?(name: string): (served: ServedName) => void;
 }
 export type ServedName = { addr: string | null; lapsed: boolean };
 
@@ -38,7 +40,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
   // interpolating it into the resolver URL; a name with `/`, `..`, `%`, or query chars must never
   // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
   if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
-  wallet.noteServed?.(nm, null);
+  const noteServed = wallet.beginServed?.(nm);
   try {
     // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
     // EVERY name send with "name lookup failed" even though clarvis, the second source, could
@@ -60,7 +62,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     }
     if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
     const j = await r.json();
-    wallet.noteServed?.(nm, { addr: servedAddr(j), lapsed: j?.lapsed === true });
+    noteServed?.({ addr: servedAddr(j), lapsed: j?.lapsed === true });
     if (j?.lapsed) {
       // A served `lapsed` flag is not a refusal by itself: the chain proves the lease current -> the proven answer;
       // the lapse holds at a verified height -> refuse; anything else -> the unconfirmed-lapse caution.
@@ -100,11 +102,13 @@ const servedAddr = (j: { addr?: unknown } | null | undefined): string | null =>
 // A lapse the wallet could not settle (the served flag, a lease expired only at the served tip, or one source): a caution, not a
 // refusal ([A4]). The address is the last holding's from the name's own verified records when the replay gave one, so
 // a tip moved past a live lease does not also move the send (test/name-lapse-tip.test.mjs [T3]); the served one only
-// when nothing was replayed.
+// when nothing was replayed. `addrProven` says which: the review shows [A4] alone only on a proven address, and the
+// served one under [A9] (or [A10] for a bought name) as well (popup-recipient.ts, test/name-lapse-tip.test.mjs [T8]).
 function unconfirmedLapse(nm: string, j: { addr?: unknown; via?: string; owner?: string }, v: NameVerification | null): NameResolution {
-  const addr = v?.lastAddr ?? servedAddr(j);
+  const proven = v?.lastAddr;
+  const addr = proven ?? servedAddr(j);
   if (!addr) return { ok: false, error: `${nm}.csd has no address` };
-  return { ok: true, name: nm, addr, via: j.via, owner: j.owner, lapsed: false, lapseUnconfirmed: true, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable" };
+  return { ok: true, name: nm, addr, via: j.via, owner: j.owner, lapsed: false, lapseUnconfirmed: true, addrProven: proven !== undefined, verified: false, viaFill: v?.viaFill === true, verifyReason: v?.reason ?? "on-chain verification unavailable" };
 }
 
 // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies

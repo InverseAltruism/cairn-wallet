@@ -1,16 +1,16 @@
 // A send's recipient: an address or a .csd name resolved and badged, the confirm-time re-check, and the first-time
 // and look-alike reads.
 import { isPlainName } from "../core/cairnx.js";
-import { NAME_SAFE_DEPTH, reresolveUnchanged, recipientStatus, paidRecipients, lastPaidTo, isZeroAddr, short } from "./clearsign.js";
+import { NAME_SAFE_DEPTH, recheckOutcome, type Recheck, recipientStatus, paidRecipients, lastPaidTo, isZeroAddr, short } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 import { SPV_NEWEST_HEIGHT } from "../core/spvnewest.js";
-import { sentenceOf } from "./sentences.js";
+import { sentenceOf, type Sentence } from "./sentences.js";
 import { sentenceHtml } from "./popup-outcome.js";
 import { awaitCheck, startNameCheck, type CheckUi, type NameCheck, type Served } from "./popup-namecheck.js";
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
-export type Recipient = { ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean; partly?: boolean; lapseUnconfirmed?: boolean; lineHtml?: string; unchecked?: NameCheck };
+export type Recipient = { ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean; partly?: boolean; lapseUnconfirmed?: boolean; linesHtml?: string[]; unchecked?: NameCheck };
 /** A Review's wait for a name: the sheet's line ([A16]) and whether the Review was left; `check` is the running check
  *  "Wait" goes back to. Without it the lookup is awaited as one call (the token and CSD reviews pass it). */
 export type ReviewWait = { ui: CheckUi; left: () => boolean; check?: NameCheck | null };
@@ -54,35 +54,37 @@ export async function resolveRecipient(raw: string, wait?: ReviewWait): Promise<
     // which the servers that answered also serve; it takes the line the agreeing servers would get.
     const partly = verified && !viaFill && !res.soleSource && !res.disagree && (res.sources ?? 1) >= 2
       && typeof res.completedAt === "number" && res.completedAt > SPV_NEWEST_HEIGHT;
-    // [A4]: the name service or the served tip says the lease ran out and the wallet could not settle it.
+    // [A4]: the name service or the served tip says the lease ran out and the wallet could not settle it. It stands
+    // alone only on the address the name's verified records gave (`addrProven`); on the served one [A9] (or [A10] for a
+    // bought name) comes first, since that address was not checked at all.
     const lapseUnconfirmed = res.lapseUnconfirmed === true;
-    // [A4] and [A18] stand in place of the name's paragraph: the review row is that line alone, with its Details.
-    const line = lapseUnconfirmed ? sentenceOf("A4", undefined, { name: `${nm}.csd` }) : partly ? sentenceOf("A18") : null;
-    const badge = line ? line.text : !verified
+    const lapseLines = lapseUnconfirmed ? [...(res.addrProven === true ? [] : [sentenceOf(viaFill ? "A10" : "A9")]), sentenceOf("A4", undefined, { name: `${nm}.csd` })] : [];
+    // These lines and [A18] stand in place of the name's paragraph, each with its Details.
+    const lines: Sentence[] = lapseUnconfirmed ? lapseLines : partly ? [sentenceOf("A18")] : [];
+    const badge = lines.length ? lines.map((l) => l.text).join(" ") : !verified
       ? (viaFill ? "Purchased name: it can't be name-scope-proven, so confirm the address." : "Not chain-verified: confirm the address.")
       : res.soleSource ? `Only one name source could prove this address, and it isn't independently corroborated: confirm it out-of-band before sending${conf}.`
       : res.disagree ? `Chain-backed, but a name source disagreed (or hasn't indexed it yet): verify the address${conf}.`
       : (res.sources ?? 1) >= 2
         ? (lowDepth ? `Chain-backed, ${res.sources} servers agree, only${conf}: it could still reorg.` : `Chain-backed, ${res.sources} name servers agree (same operator)${conf}.`)
         : `Chain-backed, but only 1 source answered: the second server is unreachable, a weaker guarantee${conf}.`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, partly, lapseUnconfirmed, ...(line ? { lineHtml: sentenceHtml(line) } : {}), label: `${nm}.csd → ${short(res.addr)}`, badge };
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, partly, lapseUnconfirmed, ...(lines.length ? { linesHtml: lines.map(sentenceHtml) } : {}), label: `${nm}.csd → ${short(res.addr)}`, badge };
   }
   return { ok: false, error: "Enter a 0x… address or a name.csd." };
 }
-// "Send without check": the review on the name service's answer, unverified, with [A17] (or [A4] when the service calls
-// the name expired) in place of the name's paragraph; `unchecked` is the check still running, which Confirm reads.
+// "Send without check": the review on the name service's answer, unverified, with [A17] in place of the name's paragraph,
+// and [A4] after it when the service calls the name expired; `unchecked` is the check still running, which Confirm reads.
 function uncheckedRecipient(nm: string, served: Served, check: NameCheck): Recipient {
   if (isZeroAddr(served.addr)) return { ok: false, error: `${nm}.csd points at the zero address: refusing (sends would be burned)` };
-  const line = served.lapsed ? sentenceOf("A4", undefined, { name: `${nm}.csd` }) : sentenceOf("A17");
-  return { ok: true, addr: served.addr, name: nm, verified: false, unchecked: check, lapseUnconfirmed: served.lapsed, lineHtml: sentenceHtml(line), badge: line.text, label: `${nm}.csd → ${short(served.addr)}` };
+  const lines = [sentenceOf("A17"), ...(served.lapsed ? [sentenceOf("A4", undefined, { name: `${nm}.csd` })] : [])];
+  return { ok: true, addr: served.addr, name: nm, verified: false, unchecked: check, lapseUnconfirmed: served.lapsed, linesHtml: lines.map(sentenceHtml), badge: lines.map((l) => l.text).join(" "), label: `${nm}.csd → ${short(served.addr)}` };
 }
 
-// XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time and REFUSE unless it still
-// returns EXACTLY the reviewed address. Fail-closed on any error / network failure. The equality +
-// shape check lives in clearsign.reresolveUnchanged (pure, unit-tested); this only wires the live call.
-export async function nameStillPointsTo(name: string, reviewed: string, reviewedVerified?: boolean): Promise<boolean> {
+// XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time; the outcome is clearsign.recheckOutcome's
+// (pure, unit-tested) over the answer, and a call that failed is a look-up that did not answer. This only wires the call.
+export async function nameRecheck(name: string, reviewed: string, reviewedVerified?: boolean): Promise<Recheck> {
   const re = await call("confirmName", name).catch(() => ({ ok: false }));
-  return reresolveUnchanged(reviewed, re, reviewedVerified); // L7: also refuses a verified→unverified regression
+  return recheckOutcome(reviewed, re, reviewedVerified);
 }
 
 export function setNameRow(rowId: string, valId: string, label: string | null | undefined) {

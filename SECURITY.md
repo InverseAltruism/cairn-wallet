@@ -117,6 +117,13 @@ host that answered its coin list answers every source transaction read, so the c
 host exactly as on the main host, and a forged body there refuses `VERIFY_TAMPER` (test/hosts-spend-pin.test.mjs). A
 history reconcile pass stays on the host that answered its tip.
 
+The name check of a send to a name does not use the second host for its node and header reads in this release: the
+chain tip, the headers and the name's blocks come from the main host only (`src/core/namespv.ts`), as in 0.3.4. With
+the main host hanging, each of those reads waits for its own time limit (12 s for the tip), so the check is slow; its
+name service answer comes from the second server after the main one's 12 s limit, and from then (10 s at the
+earliest) the send sheet offers "Send without check" (described under the name checks below). A send to a 0x address
+is not affected.
+
 Submits (`hosts.ts` `submitEach`, `submitverdict.ts` `decideSubmit`): every signed transaction goes to both hosts at
 once, the same bytes from one signing, so the txid is one. The result comes at the first host that accepts it, and
 nothing waits on the other host. A later answer never changes the result: from the main host it can only clear a row's
@@ -127,6 +134,11 @@ both is `SUBMIT_REJECTED` (test/submit-two-hosts.test.mjs has every pair). After
 waits for the second host at most 4 s (`MAIN_REFUSED_WAIT_MS`); the send keeps its "Sending..." state meanwhile. When
 the second host has not answered by then, or answers unclear, the result is `SUBMIT_MAYBE_INFLIGHT` with the main
 host's `reason` and a maybe row, and the line says the main server refused and the backup server has not answered.
+So while the second host does not answer submits, every refusal by the main host reads "may still go through" and
+leaves a "sent, not yet included" row. For a buy that row is an earlier fill that may still land: a retry of the same
+offer built with other bytes (another fee, other coins) is refused `FILL_ALREADY_SENT` until the row is seen applied or
+marked gone, for up to 30 minutes from that transaction's last send (`OWN_FILL_INDEX_WAIT_MS`), while a retry with the
+same bytes is sent again (test/submit-two-hosts.test.mjs, test/fill-refill-after-send.test.mjs sections 5 and 6).
 The reason for waiting at all: a refusal reported while the other host may still accept and relay the payment invites
 the user to pay again, with other coins once the first are seen as spent. The second host's refusal after the cap means
 no host took it, and the row that send made is removed, as a refused send keeps none; a row an earlier attempt of the
@@ -277,20 +289,31 @@ them, so a name the replay shows was bought through an offer fill or re-claimed 
 described above (`docs/DESIGN-viafill.md`, "Decision").
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
-refuse: a lease that has lapsed at a height the wallet verified (its own proof-of-work header tip, or the floor kept
-from earlier sessions) with the corroboration 0.3.4 required (two name sources served the records, or the floor), and
-a change between review and confirm. Any other lapse is a caution with a second click ("Send anyway"), not a refusal:
-a lapse at the served tip alone (whoever answers for both default hosts could otherwise serve a tip past a live name's
-lease and stop every send to it), one that a single source's records show (that source can withhold a renewal or a
-recapture), and one a resolver reports and the wallet cannot settle. The caution's
+refuse: a lapsed lease, and a change between review and confirm. A lease counts as lapsed, as in 0.3.4, when it is
+over at the floor kept from earlier sessions, or over at the wallet's own proof-of-work header tip with two name
+sources serving the records. Any other lapse is a caution with a second click ("Send anyway"), not a refusal: a lapse
+at the served tip alone (whoever answers for both default hosts could otherwise serve a tip past a live name's lease
+and stop every send to it), one at the wallet's own tip that a single source's records show (that source can withhold
+a renewal or a recapture), and one a resolver reports and the wallet cannot settle. With the kept floor past the old
+lease end, one source that withholds a renewal still causes the refusal, as in 0.3.4 (test/name-lapse-tip.test.mjs
+[W2]). The caution's
 address is the one the name's own verified records give its last holding, when the replay gives one, so a moved tip
-does not also move the send (test/name-lapse-tip.test.mjs). At confirm the wallet **re-resolves and
-re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not
-verified. The recipient you confirm is always the **full, untruncated address**.
+does not also move the send (test/name-lapse-tip.test.mjs). When it gives none (nothing could be replayed, both
+sources are down or answer not found, a source reports the replay insufficient, the name is a reservation not yet
+finalized, or it was bought through an offer fill), the address is the served one, and the review shows "Not
+verified. Check the address yourself." (for a bought name "Bought name: the wallet can only partly verify it. Check
+the address yourself.") before the lapse line (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs
+section 12). At confirm the wallet **re-resolves and
+re-verifies** the name: another address refuses ("alice.csd now points to a different address. Nothing was sent;
+review it again."), and so does a lapse the check proves. A look-up that does not answer, or one that can no longer
+verify an address that was verified at review, shows "Could not check alice.csd again. The address is the one you
+reviewed." with "Send anyway" / "Cancel"; that second click signs the reviewed address without another look-up
+(test/name-recheck-dom.test.mjs). The recipient you confirm is always the **full, untruncated address**.
 
 While the name check runs, the send sheet says "Checking alice.csd..." from 0.3 s and, from 10 s once the name
 service has answered, offers "Send without check". That review shows the name service's address, unverified, with
-"This name could not be checked. Make sure the address is right." and "Send anyway" / "Wait"; its Confirm signs that
+"This name could not be checked. Make sure the address is right." (and the lapse line after it when the name service
+says the name expired) and "Send anyway" / "Wait"; its Confirm signs that
 address without waiting for the check and without asking again. The check keeps running: if it ends with that address
 nothing changes; if it ends with another address or a refusal before Confirm, the review is taken down and nothing is
 signed. Confirm signs only the reviewed address in every case (test/name-check-wait-dom.test.mjs).

@@ -129,7 +129,8 @@ export function tokenQuoteHtml(q: any, tip?: unknown, bound?: unknown): string {
     if (human == null) return `<b>${escapeHtml(b)}</b> base units of <b>${escapeHtml(String(tk))}</b>`;
     return `<b>${escapeHtml(human)} ${escapeHtml(String(tk))}</b> <span class="dim">(${escapeHtml(b)} base units)</span>${unverifiedMark(tk, pinned, deployId)}`;
   };
-  const giveBit = (q.giveTicker || q.giveName)
+  // A give the quote dropped at the door (cairnxview.ts) has no "You receive" sentence.
+  const giveBit = (q.giveName || (q.giveTicker && q.giveAmount !== undefined))
     ? ` You receive ${q.giveName ? `<b>${escapeHtml(String(q.giveName))}.csd</b>` : amt(q.giveAmount, q.giveDecimals, q.giveTicker, q.giveDeployId)}.`
     : "";
   const warn = [tickerWarning(q.ticker, q.wantDeployId), q.giveTicker ? tickerWarning(q.giveTicker, q.giveDeployId) : ""].filter(Boolean).join(" ");
@@ -972,31 +973,35 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: NameInf
 
 // Below this many confirmations a name's resolution could still reorg: the badge says so and the review row is caution.
 export const NAME_SAFE_DEPTH = 3;
-/** A send review's name row: positive only on the caution's agree branch at a depth that can no longer reorg. */
-export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; partly?: boolean; lineHtml?: string }): Check | null {
-  if (!rr.name) return null;
-  if (rr.lineHtml) return { tier: "caution", html: rr.lineHtml };   // a sheet line that stands alone ([A4], [A18]), amber
+/** A send review's name rows: the sheet's lines, one amber row each in their order ([A17], [A9] or [A10], [A4], [A18]),
+ *  or else the name's paragraph, positive only on its agree branch at a depth that can no longer reorg. */
+export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; partly?: boolean; linesHtml?: string[] }): Check[] {
+  if (!rr.name) return [];
+  if (rr.linesHtml?.length) return rr.linesHtml.map((html) => ({ tier: "caution" as const, html }));
   const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
   const ok = nameBranch(rr.verified, info) === "agree" && !rr.lowDepth && !rr.partly;   // [A18] is amber
   const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";
-  return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge };
+  return [{ tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge }];
 }
 
-// XREPO-1 confirm-time guard. A name recipient is re-resolved at sign-time and the send is REFUSED
-// unless the service still returns EXACTLY the address the user reviewed. Fail-closed on any error /
-// lapse / shape change / network failure (a name that no longer resolves to the reviewed address must
-// never be signed silently). Pure over the re-resolution RESULT so it's unit-testable; the popup wires
-// the live `resolveName` call. NOTE: this stops a server that re-points the name BETWEEN review and
-// confirm; it does NOT defend against a server that is CONSISTENTLY hostile (returns the same attacker
-// address both times). Closing that requires the light client (the real fix; see the SPV name-verify path).
-export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean } | null | undefined, reviewedVerified?: boolean): boolean {
-  if (!(re && re.ok && typeof re.addr === "string" && (re.addr as string).toLowerCase() === reviewed.toLowerCase())) return false;
-  // L7 (CONFIRMGUARD): also refuse a verification-status REGRESSION. If the name was chain-verified at
-  // review but the confirm-time re-resolution can no longer verify it (even at the SAME address), a source
-  // may have gone hostile/stale or a competing claim appeared between the two reads: re-review, don't sign.
-  if (reviewedVerified === true && re.verified === false) return false;
-  return true;
+// XREPO-1 confirm-time guard. A name recipient is re-resolved at sign-time, and the outcome is one of: the reviewed
+// address again ("same"); another address ("moved", [A14], refused); a proven lapse ("lapsed", [A3], refused); or a
+// look-up that did not answer, refused for another reason, gave no address, or could not verify again an address that
+// was verified at review ("unchecked", [A15]: a caution whose second click signs the reviewed address and nothing
+// else). Pure over the re-resolution RESULT; the popup wires the live `confirmName` call. It stops a server that
+// re-points the name BETWEEN review and confirm, not one that answers the same hostile address both times (the SPV
+// name check is the defence there).
+export type Recheck = "same" | "moved" | "lapsed" | "unchecked";
+export function recheckOutcome(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean; lapsed?: boolean } | null | undefined, reviewedVerified?: boolean): Recheck {
+  if (re?.ok === true && typeof re.addr === "string") {
+    if (re.addr.toLowerCase() !== reviewed.toLowerCase()) return "moved";
+    return reviewedVerified === true && re.verified === false ? "unchecked" : "same";
+  }
+  return re?.ok === false && re.lapsed === true ? "lapsed" : "unchecked";
 }
+/** Whether the re-resolution still gives the reviewed address with no drop from verified (`recheckOutcome` "same"). */
+export const reresolveUnchanged = (reviewed: string, re: Parameters<typeof recheckOutcome>[1], reviewedVerified?: boolean): boolean =>
+  recheckOutcome(reviewed, re, reviewedVerified) === "same";
 
 // ── nfinalize finalize-window gate (Plan 63 carry-over; the approve-path backstop for the C1 burn class) ──
 // An `nfinalize` pays the registration fee (or recapture premium) for a reservation the signer holds.

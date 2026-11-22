@@ -566,12 +566,12 @@ ok("BIDI-1: plain text is unchanged (no false neutralization)", escapeHtml("alic
     ["one source answered", { ...base, sources: 1 }, "caution"],
   ];
   for (const [label, rr, tier] of cases) {
-    const c = nameCheck(rr)!;
+    const [c] = nameCheck(rr) as any[];
     ok(`nameCheck ${label}: ${tier}, and its copy is the agree copy only when positive or below the safe depth`, c.tier === tier && /name servers agree\.<\/b>/.test(c.html) === (tier === "ok" || !!rr.lowDepth) && !/^[⚠✓]/.test(c.html));
   }
-  ok("nameCheck: no name, no row", nameCheck({ name: null }) === null);
+  ok("nameCheck: no name, no row", nameCheck({ name: null }).length === 0);
   ok(`NAME_SAFE_DEPTH is 3 (${NAME_SAFE_DEPTH})`, NAME_SAFE_DEPTH === 3);
-  ok("nameCheck carries the badge line, escaped", nameCheck({ ...base, badge: "<i>x</i>" })!.html.includes(`<span class="check-line">&lt;i&gt;x&lt;/i&gt;</span>`));
+  ok("nameCheck carries the badge line, escaped", nameCheck({ ...base, badge: "<i>x</i>" })[0]!.html.includes(`<span class="check-line">&lt;i&gt;x&lt;/i&gt;</span>`));
 }
 
 

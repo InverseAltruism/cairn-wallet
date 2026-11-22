@@ -6,7 +6,7 @@
 //   (2) the groundwork's boundary case: a commit at or below the newest entry with the reveal and nfinalize above it
 //       is above (the rule on `effHeight` read it as below);
 //   (2c) a recapture completes at its nfinalize; (2d) the confirm-time hint-set cache returns the reviewed height;
-//   (3) resolveName passes the height on.
+//   (3) resolveName passes the height on; (4) a record without its holding fields completes at its highest event.
 // RED-FIRST: on the commit before this one, completedAt is absent and (1), (2), (3) fail; returning the record's
 // `effectiveHeight` (the commit's height) instead of completingHeight fails (1a), (1b) and (2a).
 // Run: node --import tsx test/name-completed-at.test.mjs   (offline)
@@ -122,5 +122,12 @@ console.log("3. resolveName passes it on");
   };
   const r = await resolveName(wallet, "dora");
   check(`(3) the resolve result carries completedAt (${r.completedAt})`, r.ok === true && r.verified === true && r.completedAt === 143_368);
+}
+// (4) a replayed record that names no holding (no claimId or effectiveHeight) completes at its highest event height:
+//     the fallback can only move the height up, so such a name never reads as older than the table (returning 0 fails).
+{
+  const { completingHeight } = await import("../src/core/namespv.ts");
+  const evs = [{ height: 40_000 }, { height: 52_000 }, { height: 45_000 }];
+  check(`(4a) a record without its holding fields completes at the highest event height (${completingHeight("alice", evs, {}, 60_000)})`, completingHeight("alice", evs, {}, 60_000) === 52_000 && completingHeight("alice", evs, { claimId: "x" }, 60_000) === 52_000 && completingHeight("alice", evs, { effectiveHeight: 40_000 }, 60_000) === 52_000);
 }
 done("name-completed-at");

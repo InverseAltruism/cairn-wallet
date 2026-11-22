@@ -1,36 +1,63 @@
 # Changelog
 
-## Unreleased
+## 0.3.5
+
+Every send goes to both of Cairn's servers, so a send goes through while one of them is down, and a refused send says
+why in plain words, with no server's text on screen. A send to a name says that its check is running ("Checking
+alice.csd...") and offers "Send without check" from 10 s. A name paid before that now points to another address, a
+new name only partly verified, and a lapse the wallet could not confirm each get their own amber line. At Confirm, a
+name check that could not run again asks for a second click on the reviewed address instead of refusing.
 
 - A send to a name no longer waits silently for the name check. From 0.3 s the send sheet says "Checking
   alice.csd..." with the share of headers synced while they sync, and from 10 s, once the name service has answered,
   offers "Send without check". It arms the review on the name service's address, unverified, with "This name could
-  not be checked. Make sure the address is right." and "Send anyway" / "Wait"; that Confirm signs the reviewed
+  not be checked. Make sure the address is right." (and the lapse line below after it when the name service says the
+  name expired) and "Send anyway" / "Wait"; that Confirm signs the reviewed
   address without waiting for the check or asking again, and "Wait" goes back to the same check. A check that ends
   after the choice with the same address refuses nothing; with another address or a refusal it takes the review down
   before Confirm ("alice.csd now points to a different address. Nothing was sent; review it again."). A check that
   answers within 0.3 s shows nothing new, and the lookup makes the same requests as 0.3.4
   (test/name-check-wait-dom.test.mjs, test/name-check-progress.test.mjs).
 
-- Behaviour change: a send to a name is refused as lapsed only when the lease is over at a height the wallet verified
-  itself (its own proof-of-work header tip, or the floor kept from earlier sessions) and 0.3.4's corroboration holds
-  (two name sources, or the floor). 0.3.4 also refused when two
+- Behaviour change: the name check at Confirm has three outcomes where 0.3.4 had one refusal ("changed where it
+  points"). Another address refuses with "alice.csd now points to a different address. Nothing was sent; review it
+  again."; a lapse the check proves refuses with "alice.csd has expired, so nothing was sent. Send to the owner's 0x
+  address, or ask them to renew it."; a look-up that did not answer, refused for another reason, or no longer
+  verifies an address that was verified at review shows "Could not check alice.csd again. The address is the one you
+  reviewed." with "Send anyway" / "Cancel", and that second click signs the reviewed address without another look-up
+  (test/name-recheck-dom.test.mjs).
+
+- Behaviour change: a send to a name is refused as lapsed only when the lease is over at the floor kept from earlier
+  sessions, or over at the wallet's own proof-of-work header tip with two name sources; that is 0.3.4's rule without
+  its served-tip case. 0.3.4 also refused when two
   name sources answered and the served chain tip was past the lease, though the tip comes from neither source, so
   whoever answered for both default hosts could stop every send to a live name. Such a lapse, and one the name
   service reports while the wallet cannot check it (0.3.4 refused it with "couldn't be confirmed on-chain"), now show
   the amber line "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
   owner." with "Send anyway" and "Cancel". The address is the one the name's own verified records give, not the
-  served one, when the wallet replayed them. Nothing that was a caution in 0.3.4 is refused: a lapse one source's
-  records show stays a caution, since that source can withhold a renewal (test/name-lapse-tip.test.mjs,
-  test/name-lapse-caution-dom.test.mjs).
+  served one, when the wallet replayed them. When it shows the served one (nothing replayed, both sources down or
+  answering not found, a source reporting the replay insufficient, a reservation, a bought name), "Not verified. Check
+  the address yourself." (for a bought name "Bought name: the wallet can only partly verify it. Check the address
+  yourself.") comes first (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs section 12).
+  Nothing that was a caution in 0.3.4 is refused: a lapse one source's records show at the wallet's own tip stays a
+  caution, since that source can withhold a renewal; with the kept floor
+  past the old lease end, a source that withholds a renewal still causes the refusal, as in 0.3.4
+  (test/name-lapse-tip.test.mjs [W1], [W2], test/name-lapse-caution-dom.test.mjs).
 
-- The wallet keeps working when Cairn's main server is down. With the default RPC, a node read that the main host has
+- The wallet keeps working when Cairn's main server is down (a send to a name is slower, as below). With the default
+  RPC, a node read that the main host has
   not answered within 1.5 s, or that it failed, goes to Cairn's second server (clarvis.cairn-substrate.com), and the
   first answer wins; after a main failure the second server is asked first for 60 s. With the main host accepting
   connections and never answering, 0.3.4 showed "Balance unavailable" after 12.5 s. A balance the second server
   answered carries the grey line "Using Cairn's backup server.". A spend reads all its coins from the one host that
   listed them, so the coin-value check is the same on either (test/hosts-fallback.test.mjs,
   test/hosts-spend-pin.test.mjs). A node on this computer set as the RPC has no second server.
+  A send to a name is slower than that with the main server hanging: the name check reads the chain tip, the headers
+  and the name's blocks from the main server only in this release, so each such read waits for its own time limit
+  (12 s for the tip, `src/core/namespv.ts`). The name service's answer comes from the second server after the main
+  one's 12 s limit, and from then (10 s at the earliest) the send sheet offers "Send without check", whose review
+  signs that answer's address with "This name could not be checked. Make sure the address is right.". A send to a 0x
+  address does not run the name check and is not slowed.
 - Every send goes to both of Cairn's servers at once, the same signed bytes, so one signing and one txid. It is sent
   when either accepts it, at the first acceptance: with both healthy the time to "sent" is the main server's answer.
   It is refused only when both refuse; after the main server's refusal the wallet waits for the second server at most
@@ -87,6 +114,11 @@
   server's note go to the worker's console; the offer status and the "via" field are dropped. The content server's
   answer counts as accepted only when it says `ok: true`, and nothing of its body (no `code`, no text) reaches the
   result; an accepted sign-in returns only its address and session (test/served-text-off-screen.test.mjs).
+- The offer service's give on a fill card (the name, the ticker, the amount) and the account view's token tickers and
+  amounts, names and primary name are checked at the door with the codec's rules (ticker, plain name, digits); one
+  that fails is dropped. A fill card whose give was dropped says "The offer service did not say what this listing
+  gives." (the token-priced card leaves out its "You receive" sentence), and an account view leaves the token row or
+  the name out, or shows no primary name (test/served-text-off-screen.test.mjs 6).
 - A refusal's code is read only as a string and an own entry of the sentence tables, so a code such as "toString" or a
   non-string takes the default line instead of stopping the window on "Revealing…" (test/sentences-copy.test.mjs).
 - A token-priced fill's quote takes only tickers the codec accepts, and the amount-changed refusal names the offer's
@@ -104,6 +136,13 @@
   verified. Check the address before a large payment." in amber in place of the plain line. The name proof returns
   the height of the event that completed the holding (its `nfinalize`, not the commit that the record's height
   names); a transfer or an address change above the entry leaves the plain line (test/name-completed-at.test.mjs).
+- The SPV anchor table is 0.3.4's: regenerated for this release on 2026-11-22 at the node tip 147,472, its newest
+  entry is still 143,359 (28 entries), the newest chunk top at least 1,000 blocks below the tip.
+- Known limits: while Cairn's second server does not answer submits, every refusal by the main server reads "may
+  still go through" with a "sent, not yet included" row, and a buy of the same offer retried with other bytes (another
+  fee, other coins) is refused `FILL_ALREADY_SENT` for up to 30 minutes from that transaction's last send; a retry
+  with the same bytes is sent. A `lapsed` flag that the name service first sends at Confirm, on a review that was not
+  verified, adds no second click: that Confirm signs the reviewed address.
 
 ## 0.3.4
 
