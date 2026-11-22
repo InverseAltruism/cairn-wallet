@@ -5,7 +5,9 @@
 //   (3) a broken channel (the worker died mid-call) reads as possibly in flight, not as an answered refusal;
 //   (4) a request already handled in another view: test/approve-handled-elsewhere.test.mjs drives two real views;
 //   (5) honest paths unchanged: a txid shows "Sent", an answer with neither (a connect or sign-in) shows "Approved.",
-//       and any other refusal, an answered throw included, keeps "Failed: ...".
+//       and a request other than a send keeps "Failed: ..." for a code or throw its slice has not worded;
+//   (7) a page's send: every refusal is the sheet's line ([S4], [S12], [R1] with the engine's text under Details);
+//   (8) a refused first-party sign-in is [R11]; (9) a reveal the content server refused is [Q3], SEAL_UNKNOWN [Q4].
 // A "Failed" on an ambiguous submit invites the site's retry, which pays twice when the first transaction lands.
 // Run: npx tsx test/approve-outcome-dom.test.mjs   (offline)
 import { SENTENCES } from "../src/popup/sentences.ts";
@@ -32,15 +34,21 @@ const armed = async () => { await flush(); await sleep(760); await flush(); };
 const msgEl = () => registry.get("msg");
 let n = 0;
 async function outcome(ans, opts = {}) {
-  state.pending = [send("o" + ++n)];
+  state.pending = [(opts.req ?? send)("o" + ++n)];
   await tick(); await armed();
   answer = () => { state.pending = []; return ans; };
   const rt = globalThis.chrome.runtime;
   const real = rt.sendMessage;
   if (opts.brokenChannel) rt.sendMessage = (m, cb) => { if (m.method !== "resolve") return real(m, cb); Promise.resolve().then(() => { state.pending = []; rt.lastError = { message: "The message port closed before a response was received." }; try { cb(undefined); } finally { rt.lastError = undefined; } }); };
   try { registry.get("btn-approve")._listeners.click(); await flush(20); } finally { rt.sendMessage = real; }
-  return { text: msgEl().textContent, cls: msgEl().className };
+  // the line without its Details, and the Details text
+  const html = String(msgEl().innerHTML ?? ""), d = /<details[^>]*>([\s\S]*?)<\/details>/.exec(html);
+  const text = d ? html.replace(/<details[\s\S]*?<\/details>/, "").replace(/<[^>]*>/g, "").replace(/&#39;/g, "'") : msgEl().textContent;
+  return { text, cls: msgEl().className, details: d ? d[1].replace(/<[^>]*>/g, "") : "" };
 }
+const signin = (id) => ({ id, method: "signin", origin: "https://cairn-substrate.com", params: {} });
+const reveal = (id) => ({ id, method: "revealClaim", origin: "https://dapp.example", params: { txid: "0x" + "5e".repeat(32) } });
+const attest = (id) => ({ id, method: "attest", origin: "https://dapp.example", params: { proposalId: "0x" + "77".repeat(32), score: 1, confidence: 1, fee: 1_000_000 } });
 
 state.pending = [send("o0")];
 const tick = await loadApprove();
@@ -59,7 +67,21 @@ check(`(5) a txid: Sent (${o.text})`, /^Sent 0xc4c4c4c4/.test(o.text) && o.cls =
 o = await outcome({ done: true, ok: true });
 check(`(5) neither a refusal nor a txid (connect, sign-in): Approved. (${o.text})`, o.text === "Approved." && o.cls === "msg ok");
 o = await outcome({ done: true, ok: false, code: "INSUFFICIENT", error: "insufficient confirmed balance" });
-check(`(5) another refusal keeps Failed (${o.text})`, o.text === "Failed: insufficient confirmed balance (INSUFFICIENT)" && o.cls === "msg err");
+check(`(7) a page's send refused INSUFFICIENT is [S4], the code under Details (${o.text})`, o.text === SENTENCES.S4.text && o.cls === "msg err" && o.details.includes("(INSUFFICIENT)"));
+o = await outcome({ done: true, ok: false, code: "FEE_CAP", feeCap: 250_000_000, error: "fee exceeds 2.5 CSD (10% of the coins this spend uses); refusing" });
+check(`(7) a page's send refused FEE_CAP is [S12] with the cap (${o.text})`, o.text === "The fee is above what the wallet allows (2.5 CSD here). Nothing was sent.");
+o = await outcome({ done: true, ok: false, code: "BAD_OUTPUTS", error: "each amount must be a positive safe integer" });
+check(`(7) a page's send refused with a code without its own line is [R1], the engine's text under Details (${o.text})`, o.text === SENTENCES.R1.text && o.details.includes("each amount must be a positive safe integer") && o.details.includes("(BAD_OUTPUTS)"));
+o = await outcome({ done: true, ok: false, code: "INSUFFICIENT", error: "insufficient confirmed balance" }, { req: attest });
+check(`(5) honest: any other request keeps Failed for a code its slice has not worded (${o.text})`, o.text === "Failed: insufficient confirmed balance (INSUFFICIENT)" && o.cls === "msg err");
+o = await outcome({ done: true, ok: false, error: "sign-in failed" }, { req: signin });
+check(`(8) a refused first-party sign-in is [R11] (${o.text})`, o.text === SENTENCES.R11.text && !/Failed/.test(o.text));
+o = await outcome({ done: true, ok: true, addr: ME, session: "s" }, { req: signin });
+check(`(8) honest: an accepted sign-in reads Approved. (${o.text})`, o.text === "Approved.");
+o = await outcome({ done: true, ok: false, error: "/api/content -> 413", status: 413 }, { req: reveal });
+check(`(9) a reveal the content server did not take is [Q3], the status under Details (${o.text})`, o.text === SENTENCES.Q3.text && o.details.includes("HTTP 413"));
+o = await outcome({ done: true, ok: false, code: "SEAL_UNKNOWN", error: "no sealed claim with that txid in this account" }, { req: reveal });
+check(`(9) SEAL_UNKNOWN is [Q4] (${o.text})`, o.text === SENTENCES.Q4.text);
 o = await outcome({ done: true, ok: false, code: "SUBMIT_REJECTED", reason: "FEE", error: "every server refused this transaction (FEE)" });
 check(`(6) a refused submit is [R4] by its reason, no code on the line (${o.text})`, o.text === SENTENCES.R4.text && !/SUBMIT_REJECTED|Failed/.test(o.text));
 handlers.resolve = () => { state.pending = []; throw new Error("wallet locked"); };
@@ -67,6 +89,8 @@ o = await outcome(null);
 check(`(5) an answered lock throw (the worker refused before any submit) is [R8], without Failed (${o.text})`, o.text === SENTENCES.R8.text && o.cls === "msg err");
 handlers.resolve = () => { state.pending = []; throw new Error("something internal"); };
 o = await outcome(null);
-check(`(5) another answered throw keeps its own text until its slice words it (${o.text})`, o.text === "Failed: something internal" && o.cls === "msg err");
+check(`(7) an answered throw on a page's send is [R1], its text under Details (${o.text})`, o.text === SENTENCES.R1.text && o.details.includes("something internal"));
+o = await outcome(null, { req: attest });
+check(`(5) honest: an answered throw on any other request keeps its own text until its slice words it (${o.text})`, o.text === "Failed: something internal" && o.cls === "msg err");
 
 done("approve-outcome-dom");

@@ -14,7 +14,7 @@ const { check, done } = checker("=== a server's text stays off the wallet's line
 const EVIL = "Your funds are at risk: visit evil.example to restore them";
 const has = (v) => JSON.stringify(v ?? "").includes("evil.example");
 const reply = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
-const quiet = console.info; console.info = () => {};
+const quiet = console.info; console.info = () => { /* the server texts this file sends go to the console by design */ };
 
 console.log("1. the content server's refusal of a body (a reveal shows it)");
 for (const [status, body] of [[413, { ok: false, error: EVIL }], [400, { err: EVIL }], [422, { error: { text: EVIL } }]]) {

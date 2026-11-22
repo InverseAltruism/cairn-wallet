@@ -286,6 +286,10 @@ async function main() {
     const overProp = await w.send(RCPT, 1e7, 20e8);   // 20 CSD fee, 0.1 CSD send, 100 CSD coin
     check("send rejects a fee over 10% of the verified inputs (proportional cap)",
       overProp.ok === false && /10% of the coins/i.test(overProp.error ?? "") && overProp.code === "FEE_CAP");
+    // the popup's and the approval window's line names the cap ([S12], popup/sentences.ts), so the refusal carries it
+    check("the proportional refusal carries its cap, 10 CSD (feeCap)", overProp.feeCap === 10e8);
+    const overFlat = await w.send(RCPT, 1e7, 101e8);
+    check("the flat refusal carries its cap, 100 CSD (feeCap)", overFlat.code === "FEE_CAP" && overFlat.feeCap === 100e8);
     const okFee = await w.send(RCPT, 1e7, 5e8);        // 5 CSD fee < 10 CSD propCap → passes
     check("send ACCEPTS a fee within the proportional cap (5 CSD < 10% of 100 CSD)", okFee.ok === true);
   } finally { (globalThis as any).fetch = of2; }

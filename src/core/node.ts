@@ -479,7 +479,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
 // latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
 // rows for the "gone" check), hosts (each host's answer to the submit, a server's text included) and mainHolds (the main
 // host answered "accepted" or "already present") are internal; background.ts strips them before a result reaches a page.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[]; mainHolds?: boolean }
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; feeCap?: number; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[]; mainHolds?: boolean }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 
@@ -637,7 +637,7 @@ async function assembleValueTx(
   // OUTPUTS, never this fee param), 4x under the 1 CSD floor; no honest tx can trip this.
   const propCap = proportionalFeeCap(sv.total);
   if (fee > propCap)
-    return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this spend uses); refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
+    return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this spend uses); refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP", feeCap: propCap };
   const outs = [...outputs];
   const change = sv.total - need; // CHAIN-VERIFIED input total, not the RPC's report
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
@@ -702,14 +702,14 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
   return assembleValueTx(rpc, chk.outputs, fee, app, priv);
 }
 
-type Refusal = { code: string; error: string };
+type Refusal = { code: string; error: string; feeCap?: number };
 // The fee checks that need no coins, one home each: the engine runs them at signing and proposeRefusal before the queue.
 // The proportional cap needs the selected inputs, so it stays in assembleValueTx.
 const feeTypeRefusal = (fee: unknown): Refusal | null =>
   Number.isSafeInteger(fee) && (fee as number) >= 0 ? null : { code: "BAD_FEE", error: "fee out of safe integer range" };
 function feeBoundsRefusal(fee: number): Refusal | null {
   if (!(fee > 0)) return { code: "FEE_TOO_LOW", error: "fee must be positive (the node enforces a minimum fee)" };
-  if (fee > MAX_FEE) return { code: "FEE_CAP", error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing (a legitimate fee is well under 1 CSD)` };
+  if (fee > MAX_FEE) return { code: "FEE_CAP", error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing (a legitimate fee is well under 1 CSD)`, feeCap: MAX_FEE };
   return null;
 }
 function zeroAddrRefusal(outputs: { scriptPubkey: string }[]): Refusal | null {

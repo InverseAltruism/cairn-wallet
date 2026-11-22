@@ -34,8 +34,20 @@
   right now. Nothing was sent.", "Network busy, so nothing was sent. Try again in a minute." and "The network did not
   accept this payment. Nothing was sent." for refusals by reason; the duplicate, lock, account-change, sign-in and
   coin-check lines (the sheet's R1 to R11, S9 to S11). The approval window shows the same lines for those codes,
-  without "Failed:" and the code. Other codes keep their text until their slice. The words are a draft the owner
-  signs (test/sentences-copy.test.mjs holds them to the copy rule).
+  without "Failed:" and the code. The words are the owner's signed copy sheet (test/sentences-copy.test.mjs holds them
+  to the copy rule).
+- Every refusal of a send now has its line: the popup's CSD and token sends and a page's send in the approval window
+  show "Your confirmed balance doesn't cover this payment and its fee. Nothing was sent." (INSUFFICIENT), the coin
+  limit line with "Merge coins now" (TOO_MANY_INPUTS), "The fee is above what the wallet allows (1 CSD here)."
+  (FEE_CAP, with the cap; the result carries `feeCap`), the zero-address line, the merge note while a merge
+  confirms, and for any other code or a thrown error "Something went wrong, so nothing was sent. Try again, or see
+  Details." A "Details" tap under a result line shows the technical sentence, the code and, for that last line, the
+  engine's own text; an open Details keeps the line on screen. A first-party sign-in the check refused shows "Could
+  not sign you in. Try again."; a reveal the content server did not take, "Could not publish the reveal. Try again
+  later."; a reveal of a seal the account does not hold, the sheet's line for it. Name actions, merges, posts, seals
+  and fills keep their text for a code their lines do not cover yet. A token send whose account changed after the
+  review answers ACCOUNT_CHANGED instead of throwing (test/popup-outcome-dom.test.mjs 12, 13,
+  test/approve-outcome-dom.test.mjs 7 to 9).
 - A submit refusal's or unclear answer's `error` is the wallet's own sentence naming the reason; a server's text no
   longer reaches a page or the screen through it and stays in the wallet's internal log (test/submit-answers.test.mjs
   H6).

@@ -273,6 +273,16 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   reading of a Reject's answer, which the popup takes through `popup-bridge.ts` and the approval window directly:
   `approve.js` is built without code splitting, so it must not import `popup-bridge.ts`, whose dev path would inline
   the Wallet; `build.mjs` aborts if it does.
+- `sentences.ts`: the copy. Every line the wallet's results put on screen is an entry of one table keyed by the copy
+  sheet's tag (`R1`, `S4`, ...): its text, its level (grey, amber, red) and its Details, the technical sentence one
+  tap away under the line. A selector chooses the key from a result's code and refusal reason, not from a text, so
+  a change of wording is a change of one entry; `test/sentences-copy.test.mjs` holds every entry to the copy rule (at
+  most 160 characters and two sentences, no technical word, three levels). In a send (the popup's CSD and token
+  sends, a page's send in the approval window) every refusal has a line, `R1` for a code without its own, with the
+  engine's text under Details; any other flow keeps the engine's text for a code its lines do not cover yet. A
+  server's free text reaches neither a line nor Details: a submit's `error` is the wallet's sentence (`node.ts`
+  `submitResult`), and the other places a served string was shown map it onto a fixed list of words or leave it out
+  (`src/core/servedtext.ts`; test/served-text-off-screen.test.mjs).
 - `approve.ts`: the clear-signing window. For an `nprofile` or an `nxfer` it reads the name's record once from the
   configured CairnX API (`namegate.ts` `readNameRecord`, bounded at 6 s) after the paint: an `nprofile` fills the
   reserved "Keys removed" row with the current keys the record drops (`clearsign.ts` `profileDropValue`), and both

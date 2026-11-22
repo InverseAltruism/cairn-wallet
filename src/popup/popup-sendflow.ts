@@ -1,7 +1,9 @@
 // The review-and-confirm engine the CSD and token sends share.
-import { checkRow, type Check, escapeHtml, fmtBalance } from "./clearsign.js";
+import { checkRow, type Check, escapeHtml } from "./clearsign.js";
+import { fmtCsd } from "../core/cairnx.js";
+import { sentenceOf } from "./sentences.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
-import { $, busy, msg, msgAction, statusWrites } from "./popup-dom.js";
+import { $, busy, msg, msgAction, msgOutcome, statusWrites } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
 import { celebrateSend, mergePendingNow, refreshBalance } from "./popup-balance.js";
 import { closeAllPanels, syncNav } from "./popup-panels.js";
@@ -110,31 +112,27 @@ export function setWarn(el: HTMLElement, checks: Check[]) {
 function sendOutcome(f: SendFlow, o: Outcome) {
   teardownReview(f, false);
   f.refresh();
-  msg(o.text, o.cls);
+  msgOutcome(o);
 }
 // A throw is routed by whether anything could have been submitted (see AnsweredError).
-export function sendThrew(f: SendFlow, e: any) { sendOutcome(f, thrownCopy(e, "send")); }
+export function sendThrew(f: SendFlow, e: any) { sendOutcome(f, thrownCopy(e, "send", "send")); }
 // A structured {ok:false} from the send engine: only SUBMIT_MAYBE_INFLIGHT is ambiguous; every other
 // code is a clean pre-broadcast refusal or a refusal of this submit (SUBMIT_REJECTED: what the node or proxy that
-// answered did with it; popup-outcome.ts), shown with the engine's own reason.
+// answered did with it), shown as the sentence module's line for a send (popup-outcome.ts).
 export function sendRefused(f: SendFlow, r: any) {
-  const o = refusedCopy(r, "send");
+  const o = refusedCopy(r, "send", "send");
   if (o.maybe) return sendOutcome(f, o);
   teardownReview(f, false);
   f.refresh();
   let text = o.text;
   // Merge-aware refusals (Plans/66 B4b): right after a consolidate, the confirmed balance is
-  // legitimately short by the whole merging amount; say so instead of leaving "insufficient"
+  // legitimately short by the whole merging amount; say so ([S5]) instead of leaving "insufficient"
   // to read as lost funds.
-  if ((r?.code === "INSUFFICIENT" || r?.code === "TOO_MANY_INPUTS") && mergePendingNow.pending) {
-    text += ` A coin merge (${fmtBalance(mergePendingNow.amount)} CSD) is still confirming; retry once it is mined.`;
-  }
+  if ((o.key === "S4" || o.key === "S8") && mergePendingNow.pending) text += " " + sentenceOf("S5", undefined, { amount: fmtCsd(mergePendingNow.amount) }).text;
   // TOO_MANY_INPUTS: the remedy is one click away; surface it as an action, not a breadcrumb
   // in a toast that fades mid-read (Plans/66 B5).
-  if (r?.code === "TOO_MANY_INPUTS") {
-    return msgAction(text, "Merge coins now", () => { void openConsolidatePanel(true); });
-  }
-  msg(text, "err");
+  if (o.key === "S8") return msgAction(text, "Merge coins now", () => { void openConsolidatePanel(true); }, "err", o.details);
+  msg(text, o.cls, undefined, o.details);
 }
 // Success: the sent toast with its txid first, then the one clear-the-draft path, then the sheet closes (only a confirmed
 // submission closes it; a refusal or an ambiguous outcome keeps the sheet and the draft, sendOutcome and sendRefused

@@ -13,28 +13,36 @@ export function extensionCall(chrome: any, method: string, ...args: any[]): Prom
   }));
 }
 // Only SUBMIT_MAYBE_INFLIGHT and a broken channel may say "may already be in flight".
-import { sentenceKeyOf, sentenceOf, type SentenceKey } from "./sentences.js";
-// `details`: the technical sentence and the code (sentences.ts), never a server's text.
+import { fmtCsd } from "../core/cairnx.js";
+import { escapeHtml } from "./clearsign.js";
+import { sentenceKeyOf, sentenceOf, type Flow, type SentenceKey, type Vars } from "./sentences.js";
+// `details`: the technical sentence and the code (sentences.ts); for R1 also the engine's own text, which is the
+// wallet's (a server's text does not reach a result's `error`: test/served-text-off-screen.test.mjs, submit-answers H6).
 export type Outcome = { text: string; cls: "err" | "info"; maybe: boolean; details?: string; key?: SentenceKey };
 const MAYBE_SENT: ReadonlySet<SentenceKey> = new Set(["R2", "R3", "MR_FEE", "MR_BUSY", "MR_OTHER"]);
 /** The outcome of a sentence: grey reads as information, amber and red as a warning. */
-export function sentenceOutcome(key: SentenceKey, code?: unknown, details?: string): Outcome {
-  const s = sentenceOf(key, code);
+export function sentenceOutcome(key: SentenceKey, code?: unknown, details?: string, vars?: Vars): Outcome {
+  const s = sentenceOf(key, code, vars);
   return { text: s.text, cls: s.tone === "grey" ? "info" : "err", maybe: MAYBE_SENT.has(key), details: details ? `${s.details} ${details}` : s.details, key };
 }
+/** The Details disclosure under a result line, in the popup and the approval window. */
+export const detailsHtml = (d: string): string => `<details class="msg-details"><summary>Details</summary><small>${escapeHtml(d)}</small></details>`;
 const clause = (s: unknown): string => String(s).replace(/[.\s]+$/, "");
-// A result whose code the sentence module words shows its line (sentences.ts); any other code keeps the engine's own
-// text (wallet text: a submit's server text never reaches `error`, core/node.ts submitResult) until its slice words it.
-export function refusedCopy(r: any, what: string): Outcome {
-  const key = sentenceKeyOf(r);
-  if (key) return sentenceOutcome(key, r?.code);
+const capOf = (r: any): Vars => (Number.isSafeInteger(r?.feeCap) ? { cap: fmtCsd(r.feeCap) } : {});
+// A result whose code the sentence module words shows its line (sentences.ts). In a send every refusal is worded (R1
+// with the engine's text under Details); in any other flow an unworded code keeps the engine's own text until its slice.
+export function refusedCopy(r: any, what: string, flow: Flow = "other"): Outcome {
+  const key = sentenceKeyOf(r, flow);
+  if (key === "R1") return sentenceOutcome("R1", r?.code, r?.error ? `${clause(r.error)}.` : undefined);
+  if (key) return sentenceOutcome(key, r?.code, undefined, capOf(r));
   return { text: `${r?.error ? clause(r.error) : `The ${what} was refused`}. Nothing was sent.`, cls: "err", maybe: false };
 }
-// A broken channel may hide a send ([R2]); a lock before signing is [R8]; any other throw submitted nothing and keeps
-// the engine's own text (wallet text) until its slice words it.
-export function thrownCopy(e: any, _what: string): Outcome {
+// A broken channel may hide a send ([R2]); a lock before signing is [R8]; any other throw submitted nothing: in a send it
+// is R1 with the engine's text (the wallet's) under Details, in any other flow it keeps that text until its slice.
+export function thrownCopy(e: any, _what: string, flow: Flow = "other"): Outcome {
   if (!(e instanceof AnsweredError)) return sentenceOutcome("R2", undefined, e?.message ? `(${clause(e.message)})` : undefined);
   if (e.message === "locked" || e.message === "wallet locked") return sentenceOutcome("R8");
+  if (flow === "send") return sentenceOutcome("R1", undefined, `${clause(e.message)}.`);
   return { text: `${clause(e.message)}. Nothing was sent.`, cls: "err", maybe: false };
 }
 // A view's Approve or Reject gets { done: false } when the request left the queue before that view resolved it:

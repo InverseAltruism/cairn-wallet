@@ -753,6 +753,11 @@
   .page-popup #msg button { pointer-events: auto; flex: none; }
   .page-popup #msg .msg-body { display: flex; flex-direction: column; min-width: 0; }
   .page-popup #msg .msg-body small { font-size: var(--ui-text-xs); opacity: 0.72; }
+  /* an outcome's technical sentence, one tap away (popup-outcome.ts detailsHtml) */
+  .msg-details { margin-top: var(--ui-space-1); font-size: var(--ui-text-xs); }
+  .msg-details summary { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; opacity: 0.85; }
+  .msg-details small { display: block; margin-top: var(--ui-space-1); opacity: 0.8; overflow-wrap: anywhere; }
+  .page-popup #msg .msg-details { pointer-events: auto; }
   /* The sent toast shows after its sheet has closed (popup-sendflow.ts sentOk), so it sits at the bottom, over the list,
      as in the approved design, and leaves the top clear for the balance that settles there; every other status keeps
      the top, clear of an open sheet's buttons. */

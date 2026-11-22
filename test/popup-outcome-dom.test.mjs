@@ -50,6 +50,7 @@ const text = () => String(byId("msg").textContent || "") + String(byId("msg").in
 // WL1.2: the lines are the sentence module's (src/popup/sentences.ts): [R2] may have been sent, [R1] and the others say
 // nothing was sent, [R3] the payment is already on its way.
 const IN_FLIGHT = /This may have been sent|may still go through/;
+const ENGINE_SEAL = "no sealed claim with that txid in this account";
 
 async function csdReview(to) {
   byId("s-to").value = to; byId("s-amt").value = "1";
@@ -301,6 +302,81 @@ console.log("11. W-4: the send sheet shows the network fee and the balance after
   h.balance = () => ({ confirmed: 100e8, utxos: [] });
   // RED-FIRST: drop the input listener and 11a-11d keep the first value; drop SEND_FEE from the sum and 11a, 11b fail;
   // read balanceState.last regardless of `stale` and 11e fails.
+}
+
+console.log("12. WL1.2: every refusal of a send is the sheet's line, the engine's text one tap away under Details");
+{
+  // the status line as shown: the line, and what its Details holds (empty when it has none)
+  const strip = (h) => String(h).replace(/<[^>]*>/g, "").replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" })[e]);
+  const shown = () => {
+    const m = byId("msg"), html = String(m.innerHTML || "");
+    if (strip(html) !== String(m.textContent)) return { line: String(m.textContent), details: "" };   // a plain write after markup
+    const d = /<details[^>]*>([\s\S]*?)<\/details>/.exec(html);
+    return { line: strip(html.replace(/<details[\s\S]*?<\/details>/, "")).trim(), details: d ? strip(d[1]).replace(/^Details/, "") : "" };
+  };
+  const ENGINE = "an engine text that is not on the line";
+  const refusedSend = async (r) => { await csdSend(() => r); return shown(); };
+  const s4 = await refusedSend({ ok: false, code: "INSUFFICIENT", error: "insufficient confirmed balance" });
+  t(`12a INSUFFICIENT is [S4], its code under Details (${s4.line})`, () => {
+    assert.equal(s4.line, SENTENCES.S4.text); assert.match(s4.details, /\(INSUFFICIENT\)/); assert.doesNotMatch(s4.line, /insufficient confirmed balance/);
+  });
+  await refusedSend({ ok: false, code: "TOO_MANY_INPUTS", error: ENGINE });
+  const s8 = String(byId("msg").innerHTML);   // the fake DOM adds the action button's label to the markup
+  t(`12b TOO_MANY_INPUTS is [S8] with "Merge coins now" and its Details (${strip(s8).slice(0, 40)})`, () => {
+    assert.ok(strip(s8).startsWith(SENTENCES.S8.text), s8); assert.match(s8, /<details[\s\S]*\(TOO_MANY_INPUTS\)[\s\S]*<\/details><\/span>Merge coins now$/); assert.ok(!s8.includes(ENGINE));
+  });
+  const s12 = await refusedSend({ ok: false, code: "FEE_CAP", feeCap: 1e8, error: ENGINE });
+  t(`12c FEE_CAP is [S12] with the cap (${s12.line})`, () => {
+    assert.equal(s12.line, "The fee is above what the wallet allows (1 CSD here). Nothing was sent.");
+  });
+  for (const code of ["BAD_OUTPUTS", "NO_OUTPUTS", "INTERNAL", "A_CODE_FROM_LATER"]) {
+    const r1 = await refusedSend({ ok: false, code, error: ENGINE });
+    t(`12d ${code} is [R1]; the engine's text and the code are under Details only (${r1.details.slice(0, 60)})`, () => {
+      assert.equal(r1.line, SENTENCES.R1.text); assert.ok(r1.details.includes(ENGINE) && r1.details.includes(`(${code})`), r1.details);
+    });
+  }
+  await csdSend(() => { throw new Error(ENGINE); });
+  const thrown = shown();
+  t(`12e a wallet-answered throw in a CSD send is [R1], its text under Details (${thrown.line})`, () => {
+    assert.equal(thrown.line, SENTENCES.R1.text); assert.ok(thrown.details.includes(ENGINE));
+  });
+  await tokenSend(() => { throw new Error(ENGINE); });
+  const tThrown = shown();
+  t(`12f the same in a token send (${tThrown.line})`, () => { assert.equal(tThrown.line, SENTENCES.R1.text); assert.ok(tThrown.details.includes(ENGINE)); });
+  await tokenSend(() => ({ ok: false, code: "ACCOUNT_CHANGED", error: ENGINE }));
+  const r9 = shown();
+  t(`12g a token send refused ACCOUNT_CHANGED is [R9] (${r9.line})`, () => { assert.equal(r9.line, SENTENCES.R9.text); });
+  h.pendingMerge = () => ({ pending: true, amount: 1_250_000_000, maybe: false });
+  await byId("btn-refresh").click(); await flush();
+  const merging = await refusedSend({ ok: false, code: "INSUFFICIENT", error: ENGINE });
+  h.pendingMerge = () => ({ pending: false, amount: 0, maybe: false });
+  await byId("btn-refresh").click(); await flush();
+  t(`12h while a merge confirms, [S4] carries [S5] (${merging.line})`, () => {
+    assert.equal(merging.line, `${SENTENCES.S4.text} A coin merge of 12.5 CSD is still confirming. Try again once it is.`);
+  });
+  const ok = await csdSend(() => ({ ok: true, txid: TXID, sighashMatch: true }));
+  t("12i honest: an accepted send still reads 'Sent 1 CSD', with no Details", () => { assert.match(ok, /^Sent 1 CSD/); assert.doesNotMatch(ok, /<details/); });
+}
+
+console.log("13. WL1.2: a reveal's refusal");
+{
+  const SEAL = "0x" + "5e".repeat(32);
+  h.sealedClaims = () => [{ txid: SEAL, claim: "a claim", committedTs: 1, revealed: false }];
+  const reveal = async (answer) => {
+    h.revealClaim = answer;
+    await byId("btn-seal-t").click(); await flush();
+    await byId("seal-list").querySelectorAll("[data-reveal]")[0].click(); await flush();
+    return text();
+  };
+  const q3 = await reveal(() => ({ ok: false, error: "/api/content -> 413", status: 413 }));
+  t(`13a the content server did not take it: [Q3], the status under Details (${q3.slice(0, 50)})`, () => {
+    assert.ok(q3.includes(SENTENCES.Q3.text), q3); assert.match(q3, /HTTP 413/); assert.doesNotMatch(q3, /Reveal failed/);
+  });
+  const q4 = await reveal(() => ({ ok: false, code: "SEAL_UNKNOWN", error: ENGINE_SEAL }));
+  t(`13b SEAL_UNKNOWN is [Q4] (${q4.slice(0, 50)})`, () => { assert.ok(q4.includes(SENTENCES.Q4.text), q4); });
+  const ok = await reveal(() => ({ ok: true }));
+  t("13c honest: a reveal that went through says so", () => { assert.match(ok, /^Revealed: now public/); });
+  h.sealedClaims = () => [];
 }
 
 console.log(`\npopup-outcome-dom: ${pass} passed, ${fail} failed`);

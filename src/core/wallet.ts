@@ -942,7 +942,8 @@ export class Wallet {
   async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number; expectSigner?: string }) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
-    this.throwOnSignerChange(p.expectSigner);
+    const early = this.expectSignerRefusal(p.expectSigner, this.addr());
+    if (early) return early;
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
