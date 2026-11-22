@@ -4,7 +4,7 @@
 // chain-proven address: whoever answers for the tip can serve one past a live lease, and one source can withhold a
 // renewal so that a live name replays as lapsed at the wallet's own tip ([W1]).
 // RED-FIRST: on 2d910ab, [1], [3], [T3], [T4] and [T6] fail (no `lapseUnconfirmed`; two sources made the served tip's
-// lapse a refusal). [2v] and [W1] fail on 2fd66a8 (one source at the verified tip refused there). Mutations: drop the
+// lapse a refusal). [2v], [W1] and [T7] fail on 2fd66a8 (one source at the verified tip refused there). Mutations: drop the
 // source-count condition (`usable.length >= 2 ||`) from `corroborated` and [2v], [W1] fail; drop `atVerifiedHeight`
 // from `confident` and [3], [T3], [T4], [T6] fail; drop `verifiedCorroborated` and [3v], [T2] fail; prefer the served
 // address over `lastAddr` and [T3], [T6] fail.
