@@ -147,4 +147,30 @@ const lw2 = new Wallet(st);
 await lw2.init();
 check("L4: a stored RPC equal to BACKUP_RPC is replaced by the default at start", (await lw2.status()).rpc === DEFAULT_RPC);
 
+// ── S1, S2: when the second host wins the hedge, later reads ask it first (BACKUP_FIRST_MS) ──
+// RED-FIRST: before this rule every read with the main host hanging waited HEDGE_MS (S2's second and third reads).
+// Mutation (run in a copy): drop the flip on a hedge win and S2 fails. Kept last: the hanging requests end at the
+// 12 s timeout, and that failure opens the window again.
+nextMinute();
+route(healthy(HEDGE_MS + 500), healthy());
+b = await timed(() => w.balance());
+check(`S1: a main answer slower than HEDGE_MS once: the second host answers (${b.ms} ms)`, b.v?.via === "backup");
+await new Promise((r) => setTimeout(r, 700));   // the main host's slow answer arrives and ends the window
+route(healthy(), healthy());
+b = await timed(() => w.balance());
+check("S1: once the main host has answered, it is asked first again: one slow answer costs at most one window", b.v?.via === undefined && log[0].host === "main" && asked("backup") === 0);
+nextMinute();
+const times = [];
+for (let i = 0; i < 3; i++) {
+  route(hang, healthy());
+  const t = await timed(() => w.balance());
+  times.push({ ms: t.ms, via: t.v?.via, main: asked("main") });
+}
+check(`S2: the main host hanging, three reads: the first waits HEDGE_MS, the next two do not (${times.map((t) => t.ms).join(", ")} ms)`,
+  times.every((t) => t.via === "backup") && times[0].ms >= HEDGE_MS - 50 && times[1].ms < 500 && times[2].ms < 500 && times[1].main === 0 && times[2].main === 0);
+nextMinute();
+route(healthy(), healthy());
+b = await timed(() => w.balance());
+check("S2: after BACKUP_FIRST_MS the main host is asked first again", b.v?.via === undefined && log[0].host === "main");
+
 done("hosts-fallback");

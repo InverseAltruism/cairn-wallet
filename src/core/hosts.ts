@@ -6,7 +6,8 @@ import { decideSubmit, type HostVerdict, type SubmitOutcome } from "./submitverd
 
 /** A read goes to the second host when the first has not answered this long after it was asked. */
 export const HEDGE_MS = 1_500;
-/** After the main host failed a read, reads ask the second host first for this long. */
+/** After the main host failed a read, or the second host answered one first, reads ask the second host first for this
+ *  long. */
 export const BACKUP_FIRST_MS = 60_000;
 
 // Module state dies with the service worker, so a fresh worker asks the main host first again.
@@ -38,6 +39,9 @@ export function firstAnswer<T>(rpc: string, read: (host: string) => Promise<T>):
         if (host === DEFAULT_RPC) backupFirstUntil = 0;
         if (settled) return;
         settled = true;
+        // the second host answered while the main host, asked first, had not: later reads ask the second host first,
+        // so they do not each wait HEDGE_MS; a main answer, even this one arriving late, ends that window
+        if (host === BACKUP_RPC && order[0] === DEFAULT_RPC) backupFirstUntil = Date.now() + BACKUP_FIRST_MS;
         if (timer !== undefined) clearTimeout(timer);
         resolve({ value, host });
       }, (e: unknown) => {
