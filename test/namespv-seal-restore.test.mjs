@@ -230,10 +230,13 @@ console.log("6. the Wallet hands the source its seal key getter and the unlock s
   await tick();
   const asleep = !woke;
   await w.unlock("correct horse battery");
+  await tick();
+  const asleepAfterUnlock = !woke;
+  await w.balance().catch(() => null);
   await waiting;
   const k2 = await seen.sealKey();
   check("the getter gives a key unlocked, none locked, the same key after unlock", k1 !== null && kLocked === null && k2 !== null && Buffer.from(k1).equals(Buffer.from(k2)));
-  check("the unlock signal waits while locked and settles at unlock", asleep && woke);
+  check("the unlock signal waits while locked and after the unlock, and settles once the balance has answered", asleep && asleepAfterUnlock && woke);
 }
 
 console.log("7. a reset and a new vault in the same worker drop the source and the session pin:");
