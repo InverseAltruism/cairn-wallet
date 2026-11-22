@@ -28,6 +28,14 @@
   could not prove is checked again when the other server lists it (the session skip caches are per server). A
   server's answer whose error text is not a string no longer stops the send from ending
   (test/submit-classify.test.mjs, test/submit-two-hosts.test.mjs X1, X2).
+- The results of a send and the coin checks before it read the copy sheet's lines from one module
+  (`src/popup/sentences.ts`): "This may have been sent. Check your history before you send again." for an unclear
+  answer, a broken channel, a request handled in another window or a lost rejection; "Fee too low for the network
+  right now. Nothing was sent.", "Network busy, so nothing was sent. Try again in a minute." and "The network did not
+  accept this payment. Nothing was sent." for refusals by reason; the duplicate, lock, account-change, sign-in and
+  coin-check lines (the sheet's R1 to R11, S9 to S11). The approval window shows the same lines for those codes,
+  without "Failed:" and the code. Other codes keep their text until their slice. The words are a draft the owner
+  signs (test/sentences-copy.test.mjs holds them to the copy rule).
 - A submit refusal's or unclear answer's `error` is the wallet's own sentence naming the reason; a server's text no
   longer reaches a page or the screen through it and stays in the wallet's internal log (test/submit-answers.test.mjs
   H6).

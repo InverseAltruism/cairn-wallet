@@ -146,6 +146,11 @@ accepting host may relay it and a refusal could prompt a second payment. When th
 is recorded unclear (above), so if it never confirms the reconcile marks it. On a reorg between the hosts the coin-value check is unchanged: values are bound to the
 txid, and a source transaction off the answering host's branch reads as not found and is skipped.
 
+A server's own text no longer reaches the screen or a page through a send's result: the result's `error` is the
+wallet's sentence and the popup and approval window show the sentence module's line for the code and reason
+(`src/popup/sentences.ts`; test/submit-answers.test.mjs H6, test/popup-outcome-dom.test.mjs 4f). The other places a
+server's text reaches the screen are listed for later slices in the copy sheet's List 3.
+
 ### Sending to a `.csd` name
 
 When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX name services as

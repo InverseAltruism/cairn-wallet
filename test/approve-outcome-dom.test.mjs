@@ -8,6 +8,7 @@
 //       and any other refusal, an answered throw included, keeps "Failed: ...".
 // A "Failed" on an ambiguous submit invites the site's retry, which pays twice when the first transaction lands.
 // Run: npx tsx test/approve-outcome-dom.test.mjs   (offline)
+import { SENTENCES } from "../src/popup/sentences.ts";
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 
@@ -46,11 +47,12 @@ const tick = await loadApprove();
 await armed();
 
 let o = await outcome({ done: true, ok: false, code: "SUBMIT_MAYBE_INFLIGHT", error: "/tx/submit -> network error", txid: TXID });
-check(`(1) maybe in flight: says so and names the history row (${o.text})`, o.text === "/tx/submit -> network error. The transaction didn't confirm; it may already be in flight. Check your history before trying again. It's in your history as 0xc4c4c4c4c4…" && o.cls === "msg err" && !/^Failed/.test(o.text));
+// WL1.2: the lines are the sentence module's (src/popup/sentences.ts); no server text and no code on the line.
+check(`(1) maybe in flight: [R2], no server text (${o.text})`, o.text === SENTENCES.R2.text && o.cls === "msg err" && !/^Failed/.test(o.text));
 o = await outcome({ done: true, ok: false, code: "SUBMIT_DUPLICATE", error: "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again." });
-check(`(2) duplicate: its own text, info style (${o.text})`, o.text === "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again." && o.cls === "msg info");
+check(`(2) duplicate: [R3], info style (${o.text})`, o.text === SENTENCES.R3.text && o.cls === "msg info");
 o = await outcome(null, { brokenChannel: true });
-check(`(3) broken channel: possibly in flight, not a refusal (${o.text})`, o.text === "The message port closed before a response was received. The transaction didn't confirm; it may already be in flight. Check your history before trying again." && o.cls === "msg err");
+check(`(3) broken channel: possibly in flight, not a refusal: [R2] (${o.text})`, o.text === SENTENCES.R2.text && o.cls === "msg err");
 
 o = await outcome({ done: true, ok: true, txid: TXID });
 check(`(5) a txid: Sent (${o.text})`, /^Sent 0xc4c4c4c4/.test(o.text) && o.cls === "msg ok");
@@ -58,8 +60,13 @@ o = await outcome({ done: true, ok: true });
 check(`(5) neither a refusal nor a txid (connect, sign-in): Approved. (${o.text})`, o.text === "Approved." && o.cls === "msg ok");
 o = await outcome({ done: true, ok: false, code: "INSUFFICIENT", error: "insufficient confirmed balance" });
 check(`(5) another refusal keeps Failed (${o.text})`, o.text === "Failed: insufficient confirmed balance (INSUFFICIENT)" && o.cls === "msg err");
+o = await outcome({ done: true, ok: false, code: "SUBMIT_REJECTED", reason: "FEE", error: "every server refused this transaction (FEE)" });
+check(`(6) a refused submit is [R4] by its reason, no code on the line (${o.text})`, o.text === SENTENCES.R4.text && !/SUBMIT_REJECTED|Failed/.test(o.text));
 handlers.resolve = () => { state.pending = []; throw new Error("wallet locked"); };
 o = await outcome(null);
-check(`(5) an answered throw (the worker refused before any submit) keeps Failed (${o.text})`, o.text === "Failed: wallet locked" && o.cls === "msg err");
+check(`(5) an answered lock throw (the worker refused before any submit) is [R8], without Failed (${o.text})`, o.text === SENTENCES.R8.text && o.cls === "msg err");
+handlers.resolve = () => { state.pending = []; throw new Error("something internal"); };
+o = await outcome(null);
+check(`(5) another answered throw keeps its own text until its slice words it (${o.text})`, o.text === "Failed: something internal" && o.cls === "msg err");
 
 done("approve-outcome-dom");

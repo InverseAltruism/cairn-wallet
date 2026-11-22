@@ -10,6 +10,7 @@ import type { CairnThemeApi } from "../vendor/cairn-ui/theme.js";
 import { chooseDensity, reservesFor } from "./approve-density.js";
 import { tokenMs } from "./motion.js";
 import { extensionCall, HANDLED_ELSEWHERE, refusedCopy, rejectCopy, thrownCopy } from "./popup-outcome.js";
+import { sentenceKeyOf } from "./sentences.js";
 import { APPROVE_REARM } from "../approve-window.js";
 const chrome: any = (globalThis as any).chrome;
 const $ = (id: string) => document.getElementById(id)!;
@@ -675,20 +676,21 @@ async function resolve(approve: boolean) {
   // flight, so they never read "Failed"; any other refusal keeps "Failed: <error> (<code>)".
   if (thrown) {
     const o = thrownCopy(thrown, "transaction");
-    msg(o.maybe ? o.text : "Failed: " + ((thrown as Error)?.message || "?"), o.maybe ? o.cls : "err"); hold();
+    msg(o.key ? o.text : "Failed: " + ((thrown as Error)?.message || "?"), o.cls); hold();
   } else if (r && r.code === "RESERVATION_UNCONFIRMED" && r.unconfirmed && typeof r.unconfirmed.fclaimTxid === "string") {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
   } else if (r && r.ok === false) {
     const o = refusedCopy(r, "transaction");
-    msg(o.maybe ? o.text : "Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), o.maybe ? o.cls : "err"); hold();
+    // a code the sentence module words shows its line; any other keeps "Failed: <engine text> (<code>)" until its slice
+    msg(o.maybe || sentenceKeyOf(r) ? o.text : "Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), o.maybe || sentenceKeyOf(r) ? o.cls : "err"); hold();
   }
   else if (r && r.txid) {
     msg("Sent " + String(r.txid).slice(0, 10) + "…", "ok");
     const note = secondSourceNote(r.secondSource);
     if (note) { $("msg").insertAdjacentHTML("beforeend", checkRow({ tier: "danger", html: escapeHtml(note) })); hold(); }
   }
-  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "info"); hold(); }
+  else if (r && r.done === false) { msg(HANDLED_ELSEWHERE, "err"); hold(); }
   else msg("Approved.", "ok");
   render();
 }

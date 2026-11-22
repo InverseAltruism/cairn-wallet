@@ -352,7 +352,9 @@ try {
     check("pendingMerge is a READ-ONLY popup method (must not reset the idle lock)", !!roLine && roLine.includes("pendingMerge"));
     const popup = scriptSource("popup.ts");
     check("TOO_MANY_INPUTS refusal offers the inline merge action", popup.includes('"Merge coins now"'));
-    check("popup treats SUBMIT_DUPLICATE as pending, never 'nothing was sent'", /SUBMIT_DUPLICATE/.test(popup));
+    const { refusedCopy } = await import("../src/popup/popup-outcome.ts");
+    const dupLine = refusedCopy({ ok: false, code: "SUBMIT_DUPLICATE" }, "merge");
+    check("popup treats SUBMIT_DUPLICATE as pending, never 'nothing was sent'", dupLine.maybe === true && !/nothing was sent/i.test(dupLine.text));
     check("balance hero has the pending-merge line wired", popup.includes('$("merge-pending")'));
     const html = readFileSync(new URL("../src/popup/popup.html", import.meta.url), "utf8");
     check("popup.html carries the merge-pending element", html.includes('id="merge-pending"'));
