@@ -20,9 +20,11 @@ export interface NameIo {
   tradeApi(): string;
   spvGen(): number;
   nameHints(): Map<string, HintSetEntry>;
-  /** The name service's answer as it arrives, before the check: null when a resolve starts, then the served address
-   *  (a well-formed one, else null) and its lapsed flag. The send review offers it after D12's 10 s (`nameCheck`). */
-  noteServed?(name: string, served: ServedName | null): void;
+  /** A resolve of `name` starts: the name's earlier served answer is forgotten, and the note returned records this
+   *  resolve's answer as it arrives (the served address, a well-formed one else null, and its lapsed flag), unless a
+   *  newer resolve of the name started or the answers were cleared since. The send review offers it after D12's 10 s
+   *  (`nameCheck`). */
+  beginServed?(name: string): (served: ServedName) => void;
 }
 export type ServedName = { addr: string | null; lapsed: boolean };
 
@@ -38,7 +40,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
   // interpolating it into the resolver URL; a name with `/`, `..`, `%`, or query chars must never
   // reach the path. (encodeURIComponent is belt-and-braces.) A non-name can't be a real .csd name.
   if (!isPlainName(nm)) return { ok: false, error: `${nm} is not a valid .csd name` };
-  wallet.noteServed?.(nm, null);
+  const noteServed = wallet.beginServed?.(nm);
   try {
     // Base-claim fetch with clarvis FALLBACK (2026-07-09): a primary-resolver outage used to block
     // EVERY name send with "name lookup failed" even though clarvis, the second source, could
@@ -60,7 +62,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     }
     if (!r || !r.ok) return { ok: false, error: "name lookup failed" };
     const j = await r.json();
-    wallet.noteServed?.(nm, { addr: servedAddr(j), lapsed: j?.lapsed === true });
+    noteServed?.({ addr: servedAddr(j), lapsed: j?.lapsed === true });
     if (j?.lapsed) {
       // A served `lapsed` flag is not a refusal by itself: the chain proves the lease current -> the proven answer;
       // the lapse holds at a verified height -> refuse; anything else -> the unconfirmed-lapse caution.

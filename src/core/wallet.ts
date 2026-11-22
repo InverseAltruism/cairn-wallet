@@ -178,8 +178,13 @@ export class Wallet {
   // hint-set cache, whose header hashes came from it.
   async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this.endpointChanged(); this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); if (u !== this.api) this.endpointChanged(); this.api = u; await this.store.set("api", u); }
-  private endpointChanged(): void { this._spvSrc = null; this._spvLive = null; this.spvGen++; this.nameHints.clear(); }
-  async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
+  private endpointChanged(): void { this._spvSrc = null; this._spvLive = null; this.spvGen++; this.nameHints.clear(); this.servedNames.clear(); }
+  async setTradeApi(u: string) {
+    if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR);
+    const next = u || DEFAULT_TRADE_API;
+    if (next !== this.tradeApi) this.servedNames.clear();   // a served answer belongs to the name service that gave it
+    this.tradeApi = next; await this.store.set("tradeApi", this.tradeApi);
+  }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
   async addRpc(u: string): Promise<void> { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); const l = await this.rpcList(); if (!l.includes(u)) { l.push(u); await this.store.set("customRpcs", l.slice(0, 20)); } }
@@ -429,6 +434,7 @@ export class Wallet {
 
   async lock(): Promise<void> {
     this.accts = null; this.vaultKey = null; this.salt = ""; this.iter = 0; this.mnemonic = null; this.nextIndex = 0;
+    this.servedNames.clear();
     // W4 (AW-SEAL-LOCK-1): lock() no longer wipes the parked arrays. `pendingSeals` holds a PAID commit's
     // reveal nonce (already vault ciphertext at the park site) and `pendingHist` holds the parked history
     // rows behind the double-pay backstop; both are the only copy after a failed storage write, so an idle
@@ -833,14 +839,22 @@ export class Wallet {
     tradeApi: () => this.tradeApi,
     spvGen: () => this.spvGen,
     nameHints: () => this.nameHints,
-    noteServed: (name, served) => { this.servedNames.delete(name); if (served) this.servedNames.set(name, served); while (this.servedNames.size > 8) this.servedNames.delete(this.servedNames.keys().next().value!); },
+    beginServed: (name) => {
+      const seq = ++this.servedSeq;
+      this.servedNames.delete(name);
+      this.servedNames.set(name, { seq, served: null });
+      while (this.servedNames.size > 8) this.servedNames.delete(this.servedNames.keys().next().value!);
+      return (served) => { const cur = this.servedNames.get(name); if (cur?.seq === seq) cur.served = served; };
+    },
   };
-  private servedNames = new Map<string, ServedName>();
+  // The served answer per name, from the latest resolve of it only (`seq`); cleared on an endpoint change and on lock.
+  private servedNames = new Map<string, { seq: number; served: ServedName | null }>();
+  private servedSeq = 0;
   // What the send review shows while resolveName runs (popup-only, READ_ONLY_METHODS): the served answer once it
   // arrived and the header sync's progress. Memory only: no request.
   nameCheck(name: unknown): { served: ServedName | null; progress: { done: number; total: number } | null } {
     const nm = String(name ?? "").toLowerCase().replace(/\.csd$/, "");
-    return { served: this.servedNames.get(nm) ?? null, progress: (this.nameSpvForTest ?? this._spvLive)?.syncProgress?.() ?? null };
+    return { served: this.servedNames.get(nm)?.served ?? null, progress: (this.nameSpvForTest ?? this._spvLive)?.syncProgress?.() ?? null };
   }
   resolveName(name: string): Promise<NameResolution> { return resolveName(this.nameIo, name); }
   verifyName(name: string): Promise<NameVerification & { name: string }> { return verifyName(this.nameIo, name); }
