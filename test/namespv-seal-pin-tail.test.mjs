@@ -1,34 +1,17 @@
 // A worker restart with a session pin above the next sealable top. With the release table every chunk top up to its
 // newest entry is a checkpoint, and the pin walk refuses a range holding one, so this case needs a table whose newest
 // entry is the restore's base: the production liveSpvSource is bundled here with the table cut to its first 25 entries
-// (newest 131,071, an esbuild copy; the shipped code is untouched), over the real headers to 146,829.
+// (newest 131,071, test/helpers/cuttable.mjs; the shipped code is untouched), over the real headers to 146,829.
 // - With the list current (chunks 32 and 33 sealed), the restart does no pass with every check over the walked run.
 // - With chunk 33 left unsealed, the pass runs once and the list it writes carries the work counted from the bits.
 // Run: npx tsx test/namespv-seal-pin-tail.test.mjs   (offline)
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
 import { checker } from "./helpers/check.mjs";
+import { cutTableBundle } from "./helpers/cuttable.mjs";
 import { serveFixture, memStore, records, hashOf, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
 import { deserializeHeader } from "../src/vendor/cairnx-spv.js";
 
 const t = checker("seal restore with a session pin above the next sealable top (table cut to 131,071)");
-const root = fileURLToPath(new URL("..", import.meta.url));
-const anchorsSrc = readFileSync(`${root}/src/core/spvanchors.ts`, "utf8");
-const cut = anchorsSrc.replace(/export const SPV_ANCHORS: readonly string\[\] = \[[\s\S]*?\];/, (m) => {
-  const entries = [...m.matchAll(/"0x[0-9a-f]{64}"/g)].map((x) => x[0]).slice(0, SEAL_ANCHORS.length);
-  return `export const SPV_ANCHORS: readonly string[] = [${entries.join(", ")}];`;
-});
-if (cut === anchorsSrc) throw new Error("the anchor table was not cut");
-const bundle = (await build({
-  stdin: { contents: 'export { liveSpvSource, flushSpvStoreWrites } from "./src/core/namespv.ts"; export { sealKeyGetter, sealRecord, checkSeals } from "./src/core/spvseal.ts"; export { importKeyRaw } from "./src/core/keystore.ts"; export { LightClient } from "./src/vendor/cairnx-spv.js";', resolveDir: root, loader: "ts" },
-  bundle: true, format: "esm", platform: "node", target: "es2022", write: false, logLevel: "warning",
-  plugins: [{ name: "cut-table", setup(b) {
-    b.onLoad({ filter: /spvanchors\.ts$/ }, () => ({ contents: cut, loader: "ts" }));
-    b.onLoad({ filter: /spvnewest\.ts$/ }, () => ({ contents: `export const SPV_NEWEST_HEIGHT = ${SEAL_NEWEST};`, loader: "ts" }));
-  } }],
-})).outputFiles[0].text;
-const C = await import(`data:text/javascript;base64,${Buffer.from(bundle).toString("base64")}`);
+const C = await cutTableBundle('export { liveSpvSource, flushSpvStoreWrites } from "./src/core/namespv.ts"; export { sealKeyGetter, sealRecord, checkSeals } from "./src/core/spvseal.ts"; export { importKeyRaw } from "./src/core/keystore.ts"; export { LightClient } from "./src/vendor/cairnx-spv.js";');
 
 const API = "https://cairn-substrate.test";
 const net = { tip: SEAL_TOP };

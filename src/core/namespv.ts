@@ -1050,13 +1050,15 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           await acq.writes();
           adoptions++;
           LC = fresh;
+          // The state of the replaced chain goes with it. The LRU drop and the walked run's bounds are also held elsewhere
+          // (an LRU entry answers only its spec's tag; no read uses walkFrom or base while the walked run is empty).
           for (const k of lru.keys()) if (k > newestK) lru.delete(k);
           walked = new Uint8Array(0);
           walkFrom = newest + 1;
           base = tableBase;
-          // The remembered tops are the replaced chain's: kept, a read below a later rebase would walk against them and
-          // the next list would seal them over the adopted bytes (a restore skips and rewrites it, namespv-seal-restore 5).
-          // No offline fixture holds a second chain above a release checkpoint, so no test tells this line apart.
+          // Kept, the replaced chain's tops go into the next list under the vault's MAC, below the adopted chain's own; a
+          // restart seeded on a higher entry takes them on the MAC alone, and their chunks answer the replaced chain or
+          // nothing (test/namespv-seal-two-chains.test.mjs).
           tops = [];
           workBase = 0n;
           persistedTip = newest;

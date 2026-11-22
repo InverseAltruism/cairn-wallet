@@ -166,7 +166,9 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
   `opts.sealKey`). Locked, there is none. A new vault has a new key, under which old seals fail and are ignored; a
   reset drops the header source, its name hints and the session pin, and a source seals only under the vault it was
   built for, so a new vault in the same worker starts from a new source, and a source still running from before the
-  reset writes no list under the new vault's key (test/namespv-seal-restore.test.mjs 7 and 7b).
+  reset writes no list under the new vault's key (test/namespv-seal-restore.test.mjs 7 and 7b). Its session pin is bound
+  the same way: such a source writes no pin after the reset, so the next vault's first restore cannot walk to a pin the
+  old vault's seal vouched for (test/namespv-pin-after-reset.test.mjs).
 - A seal is a MAC over 145 bytes: a tag, the chunk index, the previous chunk's top hash (the table hash for the first
   chunk above the anchor), the chunk's top hash, its chainwork as u128 and the table's newest entry and hash. The
   record is `meta` key `seals`, `{ v: 1, newest, list: [{ k, top, work, mac }] }`, contiguous from the chunk above the
@@ -189,6 +191,13 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
   A read that waited behind an adoption finds no remembered tops, since the adopted client holds every height above
   the table; it is decided again once and answers from that client, as 0.3.4 does (test/namespv-seal-restore.test.mjs
   13). A read no adoption crosses takes the same path and makes the same requests as before.
+- An adoption drops every remembered top: the adopted client starts at the table and its own tops replace them. A
+  restore walks only the seed chunk and takes every entry below it on the MAC, so a kept top of the replaced chain
+  would be sealed into the next list below the adopted chain's own and a restart seeded above it would answer that
+  chain or nothing (test/namespv-seal-two-chains.test.mjs, two valid chains on the cut table, red with the line
+  removed). A change that keeps the tops below the fork must keep only entries whose top is at or below the last height
+  the two chains share; that test forks inside the first sealed chunk, where nothing is kept either way, so such a
+  change adds a fork above a kept entry (inside chunk 33, keeping 32).
 - A seal never refuses. An entry whose chunk is missing or holds other bytes is absent: a list a 0.3.4 install left
   behind after it rewrote chunks, a write made while locked over sealed chunks, a write that was dropped. A stored
   value that is no list at all (any structured-cloneable junk) proves nothing and is rewritten. Only the
