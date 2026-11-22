@@ -71,7 +71,8 @@ const READS = [["status"], ["pending"], ["history"], ["tipFloor"], ["sealedClaim
 {
   const page = { id: "cairnwallettestid", url: "https://dapp.test/", origin: "https://dapp.test", tab: { id: 3 } };
   const send = (msg, sender) => new Promise((res) => chrome.listener(msg, sender, res));
-  const viaPage = await send({ kind: "dapp", method: "nameCheck", params: ["alice"] }, page);
+  // a dApp method would be queued for approval and not answer; 500 ms of no answer reads as that
+  const viaPage = await Promise.race([send({ kind: "dapp", method: "nameCheck", params: ["alice"] }, page), new Promise((r) => setTimeout(() => r({ queued: true }), 500))]);
   check(`3. a page's nameCheck is refused as no dApp method (${viaPage.code})`, viaPage.ok === false && viaPage.code === "UNSUPPORTED_METHOD");
   const forged = await send({ kind: "popup", method: "nameCheck", args: ["alice"] }, page);
   check(`3. a content script's forged popup nameCheck is refused (${forged.code})`, forged.ok === false && forged.code === "FORBIDDEN" && forged.result === undefined);
