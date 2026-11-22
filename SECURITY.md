@@ -296,8 +296,11 @@ keep pulling the window forward; what remains is one raise and its 700 ms floor 
 (test/approve-raise-refused-bound.test.mjs).
 The provider is injected
 on all sites (like MetaMask) so any dApp can request a connection, but injection scope is
-**not** the security boundary: the content script only relays requests, exposes no keys, and
-`host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
+**not** the security boundary: the content script only relays requests, exposes no keys and makes no network request.
+Chrome counts its matches as host access (`chrome.permissions.getAll()` lists `https://*/*` beside the declared
+`host_permissions`); what limits the wallet's own requests is the manifest's content security policy, whose
+`connect-src` allows only the extension itself, cairn-substrate.com, clarvis.cairn-substrate.com and localhost or
+127.0.0.1.
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
 sealed claims, **send** (a plain CSD transfer), and **fillOffer** (a CairnX offer fill: one transaction pays
 the recipients and records the fill, and CairnX then decides delivery; if it refuses the fill, the payment is not
