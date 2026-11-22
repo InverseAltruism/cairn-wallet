@@ -327,5 +327,34 @@ for (const how of ["seal-seeded", "rebased"]) {
   check(`${how}: a page that breaks once reseeds from the table, and the honest chain with more work is adopted (${p.verifiedTip ?? p.error})`, p.verifiedTip === SEAL_TOP && calls >= 2 && (await src.hashAt(146000)) === hashOf(146000));
 }
 
+console.log("12. an adoption's rewrite is queued after the acquirer's pending writes:");
+{
+  const st = honestStore(145000);
+  const r = st.chunks.get(32).slice(); r[84 * 300 + 40] ^= 0xff; st.chunks.set(32, r);
+  let open;
+  const gate = new Promise((res) => { open = res; });
+  const inner = st.write.bind(st);
+  const order = [];
+  st.write = async (w) => {
+    if (w.put?.length === 1 && w.put[0].k === 32 && !w.head) { order.push("acquirer put 32"); await gate; }
+    else if (w.head) order.push(`suffix write from ${w.put?.[0]?.k}`);
+    return inner(w);
+  };
+  net.tip = SEAL_TOP;
+  const src = await liveSpvSource(opts(st));
+  await src.hashAt(32 * CH + 300);
+  let calls = 0;
+  net.tamper = (from, rows) => (from === 144896 && ++calls === 1 ? rows.map((x) => (x.height === 145001 ? { ...x, header: { ...x.header, nonce: x.header.nonce + 1 } } : x)) : rows);
+  const adopting = src.prepare(SEAL_TOP - 12);
+  for (let i = 0; i < 20; i++) await tick();
+  const beforeOpen = order.slice();
+  open();
+  const p = await adopting;
+  net.tamper = undefined;
+  await flushSpvStoreWrites();
+  check(`while the acquirer's write is pending, the adoption queues no rewrite (${beforeOpen.join(", ")}); after it lands the rewrite follows (${order.join(", ")}), verified to ${p.verifiedTip}`,
+    beforeOpen.length === 1 && order[0] === "acquirer put 32" && order.some((o) => o.startsWith("suffix write")) && p.verifiedTip === SEAL_TOP);
+}
+
 check(`the header database stays at version 1 (a bump makes 0.3.4 delete it) (${DB_VERSION})`, DB_VERSION === 1);
 done("namespv-seal-restore");
