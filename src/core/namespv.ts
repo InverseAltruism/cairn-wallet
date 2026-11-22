@@ -47,6 +47,10 @@ export interface NameVerification {
   owner?: string;
   via?: "nset" | "owner";
   depth?: number;             // confirmations of the most recent defining record
+  // The height of the event that completed the name's current holding (its nfinalize, the fill, or the reveal of a name
+  // from before the two-step finalize; a transfer, an nset or a renewal leaves it): the popup's [A18] compares it with
+  // the release's newest table entry (completingHeight).
+  completedAt?: number;
   reason?: string;            // fail-closed explanation when !verified
   // NSPV-CLAIMCAP-1 (H1): true when the winning record was acquired via an on-chain offer FILL/recapture
   // (cairnx resolver `viaFill`). Such ownership can depend on out-of-name-scope state (the V17 open-lane
@@ -170,7 +174,7 @@ const fail = (reason: string): NameVerification => ({ verified: false, reason })
 // Core SPV replay (no claim gate): SPV-verify `hints` against the chain and recompute the name's (owner,addr)
 // via the AUDITED resolver. Shared by the single-source verifyName and the multi-source verifyNameUnion.
 type Replay =
-  | { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number; viaFill: boolean }
+  | { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number; viaFill: boolean; completedAt: number }
   // WALLET-LAPSE-TIP-1: a lease-lapse failure carries `lapsed` + whether the persisted floor corroborated it,
   // so the caller can present a confident lapse vs a single-source caution. Other failures leave both unset.
   | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean };
@@ -204,6 +208,24 @@ export function nameScopedEvents(name: string, events: ChainEvent[]): ChainEvent
     const about = rec ? recordName(rec) : null;
     return about === null || about === name;
   });
+}
+
+/** The lowest event height at which the vendored resolver, over the events up to it, already holds the name's current
+ *  holding: a record that is not pending with the same `claimId` and `effectiveHeight` (the resolver sets both once per
+ *  holding: the claim, a recapture or a fill; a transfer, an nset or a renewal keeps them). That event completed the
+ *  holding. Found with the vendored rules alone; a record without either field gives the highest event height, which
+ *  only moves the result up. */
+export function completingHeight(name: string, scoped: ChainEvent[], rec: { claimId?: unknown; effectiveHeight?: unknown }, tip: number): number {
+  const heights = [...new Set(scoped.map((e) => e.height))].sort((a, b) => a - b);
+  const last = heights.at(-1) ?? 0;
+  if (typeof rec.claimId !== "string" || typeof rec.effectiveHeight !== "number") return last;
+  for (const h of heights) {
+    if (h < rec.effectiveHeight) continue;
+    const names = resolve(scoped.filter((e) => e.height <= h), tip).names;
+    const r = Object.hasOwn(names, name) ? (names[name] as { claimId?: unknown; effectiveHeight?: unknown; pending?: unknown }) : undefined;
+    if (r && !r.pending && r.claimId === rec.claimId && r.effectiveHeight === rec.effectiveHeight) return h;
+  }
+  return last;
 }
 
 async function replayName(name: string, hints: NameHint[], src: SpvSource): Promise<Replay> {
@@ -272,7 +294,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   // that is only reserved, or whose promoting `nfinalize` is being withheld from the hint set, can never be a
   // send target. A finalized name is not pending (nfinalize clears the flag), so this only blocks true reserves.
   if (rec.pending) return { ok: false, reason: `${name}.csd is a reservation that has not been finalized on-chain yet; refusing to send` };
-  return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1), viaFill: !!rec.viaFill };
+  return { ok: true, owner: String(rec.owner).toLowerCase(), addr: String(rec.addr ?? rec.owner).toLowerCase(), via: rec.addr ? "nset" : "owner", depth: Math.max(0, verifiedTip - maxHeight + 1), viaFill: !!rec.viaFill, completedAt: completingHeight(name, scoped, rec as { claimId?: unknown; effectiveHeight?: unknown }, lapseTip) };
 }
 
 // D2 (register §3, 2026-09-12): the single-source verifyName twin is DELETED. It had zero production
@@ -382,7 +404,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           // multi-source "chain-verified". This is MITIGATION BY DISCLOSURE, not closure: a lone hostile
           // source still decides the send target (recorded residual). A recovery ALWAYS flags disagree.
           const soleSource = recovered.length === 1;
-          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, sources: usable.length, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree || belowFloor, soleSource, viaFill: false, recovered: true };
+          return { verified: true, addr: win.addr, owner: win.owner, via: win.via, depth: win.depth, completedAt: win.completedAt, sources: usable.length, disagree: recovered.length < usable.length || agreed < usable.length || existenceDisagree || belowFloor, soleSource, viaFill: false, recovered: true };
         }
       }
       return { ...fail(rep.reason), sources: usable.length, disagree: false };
@@ -408,7 +430,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       if (c !== rep.addr) disagreeing.push(r.label);
     }
     const disagree = disagreeing.length > 0 || conflict || existenceDisagree || belowFloor; // S-B6: a 404-ing source counts
-    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, sources: usable.length, disagree, viaFill: false, hintPairs: pairs };
+    return { verified: true, addr: rep.addr, owner: rep.owner, via: rep.via, depth: rep.depth, completedAt: rep.completedAt, sources: usable.length, disagree, viaFill: false, hintPairs: pairs };
   } catch (e) {
     return { ...fail(`couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}`), sources: 0, disagree: false };
   }

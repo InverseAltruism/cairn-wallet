@@ -222,6 +222,13 @@ source alone, and the send's confirm step runs the full check again rather than 
 does not cover that operator hiding a later transfer or a competing claim from both, nor the stale-seller case below.
 The wallet's own badge says the name servers share one operator.
 
+A name whose current holding was completed above the newest header the release carries (the `nfinalize` of a
+registration or recapture, the reveal of a name from before the two-step finalize; a later transfer or address change
+does not move it) rests on headers the wallet learned from the same servers that answer for the name, and a new
+install has no older record of its own to check them against. Such a name shows "New name, only partly verified.
+Check the address before a large payment." in place of the plain line. It is a caution, not a refusal; a bought name
+keeps its own caution (test/name-completed-at.test.mjs, test/popup-checks-dom.test.mjs 9d).
+
 **What happens when the sources disagree.** There is no hard refusal on a disagreeing source. The wallet
 warns and lets you decide:
 

@@ -67,6 +67,10 @@
   ("alice.csd points to a different address than when you last paid it. Continue only if you expected this.") and
   its buttons read "Send to new address" and "Cancel". The history row of a popup send or token send to a name keeps
   the name; the transaction is the same (test/name-redirect-dom.test.mjs, test/name-redirect-history.test.mjs).
+- A name whose holding was completed above this release's newest header table entry shows "New name, only partly
+  verified. Check the address before a large payment." in amber in place of the plain line. The name proof returns
+  the height of the event that completed the holding (its `nfinalize`, not the commit that the record's height
+  names); a transfer or an address change above the entry leaves the plain line (test/name-completed-at.test.mjs).
 
 ## 0.3.4
 

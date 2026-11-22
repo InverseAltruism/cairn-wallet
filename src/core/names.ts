@@ -8,7 +8,7 @@ import { CLARVIS_TRADE_API } from "./endpoints.js";
 
 // What resolveName and confirmName answer: a refusal (ok false, with error), or the address to send to and how
 // far it was verified.
-export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
 // What name resolution reads through the wallet. verifyName is called through the wallet so an instance override
 // applies (test/resolve-lapse-corroborate replaces it to test the resolve logic without SPV). spvGen is bumped on
 // every endpoint change: a verification that began under an older value caches nothing.
@@ -65,7 +65,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
       // copy. A real lapse still refuses exactly as before; this only removes the FALSE refusal.
       const lv = await wallet.verifyName(nm).catch(() => null);
       if (lv?.verified && lv.addr)
-        return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
+        return { ok: true, name: nm, addr: lv.addr, via: j.via, owner: j.owner, lapsed: false, verified: true, depth: lv.depth, completedAt: lv.completedAt, sources: lv.sources, disagree: lv.disagree, soleSource: lv.soleSource };
       return lv?.lapsed === true
         ? { ok: false, lapsed: true, error: `${nm}.csd lease has lapsed: can't send to it` }
         : { ok: false, lapsed: true, error: `${nm}.csd: the resolver reports the lease lapsed, but this couldn't be confirmed on-chain; refusing to send to a possibly-stale address (try again, or check the name on the explorer)` };
@@ -79,7 +79,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     // "does NOT match / hostile resolver" refusal branch is deleted; the union replaced that
     // refusal with serve-the-proven-winner + disagree, so no emitted reason ever matched it.)
     const v = await wallet.verifyName(nm).catch(() => null);
-    if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, sources: v.sources, disagree: v.disagree, soleSource: v.soleSource };
+    if (v?.verified && v.addr) return { ...base, addr: v.addr, verified: true, depth: v.depth, completedAt: v.completedAt, sources: v.sources, disagree: v.disagree, soleSource: v.soleSource };
     // NS-2: gate on the PROVEN lapse, not a served flag. A resolver that OMITS `lapsed` but serves an
     // address for a genuinely-lapsed name reaches here; verifyName's union already computed the lapse
     // (resolve(events, lapseTip).expired, corroborated by the persisted floor at namespv.ts). Refuse a
@@ -149,12 +149,12 @@ async function rememberHintSet(wallet: NameIo, nm: string, res: NameVerification
   const tip = await wallet.tip();
   if (tip == null || !Number.isFinite(tip) || gen !== wallet.spvGen()) return;
   wallet.nameHints().set(nm, {
-    name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth,
+    name: nm, pairs, hashes, addr: res.addr, owner: res.owner, via: res.via, depth: res.depth, completedAt: res.completedAt,
     ts: Date.now(), epoch: Math.floor(tip / EPOCH_LEN),
   });
 }
 
-async function tryConfirmHintSet(wallet: NameIo, nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
+async function tryConfirmHintSet(wallet: NameIo, nm: string): Promise<{ ok: true; name: string; addr: string; via?: string; owner?: string; lapsed: false; verified: true; depth?: number; completedAt?: number; sources: number; disagree: boolean; soleSource: false; viaFill: false } | null> {
   const gen = wallet.spvGen();
   const cache = wallet.nameHints().get(nm);
   if (!cache) return null;
@@ -177,7 +177,7 @@ async function tryConfirmHintSet(wallet: NameIo, nm: string): Promise<{ ok: true
   if (!verdict.skip || gen !== wallet.spvGen()) return null;
   return {
     ok: true, name: nm, addr: cache.addr, via: cache.via, owner: cache.owner, lapsed: false,
-    verified: true, depth: cache.depth, sources: verdict.sources, disagree: verdict.disagree,
+    verified: true, depth: cache.depth, completedAt: cache.completedAt, sources: verdict.sources, disagree: verdict.disagree,
     soleSource: false, viaFill: false,
   };
 }

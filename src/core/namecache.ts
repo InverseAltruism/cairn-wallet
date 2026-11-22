@@ -17,6 +17,7 @@ export interface HintSetEntry {
   owner?: string;
   via?: string;
   depth?: number;
+  completedAt?: number;
   ts: number;
   epoch: number;
 }

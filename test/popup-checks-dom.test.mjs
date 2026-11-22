@@ -30,6 +30,8 @@
 // Run: node --import tsx test/popup-checks-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
+import { SENTENCES } from "../src/popup/sentences.ts";
+import { SPV_NEWEST_HEIGHT } from "../src/core/spvnewest.ts";
 
 const { check, done } = checker("popup review checks, pending poll, history, names (real popup.ts):");
 const { byId } = installFakeDom({ autoCreate: true });
@@ -263,6 +265,30 @@ console.log("9. the send review's Name row");
   check(`9a the Name row is the name and the short address, without the name service's "via" field (${name})`, name === "alice.csd → 0x313131…3131");
   check("9b the badge sentence is in the name check row, word for word, once", rows().length === 1 && rows()[0].tier === "ok" && rows()[0].html.includes(badge) && !name.includes("Chain-backed"));
   check("9c the To address is grouped in fours and its text is the raw address", String(byId("c-to").innerHTML).replace(/<[^>]*>/g, "") === PAID && (String(byId("c-to").innerHTML).match(/<span>/g) || []).length === 10);
+}
+
+// 9d. WL1.5 (D20): a name whose holding was completed above this release's newest table entry gets [A18], amber, in
+//     place of the plain line; one completed at or below it keeps the plain line. A bought name or a name one source
+//     alone decided keeps its own caution. RED-FIRST: drop `partly` from resolveRecipient and 9d1 fails.
+console.log("9d. a name newer than this release");
+{
+  const A18 = SENTENCES.A18.text;
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, completedAt: SPV_NEWEST_HEIGHT + 9 };
+  await review("alice.csd");
+  check(`9d1 completed above the newest entry: [A18], amber (${rows()[0]?.tier})`, rows().length === 1 && rows()[0].tier === "caution" && rows()[0].html.includes(A18) && !rows()[0].html.includes("(same operator)"));
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, completedAt: SPV_NEWEST_HEIGHT };
+  await review("alice.csd");
+  check("9d2 honest: completed at the newest entry: the plain line, ok tier", rows()[0]?.tier === "ok" && !rows()[0].html.includes(A18) && rows()[0].html.includes("(same operator)"));
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14 };
+  await review("alice.csd");
+  check("9d3 honest: no completing height (an older background): the plain line", rows()[0]?.tier === "ok" && !rows()[0].html.includes(A18));
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, soleSource: true, completedAt: SPV_NEWEST_HEIGHT + 9 };
+  await review("alice.csd");
+  check("9d4 one source alone decided: its own caution, not [A18]", !rows()[0]?.html.includes(A18) && /only one name source could prove/.test(rows()[0]?.html ?? ""));
+  resolveAns = { ok: true, addr: PAID, verified: false, viaFill: true, sources: 2, completedAt: SPV_NEWEST_HEIGHT + 9 };
+  await review("alice.csd");
+  check("9d5 a bought name: its purchased-name caution, not [A18]", !rows()[0]?.html.includes(A18) && /Purchased name/.test(rows()[0]?.html ?? ""));
+  resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, via: "owner" };
 }
 
 // 10. W-12: a link to the explorer or the site ends in the sprite's external-link icon, never an arrow character, and

@@ -234,6 +234,11 @@ Beside it:
   - Then: full-block merkle bind, signer auth and prevout-ownership bind, and the two-source union (`verifyNameUnion`:
     primary and clarvis). A disagreeing source is a warning, not a refusal (the warn-over-block rule; `SECURITY.md`
     states it).
+  - The replay also returns `completedAt`, the height of the event that completed the name's current holding
+    (`completingHeight`: the lowest event height at which the vendored resolver over the events up to it already
+    holds a record with the final `claimId` and `effectiveHeight`, not pending). The popup shows `[A18]` when it is
+    above the release's newest table entry (`spvnewest.ts`), since such a holding rests on headers above the table
+    that the answering servers also serve (test/name-completed-at.test.mjs, test/popup-checks-dom.test.mjs 9d).
   - Store, sync, migration and the union's lapse and badge rules: `docs/DESIGN-namespv-scaling.md`.
 - `spvnewest.ts`: the anchor table's newest height alone, written by the generator beside `spvanchors.ts`.
   `chainbound.ts`: `heightOf` (a served tip or stored floor counts only as a positive safe integer) and
