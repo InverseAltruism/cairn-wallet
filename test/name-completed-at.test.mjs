@@ -10,6 +10,7 @@
 // RED-FIRST: on the commit before this one, completedAt is absent and (1), (2), (3) fail; returning the record's
 // `effectiveHeight` (the commit's height) instead of completingHeight fails (1a), (1b) and (2a).
 // Run: node --import tsx test/name-completed-at.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { verifyNameUnion } from "../src/core/namespv.ts";
 import { resolveName } from "../src/core/names.ts";
 import { SPV_NEWEST_HEIGHT } from "../src/core/spvnewest.ts";
