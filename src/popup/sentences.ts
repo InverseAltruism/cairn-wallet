@@ -65,20 +65,24 @@ const SEND_CODES: Record<string, SentenceKey> = { INSUFFICIENT: "S4", TOO_MANY_I
 export type Flow = "send" | "other";
 /** The sentence for a result's code and reason (core/submitverdict.ts RefusalReason); null in an "other" flow for a code
  *  not worded yet, and in a "send" flow only for a result that is not a refusal. */
+// A code is read only as a string and only as an own key of a table, so a code named like an Object.prototype member
+// or one that is not a string takes the default (test/sentences-copy.test.mjs (6)).
+const own = (t: Record<string, SentenceKey>, code: string): SentenceKey | null => Object.hasOwn(t, code) ? t[code]! : null;
 export function sentenceKeyOf(r: { ok?: unknown; code?: unknown; reason?: unknown; feeCap?: unknown } | null | undefined, flow: Flow = "other"): SentenceKey | null {
-  const code = String(r?.code ?? ""), reason = typeof r?.reason === "string" ? r.reason : "";
+  const code = typeof r?.code === "string" ? r.code : "", reason = typeof r?.reason === "string" ? r.reason : "";
   if (code === "SUBMIT_REJECTED") return reason === "FEE" ? "R4" : reason === "BUSY" ? "R5" : "R6";
   if (code === "SUBMIT_MAYBE_INFLIGHT") return !reason ? "R2" : reason === "FEE" ? "MR_FEE" : reason === "BUSY" ? "MR_BUSY" : "MR_OTHER";
-  const key = BY_CODE[code] ?? null;
+  const key = own(BY_CODE, code);
   if (key || flow !== "send" || r?.ok === true) return key;
   // S12 names the cap, so a FEE_CAP without one (none reaches a send) reads as R1
   if (code === "FEE_CAP" && !Number.isSafeInteger(r?.feeCap)) return "R1";
-  return SEND_CODES[code] ?? "R1";
+  return own(SEND_CODES, code) ?? "R1";
 }
-/** The line, its tone and Details for a key, with its variable parts filled; `code` is added to Details, never a
- *  server's text. */
+/** The line, its tone and Details for a key, with its variable parts filled; `code` is added to Details when it has a
+ *  machine code's shape, never a server's text. */
 export function sentenceOf(key: SentenceKey, code?: unknown, vars: Vars = {}): Sentence {
   const s: Sentence = SENTENCES[key];
   const text = s.text.replace(/\{(amount|cap|name)\}/g, (_m, k: keyof Vars) => vars[k] ?? "?");
-  return { ...s, text, details: code ? `${s.details} (${String(code)})` : s.details };
+  return { ...s, text, details: typeof code === "string" && CODE_SHAPE.test(code) ? `${s.details} (${code})` : s.details };
 }
+const CODE_SHAPE = /^[A-Z][A-Z0-9_]{0,47}$/;

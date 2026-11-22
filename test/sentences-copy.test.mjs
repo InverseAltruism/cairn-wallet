@@ -48,4 +48,22 @@ check("(4) an accepted send has no refusal line", sentenceKeyOf({ ok: true, txid
 // (5) Outside a send the send's own lines do not apply: a merge's INSUFFICIENT means the coins are smaller than the fee.
 check("(5) a merge's INSUFFICIENT keeps its own text (no key outside a send)", sentenceKeyOf({ ok: false, code: "INSUFFICIENT" }) === null && sentenceKeyOf({ ok: false, code: "FEE_CAP", feeCap: 1 }) === null);
 check("(5) a code worded everywhere is worded outside a send too", sentenceKeyOf({ ok: false, code: "SEAL_UNKNOWN" }) === "Q4" && sentenceKeyOf({ ok: false, code: "VERIFY_TAMPER" }) === "S10");
+// (6) The selector is total: a code read from a result counts only as a string and an own key of a table. Hostile codes
+// take the default (R1 in a send, no key elsewhere), and sentenceOf adds to Details only a code of the machine shape.
+const throwing = { toString() { throw new Error("boom"); } };
+const HOSTILE = ["toString", "constructor", "valueOf", "__proto__", "hasOwnProperty", "isPrototypeOf", 7, null, true, {}, [], throwing, { toString: 1 }, "X".repeat(100_000), "SEAL_UNKNOWN ", "seal_unknown"];
+for (const code of HOSTILE) {
+  const label = typeof code === "string" ? JSON.stringify(code.slice(0, 20)) : Object.prototype.toString.call(code);
+  let send, other, details, threw = null;
+  try {
+    send = sentenceKeyOf({ ok: false, code }, "send"); other = sentenceKeyOf({ ok: false, code });
+    details = sentenceOf(send, code).details;
+  } catch (e) { threw = e; }
+  check(`(6) hostile code ${label}: no throw, R1 in a send (${send}), none elsewhere (${other}), Details without it`, threw === null && send === "R1" && other === null && details === SENTENCES.R1.details);
+}
+check("(6) a hostile reason takes the default too", sentenceKeyOf({ code: "SUBMIT_REJECTED", reason: throwing }) === "R6" && sentenceKeyOf({ code: "SUBMIT_MAYBE_INFLIGHT", reason: "toString" }) === "MR_OTHER");
+// paired: every real code still gets its line, and its code under Details
+const REAL = { SUBMIT_DUPLICATE: "R3", USER_REJECTED: "R7", WALLET_LOCKED: "R8", ACCOUNT_CHANGED: "R9", FIRST_PARTY_ONLY: "R10", VERIFY_UNAVAILABLE: "S9", VERIFY_TAMPER: "S10", VERIFY_HORIZON: "S11", VERIFY_UNREPRESENTABLE: "S11", GHOST_INPUTS_SKIPPED: "S11", SEAL_UNKNOWN: "Q4" };
+for (const [code, key] of Object.entries(REAL)) check(`(6) honest: ${code} reads ${key}, with the code under Details`, sentenceKeyOf({ ok: false, code }) === key && sentenceKeyOf({ ok: false, code }, "send") === key && sentenceOf(key, code).details.endsWith(`(${code})`));
+for (const [code, key] of Object.entries({ INSUFFICIENT: "S4", TOO_MANY_INPUTS: "S8", ZERO_ADDR_REFUSED: "S2" })) check(`(6) honest: a send's ${code} reads ${key}`, sentenceKeyOf({ ok: false, code }, "send") === key);
 done("sentences-copy");
