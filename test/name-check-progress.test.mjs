@@ -77,7 +77,7 @@ console.log("4. lookups in order, and the answers cleared");
   };
   const w = new Wallet(memoryStore());
   await w.create("pw-namecheck-12345");
-  w.verifyName = () => new Promise(() => {});   // the check never ends here; only the served answers are read
+  w.verifyName = () => new Promise(() => undefined);   // the check does not end here; only the served answers are read
   const tick = () => new Promise((r) => setTimeout(r, 10));
   queue.push(OLD, NEW);
   void w.resolveName("alice"); await tick();     // lookup 1: its answer is held
