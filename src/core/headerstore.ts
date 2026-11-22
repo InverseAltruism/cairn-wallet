@@ -5,6 +5,7 @@
 // Nothing read from the store is trusted: acquisition verifies every chunk against its two baked
 // hashes before use. Every store failure (open, read, write) degrades to "no cache", not a refusal.
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
+import type { SealRecord } from "./spvseal.js";
 
 export const DB_NAME = "cairn-wallet-spv";
 export const DB_VERSION = 1;
@@ -56,6 +57,8 @@ export interface StoreWrite {
   /** Deletes every chunk key above this one (a suffix truncation). */
   deleteAbove?: number;
   head?: HeadHint;
+  /** The whole seal record (core/spvseal.ts), `meta` key "seals"; read back only through checkSeals. */
+  seals?: SealRecord;
 }
 
 export interface HeaderStore {
@@ -136,6 +139,7 @@ function wrap(db: IDBDatabase): HeaderStore {
       for (const k of w.del ?? []) checkKey(k);
       if (w.deleteAbove !== undefined) checkKey(w.deleteAbove);
       if (w.head !== undefined && !isHeadHint(w.head)) throw new TypeError("header store head is malformed");
+      for (const e of w.seals?.list ?? []) checkKey(e.k);
       // One transaction, every request issued in this task: once control returns to the event loop with no
       // request pending, IndexedDB auto-commits, so a request after a timer or fetch await lands outside it
       // (test/headerstore-chrome.test.mjs pins both the single transaction and that failure in real Chrome).
@@ -146,6 +150,7 @@ function wrap(db: IDBDatabase): HeaderStore {
       for (const k of w.del ?? []) chunks.delete(k);
       for (const p of w.put ?? []) chunks.put(p.records.slice().buffer, p.k);
       if (w.head) tx.objectStore(META).put(w.head, "head");
+      if (w.seals) tx.objectStore(META).put(w.seals, "seals");
       return done;
     },
     close() { db.close(); },

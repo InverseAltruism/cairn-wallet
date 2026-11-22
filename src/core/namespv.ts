@@ -953,15 +953,20 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const storeWriters = new Map<HeaderStore, { tail: Promise<void>; busy: boolean; pending: StoreWrite | null }>();
 const acquirers = new Map<HeaderStore, { writes(): Promise<void> }>();
 
-/** `newer` after `older` as one write: newer's puts and head win, and older's puts above newer's deleteAbove are dropped. */
+/**
+ * `newer` after `older` as one write: newer's puts, head and seal list win, and older's puts and seal entries above
+ * newer's deleteAbove are dropped (a seal list cut from the top still verifies).
+ */
 export function mergeStoreWrites(older: StoreWrite, newer: StoreWrite): StoreWrite {
   if (older.del?.length || newer.del?.length) throw new Error("mergeStoreWrites: suffix writes carry no del");
+  const below = (k: number) => newer.deleteAbove === undefined || k <= newer.deleteAbove;
   const put = new Map<number, Uint8Array>();
-  for (const p of older.put ?? []) if (newer.deleteAbove === undefined || p.k <= newer.deleteAbove) put.set(p.k, p.records);
+  for (const p of older.put ?? []) if (below(p.k)) put.set(p.k, p.records);
   for (const p of newer.put ?? []) put.set(p.k, p.records);
   const deleteAbove = newer.deleteAbove ?? older.deleteAbove;
   const head = newer.head ?? older.head;
-  return { put: [...put].map(([k, records]) => ({ k, records })), ...(deleteAbove !== undefined ? { deleteAbove } : {}), ...(head ? { head } : {}) };
+  const seals = newer.seals ?? (older.seals && { ...older.seals, list: older.seals.list.filter((e) => below(e.k)) });
+  return { put: [...put].map(([k, records]) => ({ k, records })), ...(deleteAbove !== undefined ? { deleteAbove } : {}), ...(head ? { head } : {}), ...(seals ? { seals } : {}) };
 }
 
 export function detachStoreWrite(store: HeaderStore, w: StoreWrite): void {

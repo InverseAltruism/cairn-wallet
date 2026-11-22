@@ -147,5 +147,28 @@ const acq = await scenario("acquisition over the real store", async () => {
 });
 t.check("a corrupt stored chunk is refetched once and the store holds the verified bytes after", acq?.fetches === 1 && acq.got === 9 && acq.stored === 9);
 
+const sealed = await scenario("seal record", async (H) => {
+  const seals = { v: 1, newest: 143359, list: [{ k: 35, top: H, work: "340282366920938463463374607431768211455", mac: "ab".repeat(32) }] };
+  const s = await HS.openHeaderStore();
+  const real = IDBDatabase.prototype.transaction;
+  let n = 0;
+  IDBDatabase.prototype.transaction = function (...a) { n++; return real.apply(this, a); };
+  try {
+    await s.write({ put: [{ k: 35, records: new Uint8Array(84).fill(35) }], deleteAbove: 35, head: { v: 2, tip: 147455, tipHash: H }, seals });
+  } finally {
+    IDBDatabase.prototype.transaction = real;
+  }
+  let threw = false;
+  try { await s.write({ seals: { v: 1, newest: 143359, list: [{ ...seals.list[0], k: HS.MAX_CHUNK + 1 }] } }); } catch { threw = true; }
+  s.close();
+  const db = await new Promise((res) => { const q = indexedDB.open(HS.DB_NAME); q.onsuccess = () => res(q.result); });
+  const back = await new Promise((res) => { const q = db.transaction("meta", "readonly").objectStore("meta").get("seals"); q.onsuccess = () => res(q.result); });
+  const version = db.version;
+  db.close();
+  return { n, threw, back, version, same: JSON.stringify(back) === JSON.stringify(seals) };
+}, H);
+t.check(`a seal record is written in the chunks' and head's one transaction (${sealed?.n}) and reads back from meta as written`, sealed?.n === 1 && sealed.same === true);
+t.check("a seal entry for a chunk key outside the bounds rejects the write before any transaction; the database stays version 1", sealed?.threw === true && sealed.back?.list[0].k === 35 && sealed.version === 1);
+
 await browser.close();
 t.done("headerstore-chrome");
