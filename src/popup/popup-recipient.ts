@@ -5,10 +5,11 @@ import { NAME_SAFE_DEPTH, reresolveUnchanged, recipientStatus, paidRecipients, l
 import { call } from "./popup-bridge.js";
 import { SPV_NEWEST_HEIGHT } from "../core/spvnewest.js";
 import { sentenceOf } from "./sentences.js";
+import { sentenceHtml } from "./popup-outcome.js";
 
 // Resolve a send recipient: a 0x… address as-is, or a .csd name (nset addr else owner; refuse lapsed).
 const looksLikeName = (s: string) => /\.csd$/i.test(s) || isPlainName(s.toLowerCase()); // L10: single-sourced NAME_RE
-export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean; partly?: boolean; lapseUnconfirmed?: boolean }> {
+export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr?: string; name?: string | null; label?: string | null; badge?: string; lowDepth?: boolean; error?: string; verified?: boolean; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean; partly?: boolean; lapseUnconfirmed?: boolean; lineHtml?: string }> {
   const r = (raw || "").trim();
   // Refuse the zero address outright: a send there is an irrecoverable burn. Defense-in-depth for the V23
   // transition: a wallet that CARRIES this guard but whose vendored core still lacked the v23 branch would
@@ -43,14 +44,16 @@ export async function resolveRecipient(raw: string): Promise<{ ok: boolean; addr
       && typeof res.completedAt === "number" && res.completedAt > SPV_NEWEST_HEIGHT;
     // [A4]: the name service or the served tip says the lease ran out and the wallet could not settle it.
     const lapseUnconfirmed = res.lapseUnconfirmed === true;
-    const badge = lapseUnconfirmed ? sentenceOf("A4", undefined, { name: `${nm}.csd` }).text : partly ? sentenceOf("A18").text : !verified
+    // [A4] and [A18] stand in place of the name's paragraph: the review row is that line alone, with its Details.
+    const line = lapseUnconfirmed ? sentenceOf("A4", undefined, { name: `${nm}.csd` }) : partly ? sentenceOf("A18") : null;
+    const badge = line ? line.text : !verified
       ? (viaFill ? "Purchased name: it can't be name-scope-proven, so confirm the address." : "Not chain-verified: confirm the address.")
       : res.soleSource ? `Only one name source could prove this address, and it isn't independently corroborated: confirm it out-of-band before sending${conf}.`
       : res.disagree ? `Chain-backed, but a name source disagreed (or hasn't indexed it yet): verify the address${conf}.`
       : (res.sources ?? 1) >= 2
         ? (lowDepth ? `Chain-backed, ${res.sources} servers agree, only${conf}: it could still reorg.` : `Chain-backed, ${res.sources} name servers agree (same operator)${conf}.`)
         : `Chain-backed, but only 1 source answered: the second server is unreachable, a weaker guarantee${conf}.`;
-    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, partly, lapseUnconfirmed, label: `${nm}.csd → ${short(res.addr)}`, badge };
+    return { ok: true, addr: res.addr, name: nm, verified, sources: res.sources, disagree: res.disagree, soleSource: res.soleSource, viaFill, lowDepth, partly, lapseUnconfirmed, ...(line ? { lineHtml: sentenceHtml(line) } : {}), label: `${nm}.csd → ${short(res.addr)}`, badge };
   }
   return { ok: false, error: "Enter a 0x… address or a name.csd." };
 }

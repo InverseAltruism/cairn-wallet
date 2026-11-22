@@ -3,6 +3,7 @@ import { checkRow, type Check, escapeHtml } from "./clearsign.js";
 import { fmtCsd } from "../core/cairnx.js";
 import { LAPSE_BUTTONS, REDIRECT_BUTTONS, type ReviewButtons, sentenceOf } from "./sentences.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
+import { sentenceHtml } from "./popup-outcome.js";
 import { $, busy, msg, msgAction, msgOutcome, statusWrites } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
 import { celebrateSend, mergePendingNow, refreshBalance } from "./popup-balance.js";
@@ -109,7 +110,7 @@ function labelButtons(f: SendFlow, buttons: ReviewButtons | null) {
 // `redirected`: the .csd name of a send whose address differs from the one this account last paid it at ([A19], first).
 export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments", redirected: string | null = null): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
-  const out: Check[] = redirected ? [{ tier: "caution", html: escapeHtml(sentenceOf("A19", undefined, { name: redirected }).text) }] : [];
+  const out: Check[] = redirected ? [{ tier: "caution", html: sentenceHtml(sentenceOf("A19", undefined, { name: redirected })) }] : [];
   if (nameCaution) out.push(nameCaution);
   if (lookalike) out.push({ tier: "danger", html: `<b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is <b>not</b> the same address. Verify every character. ${Noun} are irreversible.` });
   else if (firstTime) out.push({ tier: "caution", html: `First time sending to this address: check every character. ${Noun} are irreversible.` });

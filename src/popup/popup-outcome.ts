@@ -27,6 +27,8 @@ export function sentenceOutcome(key: SentenceKey, code?: unknown, details?: stri
 }
 /** The Details disclosure under a result line, in the popup and the approval window. */
 export const detailsHtml = (d: string): string => `<details class="msg-details"><summary>Details</summary><small>${escapeHtml(d)}</small></details>`;
+/** A sentence as a review row's content: its line, and its technical sentence behind Details. */
+export const sentenceHtml = (s: { text: string; details: string }): string => escapeHtml(s.text) + detailsHtml(s.details);
 const clause = (s: unknown): string => String(s).replace(/[.\s]+$/, "");
 const capOf = (r: any): Vars => (Number.isSafeInteger(r?.feeCap) ? { cap: fmtCsd(r.feeCap) } : {});
 // A result whose code the sentence module words shows its line (sentences.ts). In a send every refusal is worded (R1

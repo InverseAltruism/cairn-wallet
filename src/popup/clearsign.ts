@@ -973,8 +973,9 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: NameInf
 // Below this many confirmations a name's resolution could still reorg: the badge says so and the review row is caution.
 export const NAME_SAFE_DEPTH = 3;
 /** A send review's name row: positive only on the caution's agree branch at a depth that can no longer reorg. */
-export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; partly?: boolean }): Check | null {
+export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; partly?: boolean; lineHtml?: string }): Check | null {
   if (!rr.name) return null;
+  if (rr.lineHtml) return { tier: "caution", html: rr.lineHtml };   // a sheet line that stands alone ([A4], [A18]), amber
   const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
   const ok = nameBranch(rr.verified, info) === "agree" && !rr.lowDepth && !rr.partly;   // [A18] is amber
   const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";

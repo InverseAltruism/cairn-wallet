@@ -6,7 +6,7 @@
 // RED-FIRST: on the commit before this one, (1a) to (1e), (2a), (4a) and (4b) fail; (2b) and (3a) to (3e) pass there.
 // Run: node --import tsx test/name-redirect-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
-import { sentenceOf, REDIRECT_BUTTONS } from "../src/popup/sentences.ts";
+import { sentenceOf, REDIRECT_BUTTONS, SENTENCES } from "../src/popup/sentences.ts";
 import { checker } from "./helpers/check.mjs";
 
 const { byId } = installFakeDom({ autoCreate: true });
@@ -54,6 +54,24 @@ await byId("btn-send-confirm").click(); await flush();
 const last = sends.at(-1);
 check(`(1d) that Confirm signs the reviewed send, to NEW, and passes the name for the row (${JSON.stringify(last?.slice(0, 1))}, ${last?.[4]})`, last?.[0] === NEW && last?.[1] === 1e8 && last?.[4] === "alice");
 check("(1e) honest: Back and Confirm read as before once the review is gone", byId("btn-send-confirm").textContent === "Confirm send" && byId("btn-send-back").textContent === "Back");
+check("(1f) [A19] carries the sheet's technical sentence behind Details", r.warn.includes("<summary>Details</summary>") && r.warn.includes(SENTENCES.A19.details.replace(/'/g, "&#39;")));
+
+console.log("1b. after \"Send to new address\" the confirm-time re-check still decides, and Cancel restores the labels");
+{
+  const THIRD = "0x" + "53".repeat(20);
+  history = [paid(OLD, "alice", 10)];
+  resolved.alice = NEW;
+  r = await csdReview("alice.csd");
+  const n0 = sends.length;
+  resolved.alice = THIRD;                       // the name moved again between the review and the click
+  await byId("btn-send-confirm").click(); await flush();
+  check(`(1g) the name moved again before "Send to new address": nothing is signed (${sends.length - n0} sends)`, r.confirm === REDIRECT_BUTTONS.confirm && sends.length === n0 && /changed where it points/.test(byId("msg").textContent));
+  check("(1g) ...and the buttons read as before", byId("btn-send-confirm").textContent === "Confirm send" && byId("btn-send-back").textContent === "Back");
+  resolved.alice = NEW;
+  r = await csdReview("alice.csd");
+  byId("btn-send-back").click(); await flush();
+  check(`(1h) Cancel on an [A19] review restores "Confirm send" and "Back" (${byId("btn-send-confirm").textContent}, ${byId("btn-send-back").textContent})`, r.back === REDIRECT_BUTTONS.back && byId("btn-send-confirm").textContent === "Confirm send" && byId("btn-send-back").textContent === "Back");
+}
 
 console.log("2. it fires on every redirection, by the newest row");
 history = [paid(NEW, "alice", 20), paid(OLD, "alice", 10)];
@@ -91,5 +109,11 @@ console.log("4. the token send");
   check(`(4a) a token send to alice.csd, last paid at OLD: [A19] with the two buttons (${byId("btn-tsend-confirm").textContent})`, warn.includes(A19) && byId("btn-tsend-confirm").textContent === REDIRECT_BUTTONS.confirm && byId("btn-tsend-back").textContent === REDIRECT_BUTTONS.back);
   await byId("btn-tsend-confirm").click(); await flush();
   check("(4b) its Confirm sends to NEW with the name", sends.at(-1)?.[0]?.to === NEW && sends.at(-1)?.[0]?.name === "alice");
+  byId("assets").querySelectorAll("[data-tsend]")[0].click(); await flush();
+  byId("ts-to").value = "alice.csd"; byId("ts-amt").value = "1";
+  await byId("btn-tsend").click(); await flush();
+  const relabelled = byId("btn-tsend-back").textContent === REDIRECT_BUTTONS.back;
+  byId("btn-tsend-back").click(); await flush();
+  check(`(4c) Cancel on a token [A19] review restores the labels (${byId("btn-tsend-confirm").textContent}, ${byId("btn-tsend-back").textContent})`, relabelled && byId("btn-tsend-confirm").textContent !== REDIRECT_BUTTONS.confirm && byId("btn-tsend-back").textContent !== REDIRECT_BUTTONS.back);
 }
 done("name-redirect-dom");

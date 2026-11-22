@@ -269,13 +269,16 @@ console.log("9. the send review's Name row");
 
 // 9d. WL1.5 (D20): a name whose holding was completed above this release's newest table entry gets [A18], amber, in
 //     place of the plain line; one completed at or below it keeps the plain line. A bought name or a name one source
-//     alone decided keeps its own caution. RED-FIRST: drop `partly` from resolveRecipient and 9d1 fails.
+//     alone decided keeps its own caution. RED-FIRST: drop `partly` from resolveRecipient and 9d1 fails; render the
+//     name's paragraph beside the line (nameCheck without its `lineHtml` return) and the second 9d1 fails.
 console.log("9d. a name newer than this release");
 {
   const A18 = SENTENCES.A18.text;
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, completedAt: SPV_NEWEST_HEIGHT + 9 };
   await review("alice.csd");
   check(`9d1 completed above the newest entry: [A18], amber (${rows()[0]?.tier})`, rows().length === 1 && rows()[0].tier === "caution" && rows()[0].html.includes(A18) && !rows()[0].html.includes("(same operator)"));
+  check("9d1 ...alone: no positive paragraph beside it (no \"chain-backed\", no \"name servers agree\")", !/chain-backed|name servers agree/i.test(rows()[0].html));
+  check("9d1 ...with the sheet's technical sentence behind Details", rows()[0].html.includes("<summary>Details</summary>") && rows()[0].html.includes(SENTENCES.A18.details.replace(/'/g, "&#39;")));
   resolveAns = { ok: true, addr: PAID, verified: true, sources: 2, depth: 14, completedAt: SPV_NEWEST_HEIGHT };
   await review("alice.csd");
   check("9d2 honest: completed at the newest entry: the plain line, ok tier", rows()[0]?.tier === "ok" && !rows()[0].html.includes(A18) && rows()[0].html.includes("(same operator)"));
