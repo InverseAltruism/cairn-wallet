@@ -22,7 +22,7 @@ function rig(stored) {
     async getChunk(k) { return chunks.get(k) ?? null; },
     async getHead() { return null; }, async getSeals() { return null; },
     async write(w) { writes.push(w); for (const k of w.del ?? []) chunks.delete(k); for (const p of w.put ?? []) chunks.set(p.k, p.records); },
-    close() {},
+    close() { /* nothing to release in memory */ },
   };
   let branch = A;
   const fetched = [];

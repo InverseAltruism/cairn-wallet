@@ -5,7 +5,7 @@
 // (invariant 4), the key fetched at each write, stale lists as a normal store state (invariant 1), and the Wallet's
 // wiring. Run: npx tsx test/namespv-seal-restore.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
-import { serveFixture, memStore, records, hashOf, headerOf, legacyOf, v1Snapshot, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
+import { serveFixture, memStore, records, hashOf, legacyOf, v1Snapshot, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
 import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { checkSeals, sealKeyGetter, sealRecord } from "../src/core/spvseal.ts";
 import { importKeyRaw } from "../src/core/keystore.ts";
