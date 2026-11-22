@@ -5,7 +5,7 @@
 // (invariant 4), the key fetched at each write, stale lists as a normal store state (invariant 1), and the Wallet's
 // wiring. Run: npx tsx test/namespv-seal-restore.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
-import { serveFixture, memStore, records, hashOf, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
+import { serveFixture, memStore, records, hashOf, headerOf, legacyOf, v1Snapshot, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
 import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { checkSeals, sealKeyGetter, sealRecord } from "../src/core/spvseal.ts";
 import { importKeyRaw } from "../src/core/keystore.ts";
@@ -234,6 +234,94 @@ console.log("6. the Wallet hands the source its seal key getter and the unlock s
   const k2 = await seen.sealKey();
   check("the getter gives a key unlocked, none locked, the same key after unlock", k1 !== null && kLocked === null && k2 !== null && Buffer.from(k1).equals(Buffer.from(k2)));
   check("the unlock signal waits while locked and settles at unlock", asleep && woke);
+}
+
+console.log("7. a reset and a new vault in the same worker drop the source and the session pin:");
+{
+  const session = memoryStore();
+  const w = new Wallet(memoryStore(), session);
+  const st = memStore();
+  let builds = 0;
+  w.spvBuildForTest = (o) => { builds++; return liveSpvSource({ ...o, rpcBase: `${API}/api/rpc`, headersBase: API, anchors: SEAL_ANCHORS, store: async () => st, legacy: undefined }); };
+  net.tip = SEAL_TOP;
+  await w.create("correct horse battery");
+  const kA = await w.sealKey();
+  await (await w.spvSource()).prepare(SEAL_TOP - 12);
+  await tick(); await flushSpvStoreWrites();
+  const sealedA = checkSeals(kA, st.seals, TABLE)?.length;
+  const pinA = await session.get("spvPin");
+  await w.reset();
+  const pinAfterReset = await session.get("spvPin");
+  await w.create("another battery staple");
+  const kB = await w.sealKey();
+  const { calls } = await seeds(async () => { await (await w.spvSource()).prepare(SEAL_TOP - 12); });
+  await tick(); await flushSpvStoreWrites();
+  check(`vault A sealed ${sealedA} chunks and wrote a pin; the reset deletes the pin (${pinA ? "pin" : "none"} then ${pinAfterReset ? "pin" : "none"})`, sealedA === 2 && !!pinA && pinAfterReset == null);
+  check(`vault B gets a new source (${builds} builds) whose restore seeds at the table (${calls.map((c) => c.anchor).join(",")}): A's seals do not verify under B's key`, builds === 2 && calls[0]?.anchor === SEAL_NEWEST);
+  check("  and the list stored after it verifies under B's key only", checkSeals(kB, st.seals, TABLE)?.length === 2 && checkSeals(kA, st.seals, TABLE) === null);
+}
+
+console.log("8. a source parked while locked makes no header request before the balance answer (invariant 10):");
+{
+  const fetchLog = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = (url, init) => { fetchLog.push(String(url)); return inner(url, init); };
+  const w = new Wallet(memoryStore(), memoryStore());
+  const st = honestStore();
+  st.chunks.delete(NEWEST_K);
+  w.spvBuildForTest = (o) => liveSpvSource({ ...o, rpcBase: `${API}/api/rpc`, headersBase: API, anchors: SEAL_ANCHORS, store: async () => st, legacy: undefined });
+  await w.create("correct horse battery");
+  await w.lock();
+  fetchLog.length = 0;
+  w.prewarmSpv();
+  await tick(); await tick();
+  const whileLocked = fetchLog.filter((u) => u.includes("/api/headers/")).length;
+  await w.unlock("correct horse battery");
+  await tick(); await tick();
+  const beforeBalance = fetchLog.filter((u) => u.includes("/api/headers/")).length;
+  await w.balance().catch(() => null);
+  for (let i = 0; i < 40 && !fetchLog.some((u) => u.includes("/api/headers/")); i++) await tick();
+  const firstHeader = fetchLog.findIndex((u) => u.includes("/api/headers/")), firstBalance = fetchLog.findIndex((u) => u.includes("/utxos/"));
+  globalThis.fetch = inner;
+  check(`no header request while locked (${whileLocked}) nor between unlock and the balance answer (${beforeBalance})`, whileLocked === 0 && beforeBalance === 0);
+  check(`  the parked restore requests the anchor chunk after the balance request (balance at ${firstBalance}, first header page at ${firstHeader})`, firstBalance >= 0 && firstHeader > firstBalance);
+}
+
+console.log("9. a pin exactly at the sealed top:");
+{
+  // A pin 0 above the restore's base is not walked: the restore seeds at the seal.
+  const st3 = honestStore();
+  const pinSlot = { value: { v: 1, newest: SEAL_NEWEST, tip: topOf(33), hash: hashOf(topOf(33)), work: workAt(topOf(33)).toString() }, get: async () => pinSlot.value, set: async (p) => { pinSlot.value = p; } };
+  const { out: s3, calls: c3 } = await seeds(async () => { const s = await liveSpvSource(opts(st3, { pin: pinSlot })); await s.prepare(SEAL_TOP - 12); return s; });
+  check(`one client seeded at the seal (${c3.map((c) => `${c.anchor}/${c.n}`).join(",")}), honest headers`, c3.length === 1 && c3[0].anchor === topOf(33) && (await s3.hashAt(topOf(33))) === hashOf(topOf(33)) && (await s3.hashAt(SEAL_TOP)) === hashOf(SEAL_TOP));
+}
+
+console.log("10. a failed migration write: the base never moves above what is stored:");
+{
+  const kv = new Map([["spvHeaderChain", v1Snapshot(126976, 145000)]]);
+  let failed = false;
+  const st = memStore({ failWrite: (w) => (w.head && !failed ? (failed = true) : false) });
+  net.tip = SEAL_TOP;
+  const src = await liveSpvSource(opts(st, { legacy: legacyOf(kv) }));
+  await tick();
+  const p = await src.prepare(SEAL_TOP - 12);
+  await tick(); await flushSpvStoreWrites();
+  const bad = [];
+  for (let k = 32; k <= 35; k++) if (!Buffer.from(st.chunks.get(k) ?? []).equals(Buffer.from(records(k * CH, Math.min(topOf(k), SEAL_TOP))))) bad.push(k);
+  check(`after the migration write failed once, the chunks written afterwards are the chain's bytes (wrong: ${bad.join(",") || "none"}), verified to ${p.verifiedTip}`, failed && bad.length === 0 && p.verifiedTip === SEAL_TOP);
+}
+
+console.log("11. a reseed after a seal-seeded or rebased restore compares work counted once:");
+for (const how of ["seal-seeded", "rebased"]) {
+  const st = honestStore(145000);
+  if (how === "rebased") st.seals = null;
+  net.tip = SEAL_TOP;
+  let calls = 0;
+  net.tamper = (from, rows) => (from === 144896 && ++calls === 1 ? rows.map((x) => (x.height === 145001 ? { ...x, header: { ...x.header, nonce: x.header.nonce + 1 } } : x)) : rows);
+  const src = await liveSpvSource(opts(st));
+  const p = await src.prepare(SEAL_TOP - 12).catch((e) => ({ error: String(e?.message ?? e) }));
+  net.tamper = undefined;
+  check(`${how}: a page that breaks once reseeds from the table, and the honest chain with more work is adopted (${p.verifiedTip ?? p.error})`, p.verifiedTip === SEAL_TOP && calls >= 2 && (await src.hashAt(146000)) === hashOf(146000));
 }
 
 check(`the header database stays at version 1 (a bump makes 0.3.4 delete it) (${DB_VERSION})`, DB_VERSION === 1);

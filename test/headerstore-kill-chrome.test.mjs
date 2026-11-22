@@ -63,17 +63,18 @@ const readBack = (page) => page.evaluate(async () => {
   for (const k of keys) { const c = await s.getChunk(k); chunks.push(`${k}:${c[0]}:${c.length}`); }
   const head = await s.getHead(), seals = await s.getSeals();
   s.close();
-  return JSON.stringify({ chunks, tip: head?.tip ?? null, seals: seals?.list?.map((e) => e.k).join(",") ?? null });
+  return JSON.stringify({ chunks, tip: head?.tip ?? null, seals: seals?.list?.map((e) => `${e.k}:${e.top.slice(-4)}`).join(",") ?? null });
 });
 
 const H = (n) => "0x" + n.toString(16).padStart(64, "0");
-const entry = (k) => ({ k, top: H(k), work: String(k), mac: "ab".repeat(32) });
-const BEFORE = { put: [32, 33, 34].map((k) => ({ k, fill: 1, n: 4096 })), head: 143000, seals: [32] };
+// A list entry names its branch in its top: branch 1 is the chain BEFORE holds, branch 3 the reseed's.
+const entry = ([k, branch]) => ({ k, top: H(k * 16 + branch), work: String(k), mac: "ab".repeat(32) });
+const BEFORE = { put: [32, 33, 34, 35].map((k) => ({ k, fill: 1, n: 4096 })), head: 147455, seals: [[32, 1], [33, 1]] };
 // The writes, each applied over BEFORE.
 const WRITES = {
-  "a suffix write with its seal list": { put: [{ k: 34, fill: 2, n: 4096 }, { k: 35, fill: 2, n: 512 }], deleteAbove: 35, head: 143871, seals: [32, 33] },
-  "a seal-only write": { put: [], seals: [32, 33] },
-  "a reseed rewrite (truncate, puts, a new list)": { put: [{ k: 33, fill: 3, n: 4096 }, { k: 34, fill: 3, n: 100 }], deleteAbove: 34, head: 139363, seals: [32] },
+  "a suffix write with its seal list": { put: [{ k: 35, fill: 2, n: 4096 }, { k: 36, fill: 2, n: 512 }], deleteAbove: 36, head: 147967, seals: [[32, 1], [33, 1], [34, 1]] },
+  "a seal-only write": { put: [], seals: [[32, 1], [33, 1], [34, 1]] },
+  "a reseed rewrite (truncate, puts, a new list)": { put: [{ k: 33, fill: 3, n: 4096 }, { k: 34, fill: 3, n: 100 }], deleteAbove: 34, head: 139363, seals: [[32, 3]] },
 };
 
 async function applyBefore(page) {
@@ -112,7 +113,7 @@ const expect = (w) => {
     if (w.deleteAbove !== undefined) for (const k of [...chunks.keys()]) if (k > w.deleteAbove) chunks.delete(k);
     for (const p of w.put) chunks.set(p.k, `${p.k}:${p.fill}:${p.n * 84}`);
   }
-  return JSON.stringify({ chunks: [...chunks].sort((a, b) => a[0] - b[0]).map((e) => e[1]), tip: w?.head ?? BEFORE.head, seals: (w ?? BEFORE).seals.join(",") });
+  return JSON.stringify({ chunks: [...chunks].sort((a, b) => a[0] - b[0]).map((e) => e[1]), tip: w?.head ?? BEFORE.head, seals: (w ?? BEFORE).seals.map(entry).map((e) => `${e.k}:${e.top.slice(-4)}`).join(",") });
 };
 
 for (const [name, w] of Object.entries(WRITES)) {

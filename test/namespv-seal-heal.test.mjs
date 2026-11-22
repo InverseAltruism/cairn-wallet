@@ -68,6 +68,11 @@ const OPS = {
   "list for another table": (st) => { st.seals = { ...structuredClone(honestList), newest: SEAL_NEWEST + CH }; },
   "list naming a chunk with other bytes": (st) => { st.seals = sealRecord(KA, TABLE, [honestTops[0], { k: 33, top: "0x" + "ee".repeat(32), work: honestTops[1].work }]); },
   "no list": (st) => { st.seals = null; },
+  "a stored value JSON cannot write": (st) => {
+    const cyc = { v: 1, newest: SEAL_NEWEST, list: [] }; cyc.self = cyc;
+    st.seals = [1n, { ...structuredClone(honestList), extra: 2n }, cyc, { v: 1, newest: SEAL_NEWEST, list: [{ ...honestList.list[0], work: 5n }] }][ri(4)];
+  },
+  "a stored value with a prototype": (st) => { st.seals = Object.create(structuredClone(honestList)); },
   "broken head": (st) => { st.head = { v: 2, tip: SEAL_TOP + 999, tipHash: "0x" + "cd".repeat(32) }; },
 };
 const names = Object.keys(OPS);
