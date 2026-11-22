@@ -163,7 +163,9 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
 
 - The key is HMAC-SHA256 of the raw vault key under the label `cairn-wallet/spv-seal-key/v1`, derived from the
   current vault key at each use and held across no `await` (`sealKeyGetter`; the wallet passes it as
-  `opts.sealKey`). Locked, there is none. A new vault has a new key, under which old seals fail and are ignored.
+  `opts.sealKey`). Locked, there is none. A new vault has a new key, under which old seals fail and are ignored; a
+  reset drops the header source, its name hints and the session pin, and a source seals only under the vault it was
+  built for, so a new vault in the same worker starts from a new source (test/namespv-seal-restore.test.mjs 7).
 - A seal is a MAC over 145 bytes: a tag, the chunk index, the previous chunk's top hash (the table hash for the first
   chunk above the anchor), the chunk's top hash, its chainwork as u128 and the table's newest entry and hash. The
   record is `meta` key `seals`, `{ v: 1, newest, list: [{ k, top, work, mac }] }`, contiguous from the chunk above the
@@ -171,7 +173,8 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
   least 4,096 below the tip. The work counts from the light client's seed below the table's newest entry, as the pin's
   does; one helper (`seededClient`) seeds every client (the table, a seal, the pin, a rebase) and carries that base.
 - Restore: with a list stored and no key, the restore waits for unlock before any request (the install hook and the
-  popup's prewarm both build the source). With the key, `checkSeals` proves the list (any failed MAC ignores all of
+  popup's prewarm both build the source); after the unlock it resumes once the balance has answered or a lookup asks
+  for it, so its requests follow the balance request. With the key, `checkSeals` proves the list (any failed MAC ignores all of
   it), and `sealSeed` picks, top-down, the highest sealed chunk whose stored bytes walk from the top below it to its
   own seal. The client is seeded with that chunk's last 46 records and the stored chunks above it are ingested with
   every check, or walked to the session pin when the pin lies among them. When no sealed chunk walks, the restore
@@ -179,15 +182,19 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
   the one or two chunks above it, and its client holds at most 8,237 headers.
 - A height between the anchor and the client's base reads its chunk through the acquirer and the LRU, walked against
   the remembered tops; a stored chunk that fails is deleted and refetched, and a refetch that fails its seal answers
-  "could not verify" for that one call.
+  "could not verify" for that one call. The spec a read walks against is the one in force when the read runs, and an
+  LRU entry answers only the spec it was verified against, so a read across an adoption never serves or caches the
+  replaced chain; an adoption queues its rewrite after the acquirer's pending writes (test/headerstore-adoption.test.mjs).
 - A seal never refuses. An entry whose chunk is missing or holds other bytes is absent: a list a 0.3.4 install left
-  behind after it rewrote chunks, a write made while locked over sealed chunks, a write that was dropped. Only the
+  behind after it rewrote chunks, a write made while locked over sealed chunks, a write that was dropped. A stored
+  value that is no list at all (any structured-cloneable junk) proves nothing and is rewritten. Only the
   restore judges this; the writer does not cut a stored list it does not replace, because 0.3.4 does not read or
   write the list (its store code touches only `head` in `meta`) and the restore must judge its writes anyway. Once
   per source, when the key is there, the catch-up writes the list for every sealable chunk in the store when it
-  differs from the stored one, and moves the client's base to the highest sealed top (the rebase: the records above
-  are re-ingested with every check, 4,096 to 8,191 of them). A client longer than 16 chunks is rebased after a
-  persist, which bounds a long first sync's memory.
+  differs from what the stored record proves, and rebases a client seeded below the highest sealed top onto it (the
+  records above are re-ingested with every check, 4,096 to 8,191 of them; a client seeded at the session pin above
+  it stays as it is, and with the list current no pass runs over the walked run). The base never moves above the
+  persisted tip. A client longer than 16 chunks is rebased after a persist, which bounds a long first sync's memory.
 - Rollback: the database stays at version 1 (a bump makes 0.3.4 delete and recreate it), the seals live in `meta`,
   which 0.3.4 reads only at `head`, and the vault is untouched. 0.3.4 walks chunks to the table and ingests the suffix
   with every check, so it trusts no header that only a seal vouched for.
@@ -413,8 +420,9 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   to the session pin of headers verified earlier in the same browser session, or its walk to a seal the unlocked
   vault's key proves. This is the storage-poisoning defence: the profile is writable by whoever can write it, and a
   poisoned store can at most cost a refetch.
-- A seal never refuses: an entry that does not match its chunk is absent, and the headers it named are verified the
-  slow way and sealed again (test/namespv-seal-heal.test.mjs).
+- A seal never refuses: an entry that does not match its chunk is absent; at the restore the headers above the highest
+  entry that still walks are verified with every check, a lower chunk that fails is refetched when it is read, and
+  the list is written again (test/namespv-seal-heal.test.mjs).
 - The floor (29,960) does not move: a name event at height h needs the verified header at exactly h.
 - Store and network failures degrade to "no cache this session" or a refetch, not to a refusal of a send that
   would otherwise verify. The exception is an unreadable node tip (SPV-5): nothing is synced, so a name record above
