@@ -132,6 +132,11 @@ console.log("3. locked with a list stored, nothing is built or requested until u
   const { calls } = await seeds(async () => (await liveSpvSource(opts(st2, { unlocked: undefined }))).prepare(SEAL_TOP - 12));
   check(`a locked restore reads every chunk (${st2.readKeys.join(",")}) and seeds at the table with all ${calls[0]?.n} records`, st2.readKeys.join(",") === "31,32,33,34,35" && calls[0]?.anchor === SEAL_NEWEST && calls[0]?.n === SEED + SEAL_TOP - SEAL_NEWEST);
   cur = vk;
+  // A proven empty list means what no list means: the restore verifies from the table.
+  const st4 = honestStore();
+  st4.seals = sealRecord(K, TABLE, []);
+  const { calls: c4 } = await seeds(async () => (await liveSpvSource(opts(st4))).prepare(SEAL_TOP - 12));
+  check(`an empty list seeds at the table with every stored record (${c4[0]?.anchor}, ${c4[0]?.n} records)`, c4[0]?.anchor === SEAL_NEWEST && c4[0]?.n === SEED + SEAL_TOP - SEAL_NEWEST);
   // Unlocked, the wait is not taken: an unlock signal that never settles changes nothing.
   const st3 = honestStore();
   const t0 = performance.now();
