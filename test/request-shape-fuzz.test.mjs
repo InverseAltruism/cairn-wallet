@@ -26,6 +26,7 @@
 //   back. With revealFields total, dropping the revealClaim case from prequeueRefusal queues such a reveal, which the
 //   window paints with an empty txid, so this file stays green and test/request-shape-prequeue.test.mjs turns red.
 // Run: npx tsx test/request-shape-fuzz.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush } from "./helpers/approve-dom.mjs";

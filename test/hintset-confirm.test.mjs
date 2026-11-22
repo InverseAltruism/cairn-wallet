@@ -2,6 +2,7 @@
 // when sorted (txid,height) pairs match, no source served lapsed:true, header hashes are
 // unchanged, and the short TTL / tip-epoch bound still holds. Recompute disagree/sources
 // from the fresh claims. Never cache/skip M12 recovered / soleSource (pinned at the write site).
+import "./helpers/backup-host.mjs";
 import { evaluateHintSetSkip, hintPairsEqual, sortHintPairs, HINTSET_TTL_MS } from "../src/core/namecache.ts";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";

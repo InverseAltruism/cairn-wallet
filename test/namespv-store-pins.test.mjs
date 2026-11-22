@@ -3,6 +3,7 @@
 // chunk (cases 9 and 17) and a proof racing an acquisition (case 16). Each refusal is paired with the honest
 // path on the same call shape. Real mainnet headers (test/helpers/spvfixture.mjs), offline.
 // Run: npx tsx test/namespv-store-pins.test.mjs
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { serveFixture, memStore, legacyOf, records, hashOf, headerOf, forge, rehash, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";

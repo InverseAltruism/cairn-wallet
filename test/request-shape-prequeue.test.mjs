@@ -19,6 +19,7 @@
 //   sends a list there (cairn-sdk types each as a string or a number; the site's golden calls). Drop the attest case
 //   from prequeueRefusal and every refused attest row fails on the page path.
 // Run: npx tsx test/request-shape-prequeue.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
 import { mkCoin, txReply } from "./_coin.ts";

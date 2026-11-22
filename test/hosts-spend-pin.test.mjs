@@ -11,6 +11,7 @@
 // host. PAIRED UNTOUCHED CASE: both hosts healthy, every read goes to the main host (P5).
 //
 // Run: node --import tsx test/hosts-spend-pin.test.mjs   (offline; about 10 s, the hedge waits are real time)
+// routes the second host itself
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { DEFAULT_RPC, BACKUP_RPC } from "../src/core/endpoints.js";

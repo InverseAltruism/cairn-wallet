@@ -21,6 +21,7 @@
 //      RED-FIRST: drop the migration block in Wallet.init and G1-G4 fail. HONEST PATH: G5-G7.
 //
 // Run: node --import tsx test/signer-display-73b.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { fmtCsd, fmtBalance, describe, costBlock, feeValue, tokenQuoteHtml, tokenAmountBothScales, fillViewHtml, expiryValue, FILL_PAYS } from "../src/popup/clearsign.ts";
 import { registerContent } from "../src/core/node.ts";

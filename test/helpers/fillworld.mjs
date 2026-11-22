@@ -1,6 +1,7 @@
 // Shared fixture for the fclaim-lane second-source tests (fill-offer-crosscheck, fill-reservation-verdict): a
 // PoC-shaped world over the vendored resolver, a fetch stub that routes clarvis to a per-test handler, and fill(),
 // which runs the REAL Wallet.fillOffer preflight with a synthetic (pre-proven) SPV io.
+import "./backup-host.mjs";
 import { createHash } from "node:crypto";
 import { Wallet } from "../../src/core/wallet.js";
 import { memoryStore } from "../../src/core/storage.js";

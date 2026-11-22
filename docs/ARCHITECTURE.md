@@ -168,7 +168,8 @@ test/provider-discovery.test.mjs pins the discovery part.
 asks the preferred host, the other after `HEDGE_MS` or on the preferred host's failure, and returns the first answer
 with its host. The reads in `node.ts` take the wallet's RPC and go through it; a step that must stay on one host
 passes the host it got: a spend's source reads (`selectVerified`, `consolidate`) and a reconcile pass
-(`history.ts` `inclusionReads`). `balance()` adds `via: "backup"` when the second host answered.
+(`history.ts` `inclusionReads`). `balance()` adds `via: "backup"` when the second host answered. `submitEach(rpc,
+send)` sends to every host at once and resolves with the outcome as soon as `decideSubmit` decides it.
 
 ### The send engine (`node.ts`)
 
@@ -186,7 +187,11 @@ passes the host it got: a spend's source reads (`selectVerified`, `consolidate`)
    tamper/transient fold; all three skip classes are remembered for the session (`ghostSeen`, `horizonSeen`,
    `unrepSeen`, 120 s, 2,048 each), so a retry starts without the coins an attempt already skipped;
 4. the ghost re-select loop, then the proportional fee cap max(1 CSD, 10% of verified inputs), change to self only,
-   and `signAndSubmit` (`SUBMIT_REJECTED` versus `SUBMIT_MAYBE_INFLIGHT` versus `SUBMIT_DUPLICATE`).
+   and `signAndSubmit`: one signing, the bytes to every host of the RPC at once (`hosts.ts` `submitEach`), each answer
+   read by `submitverdict.ts` `classifyAnswer` (accepted, duplicate, refused with a `reason`, unclear) and the outcome
+   by `decideSubmit`: sent at the first acceptance, else once every host answered, unclear before duplicate before
+   refused (`SUBMIT_MAYBE_INFLIGHT`, `SUBMIT_DUPLICATE`, `SUBMIT_REJECTED`). The result's `hosts` logs each answer
+   and is stripped before a page receives it.
 
 Beside it:
 
@@ -316,8 +321,8 @@ dir: both files must be byte-identical to the committed ones.
   outer timeout sits above its server-side worst case; do not lower one without re-deriving the inner chain. The
   default RPC's second host, https://clarvis.cairn-substrate.com/api/rpc (`hosts.ts`): a read goes there 1.5 s
   (`HEDGE_MS`) after the main host if it has not answered, or at once when it failed; after a main failure the second
-  host is asked first for 60 s (`BACKUP_FIRST_MS`). With both healthy it gets no reads. A loopback RPC has no second
-  host.
+  host is asked first for 60 s (`BACKUP_FIRST_MS`). With both healthy it gets no reads. Every submit goes to both at
+  once. A loopback RPC has no second host.
 - Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15 s with
   Retry-After-aware 429 and 502/503 backoff.
 - CairnX read API /trade/api (12 s); clarvis /trade/api (name-history union always, resolve fallback, 12 s).

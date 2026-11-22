@@ -5,6 +5,7 @@
 // registered"). The SPV verifyName step stays the trust anchor either way; here it is offline in
 // every case, so every result must carry verified:false — these tests pin the SOURCE-SELECTION
 // logic, not the trust. Money path: a wrong answer here routes a send.
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 

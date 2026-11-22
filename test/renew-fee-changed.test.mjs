@@ -3,6 +3,7 @@
 // re-opens the review at the new price. Without the check it would sign the reviewed fee, which the resolver
 // no-ops when it underpays while the treasury output is paid. Paired: the matching fee signs and pays the treasury.
 // Run: npx tsx test/renew-fee-changed.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

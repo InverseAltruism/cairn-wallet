@@ -10,6 +10,7 @@
 // full; another window closing leaves the queue alone; after the close the queue takes requests again.
 //
 // Run: npx tsx test/background-queue-caps.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { APPROVE_WINDOW } from "../src/approve-window.ts";
 

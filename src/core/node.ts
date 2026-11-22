@@ -8,8 +8,8 @@ import { fmtCsd, csdBase } from "./cairnx.js";
 import type { TxInclusion } from "./inclusion.js";
 import { selectInputs, strip0x, MAX_TX_INPUTS, MAX_DOMAIN_BYTES, MAX_URI_BYTES, MIN_FEE_PROPOSE } from "../vendor/cairnx-spv.js";
 import { byteCapRefusal } from "./signfields.js";
-import { firstAnswer, isBackup } from "./hosts.js";
-import { classifyAnswer, decideSubmit, isSubmitDuplicateErr, type HostVerdict, type RefusalReason, type SubmitAnswer, type SubmitOutcome } from "./submitverdict.js";
+import { firstAnswer, isBackup, submitEach, type HostAnswer } from "./hosts.js";
+import { classifyAnswer, isSubmitDuplicateErr, type HostVerdict, type RefusalReason, type SubmitAnswer, type SubmitOutcome } from "./submitverdict.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever; the popup's "sending…" spinner never settled and there was no in-popup
@@ -469,8 +469,9 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
 // on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
 // spentTxids (successful submits: the source txids of the inputs spent, so the merge rows they consumed
 // latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
-// rows for the "gone" check) are internal; background.ts strips both before a result reaches a page.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[] }
+// rows for the "gone" check) and hosts (each host's answer to the submit, a server's text included) are internal;
+// background.ts strips them before a result reaches a page.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[] }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 
@@ -506,17 +507,21 @@ export function spendableCoins(utxos: any[], exclude?: ReadonlySet<string>): Sel
 // The duplicate rule's home is submitverdict.ts; cairn-sdk's classifySubmit names it here.
 export { isSubmitDuplicateErr };
 
-/** One host's verdict on a submit (submitverdict.ts classifyAnswer). */
+/** One host's verdict on a submit (submitverdict.ts classifyAnswer); never rejects. */
 async function submitTo(host: string, body: unknown): Promise<HostVerdict> {
   return classifyAnswer(await postRaw(host, "/tx/submit", body));
 }
+// What each host answered, for diagnostics: kept off what a page receives (background.ts pageResult).
+type HostLog = { host: string; kind: HostVerdict["kind"]; reason?: RefusalReason; text?: string };
+const hostLog = ({ host, verdict: v }: HostAnswer): HostLog =>
+  ({ host, kind: v.kind, ...(v.kind === "refused" ? { reason: v.reason } : {}), ...("text" in v ? { text: v.text } : {}) });
 const DUPLICATE_TEXT = "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again";
 // The result of a submit for the sender. The txid is the local one whenever a host may hold the transaction (sent,
 // duplicate, unclear); a refusal carries none, since a txid would read as "it went through". SUBMIT_REJECTED: every
 // host refused (a node's 200 ok:false, or a proxy's 400, 413 or 429 before forwarding); SUBMIT_MAYBE_INFLIGHT: a host
 // may hold it (a throw, a timeout, a 5xx, an unreadable answer); SUBMIT_DUPLICATE: a host holds this transaction, or
 // one spending the same coins, so "nothing was sent" would be false. `reason` classes a refusal (additive).
-function submitResult(o: SubmitOutcome, localTxid: string): SubmitResult {
+function submitResult(o: SubmitOutcome, localTxid: string): Omit<SubmitResult, "hosts"> {
   if (o.kind === "sent") return { ok: true, txid: localTxid, error: undefined, sighashMatch: true, code: undefined };
   if (o.kind === "duplicate") return { ok: false, txid: localTxid, error: DUPLICATE_TEXT, sighashMatch: true, code: "SUBMIT_DUPLICATE" };
   if (o.kind === "unclear") return { ok: false, txid: localTxid, error: o.text, sighashMatch: true, code: "SUBMIT_MAYBE_INFLIGHT" };
@@ -538,10 +543,14 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   // answer, not a fallback: a host's echo is only a cross-check of the codec copy, logged and never used (a constant
   // echo would otherwise dedupe later sends out of history and point the explorer link at another transaction).
   const localTxid = codecTxid(tx);
-  const v = await submitTo(rpc, { tx: txToNodeJson(tx) });
-  if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
-    console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
-  return submitResult(decideSubmit([v]) as SubmitOutcome, localTxid);
+  // The same bytes to every host of the RPC at once (hosts.ts submitEach): one signing, one txid. The result comes at
+  // the first acceptance; another host's later answer is logged and changes nothing.
+  const body = { tx: txToNodeJson(tx) };
+  const { outcome, answers } = await submitEach(rpc, (h) => submitTo(h, body), (a) => console.info("[node] a later submit answer", localTxid, hostLog(a)));
+  for (const { verdict: v } of answers)
+    if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
+      console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
+  return { ...submitResult(outcome, localTxid), hosts: answers.map(hostLog) };
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).

@@ -2,6 +2,7 @@
 // guarantees that matter for a non-custodial wallet. Oracle-based where possible
 // (we reconstruct the SUBMITTED tx and prove the ACTIVE key signed it; we tamper
 // ciphertext and prove decryption fails). No self-fulfilling assertions.
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { seal, open, sealNew } from "../src/core/keystore.js";

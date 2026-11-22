@@ -5,6 +5,7 @@
 //  - case 19: a Local node RPC serving another chain's block refuses with the configured RPC in the reason;
 //  - the confirm-time hint-set skip re-acquires a chunk that is not in memory and refuses on a hash mismatch.
 // Every refusal is paired with the honest path on the same call shape. Offline. Run: npx tsx test/namespv-hints-floor.test.mjs
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { serveFixture, serveOffer, memStore, legacyOf, OFFER, FIX_TOP, FIX_ANCHORS } from "./helpers/spvfixture.mjs";

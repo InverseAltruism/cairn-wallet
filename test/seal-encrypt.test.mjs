@@ -11,6 +11,7 @@
 //   * the lazy migration stops re-encrypting a legacy record on reveal (the legacy re-encrypt check).
 //   * the popup preview stops decrypting (sealedClaims claim-preview check) — a UX regression.
 // Run: tsx test/seal-encrypt.test.mjs
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { cairnPayloadHash } from "../src/core/csdtx.js";

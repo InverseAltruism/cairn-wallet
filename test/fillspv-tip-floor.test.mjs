@@ -12,6 +12,7 @@
 // the retryable VERIFY_UNAVAILABLE copy; a genuine denial (tipFloored false) still returns FILL_UNSAFE.
 //
 // Run: node --import tsx test/fillspv-tip-floor.test.mjs   (offline; synthetic PoW, real signed txs)
+import "./helpers/backup-host.mjs";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";

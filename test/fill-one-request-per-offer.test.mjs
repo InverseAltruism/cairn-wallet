@@ -15,6 +15,7 @@
 // confirm step (8) or settled by closing the window (9), the next fill of the same offer queues, and in 7 signs.
 //
 // Run: npx tsx test/fill-one-request-per-offer.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { checker } from "./helpers/check.mjs";
 import { PRIV, world, stub, body, recordAnswer, truthful, H } from "./helpers/fillworld.mjs";

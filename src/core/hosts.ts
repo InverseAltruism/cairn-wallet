@@ -2,6 +2,7 @@
 // BACKUP_RPC, a constant of the release; any other RPC (a node on this computer) is the only host. The second host is
 // chosen here only, never from a setting or a page: rpcAllowed refuses it as an RPC (endpoints.ts).
 import { DEFAULT_RPC, BACKUP_RPC } from "./endpoints.js";
+import { decideSubmit, type HostVerdict, type SubmitOutcome } from "./submitverdict.js";
 
 /** A read goes to the second host when the first has not answered this long after it was asked. */
 export const HEDGE_MS = 1_500;
@@ -49,5 +50,30 @@ export function firstAnswer<T>(rpc: string, read: (host: string) => Promise<T>):
     };
     startNext();
     timer = setTimeout(() => { timer = undefined; if (!settled && started < order.length) startNext(); }, HEDGE_MS);
+  });
+}
+
+export type HostAnswer = { host: string; verdict: HostVerdict };
+/**
+ * One signed transaction sent to every host of `rpc` at once, and its outcome (submitverdict.ts decideSubmit) as soon
+ * as it is decided: at the first acceptance, else once every host has answered (each POST ends at its own timeout).
+ * `answers` holds the verdicts known at that moment, in host order. A host that answers later is passed to `onLate`
+ * only: it never changes the outcome. `send` must return a verdict for any failure, as node.ts submitTo does.
+ */
+export function submitEach(rpc: string, send: (host: string) => Promise<HostVerdict>, onLate?: (a: HostAnswer) => void): Promise<{ outcome: SubmitOutcome; answers: HostAnswer[] }> {
+  const hosts = hostsFor(rpc);
+  const verdicts: (HostVerdict | undefined)[] = hosts.map(() => undefined);
+  return new Promise((resolve) => {
+    let decided = false;
+    hosts.forEach((host, i) => {
+      void send(host).then((v) => {
+        if (decided) { onLate?.({ host, verdict: v }); return; }
+        verdicts[i] = v;
+        const outcome = decideSubmit(verdicts);
+        if (!outcome) return;
+        decided = true;
+        resolve({ outcome, answers: hosts.flatMap((h, k) => (verdicts[k] ? [{ host: h, verdict: verdicts[k]! }] : [])) });
+      });
+    });
   });
 }

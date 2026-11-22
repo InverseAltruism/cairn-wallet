@@ -48,6 +48,7 @@
 // the vault current when it finishes: 9 [1] (R5); the reset leaving the vault id: 7 [2]; the finish-time vault check
 // dropped: 7 and 9 [2]; a list read under any vault or none: 7, 8 and 9 [9].
 // Run: npx tsx test/approve-first-request.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 import { mkCoin, txReply } from "./_coin.ts";

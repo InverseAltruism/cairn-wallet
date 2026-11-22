@@ -1,5 +1,6 @@
 // Cairn Wallet core self-tests; oracle-based (consensus golden vectors + a real
 // on-chain signature), plus keystore/account adversarial cases. No mocks of our own.
+import "./helpers/backup-host.mjs";
 import { serialize, txid, sighash, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
 import { verifyDigest } from "../src/vendor/cairnx-spv.js";
 import { generate, fromPriv, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";

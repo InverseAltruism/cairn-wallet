@@ -16,6 +16,7 @@
 // (outputs:[]) submits (that last one is also covered by fill-token-content.test.mjs).
 //
 // Run: node --import tsx test/fill-score-guard.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";

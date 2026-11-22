@@ -9,6 +9,11 @@
   answered carries the grey line "Using Cairn's backup server.". A spend reads all its coins from the one host that
   listed them, so the coin-value check is the same on either (test/hosts-fallback.test.mjs,
   test/hosts-spend-pin.test.mjs). A node on this computer set as the RPC has no second server.
+- Every send goes to both of Cairn's servers at once, the same signed bytes, so one signing and one txid. It is sent
+  when either accepts it, at the first acceptance: with both healthy the time to "sent" is the main server's answer.
+  It is refused only when both refuse; a refusal now waits for the slower server, up to the 20 s submit timeout, and
+  a server that does not answer makes it "may already be in flight" (`SUBMIT_MAYBE_INFLIGHT`) where one server's
+  refusal was final in 0.3.4 (SECURITY.md says why; test/submit-two-hosts.test.mjs).
 - Submit answers are read by one classifier (`src/core/submitverdict.ts`). A refusal carries a new `reason` (FEE, BUSY,
   SPENT, CONFLICT, PROXY, INVALID, UNKNOWN; additive, WALLET-ERROR-CODES.md). Answers that may follow a node taking the
   transaction are now `SUBMIT_MAYBE_INFLIGHT` with the local txid and a history row, where 0.3.4 read them otherwise:

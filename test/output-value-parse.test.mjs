@@ -4,6 +4,7 @@
 // window's row and amount hero said "invalid amount". An integer number and a decimal-digit string still sign, the
 // same bytes.
 // Run: npx tsx test/output-value-parse.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { sendMany, propose } from "../src/core/node.js";
 import { fmtCsd, baseVal } from "../src/popup/clearsign.js";

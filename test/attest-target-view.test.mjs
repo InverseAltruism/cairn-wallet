@@ -5,6 +5,7 @@
 //   PAIRED HONEST PATHS: a proposal of another domain is "other" (1); an unreadable or malformed answer is not ok, so
 //   the window says what it knows (2); another account's offer keeps "Support / review" (3).
 // Run: npx tsx test/attest-target-view.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { attestTargetView } from "../src/core/cairnxview.ts";
 import { offer, bid } from "../src/vendor/cairnx-spv.js";
 import { CAIRNX_DOMAIN } from "../src/core/cairnx.ts";

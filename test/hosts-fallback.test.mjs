@@ -11,6 +11,7 @@
 // ask it only after the main host's timeout and F1 fails.
 //
 // Run: node --import tsx test/hosts-fallback.test.mjs   (offline; about 20 s, the hedge waits are real time)
+// routes the second host itself
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { DEFAULT_RPC, BACKUP_RPC, rpcAllowed } from "../src/core/endpoints.js";

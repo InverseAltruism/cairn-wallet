@@ -12,6 +12,7 @@
 // Same harness style as ghostcoin.test.mjs: URL-routed fetch stub, real Wallet + memoryStore.
 // Module-level ghostSeen cache is shared across cases in this process → distinct coin VALUES per
 // case (mkCoin derives the txid from the tx, so distinct values ⇒ distinct txids).
+import "./helpers/backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { scriptSource } from "../scripts/popup-ids.mjs";
 import { Wallet } from "../src/core/wallet.js";

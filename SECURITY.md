@@ -99,10 +99,31 @@ host that answered its coin list answers every source transaction read, so the c
 host exactly as on the main host, and a forged body there refuses `VERIFY_TAMPER` (test/hosts-spend-pin.test.mjs). A
 history reconcile pass stays on the host that answered its tip.
 
+Submits (`hosts.ts` `submitEach`, `submitverdict.ts` `decideSubmit`): every signed transaction goes to both hosts at
+once, the same bytes from one signing, so the txid is one. The result comes at the first host that accepts it, and
+nothing waits on the other host; a later answer from it is logged and changes neither the result nor the history row.
+Any other answer waits for both hosts: a host that may hold the transaction (a timeout, a 5xx, an unreadable answer)
+makes the result `SUBMIT_MAYBE_INFLIGHT`, then an "already present" answer `SUBMIT_DUPLICATE`, and only a refusal from
+both is `SUBMIT_REJECTED` (test/submit-two-hosts.test.mjs has every pair). A refusal therefore waits for the slower
+host, up to the 20 s submit timeout, where one host refused at once; the send keeps its "Sending..." state meanwhile.
+The reason: a refusal reported while the other host may still accept and relay the payment invites the user to pay
+again, with other coins once the first are seen as spent.
+
 What it can do when it answers: what a lying RPC can do, as listed above (a wrong balance, withheld coins, a refusal, a
 false Activity marker), and no more: it cannot change what is signed or the value of a coin. It answers a read only
 while the main host is slower than 1.5 s or failing, so a party that holds it alone must also slow or stop the main
-host. It sees the address whose balance is read, as the main host does.
+host. On a submit it can answer "accepted" to everything and turn a main host's refusal into "sent"; the transaction
+then never confirms and its coins stay unspent, as when a lying main host answers so today. It cannot hide the main
+host's acceptance: its refusal, its duplicate answer or its silence do not end the wait, so a send the main host took
+is reported sent. It sees the address whose balance is read and every signed transaction, as the main host does.
+
+Where the two hosts honestly disagree: a host a block behind lists a coin this wallet spent in the newest block, or a
+send of this wallet sits in one host's pending pool and not the other's. A spend of that coin is accepted by the one
+and refused as a conflict or a spent coin by the other; the wallet reports it sent, with a history row, because the
+accepting host may relay it and a refusal could prompt a second payment. If it never confirms, the coins it spent
+were spent by the other transaction, and the row is not marked (a row the wallet recorded as sent is not reconciled;
+only an unclear one is). On a reorg between the hosts the coin-value check is unchanged: values are bound to the
+txid, and a source transaction off the answering host's branch reads as not found and is skipped.
 
 ### Sending to a `.csd` name
 

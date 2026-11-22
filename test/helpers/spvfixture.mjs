@@ -3,6 +3,7 @@
 // in-memory HeaderStore with the write semantics of src/core/headerstore.ts. The fixture stores each record
 // without its prev field (the previous record's sha256d), and the loader checks that chunks 7, 26 and 27 walk to
 // the anchor table.
+import "./backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { brotliDecompressSync } from "node:zlib";
 import { createHash } from "node:crypto";

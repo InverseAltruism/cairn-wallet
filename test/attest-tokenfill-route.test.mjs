@@ -11,6 +11,7 @@
 // MUTATION CONTRACT: removing the route (attest always calls node.attest) REDS the OFFER_UNKNOWN case.
 //
 // Run: node --import tsx test/attest-tokenfill-route.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";

@@ -41,6 +41,7 @@
 //   RED-FIRST: drop the tokenMeta threading in approve.ts render() and (9a) goes red.
 //
 // Run: node --import tsx test/approve-repaint-dom.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { debitOf, fmtBalance } from "../src/popup/clearsign.js";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";

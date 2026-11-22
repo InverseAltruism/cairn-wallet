@@ -16,6 +16,7 @@
 // PAIRED HONEST PATHS: A4, B5, C2, C3, D2, E1, E2 run the production call shapes and still succeed.
 //
 // Run: node --import tsx test/submit-outcome.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

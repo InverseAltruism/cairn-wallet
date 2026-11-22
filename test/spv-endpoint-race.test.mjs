@@ -8,6 +8,7 @@
 //   cache clear in endpointChanged and (4) does the same after a change made with nothing in flight.
 //   PAIRED HONEST PATH: (3) no settings change: the cache is written and confirmName uses it (zero block reads).
 // Run: npx tsx test/spv-endpoint-race.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { checker } from "./helpers/check.mjs";

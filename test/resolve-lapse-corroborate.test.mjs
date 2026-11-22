@@ -13,6 +13,7 @@
 // (`if (j?.lapsed) return { ok:false, ... }`) REDS case 1 (the false-lapse route-around).
 //
 // Run: node --import tsx test/resolve-lapse-corroborate.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { withWalletMutant } from "./helpers/mutant.mjs";

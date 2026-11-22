@@ -20,6 +20,7 @@
 //   toolbar Reject sends resolve(id, false) and reads "Rejected. Nothing was signed." (f), also on a double click (g); a
 //   confirmed Reject carries nothing to the next request, whose line is empty as before (h).
 // Run: npx tsx test/approve-handled-elsewhere.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import vm from "node:vm";
 import { build } from "esbuild";
 import { checker } from "./helpers/check.mjs";

@@ -7,6 +7,7 @@
 // The fclaim scan window is a synthetic world near its own tip (no real fclaim exists on a chunk-7 offer: every
 // chunk-7 offer expired before V28), joined to the live source by splitSource. Offline.
 // Run: npx tsx test/fillspv-store.test.mjs
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { serveFixture, serveOffer, splitSource, memStore, legacyOf, OFFER, FIX_TOP, FIX_ANCHORS } from "./helpers/spvfixture.mjs";

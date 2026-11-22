@@ -24,6 +24,7 @@
 //     PAIRED HONEST PATH: (E2) the page still receives ok and the txid.
 //
 // Run: node --import tsx test/background-consent-outcome.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { mkCoin, txReply } from "./_coin.ts";
@@ -209,6 +210,7 @@ assert.equal(pageOk.ok, true, "(C2) the page receives the success");
 assert.match(String(pageOk.result?.txid), /^0x[0-9a-f]{64}$/, "(E2) paired: the page still receives ok and the txid");
 assert.equal("inputs" in pageOk.result, false, "(E1) the page result carries no spent outpoints");
 assert.equal("spentTxids" in pageOk.result, false, "(E1) ...and no spent source txids");
+assert.equal("hosts" in pageOk.result, false, "(E1) ...and no log of each host's submit answer (a server's text)");
 globalThis.fetch = baseFetch;
 // ── (D) a popup send while locked answers WALLET_LOCKED, not INTERNAL (Plan 85 7.3a, E1.lock) ────────
 // RED-FIRST: use "INTERNAL" again in the popup listener's catch in background.ts and (D1) fails.

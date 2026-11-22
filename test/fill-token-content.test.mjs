@@ -12,6 +12,7 @@
 // again, which is the load-bearing proof (recorded in the session log). An HONEST token fill still PROCEEDS.
 //
 // Run: node --import tsx test/fill-token-content.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";

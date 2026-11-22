@@ -22,6 +22,7 @@
 //   history write against WORKING storage park nothing at all.
 //
 // Run: node --import tsx test/seal-lock-park.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { mkCoin, txReply } from "./_coin.js";
 

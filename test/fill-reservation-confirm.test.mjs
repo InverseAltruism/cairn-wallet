@@ -13,6 +13,7 @@
 // Section 11: the "second source not consulted" notice reaches the window's outcome and not the page.
 //
 // Run: npx tsx test/fill-reservation-confirm.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { PRIV, world, stub, body, delayed, recordAnswer, truthful, H } from "./helpers/fillworld.mjs";
 

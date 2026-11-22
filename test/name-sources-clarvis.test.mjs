@@ -8,6 +8,7 @@
 //   PAIRED HONEST PATH: (2) both sources honest: verified to the owner's address, two sources, no
 //   disagreement, with the production call shape (default trade API, live clarvis base).
 // Run: node --import tsx test/name-sources-clarvis.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { checker } from "./helpers/check.mjs";
