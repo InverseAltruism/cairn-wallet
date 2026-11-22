@@ -150,16 +150,16 @@ try {
       await page.waitForSelector("#msg .msg-details summary");
       await page.waitForTimeout(500);
       const geo = () => page.evaluate(() => {
-        const m = document.getElementById("msg"), s = m.querySelector("summary"), r = m.getBoundingClientRect(), sr = s.getBoundingClientRect();
-        const hit = document.elementFromPoint(sr.left + sr.width / 2, sr.top + sr.height / 2);
+        const m = document.getElementById("msg"), s = m.querySelector("summary"), r = m.getBoundingClientRect(), sr = s?.getBoundingClientRect();
+        const hit = sr && document.elementFromPoint(sr.left + sr.width / 2, sr.top + sr.height / 2);
         return { inside: r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, scroll: document.documentElement.scrollWidth > innerWidth,
-          tappable: hit === s || s.contains(hit), shown: Number(getComputedStyle(m).opacity) > 0 && !m.classList.contains("fade") && !!m.textContent };
+          tappable: !!s && (hit === s || s.contains(hit)), shown: Number(getComputedStyle(m).opacity) > 0 && !m.classList.contains("fade") && !!m.textContent };
       });
       const closed = await geo();
       t.check(`a refused send's line and its Details fit the popup's width, no sideways scroll (${JSON.stringify(closed)})`, closed.inside && !closed.scroll);
       t.check("its Details summary takes the tap (the toast passes clicks through elsewhere)", closed.tappable);
-      await page.click("#msg .msg-details summary");
-      const open = await page.evaluate(() => document.querySelector("#msg .msg-details").open);
+      await page.click("#msg .msg-details summary", { timeout: 3_000 }).catch(() => undefined);   // a refused tap is the check below
+      const open = await page.evaluate(() => !!document.querySelector("#msg .msg-details")?.open);
       await page.waitForTimeout(9_000);
       const later = await geo();
       t.check(`an opened Details keeps the line on screen past 8 s (open ${open}, ${JSON.stringify(later)})`, open && later.shown && later.inside);
