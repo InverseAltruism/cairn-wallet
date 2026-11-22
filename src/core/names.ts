@@ -8,7 +8,7 @@ import { CLARVIS_TRADE_API } from "./endpoints.js";
 
 // What resolveName and confirmName answer: a refusal (ok false, with error), or the address to send to and how
 // far it was verified.
-export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; lapseUnconfirmed?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
+export type NameResolution = { ok: boolean; name?: string; addr?: string; via?: string; owner?: string; lapsed?: boolean; lapseUnconfirmed?: boolean; addrProven?: boolean; error?: string; verified?: boolean; verifyReason?: string; depth?: number; completedAt?: number; sources?: number; disagree?: boolean; soleSource?: boolean; viaFill?: boolean };
 // What name resolution reads through the wallet. verifyName is called through the wallet so an instance override
 // applies (test/resolve-lapse-corroborate replaces it to test the resolve logic without SPV). spvGen is bumped on
 // every endpoint change: a verification that began under an older value caches nothing.
@@ -100,11 +100,13 @@ const servedAddr = (j: { addr?: unknown } | null | undefined): string | null =>
 // A lapse the wallet could not settle (the served flag, a lease expired only at the served tip, or one source): a caution, not a
 // refusal ([A4]). The address is the last holding's from the name's own verified records when the replay gave one, so
 // a tip moved past a live lease does not also move the send (test/name-lapse-tip.test.mjs [T3]); the served one only
-// when nothing was replayed.
+// when nothing was replayed. `addrProven` says which: the review shows [A4] alone only on a proven address, and the
+// served one under [A9] (or [A10] for a bought name) as well (popup-recipient.ts, test/name-lapse-tip.test.mjs [T8]).
 function unconfirmedLapse(nm: string, j: { addr?: unknown; via?: string; owner?: string }, v: NameVerification | null): NameResolution {
-  const addr = v?.lastAddr ?? servedAddr(j);
+  const proven = v?.lastAddr;
+  const addr = proven ?? servedAddr(j);
   if (!addr) return { ok: false, error: `${nm}.csd has no address` };
-  return { ok: true, name: nm, addr, via: j.via, owner: j.owner, lapsed: false, lapseUnconfirmed: true, verified: false, verifyReason: v?.reason ?? "on-chain verification unavailable" };
+  return { ok: true, name: nm, addr, via: j.via, owner: j.owner, lapsed: false, lapseUnconfirmed: true, addrProven: proven !== undefined, verified: false, viaFill: v?.viaFill === true, verifyReason: v?.reason ?? "on-chain verification unavailable" };
 }
 
 // XREPO-1: trustlessly SPV-verify a .csd name → address against a PoW header chain the wallet verifies

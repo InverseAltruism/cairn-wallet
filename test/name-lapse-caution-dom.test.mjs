@@ -14,7 +14,7 @@ const { byId } = installFakeDom({ autoCreate: true });
 const { check, done } = checker("=== a name whose lapse the wallet could not settle (real popup.ts) ===");
 const ME = "0x" + "ab".repeat(20), LAST = "0x" + "31".repeat(20), TXID = "0x" + "7e".repeat(32);
 const answers = {
-  alice: { ok: true, addr: LAST, name: "alice", lapsed: false, lapseUnconfirmed: true, verified: false },
+  alice: { ok: true, addr: LAST, name: "alice", lapsed: false, lapseUnconfirmed: true, addrProven: true, verified: false },
   bob: { ok: true, addr: LAST, name: "bob", verified: true, sources: 2, depth: 14 },
   carol: { ok: false, lapsed: true, error: "carol.csd has lapsed, so we did not send. Send to the owner's 0x address directly, or ask them to renew the name before sending again." },
 };

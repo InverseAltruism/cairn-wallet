@@ -7,7 +7,8 @@
 // lapse a refusal). [2v], [W1] and [T7] fail on 2fd66a8 (one source at the verified tip refused there). Mutations: drop the
 // source-count condition (`usable.length >= 2 ||`) from `corroborated` and [2v], [W1] fail; drop `atVerifiedHeight`
 // from `confident` and [3], [T3], [T4], [T6] fail; drop `verifiedCorroborated` and [3v], [T2] fail; prefer the served
-// address over `lastAddr` and [T3], [T6] fail.
+// address over `lastAddr` and [T3], [T6] fail. On 68cce65 [T3] and [T8a] to [T8n] fail (no `addrProven`); drop
+// `!scopeInsufficient &&` from namespv.ts's `lastAddr` and [T8m], [T8n] fail.
 // Run: tsx test/name-lapse-tip.test.mjs
 import "./helpers/backup-host.mjs";
 import { verifyNameUnion } from "../src/core/namespv.ts";
@@ -123,9 +124,10 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   const ATTACKER = "0x" + "ee".repeat(20);
   const origFetch = globalThis.fetch;
   // Both hosts answer alike: the served resolve record and the name history of the same events.
-  const run = async ({ served, spv, clarvis = true }) => {
+  // `prim` and `clar` replace a host's name-history answer (a body, "throw" or { __status }).
+  const run = async ({ served, spv, clarvis = true, prim, clar }) => {
     const history = { ok: true, events: hints, resolve: { addr: served.addr, owner: A, via: "nset", lapsed: served.lapsed }, scopedReplaySufficient: true };
-    const f = mkFetch({ [PRIM]: history, [CLARVIS_TRADE_API]: clarvis ? history : "throw" });
+    const f = mkFetch({ [PRIM]: prim ?? history, [CLARVIS_TRADE_API]: clar ?? (clarvis ? history : "throw") });
     globalThis.fetch = (url, init) => String(url).includes("/cairnx/resolve/") ? Promise.resolve({ ok: true, status: 200, json: async () => served }) : f(url, init);
     const io = {
       tradeGet: (path) => globalThis.fetch(PRIM + path), tip: async () => spv.nodeTip, spvSource: async () => spv,
@@ -144,7 +146,7 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   // (T3) a forged tip past a live lease, the served flag set and the served address the attacker's: a caution, and the
   //      send goes to the address the name's own verified records give, not the served one.
   r = await run({ served: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, spv: srcNoFloor(REAL_TIP) });
-  check(`[T3] forged tip, served lapsed + another address: caution on the proven address (${r.addr})`, r.ok === true && r.lapseUnconfirmed === true && r.verified === false && r.addr === TARGET);
+  check(`[T3] forged tip, served lapsed + another address: caution on the proven address (${r.addr})`, r.ok === true && r.lapseUnconfirmed === true && r.verified === false && r.addr === TARGET && r.addrProven === true);
   // (T4) a newer tip the wallet has not verified, no served flag (also an honest lapse with headers trailing): caution.
   r = await run({ served: { addr: TARGET, owner: A, via: "nset" }, spv: srcNoFloor(REAL_TIP) });
   check("[T4] a served tip past the lease, no flag: caution on the proven address", r.ok === true && r.lapseUnconfirmed === true && r.verified === false && r.addr === TARGET);
@@ -158,6 +160,25 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   const { reresolveUnchanged } = await import("../src/popup/clearsign.ts");
   r = await run({ served: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, spv: srcNoFloor(REAL_TIP) });
   check("[T6] the confirm-time re-check of the caution passes on the reviewed address and refuses another", reresolveUnchanged(TARGET, r, false) === true && reresolveUnchanged(ATTACKER, r, false) === false);
+  // (T8) the served `lapsed` flag with an address the wallet did not prove: the served address stays (the replay may be
+  //      stale where a source says so), and `addrProven` is false, so the review shows [A9] with [A4], not [A4] alone.
+  const insufficient = { ok: true, events: hints, resolve: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, scopedReplaySufficient: false };
+  const live = () => source(blocks, LIVE_TIP, { verifiedTip: LIVE_TIP, nodeTip: LIVE_TIP });
+  r = await run({ served: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, spv: live(), prim: insufficient });
+  check(`[T8a] a hostile primary: its own address, lapsed, its history flagged insufficient: the served address, not proven (${r.addr}, ${r.addrProven})`, r.ok === true && r.lapseUnconfirmed === true && r.addr === ATTACKER && r.addrProven === false);
+  r = await run({ served: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, spv: srcNoFloor(REAL_TIP), prim: insufficient, clar: insufficient });
+  check(`[T8b] the same with a forged tip past the lease and both sources flagging: the served address, not proven (${r.addr})`, r.ok === true && r.lapseUnconfirmed === true && r.addr === ATTACKER && r.addrProven === false);
+  r = await run({ served: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, spv: live(), prim: { __status: 404 }, clar: { __status: 404 } });
+  check(`[T8d] both histories 404, served lapsed: the served address, not proven (${r.addr})`, r.ok === true && r.lapseUnconfirmed === true && r.addr === ATTACKER && r.addrProven === false);
+  r = await run({ served: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, spv: live(), prim: "throw", clar: "throw" });
+  check(`[T8e] both histories down, served lapsed: the served address, not proven (${r.addr})`, r.ok === true && r.lapseUnconfirmed === true && r.addr === ATTACKER && r.addrProven === false);
+  // (T8m) the served tip past the lease while one source flags the replay insufficient: no proven last holding
+  //       (namespv.ts drops `lastAddr` there), so the served address goes under [A9] with [A4].
+  const histTarget = { ok: true, events: hints, resolve: { addr: ATTACKER, owner: A, via: "nset" }, scopedReplaySufficient: true };
+  const v = await verifyNameUnion(NAME, [{ label: "primary", base: PRIM }, { label: "clarvis", base: CLARVIS_TRADE_API }], srcNoFloor(REAL_TIP), mkFetch({ [PRIM]: { ...histTarget, scopedReplaySufficient: false }, [CLARVIS_TRADE_API]: histTarget }));
+  check(`[T8m] a source flagging the replay insufficient leaves no lastAddr on an unconfirmed lapse (${v.lastAddr})`, v.lapseUnconfirmed === true && v.lastAddr === undefined);
+  r = await run({ served: { addr: ATTACKER, owner: A, via: "nset" }, spv: srcNoFloor(REAL_TIP), prim: { ...histTarget, scopedReplaySufficient: false }, clar: histTarget });
+  check(`[T8n] through resolveName: the served address, not proven (${r.addr}, ${r.addrProven})`, r.ok === true && r.lapseUnconfirmed === true && r.addr === ATTACKER && r.addrProven === false);
 }
 
 done("name-lapse-tip");

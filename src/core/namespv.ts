@@ -71,7 +71,8 @@ export interface NameVerification {
   lapsed?: boolean;
   lapseUnconfirmed?: boolean;
   // With `lapseUnconfirmed`: the address the name's own verified records give its last holding, when they give one
-  // a name-scoped replay proves (not a fill, no source reporting the replay insufficient).
+  // a name-scoped replay proves (not a fill, no source reporting the replay insufficient). `viaFill` is set there when
+  // that holding came through a fill.
   lastAddr?: string;
   // NS-1 (HIGH, RESIDUAL; not a closed defense): true when the union failed and only ONE source solo-
   // recovered the winner, so a lone (possibly hostile) source alone decided the send target; NOT
@@ -183,9 +184,9 @@ const fail = (reason: string): NameVerification => ({ verified: false, reason })
 type Replay =
   | { ok: true; owner: string; addr: string; via: "nset" | "owner"; depth: number; viaFill: boolean; completedAt: number }
   // A lease-lapse failure carries `lapsed`, whether it holds at a verified height (`verifiedCorroborated`: the
-  // verified header tip; `floorCorroborated`: the persisted floor) and the last holding's address. Other failures
-  // leave them unset.
-  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string };
+  // verified header tip; `floorCorroborated`: the persisted floor), the last holding's address and whether that
+  // holding came through a fill (`viaFill`, then no address). Other failures leave them unset.
+  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string; viaFill?: boolean };
 // Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
 // unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
 // is far above any honest history. The cap is per replay: verifyNameUnion's per-source recovery replays each source's
@@ -294,7 +295,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     const floorCorroborated = floor > 0 && expiredAt(floor);
     const verifiedCorroborated = expiredAt(verifiedTip);
     const lastAddr = rec.viaFill ? undefined : String(rec.addr ?? rec.owner).toLowerCase();
-    return { ok: false, lapsed: true, floorCorroborated, verifiedCorroborated, lastAddr, reason: `${name}.csd lease has lapsed (per the chain); refusing to send` };
+    return { ok: false, lapsed: true, floorCorroborated, verifiedCorroborated, lastAddr, viaFill: !!rec.viaFill, reason: `${name}.csd lease has lapsed (per the chain); refusing to send` };
   }
   // v2.5: a `pending` reservation is a payment-free registration/recapture reserve that has NOT been finalized:
   // it confers no address and is not an owned name yet. Fail CLOSED (never resolve it to the owner) so a name
@@ -374,8 +375,11 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
         const corroborated = usable.length >= 2 || rep.floorCorroborated === true;
         const confident = atVerifiedHeight && corroborated;
         if (confident) return { ...fail(rep.reason), sources: usable.length, disagree: false, lapsed: true };
+        // A source reporting the replay insufficient leaves no proven address: the caller shows the served one, unverified.
         const lastAddr = !scopeInsufficient && rep.lastAddr ? { lastAddr: rep.lastAddr } : {};
-        return { ...fail(`${name}.csd may have lapsed: its lease ends below the served tip, above the headers the wallet verified`), sources: usable.length, disagree: false, lapsed: false, lapseUnconfirmed: true, ...lastAddr };
+        const why = atVerifiedHeight ? "its lease ends at or below the headers the wallet verified, but only one name source answered and it could leave out a renewal"
+          : "its lease ends below the served tip, above the headers the wallet verified";
+        return { ...fail(`${name}.csd may have lapsed: ${why}`), sources: usable.length, disagree: false, lapsed: false, lapseUnconfirmed: true, viaFill: rep.viaFill === true, ...lastAddr };
       }
       // M12 (B5e): the UNIONED replay failed. A single hostile source can poison the combined hint set
       // with ONE junk hint (a txid not in its claimed block, an unauthenticated record), aborting the whole

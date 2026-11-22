@@ -270,7 +270,7 @@ console.log("9. the send review's Name row");
 // 9d. WL1.5 (D20): a name whose holding was completed above this release's newest table entry gets [A18], amber, in
 //     place of the plain line; one completed at or below it keeps the plain line. A bought name or a name one source
 //     alone decided keeps its own caution. RED-FIRST: drop `partly` from resolveRecipient and 9d1 fails; render the
-//     name's paragraph beside the line (nameCheck without its `lineHtml` return) and the second 9d1 fails.
+//     name's paragraph beside the line (nameCheck without its `linesHtml` return) and the second 9d1 fails.
 console.log("9d. a name newer than this release");
 {
   const A18 = SENTENCES.A18.text;

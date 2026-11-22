@@ -270,13 +270,19 @@ a lapse at the served tip alone (whoever answers for both default hosts could ot
 lease and stop every send to it), one that a single source's records show (that source can withhold a renewal or a
 recapture), and one a resolver reports and the wallet cannot settle. The caution's
 address is the one the name's own verified records give its last holding, when the replay gives one, so a moved tip
-does not also move the send (test/name-lapse-tip.test.mjs). At confirm the wallet **re-resolves and
+does not also move the send (test/name-lapse-tip.test.mjs). When it gives none (nothing could be replayed, both
+sources are down or answer not found, a source reports the replay insufficient, the name is a reservation not yet
+finalized, or it was bought through an offer fill), the address is the served one, and the review shows "Not
+verified. Check the address yourself." (for a bought name "Bought name: the wallet can only partly verify it. Check
+the address yourself.") before the lapse line (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs
+section 12). At confirm the wallet **re-resolves and
 re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not
 verified. The recipient you confirm is always the **full, untruncated address**.
 
 While the name check runs, the send sheet says "Checking alice.csd..." from 0.3 s and, from 10 s once the name
 service has answered, offers "Send without check". That review shows the name service's address, unverified, with
-"This name could not be checked. Make sure the address is right." and "Send anyway" / "Wait"; its Confirm signs that
+"This name could not be checked. Make sure the address is right." (and the lapse line after it when the name service
+says the name expired) and "Send anyway" / "Wait"; its Confirm signs that
 address without waiting for the check and without asking again. The check keeps running: if it ends with that address
 nothing changes; if it ends with another address or a refusal before Confirm, the review is taken down and nothing is
 signed. Confirm signs only the reviewed address in every case (test/name-check-wait-dom.test.mjs).

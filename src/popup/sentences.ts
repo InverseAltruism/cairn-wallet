@@ -34,6 +34,8 @@ export const SENTENCES = {
   S8: { text: "This amount needs more coins than one payment can use, so nothing was sent. Send less, or merge coins first.", tone: "red", details: "TOO_MANY_INPUTS: more than the 512-input per-transaction limit." },
   S12: { text: "The fee is above what the wallet allows ({cap} here). Nothing was sent.", tone: "red", details: "FEE_CAP: fee above max(1 CSD, 10% of the inputs)." },
   A4: { text: "{name} may have expired; the wallet could not check. If it has, this address belongs to its last owner.", tone: "amber", details: "Served lapsed flag; the SPV check did not settle the lapse." },
+  A9: { text: "Not verified. Check the address yourself.", tone: "amber", details: "The address came from the name service and could not be verified against the chain right now." },
+  A10: { text: "Bought name: the wallet can only partly verify it. Check the address yourself.", tone: "amber", details: "Ownership set by a fill depends on state outside the name's own history; a name-scoped proof does not cover it." },
   A14: { text: "{name} now points to a different address. Nothing was sent; review it again.", tone: "red", details: "The confirm-time re-resolution returned a different address." },
   A16: { text: "Checking {name}...{pct}", tone: "grey", details: "Header sync progress of the name check." },
   A17: { text: "This name could not be checked. Make sure the address is right.", tone: "amber", details: "The SPV check had not finished when the user chose to go on." },

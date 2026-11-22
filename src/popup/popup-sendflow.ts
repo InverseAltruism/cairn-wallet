@@ -97,8 +97,10 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
 }
 
 const DEFAULT_BUTTONS = { confirm: "Confirm send", back: "Back" } as const;
-/** The review's buttons for a send's cautions: [A17]'s while the check runs ("Wait" goes back to it), then [A19]'s,
- *  then [A4]'s, else the default pair. */
+/** The review's buttons when several lines apply: the strictest set of the lines shown. Strictest first: [A17]'s (the
+ *  name was not checked at all; "Wait" goes back to the check), [A19]'s (Confirm names the new address), [A4]'s ("Send
+ *  anyway" / "Cancel"), else the default pair, which [A9], [A10] and [A18] keep on their own. The lines' order on screen
+ *  is composeSendWarning's (test/name-check-wait-dom.test.mjs section 12 holds the table). */
 export function reviewButtons(redirected: boolean, lapseUnconfirmed: boolean | undefined, unchecked = false): ReviewButtons | null {
   return unchecked ? UNCHECKED_BUTTONS : redirected ? REDIRECT_BUTTONS : lapseUnconfirmed ? LAPSE_BUTTONS : null;
 }
@@ -128,10 +130,12 @@ function labelButtons(f: SendFlow, buttons: ReviewButtons | null) {
 // otherwise the historical ones byte-for-byte. A look-alike is danger, a first send caution, as in the approval window
 // (clearsign.warningChecks). Empty return = nothing to warn about (box hidden).
 // `redirected`: the .csd name of a send whose address differs from the one this account last paid it at ([A19], first).
-export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments", redirected: string | null = null): Check[] {
+// The order on screen: [A19], the name's rows (nameCheck: [A17], [A9] or [A10], [A4], [A18], or the paragraph), then the
+// look-alike or first-send line.
+export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCautions: Check[], noun: "transfers" | "payments", redirected: string | null = null): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
   const out: Check[] = redirected ? [{ tier: "caution", html: sentenceHtml(sentenceOf("A19", undefined, { name: redirected })) }] : [];
-  if (nameCaution) out.push(nameCaution);
+  out.push(...nameCautions);
   if (lookalike) out.push({ tier: "danger", html: `<b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is <b>not</b> the same address. Verify every character. ${Noun} are irreversible.` });
   else if (firstTime) out.push({ tier: "caution", html: `First time sending to this address: check every character. ${Noun} are irreversible.` });
   return out;

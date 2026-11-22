@@ -10,9 +10,12 @@
 // Mutations: the line from 0 s fails (1b); the choice before 10 s fails (2d); Confirm on the choice re-running the
 // check (nameStillPointsTo) fails (3c); Confirm signing the check's later answer instead of the review fails (6b);
 // the choice armed with the default buttons fails (3b).
+// Section 12 is the table of the lines that apply together; on 68cce65 (the new sentences added so the file loads) the
+// six rows with [A9], [A10] or [A17] beside [A4] fail, since [A4] stood alone there.
 // Run: node --import tsx test/name-check-wait-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
-import { SENTENCES, sentenceOf, UNCHECKED_BUTTONS, SKIP_CHECK } from "../src/popup/sentences.ts";
+import { SENTENCES, sentenceOf, UNCHECKED_BUTTONS, LAPSE_BUTTONS, REDIRECT_BUTTONS, SKIP_CHECK } from "../src/popup/sentences.ts";
+import { SPV_NEWEST_HEIGHT } from "../src/core/spvnewest.ts";
 import { checker } from "./helpers/check.mjs";
 
 // The virtual clock: a timer of 0 ms runs on the real loop (flush), any longer one only when `advance` passes it.
@@ -206,5 +209,38 @@ console.log("11. [A17] and [A19] together: both lines on the review, [A17]'s but
   check(`(11b) with "Send anyway" / "Wait" (${r.confirm} / ${r.back})`, r.confirm === UNCHECKED_BUTTONS.confirm && r.back === UNCHECKED_BUTTONS.back);
   history = [];
   pending.res(verified(SERVED)); await flush();
+}
+
+console.log("12. every line that can apply together: all on screen, in one order, with the strictest buttons");
+{
+  const nm = { name: "alice.csd" };
+  const T = { A4: sentenceOf("A4", undefined, nm).text, A9: SENTENCES.A9.text, A10: SENTENCES.A10.text, A17, A18: SENTENCES.A18.text, A19: sentenceOf("A19", undefined, nm).text };
+  const ORDER = ["A19", "A17", "A9", "A10", "A4", "A18"];
+  const lapse = (extra) => ({ ok: true, addr: SERVED, name: "alice", lapsed: false, lapseUnconfirmed: true, verified: false, ...extra });
+  const rows = [
+    // [lines from the check, how the review is reached, its answer or the served flag, the buttons without [A19]]
+    [["A4"], "answer", lapse({ addrProven: true }), LAPSE_BUTTONS],
+    [["A9", "A4"], "answer", lapse({ addrProven: false }), LAPSE_BUTTONS],
+    [["A10", "A4"], "answer", lapse({ addrProven: false, viaFill: true }), LAPSE_BUTTONS],
+    [["A18"], "answer", { ...verified(SERVED), completedAt: SPV_NEWEST_HEIGHT + 1 }, null],
+    [["A17"], "choose", false, UNCHECKED_BUTTONS],
+    [["A17", "A4"], "choose", true, UNCHECKED_BUTTONS],
+  ];
+  const DEFAULT = { confirm: "Confirm send", back: "Back" };
+  for (const redirect of [false, true]) for (const [lines, how, arg, buttons] of rows) {
+    if (pending && !pending.settled) { pending.res(verified(SERVED)); pending.settled = true; await flush(); }
+    history = redirect ? [{ type: "send", to: OTHER, amount: 1e8, fee: 1e6, txid: "0x" + "0b".repeat(32), ts: 10, name: "alice" }] : [];
+    await startReview();
+    if (how === "answer") { pending.res(arg); pending.settled = true; await flush(); await advance(50); }
+    else { served = { addr: SERVED, lapsed: arg }; await advance(10_300); await choose(); }
+    const want = [...(redirect ? ["A19"] : []), ...lines];
+    const r = review();
+    const at = ORDER.map((k) => [k, r.warn.indexOf(T[k])]).filter(([, i]) => i >= 0);
+    const shown = at.sort((a, b) => a[1] - b[1]).map(([k]) => k);
+    const exp = buttons === UNCHECKED_BUTTONS ? UNCHECKED_BUTTONS : redirect ? REDIRECT_BUTTONS : buttons ?? DEFAULT;
+    check(`(12) ${want.join(" + ")}: on screen ${shown.join(", ")}; buttons "${r.confirm}" / "${r.back}"`, r.shown && shown.join() === want.join() && r.confirm === exp.confirm && r.back === exp.back);
+  }
+  if (pending && !pending.settled) { pending.res(verified(SERVED)); await flush(); }
+  history = [];
 }
 done("name-check-wait-dom");

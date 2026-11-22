@@ -972,14 +972,15 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: NameInf
 
 // Below this many confirmations a name's resolution could still reorg: the badge says so and the review row is caution.
 export const NAME_SAFE_DEPTH = 3;
-/** A send review's name row: positive only on the caution's agree branch at a depth that can no longer reorg. */
-export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; partly?: boolean; lineHtml?: string }): Check | null {
-  if (!rr.name) return null;
-  if (rr.lineHtml) return { tier: "caution", html: rr.lineHtml };   // a sheet line that stands alone ([A4], [A18]), amber
+/** A send review's name rows: the sheet's lines, one amber row each in their order ([A17], [A9] or [A10], [A4], [A18]),
+ *  or else the name's paragraph, positive only on its agree branch at a depth that can no longer reorg. */
+export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; partly?: boolean; linesHtml?: string[] }): Check[] {
+  if (!rr.name) return [];
+  if (rr.linesHtml?.length) return rr.linesHtml.map((html) => ({ tier: "caution" as const, html }));
   const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
   const ok = nameBranch(rr.verified, info) === "agree" && !rr.lowDepth && !rr.partly;   // [A18] is amber
   const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";
-  return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge };
+  return [{ tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge }];
 }
 
 // XREPO-1 confirm-time guard. A name recipient is re-resolved at sign-time and the send is REFUSED

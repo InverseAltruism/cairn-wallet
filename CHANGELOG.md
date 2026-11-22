@@ -5,7 +5,8 @@
 - A send to a name no longer waits silently for the name check. From 0.3 s the send sheet says "Checking
   alice.csd..." with the share of headers synced while they sync, and from 10 s, once the name service has answered,
   offers "Send without check". It arms the review on the name service's address, unverified, with "This name could
-  not be checked. Make sure the address is right." and "Send anyway" / "Wait"; that Confirm signs the reviewed
+  not be checked. Make sure the address is right." (and the lapse line below after it when the name service says the
+  name expired) and "Send anyway" / "Wait"; that Confirm signs the reviewed
   address without waiting for the check or asking again, and "Wait" goes back to the same check. A check that ends
   after the choice with the same address refuses nothing; with another address or a refusal it takes the review down
   before Confirm ("alice.csd now points to a different address. Nothing was sent; review it again."). A check that
@@ -20,7 +21,10 @@
   service reports while the wallet cannot check it (0.3.4 refused it with "couldn't be confirmed on-chain"), now show
   the amber line "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
   owner." with "Send anyway" and "Cancel". The address is the one the name's own verified records give, not the
-  served one, when the wallet replayed them. Nothing that was a caution in 0.3.4 is refused: a lapse one source's
+  served one, when the wallet replayed them. When it shows the served one (nothing replayed, both sources down or
+  answering not found, a source reporting the replay insufficient, a reservation, a bought name), "Not verified. Check
+  the address yourself." (for a bought name "Bought name: the wallet can only partly verify it. Check the address
+  yourself.") comes first (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs section 12). Nothing that was a caution in 0.3.4 is refused: a lapse one source's
   records show stays a caution, since that source can withhold a renewal (test/name-lapse-tip.test.mjs,
   test/name-lapse-caution-dom.test.mjs).
 
