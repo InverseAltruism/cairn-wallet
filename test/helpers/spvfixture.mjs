@@ -1,8 +1,8 @@
 // Real chain headers for the header-store tests (heights 29,696 to 32,767 and 106,496 to 115,199, fetched from
-// /api/headers on 2026-10-13 and 2026-10-14), the /api/headers and node RPC endpoints served from them, and an
-// in-memory HeaderStore with the write semantics of src/core/headerstore.ts. The fixture stores each record
-// without its prev field (the previous record's sha256d), and the loader checks that chunks 7, 26 and 27 walk to
-// the anchor table.
+// /api/headers on 2026-10-13 and 2026-10-14; 126,976 to 146,829 from a recording of /api/headers on 2026-11-21),
+// the /api/headers and node RPC endpoints served from them, and an in-memory HeaderStore with the write semantics of
+// src/core/headerstore.ts. The fixture stores each record without its prev field (the previous record's sha256d),
+// and the loader checks that chunks 7, 26, 27 and 31 to 34 walk to the anchor table.
 import "./backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { brotliDecompressSync } from "node:zlib";
@@ -63,10 +63,16 @@ export function v1Snapshot(from, to) {
 verifyLinkedRecords(records(SPV_FLOOR.height, 32767), { firstHeight: SPV_FLOOR.height, firstHash: SPV_FLOOR.hash, lastHash: SPV_ANCHORS[0], lastHeight: 32767 });
 verifyLinkedRecords(records(106496, 110591), { firstHeight: 106496, prevHash: SPV_ANCHORS[18], lastHash: SPV_ANCHORS[19], lastHeight: 110591 });
 verifyLinkedRecords(records(110592, NEWEST), { firstHeight: 110592, prevHash: SPV_ANCHORS[19], lastHash: SPV_ANCHORS[20], lastHeight: NEWEST });
-if (SPV_ANCHORS.length < 21) throw new Error("the fixture needs the release table's first 21 entries (to 114,687)");
+for (let k = 31; k <= 34; k++) verifyLinkedRecords(records(k * 4096, k * 4096 + 4095), { firstHeight: k * 4096, prevHash: SPV_ANCHORS[k - 8], lastHash: SPV_ANCHORS[k - 7], lastHeight: k * 4096 + 4095 });
+if (SPV_ANCHORS.length < 28) throw new Error("the fixture needs the release table's first 28 entries (to 143,359)");
 /** The release table's first 21 entries (newest 114,687, the fixture's top anchored chunk). Sources built on the fixture
  *  pass it as `anchors`, so a release that appends entries leaves these tests unchanged. */
 export const FIX_ANCHORS = Object.freeze(SPV_ANCHORS.slice(0, 21));
+/** The sealed-store fixture: the table's first 25 entries (newest 131,071, chunk 31), real headers to 146,829, so
+ *  chunks 32 and 33 are sealable (their tops at least 4,096 below the tip) and 34 and 35 are the unsealed tail. */
+export const SEAL_ANCHORS = Object.freeze(SPV_ANCHORS.slice(0, 25));
+export const SEAL_NEWEST = 131071;
+export const SEAL_TOP = 146829;
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -128,10 +134,11 @@ export const rehash = (r) => ({ ...r, hash: hex(sha256d(serializeHeader(r.header
 export function memStore({ failWrite = () => false } = {}) {
   const chunks = new Map();
   const st = {
-    chunks, head: null, writes: [], reads: 0,
+    chunks, head: null, seals: null, writes: [], reads: 0, readKeys: [],
     async listChunks() { return [...chunks.keys()].filter((k) => k >= 7 && k <= 7 + 4096).sort((a, b) => a - b); },
-    async getChunk(k) { st.reads++; const v = chunks.get(k); return v ? v.slice() : null; },
+    async getChunk(k) { st.reads++; st.readKeys.push(k); const v = chunks.get(k); return v ? v.slice() : null; },
     async getHead() { return st.head ? { ...st.head } : null; },
+    async getSeals() { return st.seals ? structuredClone(st.seals) : null; },
     async write(w) {
       if (failWrite(w, st.writes.length)) { st.writes.push({ ...w, failed: true }); throw new Error("QuotaExceededError"); }
       st.writes.push(w);
@@ -139,10 +146,11 @@ export function memStore({ failWrite = () => false } = {}) {
       for (const k of w.del ?? []) chunks.delete(k);
       for (const p of w.put ?? []) chunks.set(p.k, p.records.slice());
       if (w.head) st.head = { ...w.head };
+      if (w.seals) st.seals = structuredClone(w.seals);
     },
     close() {},
     /** A byte image of the store, to compare before and after. */
-    image() { return JSON.stringify({ head: st.head, chunks: [...chunks].sort((a, b) => a[0] - b[0]).map(([k, v]) => [k, hex(createHash("sha256").update(v).digest()), v.length]) }); },
+    image() { return JSON.stringify({ head: st.head, seals: st.seals, chunks: [...chunks].sort((a, b) => a[0] - b[0]).map(([k, v]) => [k, hex(createHash("sha256").update(v).digest()), v.length]) }); },
   };
   return st;
 }

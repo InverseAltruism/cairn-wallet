@@ -67,6 +67,8 @@ export interface HeaderStore {
   /** The stored bytes, or null when absent or not an ArrayBuffer (a malformed value is overwritten on refetch). */
   getChunk(k: number): Promise<Uint8Array | null>;
   getHead(): Promise<HeadHint | null>;
+  /** The stored seal record as read, unchecked (core/spvseal.ts checkSeals decides what it proves); null when absent. */
+  getSeals(): Promise<unknown>;
   /** Commits whole or not at all; resolves after the transaction completes, rejects on bad input. */
   write(w: StoreWrite): Promise<void>;
   close(): void;
@@ -133,6 +135,9 @@ function wrap(db: IDBDatabase): HeaderStore {
     async getHead() {
       const v = await reqP(db.transaction(META, "readonly").objectStore(META).get("head"));
       return isHeadHint(v) ? v : null;
+    },
+    async getSeals() {
+      return (await reqP(db.transaction(META, "readonly").objectStore(META).get("seals"))) ?? null;
     },
     async write(w) {
       for (const p of w.put ?? []) checkKey(p.k);

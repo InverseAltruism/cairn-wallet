@@ -38,6 +38,7 @@ import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
 import { heightOf } from "./chainbound.js";
 import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "./spvpin.js";
+import type { SealKey } from "./spvseal.js";
 import { bindBlock, bindSigner, toChainEvent, type ChainEvent } from "./spvbind.js";
 
 
@@ -478,6 +479,12 @@ export interface LiveSpvOpts {
   floor?: { get(): Promise<number | null>; set(v: number): Promise<void> };
   /** The session pin (chrome.storage.session); without it a restore runs every consensus check. */
   pin?: PinSlot;
+  /** The seal key getter (spvseal.ts sealKeyGetter), called at each use; null while locked. Without it seals are
+   *  neither read nor written. */
+  sealKey?: () => Promise<SealKey | null>;
+  /** Settles when the wallet is unlocked (at once when it is). A store holding a seal list waits for it before
+   *  the restore makes any request. */
+  unlocked?: () => Promise<void>;
 }
 
 // M9 (B5a): the lapse-floor advance rule, ONE pure function so the clamp and its use-site cannot drift.
