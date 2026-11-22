@@ -120,6 +120,11 @@ both is `SUBMIT_REJECTED` (test/submit-two-hosts.test.mjs has every pair). After
 waits for the second host at most 4 s (`MAIN_REFUSED_WAIT_MS`); the send keeps its "Sending..." state meanwhile. When
 the second host has not answered by then, or answers unclear, the result is `SUBMIT_MAYBE_INFLIGHT` with the main
 host's `reason` and a maybe row, and the line says the main server refused and the backup server has not answered.
+So while the second host does not answer submits, every refusal by the main host reads "may still go through" and
+leaves a "sent, not yet included" row. For a buy that row is an earlier fill that may still land: a retry of the same
+offer built with other bytes (another fee, other coins) is refused `FILL_ALREADY_SENT` until the row is seen applied or
+marked gone, for up to 30 minutes from that transaction's last send (`OWN_FILL_INDEX_WAIT_MS`), while a retry with the
+same bytes is sent again (test/submit-two-hosts.test.mjs, test/fill-refill-after-send.test.mjs sections 5 and 6).
 The reason for waiting at all: a refusal reported while the other host may still accept and relay the payment invites
 the user to pay again, with other coins once the first are seen as spent. The second host's refusal after the cap means
 no host took it, and the row that send made is removed, as a refused send keeps none; a row an earlier attempt of the
