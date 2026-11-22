@@ -72,8 +72,19 @@
   `/api/content -> <HTTP status>`; a failed first-party sign-in says "sign-in failed"; the second server's note on a
   denied reservation is left out of RESERVATION_DENIED's text; the offer service's status in a fill refusal or the
   token price line is one of open, filled, cancelled, expired, locked, closed, else "not open"; the send review's Name
-  row no longer shows the name service's "via" field. Each server text goes to the worker's console
-  (test/served-text-off-screen.test.mjs).
+  row no longer shows the name service's "via" field. The content server's and the sign-in check's texts and the second
+  server's note go to the worker's console; the offer status and the "via" field are dropped. The content server's
+  answer counts as accepted only when it says `ok: true`, and nothing of its body (no `code`, no text) reaches the
+  result; an accepted sign-in returns only its address and session (test/served-text-off-screen.test.mjs).
+- A refusal's code is read only as a string and an own entry of the sentence tables, so a code such as "toString" or a
+  non-string takes the default line instead of stopping the window on "Revealing…" (test/sentences-copy.test.mjs).
+- A token-priced fill's quote takes only tickers the codec accepts, and the amount-changed refusal names the offer's
+  on-chain want in the wallet's words, without the quote's own strings (test/served-text-off-screen.test.mjs,
+  test/fill-token-content.test.mjs).
+- A new name only partly verified shows "New name, only partly verified. Check the address before a large payment."
+  alone, without the verified paragraph above it; that line, "alice.csd may have expired..." and the changed-address
+  line carry the sheet's technical sentence behind Details (test/popup-checks-dom.test.mjs 9d1,
+  test/name-redirect-dom.test.mjs 1f).
 - A send review to a `.csd` name this account paid before, which now points to another address, says so in amber
   ("alice.csd points to a different address than when you last paid it. Continue only if you expected this.") and
   its buttons read "Send to new address" and "Cancel". The history row of a popup send or token send to a name keeps
