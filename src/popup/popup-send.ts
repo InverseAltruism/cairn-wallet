@@ -111,5 +111,6 @@ $("btn-send-back").addEventListener("click", () => teardownReview(CSD_FLOW, fals
 // Confirm signs the frozen review and nothing else (popup-sendflow runConfirm).
 $("btn-send-confirm").addEventListener("click", () => runConfirm(CSD_FLOW,
   { read: () => reviewState.reviewedSend, consume: () => { reviewState.reviewedSend = null; } },
-  ({ to, amt, signer, name }) => call("send", to, amt, SEND_FEE, signer ?? undefined, name ?? undefined),
+  // a send to an address keeps 0.3.4's call shape; a send to a name adds the name for its history row (wallet.ts namedRow)
+  ({ to, amt, signer, name }) => call("send", to, amt, SEND_FEE, signer ?? undefined, ...(name ? [name] : [])),
   ({ amt }) => "Sent " + fmtCsd(amt)));
