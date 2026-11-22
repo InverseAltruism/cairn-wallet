@@ -182,8 +182,8 @@ seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. De
   "could not verify" for that one call.
 - A seal never refuses. An entry whose chunk is missing or holds other bytes is absent: a list a 0.3.4 install left
   behind after it rewrote chunks, a write made while locked over sealed chunks, a write that was dropped. Only the
-  restore judges this; the writer does not cut a stored list it does not replace, because 0.3.4 never touches the
-  list and the restore must judge its writes anyway. Once per source, when the key is there, the catch-up writes the
+  restore judges this; the writer does not cut a stored list it does not replace, because 0.3.4 does not read or write
+  the list (its store code touches only `head` in `meta`) and the restore must judge its writes anyway. Once per source, when the key is there, the catch-up writes the
   list for every sealable chunk in the store when it differs from the stored one, and moves the client's base to the
   highest sealed top (the rebase: the records above are re-ingested with every check, 4,096 to 8,191 of them). A
   client longer than 16 chunks is rebased after a persist, which bounds a long first sync's memory.

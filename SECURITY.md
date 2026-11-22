@@ -38,7 +38,7 @@ Seals keep that cost flat across browser starts. For every stored 4,096-header c
 4,096 blocks below the tip, the wallet stores a seal: an HMAC-SHA256 over the chunk's last block
 hash, the previous chunk's, the cumulative proof of work and the release's newest built-in hash,
 under a key derived from the vault key (an HMAC of it under a fixed label, computed when needed
-and never stored). A restore with the wallet unlocked starts from the newest sealed chunk whose
+and not stored). A restore with the wallet unlocked starts from the newest sealed chunk whose
 stored headers still hash-link to their seal and checks only the headers above it with every
 rule; a seal whose chunk is missing or holds other headers counts as absent. Locked, the seals
 are ignored and every check runs, and while seals are stored the restore waits for unlock before

@@ -873,7 +873,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       tops.push({ k, top: String(vh.hash).toLowerCase(), work: vh.chainwork + pass.workBase });
     }
   };
-  // The key is fetched for this write only (invariant 4: never held across an await or a lock). Without it, or with
+  // The key is fetched for this write and dropped after it (invariant 4: no key held across a lock). Without it, or with
   // nothing sealable yet, the write carries no list and the stored one is left for the restore to judge.
   const withSeals = async (w: StoreWrite, upTo: number): Promise<StoreWrite> => {
     const list = opts.sealKey ? knownTops(sealableK(upTo)) : [];
