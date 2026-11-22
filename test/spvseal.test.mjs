@@ -1,11 +1,10 @@
 // src/core/spvseal.ts and the seal half of mergeStoreWrites: the key and MAC against vectors computed with node:crypto
 // from the byte layout (not from the module), a list check that ignores a wrong MAC over forged bytes and a list
 // spliced from two genuine branches, a property run over tampered lists, and the merge of detached writes.
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
 import { checkSeals, sealKeyGetter, sealMessage, sealRecord } from "../src/core/spvseal.ts";
 import { importKeyRaw } from "../src/core/keystore.ts";
-import { MAX_CHUNK } from "../src/core/headerstore.ts";
 import { detachStoreWrite, flushSpvStoreWrites, mergeStoreWrites } from "../src/core/namespv.ts";
 
 const t = checker("spvseal: key, message, MAC, list check, merge");
@@ -43,20 +42,42 @@ const K = await sealKeyGetter(() => vk)();
     try { f(); } catch { threw++; }
   }
   t.check("work outside u128, an uppercase hash and a list not contiguous from newestK + 1 throw when sealing", threw === 5);
+  // A u32 field that wrapped would give two heights one message, so one MAC would seal both.
+  let wraps = 0;
+  for (const f of [() => sealMessage(2 ** 32 + 35, NH, T1, W1, TABLE), () => sealMessage(-1, NH, T1, W1, TABLE), () => sealMessage(35.5, NH, T1, W1, TABLE),
+    () => sealMessage(35, NH, T1, W1, { newest: 2 ** 32 + 143359, newestHash: NH })]) {
+    try { f(); } catch { wraps++; }
+  }
+  t.check("k or newest outside u32 (or not an integer) throws instead of wrapping onto another height's message", wraps === 4);
 }
 
 {
+  // One getter over a vault key that changes, as Wallet's does: vault A, vault B, a lock, A again.
+  const vkB = await importKeyRaw("ff".repeat(32));
+  const hex = (k) => (k ? Buffer.from(k).toString("hex") : null);
   let cur = null;
   const get = sealKeyGetter(() => cur);
   t.check("locked (no vault key): the getter gives no key", (await get()) === null);
   cur = vk;
-  const p = get();
+  const kA = hex(await get());
+  cur = vkB;
+  const kB = hex(await get());
   cur = null;
-  t.check("a lock during the derivation gives no key", (await p) === null);
-  cur = await importKeyRaw("ff".repeat(32));
-  const other = await get();
+  const kLocked = await get();
+  cur = vk;
+  const kA2 = hex(await get());
+  t.check("vault A, then vault B, then a lock, then A again: A's key, B's own key, none, A's key", kA === K_HEX && kB !== null && kB !== K_HEX && kLocked === null && kA2 === K_HEX);
   const rec = sealRecord(K, TABLE, [{ k: 35, top: T1, work: W1 }]);
-  t.check("a new vault (another raw key) gives another key, under which the old list is ignored", other !== null && Buffer.from(other).toString("hex") !== K_HEX && checkSeals(other, rec, TABLE) === null);
+  t.check("under vault B's key (a new vault) vault A's list is ignored", checkSeals(Buffer.from(kB, "hex"), rec, TABLE) === null);
+  cur = vk;
+  const toNull = get();
+  cur = null;
+  t.check("a lock during the derivation gives no key", (await toNull) === null);
+  cur = vk;
+  const toB = get();
+  cur = vkB;
+  t.check("a change to another vault key during the derivation gives no key (not A's, not B's)", (await toB) === null);
+  t.check("after that change the getter gives B's key", hex(await get()) === kB);
 }
 
 // Seeded generator for branches and tampering.
@@ -93,6 +114,29 @@ t.check("an empty list verifies to no sealed chunk", same(checkSeals(K, { v: 1, 
   const work = structuredClone(recA);
   work.list[7].work = (BigInt(work.list[7].work) + 1n).toString();
   t.check("a raised work under the genuine MAC is ignored", checkSeals(K, work, TABLE) === null);
+  // The compare covers all 64 hex characters of every entry's MAC.
+  let flips = 0, taken = 0;
+  for (let e = 0; e < recA.list.length; e++) for (let p = 0; p < 64; p++) {
+    const r = structuredClone(recA);
+    const m = r.list[e].mac;
+    r.list[e].mac = m.slice(0, p) + (m[p] === "0" ? "1" : "0") + m.slice(p + 1);
+    flips++;
+    if (checkSeals(K, r, TABLE) !== null) taken++;
+  }
+  t.check(`each of ${flips} one-character MAC changes over genuine bytes is ignored (${taken} taken)`, flips === recA.list.length * 64 && taken === 0);
+  const upper = structuredClone(recA);
+  upper.list[0].mac = upper.list[0].mac.toUpperCase();
+  t.check("the genuine MAC in upper case is ignored (the compare is exact)", checkSeals(K, upper, TABLE) === null);
+}
+
+{
+  // An entry whose fields are read through getters (a value that did not come from IndexedDB): each field is read
+  // once, so the top returned is the top the MAC covered.
+  let reads = 0;
+  const e = { k: recA.list[0].k, work: recA.list[0].work, mac: recA.list[0].mac };
+  Object.defineProperty(e, "top", { enumerable: true, get() { reads++; return reads === 1 ? recA.list[0].top : "0x" + "ee".repeat(32); } });
+  const out = checkSeals(K, { v: 1, newest: TABLE.newest, list: [e] }, TABLE);
+  t.check(`a top read through a getter is read once and the returned top is the one the MAC covered (${reads} reads)`, reads === 1 && out?.[0]?.top === recA.list[0].top);
 }
 
 {
@@ -103,11 +147,15 @@ t.check("an empty list verifies to no sealed chunk", same(checkSeals(K, { v: 1, 
   t.check("joined at the fork, where the branches are one chain, it is branch B's own list", same(checkSeals(K, atFork, TABLE), B));
 }
 
-t.check("a list for another table entry (a newer release) is ignored", checkSeals(K, { ...recA, newest: 147455 }, { newest: 147455, newestHash: NH }) === null);
+{
+  const NEXT = { newest: 147455, newestHash: "0x" + "ab".repeat(32) };
+  const recNext = sealRecord(K, NEXT, [{ k: 36, top: T1, work: W1 }]);
+  t.check("a list sealed for another table entry (a newer release) is ignored, and verifies against its own", checkSeals(K, recNext, TABLE) === null && checkSeals(K, recNext, NEXT)?.length === 1);
+  t.check("an empty list stored for another table entry is ignored (no MAC binds it, the record's newest does)", checkSeals(K, { v: 1, newest: NEXT.newest, list: [] }, TABLE) === null);
+}
 t.check("a list for another table hash at the same height is ignored", checkSeals(K, recA, { newest: TABLE.newest, newestHash: "0x" + "ab".repeat(32) }) === null);
 
 {
-  const first = 35;
   const bad = [null, "seals", 7, { v: 2, newest: TABLE.newest, list: recA.list }, { v: 1, newest: TABLE.newest, list: "x" },
     { v: 1, newest: TABLE.newest, list: recA.list.slice(1) },
     { v: 1, newest: TABLE.newest, list: [recA.list[0], recA.list[2]] },
@@ -117,7 +165,10 @@ t.check("a list for another table hash at the same height is ignored", checkSeal
     { v: 1, newest: TABLE.newest, list: [{ ...recA.list[0], work: (1n << 128n).toString() }] },
     { v: 1, newest: TABLE.newest, list: [{ ...recA.list[0], mac: recA.list[0].mac.slice(2) }] },
     { v: 1, newest: TABLE.newest, list: [{ ...recA.list[0], k: "35" }] },
-    { v: 1, newest: TABLE.newest, list: new Array(MAX_CHUNK - first + 2).fill(recA.list[0]) }];
+    { v: 1, newest: TABLE.newest, list: [{ ...recA.list[0], mac: Number.NaN }] },
+    { v: 1, newest: TABLE.newest },
+    { v: 1, newest: TABLE.newest, list: null },
+    { v: 1, newest: TABLE.newest, list: new Array(1e6).fill(recA.list[0]) }];
   let threw = false, nulls = 0;
   for (const raw of bad) { try { if (checkSeals(K, raw, TABLE) === null) nulls++; } catch { threw = true; } }
   t.check(`malformed stored values are ignored without a throw (${nulls} of ${bad.length})`, !threw && nulls === bad.length);
@@ -167,31 +218,73 @@ t.check("a list for another table hash at the same height is ignored", checkSeal
   t.check("merge: no list in either write gives none, and the puts merge as before", !("seals" in m4) && m4.put.map((p) => p.k).join() === "40" && m4.deleteAbove === 40);
   t.check("merge: the older list is not changed in place", recA.list.length === 12);
 
-  // Property: folding random suffix writes equals applying them in order, for chunks, and gives the last list cut by
-  // every later deleteAbove, which still verifies.
-  let bad = 0;
-  for (let n = 0; n < 500; n++) {
-    const writes = Array.from({ length: 2 + ri(5) }, () => {
-      const w = { put: Array.from({ length: ri(4) }, () => ({ k: 35 + ri(14), records: new Uint8Array([ri(256)]) })) };
-      if (rnd() < 0.5) w.deleteAbove = 35 + ri(14);
-      if (rnd() < 0.6) w.seals = pre(rnd() < 0.5 ? recA : recB, ri(13));
-      return w;
-    });
-    const folded = writes.reduce((o, w) => mergeStoreWrites(o, w));
-    const seq = new Map(), fold = new Map();
-    let list = null;
-    for (const w of writes) {
-      if (w.deleteAbove !== undefined) { for (const k of [...seq.keys()]) if (k > w.deleteAbove) seq.delete(k); if (list) list = list.filter((e) => e.k <= w.deleteAbove); }
-      for (const p of w.put) seq.set(p.k, p.records[0]);
-      if (w.seals) list = w.seals.list;
-    }
-    if (folded.deleteAbove !== undefined) for (const k of [...fold.keys()]) if (k > folded.deleteAbove) fold.delete(k);
-    for (const p of folded.put) fold.set(p.k, p.records[0]);
-    const chunksEqual = seq.size === fold.size && [...seq].every(([k, v]) => fold.get(k) === v);
-    const sealsEqual = list === null ? !folded.seals : folded.seals?.list.length === list.length && folded.seals.list.every((e, i) => e === list[i]) && checkSeals(K, folded.seals, TABLE) !== null;
-    if (!chunksEqual || !sealsEqual) bad++;
+  // A store model that applies a write as headerstore.write does: deleteAbove, then puts, then the seal record. A
+  // chunk's bytes name the branch that made it; a seal entry is made for the bytes of its branch at k.
+  const forkOf = [0, 40, 44];                                   // branch 1 forks from 0 at chunk 40, branch 2 at 44
+  const owner = (b, k) => (b === 0 || k < forkOf[b] ? (b === 0 ? 0 : owner(0, k)) : b);
+  const bytesOf = (b, k) => new Uint8Array([owner(b, k), k]);
+  const topOf = (bytes) => "0x" + createHash("sha256").update(bytes).digest("hex");
+  const sealsFor = (b, ks) => sealRecord(K, TABLE, ks.map((k) => ({ k, top: topOf(bytesOf(b, k)), work: 1000n * BigInt(k) + BigInt(owner(b, k)) })));
+  const apply = (st, w) => {
+    const chunks = new Map(st.chunks);
+    if (w.deleteAbove !== undefined) for (const k of [...chunks.keys()]) if (k > w.deleteAbove) chunks.delete(k);
+    for (const p of w.put ?? []) chunks.set(p.k, p.records);
+    return { chunks, seals: w.seals ?? st.seals };
+  };
+  // The entries of `seals` that sit over a missing chunk or over bytes other than the ones they were made for.
+  const stale = (chunks, seals) => (seals?.list ?? []).filter((e) => !chunks.has(e.k) || topOf(chunks.get(e.k)) !== e.top).map((e) => e.k);
+  const range = (a, b) => Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+
+  // The review's two cases, by name.
+  {
+    const older = { put: range(35, 40).map((k) => ({ k, records: bytesOf(0, k) })), deleteAbove: 42, seals: sealsFor(0, range(35, 40)) };
+    const reorg = { put: range(40, 43).map((k) => ({ k, records: bytesOf(1, k) })), deleteAbove: 43 };
+    const mA = mergeStoreWrites(older, reorg);
+    const after = apply({ chunks: new Map(), seals: null }, mA);
+    t.check(`merge, newer write without a list replaces sealed chunks: the older list is cut below them (stale ${stale(after.chunks, mA.seals).join() || "none"}, list to ${mA.seals?.list.at(-1)?.k})`,
+      stale(after.chunks, mA.seals).length === 0 && mA.seals?.list.at(-1)?.k === 39 && checkSeals(K, mA.seals, TABLE)?.length === 5);
+    const trunc = { put: [{ k: 38, records: new Uint8Array([9, 38]) }], deleteAbove: 38 };
+    const mT = mergeStoreWrites(older, trunc);
+    t.check("merge, newer write truncating into the sealed run: the older list is cut below the rewritten chunk", stale(apply({ chunks: new Map(), seals: null }, mT).chunks, mT.seals).length === 0 && mT.seals?.list.at(-1)?.k === 37);
+    const cut = { put: [{ k: 36, records: bytesOf(0, 36) }], deleteAbove: 36 };
+    const catchUp = { seals: sealsFor(0, range(35, 38)) };
+    const mB = mergeStoreWrites(cut, catchUp);
+    const afterB = apply({ chunks: new Map(range(35, 38).map((k) => [k, bytesOf(0, k)])), seals: null }, mB);
+    t.check(`merge, newer list over chunks the older write deletes: the merged list names no deleted chunk (stale ${stale(afterB.chunks, mB.seals).join() || "none"})`,
+      stale(afterB.chunks, mB.seals).length === 0 && mB.seals?.list.at(-1)?.k === 36);
   }
-  t.check(`merge property: 500 random write sequences fold to the sequential chunks and the last list cut by later truncations (${bad} differ)`, bad === 0);
+
+  // Property: for pairs and runs of writes made as a writer makes them (each list seals only chunks that hold its
+  // branch's bytes once that write lands), the merged write leaves the chunks the writes leave in order, and its list
+  // sits over no missing chunk and no other bytes.
+  let differ = 0, staleMerged = 0, staleSeq = 0, runs = 0;
+  let seqExample = null;
+  for (let n = 0; n < 2000; n++) {
+    let st = { chunks: new Map(range(35, 35 + ri(14)).map((k) => [k, bytesOf(ri(3), k)])), seals: null };
+    const start = st;
+    const writes = [];
+    for (let i = 0, len = 2 + ri(4); i < len; i++) {
+      const b = ri(3), lo = 35 + ri(14), hi = lo + ri(4);
+      const w = { put: range(lo, hi).map((k) => ({ k, records: bytesOf(b, k) })) };
+      if (rnd() < 0.7) w.deleteAbove = hi + (rnd() < 0.3 ? -ri(3) : 0);
+      const landed = apply(st, w).chunks;
+      if (rnd() < 0.6) {
+        let top = 34;
+        while (landed.has(top + 1) && topOf(landed.get(top + 1)) === topOf(bytesOf(b, top + 1))) top++;
+        w.seals = sealsFor(b, range(35, 35 + ri(top - 34 + 1) - 1));
+      }
+      st = apply(st, w);
+      writes.push(w);
+    }
+    const merged = writes.reduce((o, w) => mergeStoreWrites(o, w));
+    const one = apply(start, merged);
+    runs++;
+    if (one.chunks.size !== st.chunks.size || [...st.chunks].some(([k, v]) => one.chunks.get(k) !== v)) differ++;
+    if (merged.seals && (stale(one.chunks, merged.seals).length || checkSeals(K, merged.seals, TABLE) === null)) staleMerged++;
+    if (stale(st.chunks, st.seals).length) { staleSeq++; seqExample ??= writes.map((w) => ({ put: w.put.map((p) => `${p.k}:${p.records[0]}`).join(" "), deleteAbove: w.deleteAbove, seals: w.seals?.list.map((e) => e.k).join(" ") })); }
+  }
+  t.check(`merge property: ${runs} runs of 2 to 5 writes over a filled store: the merged write leaves the same chunks (${differ} differ) and its list is never stale (${staleMerged} stale)`, differ === 0 && staleMerged === 0);
+  console.log(`    (the same writes applied one by one left a stale seal in ${staleSeq} of ${runs} runs, a write without a list over sealed chunks; first: ${JSON.stringify(seqExample)})`);
 
   // The production path: a burst of detached writes while one is in flight lands the newest list.
   const writes = [];
