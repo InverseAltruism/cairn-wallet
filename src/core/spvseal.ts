@@ -6,7 +6,7 @@
 import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/utils";
-import { chunkOf, MAX_CHUNK } from "./headerstore.js";
+import { chunkOf } from "./headerstore.js";
 import { exportKeyRaw } from "./keystore.js";
 
 declare const sealKeyBrand: unique symbol;
@@ -26,7 +26,6 @@ const MSG_TAG = utf8ToBytes("cairn-wallet/spv-seal/v1");
 const MSG_BYTES = 145;
 const WORK_MAX = (1n << 128n) - 1n;
 const HASH_RE = /^0x[0-9a-f]{64}$/;
-const MAC_RE = /^[0-9a-f]{64}$/;
 const WORK_RE = /^(0|[1-9][0-9]{0,38})$/;
 
 /**
@@ -89,21 +88,23 @@ export function sealRecord(key: SealKey, table: SealTable, chunks: readonly Seal
  * `table` throws.
  */
 export function checkSeals(key: SealKey, raw: unknown, table: SealTable): SealedChunk[] | null {
-  const r = raw as SealRecord | null;
-  if (!r || typeof r !== "object" || r.v !== 1 || r.newest !== table.newest || !Array.isArray(r.list)) return null;
-  const first = chunkOf(table.newest) + 1;
-  if (r.list.length > MAX_CHUNK - first + 1) return null;
+  if (!raw || typeof raw !== "object") return null;
+  // Every field is read once into a local, so the values checked are the values returned.
+  const { v, newest, list } = raw as Partial<SealRecord>;
+  if (v !== 1 || newest !== table.newest || !Array.isArray(list)) return null;
+  const first = chunkOf(table.newest) + 1, n = list.length;
   const out: SealedChunk[] = [];
   let prevTop = table.newestHash;
-  for (let i = 0; i < r.list.length; i++) {
-    const e = r.list[i] as SealEntry | null;
-    if (!e || typeof e !== "object" || e.k !== first + i || typeof e.top !== "string" || !HASH_RE.test(e.top)) return null;
-    if (typeof e.work !== "string" || !WORK_RE.test(e.work) || typeof e.mac !== "string" || !MAC_RE.test(e.mac)) return null;
-    const work = BigInt(e.work);
-    if (work > WORK_MAX) return null;
-    if (macHex(key, sealMessage(e.k, prevTop, e.top, work, table)) !== e.mac) return null; // MUTATE_SEAL_MAC
-    out.push({ k: e.k, top: e.top, work });
-    prevTop = e.top;
+  for (let i = 0; i < n; i++) {
+    const e: unknown = list[i];
+    if (!e || typeof e !== "object") return null;
+    const { k, top, work, mac } = e as Partial<SealEntry>;
+    if (k !== first + i || typeof top !== "string" || !HASH_RE.test(top) || typeof work !== "string" || !WORK_RE.test(work)) return null;
+    const w = BigInt(work);
+    if (w > WORK_MAX) return null;
+    if (macHex(key, sealMessage(k, prevTop, top, w, table)) !== mac) return null; // MUTATE_SEAL_MAC
+    out.push({ k, top, work: w });
+    prevTop = top;
   }
   return out;
 }
