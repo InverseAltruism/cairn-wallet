@@ -4,6 +4,7 @@
 // service's "via" field (item 8) is popup-checks-dom 9a.
 // RED-FIRST: on the commit before this one, (1a), (2a), (3a) and (4a) fail; (5a) is fill-reservation-verdict.
 // Run: node --import tsx test/served-text-off-screen.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { registerContent, signIn } from "../src/core/node.ts";
 import { fillOfferPreflight } from "../src/core/fillpreflight.ts";
 import { tokenFillQuote } from "../src/core/cairnxview.ts";
