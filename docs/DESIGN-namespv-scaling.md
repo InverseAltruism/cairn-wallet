@@ -153,6 +153,46 @@ grows by one page per 512 blocks, so the timeout is reached near tip 513,000 at 
 public repository's minutes are free) or the check walks from the previous release's newest entry, which the
 previous release's run already derived from the floor.
 
+## Sealed chunks
+
+A browser start finds no session pin, so without more the restore runs every check on every stored header above the
+newest anchor, and its cost grows with the release's age (3.1 s and 71 MB at 114,062 headers, measured 2026-11-21).
+Seals make it flat. `src/core/spvseal.ts` holds the key, the message and the list check; `src/core/spvseed.ts` the
+seeding; the restore, the sealed reads and the writes are in `liveSpvSource`. Design and review: cairn
+`docs/Plans/91-evidence/wallet-wl2-design-2026-11-22.md`.
+
+- The key is HMAC-SHA256 of the raw vault key under the label `cairn-wallet/spv-seal-key/v1`, derived from the
+  current vault key at each use and held across no `await` (`sealKeyGetter`; the wallet passes it as
+  `opts.sealKey`). Locked, there is none. A new vault has a new key, under which old seals fail and are ignored.
+- A seal is a MAC over 145 bytes: a tag, the chunk index, the previous chunk's top hash (the table hash for the first
+  chunk above the anchor), the chunk's top hash, its chainwork as u128 and the table's newest entry and hash. The
+  record is `meta` key `seals`, `{ v: 1, newest, list: [{ k, top, work, mac }] }`, contiguous from the chunk above the
+  anchor and rewritten whole by every suffix write while the key is there. A chunk is sealed once its top is at
+  least 4,096 below the tip. The work counts from the light client's seed below the table's newest entry, as the pin's
+  does; one helper (`seededClient`) seeds every client (the table, a seal, the pin, a rebase) and carries that base.
+- Restore: with a list stored and no key, the restore waits for unlock before any request (the install hook and the
+  popup's prewarm both build the source). With the key, `checkSeals` proves the list (any failed MAC ignores all of
+  it), and `sealSeed` picks, top-down, the highest sealed chunk whose stored bytes walk from the top below it to its
+  own seal. The client is seeded with that chunk's last 46 records and the stored chunks above it are ingested with
+  every check, or walked to the session pin when the pin lies among them. When no sealed chunk walks, the restore
+  seeds at the table as before. A sealed restore reads the seal record, the head, the anchor chunk, the seed chunk and
+  the one or two chunks above it, and its client holds at most 8,237 headers.
+- A height between the anchor and the client's base reads its chunk through the acquirer and the LRU, walked against
+  the remembered tops; a stored chunk that fails is deleted and refetched, and a refetch that fails its seal answers
+  "could not verify" for that one call.
+- A seal never refuses. An entry whose chunk is missing or holds other bytes is absent: a list a 0.3.4 install left
+  behind after it rewrote chunks, a write made while locked over sealed chunks, a write that was dropped. Only the
+  restore judges this; the writer does not cut a stored list it does not replace, because 0.3.4 never touches the
+  list and the restore must judge its writes anyway. Once per source, when the key is there, the catch-up writes the
+  list for every sealable chunk in the store when it differs from the stored one, and moves the client's base to the
+  highest sealed top (the rebase: the records above are re-ingested with every check, 4,096 to 8,191 of them). A
+  client longer than 16 chunks is rebased after a persist, which bounds a long first sync's memory.
+- Rollback: the database stays at version 1 (a bump makes 0.3.4 delete and recreate it), the seals live in `meta`,
+  which 0.3.4 reads only at `head`, and the vault is untouched. 0.3.4 walks chunks to the table and ingests the suffix
+  with every check, so it trusts no header that only a seal vouched for.
+- Who can do what: a writer of the profile without the unlocked vault cannot make a seal; a holder of the unlocked
+  vault can seal a chain of their choice that a later restore trusts, and can already spend.
+
 ## Work above the newest anchor
 
 Above the newest anchor the light client checks each header against its parent (prev link, time rules, LWMA bits,
@@ -364,12 +404,16 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 | the reseed's work rule (`reseedAdopts`) | `test/namespv-reseed-work.test.mjs` (the rule on bigint work and on two light clients over real headers; through `liveSpvSource`, a held branch with more work at the sync target compared at the node tip; the use-site), `test/namespv-reseed-recover.test.mjs` (the reseed order) |
 | an unreadable node tip (SPV-5) | `test/spv-unknown-tip.test.mjs` |
 | the session pin (`walkToPin`, the pin-seeded restore) | `test/namespv-session-pin.test.mjs`, `test/namespv-store-chrome.test.mjs` |
+| sealed chunks (`checkSeals`, `sealSeed`, sealed reads, seal writes, catch-up, rebase, the locked wait) | `test/namespv-seal-heal.test.mjs` (a seal mismatch never refuses and heals, as a property), `test/namespv-seal-restore.test.mjs`, `test/spvseal.test.mjs`, `test/headerstore-kill-chrome.test.mjs` (a write killed in Chrome) |
 
 ## Invariants
 
-- No stored header is used without its walk to the table, its forward verification in the same session, or its walk
-  to the session pin of headers verified earlier in the same browser session. This is the storage-poisoning
-  defence: the profile is writable by whoever can write it, and a poisoned store can at most cost a refetch.
+- No stored header is used without its walk to the table, its forward verification in the same session, its walk
+  to the session pin of headers verified earlier in the same browser session, or its walk to a seal the unlocked
+  vault's key proves. This is the storage-poisoning defence: the profile is writable by whoever can write it, and a
+  poisoned store can at most cost a refetch.
+- A seal never refuses: an entry that does not match its chunk is absent, and the headers it named are verified the
+  slow way and sealed again (test/namespv-seal-heal.test.mjs).
 - The floor (29,960) does not move: a name event at height h needs the verified header at exactly h.
 - Store and network failures degrade to "no cache this session" or a refetch, not to a refusal of a send that
   would otherwise verify. The exception is an unreadable node tip (SPV-5): nothing is synced, so a name record above

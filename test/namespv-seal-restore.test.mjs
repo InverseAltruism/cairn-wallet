@@ -73,21 +73,26 @@ console.log("1. what a sealed restore reads and holds (invariant 3):");
 
 console.log("2. the work in a seal counts from the seed below the table's newest entry, once, on every path:");
 {
-  // A first session to 142,000 seeds at the table; its catch-up seals chunk 32 and rebases the client there.
+  // A first session to 142,000 seeds at the table and seals chunk 32 from that client.
   net.tip = 142000;
   const st = memStore();
   const s1 = await liveSpvSource(opts(st));
   await s1.prepare(142000 - 12);
   await flushSpvStoreWrites();
-  await tick(); await flushSpvStoreWrites();
   const w1 = storedWork(st);
   check(`table-seeded session: chunk 32's seal carries the work and top counted here (${JSON.stringify(w1)})`, w1.length === 1 && w1[0].ok);
-  // The same session after its rebase onto chunk 32 syncs on to the tip: chunk 33's seal is made on the rebased client.
+  // The same store without its list (as 0.3.4 or a locked session leaves it): the restore seeds at the table, the
+  // catch-up seals chunk 32 and rebases the client onto it, and the sync on to the tip seals 33 on the rebased client.
+  st.seals = null;
   net.tip = SEAL_TOP;
-  await s1.prepare(SEAL_TOP - 12);
+  const { calls: rebased } = await seeds(async () => {
+    const s2 = await liveSpvSource(opts(st));
+    await s2.prepare(SEAL_TOP - 12);
+  });
   await flushSpvStoreWrites();
   const w2 = storedWork(st);
-  check(`rebased client: chunk 33's seal carries the work counted here (${JSON.stringify(w2)})`, w2.length === 2 && w2.every((e) => e.ok));
+  check(`rebased client (seeded at ${rebased.map((c) => c.anchor).join(",")}): chunk 33's seal carries the work counted here (${JSON.stringify(w2)})`,
+    rebased.some((c) => c.anchor === topOf(32) && c.first === topOf(32) - SEED + 1) && w2.length === 2 && w2.every((e) => e.ok));
   // A restore seeded at chunk 32's seal (the store cut back to 142,000) syncs on and seals chunk 33.
   const st2 = honestStore(142000);
   const pinSlot = { value: null, get: async () => pinSlot.value, set: async (p) => { pinSlot.value = p; } };
@@ -187,6 +192,20 @@ console.log("5. stale lists are a normal store state (invariant 1):");
   const honest = (await src.hashAt(h)) === hashOf(h) && (await src.hashAt(h - 1)) === hashOf(h - 1);
   check(`a sealed chunk below the seed with other bytes: the read at ${h} answers the honest header from a refetch of its 8 pages (${net.log.length} requests)`,
     honest && net.log.length === 8);
+}
+
+{
+  // The same stored bytes, and a header source serving other bytes for chunk 32: that read is not verified, the call
+  // answers null, nothing throws, and the client above keeps answering.
+  const st = honestStore();
+  const r = st.chunks.get(32).slice(); r[84 * 300 + 40] ^= 0xff; st.chunks.set(32, r);
+  const src = await liveSpvSource(opts(st));
+  await src.prepare(SEAL_TOP - 12);
+  net.tamper = (from, rows) => (from >= 32 * CH && from <= topOf(32) ? rows.map((x, i) => (i === 3 ? { ...x, header: { ...x.header, nonce: x.header.nonce + 1 } } : x)) : rows);
+  const h = 32 * CH + 300;
+  const got = await src.hashAt(h).catch((e) => `threw ${e}`);
+  net.tamper = undefined;
+  check(`a refetched sealed chunk that fails its seal answers null for that call (${got}), and the tip still answers`, got === null && (await src.hashAt(SEAL_TOP)) === hashOf(SEAL_TOP));
 }
 
 console.log("6. the Wallet hands the source its seal key getter and the unlock signal:");
