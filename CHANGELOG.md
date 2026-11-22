@@ -92,6 +92,11 @@
   server's note go to the worker's console; the offer status and the "via" field are dropped. The content server's
   answer counts as accepted only when it says `ok: true`, and nothing of its body (no `code`, no text) reaches the
   result; an accepted sign-in returns only its address and session (test/served-text-off-screen.test.mjs).
+- The offer service's give on a fill card (the name, the ticker, the amount) and the account view's token tickers and
+  amounts, names and primary name are checked at the door with the codec's rules (ticker, plain name, digits); one
+  that fails is dropped. A fill card whose give was dropped says "The offer service did not say what this listing
+  gives." (the token-priced card leaves out its "You receive" sentence), and an account view leaves the token row or
+  the name out, or shows no primary name (test/served-text-off-screen.test.mjs 6).
 - A refusal's code is read only as a string and an own entry of the sentence tables, so a code such as "toString" or a
   non-string takes the default line instead of stopping the window on "Revealing…" (test/sentences-copy.test.mjs).
 - A token-priced fill's quote takes only tickers the codec accepts, and the amount-changed refusal names the offer's

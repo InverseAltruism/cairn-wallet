@@ -4,12 +4,14 @@
 // service's "via" field (item 8) is popup-checks-dom 9a.
 // RED-FIRST: on the commit before this one, (1a), (2a), (3a) and (4a) fail; (5a) is fill-reservation-verdict. (1c), (1d),
 // (2c), (2d), (4c) and (4d) pin that nothing of a served object is copied into a result, and fail before the strict
-// `ok === true` reads and the ticker check at the door.
+// `ok === true` reads and the ticker check at the door. On 68cce65 (6a), (6b) and (6e) fail: the give's name and amount and the
+// account view's tokens and names were not checked at the door.
 // Run: node --import tsx test/served-text-off-screen.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { registerContent, signIn } from "../src/core/node.ts";
 import { fillOfferPreflight } from "../src/core/fillpreflight.ts";
-import { tokenFillQuote } from "../src/core/cairnxview.ts";
+import { tokenFillQuote, fillOfferView, cairnxAssets } from "../src/core/cairnxview.ts";
+import { tokenQuoteHtml, fillViewHtml } from "../src/popup/clearsign.ts";
 import { offerStatusWord } from "../src/core/servedtext.ts";
 import { checker } from "./helpers/check.mjs";
 
@@ -82,5 +84,35 @@ check(`(4e) honest: a token-priced offer still quotes (${q5.ticker} ${q5.amount}
 console.log("5. the fixed list");
 check("(5) offerStatusWord keeps the list and maps anything else", ["open", "filled", "cancelled", "expired", "locked", "closed"].every((s) => offerStatusWord(s) === s)
   && [EVIL, "", null, 7, {}, "Open"].every((s) => offerStatusWord(s) === "not open"));
+
+console.log("6. the served give of a fill card and the account view's tokens and names, at the door");
+{
+  const NM = "alice", ID = "0x" + "ab".repeat(32), PAYTO = "0x" + "cd".repeat(20);
+  const offer = (give) => ({ status: "open", id: ID, want: { value: "100000000", payto: PAYTO }, give, feeBps: 150, height: 40_000 });
+  const view = (give) => fillOfferView({ tradeGet: async (p) => p.startsWith("/cairnx/offer/") ? reply(200, offer(give)) : reply(404, {}) }, OFFER);
+  const bad = [["name", { name: EVIL }], ["ticker", { ticker: EVIL, amount: "1" }], ["amount", { ticker: "SUN", amount: EVIL }]];
+  for (const [what, give] of bad) {
+    const v = await view(give);
+    const html = fillViewHtml(v, OFFER, 40_000);
+    check(`(6a) fill card, a served give ${what} the codec refuses: dropped, and the card says the service did not say what it gives`, v.ok === true && !has(v) && !has(html) && /did not say what this listing gives/.test(html));
+    const q6 = await quote({ ticker: "PAY", amount: "5" }, give);
+    const qh = tokenQuoteHtml(q6, 40_000);
+    check(`(6b) token-priced card, a served give ${what} the codec refuses: dropped, no "You receive" sentence`, q6.ok === true && !has(q6) && !has(qh) && !/You receive/.test(qh));
+  }
+  const vn = await view({ name: NM }), vt = await view({ ticker: "SUN", amount: "7" });
+  check(`(6c) honest: a name listing and a token listing keep their give (${vn.giveName}, ${vt.giveTicker} ${vt.giveAmount})`, vn.giveName === NM && /<b>alice\.csd<\/b>/.test(fillViewHtml(vn, OFFER, 40_000)) && vt.giveTicker === "SUN" && vt.giveAmount === "7");
+  const qn = await quote({ ticker: "PAY", amount: "5" }, { name: NM }), qa = await quote({ ticker: "PAY", amount: "5" }, { ticker: "SUN", amount: 7 });
+  check(`(6d) honest: the token-priced card keeps a name give and a numeric amount (${qn.giveName}, ${qa.giveAmount})`, qn.giveName === NM && /You receive <b>alice\.csd<\/b>/.test(tokenQuoteHtml(qn, 40_000)) && qa.giveAmount === "7");
+  const io = (body) => ({ tradeGet: async () => reply(200, body), addr: () => "0x" + "ab".repeat(20) });
+  const a = await cairnxAssets(io({
+    balances: { [EVIL]: { available: "1", locked: "0" }, SUN: { available: EVIL, locked: "0" }, MOON: { available: "5", locked: EVIL }, PAY: { available: "12", locked: "3" }, CAIRN: { available: 9 } },
+    names: [NM, EVIL], nameDetails: [{ name: NM, leased: true, epochsLeft: 100 }, { name: EVIL }], primaryName: EVIL, tipHeight: 5,
+  }));
+  check(`(6e) the account view keeps only the tokens, names and primary name the codec accepts (${Object.keys(a.balances).join()}; ${a.names}; ${a.nameDetails.map((d) => d.name)}; ${a.primaryName})`,
+    a.ok === true && !has(a) && Object.keys(a.balances).sort().join() === "CAIRN,PAY" && a.balances.PAY.available === "12" && a.balances.PAY.locked === "3" && a.balances.CAIRN.locked === "0"
+    && a.names.join() === NM && a.nameDetails.length === 1 && a.nameDetails[0].name === NM && a.primaryName === null);
+  const h = await cairnxAssets(io({ balances: { PAY: { available: "12", locked: "0" } }, names: [NM], nameDetails: [{ name: NM, leased: true }], primaryName: NM, tipHeight: 5 }));
+  check("(6f) honest: an account's tokens, names and primary name as served", h.balances.PAY.available === "12" && h.names.join() === NM && h.nameDetails.length === 1 && h.primaryName === NM && h.tipHeight === 5);
+}
 console.info = quiet;
 done("served-text-off-screen");

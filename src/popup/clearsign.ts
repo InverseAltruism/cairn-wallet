@@ -129,7 +129,8 @@ export function tokenQuoteHtml(q: any, tip?: unknown, bound?: unknown): string {
     if (human == null) return `<b>${escapeHtml(b)}</b> base units of <b>${escapeHtml(String(tk))}</b>`;
     return `<b>${escapeHtml(human)} ${escapeHtml(String(tk))}</b> <span class="dim">(${escapeHtml(b)} base units)</span>${unverifiedMark(tk, pinned, deployId)}`;
   };
-  const giveBit = (q.giveTicker || q.giveName)
+  // A give the quote dropped at the door (cairnxview.ts) has no "You receive" sentence.
+  const giveBit = (q.giveName || (q.giveTicker && q.giveAmount !== undefined))
     ? ` You receive ${q.giveName ? `<b>${escapeHtml(String(q.giveName))}.csd</b>` : amt(q.giveAmount, q.giveDecimals, q.giveTicker, q.giveDeployId)}.`
     : "";
   const warn = [tickerWarning(q.ticker, q.wantDeployId), q.giveTicker ? tickerWarning(q.giveTicker, q.giveDeployId) : ""].filter(Boolean).join(" ");
