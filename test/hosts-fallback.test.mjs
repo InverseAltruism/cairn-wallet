@@ -40,7 +40,9 @@ const healthy = (delay = 0) => async (u) => {
 const down = async () => { throw new TypeError("fetch failed"); };
 // accepts the connection and never answers; ends when the wallet's own timeout aborts it. The interval keeps the event
 // loop alive meanwhile (AbortSignal.timeout's timer does not).
+let hangSignals = [];
 const hang = async (_u, init) => new Promise((_r, rej) => {
+  hangSignals.push(init?.signal);
   const alive = setInterval(() => undefined, 1_000);
   init?.signal?.addEventListener("abort", () => { clearInterval(alive); rej(init.signal.reason); });
 });
@@ -76,6 +78,7 @@ route(hang, healthy());
 b = await timed(() => w.balance());
 check(`F1: the main host hangs: the balance comes from the second host with via "backup" in ${b.ms} ms (0.3.4: failed at 12 s)`,
   b.v?.confirmed === 5e8 && b.v.via === "backup" && b.ms < HEDGE_MS + 1_000);
+check("F1: the main host's request is not cut short when the second host answers", hangSignals.length === 1 && hangSignals[0]?.aborted === false);
 const second = log.find((e) => e.host === "backup");
 check("F1: the second host was asked HEDGE_MS after the main host, not before", !!second && second.t - log[0].t >= HEDGE_MS - 50);
 

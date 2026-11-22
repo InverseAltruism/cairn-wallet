@@ -7,7 +7,7 @@
  *  the request before forwarding it (its 400 or 413 body cap). UNKNOWN: a refusal text this wallet does not know. */
 export type RefusalReason = "FEE" | "BUSY" | "SPENT" | "CONFLICT" | "PROXY" | "INVALID" | "UNKNOWN";
 
-/** One host's answer. `text` is the answer's own error text (a server's words: diagnostics, never a verdict input),
+/** One host's answer. `text` is the answer's own error text (a server's words, for the result's `error` and the log),
  *  or a transport label when there was none. `txid` is the txid the host echoed on an acceptance. */
 export type HostVerdict =
   | { kind: "accepted"; txid?: string }
