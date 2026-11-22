@@ -13,6 +13,14 @@
   answers within 0.3 s shows nothing new, and the lookup makes the same requests as 0.3.4
   (test/name-check-wait-dom.test.mjs, test/name-check-progress.test.mjs).
 
+- Behaviour change: the name check at Confirm has three outcomes where 0.3.4 had one refusal ("changed where it
+  points"). Another address refuses with "alice.csd now points to a different address. Nothing was sent; review it
+  again."; a lapse the check proves refuses with "alice.csd has expired, so nothing was sent. Send to the owner's 0x
+  address, or ask them to renew it."; a look-up that did not answer, refused for another reason, or no longer
+  verifies an address that was verified at review shows "Could not check alice.csd again. The address is the one you
+  reviewed." with "Send anyway" / "Cancel", and that second click signs the reviewed address without another look-up
+  (test/name-recheck-dom.test.mjs).
+
 - Behaviour change: a send to a name is refused as lapsed only when the lease is over at the floor kept from earlier
   sessions, or over at the wallet's own proof-of-work header tip with two name sources; that is 0.3.4's rule without
   its served-tip case. 0.3.4 also refused when two

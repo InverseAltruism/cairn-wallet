@@ -1,7 +1,7 @@
 // A send's recipient: an address or a .csd name resolved and badged, the confirm-time re-check, and the first-time
 // and look-alike reads.
 import { isPlainName } from "../core/cairnx.js";
-import { NAME_SAFE_DEPTH, reresolveUnchanged, recipientStatus, paidRecipients, lastPaidTo, isZeroAddr, short } from "./clearsign.js";
+import { NAME_SAFE_DEPTH, recheckOutcome, type Recheck, recipientStatus, paidRecipients, lastPaidTo, isZeroAddr, short } from "./clearsign.js";
 import { call } from "./popup-bridge.js";
 import { SPV_NEWEST_HEIGHT } from "../core/spvnewest.js";
 import { sentenceOf, type Sentence } from "./sentences.js";
@@ -80,12 +80,11 @@ function uncheckedRecipient(nm: string, served: Served, check: NameCheck): Recip
   return { ok: true, addr: served.addr, name: nm, verified: false, unchecked: check, lapseUnconfirmed: served.lapsed, linesHtml: lines.map(sentenceHtml), badge: lines.map((l) => l.text).join(" "), label: `${nm}.csd → ${short(served.addr)}` };
 }
 
-// XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time and REFUSE unless it still
-// returns EXACTLY the reviewed address. Fail-closed on any error / network failure. The equality +
-// shape check lives in clearsign.reresolveUnchanged (pure, unit-tested); this only wires the live call.
-export async function nameStillPointsTo(name: string, reviewed: string, reviewedVerified?: boolean): Promise<boolean> {
+// XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time; the outcome is clearsign.recheckOutcome's
+// (pure, unit-tested) over the answer, and a call that failed is a look-up that did not answer. This only wires the call.
+export async function nameRecheck(name: string, reviewed: string, reviewedVerified?: boolean): Promise<Recheck> {
   const re = await call("confirmName", name).catch(() => ({ ok: false }));
-  return reresolveUnchanged(reviewed, re, reviewedVerified); // L7: also refuses a verified→unverified regression
+  return recheckOutcome(reviewed, re, reviewedVerified);
 }
 
 export function setNameRow(rowId: string, valId: string, label: string | null | undefined) {

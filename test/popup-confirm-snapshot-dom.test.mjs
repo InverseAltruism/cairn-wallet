@@ -164,7 +164,7 @@ console.log("G. a name that re-points between review and Confirm");
   confirmAddr = MOVED;
   await byId("btn-send-confirm").click(); await flush(40);
   confirmAddr = ALICE;
-  check(`G1 nothing is sent, with the exact refusal (${sends.length - before}, "${text()}")`, sends.length - before === 0 && text() === "alice.csd changed where it points. Nothing was sent: review it again.");
+  check(`G1 nothing is sent, with the exact refusal (${sends.length - before}, "${text()}")`, sends.length - before === 0 && text() === "alice.csd now points to a different address. Nothing was sent; review it again.");
   check("G2 the review is torn down and the draft kept for a re-review", byId("send-confirm").hidden === true && byId("s-to").value === "alice.csd" && byId("s-to").disabled === false);
 }
 

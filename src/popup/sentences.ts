@@ -33,10 +33,12 @@ export const SENTENCES = {
   S5: { text: "A coin merge of {amount} is still confirming. Try again once it is.", tone: "grey", details: "Added to INSUFFICIENT or TOO_MANY_INPUTS while a consolidation is pending." },
   S8: { text: "This amount needs more coins than one payment can use, so nothing was sent. Send less, or merge coins first.", tone: "red", details: "TOO_MANY_INPUTS: more than the 512-input per-transaction limit." },
   S12: { text: "The fee is above what the wallet allows ({cap} here). Nothing was sent.", tone: "red", details: "FEE_CAP: fee above max(1 CSD, 10% of the inputs)." },
+  A3: { text: "{name} has expired, so nothing was sent. Send to the owner's 0x address, or ask them to renew it.", tone: "red", details: "The SPV check proves the lease lapsed." },
   A4: { text: "{name} may have expired; the wallet could not check. If it has, this address belongs to its last owner.", tone: "amber", details: "Served lapsed flag; the SPV check did not settle the lapse." },
   A9: { text: "Not verified. Check the address yourself.", tone: "amber", details: "The address came from the name service and could not be verified against the chain right now." },
   A10: { text: "Bought name: the wallet can only partly verify it. Check the address yourself.", tone: "amber", details: "Ownership set by a fill depends on state outside the name's own history; a name-scoped proof does not cover it." },
   A14: { text: "{name} now points to a different address. Nothing was sent; review it again.", tone: "red", details: "The confirm-time re-resolution returned a different address." },
+  A15: { text: "Could not check {name} again. The address is the one you reviewed.", tone: "amber", details: "Confirm-time re-resolution failed on the network, or was verified at review and unverified now at the same address." },
   A16: { text: "Checking {name}...{pct}", tone: "grey", details: "Header sync progress of the name check." },
   A17: { text: "This name could not be checked. Make sure the address is right.", tone: "amber", details: "The SPV check had not finished when the user chose to go on." },
   A18: { text: "New name, only partly verified. Check the address before a large payment.", tone: "amber", details: "Registered after this release's newest table entry; Cairn's 2 servers agree and the wallet has no older record to check them against." },
@@ -53,7 +55,7 @@ export const SENTENCES = {
 export type SentenceKey = keyof typeof SENTENCES;
 /** [A19]'s two buttons in a send review: the review's Confirm and Back, relabelled while the line is shown. */
 export const REDIRECT_BUTTONS = { confirm: "Send to new address", back: "Cancel" } as const;
-/** [A4]'s two buttons, the same way. */
+/** [A4]'s two buttons, the same way; [A15]'s at Confirm too. */
 export const LAPSE_BUTTONS = { confirm: "Send anyway", back: "Cancel" } as const;
 /** [A17]'s: Back is "Wait", which goes back to the check still running. */
 export const UNCHECKED_BUTTONS = { confirm: "Send anyway", back: "Wait" } as const;

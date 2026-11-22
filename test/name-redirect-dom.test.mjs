@@ -65,7 +65,7 @@ console.log("1b. after \"Send to new address\" the confirm-time re-check still d
   const n0 = sends.length;
   resolved.alice = THIRD;                       // the name moved again between the review and the click
   await byId("btn-send-confirm").click(); await flush();
-  check(`(1g) the name moved again before "Send to new address": nothing is signed (${sends.length - n0} sends)`, r.confirm === REDIRECT_BUTTONS.confirm && sends.length === n0 && /changed where it points/.test(byId("msg").textContent));
+  check(`(1g) the name moved again before "Send to new address": nothing is signed (${sends.length - n0} sends)`, r.confirm === REDIRECT_BUTTONS.confirm && sends.length === n0 && byId("msg").textContent === sentenceOf("A14", undefined, { name: "alice.csd" }).text);
   check("(1g) ...and the buttons read as before", byId("btn-send-confirm").textContent === "Confirm send" && byId("btn-send-back").textContent === "Back");
   resolved.alice = NEW;
   r = await csdReview("alice.csd");

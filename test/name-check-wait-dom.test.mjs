@@ -8,7 +8,7 @@
 // 6a, 7, 9a, 9b and 10a to 10c fail; 1 passes there (the honest path), and so do the cases the old wait reaches after
 // the check answers.
 // Mutations: the line from 0 s fails (1b); the choice before 10 s fails (2d); Confirm on the choice re-running the
-// check (nameStillPointsTo) fails (3c); Confirm signing the check's later answer instead of the review fails (6b);
+// check (nameRecheck) fails (3c); Confirm signing the check's later answer instead of the review fails (6b);
 // the choice armed with the default buttons fails (3b).
 // Section 12 is the table of the lines that apply together; on 68cce65 (the new sentences added so the file loads) the
 // six rows with [A9], [A10] or [A17] beside [A4] fail, since [A4] stood alone there.

@@ -278,8 +278,11 @@ finalized, or it was bought through an offer fill), the address is the served on
 verified. Check the address yourself." (for a bought name "Bought name: the wallet can only partly verify it. Check
 the address yourself.") before the lapse line (test/name-lapse-tip.test.mjs [T8], test/name-check-wait-dom.test.mjs
 section 12). At confirm the wallet **re-resolves and
-re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not
-verified. The recipient you confirm is always the **full, untruncated address**.
+re-verifies** the name: another address refuses ("alice.csd now points to a different address. Nothing was sent;
+review it again."), and so does a lapse the check proves. A look-up that does not answer, or one that can no longer
+verify an address that was verified at review, shows "Could not check alice.csd again. The address is the one you
+reviewed." with "Send anyway" / "Cancel"; that second click signs the reviewed address without another look-up
+(test/name-recheck-dom.test.mjs). The recipient you confirm is always the **full, untruncated address**.
 
 While the name check runs, the send sheet says "Checking alice.csd..." from 0.3 s and, from 10 s once the name
 service has answered, offers "Send without check". That review shows the name service's address, unverified, with

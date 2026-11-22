@@ -984,21 +984,24 @@ export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string;
   return [{ tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge }];
 }
 
-// XREPO-1 confirm-time guard. A name recipient is re-resolved at sign-time and the send is REFUSED
-// unless the service still returns EXACTLY the address the user reviewed. Fail-closed on any error /
-// lapse / shape change / network failure (a name that no longer resolves to the reviewed address must
-// never be signed silently). Pure over the re-resolution RESULT so it's unit-testable; the popup wires
-// the live `resolveName` call. NOTE: this stops a server that re-points the name BETWEEN review and
-// confirm; it does NOT defend against a server that is CONSISTENTLY hostile (returns the same attacker
-// address both times). Closing that requires the light client (the real fix; see the SPV name-verify path).
-export function reresolveUnchanged(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean } | null | undefined, reviewedVerified?: boolean): boolean {
-  if (!(re && re.ok && typeof re.addr === "string" && (re.addr as string).toLowerCase() === reviewed.toLowerCase())) return false;
-  // L7 (CONFIRMGUARD): also refuse a verification-status REGRESSION. If the name was chain-verified at
-  // review but the confirm-time re-resolution can no longer verify it (even at the SAME address), a source
-  // may have gone hostile/stale or a competing claim appeared between the two reads: re-review, don't sign.
-  if (reviewedVerified === true && re.verified === false) return false;
-  return true;
+// XREPO-1 confirm-time guard. A name recipient is re-resolved at sign-time, and the outcome is one of: the reviewed
+// address again ("same"); another address ("moved", [A14], refused); a proven lapse ("lapsed", [A3], refused); or a
+// look-up that did not answer, refused for another reason, gave no address, or could not verify again an address that
+// was verified at review ("unchecked", [A15]: a caution whose second click signs the reviewed address and nothing
+// else). Pure over the re-resolution RESULT; the popup wires the live `confirmName` call. It stops a server that
+// re-points the name BETWEEN review and confirm, not one that answers the same hostile address both times (the SPV
+// name check is the defence there).
+export type Recheck = "same" | "moved" | "lapsed" | "unchecked";
+export function recheckOutcome(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean; lapsed?: boolean } | null | undefined, reviewedVerified?: boolean): Recheck {
+  if (re?.ok === true && typeof re.addr === "string") {
+    if (re.addr.toLowerCase() !== reviewed.toLowerCase()) return "moved";
+    return reviewedVerified === true && re.verified === false ? "unchecked" : "same";
+  }
+  return re?.ok === false && re.lapsed === true ? "lapsed" : "unchecked";
 }
+/** Whether the re-resolution still gives the reviewed address with no drop from verified (`recheckOutcome` "same"). */
+export const reresolveUnchanged = (reviewed: string, re: Parameters<typeof recheckOutcome>[1], reviewedVerified?: boolean): boolean =>
+  recheckOutcome(reviewed, re, reviewedVerified) === "same";
 
 // ── nfinalize finalize-window gate (Plan 63 carry-over; the approve-path backstop for the C1 burn class) ──
 // An `nfinalize` pays the registration fee (or recapture premium) for a reservation the signer holds.

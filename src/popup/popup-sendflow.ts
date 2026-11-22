@@ -12,7 +12,8 @@ import { closeAllPanels, syncNav } from "./popup-panels.js";
 import { tokenMs } from "./motion.js";
 import { renderAssets } from "./popup-assets.js";
 import { openConsolidatePanel } from "./popup-coins.js";
-import { nameStillPointsTo } from "./popup-recipient.js";
+import { nameRecheck } from "./popup-recipient.js";
+import type { Recheck } from "./clearsign.js";
 
 // ── shared send-flow engine ───────────────────────────────────────────────────────────────────
 // The CSD and token send panels are deliberate twins with three real deltas, carried by a flow
@@ -70,6 +71,9 @@ export function armReview(f: SendFlow, hold = false, buttons: ReviewButtons | nu
 //     the first one's outcome lands.
 let confirmGen = 0;
 let submitting = false;
+// Reviews whose confirm-time re-check could not check the name again ([A15]): their next Confirm signs the reviewed
+// address without a second look-up. A new review is a new snapshot, so it is checked again.
+const recheckWaived = new WeakSet<object>();
 // `check`: the review was armed by "Send without check" on the name service's answer, while this check ran.
 type Snapshot = { to: string; name?: string | null; verified?: boolean; check?: NameCheck | null };
 export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read: () => S | null; consume: () => void }, submit: (s: S) => Promise<any>, sentText: (s: S) => string) {
@@ -79,12 +83,21 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   btn.disabled = true;
   const gen = ++confirmGen;
   const writes = statusWrites();
-  // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
-  // chain-verification regressed since review (L7); fail-closed to a re-review either way.
-  const stillPoints = !snap.name || (snap.check ? uncheckedStillPoints(snap.check, snap.to) : await nameStillPointsTo(snap.name, snap.to, snap.verified));
+  // a name recipient is re-resolved at sign-time (XREPO-1): another address refuses ([A14]), a proven lapse refuses
+  // ([A3]), and a look-up that could not check the reviewed address again, or no longer verifies it (L7), asks for a
+  // second click ([A15]) that signs the reviewed address.
+  const outcome: Recheck = !snap.name || recheckWaived.has(snap) ? "same"
+    : snap.check ? (uncheckedStillPoints(snap.check, snap.to) ? "same" : "moved")
+    : await nameRecheck(snap.name, snap.to, snap.verified);
   if (gen !== confirmGen) return;                    // a later Confirm owns the outcome line; this one sent nothing
   if (review.read() !== snap) { if (statusWrites() === writes) msg(REVIEW_GONE, "err"); return; }
-  if (!stillPoints) { teardownReview(f, false); return msg(snap.check ? sentenceOf("A14", undefined, { name: `${snap.name}.csd` }).text : `${snap.name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
+  const name = { name: `${snap.name}.csd` };
+  if (outcome === "unchecked") {
+    recheckWaived.add(snap);
+    armReview(f, false, LAPSE_BUTTONS);
+    return msg(sentenceOf("A15", undefined, name).text, "err");
+  }
+  if (outcome !== "same") { teardownReview(f, false); return msg(sentenceOf(outcome === "lapsed" ? "A3" : "A14", undefined, name).text, "err"); }
   review.consume();                                  // a second click finds no review
   submitting = true;
   // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
