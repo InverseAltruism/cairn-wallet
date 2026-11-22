@@ -2,7 +2,7 @@
 // token-fill confidence). It reads the offer and the chain through the wallet (FillPreflightIo) and returns a
 // refusal, or null to sign. Nothing here signs or records.
 import { attestRefusal, fillTxRefusal, type SubmitResult } from "./node.js";
-import { cairnxTradeFee, fillIsSafe, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR } from "./cairnx.js";
+import { cairnxTradeFee, fillIsSafe, isTicker, hasLiveClaim, requiredFillOutputs, verifyFillSpv, bindOfferTerms, fmtCsd, FEE_BPS, FEE_BPS_V16, V16_HEIGHT, TREASURY_ADDR } from "./cairnx.js";
 import { fclaimHoldEnd, offerExpiryHeightOf, offerFillTooLate, LEGACY_HOLD_SUNSET_HEIGHT, type OfferState, type FillSpvIo, type FillVerdict } from "../vendor/cairnx-spv.js";
 import { BodyMismatchError } from "./spvbind.js";
 import type { MintedProvenOfferTerms, OfferProgress } from "./fillspv.js";
@@ -372,6 +372,9 @@ async function csdLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums
 
 // The offer-id token lane: the fill pays in tokens (an Attest with no CSD outputs). The give and want content are
 // bound to the merkle-proven offer and the reviewed quote to the proven want, fee and total.
+// The proven want as text for a refusal: digits and a ticker the codec accepts, else the wallet's words.
+const provenWant = (t: { wantAmount?: unknown; wantTicker?: unknown }): string =>
+  `${/^\d+$/.test(String(t.wantAmount ?? "")) ? String(t.wantAmount) : "another amount"} ${isTicker(t.wantTicker) ? t.wantTicker : "of the token"}`;
 async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, sums: Map<string, bigint>, tip: number, reviewedQuote?: TokenFillQuote): Promise<FillRefusal | null> {
   // XR-1 (N26): a token-priced fill routes NO CSD - its on-chain tx is the Attest with outputs:[].
   // The attest->fillOffer reroute hardcodes outputs:[] (in attest()), but a DIRECT dApp fillOffer
@@ -412,7 +415,7 @@ async function tokenLanePreflight(wallet: FillPreflightIo, offer: OfferState, su
   if (reviewedQuote && reviewedQuote.ticker !== undefined) {
     const qT = String(reviewedQuote.ticker ?? ""), qA = String(reviewedQuote.amount ?? "");
     if (qT !== String(proven.terms.wantTicker ?? "") || qA !== String(proven.terms.wantAmount ?? ""))
-      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing. The card showed ${qA} ${qT}, but the offer's on-chain record requires ${proven.terms.wantAmount ?? "?"} ${proven.terms.wantTicker ?? "?"}. The site's quote did not match its on-chain record; retry from the site's Buy button.`);
+      return refuse("FILL_UNSAFE", `refusing to sign: the amount changed between review and signing. The offer's on-chain record requires ${provenWant(proven.terms)}, not what the card showed. Retry from the site's Buy button.`);
   }
   // 0.2.71 (CX-15): bind the reviewed fee and total. The fee follows from the proven amount and the
   // offer's proven inclusion height (1.5% from V16, 1% before), not from the served feeBps, so a

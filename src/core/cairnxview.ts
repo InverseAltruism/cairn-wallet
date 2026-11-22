@@ -47,7 +47,7 @@ export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): 
     if (!so.ok) return so;
     const o = so.offer;
     const w = o.want;
-    if (!w || typeof w.ticker !== "string" || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
+    if (!w || !isTicker(w.ticker) || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
     let amount: bigint;
     try { amount = BigInt(String(w.amount)); } catch { return { ok: false, error: "bad amount" }; }
     if (amount < 0n) return { ok: false, error: "bad amount" };
@@ -58,7 +58,7 @@ export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): 
     const bps = hasBps ? Number(o.feeBps) : FEE_BPS_V16;
     const fee = cairnxTradeFee(amount, bps);
     const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
-    const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
+    const giveTicker = isTicker(g?.ticker) ? g.ticker : undefined;
     // Served amount:null must stay absent; String(null) is "null", and the vendor give-leg
     // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
     const giveAmount = g?.amount != null ? String(g.amount) : undefined;

@@ -993,18 +993,20 @@ export async function fillOffer(
 
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:
 // a hung request would otherwise hold flushPending's in-flight latch and a revealClaim approval.
-// Never throws. A non-2xx answer resolves { ok: false, error, status } with the HTTP status, so the content queue can
-// tell the server's lasting refusal (contentRefusedForGood) from an outage. `error` is the wallet's label with the
-// status; the server's own text goes to the worker's console only, since a refused reveal shows `error`.
-export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<any> {
-  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r) => {
+// Never throws. Success is a 2xx whose body says `ok: true`; anything else resolves { ok: false, error, status } with the
+// HTTP status, so the content queue can tell the server's lasting refusal (contentRefusedForGood) from an outage.
+// Nothing of the server's body is copied into the result: `error` is the wallet's label with the status, and the
+// server's own text goes to the worker's console only (test/served-text-off-screen.test.mjs).
+export type ContentResult = { ok: true } | { ok: false; error: string; status?: number };
+export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<ContentResult> {
+  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r): Promise<ContentResult> => {
     let j: any;
     try { j = await r.json(); } catch { j = undefined; }
-    if (r.ok) return j && typeof j === "object" ? j : { ok: false, error: "/api/content -> unreadable response" };
+    if (r.ok && j?.ok === true) return { ok: true };
     const body = j && typeof j === "object" && !Array.isArray(j) ? j : {};
     if (body.error !== undefined || body.err !== undefined) console.info("[content] the server's answer", r.status, String(body.error ?? body.err));
-    return { ...body, ok: false, error: `/api/content -> ${r.status}`, status: r.status };
-  }).catch((e) => ({ ok: false, error: String(e) }));
+    return { ok: false, error: r.ok && j === undefined ? "/api/content -> unreadable response" : `/api/content -> ${r.status}`, status: r.status };
+  }).catch((e): ContentResult => ({ ok: false, error: String(e) }));
 }
 /** 400, 413 and 422 are the server refusing this body for good (a malformed request, a body over its cap, content it
  *  cannot take); a retry gets the same answer. Anything else may pass later: a 5xx, a rate limit, a 200 {ok:false}, and a
@@ -1026,7 +1028,7 @@ export async function signIn(apiBase: string, priv: string): Promise<{ ok: boole
   const v = await post(apiBase, "/auth/verify", { nonce: n.nonce, pub33, sig64 });
   // The failure's `error` is the wallet's words: the approval window shows the result, and the server's own text
   // (post() returns it as `err` on a non-2xx body) goes to the worker's console only.
-  if (v?.ok) return v;
+  if (v?.ok === true) return { ok: true, ...(typeof v.addr === "string" ? { addr: v.addr } : {}), ...(typeof v.session === "string" ? { session: v.session } : {}) };
   if (v?.error !== undefined || v?.err !== undefined) console.info("[sign-in] the server's answer", String(v.error ?? v.err));
   return { ok: false, error: "sign-in failed" };
 }

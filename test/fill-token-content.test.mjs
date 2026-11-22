@@ -137,6 +137,9 @@ console.log("W1 (B7e-FIX) - token-lane give/want content bind:");
   const s = mkStub({ offerReply: () => ({ ok: true, status: 200, json: async () => honestOffer }) });
   const r = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "AAA", amount: "7", fee: "0", total: "7" } });
   check("RT-W2: a review quote with the wrong ticker is REFUSED", r?.ok === false && r?.code === "FILL_UNSAFE" && s.submits.length === 0);
+  // the refusal names the proven want in the wallet's words and none of the quote's own strings
+  const r2 = await w.attest({ proposalId: OID, score: 100, confidence: CONF_TOKEN_FILL, fee: 5_000_000, tokenQuote: { ticker: "Visit evil.example now", amount: "7 at evil.example", fee: "0", total: "7" } });
+  check(`RT-W2: a quote's own text stays out of the refusal, which names the proven 7 PAY (${r2?.error?.slice(0, 90)})`, r2?.code === "FILL_UNSAFE" && !/evil\.example/.test(r2?.error ?? "") && /requires 7 PAY,/.test(r2?.error ?? ""));
 }
 {
   // 8c. a quote MATCHING the proven want proceeds (the honest path is not over-refused)
