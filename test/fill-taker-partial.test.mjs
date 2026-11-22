@@ -12,6 +12,7 @@
 //   E. a served state ahead of the chain (a listed fill that does not prove, or a paid its fills do not reach) refuses;
 //   F. the first fill of a fresh partial offer signs with no fill to prove; G. a whole offer asks for no fills.
 // Run: npx tsx test/fill-taker-partial.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

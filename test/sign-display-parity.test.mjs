@@ -17,6 +17,7 @@
 // signs nothing (it publishes a stored preimage); its pair is the txid shown against the txid posted (section 6).
 // Sections 9 to 12 pin what docs/PROVIDER.md states about the approval window and consent; each says its red-first runs.
 // Run: npx tsx test/sign-display-parity.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 import { fmtCsd, CONF_TOKEN_FILL, CAIRNX_DOMAIN, buildNameProfile } from "../src/core/cairnx.ts";

@@ -8,11 +8,13 @@ import { fmtCsd, csdBase } from "./cairnx.js";
 import type { TxInclusion } from "./inclusion.js";
 import { selectInputs, strip0x, MAX_TX_INPUTS, MAX_DOMAIN_BYTES, MAX_URI_BYTES, MIN_FEE_PROPOSE } from "../vendor/cairnx-spv.js";
 import { byteCapRefusal } from "./signfields.js";
+import { firstAnswer, hostsFor, isBackup, submitEach, type HostAnswer } from "./hosts.js";
+import { classifyAnswer, isSubmitDuplicateErr, type HostVerdict, type RefusalReason, type SubmitAnswer, type SubmitOutcome } from "./submitverdict.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever; the popup's "sending…" spinner never settled and there was no in-popup
 // recovery. A timeout converts the stall into the existing fail-closed error paths (get() throws →
-// caller catch; post() returns the maybeInflight-flagged failure below). Reads are short; submit is
+// caller catch; a submit that timed out reads as unclear, submitverdict.ts). Reads are short; submit is
 // generous (the node can be busy validating a 512-input tx).
 // 12s, not 8s: the cairn proxy's failover chain worst-cases at 4s (routed backend) + 6s (fallback)
 // = 10s of legitimate inner wait; an 8s outer abort raced that chain and turned a survivable
@@ -24,62 +26,37 @@ async function get(rpc: string, path: string): Promise<any> {
   const r = await fetch(`${rpc}${path}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`); return r.json();
 }
-// Symmetric with get(): a POST must NEVER throw out of the caller after a tx is already signed:
-// otherwise a non-JSON 4xx/5xx (e.g. an HTML error page from a proxy) on /tx/submit would surface as an
-// uncaught rejection AFTER signing, leaving send/sendMany/fillOffer/propose with an ambiguous outcome
-// (audit VAL-2). Read the body as text, parse if we can, and return a structured {ok:false,err} on any
-// non-2xx / network error / unparseable body. Every caller already reads {ok,txid,err}, so a 2xx JSON
-// body is returned unchanged; this only converts the failure path from "throw" to "fail-closed value".
-async function post(rpc: string, path: string, body: unknown): Promise<any> {
+// One POST, never a throw: a request that failed or timed out is `thrown`, any answer is its status and parsed body
+// (`undefined` when it is not JSON). submitverdict.ts reads a submit's answer; post() below reads sign-in's.
+async function postRaw(base: string, path: string, body: unknown): Promise<SubmitAnswer> {
   let r: Response;
-  try { r = await fetch(`${rpc}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
-  // `maybeInflight` classifies the AMBIGUITY of a failure, not its severity: a thrown fetch
-  // (network error / timeout) means the request may or may not have reached the server; a
-  // /tx/submit could already be in the mempool. signAndSubmit maps this flag to SUBMIT_MAYBE_INFLIGHT
-  // vs SUBMIT_REJECTED so the popup only shows the scary "may already be in flight" copy when it is
-  // actually true (the old copy claimed it for EVERY failure).
-  catch { return { ok: false, err: `${path} -> network error`, maybeInflight: true }; }
-  // Symmetric with get(): never let a non-JSON 4xx/5xx (e.g. an HTML proxy error page) throw out of a
-  // caller AFTER a tx is already signed; parse defensively and return a structured {ok:false,err} on any
-  // non-2xx or unparseable body (audit VAL-2). A 2xx JSON body is returned unchanged; every caller reads
-  // {ok,txid,err}, so this only converts the failure path from "throw" to a fail-closed value.
-  let j: any;
+  try { r = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
+  catch { return { thrown: true }; }
+  let j: unknown;
   try { j = await r.json(); } catch { j = undefined; }
-  if (!r.ok) {
-    // A non-2xx is NOT automatically "definitively rejected". The node answers every submit with HTTP 200 and
-    // refuses with ok:false, so a 4xx comes from a proxy before it forwards (a 400, a 413 body cap, a 429 rate
-    // limit): this request reached no node. But a 5xx / gateway failure is AMBIGUOUS:
-    // the cairn proxy gives the node only ~4s (fallback ~6s) and returns a 502 "node unreachable" if both
-    // time out, yet a busy node can INGEST the POST and then be too slow to answer within that window, so
-    // the tx MAY be in the mempool. An unparseable error body (a Cloudflare/nginx HTML 5xx page) is the
-    // same class. Flag those maybeInflight so the popup shows the cautious "may already be in flight, check
-    // before resending" copy instead of a false "nothing was sent" that could drive a double-pay on resend
-    // (a resend re-reads /utxos, and if the ingested tx's inputs are now excluded it signs a DIFFERENT tx).
-    // Fable-5 money-path audit, 2026-07-09 (this was a 0.2.55 regression: 0.2.54 cautioned on every failure).
-    const ambiguous = r.status >= 500 || j === undefined;
-    return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${r.status}`, ...(ambiguous ? { maybeInflight: true } : {}) };
-  }
-  // a 2xx we couldn't parse: the server DID process the request; a submit may have been ingested
-  // even though we can't read the answer, so this is ambiguous too.
-  if (j === undefined) return { ok: false, err: `${path} -> non-JSON response`, maybeInflight: true };
-  // A 2xx body that is not a JSON object (null, an array, a bare number) carries no readable answer
-  // either. Returned as a value so signAndSubmit never throws after a submit (test/submit-outcome.test.mjs).
-  if (j === null || typeof j !== "object" || Array.isArray(j)) return { ok: false, err: `${path} -> unreadable response`, maybeInflight: true };
-  // W6 (B5c): `maybeInflight` is THIS function's transport-ambiguity classification, set only on the
-  // branches above. Never accept it off a parsed 2xx body; a hostile proxy answering HTTP 200 with
-  // {ok:false, maybeInflight:true} could otherwise steer the caller's SUBMIT_MAYBE_INFLIGHT copy and
-  // history dedupe. Body fields stay body fields; the flag stays ours.
-  if (j && typeof j === "object" && "maybeInflight" in j) delete j.maybeInflight;
+  return { status: r.status, body: j };
+}
+// Sign-in's POST: a 2xx JSON object is returned as it is, anything else as {ok:false, err}.
+async function post(base: string, path: string, body: unknown): Promise<any> {
+  const a = await postRaw(base, path, body);
+  if ("thrown" in a) return { ok: false, err: `${path} -> network error` };
+  const j: any = a.body;
+  if (a.status < 200 || a.status > 299) return { ok: false, err: (j && (j.err ?? j.error)) || `${path} -> ${a.status}` };
+  if (j === undefined) return { ok: false, err: `${path} -> non-JSON response` };
+  if (j === null || typeof j !== "object" || Array.isArray(j)) return { ok: false, err: `${path} -> unreadable response` };
   return j;
 }
 
-export async function tip(rpc: string): Promise<number> { return Number((await get(rpc, "/tip")).height ?? 0); }
-// Display only. The Cairn proxy answers /tx/:id/status (mined, pending or unknown across both backends); a
+// Reads take `rpc`, the wallet's RPC, and go to its hosts through firstAnswer (hosts.ts); a function named `...At` or
+// documented as reading one host reads exactly the host it is given, for a step that must stay on one host.
+export async function tipAt(host: string): Promise<number> { return Number((await get(host, "/tip")).height ?? 0); }
+export async function tip(rpc: string): Promise<number> { return (await firstAnswer(rpc, tipAt)).value; }
+// Display only; reads one host. The Cairn proxy answers /tx/:id/status (mined, pending or unknown across both backends); a
 // loopback node has no such route (404), so its /tx/:id says mined, or not mined (`definite` when its scan was
 // complete; it has no mempool view). null: nothing knowable this time.
-export async function txInclusion(rpc: string, txid: string): Promise<TxInclusion | null> {
+export async function txInclusion(host: string, txid: string): Promise<TxInclusion | null> {
   try {
-    const r = await fetch(`${rpc}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    const r = await fetch(`${host}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
     if (r.ok) {
       const j: any = await r.json();
       if (j?.ok !== true || !["mined", "pending", "unknown"].includes(j.state)) return null;
@@ -87,32 +64,38 @@ export async function txInclusion(rpc: string, txid: string): Promise<TxInclusio
       return j.state === "pending" ? { state: "pending" } : { state: "unknown", definite: j.definite === true };
     }
     if (r.status !== 404) return null;
-    const t: any = await get(rpc, `/tx/${txid}`);
+    const t: any = await get(host, `/tx/${txid}`);
     if (t?.ok === true && Number.isSafeInteger(t.height)) return { state: "mined", height: t.height };
     return t?.ok === false ? { state: "unknown", definite: t.complete === true } : null;
   } catch { return null; }   // unreachable or unreadable: the row stays open and is read again next block
 }
 export async function getProposal(rpc: string, txid: string): Promise<any | null> {
-  try { const j = await get(rpc, `/proposal/${txid}`); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
+  try { const { value: j } = await firstAnswer(rpc, (h) => get(h, `/proposal/${txid}`)); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
 }
 // Throws on a body without a `utxos` array, so every spend path refuses it as VERIFY_UNAVAILABLE before signing.
 // `truncated`: the node's bound cut the list (node 0.1.17 `--utxos-bound`, the largest coins first), so `utxos` holds
 // some of the address's coins and `confirmed` stays the whole balance. A coin missing from a cut list proves nothing.
-export async function balance(rpc: string, addr: string): Promise<{ confirmed: number; utxos: any[]; truncated: boolean }> {
-  const j = await get(rpc, `/utxos/${addr}?available=true`);
+// balanceAt reads one host; balance reads the wallet's hosts and says `via: "backup"` when the second host answered.
+type Balance = { confirmed: number; utxos: any[]; truncated: boolean };
+async function balanceAt(host: string, addr: string): Promise<Balance> {
+  const j = await get(host, `/utxos/${addr}?available=true`);
   if (!j || typeof j !== "object" || !Array.isArray(j.utxos)) throw new Error(`/utxos -> malformed response`);
   return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos, truncated: j.truncated === true };
 }
-// The mined utxo set, coins held by the mempool included (balance() leaves those out). The proxy serves it
+export async function balance(rpc: string, addr: string): Promise<Balance & { via?: "backup" }> {
+  const { value, host } = await firstAnswer(rpc, (h) => balanceAt(h, addr));
+  return isBackup(host) ? { ...value, via: "backup" } : value;
+}
+// Reads one host. The mined utxo set, coins held by the mempool included (balance() leaves those out). The proxy serves it
 // at /utxos-all/:addr; its /utxos/:addr is mempool-filtered, so only a bare node origin falls back to the
 // node's own /utxos/:addr. null: not readable, and no caller may conclude anything from it. `complete` is false
 // when the node's bound cut the list: a coin in it is mined, a coin missing from it proves nothing.
-export async function confirmedUtxos(rpc: string, addr: string): Promise<{ utxos: { txid: string; vout: number }[]; complete: boolean } | null> {
+export async function confirmedUtxos(host: string, addr: string): Promise<{ utxos: { txid: string; vout: number }[]; complete: boolean } | null> {
   try {
-    const r = await fetch(`${rpc}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    const r = await fetch(`${host}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
     let j: any;
     if (r.ok) j = await r.json();
-    else if (r.status === 404 && new URL(rpc).pathname.replace(/\/+$/, "") === "") j = await get(rpc, `/utxos/${addr}`);
+    else if (r.status === 404 && new URL(host).pathname.replace(/\/+$/, "") === "") j = await get(host, `/utxos/${addr}`);
     else return null;
     return j && typeof j === "object" && Array.isArray(j.utxos) ? { utxos: j.utxos, complete: j.truncated !== true } : null;
   } catch { return null; }   // unreachable or unreadable: no "gone" verdict this pass
@@ -242,7 +225,7 @@ type VerifyResult =
 // serves so keys already stored on history rows still match.
 export const opKey = (txid: unknown, vout: unknown) => `0x${strip0x(String(txid).toLowerCase())}:${Number(vout)}`;
 async function verifyInputValues(
-  rpc: string,
+  host: string,
   inputs: { txid: string; vout: number }[],
   // per-CALL cache: a coin verified in an earlier selection round is never refetched in a later one.
   // Deliberately not cross-call (a txid does commit to its outputs immutably, but re-verifying every
@@ -260,7 +243,7 @@ async function verifyInputValues(
     if (hit !== undefined) return hit;
     let body: any;
     try {
-      const r = await fetch(`${rpc}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+      const r = await fetch(`${host}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
       if (r.status === 404) return "notfound";
       // BN0w (W9): ONLY the exact 503 + body code SCAN_HORIZON pair classifies "horizon" (the node
       // v0.1.6 scan-outcome wire contract, normative in the compute-substrate README: 503 +
@@ -337,28 +320,33 @@ async function verifyInputValues(
 // or endpoint switch the coins are re-checked from scratch.
 const MAX_SELECT_ROUNDS = 3;      // bounds /tx traffic: at most 3 selections per spend attempt
 const GHOST_TTL_MS = 120_000;
-const ghostSeen = new Map<string, number>(); // outpoint -> expiry
+const ghostSeen = new Map<string, number>(); // skipKey(host, outpoint) -> expiry
 // BN0w: horizon outpoints (real coins the node's bounded scan could not reach; see verifyInputValues)
 // are cached like ghosts so an immediate retry pre-excludes them without re-probing, but tracked
 // SEPARATELY: the refusal copy for a horizon coin must say the node cannot look back far enough,
 // never that the coin "could not be verified". An outpoint lives in exactly ONE of the two caches
 // (each classification event moves it), so the honest counts below cannot double-book a coin.
-const horizonSeen = new Map<string, number>(); // outpoint -> expiry
+const horizonSeen = new Map<string, number>(); // skipKey(host, outpoint) -> expiry
 // Unrepresentable outpoints (W6, see verifyInputValues) are cached the same way, in their own map for their own
 // copy, and an outpoint lives in exactly one of the three. Without the cache each selection round rediscovers them
 // one largest-first layer at a time, so three layers spend all MAX_SELECT_ROUNDS and every retry refuses
 // VERIFY_UNAVAILABLE (test/maxsendable.test.mjs case 11). The verdict is a property of the served body; a node
 // that serves another body for the txid is the same class as one that answers not-found, which ghostSeen already
 // caches.
-const unrepSeen = new Map<string, number>(); // outpoint -> expiry
+const unrepSeen = new Map<string, number>(); // skipKey(host, outpoint) -> expiry
 const SKIP_CACHE_MAX = 2048; // per map: a hostile RPC cannot grow one unboundedly
-/** Drops expired entries and returns every outpoint a cache still excludes. */
-function sessionExclusions(now: number): Set<string> {
+// The caches hold a verdict of the host that gave it: keyed by host and outpoint, so a coin one host could not prove
+// is checked again when another host lists it (hosts.ts: the main host and the second host).
+const skipKey = (host: string, op: string): string => `${host} ${op}`;
+/** Drops expired entries and returns every outpoint a cache still excludes for `host`. */
+function sessionExclusions(host: string, now: number): Set<string> {
   for (const m of [ghostSeen, horizonSeen, unrepSeen]) for (const [k, exp] of m) if (exp <= now) m.delete(k);
-  return new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys(), ...unrepSeen.keys()]);
+  const pre = skipKey(host, "");
+  return new Set<string>([...ghostSeen.keys(), ...horizonSeen.keys(), ...unrepSeen.keys()].filter((k) => k.startsWith(pre)).map((k) => k.slice(pre.length)));
 }
-/** Files `k` under `into` (one of the three caches) and out of the other two. */
-function rememberSkip(into: Map<string, number>, k: string, now: number): void {
+/** Files outpoint `op` of `host` under `into` (one of the three caches) and out of the other two. */
+function rememberSkip(into: Map<string, number>, host: string, op: string, now: number): void {
+  const k = skipKey(host, op);
   for (const m of [ghostSeen, horizonSeen, unrepSeen]) if (m !== into) m.delete(k);
   into.set(k, now + GHOST_TTL_MS);
   if (into.size > SKIP_CACHE_MAX) into.clear();
@@ -369,7 +357,7 @@ function roundsExhausted(count: number, value: number): { error: string; code: s
 // `needOf` is what the spend must cover (amount plus fee), or for maxSendable a function of the utxo set and the coins
 // excluded so far, evaluated at the start of every round so the target follows the exclusions this loop makes. With a
 // number every round uses that number, exactly as a send passes it.
-type NeedOf = (utxos: any[], exclude: ReadonlySet<string>, truncated: boolean) => number;
+type NeedOf = (utxos: any[], exclude: ReadonlySet<string>, truncated: boolean, host: string) => number;
 // `verified` lets maxSendable's final pass reuse the verdicts its first pass fetched (a txid commits to its output
 // values, so a verified value cannot change); a send passes none and fetches every coin it selects.
 async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf, verified: Map<string, number> = new Map()): Promise<{ inputs: SelectedInput[]; total: number } | { error: string; code: string }> {
@@ -377,11 +365,13 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
   // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch:
   // nothing has been signed at this point, so the outcome is definitively clean.
-  let utxos: any[], truncated: boolean, confirmed: number;
-  try { ({ utxos, truncated, confirmed } = await balance(rpc, addr)); }
+  // One host per spend: the host that answered the coin list is asked for every coin's source transaction, so the
+  // verdicts below are that host's, as with one host (a host a block behind could otherwise answer "not found").
+  let utxos: any[], truncated: boolean, confirmed: number, host: string;
+  try { ({ value: { utxos, truncated, confirmed }, host } = await firstAnswer(rpc, (h) => balanceAt(h, addr))); }
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
-  const exclude = sessionExclusions(now);
+  const exclude = sessionExclusions(host, now);
   const reportedVal = new Map<string, number>(utxos.map((u: any) => [opKey(u.txid, u.vout), Number(u.value) || 0]));
   // ghosts already known from the session cache that are present in THIS utxo set count toward the
   // honest error (they are why the reported balance overstates what is spendable); BN0w counts the
@@ -389,16 +379,19 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   let ghostCount = 0, ghostValue = 0;
   let horizonCount = 0, horizonValue = 0;
   let unrepCount = 0, unrepValue = 0;   // W6 (ND-1): booked separately so the final copy stays honest
-  for (const k of ghostSeen.keys()) if (reportedVal.has(k)) { ghostCount++; ghostValue += reportedVal.get(k)!; }
-  for (const k of horizonSeen.keys()) if (reportedVal.has(k)) { horizonCount++; horizonValue += reportedVal.get(k)!; }
-  for (const k of unrepSeen.keys()) if (reportedVal.has(k)) { unrepCount++; unrepValue += reportedVal.get(k)!; }
+  for (const [k, v] of reportedVal) {
+    const sk = skipKey(host, k);
+    if (ghostSeen.has(sk)) { ghostCount++; ghostValue += v; }
+    if (horizonSeen.has(sk)) { horizonCount++; horizonValue += v; }
+    if (unrepSeen.has(sk)) { unrepCount++; unrepValue += v; }
+  }
   let selExhausted = false;                 // loop left because selection failed (vs ghost-round budget spent)
   let need = typeof needOf === "number" ? needOf : 0;
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
-    if (typeof needOf === "function") need = needOf(utxos, exclude, truncated);
+    if (typeof needOf === "function") need = needOf(utxos, exclude, truncated, host);
     const sel = selectInputs(utxos, need, exclude);
     if (!sel) { selExhausted = true; break; } // remaining verifiable coins can't cover `need`, or can't within the input cap (diagnosed below)
-    const ver = await verifyInputValues(rpc, sel.inputs, verified);
+    const ver = await verifyInputValues(host, sel.inputs, verified);
     if (ver.ok) {
       if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
       return { inputs: sel.inputs, total: ver.total };
@@ -413,7 +406,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
       for (const h of ver.horizons) {
         const k = opKey(h.txid, h.vout);
         if (!exclude.has(k)) { horizonCount++; horizonValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k); rememberSkip(horizonSeen, k, now);
+        exclude.add(k); rememberSkip(horizonSeen, host, k, now);
       }
     }
     // W6 (ND-1): unrepresentable coins exclude-and-retry per coin exactly like ghosts and horizons (an
@@ -422,13 +415,13 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
       for (const u of ver.unrepresentables) {
         const k = opKey(u.txid, u.vout);
         if (!exclude.has(k)) { unrepCount++; unrepValue += reportedVal.get(k) ?? 0; }
-        exclude.add(k); rememberSkip(unrepSeen, k, now);
+        exclude.add(k); rememberSkip(unrepSeen, host, k, now);
       }
     }
     for (const g of ver.ghosts) {           // ghosts: exclude and re-select; an unverified coin is NEVER spent
       const k = opKey(g.txid, g.vout);
       if (!exclude.has(k)) { ghostCount++; ghostValue += reportedVal.get(k) ?? 0; }
-      exclude.add(k); rememberSkip(ghostSeen, k, now);
+      exclude.add(k); rememberSkip(ghostSeen, host, k, now);
     }
   }
   // TOO_MANY_INPUTS vs INSUFFICIENT (2026-07-09): selectInputs returns null BOTH when the balance
@@ -484,8 +477,9 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
 // on every result (incl. preflight errors) because dropping it is a dApp-visible shape change for zero gain.
 // spentTxids (successful submits: the source txids of the inputs spent, so the merge rows they consumed
 // latch confirmed) and inputs (every result with a txid: the spent `txid:vout` outpoints, kept on history
-// rows for the "gone" check) are internal; background.ts strips both before a result reaches a page.
-export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; spentTxids?: string[]; inputs?: string[] }
+// rows for the "gone" check), hosts (each host's answer to the submit, a server's text included) and mainHolds (the main
+// host answered "accepted" or "already present") are internal; background.ts strips them before a result reaches a page.
+export interface SubmitResult { ok: boolean; txid?: string; error?: string; sighashMatch: boolean; code?: string; reason?: RefusalReason; feeCap?: number; spentTxids?: string[]; inputs?: string[]; hosts?: HostLog[]; mainHolds?: boolean }
 
 interface SelectedInput { txid: string; vout: number; value: number }
 
@@ -518,27 +512,30 @@ export function spendableCoins(utxos: any[], exclude?: ReadonlySet<string>): Sel
   return out;
 }
 
-// N18 (B8w): the SUBMIT_DUPLICATE classification couples to the NODE's tx_submit error wording, a
-// string this wallet does not control. The coupling is deliberate but was inlined as a bare
-// `/already present/i` at the classification site, so a reword (here OR in the node) would silently
-// reopen the failure class it fixes. Make it EXPLICIT (named + documented) and pin it with a test.
-//
-// The node contract (compute-substrate api/mod.rs tx_submit) returns TWO distinct Ok(false) strings and
-// downstream consumers MUST tell them apart (the node's own comment documents this and pins the
-// substring for exactly this match):
-//   • "already present in mempool"  -> this EXACT tx is held (a byte-identical resubmit after an
-//     ambiguous failure; deterministic signing makes the retry identical). A tx spending these coins IS
-//     pending, so "nothing was sent" would be FALSE -> SUBMIT_DUPLICATE.
-//   • "mempool conflict: a different pending transaction spends these coins" -> a DIFFERENT tx already
-//     spends an input. This is a real, definitive rejection; classifying it as a duplicate would tell
-//     the user their payment "should settle" when it never will -> must fall through to SUBMIT_REJECTED.
-// Matching the NARROW substring "already present" (not the whole phrase) keeps older / re-wrapped
-// proxies matching, and is why the node pins that exact token. A match MISS is fail-safe here: a real
-// duplicate misclassified as REJECTED shows the honest "submit rejected" copy for a byte-identical tx
-// whose eventual resubmit is itself idempotent (same txid), never a double-spend or fund loss. The
-// dangerous direction (a CONFLICT read as a duplicate) is closed by the node emitting a string that does
-// NOT contain "already present". Pinned by test/submit-classify.test.mjs (reds on either drift).
-export const isSubmitDuplicateErr = (err: unknown): boolean => /already present/i.test(String(err ?? ""));
+// The duplicate rule's home is submitverdict.ts; cairn-sdk's classifySubmit names it here.
+export { isSubmitDuplicateErr };
+
+/** One host's verdict on a submit (submitverdict.ts classifyAnswer); never rejects. */
+async function submitTo(host: string, body: unknown): Promise<HostVerdict> {
+  return classifyAnswer(await postRaw(host, "/tx/submit", body));
+}
+// What each host answered, for diagnostics: kept off what a page receives (background.ts pageResult).
+type HostLog = { host: string; kind: HostVerdict["kind"]; reason?: RefusalReason; text?: string };
+const hostLog = ({ host, verdict: v }: HostAnswer): HostLog =>
+  ({ host, kind: v.kind, ...(v.kind === "refused" ? { reason: v.reason } : {}), ...("text" in v ? { text: v.text } : {}) });
+const DUPLICATE_TEXT = "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again";
+// The result of a submit for the sender. The txid is the local one whenever a host may hold the transaction (sent,
+// duplicate, unclear); a refusal carries none, since a txid would read as "it went through". SUBMIT_REJECTED: every
+// host refused (a node's 200 ok:false, or a proxy's 400, 413 or 429 before forwarding); SUBMIT_MAYBE_INFLIGHT: a host
+// may hold it (a throw, a timeout, a 5xx, an unreadable answer); SUBMIT_DUPLICATE: a host holds this transaction, or
+// one spending the same coins, so "nothing was sent" would be false. `reason` classes a refusal (additive). `error` is
+// the wallet's own sentence, never a server's text, which stays in the internal `hosts` log.
+function submitResult(o: SubmitOutcome, localTxid: string): Omit<SubmitResult, "hosts"> {
+  if (o.kind === "sent") return { ok: true, txid: localTxid, error: undefined, sighashMatch: true, code: undefined };
+  if (o.kind === "duplicate") return { ok: false, txid: localTxid, error: DUPLICATE_TEXT, sighashMatch: true, code: "SUBMIT_DUPLICATE" };
+  if (o.kind === "unclear") return { ok: false, txid: localTxid, error: o.mainRefused ? `the main server refused this transaction (${o.mainRefused}) and the other server has not answered, so it may still go through; check before sending again` : "no server accepted this transaction and one may hold it; check before sending again", sighashMatch: true, code: "SUBMIT_MAYBE_INFLIGHT", ...(o.mainRefused ? { reason: o.mainRefused } : {}) };
+  return { ok: false, txid: undefined, error: `every server refused this transaction (${o.reason})`, sighashMatch: true, code: "SUBMIT_REJECTED", reason: o.reason };
+}
 
 // Build the FULL tx locally (we set the app ourselves), sign OUR OWN codec sighash,
 // and submit. We never sign a hash a server handed us; so a malicious or MITM'd RPC
@@ -551,50 +548,54 @@ async function signAndSubmit(rpc: string, tx: Tx, priv: string): Promise<SubmitR
   const { sig64, pub33 } = signSighash(codecSighash(tx), priv);
   const scriptSig = buildScriptSig(sig64, pub33);
   for (const i of tx.inputs) i.scriptSig = scriptSig;
-  // The consensus txid is known LOCALLY before submit (txid = sha256d over the scriptSig-stripped
-  // tx). On an ambiguous outcome the server's answer was lost, so this local txid is the only
-  // handle the caller has to later check whether the tx landed (the popup's pending-merge line
-  // depends on it; Plans/66 B4).
+  // The txid leaves out the scriptSig (sha256d over the stripped tx), so it is known before submit and is the
+  // answer, not a fallback: a host's echo is only a cross-check of the codec copy, logged and never used (a constant
+  // echo would otherwise dedupe later sends out of history and point the explorer link at another transaction).
   const localTxid = codecTxid(tx);
-  const sub = await post(rpc, "/tx/submit", { tx: txToNodeJson(tx) });
-  // Two distinct failure codes (2026-07-09): SUBMIT_REJECTED = the answering node refused this request (a 200
-  // ok:false) or a proxy refused it before forwarding (400/413/429). It says what the node or proxy that answered did: through a
-  // proxy with two backends an earlier attempt may have reached the other one, so the copy does not say "nothing
-  // was sent";
-  // SUBMIT_MAYBE_INFLIGHT = the request threw / timed out / hit a 5xx gateway failure / had an unreadable
-  // body AFTER signing, so the tx MAY have been ingested; the only case where the popup's "may already be
-  // in flight" caution is truthful. post() sets maybeInflight on exactly those ambiguous branches (a 5xx is
-  // ambiguous because the cairn proxy 502s the node after only 4s, which can outrace a slow-but-successful
-  // mempool ingest).
-  // "already present or mempool conflict" is NOT a plain rejection: the node's answer string
-  // conflates "this exact tx is already in the mempool" (a resubmit after an ambiguous failure:
-  // deterministic signing makes the retry byte-identical, so this is the COMMON resubmit outcome)
-  // with "a different tx spends these coins". Either way "nothing was sent" would be FALSE; a tx
-  // spending these coins IS pending. Own code (additive, per the error-contract rule) + hedged
-  // copy that is true in both cases; txid = the local txid (in the duplicate case that is exactly
-  // the pending tx).
-  const dup = !sub.ok && !sub.maybeInflight && isSubmitDuplicateErr(sub.err);
-  // W6 (B5c): signing is deterministic and the txid does not even depend on the signature (sha256d over
-  // the scriptSig-stripped serialization), so localTxid is not a fallback; it IS the answer, and the
-  // server echo carries no information the wallet does not already hold with certainty. Preferring the
-  // echo let a hostile/buggy proxy answering a constant txid dedupe every later send out of history,
-  // file sealed-claim reveal preimages under the wrong key, poison flushPending/pendingMerge, and point
-  // the explorer link (the user's one independent check) at an attacker-chosen transaction. The echo is
-  // kept only as a FREE CROSS-CHECK on the deliberately forked codec: a mismatch logs loudly, is never
-  // trusted.
-  if (sub.txid && String(sub.txid).toLowerCase() !== localTxid.toLowerCase())
-    console.warn(`[node] submit echoed txid ${sub.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
-  return {
-    ok: !!sub.ok,
-    // LOCAL txid whenever a tx may exist on the network (ok / ambiguous / duplicate). Definitive
-    // rejections keep txid undefined: providing one would read as "it went through".
-    txid: sub.ok || sub.maybeInflight || dup ? localTxid : undefined,
-    error: dup
-      ? "this transaction, or one spending the same coins, is already pending. Check your history once it is mined before sending again"
-      : (sub.err ?? (sub.ok ? undefined : "submit rejected")),
-    sighashMatch: true,
-    code: sub.ok ? undefined : (dup ? "SUBMIT_DUPLICATE" : (sub.maybeInflight ? "SUBMIT_MAYBE_INFLIGHT" : "SUBMIT_REJECTED")),
-  };
+  // The same bytes to every host of the RPC at once (hosts.ts submitEach): one signing, one txid. The result comes at
+  // the first acceptance; another host's later answer is logged and changes nothing in the result. A later answer
+  // that settles the history row is kept for it (laterFact).
+  const body = { tx: txToNodeJson(tx) };
+  const main = hostsFor(rpc)[0]!;
+  let settle: (f: LaterFact) => void = () => undefined;
+  const later = new Promise<LaterFact>((res) => { settle = res; });
+  const { outcome, answers, capped } = await submitEach(rpc, (h) => submitTo(h, body), (a, afterCap) => {
+    console.info("[node] a later submit answer", localTxid, hostLog(a));
+    if (a.host === main) settle(holds(a.verdict) ? "mainHolds" : "open");
+    else settle(afterCap && a.verdict.kind === "refused" ? "noneTook" : "open");
+  });
+  // A server's own text goes to the worker's log only: the result's `error` is the wallet's sentence (submitResult).
+  console.info("[node] submit answers", localTxid, answers.map(hostLog));
+  for (const { verdict: v } of answers)
+    if (v.kind === "accepted" && v.txid && v.txid.toLowerCase() !== localTxid.toLowerCase())
+      console.warn(`[node] submit echoed txid ${v.txid} != locally computed ${localTxid}, using local (codec cross-check)`);
+  // One fact for the history row: whether the main host holds the transaction (it answered "accepted" or "already
+  // present"). A row recorded while it does not stays maybe until it does (history.ts maybeRecord); when the result
+  // came before the main host answered, its later answer is kept for that; after the cap on the main host's refusal,
+  // the other host's later refusal is kept as "no host took it" (laterFact).
+  const mainAnswer = answers.find((a) => a.host === main);
+  const mainHolds = !!mainAnswer && holds(mainAnswer.verdict);
+  if ((!mainAnswer && outcome.kind === "sent") || capped) keepLater(localTxid, later);
+  return { ...submitResult(outcome, localTxid), hosts: answers.map(hostLog), mainHolds };
+}
+/** What a host's answer after the result says for the history row: the main host holds it, no host took it (the
+ *  other host refused after the cap on the main host's refusal), or nothing settled. */
+export type LaterFact = "mainHolds" | "noneTook" | "open";
+const holds = (v: HostVerdict): boolean => v.kind === "accepted" || v.kind === "duplicate";
+// The later fact of a submit whose result came before the host that settles its row answered, by txid, until history
+// takes it. Bounded: an entry no flow takes is dropped with the oldest; module state dies with the worker, and the row
+// then stays maybe.
+const laterFacts = new Map<string, Promise<LaterFact>>();
+const LATER_MAX = 64;
+function keepLater(txid: string, p: Promise<LaterFact>): void {
+  laterFacts.set(txid, p);
+  if (laterFacts.size > LATER_MAX) laterFacts.delete(laterFacts.keys().next().value!);
+}
+/** The later fact kept for `txid`, taken once; undefined when none is kept. */
+export function laterFact(txid: string): Promise<LaterFact> | undefined {
+  const p = laterFacts.get(txid);
+  laterFacts.delete(txid);
+  return p;
 }
 
 // Shared assembly tail for every value-moving tx (send / sendMany / fillOffer / buildSignSubmit).
@@ -636,7 +637,7 @@ async function assembleValueTx(
   // OUTPUTS, never this fee param), 4x under the 1 CSD floor; no honest tx can trip this.
   const propCap = proportionalFeeCap(sv.total);
   if (fee > propCap)
-    return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this spend uses); refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP" };
+    return { ok: false, error: `fee exceeds ${fmtCsd(propCap)} (10% of the coins this spend uses); refusing (a legitimate fee is well under 1 CSD)`, sighashMatch: false, code: "FEE_CAP", feeCap: propCap };
   const outs = [...outputs];
   const change = sv.total - need; // CHAIN-VERIFIED input total, not the RPC's report
   if (change > 0) outs.push({ value: change, scriptPubkey: addr }); // change back to self
@@ -701,14 +702,14 @@ async function buildSignSubmit(rpc: string, app: App, fee: number, priv: string,
   return assembleValueTx(rpc, chk.outputs, fee, app, priv);
 }
 
-type Refusal = { code: string; error: string };
+type Refusal = { code: string; error: string; feeCap?: number };
 // The fee checks that need no coins, one home each: the engine runs them at signing and proposeRefusal before the queue.
 // The proportional cap needs the selected inputs, so it stays in assembleValueTx.
 const feeTypeRefusal = (fee: unknown): Refusal | null =>
   Number.isSafeInteger(fee) && (fee as number) >= 0 ? null : { code: "BAD_FEE", error: "fee out of safe integer range" };
 function feeBoundsRefusal(fee: number): Refusal | null {
   if (!(fee > 0)) return { code: "FEE_TOO_LOW", error: "fee must be positive (the node enforces a minimum fee)" };
-  if (fee > MAX_FEE) return { code: "FEE_CAP", error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing (a legitimate fee is well under 1 CSD)` };
+  if (fee > MAX_FEE) return { code: "FEE_CAP", error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing (a legitimate fee is well under 1 CSD)`, feeCap: MAX_FEE };
   return null;
 }
 function zeroAddrRefusal(outputs: { scriptPubkey: string }[]): Refusal | null {
@@ -846,31 +847,31 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", sighashMatch: false, code: "BAD_FEE" };
   if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, sighashMatch: false, code: "FEE_CAP" };
   const addr = addrFromPriv(priv);
-  let utxos: any[];
+  let utxos: any[], host: string;
   let truncated = false;
-  try { ({ utxos, truncated } = await balance(rpc, addr)); }
+  try { ({ value: { utxos, truncated }, host } = await firstAnswer(rpc, (h) => balanceAt(h, addr))); }
   catch { return { ok: false, error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" }; }
   // Same ghost handling as selectVerified: known-unprovable outpoints are pre-excluded, fresh
   // ghosts exclude-and-retry within the same bounded round budget, and no coin is EVER spent
   // unverified. tamper/transient verdicts refuse exactly as a send would.
   const now = Date.now();
-  const exclude = sessionExclusions(now);
+  const exclude = sessionExclusions(host, now);
   const verified = new Map<string, number>();
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
     if (pool.length < 2) return { ok: false, error: "nothing to consolidate: fewer than two spendable coins", sighashMatch: false, code: "NOTHING_TO_CONSOLIDATE" };
-    const ver = await verifyInputValues(rpc, pool, verified);
+    const ver = await verifyInputValues(host, pool, verified);
     if (!ver.ok) {
       if (ver.kind === "tamper") return { ok: false, error: "could not verify selected coins against the chain (refusing to risk a burned fee)", sighashMatch: false, code: "VERIFY_TAMPER" };
       if (ver.kind === "transient") return { ok: false, error: "couldn't fetch source transactions to verify coin values (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };
       // BN0w: both skip classes (ghost + horizon) exclude-and-retry alike here; consolidate simply
       // merges what THIS node can prove today (the send path owns the distinct honest refusal copy).
-      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); rememberSkip(horizonSeen, k, now); }
+      if (ver.kind === "horizon") for (const h of ver.horizons) { const k = opKey(h.txid, h.vout); exclude.add(k); rememberSkip(horizonSeen, host, k, now); }
       // W6 (ND-1): the same exclude-and-retry, and THIS is the line that unbricks consolidate() against a
       // single dust coin from a stranger. The pool is smallest-first, so the poison coin was in every
       // round and its "tamper" verdict refused the whole merge, permanently.
-      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) { const k = opKey(u.txid, u.vout); exclude.add(k); rememberSkip(unrepSeen, k, now); }
-      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); rememberSkip(ghostSeen, k, now); }
+      if (ver.kind === "unrepresentable") for (const u of ver.unrepresentables) { const k = opKey(u.txid, u.vout); exclude.add(k); rememberSkip(unrepSeen, host, k, now); }
+      for (const g of ver.ghosts) { const k = opKey(g.txid, g.vout); exclude.add(k); rememberSkip(ghostSeen, host, k, now); }
       continue;
     }
     const outValue = ver.total - fee; // ver.total is CHAIN-VERIFIED and safe-integer-guarded by the fold
@@ -942,15 +943,15 @@ export async function maxSendable(rpc: string, addr: string, fee: number): Promi
   let eligible = 0, skipped = 0, target = 0, truncated = false;
   const skippedBy = { ghost: 0, horizon: 0, unrep: 0 };
   const verified = new Map<string, number>();
-  const found = await selectVerified(rpc, addr, (utxos, exclude, cut) => {
+  const found = await selectVerified(rpc, addr, (utxos, exclude, cut, host) => {
     truncated = cut;
     const coins = spendableCoins(utxos, exclude).sort((a, b) => b.value - a.value);
     eligible = coins.length;
     const left = spendableCoins(utxos).filter((c) => exclude.has(opKey(c.txid, c.vout)));
     skipped = left.length;
-    skippedBy.ghost = left.filter((c) => ghostSeen.has(opKey(c.txid, c.vout))).length;
-    skippedBy.horizon = left.filter((c) => horizonSeen.has(opKey(c.txid, c.vout))).length;
-    skippedBy.unrep = left.filter((c) => unrepSeen.has(opKey(c.txid, c.vout))).length;
+    skippedBy.ghost = left.filter((c) => ghostSeen.has(skipKey(host, opKey(c.txid, c.vout)))).length;
+    skippedBy.horizon = left.filter((c) => horizonSeen.has(skipKey(host, opKey(c.txid, c.vout)))).length;
+    skippedBy.unrep = left.filter((c) => unrepSeen.has(skipKey(host, opKey(c.txid, c.vout)))).length;
     target = coins.slice(0, MAX_TX_INPUTS).reduce((s, c) => s + c.value, 0);
     // nothing eligible: a positive target makes the selection fail cleanly (INSUFFICIENT, or the skip reason)
     return target > 0 ? target : 1;
@@ -992,16 +993,20 @@ export async function fillOffer(
 
 // Register a Cairn item's off-chain content (hash-verified by the server). Bounded like every other POST:
 // a hung request would otherwise hold flushPending's in-flight latch and a revealClaim approval.
-// Never throws. A non-2xx answer resolves { ok: false, error, status } with the HTTP status, so the content queue can
-// tell the server's lasting refusal (contentRefusedForGood) from an outage.
-export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<any> {
-  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r) => {
+// Never throws. Success is a 2xx whose body says `ok: true`; anything else resolves { ok: false, error, status } with the
+// HTTP status, so the content queue can tell the server's lasting refusal (contentRefusedForGood) from an outage.
+// Nothing of the server's body is copied into the result: `error` is the wallet's label with the status, and the
+// server's own text goes to the worker's console only (test/served-text-off-screen.test.mjs).
+export type ContentResult = { ok: true } | { ok: false; error: string; status?: number };
+export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<ContentResult> {
+  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r): Promise<ContentResult> => {
     let j: any;
     try { j = await r.json(); } catch { j = undefined; }
-    if (r.ok) return j && typeof j === "object" ? j : { ok: false, error: "/api/content -> unreadable response" };
+    if (r.ok && j?.ok === true) return { ok: true };
     const body = j && typeof j === "object" && !Array.isArray(j) ? j : {};
-    return { ...body, ok: false, error: String(body.error ?? body.err ?? `/api/content -> ${r.status}`), status: r.status };
-  }).catch((e) => ({ ok: false, error: String(e) }));
+    if (body.error !== undefined || body.err !== undefined) console.info("[content] the server's answer", r.status, String(body.error ?? body.err));
+    return { ok: false, error: r.ok && j === undefined ? "/api/content -> unreadable response" : `/api/content -> ${r.status}`, status: r.status };
+  }).catch((e): ContentResult => ({ ok: false, error: String(e) }));
 }
 /** 400, 413 and 422 are the server refusing this body for good (a malformed request, a body over its cap, content it
  *  cannot take); a retry gets the same answer. Anything else may pass later: a 5xx, a rate limit, a 200 {ok:false}, and a
@@ -1021,7 +1026,9 @@ export async function signIn(apiBase: string, priv: string): Promise<{ ok: boole
   // valid spend signature from the login flow (see test/poc-signin-oracle.ts).
   const { sig64, pub33 } = signSighash(loginDigest(String(n.nonce)), priv);
   const v = await post(apiBase, "/auth/verify", { nonce: n.nonce, pub33, sig64 });
-  // Normalize the failure shape to this function's declared `error` key; post() returns {ok:false,err}
-  // on a non-2xx body (VAL-2), and this legacy path's callers read `.error`.
-  return v?.ok ? v : { ok: false, error: v?.error ?? v?.err ?? "sign-in failed" };
+  // The failure's `error` is the wallet's words: the approval window shows the result, and the server's own text
+  // (post() returns it as `err` on a non-2xx body) goes to the worker's console only.
+  if (v?.ok === true) return { ok: true, ...(typeof v.addr === "string" ? { addr: v.addr } : {}), ...(typeof v.session === "string" ? { session: v.session } : {}) };
+  if (v?.error !== undefined || v?.err !== undefined) console.info("[sign-in] the server's answer", String(v.error ?? v.err));
+  return { ok: false, error: "sign-in failed" };
 }

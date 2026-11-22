@@ -22,6 +22,7 @@
 //   not cover the request, and never for a request other than the one it was computed for.
 //
 // Run: npx tsx test/approve-nfinalize-fresh-dom.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { CAIRNX_DOMAIN, TREASURY_ADDR, buildNameRenew } from "../src/core/cairnx.js";
 import { nameFinalize, REG_COMMIT_MAX_BLOCKS, REG_FINALIZE_GRACE_BLOCKS, FINALIZE_TIP_MARGIN } from "../src/vendor/cairnx-spv.js";
 import { checker } from "./helpers/check.mjs";

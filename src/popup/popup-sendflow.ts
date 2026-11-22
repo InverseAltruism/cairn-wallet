@@ -1,7 +1,11 @@
 // The review-and-confirm engine the CSD and token sends share.
-import { checkRow, type Check, escapeHtml, fmtBalance } from "./clearsign.js";
+import { checkRow, type Check, escapeHtml } from "./clearsign.js";
+import { fmtCsd } from "../core/cairnx.js";
+import { LAPSE_BUTTONS, REDIRECT_BUTTONS, UNCHECKED_BUTTONS, type ReviewButtons, sentenceOf } from "./sentences.js";
+import type { NameCheck } from "./popup-namecheck.js";
 import { type Outcome, refusedCopy, thrownCopy } from "./popup-bridge.js";
-import { $, busy, msg, msgAction, statusWrites } from "./popup-dom.js";
+import { sentenceHtml } from "./popup-outcome.js";
+import { $, busy, msg, msgAction, msgOutcome, statusWrites } from "./popup-dom.js";
 import { dropReviews } from "./popup-state.js";
 import { celebrateSend, mergePendingNow, refreshBalance } from "./popup-balance.js";
 import { closeAllPanels, syncNav } from "./popup-panels.js";
@@ -19,11 +23,11 @@ import { nameStillPointsTo } from "./popup-recipient.js";
 //   • snapshot shape: reviewState.reviewed (token, base-unit string) vs .reviewedSend (CSD, number).
 // Only the SUCCESS path clears the typed recipient/amount (fail/catch keep the draft for a re-Review);
 // Back clears nothing and never refreshes. `sent` is the sent toast's second line.
-type SendFlow = { ids: { confirm: string; button: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: (txid: string) => string };
+type SendFlow = { ids: { confirm: string; button: string; back: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: (txid: string) => string };
 const pending = (txid: string) => `Transaction ${String(txid).slice(0, 12)}… is waiting for inclusion in a block.`;
-export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", button: "btn-tsend-confirm", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
+export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", button: "btn-tsend-confirm", back: "btn-tsend-back", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
   sent: (txid) => `${pending(txid)} The token balance updates once it is mined.` };
-export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn-send-confirm", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
+export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn-send-confirm", back: "btn-send-back", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
   sent: pending };
 // A Confirm whose review was dropped (Back, a sheet switch, a lock, an account switch) or replaced while it waited.
 export const REVIEW_GONE = "The review was closed before it was signed. Nothing was sent.";
@@ -34,14 +38,17 @@ export function teardownReview(f: SendFlow, clearValues: boolean) {
   dropReviews();
   for (const flow of [CSD_FLOW, TOKEN_FLOW]) {
     ($(flow.ids.confirm) as HTMLElement).hidden = true;
+    labelButtons(flow, null);
     for (const id of [flow.ids.to, flow.ids.amt]) { const el = $(id) as HTMLInputElement; el.disabled = false; if (clearValues && flow === f) el.value = ""; }
   }
 }
 // Arm the review: disable the inputs the snapshot was read from and show the confirm card (editing
 // the form after "Review" must not let displayed values diverge from signed ones). Confirm is live unless `hold`
 // (a balance that does not cover the send) or a send is still in flight; a Confirm click disarms it until the next
-// review.
-export function armReview(f: SendFlow, hold = false) {
+// review. `buttons`: a caution that asks for a second click ([A19] REDIRECT_BUTTONS, [A4] LAPSE_BUTTONS) names what
+// Confirm and Back do; that Confirm is the second click after Review.
+export function armReview(f: SendFlow, hold = false, buttons: ReviewButtons | null = null) {
+  labelButtons(f, buttons);
   ($(f.ids.to) as HTMLInputElement).disabled = true;
   ($(f.ids.amt) as HTMLInputElement).disabled = true;
   ($(f.ids.button) as HTMLButtonElement).disabled = hold || submitting;
@@ -63,7 +70,8 @@ export function armReview(f: SendFlow, hold = false) {
 //     the first one's outcome lands.
 let confirmGen = 0;
 let submitting = false;
-type Snapshot = { to: string; name?: string | null; verified?: boolean };
+// `check`: the review was armed by "Send without check" on the name service's answer, while this check ran.
+type Snapshot = { to: string; name?: string | null; verified?: boolean; check?: NameCheck | null };
 export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read: () => S | null; consume: () => void }, submit: (s: S) => Promise<any>, sentText: (s: S) => string) {
   const snap = review.read();
   const btn = $(f.ids.button) as HTMLButtonElement;
@@ -73,10 +81,10 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   const writes = statusWrites();
   // a name recipient is re-resolved at sign-time: refuse if it now points somewhere else (XREPO-1) or if its
   // chain-verification regressed since review (L7); fail-closed to a re-review either way.
-  const stillPoints = !snap.name || (await nameStillPointsTo(snap.name, snap.to, snap.verified));
+  const stillPoints = !snap.name || (snap.check ? uncheckedStillPoints(snap.check, snap.to) : await nameStillPointsTo(snap.name, snap.to, snap.verified));
   if (gen !== confirmGen) return;                    // a later Confirm owns the outcome line; this one sent nothing
   if (review.read() !== snap) { if (statusWrites() === writes) msg(REVIEW_GONE, "err"); return; }
-  if (!stillPoints) { teardownReview(f, false); return msg(`${snap.name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
+  if (!stillPoints) { teardownReview(f, false); return msg(snap.check ? sentenceOf("A14", undefined, { name: `${snap.name}.csd` }).text : `${snap.name}.csd changed where it points. Nothing was sent: review it again.`, "err"); }
   review.consume();                                  // a second click finds no review
   submitting = true;
   // Only the call is inside the try: a throw from the outcome's own display code must not read as a submit outcome.
@@ -88,13 +96,42 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   else sendRefused(f, r);                            // structured refusal: show the REAL reason (FOOT-3 teardown inside)
 }
 
+const DEFAULT_BUTTONS = { confirm: "Confirm send", back: "Back" } as const;
+/** The review's buttons for a send's cautions: [A17]'s while the check runs ("Wait" goes back to it), then [A19]'s,
+ *  then [A4]'s, else the default pair. */
+export function reviewButtons(redirected: boolean, lapseUnconfirmed: boolean | undefined, unchecked = false): ReviewButtons | null {
+  return unchecked ? UNCHECKED_BUTTONS : redirected ? REDIRECT_BUTTONS : lapseUnconfirmed ? LAPSE_BUTTONS : null;
+}
+
+// A review armed on the name service's answer signs that address without waiting for the check (D12): while the check
+// runs, Confirm signs it; once the check answered, only an answer that sends to the same address lets it through.
+// Nothing here changes the address a Confirm signs, which is the snapshot's (test/name-check-wait-dom.test.mjs).
+export function uncheckedStillPoints(check: NameCheck, to: string): boolean {
+  const v = check.settled?.value;
+  return !check.settled || (v?.ok === true && typeof v.addr === "string" && v.addr.toLowerCase() === to.toLowerCase());
+}
+// When that check answers while its review is still on screen: the same address refuses nothing; another address, or a
+// refusal, takes the review down before any Confirm, with [A14] or the check's own refusal.
+export function watchUncheckedReview<S extends Snapshot>(f: SendFlow, read: () => S | null, snap: S) {
+  void snap.check?.result.then((res: any) => {
+    if (read() !== snap || uncheckedStillPoints(snap.check!, snap.to)) return;
+    teardownReview(f, false);
+    msg(res?.ok === true ? sentenceOf("A14", undefined, { name: `${snap.name}.csd` }).text : String(res?.error || `Couldn't resolve ${snap.name}.csd.`), "err");
+  });
+}
+function labelButtons(f: SendFlow, buttons: ReviewButtons | null) {
+  const l = buttons ?? DEFAULT_BUTTONS;
+  $(f.ids.button).textContent = l.confirm; $(f.ids.back).textContent = l.back;
+}
 // One source for the review-card warning copy. `noun` is the ONLY wording difference between the two
 // flows ("transfers" for tokens, "payments" for CSD; deliberate per-flow copy); the strings are
 // otherwise the historical ones byte-for-byte. A look-alike is danger, a first send caution, as in the approval window
 // (clearsign.warningChecks). Empty return = nothing to warn about (box hidden).
-export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments"): Check[] {
+// `redirected`: the .csd name of a send whose address differs from the one this account last paid it at ([A19], first).
+export function composeSendWarning(lookalike: string | null, firstTime: boolean, nameCaution: Check | null, noun: "transfers" | "payments", redirected: string | null = null): Check[] {
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1);
-  const out: Check[] = nameCaution ? [nameCaution] : [];
+  const out: Check[] = redirected ? [{ tier: "caution", html: sentenceHtml(sentenceOf("A19", undefined, { name: redirected })) }] : [];
+  if (nameCaution) out.push(nameCaution);
   if (lookalike) out.push({ tier: "danger", html: `<b>Possible address-poisoning.</b> This looks like <code>${escapeHtml(lookalike.slice(0, 10))}…${escapeHtml(lookalike.slice(-6))}</code> you've seen before but is <b>not</b> the same address. Verify every character. ${Noun} are irreversible.` });
   else if (firstTime) out.push({ tier: "caution", html: `First time sending to this address: check every character. ${Noun} are irreversible.` });
   return out;
@@ -110,31 +147,27 @@ export function setWarn(el: HTMLElement, checks: Check[]) {
 function sendOutcome(f: SendFlow, o: Outcome) {
   teardownReview(f, false);
   f.refresh();
-  msg(o.text, o.cls);
+  msgOutcome(o);
 }
 // A throw is routed by whether anything could have been submitted (see AnsweredError).
-export function sendThrew(f: SendFlow, e: any) { sendOutcome(f, thrownCopy(e, "send")); }
+export function sendThrew(f: SendFlow, e: any) { sendOutcome(f, thrownCopy(e, "send", "send")); }
 // A structured {ok:false} from the send engine: only SUBMIT_MAYBE_INFLIGHT is ambiguous; every other
 // code is a clean pre-broadcast refusal or a refusal of this submit (SUBMIT_REJECTED: what the node or proxy that
-// answered did with it; popup-outcome.ts), shown with the engine's own reason.
+// answered did with it), shown as the sentence module's line for a send (popup-outcome.ts).
 export function sendRefused(f: SendFlow, r: any) {
-  const o = refusedCopy(r, "send");
+  const o = refusedCopy(r, "send", "send");
   if (o.maybe) return sendOutcome(f, o);
   teardownReview(f, false);
   f.refresh();
   let text = o.text;
   // Merge-aware refusals (Plans/66 B4b): right after a consolidate, the confirmed balance is
-  // legitimately short by the whole merging amount; say so instead of leaving "insufficient"
+  // legitimately short by the whole merging amount; say so ([S5]) instead of leaving "insufficient"
   // to read as lost funds.
-  if ((r?.code === "INSUFFICIENT" || r?.code === "TOO_MANY_INPUTS") && mergePendingNow.pending) {
-    text += ` A coin merge (${fmtBalance(mergePendingNow.amount)} CSD) is still confirming; retry once it is mined.`;
-  }
+  if ((o.key === "S4" || o.key === "S8") && mergePendingNow.pending) text += " " + sentenceOf("S5", undefined, { amount: fmtCsd(mergePendingNow.amount) }).text;
   // TOO_MANY_INPUTS: the remedy is one click away; surface it as an action, not a breadcrumb
   // in a toast that fades mid-read (Plans/66 B5).
-  if (r?.code === "TOO_MANY_INPUTS") {
-    return msgAction(text, "Merge coins now", () => { void openConsolidatePanel(true); });
-  }
-  msg(text, "err");
+  if (o.key === "S8") return msgAction(text, "Merge coins now", () => { void openConsolidatePanel(true); }, "err", o.details);
+  msg(text, o.cls, undefined, o.details);
 }
 // Success: the sent toast with its txid first, then the one clear-the-draft path, then the sheet closes (only a confirmed
 // submission closes it; a refusal or an ambiguous outcome keeps the sheet and the draft, sendOutcome and sendRefused

@@ -62,6 +62,18 @@ export function paidRecipients(history: unknown): string[] {
     .filter(Boolean);
 }
 
+// The address this account last paid a .csd name at: the newest send or token send row that carries the name (popup
+// sends keep it, core/wallet.ts namedRow), else null. A row from before rows kept the name gives nothing to compare.
+export function lastPaidTo(history: unknown, name: string): string | null {
+  let best: { to: string; ts: number } | null = null;
+  for (const t of Array.isArray(history) ? history : []) {
+    if (!t || (t.type !== "send" && t.type !== "tokenSend") || t.name !== name || typeof t.to !== "string") continue;
+    const ts = Number(t.ts) || 0;
+    if (!best || ts > best.ts) best = { to: t.to.toLowerCase(), ts };
+  }
+  return best?.to ?? null;
+}
+
 // Surface a fee in CSD and flag an unusually large one so a phishing site can't slip a huge fee past
 // a user skimming the dialog. propose min is 0.25 CSD; >5 CSD is odd.
 const FEE_WARN = 5n * 100_000_000n;
@@ -961,10 +973,11 @@ export function nameCautionHtml(name: string, verified?: boolean, info?: NameInf
 // Below this many confirmations a name's resolution could still reorg: the badge says so and the review row is caution.
 export const NAME_SAFE_DEPTH = 3;
 /** A send review's name row: positive only on the caution's agree branch at a depth that can no longer reorg. */
-export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean }): Check | null {
+export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string; lowDepth?: boolean; verified?: boolean; partly?: boolean; lineHtml?: string }): Check | null {
   if (!rr.name) return null;
+  if (rr.lineHtml) return { tier: "caution", html: rr.lineHtml };   // a sheet line that stands alone ([A4], [A18]), amber
   const info = { sources: rr.sources, disagree: rr.disagree, soleSource: rr.soleSource, viaFill: rr.viaFill };
-  const ok = nameBranch(rr.verified, info) === "agree" && !rr.lowDepth;
+  const ok = nameBranch(rr.verified, info) === "agree" && !rr.lowDepth && !rr.partly;   // [A18] is amber
   const badge = rr.badge ? `<span class="check-line">${escapeHtml(rr.badge)}</span>` : "";
   return { tier: ok ? "ok" : "caution", html: nameCautionHtml(rr.name, rr.verified, info) + badge };
 }

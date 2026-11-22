@@ -6,6 +6,7 @@
 //   PAIRED HONEST PATHS: the body read by hash returns the verified header's merkle root, below the newest anchor and
 //   above it (1); a body served under that hash that is another block's still fails the merkle bind (3).
 // Run: npx tsx test/block-by-hash.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { checker } from "./helpers/check.mjs";
 import { serveFixture, memStore, legacyOf, hashOf, headerOf, FIX_TOP, FIX_ANCHORS } from "./helpers/spvfixture.mjs";

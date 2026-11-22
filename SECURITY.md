@@ -83,6 +83,81 @@ the RPC to report the transaction definitely not mined and not pending: the Cair
 full, so with a backend down a row keeps the 10-block notice instead; a node on this computer reports it when its
 own transaction scan was complete (it has no mempool view to add).
 
+### The second Cairn server
+
+With the default RPC (Cairn's proxy at cairn-substrate.com) the wallet has a second host, Cairn's server at
+clarvis.cairn-substrate.com (`BACKUP_RPC`, `src/core/endpoints.ts`). It is a constant of the release: no setting and
+no page can name it (`rpcAllowed` refuses it as an RPC). A node on this computer set as the RPC has no second host: no
+node read and no submit goes to the second server's `/api/rpc` (test/hosts-fallback.test.mjs L1 to L4). The name
+checks and the fill's offer cross-check read the second server's trade API whatever the RPC (`names.ts`
+`nameSources` and its resolve fallback, `fillpreflight.ts`), as 0.3.4 did; they send a name or an offer id, never a
+transaction. It runs its own node, and has the same operator
+and the same DNS zone as the main host, so it is not an independent party.
+
+Reads (`src/core/hosts.ts` `firstAnswer`): the main host is asked first; the second host is asked 1.5 s later if the
+main host has not answered, or at once when it fails, and the first answer wins. The main host's request is never cut
+short. After a main failure, or a read the second host answered first, the second host is asked first for 60 s; a
+main answer ends that window. With both hosts healthy the second host gets no
+read at all. The popup says "Using Cairn's backup server." under a balance it answered. One spend reads one host: the
+host that answered its coin list answers every source transaction read, so the coin-value check above runs on that
+host exactly as on the main host, and a forged body there refuses `VERIFY_TAMPER` (test/hosts-spend-pin.test.mjs). A
+history reconcile pass stays on the host that answered its tip.
+
+Submits (`hosts.ts` `submitEach`, `submitverdict.ts` `decideSubmit`): every signed transaction goes to both hosts at
+once, the same bytes from one signing, so the txid is one. The result comes at the first host that accepts it, and
+nothing waits on the other host. A later answer never changes the result: from the main host it can only clear a row's
+maybe mark (below), and from the second host only its refusal after the cap described next removes a maybe row.
+Any other answer waits for both hosts: a host that may hold the transaction (a timeout, a 5xx, an unreadable answer)
+makes the result `SUBMIT_MAYBE_INFLIGHT`, then an "already present" answer `SUBMIT_DUPLICATE`, and only a refusal from
+both is `SUBMIT_REJECTED` (test/submit-two-hosts.test.mjs has every pair). After the main host's refusal the wallet
+waits for the second host at most 4 s (`MAIN_REFUSED_WAIT_MS`); the send keeps its "Sending..." state meanwhile. When
+the second host has not answered by then, or answers unclear, the result is `SUBMIT_MAYBE_INFLIGHT` with the main
+host's `reason` and a maybe row, and the line says the main server refused and the backup server has not answered.
+The reason for waiting at all: a refusal reported while the other host may still accept and relay the payment invites
+the user to pay again, with other coins once the first are seen as spent. The second host's refusal after the cap means
+no host took it, and the row that send made is removed, as a refused send keeps none; a row an earlier attempt of the
+same transaction made stays, since that attempt may have landed. Its acceptance or "already present" after the cap
+leaves the row maybe.
+
+A send reported sent before the main host had taken it (only the second host had) is recorded as an unclear history
+row: the wallet reconciles it, and unmined after 10 blocks it says to check the explorer before sending again. The
+wallet keeps no record that excludes a pending send's coins from the next send: the server that lists the coins leaves
+out the ones its own pending pool spends, so a main host that never received the send lists them as free, and a second
+payment with other coins could confirm beside the first. The row's mark is what warns. Only the main host holding the
+transaction clears it: its own "accepted" or "already present" for the same txid, late or on a resend. The second
+host's "already present" alone, any other answer, or none (a worker stopped before it came) leaves it
+(test/submit-main-late.test.mjs S2). The result shown is the same in every case.
+
+What it can do when it answers: what a lying RPC can do, as listed above (a wrong balance, withheld coins, a refusal, a
+false Activity marker), and no more. It cannot change the value of a coin the wallet spends, the outputs, the fee or
+where the change goes. The tip it serves, like the main host's, sets the expiry epoch of the records the wallet builds
+(a tip served too high makes a record live longer than meant; one too low makes it expire sooner, or the network
+refuses it before anything is spent) and the height a name fee is priced at, which is never below the stored tip floor and the release's newest
+anchor (above). It answers a read only when the main host has not answered within 1.5 s or failed, so a party that
+holds it alone must also slow or stop the main host. On a submit it can answer "accepted" to everything and turn a main host's refusal into "sent"; the transaction
+then never confirms and its coins stay unspent, as when a lying main host answers so today. It cannot hide the main
+host's acceptance: its refusal, its duplicate answer or its silence do not end the wait, so a send the main host took
+is reported sent. It sees the address whose balance is read and every signed transaction, as the main host does.
+
+Where the two hosts honestly disagree: a host a block behind lists a coin this wallet spent in the newest block, or a
+send of this wallet sits in one host's pending pool and not the other's. A spend of that coin is accepted by the one
+and refused as a conflict or a spent coin by the other; the wallet reports it sent, with a history row, because the
+accepting host may relay it and a refusal could prompt a second payment. When the main host is the one that refused, the row
+is recorded unclear (above), so if it never confirms the reconcile marks it. On a reorg between the hosts the coin-value check is unchanged: values are bound to the
+txid, and a source transaction off the answering host's branch reads as not found and is skipped.
+
+A server's own text no longer reaches the screen or a page through a send's result: the result's `error` is the
+wallet's sentence and the popup and approval window show the sentence module's line for the code and reason
+(`src/popup/sentences.ts`; test/submit-answers.test.mjs H6, test/popup-outcome-dom.test.mjs 4f). Nor through the
+other refusals that carried it: the content server's refusal of a reveal, the first-party sign-in check's refusal,
+the second server's note on a denied reservation and the offer service's status string (mapped onto a fixed list of
+words, `src/core/servedtext.ts`); the name service's "via" field is off the send review. The content server's and
+the sign-in check's texts and the second server's note go to the worker's console; the offer status and the "via"
+field are dropped (test/served-text-off-screen.test.mjs). No field of the content server's or the sign-in check's
+answer is copied into the result: a refusal carries the wallet's label and the HTTP status, an accepted sign-in only
+its address and session. What a server serves as data under review (tickers, amounts,
+profile keys) stays on screen, escaped, and the cards say where it comes from.
+
 ### Sending to a `.csd` name
 
 When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX name services as
@@ -150,6 +225,13 @@ source alone, and the send's confirm step runs the full check again rather than 
 does not cover that operator hiding a later transfer or a competing claim from both, nor the stale-seller case below.
 The wallet's own badge says the name servers share one operator.
 
+A name whose current holding was completed above the newest header the release carries (the `nfinalize` of a
+registration or recapture, the reveal of a name from before the two-step finalize; a later transfer or address change
+does not move it) rests on headers the wallet learned from the same servers that answer for the name, and a new
+install has no older record of its own to check them against. Such a name shows "New name, only partly verified.
+Check the address before a large payment." in place of the plain line. It is a caution, not a refusal; a bought name
+keeps its own caution (test/name-completed-at.test.mjs, test/popup-checks-dom.test.mjs 9d).
+
 **What happens when the sources disagree.** There is no hard refusal on a disagreeing source. The wallet
 warns and lets you decide:
 
@@ -172,18 +254,40 @@ warns and lets you decide:
   that ownership depends on state outside the name's own history; it gets an explicit caution. The replay shows it
   only when the records it replays include the sale: the stale-seller residual above is the case where they do not.
 
-Decided on 2026-11-18 for names bought on the market: the base of name verification will move from a replay of one
-name's records to a full replay of the `cairnx:v1` domain, from a pinned record log plus the complete blocks above the
-pin, and the per-name verifier will be retired with that change. The reason is a principle: some resolver rules read
-state outside the name, and a replay of one name's records cannot evaluate them, so it can undercount and accept what the
-chain refused. Until that change ships, the caution on such names stays as described above
-(`docs/DESIGN-viafill.md`, "Decision").
+The wallet keeps this per-name proof (decided 2026-11-22, changing a decision of 2026-11-18 to move the wallet to a
+full replay of the `cairnx:v1` domain from a pinned record log). Full replay is the base for servers and pages, not for
+the wallet: there its one gain is against a party that holds every name source and holds a record back, while its
+cost, catching up on the blocks above the pin, grows with the age of a release, and the wallet has to keep working on
+an old release. Some resolver rules read state outside the name, and a replay of one name's records cannot evaluate
+them, so a name the replay shows was bought through an offer fill or re-claimed after a lapse keeps the caution
+described above (`docs/DESIGN-viafill.md`, "Decision").
 
 Besides a name that does not resolve at all (unregistered, no address, or the zero address), two cases
-refuse: a lease the chain shows has lapsed (or that a resolver reports lapsed and the chain cannot show
-current), and a change between review and confirm. At confirm the wallet **re-resolves and
+refuse: a lease that has lapsed at a height the wallet verified (its own proof-of-work header tip, or the floor kept
+from earlier sessions) with the corroboration 0.3.4 required (two name sources served the records, or the floor), and
+a change between review and confirm. Any other lapse is a caution with a second click ("Send anyway"), not a refusal:
+a lapse at the served tip alone (whoever answers for both default hosts could otherwise serve a tip past a live name's
+lease and stop every send to it), one that a single source's records show (that source can withhold a renewal or a
+recapture), and one a resolver reports and the wallet cannot settle. The caution's
+address is the one the name's own verified records give its last holding, when the replay gives one, so a moved tip
+does not also move the send (test/name-lapse-tip.test.mjs). At confirm the wallet **re-resolves and
 re-verifies** the name and refuses to sign if the address changed or the status dropped from verified to not
 verified. The recipient you confirm is always the **full, untruncated address**.
+
+While the name check runs, the send sheet says "Checking alice.csd..." from 0.3 s and, from 10 s once the name
+service has answered, offers "Send without check". That review shows the name service's address, unverified, with
+"This name could not be checked. Make sure the address is right." and "Send anyway" / "Wait"; its Confirm signs that
+address without waiting for the check and without asking again. The check keeps running: if it ends with that address
+nothing changes; if it ends with another address or a refusal before Confirm, the review is taken down and nothing is
+signed. Confirm signs only the reviewed address in every case (test/name-check-wait-dom.test.mjs).
+
+A name this account paid before that now resolves to another address gets a caution in the review, whatever the
+cause (a sale, a new address set by its owner, a forged answer): "alice.csd points to a different address than when
+you last paid it. Continue only if you expected this.", and the review's Confirm reads "Send to new address". It is
+not a refusal. The wallet compares with the newest send or token send of this account to that name, which keeps the
+name on its history row from this release on (rows from earlier releases carry none, so a name last paid with one of
+them gets no caution until it is paid again); a page's request carries no name and is not compared
+(test/name-redirect-dom.test.mjs, test/name-redirect-history.test.mjs).
 
 The honest residual: "verified" means **chain-backed as shown** by records the two sources returned; for a
 sizable transfer, confirm the `0x…` address out-of-band. (As with every send, the wallet selects its own
@@ -208,8 +312,11 @@ keep pulling the window forward; what remains is one raise and its 700 ms floor 
 (test/approve-raise-refused-bound.test.mjs).
 The provider is injected
 on all sites (like MetaMask) so any dApp can request a connection, but injection scope is
-**not** the security boundary: the content script only relays requests, exposes no keys, and
-`host_permissions` (network access) stays scoped to the node/proxy, not broadened with it.
+**not** the security boundary: the content script only relays requests, exposes no keys and makes no network request.
+Chrome counts its matches as host access (`chrome.permissions.getAll()` lists `https://*/*` beside the declared
+`host_permissions`); what limits the wallet's own requests is the manifest's content security policy, whose
+`connect-src` allows only the extension itself, cairn-substrate.com, clarvis.cairn-substrate.com and localhost or
+127.0.0.1.
 The provider exposes a fixed set of actions: connect, getAddress, sign in, propose, attest,
 sealed claims, **send** (a plain CSD transfer), and **fillOffer** (a CairnX offer fill: one transaction pays
 the recipients and records the fill, and CairnX then decides delivery; if it refuses the fill, the payment is not

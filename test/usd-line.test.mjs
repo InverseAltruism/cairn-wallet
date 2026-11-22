@@ -7,6 +7,7 @@
 // (node.ts, a popup module, a new file) and the importer scan fails.
 // HONEST PATH: the live body gives "≈ $79.14 · USD via SafeTrade" for 1,284.735 CSD at 0.0616.
 // Run: npx tsx test/usd-line.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { csdMarket, parseCsdMarket, usdLine } from "../src/core/market.ts";

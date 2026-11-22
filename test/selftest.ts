@@ -1,5 +1,6 @@
 // Cairn Wallet core self-tests; oracle-based (consensus golden vectors + a real
 // on-chain signature), plus keystore/account adversarial cases. No mocks of our own.
+import "./helpers/backup-host.mjs";
 import { serialize, txid, sighash, hash160, signSighash, cairnPayloadHash, stableStringify, type Tx } from "../src/core/csdtx.js";
 import { verifyDigest } from "../src/vendor/cairnx-spv.js";
 import { generate, fromPriv, deriveAccount, isValidMnemonic, hdPath } from "../src/core/account.js";
@@ -255,10 +256,10 @@ async function main() {
     (globalThis as any).fetch = txStub(true, "0x" + "ff".repeat(32));
     await w.send(RCPT, 1e8, 1e6); await w.send(RCPT, 1e8, 1e6);
     check("history idempotent on a byte-identical resubmit (same local txid)", (await w.history()).length === 1);
-    // W6 (B5c) second half: `maybeInflight` is post()'s OWN transport classification; a parsed 2xx
-    // body cannot inject it. A hostile proxy answering HTTP 200 {ok:false, maybeInflight:true} must
-    // classify as a DEFINITIVE rejection (no txid, no scary "may be in flight" copy). REDS if the
-    // post() strip is removed.
+    // W6 (B5c) second half: whether a submit may be in flight is the wallet's own reading of the transport
+    // (submitverdict.ts classifyAnswer); a parsed 2xx body cannot inject it. A hostile proxy answering HTTP 200
+    // {ok:false, maybeInflight:true} must classify as a DEFINITIVE rejection (no txid, no scary "may be in
+    // flight" copy). REDS if classifyAnswer reads a body's maybeInflight.
     w = new Wallet(memoryStore()); await w.create("super-secret-pw");
     (globalThis as any).fetch = (async (url: any) => {
       const u = String(url);
@@ -285,6 +286,10 @@ async function main() {
     const overProp = await w.send(RCPT, 1e7, 20e8);   // 20 CSD fee, 0.1 CSD send, 100 CSD coin
     check("send rejects a fee over 10% of the verified inputs (proportional cap)",
       overProp.ok === false && /10% of the coins/i.test(overProp.error ?? "") && overProp.code === "FEE_CAP");
+    // the popup's and the approval window's line names the cap ([S12], popup/sentences.ts), so the refusal carries it
+    check("the proportional refusal carries its cap, 10 CSD (feeCap)", overProp.feeCap === 10e8);
+    const overFlat = await w.send(RCPT, 1e7, 101e8);
+    check("the flat refusal carries its cap, 100 CSD (feeCap)", overFlat.code === "FEE_CAP" && overFlat.feeCap === 100e8);
     const okFee = await w.send(RCPT, 1e7, 5e8);        // 5 CSD fee < 10 CSD propCap → passes
     check("send ACCEPTS a fee within the proportional cap (5 CSD < 10% of 100 CSD)", okFee.ok === true);
   } finally { (globalThis as any).fetch = of2; }

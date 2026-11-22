@@ -5,6 +5,7 @@
 // later rival registration win. Real signed txs in synthetic PoW-verified blocks (test/_spvrig.ts), the production
 // verifyNameUnion and the vendored resolver; section 5 drives the Wallet's own resolveName and confirmName.
 // Run: npx tsx test/namespv-union-scope.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { verifyNameUnion } from "../src/core/namespv.js";
 import { Wallet } from "../src/core/wallet.ts";

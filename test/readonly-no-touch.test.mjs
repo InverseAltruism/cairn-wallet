@@ -9,6 +9,7 @@
 //   test/extension-boundary.ts polls without moving the clock, so it stays green under that mutation (the audit of
 //   2026-11-19), and test/pentest.ts pins it by the source text only.
 // Run: npx tsx test/readonly-no-touch.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { PRIV } from "./helpers/fillworld.mjs";
 import { AUTO_LOCK_MS } from "../src/core/wallet.ts";

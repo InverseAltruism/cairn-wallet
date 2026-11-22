@@ -15,6 +15,7 @@
 // comparison covered is refused by the merkle-proven bind; the cross-offer MAX_ACTIVE_CLAIMS cap over-count is COMPUTED from the scan (2 holds
 // ACCEPTED, adding a 3rd FLIPS to REFUSED, never hardcoded 0). The denied-fclaim guard is MUTATION-VERIFIED
 // (removed from the wallet source, the same forgery then SUBMITS, proving the guard is the sole rejecter).
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";

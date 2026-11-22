@@ -14,6 +14,7 @@
 // Harness = existing house patterns (consolidate.test URL-routed stub, persistvault-race gated store,
 // seal-encrypt money assertion). Every case runs in isolation; a throw is recorded as a failure, never
 // aborts the file, so ALL red cases are visible in one unfixed run.
+import "./helpers/backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

@@ -10,6 +10,7 @@
 //   RESET BOUNDARY: (4) a reset() in the same window drops the record.
 //
 // Run: node --import tsx test/seal-lock-midflight.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

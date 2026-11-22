@@ -1,6 +1,7 @@
 // A fill with no payment outputs whose selected coins equal the fee leaves a transaction with no outputs at all; the
 // engine refuses it (NO_OUTPUTS) before signing, with copy that has no em dash.
 // Run: npx tsx test/fill-no-outputs-copy.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { fillOffer } from "../src/core/node.js";
 import { mkCoin, txReply } from "./_coin.js";

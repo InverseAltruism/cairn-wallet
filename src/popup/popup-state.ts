@@ -1,5 +1,7 @@
 // State several views read: the endpoints and the account from the last status read, the frozen review snapshots,
 // and the generation counters that bind a drawn row or sheet to the account and list it was drawn for.
+import type { NameCheck } from "./popup-namecheck.js";
+
 export let currentRpc = "";
 export let currentExplorer = "cairn"; // selected block explorer (preset id or custom base) for activity/address links
 export let siteApi = "";   // the Cairn site base (for the /trade deep-link in the names list)
@@ -12,8 +14,8 @@ export let siteApi = "";   // the Cairn site base (for the /trade deep-link in t
 // boundary), closeAllPanels (any panel switch) and the flow handlers; panels are mutually exclusive
 // via openPanel, so dropping all three is always equivalent to dropping the one that was armed.
 export const reviewState: {
-  reviewed: { to: string; base: string; ticker: string; decimals: number; name?: string | null; verified?: boolean; signer?: string | null } | null;
-  reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean; signer?: string | null } | null;
+  reviewed: { to: string; base: string; ticker: string; decimals: number; name?: string | null; verified?: boolean; signer?: string | null; check?: NameCheck | null } | null;
+  reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean; signer?: string | null; check?: NameCheck | null } | null;
   reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number; signer?: string | null; ackOtherOwner?: boolean } | null;
 } = { reviewed: null, reviewedSend: null, reviewedNameAct: null };
 export function dropReviews() { reviewGen++; reviewState.reviewed = null; reviewState.reviewedSend = null; reviewState.reviewedNameAct = null; }

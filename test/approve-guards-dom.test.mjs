@@ -36,6 +36,7 @@
 //     RED-FIRST: delete the `renderedId = null` in render()'s catch and (5) fails.
 //
 // Run: node --import tsx test/approve-guards-dom.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { buildNameRenew, CAIRNX_DOMAIN, TREASURY_ADDR } from "../src/core/cairnx.js";
 import { bid } from "../src/vendor/cairnx-spv.js";
 import { checker } from "./helpers/check.mjs";

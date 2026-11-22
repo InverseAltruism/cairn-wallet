@@ -2,8 +2,9 @@
 import { explorerLink } from "../core/explorer.js";
 import { parseUnits, CAIRNX_PROPOSE_FEE } from "../core/cairnx.js";
 import { escapeHtml } from "./clearsign.js";
-import { call, refusedCopy, thrownCopy } from "./popup-bridge.js";
-import { $, busy, msg, val } from "./popup-dom.js";
+import { call, refusedCopy, sentenceOutcome, thrownCopy } from "./popup-bridge.js";
+import { $, busy, msg, msgOutcome, val } from "./popup-dom.js";
+import { sentenceKeyOf } from "./sentences.js";
 import { currentExplorer } from "./popup-state.js";
 import { openPanel } from "./popup-panels.js";
 import { refreshBalance } from "./popup-balance.js";
@@ -74,7 +75,11 @@ export async function renderSealed() {
   el.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", () => once(b as HTMLButtonElement, async () => {
     const id = (b as HTMLElement).dataset.reveal!; busy("Revealing…");
     const r = await call("revealClaim", id);
-    (r && r.ok) ? msg("Revealed: now public, and provably committed earlier.", "ok") : msg("Reveal failed: " + ((r && r.error) || "?"), "err");
+    // a reveal the content server did not take carries no code ([Q3]); SEAL_UNKNOWN is [Q4]; SEAL_NOT_MINED keeps its text
+    const key = r && !r.ok ? (r.code ? sentenceKeyOf(r) : "Q3") : null;
+    if (r && r.ok) msg("Revealed: now public, and provably committed earlier.", "ok");
+    else if (key) msgOutcome(sentenceOutcome(key, r.code, key === "Q3" && Number.isSafeInteger(r.status) ? `(HTTP ${r.status})` : undefined));
+    else msg("Reveal failed: " + ((r && r.error) || "?"), "err");
     renderSealed();
   })));
 }

@@ -38,6 +38,7 @@
 //   txid and those fail the same way; let it allow any txid and the taken-then-lost case of 5 signs a second payment;
 //   let it allow the same txid of an accepted fill and the last case of 5 re-sends it.
 // Run: npx tsx test/fill-refill-after-send.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.js";

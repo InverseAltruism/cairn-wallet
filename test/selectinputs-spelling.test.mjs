@@ -4,6 +4,7 @@
 // fails the wallet's own txid recompute (VERIFY_TAMPER), so a duplicate pair refuses the whole spend.
 //
 // node.ts keeps a module-level ghost cache for the process, so every case uses its own coin values.
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin } from "./_coin.js";

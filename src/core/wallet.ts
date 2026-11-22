@@ -11,7 +11,7 @@ import * as node from "./node.js";
 import { cairnPayloadHash, signSighash } from "./csdtx.js";
 import { siwcDigest, CSD_CHAIN_MAINNET } from "./siwc.js";
 import { siwcMessageFor, type SiwcParams } from "./siwcparams.js";
-import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor } from "./cairnx.js";
+import { buildTransfer, buildNameRenew, buildNameSet, nameRegFee, buildFeeHeight, feePricingTip, formatUnits, CAIRNX_DOMAIN, CAIRNX_PROPOSE_FEE, TREASURY_ADDR, defaultFeeFor, isPlainName } from "./cairnx.js";
 import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { heightOf, lowestChainHeight } from "./chainbound.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
@@ -27,7 +27,7 @@ import { DEFAULT_RPC, DEFAULT_API, DEFAULT_TRADE_API, validRpcUrl, RPC_URL_ERR, 
 import type { HintSetEntry } from "./namecache.js";
 import { TxHistory, histKey, OWN_FILL_INDEX_WAIT_MS } from "./history.js";
 import { SealedClaims, sealKey } from "./claims.js";
-import { resolveName, verifyName, confirmName, type NameIo, type NameResolution } from "./names.js";
+import { resolveName, verifyName, confirmName, type NameIo, type NameResolution, type ServedName } from "./names.js";
 import { cairnxAssets, cairnxTokens, tokenFillQuote, fillOfferView, tokenDisplayMeta, attestTargetView, type CairnxViewIo } from "./cairnxview.js";
 import { csdMarket } from "./market.js";
 import { opaqueOrigin } from "./origin.js";
@@ -64,6 +64,8 @@ export const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 min
 interface SignerCtx { active: number; addr: string; priv: string; histKey: string }
 // Shared refusal for a signer mismatch detected at the sign tick (mirrors the background's
 // pre-dispatch M5 guard copy; same machine code, WALLET-ERROR-CODES.md).
+// The name a popup send resolved its recipient from, for its history row: a plain .csd name, lower-cased, else nothing.
+const namedRow = (name: unknown): { name?: string } => (isPlainName(typeof name === "string" ? name.toLowerCase() : name) ? { name: (name as string).toLowerCase() } : {});
 const ACCOUNT_CHANGED_REFUSAL = (): node.SubmitResult => refuse("ACCOUNT_CHANGED",
   "the active account changed since you reviewed this request: reopen it and review again before approving");
 // XR-1/FL-1: a fill whose on-chain score is present but is not the marketplace-required SCORE_FILL (100).
@@ -176,7 +178,7 @@ export class Wallet {
   // hint-set cache, whose header hashes came from it.
   async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this.endpointChanged(); this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); if (u !== this.api) this.endpointChanged(); this.api = u; await this.store.set("api", u); }
-  private endpointChanged(): void { this._spvSrc = null; this.spvGen++; this.nameHints.clear(); }
+  private endpointChanged(): void { this._spvSrc = null; this._spvLive = null; this.spvGen++; this.nameHints.clear(); }
   async setTradeApi(u: string) { if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR); this.tradeApi = u || DEFAULT_TRADE_API; await this.store.set("tradeApi", this.tradeApi); }
   // User-added custom RPC URLs (for the header RPC switcher). Plain config, no secrets.
   async rpcList(): Promise<string[]> { return (await this.store.get("customRpcs")) || []; }
@@ -745,14 +747,15 @@ export class Wallet {
     return { account: a.addr, pub33, sig64, message, chainId: CSD_CHAIN_MAINNET };
   }
 
-  // Plain CSD transfer to any address. fee default 0.01 CSD.
-  async send(to: string, amount: number, fee?: number, expectSigner?: string) {
+  // Plain CSD transfer to any address. fee default 0.01 CSD. `name`: the .csd name the popup resolved `to` from; it is
+  // kept on the history row only (namedRow), so the next review of that name can see where it pointed when paid.
+  async send(to: string, amount: number, fee?: number, expectSigner?: string, name?: unknown) {
     const f = fee ?? defaultFeeFor("send"); // B9: the table, not a local literal (was a param default)
     const ctx = this.captureSigner();
     const early = this.expectSignerRefusal(expectSigner, ctx.addr);
     if (early) return early;
     const r = await node.send(this.rpc, { to, amount, fee: f }, ctx.priv);
-    await this.hist.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee: f });
+    await this.hist.maybeRecord(ctx.histKey, r, { type: "send", to, amount, fee: f, ...namedRow(name) });
     return r;
   }
   // Merge small coins into one self-output (see node.consolidate for the full posture note).
@@ -830,7 +833,15 @@ export class Wallet {
     tradeApi: () => this.tradeApi,
     spvGen: () => this.spvGen,
     nameHints: () => this.nameHints,
+    noteServed: (name, served) => { this.servedNames.delete(name); if (served) this.servedNames.set(name, served); while (this.servedNames.size > 8) this.servedNames.delete(this.servedNames.keys().next().value!); },
   };
+  private servedNames = new Map<string, ServedName>();
+  // What the send review shows while resolveName runs (popup-only, READ_ONLY_METHODS): the served answer once it
+  // arrived and the header sync's progress. Memory only: no request.
+  nameCheck(name: unknown): { served: ServedName | null; progress: { done: number; total: number } | null } {
+    const nm = String(name ?? "").toLowerCase().replace(/\.csd$/, "");
+    return { served: this.servedNames.get(nm) ?? null, progress: (this.nameSpvForTest ?? this._spvLive)?.syncProgress?.() ?? null };
+  }
   resolveName(name: string): Promise<NameResolution> { return resolveName(this.nameIo, name); }
   verifyName(name: string): Promise<NameVerification & { name: string }> { return verifyName(this.nameIo, name); }
   confirmName(name: string): Promise<NameResolution> { return confirmName(this.nameIo, name); }
@@ -861,11 +872,13 @@ export class Wallet {
   // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after
   // setRpc/setApi change an endpoint; a failed build clears only itself, never a newer one.
   private _spvSrc: Promise<SpvSource> | null = null;
+  private _spvLive: SpvSource | null = null;   // the built source, for nameCheck's progress read
   private spvSource(): Promise<SpvSource> {
     if (this.nameSpvForTest) return Promise.resolve(this.nameSpvForTest);
     if (!this._spvSrc) {
       const built: Promise<SpvSource> = (this.spvBuildForTest ?? liveSpvSource)(this.spvOpts()).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
       this._spvSrc = built;
+      built.then((s) => { if (this._spvSrc === built) this._spvLive = s; }, () => { /* the catch above clears the build */ });
     }
     return this._spvSrc;
   }
@@ -939,10 +952,11 @@ export class Wallet {
   // Token transfer = a cairnx:v1 Propose whose uri is the canonical transfer record,
   // payload_hash = sha256(uri), fee 0.25 CSD, NO value outputs. The record is built
   // LOCALLY (core/cairnx.ts) and validated before signing; `amount` is base units.
-  async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number; expectSigner?: string }) {
+  async cairnxTransfer(p: { ticker: string; amount: string; to: string; decimals?: number; fee?: number; expectSigner?: string; name?: unknown }) {
     const priv = this.must().privkey;
     const hk = this.histKeyNow(); // captured with the signer (F5)
-    this.throwOnSignerChange(p.expectSigner);
+    const early = this.expectSignerRefusal(p.expectSigner, this.addr());
+    if (early) return early;
     const built = buildTransfer({ ticker: p.ticker, amount: p.amount, to: p.to }); // throws on invalid
     const expiresEpoch = Math.floor((await node.tip(this.rpc)) / EPOCH_LEN) + PROPOSE_EXPIRY_EPOCHS;
     const fee = p.fee ?? CAIRNX_PROPOSE_FEE;
@@ -950,7 +964,7 @@ export class Wallet {
     const r = await node.propose(this.rpc, { domain: CAIRNX_DOMAIN, payloadHash: built.payloadHash, uri: built.uri, expiresEpoch, fee }, priv);
     await this.hist.maybeRecord(hk, r, {
       type: "tokenSend", ticker: p.ticker, to: String(p.to).toLowerCase(), amount: p.amount,
-      human: typeof p.decimals === "number" ? formatUnits(p.amount, p.decimals) : p.amount, fee,
+      human: typeof p.decimals === "number" ? formatUnits(p.amount, p.decimals) : p.amount, fee, ...namedRow(p.name),
     });
     return r;
   }
@@ -1069,7 +1083,7 @@ export class Wallet {
           if (rr && rr.ok) continue;
           if (node.contentRefusedForGood(rr)) {
             // Its history row says the post was not published (popup-history.ts); a queue entry from before 0.3.3 has no hk.
-            console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}: ${String(rr?.error ?? "")}); it is not retried`);
+            console.warn(`[content] the server refused the body of ${x.txid} (HTTP ${rr?.status}); it is not retried`);
             if (typeof x.hk === "string") await this.hist.annotate(x.hk, x.txid, { bodyRefused: Number(rr?.status) });
             continue;
           }

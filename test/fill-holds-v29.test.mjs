@@ -7,6 +7,7 @@
 // Every scenario also runs the vendored resolve() over the same events and asserts the safety invariant:
 // the wallet never counts below the cap while the resolver denies the claim.
 // Run: npx tsx test/fill-holds-v29.test.mjs
+import "./helpers/backup-host.mjs";
 import assert from "node:assert/strict";
 import { liveFillSpvSource } from "../src/core/fillspv.ts";
 import { Wallet } from "../src/core/wallet.ts";

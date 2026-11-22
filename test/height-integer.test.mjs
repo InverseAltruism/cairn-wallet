@@ -8,6 +8,7 @@
 //   C. The same stored floor lowers no other check: the offer-id sunset and expiry refusals and the approval window's
 //      fee warning and fill card still see the release anchor.
 // Run: TSX_DISABLE_CACHE=1 node --import tsx test/height-integer.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { serveFixture, memStore, legacyOf, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 import { liveSpvSource, floorAdvance } from "../src/core/namespv.ts";

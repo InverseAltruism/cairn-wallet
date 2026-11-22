@@ -5,6 +5,7 @@
 // message path: a website can only reach the wallet via the content-script relay,
 // which stamps kind:"dapp"; so we fire dApp requests for privileged methods and
 // prove they are rejected (not executed), even after the user approves.
+import "./helpers/backup-host.mjs";
 import { sha256 } from "@noble/hashes/sha256"; // (force module init parity w/ background)
 import { readFileSync } from "node:fs";
 import { scriptSource } from "../scripts/popup-ids.mjs";

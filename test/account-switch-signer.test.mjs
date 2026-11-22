@@ -12,6 +12,7 @@
 // MUTATION CONTRACT: the race case and the expectSigner case FAIL on 0.2.56 (the fill submits from the
 // switched-to account; send ignores the 4th argument). Harness style: consolidate.test.mjs (URL-routed
 // fetch stub, real Wallet + memoryStore, mkCoin/txReply for TXB-1 verification).
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { requiredFillOutputs } from "../src/core/cairnx.js";

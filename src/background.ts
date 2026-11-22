@@ -219,7 +219,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "tipFloor": return wallet.tipFloor(); // M11/B5b: PoW-backed floor for review-side fee clamping (popup-only; READ_ONLY so it never extends the idle lock)
-    case "send": return wallet.send(args[0], args[1], args[2], args[3]); // args[3] = expectSigner (A1 popup snapshot)
+    case "send": return wallet.send(args[0], args[1], args[2], args[3], args[4]); // args[3] = expectSigner (A1 popup snapshot), args[4] = the name
     // popup-only coin maintenance (deliberately NOT in DAPP_METHODS; a dApp must not restructure the user's coins)
     case "consolidate": return wallet.consolidate(args[0]);
     case "consolidatePreview": return wallet.consolidatePreview(args[0]);
@@ -231,6 +231,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     case "cairnxTransfer": return wallet.cairnxTransfer(args[0]);
     case "resolveName": return wallet.resolveName(args[0]);
     case "confirmName": return wallet.confirmName(args[0]); // 0.2.70: hint-set confirm (popup-only, READ_ONLY)
+    case "nameCheck": return wallet.nameCheck(args[0]); // the send review's status line while resolveName runs (popup-only, READ_ONLY, memory)
     case "tokenFillQuote": return wallet.tokenFillQuote(args[0]); // M3: token-fill debit preview (read-only)
     case "tokenDisplayMeta": return wallet.tokenDisplayMeta(args[0]); // CX-35: decimals for approval cards (display only)
     case "fillOfferView": return wallet.fillOfferView(args[0]); // listing id + listed asset for a CSD-paid fill card (display only)
@@ -274,12 +275,13 @@ const thrownCode = (e: unknown): string => ((e as { message?: unknown })?.messag
 
 // RT-W2: `displayedTokenQuote` is the debit quote the approve window actually showed (threaded from
 // approve.ts); the token-fill preflight refuses unless it equals the chain-proven want.
-// spentTxids and inputs are the wallet's history bookkeeping (node.ts SubmitResult), and secondSource is the approval
-// window's notice for a fill (fillpreflight.ts FillNotes): kept off what a page receives.
+// spentTxids, inputs and mainHolds are the wallet's history bookkeeping and hosts its log of each host's submit answer
+// (node.ts SubmitResult), and secondSource is the approval window's notice for a fill (fillpreflight.ts FillNotes): kept off
+// what a page receives.
 function pageResult(r: any): any {
   if (!r || typeof r !== "object" || Array.isArray(r)) return r;
   const out = { ...r };
-  delete out.spentTxids; delete out.inputs; delete out.secondSource;
+  delete out.spentTxids; delete out.inputs; delete out.secondSource; delete out.hosts; delete out.mainHolds;
   return out;
 }
 // The approval window's "Sign anyway" acknowledgement after RESERVATION_UNCONFIRMED: honoured only for this
@@ -414,7 +416,7 @@ const DAPP_METHODS = new Set(["connect", "getAddress", "signin", "signinWithCsd"
 // defeating the 15-min idle lock (WL-1/R19). Genuine user actions (unlock/send/propose/…)
 // still touch(). The DENY-list is intentionally conservative; anything NOT listed here
 // (i.e. any write/sign/settings method) keeps extending the unlock as before.
-const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "unrevealedSeals", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "attestTarget", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
+const READ_ONLY_METHODS = new Set(["status", "pending", "balance", "csdMarket", "history", "epoch", "tip", "tipFloor", "rpcList", "explorerList", "connectedSites", "sealedClaims", "unrevealedSeals", "cairnxAssets", "cairnxTokens", "resolveName", "confirmName", "nameCheck", "tokenFillQuote", "tokenDisplayMeta", "fillOfferView", "attestTarget", "pendingMerge", "prewarmSpv", "dismissRpcNotice"]);
 
 // dApp request → queue for approval and pop a MetaMask-style approval window.
 let approveWinId: number | null = null; // track the approval popup so we can raise it for queued requests

@@ -3,6 +3,7 @@
 // the per-proof write volume, a real name proved end to end through the store, and a store that cannot be
 // opened or written (Plan 86 sections 3.2, 3.5 and 3.6, section 6 cases 4 and 10).
 // Offline: every request is answered from the fixture. Run: npx tsx test/namespv-store-restore.test.mjs
+import "./helpers/backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { checker } from "./helpers/check.mjs";
 import { serveFixture, memStore, legacyOf, records, hashOf, headerOf, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";

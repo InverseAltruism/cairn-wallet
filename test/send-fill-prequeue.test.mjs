@@ -22,6 +22,7 @@
 //   Drop the send branch from queueDappRequest and every bad send row fails; give fillTxRefusal its own cap of 101 and
 //   the 101-output row disagrees between the two paths.
 // Run: npx tsx test/send-fill-prequeue.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
 import { mkCoin, txReply } from "./_coin.ts";

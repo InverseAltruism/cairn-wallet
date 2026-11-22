@@ -10,6 +10,7 @@
 // "Renew anyway", which signs. In its grace period it refuses, acknowledged or not: the resolver ignores a renewal by
 // anyone but the owner and the fee burns.
 // Run: node --import tsx test/name-action-gate.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.ts";

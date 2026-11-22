@@ -28,6 +28,7 @@
 //   over clean bodies verify and sign with byte-identical inputs and totals.
 //
 // Run: node --import tsx test/unrepresentable-coin.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { mkCoin, txReply } from "./_coin.js";

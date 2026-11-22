@@ -12,6 +12,7 @@
 // Same harness style as ghostcoin.test.mjs: URL-routed fetch stub, real Wallet + memoryStore.
 // Module-level ghostSeen cache is shared across cases in this process → distinct coin VALUES per
 // case (mkCoin derives the txid from the tx, so distinct values ⇒ distinct txids).
+import "./helpers/backup-host.mjs";
 import { readFileSync } from "node:fs";
 import { scriptSource } from "../scripts/popup-ids.mjs";
 import { Wallet } from "../src/core/wallet.js";
@@ -197,7 +198,7 @@ try {
     globalThis.fetch = fetch;
     const { w } = await mkWallet();
     const r = await w.consolidate(FEE);
-    check("node 4xx rejection → SUBMIT_REJECTED with the server's reason (definitive, not in mempool)", r.ok === false && r.code === "SUBMIT_REJECTED" && /feerate/.test(r.error));
+    check("node 4xx rejection → SUBMIT_REJECTED with the reason classed (definitive, not in mempool); the server's text only in the internal log", r.ok === false && r.code === "SUBMIT_REJECTED" && r.reason === "PROXY" && !/feerate/.test(r.error) && r.hosts.some((h) => /feerate/.test(h.text)));
   }
   {
     // Fable-5 audit fix: a GATEWAY 5xx is AMBIGUOUS — the cairn proxy 502s the node after 4s, but the node
@@ -351,7 +352,9 @@ try {
     check("pendingMerge is a READ-ONLY popup method (must not reset the idle lock)", !!roLine && roLine.includes("pendingMerge"));
     const popup = scriptSource("popup.ts");
     check("TOO_MANY_INPUTS refusal offers the inline merge action", popup.includes('"Merge coins now"'));
-    check("popup treats SUBMIT_DUPLICATE as pending, never 'nothing was sent'", /SUBMIT_DUPLICATE/.test(popup));
+    const { refusedCopy } = await import("../src/popup/popup-outcome.ts");
+    const dupLine = refusedCopy({ ok: false, code: "SUBMIT_DUPLICATE" }, "merge");
+    check("popup treats SUBMIT_DUPLICATE as pending, never 'nothing was sent'", dupLine.maybe === true && !/nothing was sent/i.test(dupLine.text));
     check("balance hero has the pending-merge line wired", popup.includes('$("merge-pending")'));
     const html = readFileSync(new URL("../src/popup/popup.html", import.meta.url), "utf8");
     check("popup.html carries the merge-pending element", html.includes('id="merge-pending"'));

@@ -15,6 +15,7 @@
 //   with our txid unknown at two tips, shows gone. Calls use the popup's shape: pendingMerge(<the utxos the
 //   balance fetch got>).
 // Run: node --import tsx test/inclusion-chain.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";
 import { confirmedUtxos, opKey } from "../src/core/node.ts";

@@ -15,6 +15,7 @@
 //   HONEST PATH: the same blocks served as the node writes them bind, both fills sign and submit one transaction,
 //   and the name verifies to its owner's address.
 // Run: TSX_DISABLE_CACHE=1 node --import tsx test/spv-node-form.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.ts";
 import { memoryStore } from "../src/core/storage.ts";

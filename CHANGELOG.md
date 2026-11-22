@@ -1,5 +1,110 @@
 # Changelog
 
+## Unreleased
+
+- A send to a name no longer waits silently for the name check. From 0.3 s the send sheet says "Checking
+  alice.csd..." with the share of headers synced while they sync, and from 10 s, once the name service has answered,
+  offers "Send without check". It arms the review on the name service's address, unverified, with "This name could
+  not be checked. Make sure the address is right." and "Send anyway" / "Wait"; that Confirm signs the reviewed
+  address without waiting for the check or asking again, and "Wait" goes back to the same check. A check that ends
+  after the choice with the same address refuses nothing; with another address or a refusal it takes the review down
+  before Confirm ("alice.csd now points to a different address. Nothing was sent; review it again."). A check that
+  answers within 0.3 s shows nothing new, and the lookup makes the same requests as 0.3.4
+  (test/name-check-wait-dom.test.mjs, test/name-check-progress.test.mjs).
+
+- Behaviour change: a send to a name is refused as lapsed only when the lease is over at a height the wallet verified
+  itself (its own proof-of-work header tip, or the floor kept from earlier sessions) and 0.3.4's corroboration holds
+  (two name sources, or the floor). 0.3.4 also refused when two
+  name sources answered and the served chain tip was past the lease, though the tip comes from neither source, so
+  whoever answered for both default hosts could stop every send to a live name. Such a lapse, and one the name
+  service reports while the wallet cannot check it (0.3.4 refused it with "couldn't be confirmed on-chain"), now show
+  the amber line "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
+  owner." with "Send anyway" and "Cancel". The address is the one the name's own verified records give, not the
+  served one, when the wallet replayed them. Nothing that was a caution in 0.3.4 is refused: a lapse one source's
+  records show stays a caution, since that source can withhold a renewal (test/name-lapse-tip.test.mjs,
+  test/name-lapse-caution-dom.test.mjs).
+
+- The wallet keeps working when Cairn's main server is down. With the default RPC, a node read that the main host has
+  not answered within 1.5 s, or that it failed, goes to Cairn's second server (clarvis.cairn-substrate.com), and the
+  first answer wins; after a main failure the second server is asked first for 60 s. With the main host accepting
+  connections and never answering, 0.3.4 showed "Balance unavailable" after 12.5 s. A balance the second server
+  answered carries the grey line "Using Cairn's backup server.". A spend reads all its coins from the one host that
+  listed them, so the coin-value check is the same on either (test/hosts-fallback.test.mjs,
+  test/hosts-spend-pin.test.mjs). A node on this computer set as the RPC has no second server.
+- Every send goes to both of Cairn's servers at once, the same signed bytes, so one signing and one txid. It is sent
+  when either accepts it, at the first acceptance: with both healthy the time to "sent" is the main server's answer.
+  It is refused only when both refuse; after the main server's refusal the wallet waits for the second server at most
+  4 s (SECURITY.md says why; test/submit-two-hosts.test.mjs).
+- A send that only the second server took when it was reported sent gets a "sent, not yet included" history row,
+  reconciled like an unclear one, so unmined after 10 blocks it says to check the explorer before sending again; the
+  main server's later "accepted" or "already present" turns it into a plain sent row. The result line is unchanged
+  (test/submit-main-late.test.mjs).
+- When the second server answers a read the main server has not answered within 1.5 s, later reads ask the second
+  server first for 60 s, as after a main failure, so with the main server hanging only the first read waits 1.5 s.
+- Behaviour change: when the main server refuses a send and the second server has not answered within 4 s, or
+  answers unclear, the result is "may already be in flight" with a history row and a line that leads with the main
+  server's reason, where 0.3.4 showed the main server's refusal at once. The second server's refusal after those 4 s
+  removes the row the send made (no server took it).
+- A send's history row loses its "sent, not yet included" mark only when the main server holds the transaction (its
+  own "accepted" or "already present"); the second server's "already present" alone leaves it. A coin one server
+  could not prove is checked again when the other server lists it (the session skip caches are per server). A
+  server's answer whose error text is not a string no longer stops the send from ending
+  (test/submit-classify.test.mjs, test/submit-two-hosts.test.mjs X1, X2).
+- The results of a send and the coin checks before it read the copy sheet's lines from one module
+  (`src/popup/sentences.ts`): "This may have been sent. Check your history before you send again." for an unclear
+  answer, a broken channel, a request handled in another window or a lost rejection; "Fee too low for the network
+  right now. Nothing was sent.", "Network busy, so nothing was sent. Try again in a minute." and "The network did not
+  accept this payment. Nothing was sent." for refusals by reason; the duplicate, lock, account-change, sign-in and
+  coin-check lines (the sheet's R1 to R11, S9 to S11). The approval window shows the same lines for those codes,
+  without "Failed:" and the code. The words are the owner's signed copy sheet (test/sentences-copy.test.mjs holds them
+  to the copy rule).
+- Every refusal of a send now has its line: the popup's CSD and token sends and a page's send in the approval window
+  show "Your confirmed balance doesn't cover this payment and its fee. Nothing was sent." (INSUFFICIENT), the coin
+  limit line with "Merge coins now" (TOO_MANY_INPUTS), "The fee is above what the wallet allows (1 CSD here)."
+  (FEE_CAP, with the cap; the result carries `feeCap`), the zero-address line, the merge note while a merge
+  confirms, and for any other code or a thrown error "Something went wrong, so nothing was sent. Try again, or see
+  Details." A "Details" tap under a result line shows the technical sentence, the code and, for that last line, the
+  engine's own text; an open Details keeps the line on screen. A first-party sign-in the check refused shows "Could
+  not sign you in. Try again."; a reveal the content server did not take, "Could not publish the reveal. Try again
+  later."; a reveal of a seal the account does not hold, the sheet's line for it. Name actions, merges, posts, seals
+  and fills keep their text for a code their lines do not cover yet. A token send whose account changed after the
+  review answers ACCOUNT_CHANGED instead of throwing (test/popup-outcome-dom.test.mjs 12, 13,
+  test/approve-outcome-dom.test.mjs 7 to 9).
+- A submit refusal's or unclear answer's `error` is the wallet's own sentence naming the reason; a server's text no
+  longer reaches a page or the screen through it and stays in the wallet's internal log (test/submit-answers.test.mjs
+  H6).
+- Submit answers are read by one classifier (`src/core/submitverdict.ts`). A refusal carries a new `reason` (FEE, BUSY,
+  SPENT, CONFLICT, PROXY, INVALID, UNKNOWN; additive, WALLET-ERROR-CODES.md). Answers that may follow a node taking the
+  transaction are now `SUBMIT_MAYBE_INFLIGHT` with the local txid and a history row, where 0.3.4 read them otherwise:
+  a JSON 4xx other than 400, 413 and 429, a 2xx `{}` or an `ok:false` without an `err` text (were `SUBMIT_REJECTED`), a
+  truthy `ok` that is not `true` (was sent), and the node's "submit validation did not finish" (was `SUBMIT_REJECTED`)
+  (test/submit-answers.test.mjs).
+- No other server text reaches a refusal on screen either: a reveal the content server refused says
+  `/api/content -> <HTTP status>`; a failed first-party sign-in says "sign-in failed"; the second server's note on a
+  denied reservation is left out of RESERVATION_DENIED's text; the offer service's status in a fill refusal or the
+  token price line is one of open, filled, cancelled, expired, locked, closed, else "not open"; the send review's Name
+  row no longer shows the name service's "via" field. The content server's and the sign-in check's texts and the second
+  server's note go to the worker's console; the offer status and the "via" field are dropped. The content server's
+  answer counts as accepted only when it says `ok: true`, and nothing of its body (no `code`, no text) reaches the
+  result; an accepted sign-in returns only its address and session (test/served-text-off-screen.test.mjs).
+- A refusal's code is read only as a string and an own entry of the sentence tables, so a code such as "toString" or a
+  non-string takes the default line instead of stopping the window on "Revealing…" (test/sentences-copy.test.mjs).
+- A token-priced fill's quote takes only tickers the codec accepts, and the amount-changed refusal names the offer's
+  on-chain want in the wallet's words, without the quote's own strings (test/served-text-off-screen.test.mjs,
+  test/fill-token-content.test.mjs).
+- A new name only partly verified shows "New name, only partly verified. Check the address before a large payment."
+  alone, without the verified paragraph above it; that line, "alice.csd may have expired..." and the changed-address
+  line carry the sheet's technical sentence behind Details (test/popup-checks-dom.test.mjs 9d1,
+  test/name-redirect-dom.test.mjs 1f).
+- A send review to a `.csd` name this account paid before, which now points to another address, says so in amber
+  ("alice.csd points to a different address than when you last paid it. Continue only if you expected this.") and
+  its buttons read "Send to new address" and "Cancel". The history row of a popup send or token send to a name keeps
+  the name; the transaction is the same (test/name-redirect-dom.test.mjs, test/name-redirect-history.test.mjs).
+- A name whose holding was completed above this release's newest header table entry shows "New name, only partly
+  verified. Check the address before a large payment." in amber in place of the plain line. The name proof returns
+  the height of the event that completed the holding (its `nfinalize`, not the commit that the record's height
+  names); a transfer or an address change above the entry leaves the plain line (test/name-completed-at.test.mjs).
+
 ## 0.3.4
 
 - The approval window says when a site is new to the wallet: when the user has approved no request from the origin and

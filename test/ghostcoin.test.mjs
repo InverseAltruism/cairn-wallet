@@ -9,6 +9,7 @@
 // Harness footgun: node.ts keeps a module-level session ghost cache (ghostSeen, TTL 2 min), shared
 // across cases in this one tsx process. Every case therefore uses DISTINCT coin values (=> distinct
 // txids) except the final case, where the carryover IS the assertion.
+import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";
 import { selectInputs } from "../src/vendor/cairnx-spv.js";

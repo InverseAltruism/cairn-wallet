@@ -1,5 +1,6 @@
 // Element lookup, the view switch, the status line and the clipboard copy.
 import { escapeHtml } from "./clearsign.js";
+import { detailsHtml, type Outcome } from "./popup-outcome.js";
 
 export const $ = (id: string) => document.getElementById(id)!;
 export const val = (id: string) => ($(id) as HTMLInputElement).value;
@@ -13,14 +14,17 @@ let msgFadeTimer: ReturnType<typeof setTimeout> | undefined;
 let msgWrites = 0;
 export const statusWrites = (): number => msgWrites;
 // `detail`, when given, is a second, smaller line under the text (the sent toast says what happens next).
-export function msg(text: string, cls = "info", detail?: string) {
+// `details`, when given, is the outcome's technical sentence behind a "Details" tap (popup-outcome.ts detailsHtml); an
+// opened Details keeps the line on screen until the next status.
+export function msg(text: string, cls = "info", detail?: string, details?: string) {
   if (text) msgWrites++;
   const m = $("msg");
   clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
   m.classList.remove("fade");
-  if (detail) m.innerHTML = `<span class="msg-body">${escapeHtml(text)}<small>${escapeHtml(detail)}</small></span>`;
+  if (detail || details) m.innerHTML = `<span class="msg-body">${escapeHtml(text)}${detail ? `<small>${escapeHtml(detail)}</small>` : ""}${details ? detailsHtml(details) : ""}</span>`;
   else m.textContent = text;
   m.className = "msg " + cls;
+  if (details) holdWhileOpen(m);
   if (!text) return;
   const hold = cls.includes("err") ? 8000 : 3500;
   msgTimer = setTimeout(() => {
@@ -32,18 +36,24 @@ export function msg(text: string, cls = "info", detail?: string) {
 // away must stay actionable, not vanish mid-read (the old TOO_MANY_INPUTS toast pointed at a
 // settings breadcrumb and faded in 8s). Any later msg()/busy() replaces it, so it never overstays
 // a flow change. textContent + createElement only: r.error strings never touch innerHTML.
-export function msgAction(text: string, label: string, fn: () => void, cls = "err") {
+export function msgAction(text: string, label: string, fn: () => void, cls = "err", details?: string) {
   msgWrites++;
   const m = $("msg");
   clearTimeout(msgTimer); clearTimeout(msgFadeTimer);
   m.classList.remove("fade");
-  m.textContent = text + " ";
+  if (details) { m.innerHTML = `<span class="msg-body">${escapeHtml(text)}${detailsHtml(details)}</span>`; holdWhileOpen(m); }
+  else m.textContent = text + " ";
   m.className = "msg " + cls;
   const b = document.createElement("button");
   b.className = "mini";
   b.textContent = label;
   b.addEventListener("click", () => { msg(""); fn(); });
   m.appendChild(b);
+}
+/** An outcome of the sentence module (popup-outcome.ts): its line, with its Details. */
+export function msgOutcome(o: Outcome) { msg(o.text, o.cls, undefined, o.details); }
+function holdWhileOpen(m: HTMLElement) {
+  m.querySelector("details")?.addEventListener("toggle", (e) => { if ((e.target as HTMLDetailsElement).open) { clearTimeout(msgTimer); clearTimeout(msgFadeTimer); } });
 }
 // escapeHtml is imported from clearsign.ts - the hardened variant that ALSO neutralizes bidi/
 // zero-width controls (WYSIWYS-BIDI-1). A plain 5-char escape lived here until 2026-07-06, so

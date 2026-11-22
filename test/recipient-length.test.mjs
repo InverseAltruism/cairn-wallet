@@ -2,6 +2,7 @@
 // before anything is read or signed, on send({outputs}) and on a propose payout, beside an honest 20-byte send that
 // signs. The codec's fixed-width write is the backstop: it throws on a 19- or 21-byte scriptPubkey.
 // Run: npx tsx test/recipient-length.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { sendMany, propose } from "../src/core/node.js";
 import { serialize } from "../src/core/csdtx.js";

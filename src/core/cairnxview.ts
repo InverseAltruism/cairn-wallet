@@ -4,6 +4,7 @@
 import { cairnxTradeFee, FEE_BPS_V16, isTicker, decodeCairnxRecord, CAIRNX_DOMAIN, type TokenDisplayMeta } from "./cairnx.js";
 import { getProposal } from "./node.js";
 import { offerExpiryHeightOf } from "../vendor/cairnx-spv.js";
+import { offerStatusWord } from "./servedtext.js";
 
 // The block at which the served offer expires, for the fill cards. Display only: the fill preflight checks the
 // merkle-proven record's expiry before it signs.
@@ -46,7 +47,7 @@ export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): 
     if (!so.ok) return so;
     const o = so.offer;
     const w = o.want;
-    if (!w || typeof w.ticker !== "string" || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
+    if (!w || !isTicker(w.ticker) || w.amount === undefined) return { ok: false, error: "not a token-priced offer" };
     let amount: bigint;
     try { amount = BigInt(String(w.amount)); } catch { return { ok: false, error: "bad amount" }; }
     if (amount < 0n) return { ok: false, error: "bad amount" };
@@ -57,7 +58,7 @@ export async function tokenFillQuote(wallet: CairnxViewIo, proposalId: string): 
     const bps = hasBps ? Number(o.feeBps) : FEE_BPS_V16;
     const fee = cairnxTradeFee(amount, bps);
     const g = (o as { give?: { ticker?: string; amount?: unknown; name?: string } }).give;
-    const giveTicker = typeof g?.ticker === "string" ? g.ticker : undefined;
+    const giveTicker = isTicker(g?.ticker) ? g.ticker : undefined;
     // Served amount:null must stay absent; String(null) is "null", and the vendor give-leg
     // treats that present string as a mismatch against a proven missing amount (honest-fill refuse).
     const giveAmount = g?.amount != null ? String(g.amount) : undefined;
@@ -79,7 +80,7 @@ async function servedOpenOffer(wallet: CairnxViewIo, proposalId: string): Promis
   const r = await wallet.tradeGet(`/cairnx/offer/${encodeURIComponent(proposalId)}`); // 12s (tradeGet default)
   if (!r.ok) return { ok: false, error: "offer not found" };
   const o: any = await r.json().catch(() => null);
-  if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${o.status}` : "offer unavailable" };
+  if (!o || o.status !== "open") return { ok: false, error: o?.status ? `offer ${offerStatusWord(o.status)}` : "offer unavailable" };
   return { ok: true, offer: o };
 }
 

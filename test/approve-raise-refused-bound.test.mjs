@@ -11,6 +11,7 @@
 //   a refusal after the gap raises and re-arms again (3); a click after the floor approves the request on screen (4).
 // test/approve-raise-chrome.test.mjs runs the cross-origin case in Chromium with the built extension loaded.
 // Run: npx tsx test/approve-raise-refused-bound.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { mountApproveWindow, loadApprove, flush, sleep } from "./helpers/approve-dom.mjs";
 

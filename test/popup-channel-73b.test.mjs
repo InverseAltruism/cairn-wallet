@@ -14,6 +14,7 @@
 //     (3c) fails.
 //
 // Run: node --import tsx test/popup-channel-73b.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 
 const PW = "correct horse battery staple";

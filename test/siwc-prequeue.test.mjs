@@ -8,6 +8,7 @@
 //   opens the window and, approved, returns a message the canonical checks accept (2); the error text is the one the
 //   wallet gave after approval before (3).
 // Run: npx tsx test/siwc-prequeue.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { siwcMessageFor } from "../src/core/siwcparams.ts";
 

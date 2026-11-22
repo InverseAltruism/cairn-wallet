@@ -10,6 +10,7 @@
 //   the chain needs: the audit's demonstration of 2026-11-19); before this file one assertion turned red under that
 //   mutation, by its code only.
 // Run: npx tsx test/fill-offerid-terms-bind.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
 import { Wallet } from "../src/core/wallet.js";
 import { memoryStore } from "../src/core/storage.js";

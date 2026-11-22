@@ -151,7 +151,9 @@ test/provider-discovery.test.mjs pins the discovery part.
 - `history.ts`: `TxHistory`, the per-account history. `maybeRecord` is the single history chokepoint: ok records,
   `SUBMIT_MAYBE_INFLIGHT` records `maybe: true` under the local txid, `SUBMIT_DUPLICATE` clears an earlier maybe in
   place (never inserts). It also holds the write chain, the rows parked in RAM when a write fails or the wallet is
-  locked, and the inclusion reconcile (`pendingMerge`, `docs/DESIGN-inclusion-reconcile.md`).
+  locked, and the inclusion reconcile (`pendingMerge`, `docs/DESIGN-inclusion-reconcile.md`). A popup send or token
+  send to a `.csd` name keeps the name on its row (`wallet.ts` `namedRow`), which the next review of that name
+  compares with where it resolves now (`clearsign.ts` `lastPaidTo`, the `[A19]` caution).
 - `claims.ts`: `SealedClaims`, the per-account sealed claims: reveal preimages encrypted under the vault key, the
   write chain and parked records, `revealClaim` (refuses with `SEAL_NOT_MINED` until the node shows the commit mined)
   and the list. `sealClaim`, which signs the commit, is a `Wallet` method. An unrevealed record is never deleted except
@@ -161,6 +163,15 @@ test/provider-discovery.test.mjs pins the discovery part.
 - `cairnx.ts`: CairnX record builders over the vendored core; consensus rules imported, never re-typed; a pre-spend
   `parseRecord` round-trip so build success implies resolver acceptance. No on-device registration flow: the /names
   site drives registration through dApp propose, always clear-signed.
+
+### Hosts (`hosts.ts`)
+
+`hostsFor(rpc)` is the default RPC and `BACKUP_RPC` for the default RPC, else the RPC alone. `firstAnswer(rpc, read)`
+asks the preferred host, the other after `HEDGE_MS` or on the preferred host's failure, and returns the first answer
+with its host. The reads in `node.ts` take the wallet's RPC and go through it; a step that must stay on one host
+passes the host it got: a spend's source reads (`selectVerified`, `consolidate`) and a reconcile pass
+(`history.ts` `inclusionReads`). `balance()` adds `via: "backup"` when the second host answered. `submitEach(rpc,
+send)` sends to every host at once and resolves with the outcome as soon as `decideSubmit` decides it.
 
 ### The send engine (`node.ts`)
 
@@ -176,9 +187,22 @@ test/provider-discovery.test.mjs pins the discovery part.
    classified on the raw body before the txid recompute when a serialized number cannot survive `JSON.parse` exactly
    (test/unrepresentable-coin.test.mjs). Both are skipped per coin like notfound and add no rung to the decisive
    tamper/transient fold; all three skip classes are remembered for the session (`ghostSeen`, `horizonSeen`,
-   `unrepSeen`, 120 s, 2,048 each), so a retry starts without the coins an attempt already skipped;
+   `unrepSeen`, 120 s, 2,048 each), keyed by host and outpoint, so a retry on the same host starts without the coins
+   an attempt already skipped and another host checks them again;
 4. the ghost re-select loop, then the proportional fee cap max(1 CSD, 10% of verified inputs), change to self only,
-   and `signAndSubmit` (`SUBMIT_REJECTED` versus `SUBMIT_MAYBE_INFLIGHT` versus `SUBMIT_DUPLICATE`).
+   and `signAndSubmit`: one signing, the bytes to every host of the RPC at once (`hosts.ts` `submitEach`), each answer
+   read by `submitverdict.ts` `classifyAnswer` (accepted, duplicate, refused with a `reason`, unclear) and the outcome
+   by `decideSubmit`: sent at the first acceptance, else once every host answered (after the main host's refusal the
+   others get `MAIN_REFUSED_WAIT_MS`, 4 s, then the outcome is unclear carrying its reason), unclear before duplicate before
+   refused (`SUBMIT_MAYBE_INFLIGHT`, `SUBMIT_DUPLICATE`, `SUBMIT_REJECTED`). The result's `hosts` logs each answer
+   and is stripped before a page receives it. `mainHolds` (stripped too) says whether the main host answered accepted
+   or already present: `history.ts` records a sent row maybe while it does not, clears a mark only on it (a duplicate
+   result included), and on a later answer kept as one fact (`laterFact`): the main host's hold clears the mark, the
+   other host's refusal after the cap removes the row that send made. `classifyAnswer` is total: text is
+   read only from string fields, and anything it cannot read is unclear; a host's rejected send counts as unclear in
+   `submitEach`. A 200 `ok:false` whose text is neither the duplicate text nor the panic text is refused with reason
+   `UNKNOWN`, so a node that rewords one of those reads as a refusal: reading unknown text as unclear would leave a
+   "sent, not yet included" row for a transaction no host took, and 0.3.4 and cairn-sdk read it the same way.
 
 Beside it:
 
@@ -210,6 +234,11 @@ Beside it:
   - Then: full-block merkle bind, signer auth and prevout-ownership bind, and the two-source union (`verifyNameUnion`:
     primary and clarvis). A disagreeing source is a warning, not a refusal (the warn-over-block rule; `SECURITY.md`
     states it).
+  - The replay also returns `completedAt`, the height of the event that completed the name's current holding
+    (`completingHeight`: the lowest event height at which the vendored resolver over the events up to it already
+    holds a record with the final `claimId` and `effectiveHeight`, not pending). The popup shows `[A18]` when it is
+    above the release's newest table entry (`spvnewest.ts`), since such a holding rests on headers above the table
+    that the answering servers also serve (test/name-completed-at.test.mjs, test/popup-checks-dom.test.mjs 9d).
   - Store, sync, migration and the union's lapse and badge rules: `docs/DESIGN-namespv-scaling.md`.
 - `spvnewest.ts`: the anchor table's newest height alone, written by the generator beside `spvanchors.ts`.
   `chainbound.ts`: `heightOf` (a served tip or stored floor counts only as a positive safe integer) and
@@ -244,13 +273,24 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
 ## Popup and approval window (`src/popup/`)
 
 - `popup.ts`: the popup's entry. It loads one `popup-*.ts` module per view or concern, such as `popup-send.ts`,
-  `popup-sendflow.ts` for the review engine the CSD and token sends share, `popup-panels.ts` for the sheets and their
+  `popup-sendflow.ts` for the review engine the CSD and token sends share, `popup-namecheck.ts` for a Review's wait for
+  a name check (the status line, D12's choice; it reads the background's `nameCheck`, memory only), `popup-panels.ts` for the sheets and their
   teardown, `popup-state.ts` for the state several views read. Source scans read the whole set through
   `scriptSource("popup.ts")` in `scripts/popup-ids.mjs`; `popup-outcome.ts` is one of them.
 - `popup-outcome.ts`: the extension channel to the background, the one reading of a submit outcome and the one
   reading of a Reject's answer, which the popup takes through `popup-bridge.ts` and the approval window directly:
   `approve.js` is built without code splitting, so it must not import `popup-bridge.ts`, whose dev path would inline
   the Wallet; `build.mjs` aborts if it does.
+- `sentences.ts`: the copy. Every line the wallet's results put on screen is an entry of one table keyed by the copy
+  sheet's tag (`R1`, `S4`, ...): its text, its level (grey, amber, red) and its Details, the technical sentence one
+  tap away under the line. A selector chooses the key from a result's code and refusal reason, not from a text, so
+  a change of wording is a change of one entry; `test/sentences-copy.test.mjs` holds every entry to the copy rule (at
+  most 160 characters and two sentences, no technical word, three levels). In a send (the popup's CSD and token
+  sends, a page's send in the approval window) every refusal has a line, `R1` for a code without its own, with the
+  engine's text under Details; any other flow keeps the engine's text for a code its lines do not cover yet. A
+  server's free text reaches neither a line nor Details: a submit's `error` is the wallet's sentence (`node.ts`
+  `submitResult`), and the other places a served string was shown map it onto a fixed list of words or leave it out
+  (`src/core/servedtext.ts`; test/served-text-off-screen.test.mjs).
 - `approve.ts`: the clear-signing window. For an `nprofile` or an `nxfer` it reads the name's record once from the
   configured CairnX API (`namegate.ts` `readNameRecord`, bounded at 6 s) after the paint: an `nprofile` fills the
   reserved "Keys removed" row with the current keys the record drops (`clearsign.ts` `profileDropValue`), and both
@@ -305,7 +345,11 @@ dir: both files must be byte-identical to the committed ones.
 ## Runtime footprint
 
 - Node RPC: the Cairn proxy https://cairn-substrate.com/api/rpc or a loopback node only. GET 12 s, POST 20 s. Every
-  outer timeout sits above its server-side worst case; do not lower one without re-deriving the inner chain.
+  outer timeout sits above its server-side worst case; do not lower one without re-deriving the inner chain. The
+  default RPC's second host, https://clarvis.cairn-substrate.com/api/rpc (`hosts.ts`): a read goes there 1.5 s
+  (`HEDGE_MS`) after the main host if it has not answered, or at once when it failed; after a main failure or a read
+  the second host answered first, the second host is asked first for 60 s (`BACKUP_FIRST_MS`). With both healthy it gets no reads. Every submit goes to both at
+  once. A loopback RPC has no second host.
 - Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15 s with
   Retry-After-aware 429 and 502/503 backoff.
 - CairnX read API /trade/api (12 s); clarvis /trade/api (name-history union always, resolve fallback, 12 s).
