@@ -24,11 +24,11 @@ import type { Recheck } from "./clearsign.js";
 //   • snapshot shape: reviewState.reviewed (token, base-unit string) vs .reviewedSend (CSD, number).
 // Only the SUCCESS path clears the typed recipient/amount (fail/catch keep the draft for a re-Review);
 // Back clears nothing and never refreshes. `sent` is the sent toast's second line.
-type SendFlow = { ids: { confirm: string; button: string; back: string; to: string; amt: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: (txid: string) => string };
+type SendFlow = { ids: { confirm: string; button: string; back: string; to: string; amt: string; warn: string }; noun: "transfers" | "payments"; refresh: (settleIn?: number) => void; sent: (txid: string) => string };
 const pending = (txid: string) => `Transaction ${String(txid).slice(0, 12)}… is waiting for inclusion in a block.`;
-export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", button: "btn-tsend-confirm", back: "btn-tsend-back", to: "ts-to", amt: "ts-amt" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
+export const TOKEN_FLOW: SendFlow = { ids: { confirm: "tsend-confirm", button: "btn-tsend-confirm", back: "btn-tsend-back", to: "ts-to", amt: "ts-amt", warn: "tc-warn" }, noun: "transfers", refresh: (settleIn) => { refreshBalance(settleIn); renderAssets(); },
   sent: (txid) => `${pending(txid)} The token balance updates once it is mined.` };
-export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn-send-confirm", back: "btn-send-back", to: "s-to", amt: "s-amt" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
+export const CSD_FLOW: SendFlow = { ids: { confirm: "send-confirm", button: "btn-send-confirm", back: "btn-send-back", to: "s-to", amt: "s-amt", warn: "c-warn" }, noun: "payments", refresh: (settleIn) => { refreshBalance(settleIn); },
   sent: pending };
 // A Confirm whose review was dropped (Back, a sheet switch, a lock, an account switch) or replaced while it waited.
 export const REVIEW_GONE = "The review was closed before it was signed. Nothing was sent.";
@@ -93,9 +93,13 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   if (review.read() !== snap) { if (statusWrites() === writes) msg(REVIEW_GONE, "err"); return; }
   const name = { name: `${snap.name}.csd` };
   if (outcome === "unchecked") {
+    // [A15] is the review's last row, beside the buttons it relabels, for as long as the review stands.
     recheckWaived.add(snap);
     armReview(f, false, LAPSE_BUTTONS);
-    return msg(sentenceOf("A15", undefined, name).text, "err");
+    const warn = $(f.ids.warn) as HTMLElement;
+    warn.innerHTML += checkRow({ tier: "caution", html: sentenceHtml(sentenceOf("A15", undefined, name)) });
+    warn.hidden = false;
+    return;
   }
   if (outcome !== "same") { teardownReview(f, false); return msg(sentenceOf(outcome === "lapsed" ? "A3" : "A14", undefined, name).text, "err"); }
   review.consume();                                  // a second click finds no review

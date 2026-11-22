@@ -37,7 +37,10 @@ await flush();
 const nm = { name: "alice.csd" };
 const A3 = sentenceOf("A3", undefined, nm).text, A14 = sentenceOf("A14", undefined, nm).text, A15 = sentenceOf("A15", undefined, nm).text;
 const count = (m) => calls.filter((x) => x === m).length;
-const state = () => ({ shown: !byId("send-confirm").hidden, msg: byId("msg").textContent, cls: byId("msg").className, confirm: byId("btn-send-confirm").textContent, back: byId("btn-send-back").textContent, disabled: byId("btn-send-confirm").disabled });
+// [A15] is the review's last row (popup-sendflow.ts); `a15` is whether it is there and last.
+const lastRow = (id) => { const h = byId(id).hidden ? "" : String(byId(id).innerHTML); const i = h.lastIndexOf('<div class="check '); return i < 0 ? "" : h.slice(i); };
+const a15 = (id = "c-warn") => /^<div class="check caution">/.test(lastRow(id)) && lastRow(id).includes(A15);
+const state = () => ({ shown: !byId("send-confirm").hidden, msg: byId("msg").textContent, a15: a15(), cls: byId("msg").className, confirm: byId("btn-send-confirm").textContent, back: byId("btn-send-back").textContent, disabled: byId("btn-send-confirm").disabled });
 async function review() {
   byId("btn-send-back").click(); await flush();
   byId("s-to").disabled = false; byId("s-amt").disabled = false;
@@ -81,7 +84,7 @@ console.log("4. the look-up did not answer");
   const s0 = sends.length;
   await confirm();
   const r = state();
-  check(`(4a) [A15], amber ("${r.msg}", ${r.cls})`, r.msg === A15 && /\berr\b/.test(r.cls));
+  check(`(4a) [A15] as the review's last row, amber (caution), and no refusal in the status line ("${r.msg}")`, r.a15 && !/Nothing was sent/.test(r.msg));
   check(`(4b) the review stays on the reviewed address with "${r.confirm}" / "${r.back}", nothing sent`, r.shown && !r.disabled && r.confirm === LAPSE_BUTTONS.confirm && r.back === LAPSE_BUTTONS.back && sends.length === s0);
   const c0 = count("confirmName");
   await confirm();
@@ -94,7 +97,7 @@ console.log("5. the look-up refused for another reason (no lapse)");
   await review();
   confirmAnswer = () => ({ ok: false, error: "name lookup failed" });
   await confirm();
-  check(`(5a) [A15], not a refusal ("${state().msg}")`, state().msg === A15 && state().shown);
+  check(`(5a) [A15], not a refusal ("${state().msg}")`, state().a15 && state().shown);
   byId("btn-send-back").click(); await flush();
 }
 
@@ -104,7 +107,7 @@ console.log("6. verified at review, not verified now at the same address");
   confirmAnswer = () => ({ ...verifiedAlice, verified: false });
   const s0 = sends.length;
   await confirm();
-  check(`(6a) [A15] ("${state().msg}")`, state().msg === A15 && state().shown && sends.length === s0);
+  check("(6a) [A15]", state().a15 && state().shown && sends.length === s0);
   await confirm();
   check("(6b) its second click signs the reviewed address", sends.length === s0 + 1 && sends.at(-1)?.[0] === ALICE);
 }
@@ -138,7 +141,7 @@ console.log("9. the token send");
   confirmAnswer = () => ({ ok: false });
   const s0 = sends.length;
   byId("btn-tsend-confirm").click(); await flush(20);
-  check(`(9a) [A15] on the token review, "${byId("btn-tsend-confirm").textContent}" / "${byId("btn-tsend-back").textContent}"`, byId("msg").textContent === A15 && !byId("tsend-confirm").hidden && byId("btn-tsend-confirm").textContent === LAPSE_BUTTONS.confirm && sends.length === s0);
+  check(`(9a) [A15] on the token review, "${byId("btn-tsend-confirm").textContent}" / "${byId("btn-tsend-back").textContent}"`, a15("tc-warn") && !byId("tsend-confirm").hidden && byId("btn-tsend-confirm").textContent === LAPSE_BUTTONS.confirm && sends.length === s0);
   byId("btn-tsend-confirm").click(); await flush(20);
   check("(9b) its second click sends the token to the reviewed address", sends.length === s0 + 1 && sends.at(-1)?.[0]?.to === ALICE);
 }
