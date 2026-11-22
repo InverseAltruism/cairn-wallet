@@ -272,7 +272,7 @@ console.log("7b. a source superseded by a reset seals only under the vault it wa
     const sources = [];
     w.spvBuildForTest = (o) => {
       const id = sources.length + 1;
-      const own = { ...st, listChunks: () => st.listChunks(), getChunk: (k) => st.getChunk(k), getHead: () => st.getHead(), getSeals: () => st.getSeals(), write: (x) => { writes.push({ id, x }); return st.write(x); }, close() {} };
+      const own = { ...st, write: (x) => { writes.push({ id, x }); return st.write(x); } };
       const src = liveSpvSource({ ...o, rpcBase: `${API}/api/rpc`, headersBase: API, anchors: SEAL_ANCHORS, store: async () => own, legacy: undefined });
       sources.push(src);
       return src;
