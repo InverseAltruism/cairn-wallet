@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- The wallet keeps working when Cairn's main server is down. With the default RPC, a node read that the main host has
+  not answered within 1.5 s, or that it failed, goes to Cairn's second server (clarvis.cairn-substrate.com), and the
+  first answer wins; after a main failure the second server is asked first for 60 s. With the main host accepting
+  connections and never answering, 0.3.4 showed "Balance unavailable" after 12.5 s. A balance the second server
+  answered carries the grey line "Using Cairn's backup server.". A spend reads all its coins from the one host that
+  listed them, so the coin-value check is the same on either (test/hosts-fallback.test.mjs,
+  test/hosts-spend-pin.test.mjs). A node on this computer set as the RPC has no second server.
+- Submit answers are read by one classifier (`src/core/submitverdict.ts`). A refusal carries a new `reason` (FEE, BUSY,
+  SPENT, CONFLICT, PROXY, INVALID, UNKNOWN; additive, WALLET-ERROR-CODES.md). Answers that may follow a node taking the
+  transaction are now `SUBMIT_MAYBE_INFLIGHT` with the local txid and a history row, where 0.3.4 read them otherwise:
+  a JSON 4xx other than 400, 413 and 429, a 2xx `{}` or an `ok:false` without an `err` text (were `SUBMIT_REJECTED`), a
+  truthy `ok` that is not `true` (was sent), and the node's "submit validation did not finish" (was `SUBMIT_REJECTED`)
+  (test/submit-answers.test.mjs).
+
 ## 0.3.4
 
 - The approval window says when a site is new to the wallet: when the user has approved no request from the origin and

@@ -2,6 +2,7 @@
 // reads it back; nothing here signs.
 import type { Store } from "./storage.js";
 import * as node from "./node.js";
+import { firstAnswer } from "./hosts.js";
 import { INCLUSION_NOTICE_BLOCKS, INCLUSION_INPUTS_KEPT, INCLUSION_READS_MAX, INCLUSION_GONE_READ_INTERVAL, inclusionVerdict, goneStep, type TxInclusion } from "./inclusion.js";
 
 // Per-account storage namespaces; keep each account's activity + secrets separate.
@@ -286,15 +287,18 @@ export class TxHistory {
   // The tip once, a status read for each open row not yet read at this tip (newest first, capped), and the
   // mined utxo set once if any status came back unknown. No tip: no chain-derived step this pass.
   // A mined set the node cut (`complete` false) still proves a listed tx included, never an input spent elsewhere.
+  // The pass stays on the host that answered the tip (hosts.ts firstAnswer), so its tip, statuses and mined set are one
+  // host's view.
   private async inclusionReads(open: any[], addr: string): Promise<{ tip: number | null; states: Map<string, TxInclusion>; mined: { ops: Set<string>; txids: Set<string>; complete: boolean } | null }> {
     const states = new Map<string, TxInclusion>();
-    const t = await node.tip(this.w.rpc()).catch(() => 0);
+    const got0 = await firstAnswer(this.w.rpc(), node.tipAt).catch(() => null);
+    const t = got0?.value ?? 0, host = got0?.host ?? "";
     if (!(Number.isSafeInteger(t) && t > 0)) return { tip: null, states, mined: null };
     const due = open.filter((x) => !(Number(x.chkTip) >= t) && !(x.gone && t - Number(x.chkTip) < INCLUSION_GONE_READ_INTERVAL)).slice(0, INCLUSION_READS_MAX);
-    const got = await Promise.all(due.map((x) => node.txInclusion(this.w.rpc(), String(x.txid))));
+    const got = await Promise.all(due.map((x) => node.txInclusion(host, String(x.txid))));
     due.forEach((x, i) => { const st = got[i]; if (st) states.set(String(x.txid).toLowerCase(), st); });
     if (![...states.values()].some((st) => st.state === "unknown")) return { tip: t, states, mined: null };
-    const list = await node.confirmedUtxos(this.w.rpc(), addr);
+    const list = await node.confirmedUtxos(host, addr);
     const live = (list?.utxos || []).filter((u) => u && u.txid != null);
     const mined = list ? { ops: new Set(live.map((u) => node.opKey(u.txid, u.vout))), txids: new Set(live.map((u) => String(u.txid).toLowerCase())), complete: list.complete } : null;
     return { tip: t, states, mined };

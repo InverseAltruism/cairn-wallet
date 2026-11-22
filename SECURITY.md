@@ -83,6 +83,27 @@ the RPC to report the transaction definitely not mined and not pending: the Cair
 full, so with a backend down a row keeps the 10-block notice instead; a node on this computer reports it when its
 own transaction scan was complete (it has no mempool view to add).
 
+### The second Cairn server
+
+With the default RPC (Cairn's proxy at cairn-substrate.com) the wallet has a second host, Cairn's server at
+clarvis.cairn-substrate.com (`BACKUP_RPC`, `src/core/endpoints.ts`). It is a constant of the release: no setting and
+no page can name it (`rpcAllowed` refuses it as an RPC), and a node on this computer set as the RPC has no second host,
+so the wallet sends it nothing (test/hosts-fallback.test.mjs L1 to L4). It runs its own node, and has the same operator
+and the same DNS zone as the main host, so it is not an independent party.
+
+Reads (`src/core/hosts.ts` `firstAnswer`): the main host is asked first; the second host is asked 1.5 s later if the
+main host has not answered, or at once when it fails, and the first answer wins. The main host's request is never cut
+short. After a main failure the second host is asked first for 60 s. With both hosts healthy the second host gets no
+read at all. The popup says "Using Cairn's backup server." under a balance it answered. One spend reads one host: the
+host that answered its coin list answers every source transaction read, so the coin-value check above runs on that
+host exactly as on the main host, and a forged body there refuses `VERIFY_TAMPER` (test/hosts-spend-pin.test.mjs). A
+history reconcile pass stays on the host that answered its tip.
+
+What it can do when it answers: what a lying RPC can do, as listed above (a wrong balance, withheld coins, a refusal, a
+false Activity marker), and no more: it cannot change what is signed or the value of a coin. It answers a read only
+while the main host is slower than 1.5 s or failing, so a party that holds it alone must also slow or stop the main
+host. It sees the address whose balance is read, as the main host does.
+
 ### Sending to a `.csd` name
 
 When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX name services as

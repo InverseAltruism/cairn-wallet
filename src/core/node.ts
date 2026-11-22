@@ -8,6 +8,7 @@ import { fmtCsd, csdBase } from "./cairnx.js";
 import type { TxInclusion } from "./inclusion.js";
 import { selectInputs, strip0x, MAX_TX_INPUTS, MAX_DOMAIN_BYTES, MAX_URI_BYTES, MIN_FEE_PROPOSE } from "../vendor/cairnx-spv.js";
 import { byteCapRefusal } from "./signfields.js";
+import { firstAnswer, isBackup } from "./hosts.js";
 import { classifyAnswer, decideSubmit, isSubmitDuplicateErr, type HostVerdict, type RefusalReason, type SubmitAnswer, type SubmitOutcome } from "./submitverdict.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
@@ -46,13 +47,16 @@ async function post(base: string, path: string, body: unknown): Promise<any> {
   return j;
 }
 
-export async function tip(rpc: string): Promise<number> { return Number((await get(rpc, "/tip")).height ?? 0); }
-// Display only. The Cairn proxy answers /tx/:id/status (mined, pending or unknown across both backends); a
+// Reads take `rpc`, the wallet's RPC, and go to its hosts through firstAnswer (hosts.ts); a function named `...At` or
+// documented as reading one host reads exactly the host it is given, for a step that must stay on one host.
+export async function tipAt(host: string): Promise<number> { return Number((await get(host, "/tip")).height ?? 0); }
+export async function tip(rpc: string): Promise<number> { return (await firstAnswer(rpc, tipAt)).value; }
+// Display only; reads one host. The Cairn proxy answers /tx/:id/status (mined, pending or unknown across both backends); a
 // loopback node has no such route (404), so its /tx/:id says mined, or not mined (`definite` when its scan was
 // complete; it has no mempool view). null: nothing knowable this time.
-export async function txInclusion(rpc: string, txid: string): Promise<TxInclusion | null> {
+export async function txInclusion(host: string, txid: string): Promise<TxInclusion | null> {
   try {
-    const r = await fetch(`${rpc}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    const r = await fetch(`${host}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
     if (r.ok) {
       const j: any = await r.json();
       if (j?.ok !== true || !["mined", "pending", "unknown"].includes(j.state)) return null;
@@ -60,32 +64,38 @@ export async function txInclusion(rpc: string, txid: string): Promise<TxInclusio
       return j.state === "pending" ? { state: "pending" } : { state: "unknown", definite: j.definite === true };
     }
     if (r.status !== 404) return null;
-    const t: any = await get(rpc, `/tx/${txid}`);
+    const t: any = await get(host, `/tx/${txid}`);
     if (t?.ok === true && Number.isSafeInteger(t.height)) return { state: "mined", height: t.height };
     return t?.ok === false ? { state: "unknown", definite: t.complete === true } : null;
   } catch { return null; }   // unreachable or unreadable: the row stays open and is read again next block
 }
 export async function getProposal(rpc: string, txid: string): Promise<any | null> {
-  try { const j = await get(rpc, `/proposal/${txid}`); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
+  try { const { value: j } = await firstAnswer(rpc, (h) => get(h, `/proposal/${txid}`)); return j?.proposal ?? (j?.payload_hash ? j : null); } catch { return null; }
 }
 // Throws on a body without a `utxos` array, so every spend path refuses it as VERIFY_UNAVAILABLE before signing.
 // `truncated`: the node's bound cut the list (node 0.1.17 `--utxos-bound`, the largest coins first), so `utxos` holds
 // some of the address's coins and `confirmed` stays the whole balance. A coin missing from a cut list proves nothing.
-export async function balance(rpc: string, addr: string): Promise<{ confirmed: number; utxos: any[]; truncated: boolean }> {
-  const j = await get(rpc, `/utxos/${addr}?available=true`);
+// balanceAt reads one host; balance reads the wallet's hosts and says `via: "backup"` when the second host answered.
+type Balance = { confirmed: number; utxos: any[]; truncated: boolean };
+async function balanceAt(host: string, addr: string): Promise<Balance> {
+  const j = await get(host, `/utxos/${addr}?available=true`);
   if (!j || typeof j !== "object" || !Array.isArray(j.utxos)) throw new Error(`/utxos -> malformed response`);
   return { confirmed: Number(j.confirmed_balance ?? 0), utxos: j.utxos, truncated: j.truncated === true };
 }
-// The mined utxo set, coins held by the mempool included (balance() leaves those out). The proxy serves it
+export async function balance(rpc: string, addr: string): Promise<Balance & { via?: "backup" }> {
+  const { value, host } = await firstAnswer(rpc, (h) => balanceAt(h, addr));
+  return isBackup(host) ? { ...value, via: "backup" } : value;
+}
+// Reads one host. The mined utxo set, coins held by the mempool included (balance() leaves those out). The proxy serves it
 // at /utxos-all/:addr; its /utxos/:addr is mempool-filtered, so only a bare node origin falls back to the
 // node's own /utxos/:addr. null: not readable, and no caller may conclude anything from it. `complete` is false
 // when the node's bound cut the list: a coin in it is mined, a coin missing from it proves nothing.
-export async function confirmedUtxos(rpc: string, addr: string): Promise<{ utxos: { txid: string; vout: number }[]; complete: boolean } | null> {
+export async function confirmedUtxos(host: string, addr: string): Promise<{ utxos: { txid: string; vout: number }[]; complete: boolean } | null> {
   try {
-    const r = await fetch(`${rpc}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    const r = await fetch(`${host}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
     let j: any;
     if (r.ok) j = await r.json();
-    else if (r.status === 404 && new URL(rpc).pathname.replace(/\/+$/, "") === "") j = await get(rpc, `/utxos/${addr}`);
+    else if (r.status === 404 && new URL(host).pathname.replace(/\/+$/, "") === "") j = await get(host, `/utxos/${addr}`);
     else return null;
     return j && typeof j === "object" && Array.isArray(j.utxos) ? { utxos: j.utxos, complete: j.truncated !== true } : null;
   } catch { return null; }   // unreachable or unreadable: no "gone" verdict this pass
@@ -215,7 +225,7 @@ type VerifyResult =
 // serves so keys already stored on history rows still match.
 export const opKey = (txid: unknown, vout: unknown) => `0x${strip0x(String(txid).toLowerCase())}:${Number(vout)}`;
 async function verifyInputValues(
-  rpc: string,
+  host: string,
   inputs: { txid: string; vout: number }[],
   // per-CALL cache: a coin verified in an earlier selection round is never refetched in a later one.
   // Deliberately not cross-call (a txid does commit to its outputs immutably, but re-verifying every
@@ -233,7 +243,7 @@ async function verifyInputValues(
     if (hit !== undefined) return hit;
     let body: any;
     try {
-      const r = await fetch(`${rpc}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+      const r = await fetch(`${host}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
       if (r.status === 404) return "notfound";
       // BN0w (W9): ONLY the exact 503 + body code SCAN_HORIZON pair classifies "horizon" (the node
       // v0.1.6 scan-outcome wire contract, normative in the compute-substrate README: 503 +
@@ -350,8 +360,10 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
   // the retryable structured VERIFY_UNAVAILABLE every caller already handles, instead of throwing
   // out of assembleValueTx and landing in the popup's ambiguous "may be in flight" catch branch:
   // nothing has been signed at this point, so the outcome is definitively clean.
-  let utxos: any[], truncated: boolean, confirmed: number;
-  try { ({ utxos, truncated, confirmed } = await balance(rpc, addr)); }
+  // One host per spend: the host that answered the coin list is asked for every coin's source transaction, so the
+  // verdicts below are that host's, as with one host (a host a block behind could otherwise answer "not found").
+  let utxos: any[], truncated: boolean, confirmed: number, host: string;
+  try { ({ value: { utxos, truncated, confirmed }, host } = await firstAnswer(rpc, (h) => balanceAt(h, addr))); }
   catch { return { error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", code: "VERIFY_UNAVAILABLE" }; }
   const now = Date.now();
   const exclude = sessionExclusions(now);
@@ -371,7 +383,7 @@ async function selectVerified(rpc: string, addr: string, needOf: number | NeedOf
     if (typeof needOf === "function") need = needOf(utxos, exclude, truncated);
     const sel = selectInputs(utxos, need, exclude);
     if (!sel) { selExhausted = true; break; } // remaining verifiable coins can't cover `need`, or can't within the input cap (diagnosed below)
-    const ver = await verifyInputValues(rpc, sel.inputs, verified);
+    const ver = await verifyInputValues(host, sel.inputs, verified);
     if (ver.ok) {
       if (ver.total < need || !Number.isSafeInteger(ver.total) || !Number.isSafeInteger(ver.total - need)) return { error: "insufficient confirmed balance", code: "INSUFFICIENT" };
       return { inputs: sel.inputs, total: ver.total };
@@ -781,9 +793,9 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   if (!Number.isSafeInteger(fee) || !(fee > 0)) return { ok: false, error: "fee must be a positive integer", sighashMatch: false, code: "BAD_FEE" };
   if (fee > MAX_FEE) return { ok: false, error: `fee exceeds the ${fmtCsd(MAX_FEE)} safety cap; refusing`, sighashMatch: false, code: "FEE_CAP" };
   const addr = addrFromPriv(priv);
-  let utxos: any[];
+  let utxos: any[], host: string;
   let truncated = false;
-  try { ({ utxos, truncated } = await balance(rpc, addr)); }
+  try { ({ value: { utxos, truncated }, host } = await firstAnswer(rpc, (h) => balanceAt(h, addr))); }
   catch { return { ok: false, error: "couldn't fetch your coins (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" }; }
   // Same ghost handling as selectVerified: known-unprovable outpoints are pre-excluded, fresh
   // ghosts exclude-and-retry within the same bounded round budget, and no coin is EVER spent
@@ -794,7 +806,7 @@ export async function consolidate(rpc: string, p: { fee: number }, priv: string)
   for (let round = 0; round < MAX_SELECT_ROUNDS; round++) {
     const pool = spendableCoins(utxos, exclude).sort((a, b) => a.value - b.value).slice(0, MAX_TX_INPUTS);
     if (pool.length < 2) return { ok: false, error: "nothing to consolidate: fewer than two spendable coins", sighashMatch: false, code: "NOTHING_TO_CONSOLIDATE" };
-    const ver = await verifyInputValues(rpc, pool, verified);
+    const ver = await verifyInputValues(host, pool, verified);
     if (!ver.ok) {
       if (ver.kind === "tamper") return { ok: false, error: "could not verify selected coins against the chain (refusing to risk a burned fee)", sighashMatch: false, code: "VERIFY_TAMPER" };
       if (ver.kind === "transient") return { ok: false, error: "couldn't fetch source transactions to verify coin values (node unreachable or erroring); nothing was signed, try again in a moment", sighashMatch: false, code: "VERIFY_UNAVAILABLE" };

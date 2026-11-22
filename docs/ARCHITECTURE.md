@@ -162,6 +162,14 @@ test/provider-discovery.test.mjs pins the discovery part.
   `parseRecord` round-trip so build success implies resolver acceptance. No on-device registration flow: the /names
   site drives registration through dApp propose, always clear-signed.
 
+### Hosts (`hosts.ts`)
+
+`hostsFor(rpc)` is the default RPC and `BACKUP_RPC` for the default RPC, else the RPC alone. `firstAnswer(rpc, read)`
+asks the preferred host, the other after `HEDGE_MS` or on the preferred host's failure, and returns the first answer
+with its host. The reads in `node.ts` take the wallet's RPC and go through it; a step that must stay on one host
+passes the host it got: a spend's source reads (`selectVerified`, `consolidate`) and a reconcile pass
+(`history.ts` `inclusionReads`). `balance()` adds `via: "backup"` when the second host answered.
+
 ### The send engine (`node.ts`)
 
 `assembleValueTx` is the single chokepoint for every value tx, in this order:
@@ -305,7 +313,11 @@ dir: both files must be byte-identical to the committed ones.
 ## Runtime footprint
 
 - Node RPC: the Cairn proxy https://cairn-substrate.com/api/rpc or a loopback node only. GET 12 s, POST 20 s. Every
-  outer timeout sits above its server-side worst case; do not lower one without re-deriving the inner chain.
+  outer timeout sits above its server-side worst case; do not lower one without re-deriving the inner chain. The
+  default RPC's second host, https://clarvis.cairn-substrate.com/api/rpc (`hosts.ts`): a read goes there 1.5 s
+  (`HEDGE_MS`) after the main host if it has not answered, or at once when it failed; after a main failure the second
+  host is asked first for 60 s (`BACKUP_FIRST_MS`). With both healthy it gets no reads. A loopback RPC has no second
+  host.
 - Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15 s with
   Retry-After-aware 429 and 502/503 backoff.
 - CairnX read API /trade/api (12 s); clarvis /trade/api (name-history union always, resolve fallback, 12 s).
