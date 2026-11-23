@@ -44,6 +44,10 @@
   owner." with "Send anyway" and "Cancel", and the second click signs the reviewed address; before, an unverified
   review signed on the first click and a verified one showed "Could not check alice.csd again." A review that showed
   the expiry line still confirms on one click (test/name-recheck-dom.test.mjs sections 10 and 11).
+- A buy (an offer fill) refused because the offer or its proofs could not be checked yet shows the wallet's own
+  reason with its code again, as 0.3.4 did, in place of "Could not load your coins, so nothing was sent. Try again in
+  a moment."; a fill whose coins could not be read says that in its own words. A page's send and a renew keep that
+  line (test/approve-outcome-dom.test.mjs 10).
 
 ## 0.3.5
 
