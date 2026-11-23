@@ -156,23 +156,48 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   the default RPC serves node reads, not `/api/headers`).
 
 The width was decided on a modelled link, measured on 2026-11-23 (all hosts sharing one rate, six connections per
-origin, 40 ms each way, the wallet's own timeouts; the 2026-11-21 recording of `/api/headers`, a store holding the
-release table's chunk only; 3 runs each; raw data outside the repository). Each figure is the median in ms of an
-operation started while the background sync runs, against 0.3.5 on the same link, where no background sync runs.
+origin, 40 ms each way, the wallet's own timeouts; the 2026-11-21 recording of `/api/headers`; raw data outside the
+repository). With six pages fixed, a balance refresh during the sync waited for a connection the header pages held
+(3,985 ms at 250 kB/s, a timeout at 50 kB/s, against 51 and 61 ms on 0.3.5). The table is the final rule, the
+adaptive width with the foreground first: five alternating pairs per cell, each operation in its own run, started
+0.5, 1, 3 or 10 s after the unlock's balance answered (the background sync starts then; 0.3.5 runs none), from a
+store holding the release table's chunk only (a new install, 3,470 headers to the tip) or a day behind (720). Each
+figure is the median in ms, 0.3.5 first.
 
-| Link | Balance refresh | Send to an address | A name's Review | Header timeouts |
-|---|---|---|---|---|
-| 50 kB/s, six pages fixed | 0.3.5: 61; six: timed out | | | |
-| 250 kB/s, six pages fixed | 0.3.5: 51; six: 3,985 | 0.3.5: 160; six: 153 | 0.3.5: 6,115; six: 1,783 | 0, 0 |
-| 50 kB/s, adaptive from two | 0.3.5: 61; head: 76 | 169; 215 | 24,012; 24,375 | 0, 0 |
-| 250 kB/s, adaptive from two | 51; 47 | 162; 147 | 6,121; 5,510 | 0, 0 |
-| no cap, adaptive from two | 81; 100 | 249; 277 | 2,688; 1,967 | 0, 0 |
+| Link | Store | Operation | 0.5 s | 1 s | 3 s | 10 s |
+|---|---|---|---|---|---|---|
+| 50 kB/s | new install | Balance refresh | 61; 61 | 61; 62 | 61; 61 | 61; 61 |
+| 50 kB/s | new install | Send to an address | 171; 172 | 174; 172 | 172; 173 | 173; 176 |
+| 50 kB/s | new install | A name's Review | 23,952; 23,833 | 23,992; 23,823 | 23,938; 23,853 | 23,996; 16,989 |
+| 50 kB/s | a day behind | Balance refresh | 61; 61 | 61; 62 | 61; 62 | 61; 62 |
+| 50 kB/s | a day behind | Send to an address | 174; 172 | 171; 173 | 172; 173 | 174; 174 |
+| 50 kB/s | a day behind | A name's Review | 6,792; 6,747 | 6,788; 6,724 | 6,791; 6,741 | 6,782; 2,444 |
+| 250 kB/s | new install | Balance refresh | 51; 51 | 51; 52 | 51; 51 | 51; 51 |
+| 250 kB/s | new install | Send to an address | 160; 162 | 162; 164 | 164; 167 | 161; 161 |
+| 250 kB/s | new install | A name's Review | 6,137; 5,944 | 6,114; 5,964 | 6,088; 4,461 | 6,065; 1,407 |
+| 250 kB/s | a day behind | Balance refresh | 51; 52 | 51; 52 | 51; 52 | 51; 52 |
+| 250 kB/s | a day behind | Send to an address | 161; 161 | 162; 161 | 161; 162 | 161; 161 |
+| 250 kB/s | a day behind | A name's Review | 2,373; 2,331 | 2,379; 2,319 | 2,380; 1,411 | 2,391; 1,423 |
+| no cap | new install | Balance refresh | 81; 82 | 81; 81 | 81; 81 | 81; 81 |
+| no cap | new install | Send to an address | 251; 256 | 253; 253 | 252; 253 | 252; 253 |
+| no cap | new install | A name's Review | 2,730; 2,065 | 2,713; 1,981 | 2,711; 1,987 | 2,660; 1,955 |
+| no cap | a day behind | Balance refresh | 81; 82 | 81; 83 | 81; 83 | 81; 83 |
+| no cap | a day behind | Send to an address | 252; 252 | 252; 254 | 252; 253 | 252; 254 |
+| no cap | a day behind | A name's Review | 2,188; 1,980 | 2,160; 1,972 | 2,176; 1,966 | 2,177; 1,969 |
 
-With six fixed, the balance waited for a connection the header pages held. Adaptive, an operation made while the
-background sync runs is a few tens of ms slower at 50 kB/s and with no cap (the link or the worker shared with the
-sync's pages), and a name's Review about 0.4 s slower at 50 kB/s; at 250 kB/s everything is level or faster. Starting
-at one page instead cut those to 4 to 23 ms, but made a day's catch-up (two pages) 22 ms slower than 0.3.5 on every
-unlock; from two it is 54 ms faster.
+A name's Review is level or faster in every cell: its pages come first and the background's give way. A balance
+refresh and a send are within 5 ms of 0.3.5 in every cell. 0.3.5's own 20 runs of one operation on one link and
+store spread over 0 to 8 ms (all at 61 ms for a balance a day behind at 50 kB/s; 160 to 168 ms for a send a day
+behind at 250 kB/s); the medians of 4 of the 48 balance and send cells lie above that spread, by 1 ms (the balance a
+day behind at 50 kB/s, at 1, 3 and 10 s) and 2 ms (a send of a new install at 250 kB/s, at 3 s). Those remain: the
+worker runs the background's ingest in slices of about 3 ms (inferred, not traced). No header page timed out. The longest stall of the worker's
+event loop during a cold background run of 114,062 headers (unthrottled, 80 ms a request, 7 pairs) is 27 to 36 ms,
+against 52 to 58 ms on 0.3.5 (it was 177 to 261 ms before the rebase's re-ingest was sliced, 726a29b: the rebase
+rebuilt its client through the vendored `fromRecords`, whose yields let no timer run in Node). What the gate and the
+slices cost (5 runs each against 726a29b): unthrottled, that cold run takes 8,351 ms against 9,160 with the same 223
+requests; at 50 kB/s a balance 1 s into a new install's sync cancels its 2 pages in flight, which are asked again, so
+the headers reach the tip 24,666 ms after the unlock's balance against 23,391, with 9 requests against 7, and the
+balance takes 62 ms against 72.
 
 A structural sync failure (an ordinary reorg in the suffix) reseeds (the section above: from the newest seal, else
 the anchor chunk in memory) and syncs again; the stored suffix is replaced only after the new one verifies to the
