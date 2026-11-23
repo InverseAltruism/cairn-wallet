@@ -114,7 +114,11 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   any failure of it, stops the run without a refusal and waits for a lookup, so the background never runs the
   unbounded table reseed (reseed-bounded 2). It yields to a lookup that arrives while it runs: its pages stop, the
   chain it reached goes to the adoption site, which refuses it below the held tip whatever its work (5b), and the
-  lookup's own reseed runs next, so the lookup's wait is its own work (6b).
+  lookup's own reseed runs next, so the lookup's wait is its own work (6b). What one background run can cost a
+  hostile header host's target: the window that broke (at most `IN_FLIGHT` pages), the reseed (at most
+  `BOUNDED_PAGES`) and, after an adoption, the rest of the way to the node tip; 22 requests and about 3.6 MB before an
+  adoption (166 kB a page: 36,982,177 bytes over 223 pages measured), at most one run a minute while the popup is open,
+  about 1,320 requests and 220 MB an hour. A back-off after a refused reseed (a longer gap) would cut that; not built.
 - One adoption site, serialized: it waits for the acquirer's pending writes, takes the fresh client, deletes the LRU
   entries above the seed chunk, keeps the remembered tops at and below the seed (none for a table seed) and rewrites
   the store from the chunk above the seed. A seal seed's tops are the adopted chain's own, since it links to the

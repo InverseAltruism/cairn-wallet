@@ -202,7 +202,10 @@ When you send to a `.csd` name (e.g. `alice.csd`), the wallet treats the CairnX 
   built-in hash, the replacement is adopted only if it verified above the wallet's verified tip and carries more
   proof of work than the chain the wallet already verified. The background sync that starts after the balance has
   answered makes that re-sync only within 17 header pages of a seal or of the built-in hash, and leaves anything
-  larger to the next name check, so a hostile header server costs that re-sync at most those pages per run. Two cases are
+  larger to the next name check. A hostile header server can therefore make one background run cost the window that
+broke (at most 5 pages), the re-sync (at most 17 pages) and, only after a chain with more work is adopted, the rest
+of the way to the node tip it claims: 22 requests, about 3.6 MB (a page is about 166 kB), before an adoption. Runs
+are at least 60 s apart while the popup is open, so that is at most about 1,320 requests and 220 MB an hour. Two cases are
   compared with nothing: the first sync of a fresh install (also a wiped store, or a store that cannot open), and
   any chain that extends the stored tip, at any tip age. There a header source (the front door's operator, or
   whoever compromises the front door) can serve a fork whose difficulty it lowered with spread timestamps: above
