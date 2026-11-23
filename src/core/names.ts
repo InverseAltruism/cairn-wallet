@@ -5,6 +5,7 @@ import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
 import { CLARVIS_TRADE_API } from "./endpoints.js";
+import { foregroundFetch } from "./netgate.js";
 
 // What resolveName and confirmName answer: a refusal (ok false, with error), or the address to send to and how
 // far it was verified.
@@ -53,7 +54,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     if (!r || !r.ok) {
       try {
         // 12s like the primary: clarvis fronts the same cairn proxy shape (10s upstream wait).
-        const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(12000) });
+        const c = await foregroundFetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(12000) });
         // Only accept a POSITIVE answer from the fallback; a 404 from a degraded/withholding second
         // source is NOT trustworthy enough to definitively claim "not registered" (fail-closed to the
         // retryable "name lookup failed" below instead; the primary being down is transient).

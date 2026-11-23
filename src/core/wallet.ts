@@ -35,6 +35,7 @@ import { opaqueOrigin } from "./origin.js";
 export { EXPLORER_PRESETS, DEFAULT_EXPLORER, explorerLink } from "./explorer.js";
 
 import { randomBytes, bytesToHex } from "@noble/hashes/utils";
+import { foregroundFetch } from "./netgate.js";
 
 export interface PubAcct { addr: string; label: string; imported?: boolean }
 // An account label is display text in the popup and the approval window's signer line; one line of it is enough.
@@ -600,7 +601,7 @@ export class Wallet {
   // was still legitimately waiting on a slow-but-working resolver, turning a survivable stall into a
   // spurious fail-closed refusal on the fill/resolve money paths (timeout-inversion class, Plans/66 B1).
   private tradeGet(path: string, timeoutMs = 12000): Promise<Response> {
-    return fetch(this.tradeApi + path, { signal: AbortSignal.timeout(timeoutMs) });
+    return foregroundFetch(this.tradeApi + path, { signal: AbortSignal.timeout(timeoutMs) });
   }
 
   // Summarize payment outputs for a history entry: total value + a single-recipient addr or "N recipients".

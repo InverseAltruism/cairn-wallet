@@ -28,7 +28,7 @@ check("liveSpvSource holds LC in a reassignable binding (reseed target)", /\blet
 const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
 const run = code.slice(code.indexOf("const run = async (): Promise<void> => {"), code.indexOf("const raise = "));
 check("the runner wraps the shared client's page sync in a try/catch (M8 self-heal)",
-  /try \{\s*await syncPages\(\(\) => LC, \(\) => lookupWant\(\) \|\| target, lanePage,[^;]*;\s*\} catch \(e\) \{/.test(run));
+  /try \{\s*await syncPages\(\(\) => LC, \(\) => lookupWant\(\) \|\| target, runPage\(\(\) => !lookupWant\(\)\),[^;]*;\s*\} catch \(e\) \{/.test(run));
 
 // (3) The verified progress is persisted first; a clock fault and a TRANSIENT failure stop the run with their own error
 // (the store is kept, DOS-HDR-3); only a STRUCTURAL break reseeds. The classifier is the ONE exported
@@ -59,7 +59,7 @@ const adoptSite = body("const adopt = ");
 const takeIdx = adoptSite.indexOf("LC = fresh.client;"), resetIdx = adoptSite.indexOf("persistedTip = seed.top;"), persistAt = adoptSite.indexOf("await persist();");
 check("the adoption site resets persistedTip only AFTER taking the fresh client, then persists the new suffix", takeIdx > 0 && resetIdx > takeIdx && persistAt > resetIdx);
 check("a lookup's reseed syncs the fresh client to `want` BEFORE asking the adoption site (a lying-high header still throws)",
-  body("const lookupReseed = ").indexOf("await syncFresh(fresh, want)") > 0 && body("const lookupReseed = ").indexOf("await syncFresh(fresh, want)") < body("const lookupReseed = ").indexOf("await adopt(fresh, seed)"));
+  body("const lookupReseed = ").indexOf("await syncFresh(fresh, want, lookupPage)") > 0 && body("const lookupReseed = ").indexOf("await syncFresh(fresh, want, lookupPage)") < body("const lookupReseed = ").indexOf("await adopt(fresh, seed)"));
 // The reseed's transient-before-pin order and the checkpoint copy are pinned by behaviour in namespv-store-pins.
 check("a clock fault during the reseeded sync is refused with the clock named, never pinRefusal",
   /const freshFailure = [^\n]*\n\s*const m = messageOf\(e\);\s*if \(CLOCK_FAULT\.test\(m\)\) return clockRefusal\(m\);/.test(code)

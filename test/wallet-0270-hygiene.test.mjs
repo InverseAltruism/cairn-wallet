@@ -46,8 +46,9 @@ const persistUses = [...namespv.matchAll(/\bpersist\b(?=[()])/g)].map((m) => m.i
 const adoptOp = [namespv.indexOf("const adopt = (fresh: Seeded, seed: Seed) => serializeSync(async () => {"), namespv.indexOf("\n  });", namespv.indexOf("const adopt = "))];
 const inLock = (i) => namespv.startsWith("serializeSync(persist)", i - "serializeSync(".length) || (i > adoptOp[0] && i < adoptOp[1]);
 const rebaseFn = namespv.slice(namespv.indexOf("const rebase = "), namespv.indexOf("const persist = "));
-ok("LC.toRecords is read in suffixWrite(), which persist() calls and detaches, and in the rebase's re-ingest only",
-  (namespv.match(/LC\.toRecords\(/g) || []).length === 2 && /LC\.toRecords\(/.test(suffixFn.slice(0, suffixFn.indexOf("const knownTops"))) && /LC\.toRecords\(/.test(rebaseFn)
+// The rebase serializes only its seed's records (lcRecords) and re-ingests the headers above from the held client.
+ok("LC.toRecords is read in suffixWrite() only, which persist() calls and detaches; the rebase reads its seed's records",
+  (namespv.match(/LC\.toRecords\(/g) || []).length === 1 && /LC\.toRecords\(/.test(suffixFn.slice(0, suffixFn.indexOf("const knownTops"))) && /seededClient\(lcRecords\(top - SEED \+ 1, top\)/.test(rebaseFn)
   && /const persist = async \(\) => \{\s*const w = suffixWrite\(\);\s*if \(w\) \{ const sealed = await withSeals\(w, persistedTip\); if \(live\(\)\) detachStoreWrite\(store!, sealed, live\); \}\s*if \(LC\.chain\.length > REBASE_SPAN\) await rebase\(\);\s*\};/.test(namespv));
 ok("persist() is used only inside serialized ops: the runner's three and the adoption (the write is built under the lock)",
   adoptOp[0] > 0 && adoptOp[1] > adoptOp[0] && persistUses.length === 4 && persistUses.every(inLock));

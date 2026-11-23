@@ -5,6 +5,8 @@
 // before it (test/fill-reservation-verdict.test.mjs). Refuse only on positive evidence; absence, lag, errors and
 // garbage proceed.
 
+import { foregroundFetch } from "./netgate.js";
+
 const HASH_RE = /^0x[0-9a-f]{64}$/;
 const CLOSED = new Set(["cancelled", "filled", "expired"]);
 
@@ -75,7 +77,7 @@ export function startSecondSourceRead(base: string, route: "offer" | "record", i
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   (async () => {
     try {
-      const r = await fetch(`${base}/cairnx/${route}/${encodeURIComponent(key)}`, { signal: ac.signal });
+      const r = await foregroundFetch(`${base}/cairnx/${route}/${encodeURIComponent(key)}`, { signal: ac.signal });
       ans = { ok: r.ok, status: r.status, body: await r.json().catch(() => null) };
     } catch { ans = null; /* network error, timeout or abort: no evidence */ }
     finally { clearTimeout(timer); }

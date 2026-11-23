@@ -41,6 +41,7 @@ import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "
 import { checkSeals, sealRecord, type SealedChunk, type SealKey, type SealTable } from "./spvseal.js";
 import { chunkTop, sealableK, sealSeed, seededClient, SEED, type Seeded } from "./spvseed.js";
 import { bindBlock, bindSigner, toChainEvent, type ChainEvent } from "./spvbind.js";
+import { foreground, foregroundFetch, foregroundQuiet, onForeground } from "./netgate.js";
 
 
 export interface NameVerification {
@@ -111,7 +112,7 @@ export interface NameUnionFetch {
 }
 
 /** Fetch + union name-history hints (no merkle). Shared by verifyNameUnion and confirm-time skip. */
-export async function fetchNameUnion(name: string, sources: ResolverSource[], fetchImpl: typeof fetch = fetch): Promise<NameUnionFetch> {
+export async function fetchNameUnion(name: string, sources: ResolverSource[], fetchImpl: typeof fetch = foregroundFetch): Promise<NameUnionFetch> {
   const seen = new Set<string>();
   const uniq = sources.filter((s) => s.base && !seen.has(s.base.replace(/\/$/, "")) && seen.add(s.base.replace(/\/$/, "")));
   const fetched = await Promise.all(uniq.map((s) => fetchNameHistory(s, name, fetchImpl)));
@@ -353,7 +354,7 @@ async function fetchNameHistory(s: ResolverSource, name: string, fetchImpl: type
  * it is flagged. Fail-soft: 1 usable source → single-source (caution); ≥2 agree → strong; a disagreement is
  * flagged but the send still goes to the proven winner (the disagreeing source was lying/stale, not trusted).
  */
-export async function verifyNameUnion(name: string, sources: ResolverSource[], src: SpvSource, fetchImpl: typeof fetch = fetch): Promise<NameVerification> {
+export async function verifyNameUnion(name: string, sources: ResolverSource[], src: SpvSource, fetchImpl: typeof fetch = foregroundFetch): Promise<NameVerification> {
   try {
     const { results, usable, pairs, hints, conflict, existenceDisagree, belowFloor, scopeInsufficient } = await fetchNameUnion(name, sources, fetchImpl);
     if (usable.length === 0) {
@@ -588,7 +589,25 @@ const concatBytes = (parts: Uint8Array[]): Uint8Array => {
   for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
 };
-const yieldTask = () => new Promise<void>((r) => setTimeout(r, 0));
+// A task boundary: a timer, a network answer or a message queued meanwhile runs before the continuation. A nested
+// setTimeout(0) waits 4 ms in Chrome, so the worker yields through a MessageChannel; Node delivers a port's queued
+// messages without running timers, so there (the tests and the rig) it yields through setImmediate.
+// The channel is closed once no yield waits on it, so an idle worker holds no open port.
+const wakes: (() => void)[] = [];
+let wakeChannel: MessageChannel | null = null;
+export const yieldTask = (): Promise<void> => new Promise<void>((r) => {
+  const immediate = (globalThis as { setImmediate?: (f: () => void) => unknown }).setImmediate;
+  if (immediate) { immediate(r); return; }
+  if (!wakeChannel) {
+    const mc = wakeChannel = new MessageChannel();
+    mc.port1.onmessage = () => {
+      wakes.shift()?.();
+      if (!wakes.length && wakeChannel === mc) { mc.port1.close(); mc.port2.close(); wakeChannel = null; }
+    };
+  }
+  wakes.push(r);
+  wakeChannel.port2.postMessage(0);
+});
 const messageOf = (e: unknown) => String((e as Error)?.message || e);
 
 function verifyChunk(records: Uint8Array, spec: ChunkSpec): void {
@@ -694,7 +713,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // and each write checks this at the moment it would go out (test/namespv-dropped-source.test.mjs).
   const live = () => !opts.signal?.aborted;
   const dropped = () => new Error("the header source was replaced; its sync stopped");
-  const boundFetch = (...a: Parameters<typeof fetch>) => fetch(...a);
+  // The node reads of a lookup or a fill are foreground (netgate.ts); the background run's own tip read is not.
+  const boundFetch = (...a: Parameters<typeof fetch>) => foregroundFetch(...a);
   // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
   // default TIED the inner chain exactly; an abort could fire the instant the proxy's fallback
   // would have answered (timeout-inversion class, docs/Plans/66 B2).
@@ -703,6 +723,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // are read as text through `bodyClient` (same transport, timeout and size cap): bindBlockBody parses them itself.
   const rpcOpts = { baseUrl: opts.rpcBase.replace(/\/$/, ""), fetch: boundFetch, timeoutMs: 12_000 };
   const client = new CsdClient(rpcOpts);
+  const backgroundClient = new CsdClient({ ...rpcOpts, fetch: (...a: Parameters<typeof fetch>) => fetch(...a) });
   const bodyClient = new CsdClient({ ...rpcOpts, parseJson: (text: string) => ({ text }) });
   const headersBase = opts.headersBase.replace(/\/$/, "");
   // The /api/headers endpoint is budget-limited (DOS-HDR-1) and deadline-bounded (it answers a clean
@@ -760,7 +781,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   };
   const laneWidth = () => lane.width;
 
-  const fetchChunk = async (spec: ChunkSpec): Promise<Uint8Array> => {
+  // A chunk acquisition is a read a lookup, a fill or the restore waits on: foreground.
+  const fetchChunk = (spec: ChunkSpec): Promise<Uint8Array> => foreground(async () => {
     const out = new Uint8Array((spec.lastHeight - spec.firstHeight + 1) * HB);
     for (let p = spec.firstHeight - (spec.firstHeight % PAGE); p <= spec.lastHeight; p += PAGE) {
       const rows = await headersBatch(p, PAGE); // each request checks live() first, so a dropped source asks no next page
@@ -770,7 +792,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       }
     }
     return out;
-  };
+  });
 
   // BP4/N11: one serializer for every light-client mutation and every chunk acquisition, so concurrent consumers
   // of this shared source never interleave ingests and never fetch one chunk twice. A serialized op must never
@@ -944,17 +966,24 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     const key = await opts.sealKey!();
     return key ? { ...w, seals: sealRecord(key, table, list) } : w;
   };
-  // Moves the light client's base to the highest sealable chunk top it knows, re-ingesting the records above with
+  // The light client's records at heights lo to hi (both at or above its base).
+  const lcRecords = (lo: number, hi: number) => concatBytes(LC.chain.slice(lo - LC.baseHeight, hi - LC.baseHeight + 1).map((vh) => serializeHeader(vh.header)));
+  // Moves the light client's base to the highest sealable chunk top it knows, re-ingesting the headers above with
   // every check, so it holds 4,096 to 8,191 headers; the dropped chunks keep their tops (the shared helper's work base).
-  // The base stays at or below the persisted tip: the records it drops must already be in the store.
+  // The base stays at or below the persisted tip: the records it drops must already be in the store. It runs inside
+  // persist, a serialized op, so the held client does not change under it.
   const rebase = async (): Promise<void> => {
     const maxK = sealableK(Math.min(tipOf(LC), persistedTip));
     await walkedTops(maxK);
     const list = knownTops(maxK);
     const e = list[list.length - 1];
-    if (!e || chunkTop(e.k) - SEED + 1 <= LC.baseHeight) return;
-    const next = await seededClient(LC.toRecords(chunkTop(e.k) - SEED + 1), chunkTop(e.k), e.top, e.work, lcOpts);
-    if (next.failed || tipOf(next.client) !== tipOf(LC)) { console.warn("[namespv] rebase skipped: the held records did not re-verify", next.failed); return; }
+    const top = e ? chunkTop(e.k) : 0;
+    if (!e || top - SEED + 1 <= LC.baseHeight) return;
+    const next = await seededClient(lcRecords(top - SEED + 1, top), top, e.top, e.work, lcOpts);
+    if (next.failed) { console.warn("[namespv] rebase skipped: the held records did not re-verify", next.failed); return; }
+    const held = LC;
+    try { await ingestSliced(next.client, top + 1, tipOf(held) - top, (h) => held.chain[h - held.baseHeight]!); }
+    catch (err) { console.warn("[namespv] rebase skipped: the held records did not re-verify", err); return; }
     tops = list;
     LC = next.client;
     workBase = next.workBase;
@@ -1024,7 +1053,6 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   interface Seed { top: number; hash: string; work: bigint | null; tail: Uint8Array; tops: SealedChunk[] }
   const tableSeed = (): Seed => ({ top: newest, hash: table.newestHash, work: null, tail: tableBase.tail, tops: [] });
   // The held records at heights lo to hi from the walked run and the light client, or null when they do not hold them.
-  const lcRecords = (lo: number, hi: number) => concatBytes(LC.chain.slice(lo - LC.baseHeight, hi - LC.baseHeight + 1).map((vh) => serializeHeader(vh.header)));
   const heldRecords = (lo: number, hi: number): Uint8Array | null => {
     if (lo >= LC.baseHeight) return lcRecords(lo, hi);
     if (!walked.length || lo < walkFrom) return null;
@@ -1045,7 +1073,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // Invariant 5: a chain replaces the held one only when it verified above the held tip and carries more work, so the
   // held tip never falls (test/namespv-reseed-bounded.test.mjs 4 and 5, through each seed).
   const adopts = (fresh: Seeded) => tipOf(fresh.client) > tipOf(LC) && reseedAdopts(heldWork(), { chainwork: fresh.client.chainwork + fresh.workBase }); // MUTATE_ABOVE_HELD
-  const syncFresh = (fresh: Seeded, to: number, going: () => boolean = live) => syncPages(() => fresh.client, to, lanePage, { step: async (op) => op(), live: going, width: laneWidth });
+  type Page = (from: number, count: number, cancel?: AbortSignal) => Promise<{ header: BlockHeader; hash: string }[]>;
+  const syncFresh = (fresh: Seeded, to: number, page: Page, going: () => boolean = live) => syncPages(() => fresh.client, to, page, { step: async (op) => op(), live: going, width: laneWidth });
   // The one adoption site. The acquirer's detached writes, decided under the replaced tops, land before this chain's
   // rewrite is queued, so both writers then write only this chain's bytes for a chunk. Nothing of the replaced chain
   // above the seed stays: the LRU entries and tops above the seed chunk go (an LRU entry also answers only its spec's
@@ -1090,7 +1119,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (sealed) {
       const f = await seedClient(sealed).catch(() => null);
       if (f) {
-        try { await syncFresh(f, want); fresh = f; seed = sealed; }
+        try { await syncFresh(f, want, lookupPage); fresh = f; seed = sealed; }
         catch (e) {
           const m = messageOf(e);
           if (CLOCK_FAULT.test(m)) throw clockRefusal(m);
@@ -1101,14 +1130,14 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     }
     if (!fresh) {
       fresh = await seedClient(seed);
-      try { await syncFresh(fresh, want); }
+      try { await syncFresh(fresh, want, lookupPage); }
       catch (e) { throw freshFailure(e, fresh, newest); }
     }
     // `want` can sit far below the node tip (a name's record height plus the cushion), where an honest winning branch
     // may still hold less work than the held branch has at its tip; the comparison is made at the node tip in that case,
     // so the refusal below is never an artefact of a low `want`.
     if (!adopts(fresh) && nodeTipSeen > tipOf(fresh.client)) { // MUTATE_RESEED_TO_TIP
-      try { await syncFresh(fresh, nodeTipSeen); }
+      try { await syncFresh(fresh, nodeTipSeen, lookupPage); }
       catch (e) { throw freshFailure(e, fresh, seed.top); }
     }
     // A valid chain with no more work than the one held (a fork decayed to low difficulty with spread timestamps) is
@@ -1124,9 +1153,11 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (tipOf(LC) - seed.top > RESEED_BOUND) return false; // MUTATE_BOUNDED_TABLE
     try {
       const fresh = await seedClient(seed);
-      // It yields to a lookup that arrives meanwhile: its pages stop, and the lookup's own reseed runs next. A chain it
-      // stopped short is judged like any other: below the held tip it is not adopted, whatever its work.
-      await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE), () => live() && !lookupWant()); // MUTATE_BOUNDED_YIELDS
+      // It yields to a lookup that arrives meanwhile: its pages stop, those in flight or waiting are cancelled, and the
+      // lookup's own reseed runs next. A chain it stopped short is judged like any other: below the held tip it is not
+      // adopted, whatever its work.
+      const stop = arrival.signal, page = runPage(() => true);
+      await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE), (f, n, c) => page(f, n, c ? AbortSignal.any([c, stop]) : stop), () => live() && !lookupWant()); // MUTATE_BOUNDED_YIELDS
       return await adopt(fresh, seed);
     } catch (e) { console.warn("[namespv] background reseed stopped; the next lookup syncs:", e); return false; }
   };
@@ -1138,6 +1169,35 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const waiters = new Set<Waiter>();
   let target = 0, running = false, lastBackground = -Infinity, nodeTipSeen = 0;
   let syncing: { from: number } | null = null;
+  // Aborted when a lookup starts waiting: the background pages waiting on the foreground go ahead as its pages.
+  let arrival = new AbortController();
+  // A page of a run: a lookup's while one waits (foreground), else a background page, which starts only once the
+  // foreground has been quiet for QUIET_MS and is cancelled and asked again when a foreground request starts while it
+  // is in flight (netgate.ts), so a balance, a send or a name's reads do not share the link or the host's connections
+  // with it.
+  const runPage = (background: () => boolean): Page => async (from, count, cancel) => {
+    const stops = [opts.signal, cancel].filter((x): x is AbortSignal => !!x);
+    while (background()) {
+      const lookup = arrival.signal;
+      try { await foregroundQuiet(AbortSignal.any([lookup, ...stops])); } // MUTATE_QUIET_GATE
+      catch (e) {
+        if (!live()) throw dropped();
+        if (!lookup.aborted || cancel?.aborted) throw e;
+        continue;
+      }
+      if (!background()) break;
+      const giveWay = new AbortController();
+      // Once a lookup waits, a page in flight is the lookup's: its own reads do not cancel it.
+      const off = onForeground(() => { if (background()) giveWay.abort(); }); // MUTATE_GIVE_WAY
+      try { return await lanePage(from, count, AbortSignal.any([giveWay.signal, ...stops])); }
+      catch (e) {
+        if (!live()) throw dropped();
+        if (!giveWay.signal.aborted || cancel?.aborted) throw e;
+      } finally { off(); }
+    }
+    return foreground(() => lanePage(from, count, cancel));
+  };
+  const lookupPage = runPage(() => false);
   const settle = () => { for (const w of waiters) if (w.want <= tipOf(LC)) { waiters.delete(w); w.done(); } };
   const failAbove = (e: unknown) => {
     settle();
@@ -1152,7 +1212,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       while (live() && tipOf(LC) < target) {
         try {
           // While a lookup waits, each window aims at its height, so its pages are not shared with the background's.
-          await syncPages(() => LC, () => lookupWant() || target, lanePage, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
+          await syncPages(() => LC, () => lookupWant() || target, runPage(() => !lookupWant()), { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
         } catch (e) {
           failed = true;
           // Verified progress is kept before the failure is classified; it never advances the lapse floor, which moves
@@ -1199,7 +1259,12 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const reach = (want: number): Promise<void> => {
     if (want <= tipOf(LC)) return Promise.resolve();
     if (!live()) return Promise.reject(dropped());
-    return new Promise<void>((done, fail) => { waiters.add({ want, done, fail }); raise(want); });
+    return new Promise<void>((done, fail) => {
+      waiters.add({ want, done, fail });
+      arrival.abort(); // MUTATE_ARRIVAL
+      arrival = new AbortController();
+      raise(want);
+    });
   };
   opts.signal?.addEventListener("abort", () => failAbove(dropped()), { once: true }); // MUTATE_DROP_REJECTS
   // No background run offline, with Save-Data on, or within BACKGROUND_GAP_MS of the last one.
@@ -1212,7 +1277,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (now < lastBackground) lastBackground = now; // MUTATE_GAP_CLAMP
     if (now - lastBackground < BACKGROUND_GAP_MS) return;
     lastBackground = now;
-    client.tip().then((t) => {
+    backgroundClient.tip().then((t) => {
       const n = Number(t?.height);
       if (Number.isSafeInteger(n) && n > 0) { nodeTipSeen = n; raise(n); }
     }, (e) => console.warn("[namespv] node tip unreadable; no background sync this time:", e));
@@ -1398,6 +1463,19 @@ export function makeSerializer(): <T>(op: () => Promise<T>) => Promise<T> {
 
 /** A light client as a sync drives it: its tip and the vendored `ingest`, which runs every consensus check. */
 export interface Ingesting { baseHeight: number; chain: { length: number }; ingest(height: number, header: BlockHeader, claimedHash?: string): unknown }
+
+/**
+ * Ingests `count` headers from height `from` into `lc`, strictly by height, with a task boundary every INGEST_SLICE
+ * headers (512 headers take about 11 ms, measured), so a balance or a send queued meanwhile runs between slices. The
+ * one sliced ingest: a page of the sync and the rebase's re-ingest. A throw stops it at that height.
+ */
+export async function ingestSliced(lc: Ingesting, from: number, count: number, at: (h: number) => { header: BlockHeader; hash?: string }): Promise<void> {
+  for (let j = 0; j < count; j++) {
+    if (j && j % INGEST_SLICE === 0) await yieldTask(); // MUTATE_INGEST_SLICE
+    const r = at(from + j);
+    lc.ingest(from + j, r.header, r.hash);
+  }
+}
 export interface PageRun {
   /** Runs one page's ingest: the source's serializer for its shared client, so reads run between pages. */
   step(op: () => Promise<void>): Promise<void>;
@@ -1443,14 +1521,8 @@ export async function syncPages(lc: () => Ingesting, want: number | (() => numbe
         // A task boundary before each page's ingest, so the worker answers a balance or a send between pages.
         await yieldTask();
         if (!going()) return;
-        // One page's ingest (about 11 ms for 512 headers, measured) yields every INGEST_SLICE headers, so no task of
-        // the sync holds the worker for a page; the serializer still runs the page as one op.
-        await run.step(async () => {
-          for (let j = 0; j < count; j++) {
-            if (j && j % INGEST_SLICE === 0) await yieldTask(); // MUTATE_INGEST_SLICE
-            lc().ingest(from + j, rows[j]!.header, rows[j]!.hash);
-          }
-        });
+        // The serializer runs the page as one op; its ingest is sliced, so no task of the sync holds the worker for a page.
+        await run.step(() => ingestSliced(lc(), from, count, (h) => rows[h - from]!));
         run.afterPage?.();
       }
     } finally { cancel.abort(); } // MUTATE_WINDOW_CANCEL
