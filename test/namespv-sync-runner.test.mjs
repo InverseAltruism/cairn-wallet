@@ -223,13 +223,21 @@ console.log("4c. an aim raised while a lookup's run closes starts the next run (
   const src = await liveSpvSource(opts(storeTo(140000)));
   resetLog();
   await src.prepare(141000 - 12);
-  const forLookup = hdr.reqs.length;
-  // The popup's prewarm as the balance answers, while the lookup's run is in its closing persist.
+  // A chunk read queued on the serializer right after the lookup was answered holds the run's closing persist; the
+  // popup's prewarm raises the aim meanwhile, after the run's last check of it.
+  hdr.hold = (from) => from < 131072;
+  const read = src.hashAt(108000);
+  await until(() => hdr.held.length > 0);
+  const forLookup = hdr.reqs.filter((r) => r.from > 131071).length;
   net.tip = SEAL_TOP;
   src.background();
-  await until(() => hdr.reqs.length > forLookup); await quiet();
+  await tick(100);
+  hdr.hold = () => false;
+  release();
+  await read;
+  await until(() => hdr.reqs.filter((r) => r.from > 141000).length > 0); await quiet();
   const tip = (await src.prepare(0)).verifiedTip;
-  check(`the background run goes on to the node tip (${tip}) in ${hdr.reqs.length - forLookup} requests after the lookup's ${forLookup}`, tip === SEAL_TOP && hdr.reqs.length > forLookup);
+  check(`the background run goes on to the node tip (${tip}) in ${hdr.reqs.filter((r) => r.from > 141000).length} requests after the lookup's ${forLookup}`, tip === SEAL_TOP);
   net.tip = SEAL_TOP;
   await flushSpvStoreWrites();
 }

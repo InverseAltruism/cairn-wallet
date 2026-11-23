@@ -15,6 +15,13 @@
   wallet drops (another API or RPC, another vault, a reset) requests and writes nothing more and answers a wait only
   at a height it verified, and a fill's check refuses headers that stop below the node tip. Sends to an address are
   unchanged (docs/DESIGN-namespv-scaling.md, "The sync and its runner").
+- A balance, a send or a name check made while the headers sync in the background does not wait on it: no header
+  page of the background sync starts while one of them is in flight or within 250 ms of it, a page in flight when
+  one starts is cancelled and asked again later, and the sync lets the wallet answer every 128 headers, also when it
+  re-checks the headers it holds. After a background re-sync was refused, the background sync of that header source
+  waits 2 minutes, then twice as long each time up to 32, so a hostile header server gets 5 background runs in an
+  hour of an open popup instead of 60. A name check whose header source was dropped under it (another API or RPC,
+  another vault) asks the current source once more, so it verifies as 0.3.5 did.
 - After a browser start, the restore of the stored block headers starts from the newest stored 4,096-header chunk
   that the wallet verified earlier and sealed under a key derived from the unlocked vault, and checks only the headers
   above it with every rule. Before, it checked every stored header above the newest built-in hash, a cost that grew

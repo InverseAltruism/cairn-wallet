@@ -64,10 +64,10 @@ const hashOn = (name, h) => rowOf(name, h)?.hash ?? null;
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 // The served world: `chain` answers every page (A to 146,829), `tip` is the node tip; `garbageAbove` serves a header
 // that links to nothing above that height; `hold(from)` keeps a page until `release()`. `log` lists the page requests.
-const net = { chain: "A", tip: SEAL_TOP, garbageAbove: Infinity, hold: () => false, held: [], log: [], inflight: 0, tips: 0, short: () => false };
+const net = { chain: "A", tip: SEAL_TOP, garbageAbove: Infinity, hold: () => false, held: [], log: [], inflight: 0, tips: 0, short: () => false, aborted: 0 };
 const release = () => { for (const r of net.held.splice(0)) r(); };
 const garbage = (h) => ({ height: h, header: { ...headerOf(SEAL_TOP), prev: hex(createHash("sha256").update(`garbage ${h}`).digest()) }, hash: hex(createHash("sha256").update(`g ${h}`).digest()) });
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, init) => {
   const u = String(url);
   const m = /\/api\/headers\/(\d+)\/(\d+)$/.exec(u);
   if (m) {
@@ -75,7 +75,7 @@ globalThis.fetch = async (url) => {
     net.log.push(from);
     net.inflight++;
     try {
-      if (net.hold(from)) await new Promise((r) => net.held.push(r));
+      if (net.hold(from)) await new Promise((r, rej) => { net.held.push(r); init?.signal?.addEventListener("abort", () => { net.aborted++; rej(init.signal.reason); }, { once: true }); });
       if (from + n - 1 > net.tip) return json({ ok: false, error: "headers unavailable" }, 502);
       if (net.short(from)) return json({ ok: true, from, count: n, headers: [] });
       const rows = [];
@@ -254,9 +254,11 @@ console.log("6b. a lookup that arrives during the background reseed does not wai
   serve("L34", 152000, { hold: (from) => from > topOf(33) && from < 146432 && !arrived });
   src.background();
   await until(() => net.held.length > 0);
-  const atArrival = net.log.length;
+  const atArrival = net.log.length, abortedBefore = net.aborted;
   arrived = true;
   const lookup = src.prepare(146900 - 12).then((r) => `verified ${r.verifiedTip}`, (e) => String(e?.message ?? e));
+  await until(() => net.aborted > abortedBefore, 200);
+  const cancelled = net.aborted - abortedBefore, stillHeld = net.held.length;
   release();
   const out = await lookup;
   // The run that answers the lookup starts again at the held tip (its first request at 146,830, to the lookup's height;
@@ -265,6 +267,7 @@ console.log("6b. a lookup that arrives during the background reseed does not wai
   const backgroundAfter = after.indexOf(SEAL_TOP + 1);
   check(`the background reseed asked ${backgroundAfter} more pages after the lookup arrived; the lookup is answered by its own reseed (${out.slice(0, 60)})`,
     backgroundAfter === 0 && /less proof of work/.test(out));
+  check(`  its ${cancelled} pages in flight were cancelled when the lookup started waiting (${stillHeld} still held)`, cancelled > 0);
   await settled();
 }
 

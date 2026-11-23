@@ -87,12 +87,23 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   (`IN_FLIGHT` 5, `WIDEN_WITHIN_MS`; runner 1 and 1b). Five leaves one of Chrome's six HTTP/1.1 connections to the host
   free for the balance and a send, which go to the same host. While a lookup waits, each window aims at the lookup's
   height (runner 2b). Pages may arrive in any order; the rows are ingested strictly by height, one page per serialized
-  op after a task boundary, so a lookup's or a fill's reads (a chunk acquisition, a sealed read) run between pages and
-  the worker answers a balance between them. Each request keeps its own ladder (15 s, Retry-After on 429, the 502 and
+  op, so a lookup's or a fill's reads (a chunk acquisition, a sealed read) run between pages. A page's ingest and the
+  rebase's re-ingest of the held headers (once the client holds 65,536) yield to the worker's other tasks every 128
+  headers (`ingestSliced`), through a MessageChannel task (a nested `setTimeout(0)` waits 4 ms in Chrome; in Node, the
+  tests' runtime, through `setImmediate`), so a balance or a send is answered between slices (netgate 1 and 2). Each request keeps its own ladder (15 s, Retry-After on 429, the 502 and
   503 retries); a page that fails fails the sync once the pages below it are ingested, and the other pages of its
   window are cancelled. After each window the verified tail is persisted (a detached write), so a worker stopped
   mid-sync resumes from the last window whose write had committed, and asks again only what it had not stored
   (runner 3).
+- The foreground first (`netgate.ts`): the requests a user waits on are counted while in flight: the balance, a
+  send's coins, their source transactions and the submit, the node tip, the name service, a lookup's or a fill's
+  block and transaction reads (all through `foregroundFetch`), and a lookup's own header pages and chunk reads. A
+  background page starts only once none has been in flight for 250 ms (`QUIET_MS`), and a background page in flight
+  when one starts is cancelled and asked again later; once a lookup waits, the run's pages are its pages and wait for
+  nothing. The background run's own node tip read is not counted. A counted request stops counting after 30 s
+  (`HOLD_MAX_MS`), above the longest timeout a wallet request carries, so one that does not settle does not hold the
+  background sync. The popup's and the approval window's own reads (the USD line, the domain list, a name record)
+  run in their own contexts and are not counted (netgate 3 to 6).
 - The background run: the popup sends `prewarmSpv` once the balance has answered or failed (`popup-render.ts`), and
   the wallet's `syncSpv` builds the source and starts the run to the node tip, unlocked only (locked, and from the
   install hook, `prewarmSpv` builds the source and syncs nothing). So no header request goes before the balance
@@ -117,8 +128,13 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   lookup's own reseed runs next, so the lookup's wait is its own work (6b). What one background run can cost a
   hostile header host's target: the window that broke (at most `IN_FLIGHT` pages), the reseed (at most
   `BOUNDED_PAGES`) and, after an adoption, the rest of the way to the node tip; 22 requests and about 3.6 MB before an
-  adoption (166 kB a page: 36,982,177 bytes over 223 pages measured), at most one run a minute while the popup is open,
-  about 1,320 requests and 220 MB an hour. A back-off after a refused reseed (a longer gap) would cut that; not built.
+  adoption (166 kB a page: 36,982,177 bytes over 223 pages measured), at most one run a minute while the popup is open.
+  After a background reseed that was refused or failed (not on a transient failure, a drop or a yield to a lookup),
+  the source starts no background run for 2 minutes (`RESEED_BACKOFF_MS`), doubled after each further one up to 32
+  minutes (`RESEED_BACKOFF_MAX_MS`); an adoption ends it, and a lookup's run and reseed do not wait for it. Against a
+  host whose chain the reseed refuses, an hour of an open popup then starts 5 runs (minutes 0, 2, 6, 14 and 30) with
+  107 page requests (reseed-bounded 8); without it each of the 60 prewarms runs, with 1,317 page requests (the same test with the back-off removed). A transient failure in a run
+  or in its reseed backs nothing off (8b, 8c). The back-off lives with the source, so a new worker starts without it.
 - One adoption site, serialized: it waits for the acquirer's pending writes, takes the fresh client, deletes the LRU
   entries above the seed chunk, keeps the remembered tops at and below the seed (none for a table seed) and rewrites
   the store from the chunk above the seed. A seal seed's tops are the adopted chain's own, since it links to the
@@ -130,7 +146,9 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   retries stop; a page that answers after the drop is not ingested (test/namespv-dropped-source.test.mjs, one case per
   site and 50 drops at random points). Its waits above its tip are refused at once, as 0.3.5 answered `prepare` only at
   a height it reached, and the fill's burial scan also refuses verified headers that stop below the node tip it read
-  (`servedTip`; test/fill-dropped-source.test.mjs, on the real `Wallet.fillOffer`). A restore or catch-up parked on the
+  (`servedTip`; test/fill-dropped-source.test.mjs, on the real `Wallet.fillOffer`). A name lookup whose source was
+  dropped under it asks the current source once more (`names.ts` `verifyName`, one retry), as 0.3.5's old source
+  went on to verify; a buy keeps the refusal (test/spv-endpoint-race.test.mjs 5 and 5b). A restore or catch-up parked on the
   unlock signal ends without work. The headers of one run and its reseed therefore come from the one host the source
   was built on; a host change builds a new source (there is one header host per configured API: the second host of
   the default RPC serves node reads, not `/api/headers`).

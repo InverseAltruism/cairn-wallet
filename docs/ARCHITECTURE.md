@@ -246,7 +246,11 @@ Beside it:
     reseed per run: with a lookup waiting from the newest seal, then the table; with none, the bounded reseed (the
     newest seal, or the table within 8,191 of the held tip, 17 pages at most), which yields to a lookup that arrives.
     One adoption site: a chain verified above the held tip with more work. A source the wallet drops (endpoint, vault,
-    reset) requests and writes nothing more and refuses its waits above its tip.
+    reset) requests and writes nothing more and refuses its waits above its tip; a name lookup on it asks the current
+    source once more (`names.ts`). Background pages give way to the foreground (`netgate.ts`: none starts while a
+    request a user waits on is in flight or ended less than 250 ms before, and one in flight is cancelled and asked
+    again); a page's ingest and the rebase's re-ingest yield every 128 headers (`ingestSliced`). After a refused
+    background reseed the source's background runs wait 2 minutes, doubling up to 32; an adoption ends the wait.
   - Store, sync, migration and the union's lapse and badge rules: `docs/DESIGN-namespv-scaling.md`.
 - `spvnewest.ts`: the anchor table's newest height alone, written by the generator beside `spvanchors.ts`.
   `chainbound.ts`: `heightOf` (a served tip or stored floor counts only as a positive safe integer) and
@@ -361,7 +365,9 @@ dir: both files must be byte-identical to the committed ones.
   once. A loopback RPC has no second host.
 - Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15 s with
   Retry-After-aware 429 and 502/503 backoff, at most five header pages in flight per sync of a source (`IN_FLIGHT`,
-  adapting to the link), one background header run per 60 s (`BACKGROUND_GAP_MS`), none offline or with Save-Data.
+  adapting to the link), one background header run per 60 s (`BACKGROUND_GAP_MS`), none offline or with Save-Data,
+  none for 2 to 32 minutes after a refused background reseed (`RESEED_BACKOFF_MS`, `RESEED_BACKOFF_MAX_MS`), and no
+  background page while a foreground request is in flight or within 250 ms of one (`QUIET_MS`, `netgate.ts`).
 - CairnX read API /trade/api (12 s); clarvis /trade/api (name-history union always, resolve fallback, 12 s).
 - Rate limits: the front door rate-limits per IP; the wallet's fan-out is bounded (send-path input verify at 8
   concurrent, the fclaim fill-scan block fetch at 12), so legitimate flows stay under the per-IP budget.

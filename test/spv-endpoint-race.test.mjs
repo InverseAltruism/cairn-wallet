@@ -134,7 +134,7 @@ try {
     w.spvBuildForTest = async (opts) => make(opts.headersBase === API_B ? "B" : opts.headersBase === API_A ? "A" : "C", opts);
     await w.create("pw-spv-race-5");
     const pending = w.resolveName(NM);
-    while (!prepared.length) await new Promise((r) => setTimeout(r, 1));
+    for (let i = 0; i < 2000 && !prepared.length; i++) await new Promise((r) => setTimeout(r, 1));
     await w.setApi(API_B);
     gate?.();
     const r = await pending;
@@ -143,9 +143,9 @@ try {
     prepared.length = 0; dropB = true;
     await w.setApi(API_A);
     const p2 = w.resolveName(NM);
-    while (!prepared.length) await new Promise((r) => setTimeout(r, 1));
+    for (let i = 0; i < 2000 && !prepared.length; i++) await new Promise((r) => setTimeout(r, 1));
     await w.setApi(API_B);
-    while (!prepared.includes("B")) await new Promise((r) => setTimeout(r, 1));
+    for (let i = 0; i < 2000 && !prepared.includes("B"); i++) await new Promise((r) => setTimeout(r, 1));
     await w.setApi("https://api3.cairn-substrate.test");
     const r2 = await p2;
     check(`(5b) two sources asked (${asked()}), the answer is the served address unverified (verified=${r2.verified})`, asked() === "A,B" && r2.ok === true && r2.verified === false && r2.addr === TARGET);

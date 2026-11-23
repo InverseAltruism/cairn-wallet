@@ -168,6 +168,22 @@ console.log("5. a lookup's own pages do not wait for the foreground:");
   await quiet(); await flushSpvStoreWrites();
 }
 
+console.log("5b. background pages waiting on the foreground go ahead as a lookup's pages once it waits:");
+{
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  await tick(QUIET_MS * 2);
+  reset();
+  // A foreground request held in flight: the background run's pages wait for it.
+  let end; const op = foreground(() => new Promise((r) => { end = r; }));
+  src.background();
+  await tick(300);
+  const waitedPages = hdr.reqs.length;
+  const r = await Promise.race([src.prepare(137000 - 12).then((x) => x.verifiedTip), tick(3000).then(() => "waited")]);
+  end(); await op;
+  check(`no background page went out while the request was in flight (${waitedPages}); a lookup then verified to ${r} with it still in flight`, waitedPages === 0 && r === 137000);
+  await quiet(); await flushSpvStoreWrites();
+}
+
 console.log("6. every wallet request in src/core and the worker goes through the gate:");
 {
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");

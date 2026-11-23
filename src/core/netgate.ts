@@ -9,7 +9,7 @@
  *  follow each other within it (the coins, their source transactions, the submit), so a page does not slip between. */
 export const QUIET_MS = 250;
 /** A counted request stops counting after this, above the longest timeout a wallet request carries (a submit's 20 s),
- *  so a request that never settles cannot hold the background sync for the life of the worker. */
+ *  so a request that does not settle holds the background sync for at most this long (test/netgate.test.mjs 3). */
 export const HOLD_MAX_MS = 30_000;
 
 let inFlight = 0;
