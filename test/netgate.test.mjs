@@ -224,6 +224,32 @@ console.log("5d. the page that holds the lookup's height, planned for the backgr
   await flushSpvStoreWrites();
 }
 
+console.log("5e. a cut page in the middle of a wide window ends that window; the run goes on from the lookup's height:");
+{
+  // A first lookup widens the source's lane; the background window from 138,000 then holds four or five pages, and a
+  // lookup for 138,700 needs its second only to there.
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  await src.prepare(138000 - 12);
+  await tick(QUIET_MS * 2);
+  reset();
+  hdr.hold = () => true;
+  src.background();
+  await until(() => hdr.held.size >= 3);
+  const window = hdr.reqs.length;
+  hdr.hold = () => false;
+  const tip = await src.prepare(138700 - 12).then((x) => x.verifiedTip, (e) => String(e?.message ?? e));
+  const mark = hdr.reqs.length;
+  await quiet();
+  const end = (await src.prepare(0)).verifiedTip;
+  const after = hdr.reqs.slice(mark).map((r) => r.from);
+  // After the lookup the run asks the rest of the cut page (as its whole aligned page, 138,240, the edge-cached URL)
+  // and the pages above: none is ingested out of order, so no reseed asks below the cut page.
+  const below = after.filter((f) => f < 138240).length;
+  check(`a window of ${window} pages; the lookup verified to ${tip}; the run then reaches ${end} in ${after.length} requests, ${below} below the cut page, with the honest headers (${await sample(src, 136001, SEAL_TOP)} wrong)`,
+    window >= 3 && tip === 138700 && end === SEAL_TOP && below === 0 && (await sample(src, 136001, SEAL_TOP)) === 0);
+  await flushSpvStoreWrites();
+}
+
 console.log("6. every wallet request in src/core and the worker goes through the gate:");
 {
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
