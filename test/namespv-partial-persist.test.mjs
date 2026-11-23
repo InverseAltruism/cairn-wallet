@@ -1,16 +1,16 @@
 // Partial-progress persistence for the namespv header sync (BP8b), against the header store.
 //
 // Defect shape: the suffix was persisted only after a FULLY successful sync, so a rate-limited (429'd) cold
-// bootstrap persisted nothing and every retry restarted from the baked anchor. syncWithPartialPersist calls
-// `persist` after each fully synced SYNC_PERSIST_WINDOW, and prepare()'s catch persists the verified tail before
-// classifying the failure, so the next attempt resumes and bills only the remaining span.
+// bootstrap persisted nothing and every retry restarted from the baked anchor. syncPages calls `afterWindow` after
+// each window of IN_FLIGHT pages, which the runner wires to persist, and the runner's catch persists the verified
+// tail before classifying the failure, so the next attempt resumes and bills only the remaining span.
 //
 // Three layers (cf. spv-serializer.test.mjs / namespv-reseed-recover.test.mjs):
-//   (1) BEHAVIORAL units on the exported syncWithPartialPersist, driven by a fake lc that follows the vendored
-//       LightClient contract the helper relies on (sync appends verified headers one by one, a mid-sync throw
-//       keeps the verified prefix in memory).
-//   (2) SOURCE pins that prepare() wires the helper inside the serialized block, persists the tail in its catch
-//       before classifying, and that no partial-persist path can advance the lapse floor.
+//   (1) BEHAVIORAL units on the exported syncPages, driven by a fake lc that follows the vendored LightClient
+//       contract it relies on (ingest appends one verified header at the next height) and a page source with a
+//       request budget (an exhausted 429 ladder throws).
+//   (2) SOURCE pins that the runner wires the persist after each window and in its catch before classifying, and
+//       that no partial-persist path can advance the lapse floor.
 //   (3) BEHAVIORAL storage-poisoning checks through the REAL liveSpvSource over real mainnet headers: a forged
 //       stored suffix record or a forged stored anchored chunk is never adopted, the verified one replaces it,
 //       and the unpoisoned store restores with no /api/headers request.
@@ -18,7 +18,7 @@
 // Run: npx tsx test/namespv-partial-persist.test.mjs   (offline)
 import { readFileSync } from "node:fs";
 import { deserializeHeader } from "../src/vendor/cairnx-spv.js";
-import { syncWithPartialPersist, SYNC_PERSIST_WINDOW, liveSpvSource, detachStoreWrite, flushSpvStoreWrites } from "../src/core/namespv.ts";
+import { syncPages, IN_FLIGHT, liveSpvSource, detachStoreWrite, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { checker } from "./helpers/check.mjs";
 import { records, hashOf, serveFixture, memStore, legacyOf, FIX_TOP, FIX_ANCHORS } from "./helpers/spvfixture.mjs";
 
@@ -29,104 +29,101 @@ const attempt = async (name, fn) => {
   catch (e) { t.check(`${name} (threw: ${e?.message ?? e})`, false); }
 };
 
-// Fake lc, faithful to the vendored contract: `net.budget` models the /api/headers request budget; when it runs
-// out mid-sync the transport throws like an exhausted 429 ladder, with the verified prefix retained in memory.
-function fakeLc(base, tipInclusive, net) {
+const PAGE = 512;
+// Fake lc, faithful to the vendored contract: ingest appends at the next height and refuses any other.
+function fakeLc(base, tipInclusive) {
   const lc = {
     baseHeight: base,
     chain: new Array(tipInclusive - base + 1).fill(0),
-    async sync(to) {
-      for (let h = tipOf(lc) + 1; h <= to; h++) {
-        if (net.budget <= 0) throw new Error("/api/headers 429");
-        net.budget--; net.billed++;
-        lc.chain.push(h);
-      }
-    },
+    ingest(h) { if (h !== tipOf(lc) + 1) throw new Error(`out-of-order ingest at ${h}`); lc.chain.push(h); },
   };
   return lc;
 }
+// `net.budget` models the /api/headers request budget: when it runs out the request throws like an exhausted 429
+// ladder. `net.asked` lists the first height of each request.
+const pagesOf = (net) => async (from, count) => {
+  net.asked.push(from);
+  if (net.budget-- <= 0) throw new Error("/api/headers 429");
+  return Array.from({ length: count }, () => ({ header: {}, hash: "0x" }));
+};
+const direct = (extra = {}) => ({ step: async (op) => op(), ...extra });
 
-console.log("syncWithPartialPersist - behavioral:");
-const W = SYNC_PERSIST_WINDOW;
-const BASE = 1000;
-const WANT = BASE + W * 2 + Math.floor(W / 2);      // about 2.5 windows: a long cold span
+console.log("syncPages - behavioral:");
+const W = IN_FLIGHT * PAGE;                          // one window: 3,072 headers
+const BASE = 1023;                                   // page-aligned above, so every request is a whole page
+const WANT = BASE + W * 2 + W / 2;                   // two and a half windows: a long cold span
 const SPAN = WANT - BASE;
 
-// The persisted tip survives "service worker death"; persist() takes no argument, so it reads the lc at call time.
+// The persisted tip survives "service worker death"; the persist reads the lc at call time.
 const persisted = [];
+let resumeFrom = 0;
 await attempt("a 429 partway through a cold sync persists window progress and fails closed", async () => {
-  const net = { budget: W + Math.floor(W / 4), billed: 0 };   // dies mid window 2
-  const lc = fakeLc(BASE, BASE, net);
+  const net = { budget: IN_FLIGHT + 2, asked: [] };  // dies at the third page of window 2
+  const lc = fakeLc(BASE, BASE);
   let threw = false;
-  try { await syncWithPartialPersist(() => lc, WANT, () => { persisted.push(tipOf(lc)); }); } catch { threw = true; }
-  // window 1 (BASE + W) fully synced and persisted; window 2 died mid-flight, its verified prefix stays in
-  // memory for the caller's catch-tail persist (pinned at the source below).
-  return threw && persisted.length === 1 && persisted[0] === BASE + W && tipOf(lc) === BASE + net.billed;
+  try { await syncPages(() => lc, WANT, pagesOf(net), direct({ afterWindow: async () => { persisted.push(tipOf(lc)); } })); } catch { threw = true; }
+  // window 1 fully synced and persisted; window 2's two pages before the failure stay in memory for the runner's catch.
+  resumeFrom = tipOf(lc);
+  return threw && persisted.length === 1 && persisted[0] === BASE + W && tipOf(lc) === BASE + W + 2 * PAGE;
 });
-t.check("persist is called exactly on a window boundary, never on a torn tip", persisted.every((p) => (p - BASE) % W === 0));
+t.check("persist is called exactly on a window boundary, never on a torn tip", persisted.length > 0 && persisted.every((p) => (p - BASE) % W === 0));
 
-await attempt("the NEXT attempt resumes from the persisted tip: heights billed < the full span", async () => {
-  const net2 = { budget: Number.MAX_SAFE_INTEGER, billed: 0 };
-  const lc2 = fakeLc(BASE, persisted[0], net2);
-  await syncWithPartialPersist(() => lc2, WANT, () => {});
-  await lc2.sync(WANT);                                       // prepare()'s final leg
-  return net2.billed === WANT - persisted[0] && net2.billed < SPAN && tipOf(lc2) === WANT;
+await attempt("the NEXT attempt resumes from the persisted tip: heights asked < the full span", async () => {
+  const net2 = { budget: Number.MAX_SAFE_INTEGER, asked: [] };
+  const lc2 = fakeLc(BASE, persisted[0]);
+  await syncPages(() => lc2, WANT, pagesOf(net2), direct());
+  return net2.asked[0] === persisted[0] + 1 && WANT - persisted[0] < SPAN && tipOf(lc2) === WANT && resumeFrom > persisted[0];
 });
 
-await attempt("a sync shorter than one window never enters the loop: zero persists (warm hot path)", async () => {
-  const net = { budget: Number.MAX_SAFE_INTEGER, billed: 0 };
-  const lc = fakeLc(BASE, BASE, net);
-  let calls = 0;
-  await syncWithPartialPersist(() => lc, BASE + W - 1, () => { calls++; });
-  return calls === 0 && net.billed === 0;                     // the final leg belongs to the caller
+await attempt("a daily sync (three pages) is one window: one persist, at its end", async () => {
+  const net = { budget: Number.MAX_SAFE_INTEGER, asked: [] };
+  const lc = fakeLc(BASE, BASE);
+  const at = [];
+  await syncPages(() => lc, BASE + 3 * PAGE - 100, pagesOf(net), direct({ afterWindow: async () => { at.push(tipOf(lc)); } }));
+  return at.length === 1 && at[0] === BASE + 3 * PAGE - 100 && net.asked.length === 3;
 });
 
 await attempt("a persist that goes through the detached writer on a FAILING store is fail-soft: the sync completes", async () => {
-  const net = { budget: Number.MAX_SAFE_INTEGER, billed: 0 };
-  const lc = fakeLc(BASE, BASE, net);
+  const net = { budget: Number.MAX_SAFE_INTEGER, asked: [] };
+  const lc = fakeLc(BASE, BASE);
   const store = memStore({ failWrite: () => true });
   const warns = [];
   const realWarn = console.warn;
   console.warn = (...a) => { warns.push(a.join(" ")); };
   try {
-    await syncWithPartialPersist(() => lc, BASE + W * 2 + 5, () => detachStoreWrite(store, { put: [{ k: 8, records: new Uint8Array(84) }] }));
+    await syncPages(() => lc, BASE + W * 2 + 5, pagesOf(net), direct({ afterWindow: async () => detachStoreWrite(store, { put: [{ k: 8, records: new Uint8Array(84) }] }) }));
     await flushSpvStoreWrites();
   } finally { console.warn = realWarn; }
-  return tipOf(lc) >= BASE + W * 2 && store.writes.length >= 1 && store.writes.every((w) => w.failed) && warns.some((w) => /header store write failed/.test(w));
+  return tipOf(lc) === BASE + W * 2 + 5 && store.writes.length >= 1 && store.writes.every((w) => w.failed) && warns.some((w) => /header store write failed/.test(w));
 });
 
 // ── (2) source pins ──
-console.log("\nliveSpvSource.prepare use-site (BP8b wiring, source-pinned):");
+console.log("\nliveSpvSource runner use-site (BP8b wiring, source-pinned):");
 const src = readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8");
-const pStart = src.indexOf("async prepare(maxEventHeight");
-const pEnd = src.indexOf("async blockAt(", pStart);
-const prep = src.slice(pStart, pEnd);
-t.check("prepare() body located", pStart > 0 && pEnd > pStart);
-
-const wired = /serializeSync\(\s*async[\s\S]{0,700}?await syncWithPartialPersist\(\(\) => LC, want, persist\);[\s\S]{0,300}?await syncAligned\(LC, want\)/;
-t.check("prepare() runs syncWithPartialPersist(() => LC, want, persist) INSIDE the serialized block, BEFORE the final syncAligned leg", wired.test(prep));
-t.check("exactly one syncWithPartialPersist call site (an unwrapped second sync path would escape the serializer)",
-  (src.match(/await syncWithPartialPersist\(/g) || []).length === 1);
+const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
+const run = code.slice(code.indexOf("const run = async (): Promise<void> => {"), code.indexOf("const raise = "));
+const prep = code.slice(code.indexOf("async prepare(maxEventHeight"), code.indexOf("async blockAt("));
+t.check("the runner and prepare() located", run.length > 200 && prep.length > 200);
+const wired = /await syncPages\(\(\) => LC, target, pageBatch, \{[^}]*\bafterWindow: \(\) => serializeSync\(persist\)[^}]*\}\);/;
+t.check("the runner's page sync persists after each window, inside the serializer", wired.test(run));
 // The catch persists the verified tail BEFORE classifying transient-vs-structural.
-const catchIdx = prep.indexOf("} catch (e) {");
-const tailPersistIdx = prep.indexOf("persist();", catchIdx);
-const classifyIdx = prep.indexOf("const msg = String((e as Error)");
+const catchIdx = run.indexOf("} catch (e) {");
+const tailPersistIdx = run.indexOf("await serializeSync(persist);", catchIdx);
+const classifyIdx = run.indexOf("const msg = messageOf(e);", catchIdx);
 t.check("the catch calls persist() BEFORE the transient/structural classification",
   catchIdx > 0 && tailPersistIdx > catchIdx && classifyIdx > tailPersistIdx);
-const serIdx = prep.indexOf("await serializeSync(");
-const serEnd = prep.indexOf("const verifiedTip = tipOf(LC)");
-t.check("floorAdvance sits strictly AFTER the serialized block (a rethrow skips it: a partial persist never advances the floor)",
-  serIdx > 0 && serEnd > serIdx && prep.indexOf("floorAdvance(") > serEnd && !prep.slice(serIdx, serEnd).includes("floorAdvance("));
-const helperStart = src.indexOf("export async function syncWithPartialPersist");
-const helperDef = src.slice(helperStart, src.indexOf("\n}\n", helperStart) + 3);
-t.check("syncWithPartialPersist itself never touches the floor (no floorAdvance / opts.floor reference)",
+const reachIdx = prep.indexOf("await reach(want);");
+t.check("floorAdvance runs in prepare only after its wait settled (a refused wait skips it: a partial persist never advances the floor)",
+  reachIdx > 0 && prep.indexOf("floorAdvance(") > reachIdx && !/floorAdvance|opts\.floor/.test(run));
+const helperDef = code.slice(code.indexOf("export async function syncPages("));
+t.check("syncPages itself never touches the floor (no floorAdvance / opts.floor reference)",
   helperDef.length > 60 && !/floorAdvance|opts\.floor/.test(helperDef));
-const writeFn = src.slice(src.indexOf("const suffixWrite = "), src.indexOf("const persist = "));
-t.check("suffixWrite writes nothing when no header was ingested past the persisted tip", /if \(!store \|\| tip <= persistedTip\) return null;/.test(writeFn));
+const writeFn = code.slice(code.indexOf("const suffixWrite = "), code.indexOf("const persist = "));
+t.check("suffixWrite writes nothing when no header was ingested past the persisted tip (or the source was dropped)", /if \(!store \|\| tip <= persistedTip \|\| !live\(\)\) return null;/.test(writeFn));
 
 // MUTATION fixtures: the wiring guard must RED when the call is stripped back to persist-only-on-full-success.
-const wiredFixture = "await serializeSync(async () => {\n  try {\n    await syncWithPartialPersist(() => LC, want, persist);\n    await syncAligned(LC, want);\n  } catch (e) {}\n});";
-const strippedFixture = "await serializeSync(async () => {\n  try {\n    await syncAligned(LC, want);\n  } catch (e) {}\n});";
+const wiredFixture = "await syncPages(() => LC, target, pageBatch, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live });";
+const strippedFixture = "await syncPages(() => LC, target, pageBatch, { step: serializeSync, afterPage: settle, live });";
 t.check("wiring guard PASSES on the wired shape", wired.test(wiredFixture));
 t.check("MUTATION[persist-only-on-full-success]: wiring guard REDS on the stripped shape", !wired.test(strippedFixture));
 

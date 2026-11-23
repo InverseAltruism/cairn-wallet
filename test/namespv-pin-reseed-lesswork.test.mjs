@@ -5,7 +5,7 @@
 // Red with `reseedAdopts(LC, fresh)` at that site; the honest path (a production pin adopts at want) passes.
 import { checker } from "./helpers/check.mjs";
 import { serveFixture, memStore, legacyOf, records, hashOf, headerOf, forge, rehash, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
-import { liveSpvSource, flushSpvStoreWrites, syncAligned, SPV_CHECKPOINTS } from "../src/core/namespv.ts";
+import { liveSpvSource, flushSpvStoreWrites, syncPages, SPV_CHECKPOINTS } from "../src/core/namespv.ts";
 import { LightClient } from "../src/vendor/cairnx-spv.js";
 
 const { check, done } = checker("namespv-pin-reseed-lesswork: a reseed after a pin restore refuses a lower-work fork at the node tip");
@@ -26,7 +26,7 @@ function opts(store, pin) {
 async function workAt(tip) {
   const pages = async (from, count) => { const out = []; for (let h = from; h < from + count; h++) out.push({ header: headerOf(h), hash: hashOf(h) }); return out; };
   const { client } = await LightClient.fromRecords(records(NEWEST - SEED + 1, NEWEST), { firstHeight: NEWEST - SEED + 1, anchorHeight: NEWEST }, { headersBatchProvider: pages, checkpoints: SPV_CHECKPOINTS });
-  await syncAligned(client, tip);
+  await syncPages(() => client, tip, pages, { step: async (op) => op() });
   return client.chainwork;
 }
 async function firstSession(tip) {

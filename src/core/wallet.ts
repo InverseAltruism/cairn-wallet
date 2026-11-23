@@ -192,7 +192,8 @@ export class Wallet {
   // hint-set cache, whose header hashes came from it.
   async setRpc(u: string) { if (!rpcAllowed(u)) throw new Error(RPC_LOCAL_ERR); if (u !== this.rpc) this.endpointChanged(); this.rpc = u; await this.store.set("rpc", u); }
   async setApi(u: string) { if (!validRpcUrl(u)) throw new Error("API " + RPC_URL_ERR); if (u !== this.api) this.endpointChanged(); this.api = u; await this.store.set("api", u); }
-  private endpointChanged(): void { this._spvSrc = null; this._spvLive = null; this.spvGen++; this.nameHints.clear(); this.servedNames.clear(); }
+  // The dropped source is stopped: it requests and writes nothing more (namespv LiveSpvOpts.signal).
+  private endpointChanged(): void { this.spvStop?.abort(); this.spvStop = null; this._spvSrc = null; this._spvLive = null; this.spvGen++; this.nameHints.clear(); this.servedNames.clear(); }
   async setTradeApi(u: string) {
     if (u && !validRpcUrl(u)) throw new Error("trade API " + RPC_URL_ERR);
     const next = u || DEFAULT_TRADE_API;
@@ -888,7 +889,7 @@ export class Wallet {
   // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, the
   // session pin in chrome.storage.session that lets a worker restart walk the stored suffix instead of re-verifying it,
   // and the seal key getter with the unlock signal a sealed store waits for.
-  private spvOpts(): LiveSpvOpts {
+  private spvOpts(signal?: AbortSignal): LiveSpvOpts {
     const session = this.session, vault = this.vaultIdNow;
     return {
       rpcBase: this.rpc, headersBase: this.api,
@@ -903,7 +904,9 @@ export class Wallet {
       // The source pins and seals only under the vault it was built for: a new vault gets a new source (spvSource).
       ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => (this.vaultIdNow === vault ? session.set("spvPin", p) : Promise.resolve()) } } : {}),
       sealKey: () => (this.vaultIdNow === vault ? this.sealKey() : Promise.resolve(null)),
-      unlocked: () => (this.headersReleased ? Promise.resolve() : new Promise<void>((r) => this.unlockWaiters.push(r))),
+      // A source dropped while parked here wakes and ends its restore without work.
+      unlocked: () => (this.headersReleased || signal?.aborted ? Promise.resolve() : new Promise<void>((r) => { this.unlockWaiters.push(r); signal?.addEventListener("abort", () => r(), { once: true }); })),
+      ...(signal ? { signal } : {}),
     };
   }
   // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after
@@ -911,6 +914,7 @@ export class Wallet {
   private _spvSrc: Promise<SpvSource> | null = null;
   private _spvLive: SpvSource | null = null;   // the built source, for nameCheck's progress read
   private spvVault: string | null = null;      // the vault the source was built under
+  private spvStop: AbortController | null = null;   // aborted when the source is dropped
   // A lookup's source: it releases a source parked on the unlock signal.
   private spvSource(): Promise<SpvSource> {
     this.releaseHeaders();
@@ -921,7 +925,8 @@ export class Wallet {
     if (this._spvSrc && this.spvVault !== this.vaultIdNow) this.endpointChanged();
     if (!this._spvSrc) {
       this.spvVault = this.vaultIdNow;
-      const built: Promise<SpvSource> = (this.spvBuildForTest ?? liveSpvSource)(this.spvOpts()).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
+      this.spvStop = new AbortController();
+      const built: Promise<SpvSource> = (this.spvBuildForTest ?? liveSpvSource)(this.spvOpts(this.spvStop.signal)).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
       this._spvSrc = built;
       built.then((s) => { if (this._spvSrc === built) this._spvLive = s; }, () => { /* the catch above clears the build */ });
     }
@@ -933,6 +938,12 @@ export class Wallet {
   // it never extends the idle-lock (opening the popup is not a spend gesture).
   prewarmSpv(): void {
     void this.headerSource().catch(() => { /* best-effort; the real call retries and spvSource() self-resets on a build failure */ });
+  }
+  // The popup's prewarm, sent once the balance has answered: the build, then a background sync to the node tip, so a
+  // lookup after it finds the headers there. Locked, the build only (the install hook's prewarm).
+  syncSpv(): void {
+    if (!this.accts) return this.prewarmSpv();
+    void this.headerSource().then((s) => s.background?.(), () => { /* best-effort, as prewarmSpv */ });
   }
   // v1.8: the height-gated renewal fee priced at the CURRENT tip; for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.

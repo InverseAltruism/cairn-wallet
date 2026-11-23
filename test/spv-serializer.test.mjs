@@ -70,44 +70,36 @@ await okA("MUTATION[no chaining -> immediate run]: concurrent ops now OVERLAP (p
   return maxInFlight > 1;   // the real makeSerializer keeps this at 1; the mutant overlaps
 });
 
-// USE-SITE GUARD (N24 guard-of-the-guard). The primitive above is only worth anything if every sync runs inside it.
-// liveSpvSource constructs the real vendored LightClient (real PoW), so the wiring is pinned at the source.
+// USE-SITE GUARD (N24 guard-of-the-guard). The primitive above is only worth anything if every ingest into the shared
+// light client runs inside it. liveSpvSource constructs the real vendored LightClient (real PoW), so the wiring is
+// pinned at the source: the runner's page sync is the only sync of the shared client, and each of its pages is one
+// serialized op; the reseed's fresh client is private until the serialized adoption takes it.
 console.log("\nliveSpvSource use-site (BP4/N11 wiring, source-pinned):");
 const nspvSrc = readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8");
 // Comments are stripped so prose mentioning a call cannot count as, or hide, a call site.
 const code = nspvSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
-const pStart = code.indexOf("async prepare(maxEventHeight");
-const prep = code.slice(pStart, code.indexOf("async blockAt(", pStart));
-const serStart = prep.indexOf("await serializeSync(async () => {");
-const serEnd = prep.indexOf("const verifiedTip = tipOf(LC)");
-const block = prep.slice(serStart, serEnd);
 const norm = (m) => m.replace(/\s+/g, " ");
-const sites = (text) => [...text.matchAll(/await (sync(?:WithPartialPersist|Aligned)\([^;]*?\));/g)].map((m) => norm(m[1]));
-
-ok("prepare() body and its serialized block located", pStart > 0 && serStart > 0 && serEnd > serStart);
-// The other serialized op is the seal catch-up, whose rebase replaces the light client; it runs no sync.
-ok("two serializeSync ops in the file: prepare's block and the seal catch-up", (code.match(/\bserializeSync\(/g) || []).length === 2 && /\bserializeSync\(catchUp\)/.test(code));
-// The fourth site is the reseed's sync on to the node tip when the work comparison at `want` is undecided.
-const PREP_SITES = "syncWithPartialPersist(() => LC, want, persist) | syncAligned(LC, want) | syncAligned(fresh, want) | syncAligned(fresh, nodeTip)";
-ok("the four prepare-level sync call sites are exactly syncWithPartialPersist(LC), syncAligned(LC), syncAligned(fresh, want) and syncAligned(fresh, nodeTip), in that order",
-  sites(prep).join(" | ") === PREP_SITES);
-ok("every one of them sits INSIDE the serialized block (a sync outside it would race the shared light client)",
-  sites(block).length === 4 && sites(block).join() === sites(prep).join());
-ok("the file's whole sync call-site set is that, plus syncAligned inside syncWithPartialPersist (reached only from the serialized block): an unwrapped new sync trips this",
-  sites(code).join(" | ") === `${PREP_SITES} | syncAligned(lc(), next)`);
-ok("no direct light-client sync outside syncAligned (only lc.sync inside the helper)",
-  (code.match(/\b(?:LC|fresh|lc|next|pass)\.(?:client\.)?sync\(/g) || []).join() === "lc.sync(");
-ok("the serializer is constructed before the block that uses it", code.indexOf("const serializeSync = makeSerializer()") > 0 && code.indexOf("const serializeSync = makeSerializer()") < code.indexOf("await serializeSync("));
+const sites = (text) => [...text.matchAll(/syncPages\((\(\) => [^,]+), [^,]+, pageBatch, \{ step: ([^,}]+)/g)].map((m) => norm(`${m[1]} step ${m[2].trim()}`));
+const SITES = "() => fresh.client step async (op) => op() | () => LC step serializeSync";
+ok("the page syncs in the file are exactly the shared client's, stepped by serializeSync, and the private fresh client's", sites(code).join(" | ") === SITES);
+ok("syncPages is called at those two sites only (an unwrapped new sync of the shared client trips this)", (code.match(/\bsyncPages\(/g) || []).length === 3 && /export async function syncPages\(/.test(code));
+ok("no light-client ingest or sync outside syncPages (only c.ingest inside it)",
+  (code.match(/\.ingest\(/g) || []).join() === ".ingest(" && /c\.ingest\(from \+ j/.test(code) && !/\b(?:LC|fresh|lc|next|pass|client)\.(?:client\.)?sync\(/.test(code));
+const sync = code.slice(code.indexOf("export async function syncPages("));
+ok("syncPages ingests each page only inside run.step", /await run\.step\(async \(\) => \{ const c = lc\(\); for \(let j = 0; j < count; j\+\+\) c\.ingest\(/.test(sync));
+const adoptSite = code.slice(code.indexOf("const adopt = "), code.indexOf("\n  });", code.indexOf("const adopt = ")));
+ok("the fresh client becomes the shared one only inside a serialized op (the adoption site)", /^const adopt = \(fresh: Seeded, seed: Seed\) => serializeSync\(async \(\) => \{/.test(adoptSite) && /LC = fresh\.client;/.test(adoptSite));
+ok("the other serialized ops: the adoption, the run's three persists and the seal catch-up, whose rebase replaces the client; none syncs",
+  (code.match(/\bserializeSync\(/g) || []).length === 5 && /\bserializeSync\(catchUp\)/.test(code) && (code.match(/serializeSync\(persist\)/g) || []).length === 3);
+ok("the serializer is constructed before its first use", code.indexOf("const serializeSync = makeSerializer()") > 0 && code.indexOf("const serializeSync = makeSerializer()") < code.indexOf("serialize: serializeSync"));
 ok("chunk acquisition gets the same serializer: chunkAcquirer({ ..., serialize: serializeSync, ... }), constructed once",
   (code.match(/\bchunkAcquirer\(/g) || []).length === 1 && /chunkAcquirer\(\{[^}]*\bserialize: serializeSync\b[^}]*\}\)/.test(code));
 
-// MUTATION fixtures (repo idiom): the sync-site pin must RED when a sync escapes the block.
-const inBlock = (text) => sites(text.slice(text.indexOf("await serializeSync("), text.indexOf("\n});") + 4)).join(" | ");
-const goodBlock = "await serializeSync(async () => {\n try {\n await syncWithPartialPersist(LC, want, persist);\n await syncAligned(LC, want);\n } catch (e) { await syncAligned(fresh, want); }\n});";
-const nakedBlock = "await serializeSync(async () => {\n try {\n await syncWithPartialPersist(LC, want, persist);\n } catch (e) { await syncAligned(fresh, want); }\n});\nawait syncAligned(LC, want);";
-const expected = "syncWithPartialPersist(LC, want, persist) | syncAligned(LC, want) | syncAligned(fresh, want)";
-ok("site pin PASSES on the wrapped fixture", inBlock(goodBlock) === expected);
-ok("MUTATION[a sync moved out of the serialized block]: the in-block set no longer matches", inBlock(nakedBlock) !== expected);
+// MUTATION fixtures (repo idiom): the site pin must RED when the shared client's pages are stepped outside the lock.
+const goodRun = "syncPages(() => fresh.client, to, pageBatch, { step: async (op) => op(), live }); await syncPages(() => LC, target, pageBatch, { step: serializeSync, live });";
+const nakedRun = "syncPages(() => fresh.client, to, pageBatch, { step: async (op) => op(), live }); await syncPages(() => LC, target, pageBatch, { step: async (op) => op(), live });";
+ok("site pin PASSES on the wrapped fixture", sites(goodRun).join(" | ") === SITES);
+ok("MUTATION[the shared client's pages stepped outside the serializer]: the site set no longer matches", sites(nakedRun).join(" | ") !== SITES);
 
 // Behavioral, through the real liveSpvSource over real mainnet headers.
 console.log("\nliveSpvSource concurrency (BP4/N11, behavioral):");

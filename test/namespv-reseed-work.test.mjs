@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { LightClient, HEADER_BYTES } from "../src/vendor/cairnx-spv.js";
-import { reseedAdopts, SPV_CHECKPOINTS, syncAligned, liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
+import { reseedAdopts, SPV_CHECKPOINTS, syncPages, liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
 import { records, row, hashOf, serveFixture, memStore, legacyOf, forge, rehash, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
 
 let n = 0;
@@ -38,7 +38,7 @@ const pages = async (from, count) => { const out = []; for (let h = from; h < fr
 async function clientTo(tip) {
   const { client, failed } = await LightClient.fromRecords(seed, { firstHeight: NEWEST - SEED + 1, anchorHeight: NEWEST }, { headersBatchProvider: pages, checkpoints: SPV_CHECKPOINTS });
   assert.equal(failed, undefined);
-  if (tip > NEWEST) await syncAligned(client, tip);
+  if (tip > NEWEST) await syncPages(() => client, tip, pages, { step: async (op) => op() });
   return client;
 }
 const tipOf = (lc) => lc.baseHeight + lc.chain.length - 1;
@@ -145,15 +145,19 @@ await test("honest path: with no extra work on the held branch the reseed adopts
   assert.deepEqual(log, ["115001/50", "114688/363"], "the break and the reseed to `want`");
 });
 
-await test("use-site: prepare's reseed adopts the fresh client only through reseedAdopts, before `LC = fresh`", async () => {
+await test("use-site: the one adoption site takes a fresh client only through reseedAdopts, after it synced", async () => {
   const src = readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8");
-  const prep = src.slice(src.indexOf("async prepare(maxEventHeight"), src.indexOf("async blockAt(", src.indexOf("async prepare(maxEventHeight")));
-  const guard = prep.indexOf("if (!reseedAdopts(heldWork(), fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC));");
-  const adopt = prep.indexOf("LC = fresh;");
-  const freshSync = prep.indexOf("await syncAligned(fresh, want);");
-  assert.ok(guard > 0, "the reseed compares work through reseedAdopts");
-  assert.ok(freshSync > 0 && guard > freshSync, "the comparison runs after the fresh client synced to `want`");
-  assert.ok(adopt > guard, "the fresh client is adopted only after the comparison");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
+  assert.match(code, /const adopts = \(fresh: Seeded\) => tipOf\(fresh\.client\) > tipOf\(LC\) && reseedAdopts\(heldWork\(\), \{ chainwork: fresh\.client\.chainwork \+ fresh\.workBase \}\);/, "the decision is reseedAdopts on work counted from the same seed, above the held tip");
+  const site = code.slice(code.indexOf("const adopt = (fresh: Seeded, seed: Seed) => serializeSync(async () => {"));
+  const guard = site.indexOf("if (!live() || !adopts(fresh)) return false;"), take = site.indexOf("LC = fresh.client;");
+  assert.ok(guard > 0 && take > guard, "the adoption site decides before it takes the client");
+  assert.equal((code.match(/\bLC = /g) || []).length, 3, "LC is assigned at the restore, the rebase, the adoption and nowhere else");
+  for (const fn of ["const lookupReseed = ", "const boundedReseed = "]) {
+    const body = code.slice(code.indexOf(fn), code.indexOf("\n  };", code.indexOf(fn)));
+    const synced = body.indexOf("await syncFresh("), adopted = body.indexOf("await adopt(fresh, seed)");
+    assert.ok(synced > 0 && adopted > synced, `${fn.trim()} syncs the fresh client before it asks the adoption site`);
+  }
 });
 
 console.log(`namespv-reseed-work: ${n} passed, 0 failed`);

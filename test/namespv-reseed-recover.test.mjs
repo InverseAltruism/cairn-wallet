@@ -4,8 +4,8 @@
 //   per-source recovery routes to the honest proof, flags the poisoner, never trusts a served claim.
 //
 // M12 is exercised end-to-end in name2-union-poc.mjs [B]/[B2]. This file adds the transport-level M8
-// transient-vs-structural split, which name2 does not cover. The reseed source is the newest anchor's chunk held
-// in memory (no request); the stored suffix is replaced only after the fresh client has synced to `want`.
+// transient-vs-structural split, which name2 does not cover. The reseed seeds from the newest seal or from the newest
+// anchor's chunk held in memory (no request); the stored suffix is replaced only after the fresh client has synced.
 //
 // Run: npx tsx test/namespv-reseed-recover.test.mjs   (offline)
 import { readFileSync } from "node:fs";
@@ -24,44 +24,46 @@ console.log("M8 (B5e) - transient-vs-structural sync self-heal:");
 // (1) the LC binding is mutable (a const cannot be reseeded in place).
 check("liveSpvSource holds LC in a reassignable binding (reseed target)", /\blet LC = restored\.client;/.test(src));
 
-// (2) the sync is wrapped so a throw is classified, not blindly propagated.
-const prepStart = src.indexOf("async prepare(maxEventHeight");
-const prepEnd = src.indexOf("async blockAt(", prepStart);
-const prep = src.slice(prepStart, prepEnd);
-check("prepare() wraps the LC syncs in a try/catch inside the serialized block (M8 self-heal)",
-  /serializeSync\(async \(\) => \{[\s\S]*?try \{[\s\S]*?await syncAligned\(LC, want\)[\s\S]*?\} catch \(e\) \{/.test(prep));
+// (2) the runner's sync is wrapped so a throw is classified, not blindly propagated.
+const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
+const run = code.slice(code.indexOf("const run = async (): Promise<void> => {"), code.indexOf("const raise = "));
+check("the runner wraps the shared client's page sync in a try/catch (M8 self-heal)",
+  /try \{\s*await syncPages\(\(\) => LC, target, pageBatch,[^;]*;\s*\} catch \(e\) \{/.test(run));
 
-// (3) A clock fault and a TRANSIENT failure rethrow (the store is kept, DOS-HDR-3); only a STRUCTURAL break
-// reseeds. The classifier is the ONE exported isTransientSyncError (imported above), called at the throw site.
-const catchIdx = prep.indexOf("} catch (e) {");
-const clockIdx = prep.indexOf("CLOCK_FAULT.test(msg)) throw clockRefusal(msg);", catchIdx);
-const transientIdx = prep.indexOf("isTransientSyncError(msg)) throw e;", catchIdx);
-const reseedIdx = prep.indexOf("await seedFromAnchor()", catchIdx);
-check("a transient class rethrows (KEEP the store, DOS-HDR-3)", transientIdx > catchIdx);
+// (3) The verified progress is persisted first; a clock fault and a TRANSIENT failure stop the run with their own error
+// (the store is kept, DOS-HDR-3); only a STRUCTURAL break reseeds. The classifier is the ONE exported
+// isTransientSyncError (imported above), called at the throw site.
+const catchIdx = run.indexOf("} catch (e) {");
+const persistIdx = run.indexOf("await serializeSync(persist);", catchIdx);
+const clockIdx = run.indexOf("if (CLOCK_FAULT.test(msg)) { failAbove(clockRefusal(msg)); break; }", catchIdx);
+const transientIdx = run.indexOf("if (isTransientSyncError(msg)) { failAbove(e); break; }", catchIdx);
+const reseedIdx = Math.min(...["await lookupReseed(want)", "await boundedReseed()"].map((x) => run.indexOf(x, catchIdx)));
+check("the verified progress is persisted before the failure is classified", persistIdx > catchIdx && persistIdx < clockIdx);
+check("a transient class stops the run with its own error (KEEP the store, DOS-HDR-3)", transientIdx > catchIdx);
 check("a clock fault is refused with the clock named, before any reseed (the store is kept)", clockIdx > catchIdx && clockIdx < reseedIdx);
-check("the reseed runs only after the transient rethrow: structural breaks only", reseedIdx > transientIdx && transientIdx > clockIdx);
+check("the reseed runs only after the transient stop: structural breaks only", reseedIdx > transientIdx && transientIdx > clockIdx);
 
-// FIX-1b (G8 review): the stored suffix is NOT dropped before the reseed. A write issued before the fresh
-// client has synced to `want` would replace an honest suffix with nothing if the reseed then failed. On reseed
-// success the persist after the block replaces it; on failure the old suffix stays and heals on the next prepare().
-const freshSyncIdx = prep.indexOf("await syncAligned(fresh, want);", reseedIdx);
-const adoptIdx = prep.indexOf("LC = fresh;", reseedIdx);
-const resetIdx = prep.indexOf("persistedTip = newest;", reseedIdx);
-const finalPersistIdx = prep.lastIndexOf("persist();");
+// FIX-1b (G8 review): the stored suffix is NOT dropped before the reseed. A write issued before the fresh client has
+// synced would replace an honest suffix with nothing if the reseed then failed. The reseed functions write nothing;
+// the adoption site sets persistedTip only after it took the fresh client, then persists the new suffix.
+const body = (fn) => code.slice(code.indexOf(fn), code.indexOf("\n  };", code.indexOf(fn)));
+const line = (fn) => code.slice(code.indexOf(fn), code.indexOf("\n", code.indexOf(fn)));
+const reseeds = [...["const lookupReseed = ", "const boundedReseed = ", "const sealSeedNow = "].map(body), ...["const seedClient = ", "const syncFresh = "].map(line)].join("\n");
 check("the reseed does not write the store between seeding and adoption (no clear-before-reseed nuke)",
-  reseedIdx > 0 && adoptIdx > reseedIdx && !/persist\(|detachStoreWrite|store\.|deleteAbove/.test(prep.slice(reseedIdx, adoptIdx)));
-check("the reseed builds the fresh client from the anchor chunk held in memory: no request, every pin enforced by seedTrusted",
-  /const seedFromAnchor = async \(\) => \(await seededClient\(tableBase\.tail, newest, table\.newestHash, null, lcOpts\)\)\.client;/.test(src)
-  && /const tableBase = \{ height: newest, hash: table\.newestHash, work: null as bigint \| null, tail: anchor\.subarray\(anchor\.length - SEED \* HB\) \};/.test(src));
-const seedDef = src.slice(src.indexOf("const seedFromAnchor ="), src.indexOf("\n", src.indexOf("const seedFromAnchor =")));
-check("seedFromAnchor makes no request (no fetch, header batch or chunk acquisition)", seedDef.length > 40 && !/fetch|Batch|acquire|client\./.test(seedDef));
-check("the reseed re-syncs to `want` BEFORE adopting the client (a lying-high header still throws -> fail-closed)",
-  freshSyncIdx > reseedIdx && adoptIdx > freshSyncIdx);
-check("the reseed resets persistedTip only AFTER adopting the fresh client, then the block persists the new suffix",
-  resetIdx > adoptIdx && finalPersistIdx > resetIdx);
+  reseeds.length > 400 && !/persist\(|detachStoreWrite|store\.|deleteAbove|persistedTip =/.test(reseeds));
+check("the table seed is the anchor chunk held in memory: no request, every pin enforced by seedTrusted",
+  /const tableSeed = \(\): Seed => \(\{ top: newest, hash: table\.newestHash, work: null, tail: tableBase\.tail, tops: \[\] \}\);/.test(code)
+  && /const tableBase = \{ height: newest, hash: table\.newestHash, work: null as bigint \| null, tail: anchor\.subarray\(anchor\.length - SEED \* HB\) \};/.test(code)
+  && /const seedClient = \(s: Seed\) => seededClient\(s\.tail, s\.top, s\.hash, s\.work, lcOpts\);/.test(code));
+const adoptSite = body("const adopt = ");
+const takeIdx = adoptSite.indexOf("LC = fresh.client;"), resetIdx = adoptSite.indexOf("persistedTip = seed.top;"), persistAt = adoptSite.indexOf("await persist();");
+check("the adoption site resets persistedTip only AFTER taking the fresh client, then persists the new suffix", takeIdx > 0 && resetIdx > takeIdx && persistAt > resetIdx);
+check("a lookup's reseed syncs the fresh client to `want` BEFORE asking the adoption site (a lying-high header still throws)",
+  body("const lookupReseed = ").indexOf("await syncFresh(fresh, want)") > 0 && body("const lookupReseed = ").indexOf("await syncFresh(fresh, want)") < body("const lookupReseed = ").indexOf("await adopt(fresh, seed)"));
 // The reseed's transient-before-pin order and the checkpoint copy are pinned by behaviour in namespv-store-pins.
 check("a clock fault during the reseeded sync is refused with the clock named, never pinRefusal",
-  /catch \(e2\) \{\s*const m2 = String\(\(e2 as Error\)\?\.message \|\| e2\);\s*if \(CLOCK_FAULT\.test\(m2\)\) throw clockRefusal\(m2\);/.test(prep));
+  /const freshFailure = [^\n]*\n\s*const m = messageOf\(e\);\s*if \(CLOCK_FAULT\.test\(m\)\) return clockRefusal\(m\);/.test(code)
+  && /if \(CLOCK_FAULT\.test\(m\)\) throw clockRefusal\(m\);/.test(body("const lookupReseed = ")));
 
 // (4) the classifier behaves: transient markers match, a prev-link break does NOT. TSA-5: assertions run
 // against the REAL exported isTransientSyncError, NOT a hand-duplicated copy, so dropping a marker from the

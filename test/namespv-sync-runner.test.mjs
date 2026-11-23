@@ -41,6 +41,8 @@ globalThis.fetch = async (url, init) => {
     return await served(url.replace(m[1], API), init);
   } finally { hdr.inflight--; }
 };
+// A background run has ended when no header request is in flight and none was made for 400 ms.
+const quiet = async () => { for (let n = -1; n !== hdr.reqs.length || hdr.inflight > 0;) { n = hdr.reqs.length; await tick(400); } };
 const resetLog = () => { hdr.reqs.length = 0; hdr.max = 0; hdr.hold = () => false; hdr.delay = () => 0; net.log.length = 0; };
 
 function storeTo(tip) {
@@ -74,11 +76,11 @@ console.log("1. six pages in flight, answered out of order, ingested by height:"
   // Within each window the later pages answer first.
   hdr.delay = (i) => (IN_FLIGHT - (i % IN_FLIGHT)) * 8;
   src.background();
-  await until(() => hdr.reqs.length > 0 && src.syncProgress() === null);
+  await until(() => hdr.reqs.length > 0); await quiet();
   const p = await src.prepare(SEAL_TOP - 12);
   const asked = hdr.reqs.map((r) => `${r.from}/${r.n}`);
   check(`the run requests the sequential plan's pages, each once (${asked.length} of ${plan(136000, SEAL_TOP).length})`, asked.join() === plan(136000, SEAL_TOP).join());
-  check(`  six in flight at most and at once (${hdr.max})`, hdr.max === IN_FLIGHT);
+  check(`  six in flight at most and at once (${hdr.max})`, hdr.max === 6);
   check(`  verified to ${p.verifiedTip}, every sampled height the chain's own (${await sample(src, 136001, SEAL_TOP)} differ)`, p.verifiedTip === SEAL_TOP && (await sample(src, 136001, SEAL_TOP)) === 0);
   await flushSpvStoreWrites();
 }
@@ -154,7 +156,7 @@ console.log("5. no background run within 60 s of the last, offline or with Save-
   resetLog();
   net.tip = 137000;
   src.background();
-  await until(() => hdr.reqs.length > 0 && src.syncProgress() === null);
+  await until(() => hdr.reqs.length > 0); await quiet();
   const first = hdr.reqs.length;
   net.tip = SEAL_TOP;
   clock += BACKGROUND_GAP_MS - 1000;
@@ -171,7 +173,7 @@ console.log("5. no background run within 60 s of the last, offline or with Save-
   const blocked = hdr.reqs.length - first;
   Object.defineProperty(globalThis, "navigator", nav ?? { value: undefined, configurable: true });
   src.background();
-  await until(() => hdr.reqs.length > first && src.syncProgress() === null);
+  await until(() => hdr.reqs.length > first); await quiet();
   const after = (await src.prepare(0)).verifiedTip;
   check(`the first run syncs (${first} requests); within 60 s, offline and with Save-Data nothing more (${inGap}, ${blocked})`, first > 0 && inGap === 0 && blocked === 0);
   check(`  past the gap, online, the next run syncs to the node tip (${after})`, after === SEAL_TOP);
@@ -213,7 +215,7 @@ console.log("6. the popup's prewarm starts the background run; the install hook'
   await w.unlock("correct horse battery");
   w.syncSpv();
   const s = await built[0].src;
-  await until(() => hdr.reqs.length > 0 && s.syncProgress() === null);
+  await until(() => hdr.reqs.length > 0); await quiet();
   check(`the install hook's prewarm makes no header request (${byInstall}), nor the popup's while locked (${locked})`, byInstall === 0 && locked === 0);
   check(`  unlocked, the popup's prewarm syncs to the node tip (${(await s.prepare(0)).verifiedTip}) in ${hdr.reqs.length} requests`, (await s.prepare(0)).verifiedTip === SEAL_TOP && hdr.reqs.length === plan(136000, SEAL_TOP).length);
   await flushSpvStoreWrites();

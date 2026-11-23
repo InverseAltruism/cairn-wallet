@@ -217,6 +217,8 @@ export interface AcquireDeps {
   /** Throws with a reason unless the records walk from the spec's first hash or prev hash to its last hash. */
   verify(records: Uint8Array, spec: ChunkSpec): void;
   fetchChunk(spec: ChunkSpec): Promise<Uint8Array>;
+  /** False once the caller's source is dropped: its detached writes stop with it. */
+  writable?: () => boolean;
 }
 
 export interface ChunkAcquirer {
@@ -234,7 +236,7 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
   let writeTail: Promise<void> = Promise.resolve();
   // Store writes are detached from the proof path: chained, and a failure is warned.
   const detachWrite = (w: StoreWrite) => {
-    if (!store) return;
+    if (!store || deps.writable?.() === false) return;
     writeTail = writeTail.then(() => store.write(w)).catch((e) => console.warn("[headerstore] chunk write failed (refetched next session):", e));
   };
   const tryStored = async (spec: ChunkSpec): Promise<Uint8Array | null> => {

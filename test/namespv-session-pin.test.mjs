@@ -27,7 +27,7 @@
 // Run: npx tsx test/namespv-session-pin.test.mjs   (offline)
 import { checker } from "./helpers/check.mjs";
 import { serveFixture, memStore, legacyOf, records, hashOf, headerOf, forge, rehash, FIX_TOP, FIX_ANCHORS, NEWEST } from "./helpers/spvfixture.mjs";
-import { liveSpvSource, flushSpvStoreWrites, syncAligned, SPV_CHECKPOINTS } from "../src/core/namespv.ts";
+import { liveSpvSource, flushSpvStoreWrites, syncPages, SPV_CHECKPOINTS } from "../src/core/namespv.ts";
 import { parsePin, walkToPin, latestTimeHolds } from "../src/core/spvpin.ts";
 import { SPV_ANCHORS } from "../src/core/spvanchors.ts";
 import { createHash } from "node:crypto";
@@ -73,7 +73,7 @@ function opts(store, pin, anchors = FIX_ANCHORS) {
 async function workAt(tip, newest = NEWEST) {
   const pages = async (from, count) => { const out = []; for (let h = from; h < from + count; h++) out.push({ header: headerOf(h), hash: hashOf(h) }); return out; };
   const { client } = await LightClient.fromRecords(records(newest - SEED + 1, newest), { firstHeight: newest - SEED + 1, anchorHeight: newest }, { headersBatchProvider: pages, checkpoints: SPV_CHECKPOINTS });
-  await syncAligned(client, tip);
+  await syncPages(() => client, tip, pages, { step: async (op) => op() });
   return client.chainwork.toString();
 }
 // A session that fills the store to `tip` and writes the pin (the first worker start of a browser session).

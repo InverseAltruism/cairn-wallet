@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The block headers sync in the background once the balance has answered, so a name check after it finds them
+  there: six header pages at a time, checked in height order, with name checks and fills reading between pages, and
+  the progress kept every 3,072 headers, so a sync cut short resumes where it stopped. Not more than once a minute,
+  and not offline or with Save-Data on. When the served chain stops linking, the background sync re-syncs only from
+  the newest sealed chunk or within 17 pages of the built-in hash; anything larger waits for a name check, which
+  re-syncs from the newest sealed chunk and, when the chain does not link there, from the built-in hash. A replacement chain is adopted only
+  above the verified tip and with more work, and the sealed chunks it shares stay. A header source the wallet drops
+  (another API or RPC, another vault, a reset) requests and writes nothing more. Sends to an address are unchanged
+  (docs/DESIGN-namespv-scaling.md, "The sync and its runner").
 - After a browser start, the restore of the stored block headers starts from the newest stored 4,096-header chunk
   that the wallet verified earlier and sealed under a key derived from the unlocked vault, and checks only the headers
   above it with every rule. Before, it checked every stored header above the newest built-in hash, a cost that grew
