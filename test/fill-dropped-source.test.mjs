@@ -199,12 +199,15 @@ async function backgroundRun(w) {
 
 console.log("4. a background run stopped at T2, then the endpoint changes during the buy's own node tip read:");
 {
-  const w = await walletFor(lapsing);
+  const built = [];
+  const w = await walletFor(lapsing, storeToH(), built);
   const outputs = serve(lapsing);
   Object.assign(net, { headerPages: [], submits: [], held: [], prepared: [], hold: () => false, fail500: (from) => from > T2 });
   await backgroundRun(w);
+  for (let i = 0; i < 2000 && (await built[0]?.hashAt(T2)) !== G.get(T2).hash; i++) await tick();
   net.fail500 = () => false;
-  check(`  setup: the run stopped at ${T2}, above the reservation (${lapsing.grantH}) and below the hold's end (${lapsing.holdEnd}): pages ${net.headerPages.map((p) => p.from).join(",")}`, net.headerPages.some((p) => p.from === 145920) && net.headerPages.every((p) => p.from <= T2 + 1));
+  const held = [await built[0].hashAt(T2), await built[0].hashAt(T2 + 1)];
+  check(`  setup: the run stopped at ${T2}, above the reservation (${lapsing.grantH}) and below the hold's end (${lapsing.holdEnd}): pages ${net.headerPages.map((p) => p.from).join(",")}`, held[0] === G.get(T2).hash && held[1] === null);
   net.inPrepare = false;
   net.holdTip = () => net.inPrepare;
   const pending = w.fillOffer({ proposalId: lapsing.fid, outputs });

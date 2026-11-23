@@ -1425,7 +1425,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** A signal that aborts with the first of `signals` to abort, and its reason: AbortSignal.any, which not every engine
  *  the manifest admits has. `done()` removes the listeners it added, so a long-lived signal (the source's) holds none
  *  for a request that has settled (test/namespv-no-signal-any.test.mjs). */
-function following(signals: readonly AbortSignal[]): { signal: AbortSignal; done(): void } {
+export function following(signals: readonly AbortSignal[]): { signal: AbortSignal; done(): void } {
   const ctl = new AbortController();
   const added: [AbortSignal, () => void][] = [];
   const done = () => { for (const [s, f] of added.splice(0)) s.removeEventListener("abort", f); };
