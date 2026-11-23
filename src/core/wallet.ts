@@ -16,6 +16,7 @@ import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { heightOf, lowestChainHeight } from "./chainbound.js";
 import { liveSpvSource, type LiveSpvOpts, type NameVerification, type SpvSource } from "./namespv.js";
 import type { SpvPin } from "./spvpin.js";
+import { sealKeyGetter } from "./spvseal.js";
 import { openHeaderStore } from "./headerstore.js";
 import { liveFillSpvSource, provenOfferPayto } from "./fillspv.js";
 import { refuse } from "./refuse.js";
@@ -94,7 +95,20 @@ export class Wallet {
   // derived AES key (so we can re-seal on changes without retaining the password).
   private accts: Acct[] | null = null;
   private active = 0;
-  private vaultKey: CryptoKey | null = null;
+  private heldVaultKey: CryptoKey | null = null;
+  private get vaultKey(): CryptoKey | null { return this.heldVaultKey; }
+  private set vaultKey(key: CryptoKey | null) { this.heldVaultKey = key; if (!key) this.headersReleased = false; }
+  // A header source parked while locked (a sealed store) resumes after an unlock once the balance has answered or a
+  // lookup asks for it, so its requests follow the balance's (invariant 10).
+  private headersReleased = false;
+  private unlockWaiters: (() => void)[] = [];
+  private releaseHeaders(): void {
+    if (!this.heldVaultKey) return;
+    this.headersReleased = true;
+    for (const wake of this.unlockWaiters.splice(0)) wake();
+  }
+  /** The header seal key, derived from the current vault key at each call (spvseal.ts). */
+  private readonly sealKey = sealKeyGetter(() => this.heldVaultKey);
   private salt = "";
   // The current vault's identifier: its PBKDF2 salt, 16 random bytes made with the vault (create, restore, import),
   // kept by every re-seal and erased with it, so it never repeats across a reset. Null with no vault.
@@ -415,6 +429,7 @@ export class Wallet {
       this.vaultKey = key; this.salt = v.salt; this.iter = v.iter;
       await this.applyDoc(doc);
       this.lastActive = Number(ts ?? Date.now());
+      this.releaseHeaders();
       return true;
     } catch { await this.lock(); return false; }       // bad/forged session → stay locked + clear (await: wipe the key before returning)
   }
@@ -596,7 +611,11 @@ export class Wallet {
     return { total, to: os.length === 1 ? String(os[0]?.to) : `${os.length} recipients` };
   }
 
-  balance() { return node.balance(this.rpc, this.addr()); }
+  balance() {
+    const answer = node.balance(this.rpc, this.addr());
+    answer.then(() => this.releaseHeaders(), () => this.releaseHeaders());
+    return answer;
+  }
   // The CSD/USD rate for the balance's USD line, from the configured Cairn API; display only (market.ts).
   csdMarket() { return csdMarket(this.api); }
   // Current epoch (= floor(tip/30), matching this wallet's own propose math); lets the approval
@@ -866,10 +885,11 @@ export class Wallet {
   tokenDisplayMeta(tickers: unknown) { return tokenDisplayMeta(this.viewIo, tickers); }
 
   // The SPV source's storage: the IndexedDB header store, the legacy chrome.storage.local snapshot it migrates
-  // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, and the
-  // session pin in chrome.storage.session that lets a worker restart walk the stored suffix instead of re-verifying it.
+  // and then deletes, (NAME-4) the node-tip high-water that keeps the lapse floor across worker restarts, the
+  // session pin in chrome.storage.session that lets a worker restart walk the stored suffix instead of re-verifying it,
+  // and the seal key getter with the unlock signal a sealed store waits for.
   private spvOpts(): LiveSpvOpts {
-    const session = this.session;
+    const session = this.session, vault = this.vaultIdNow;
     return {
       rpcBase: this.rpc, headersBase: this.api,
       store: () => openHeaderStore(),
@@ -880,16 +900,27 @@ export class Wallet {
         attempts: { get: async () => Number(await this.store.get("spvMigrateAttempts")) || 0, set: (n) => (n ? this.store.set("spvMigrateAttempts", n) : this.store.del("spvMigrateAttempts")) },
       },
       floor: { get: async () => Number(await this.store.get("spvNodeTipFloor")) || 0, set: (v) => this.store.set("spvNodeTipFloor", v) },
-      ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => session.set("spvPin", p) } } : {}),
+      // The source pins and seals only under the vault it was built for: a new vault gets a new source (spvSource).
+      ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => (this.vaultIdNow === vault ? session.set("spvPin", p) : Promise.resolve()) } } : {}),
+      sealKey: () => (this.vaultIdNow === vault ? this.sealKey() : Promise.resolve(null)),
+      unlocked: () => (this.headersReleased ? Promise.resolve() : new Promise<void>((r) => this.unlockWaiters.push(r))),
     };
   }
   // Lazily built SPV source (singleton per wallet), restored from the header store. Rebuilt on failure and after
   // setRpc/setApi change an endpoint; a failed build clears only itself, never a newer one.
   private _spvSrc: Promise<SpvSource> | null = null;
   private _spvLive: SpvSource | null = null;   // the built source, for nameCheck's progress read
+  private spvVault: string | null = null;      // the vault the source was built under
+  // A lookup's source: it releases a source parked on the unlock signal.
   private spvSource(): Promise<SpvSource> {
+    this.releaseHeaders();
+    return this.headerSource();
+  }
+  private headerSource(): Promise<SpvSource> {
     if (this.nameSpvForTest) return Promise.resolve(this.nameSpvForTest);
+    if (this._spvSrc && this.spvVault !== this.vaultIdNow) this.endpointChanged();
     if (!this._spvSrc) {
+      this.spvVault = this.vaultIdNow;
       const built: Promise<SpvSource> = (this.spvBuildForTest ?? liveSpvSource)(this.spvOpts()).catch((e) => { if (this._spvSrc === built) this._spvSrc = null; throw e; });
       this._spvSrc = built;
       built.then((s) => { if (this._spvSrc === built) this._spvLive = s; }, () => { /* the catch above clears the build */ });
@@ -901,7 +932,7 @@ export class Wallet {
   // so the real call rebuilds rather than inheriting a rejected promise. Popup-only + in READ_ONLY_METHODS, so
   // it never extends the idle-lock (opening the popup is not a spend gesture).
   prewarmSpv(): void {
-    void this.spvSource().catch(() => { /* best-effort; the real call retries and spvSource() self-resets on a build failure */ });
+    void this.headerSource().catch(() => { /* best-effort; the real call retries and spvSource() self-resets on a build failure */ });
   }
   // v1.8: the height-gated renewal fee priced at the CURRENT tip; for the popup's pre-spend estimate, so
   // the displayed cost matches what cairnxNameRenew will actually sign (WL-V18-1). Returns base units.
@@ -1145,6 +1176,9 @@ export class Wallet {
   async reset(): Promise<void> {
     this.wiped = true;
     this.vaultIdNow = null;
+    // The header source, its hints and the session pin belong to the vault being reset.
+    this.endpointChanged();
+    try { await this.session?.del("spvPin"); } catch (e) { console.warn("[wallet] session pin not cleared at reset:", e); }
     const wallets: PubAcct[] = (await this.store.get("wallets")) || [];
     await this.lock();
     const wipe = () => this.doReset(wallets);

@@ -59,7 +59,9 @@ The in-Chrome tests (`test/*-chrome.test.mjs`) need playwright-core (`PLAYWRIGHT
 Chromium (`PLAYWRIGHT_CHROMIUM`, a full Chromium: `popup-font-chrome` loads an unpacked extension, which the headless
 shell cannot); without them they print SKIP, and `CAIRN_E2E_REQUIRED=1` turns a SKIP into a failure. The page
 measurements the approval window's layout tests share (`measure`, `settle`, the line's words) are in
-`test/helpers/approve-measure.mjs`.
+`test/helpers/approve-measure.mjs`. `headerstore-kill-chrome` launches its own Chromium (`PLAYWRIGHT_CHROMIUM` or
+playwright-core's) on a temporary persistent profile, with the DevTools port the OS picks, so it can send SIGKILL to
+that one PID mid-write and relaunch on the same profile.
 
 Not part of `npm test`:
 

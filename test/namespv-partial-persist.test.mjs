@@ -58,7 +58,7 @@ await attempt("a 429 partway through a cold sync persists window progress and fa
   const net = { budget: W + Math.floor(W / 4), billed: 0 };   // dies mid window 2
   const lc = fakeLc(BASE, BASE, net);
   let threw = false;
-  try { await syncWithPartialPersist(lc, WANT, () => { persisted.push(tipOf(lc)); }); } catch { threw = true; }
+  try { await syncWithPartialPersist(() => lc, WANT, () => { persisted.push(tipOf(lc)); }); } catch { threw = true; }
   // window 1 (BASE + W) fully synced and persisted; window 2 died mid-flight, its verified prefix stays in
   // memory for the caller's catch-tail persist (pinned at the source below).
   return threw && persisted.length === 1 && persisted[0] === BASE + W && tipOf(lc) === BASE + net.billed;
@@ -68,7 +68,7 @@ t.check("persist is called exactly on a window boundary, never on a torn tip", p
 await attempt("the NEXT attempt resumes from the persisted tip: heights billed < the full span", async () => {
   const net2 = { budget: Number.MAX_SAFE_INTEGER, billed: 0 };
   const lc2 = fakeLc(BASE, persisted[0], net2);
-  await syncWithPartialPersist(lc2, WANT, () => {});
+  await syncWithPartialPersist(() => lc2, WANT, () => {});
   await lc2.sync(WANT);                                       // prepare()'s final leg
   return net2.billed === WANT - persisted[0] && net2.billed < SPAN && tipOf(lc2) === WANT;
 });
@@ -77,7 +77,7 @@ await attempt("a sync shorter than one window never enters the loop: zero persis
   const net = { budget: Number.MAX_SAFE_INTEGER, billed: 0 };
   const lc = fakeLc(BASE, BASE, net);
   let calls = 0;
-  await syncWithPartialPersist(lc, BASE + W - 1, () => { calls++; });
+  await syncWithPartialPersist(() => lc, BASE + W - 1, () => { calls++; });
   return calls === 0 && net.billed === 0;                     // the final leg belongs to the caller
 });
 
@@ -89,7 +89,7 @@ await attempt("a persist that goes through the detached writer on a FAILING stor
   const realWarn = console.warn;
   console.warn = (...a) => { warns.push(a.join(" ")); };
   try {
-    await syncWithPartialPersist(lc, BASE + W * 2 + 5, () => detachStoreWrite(store, { put: [{ k: 8, records: new Uint8Array(84) }] }));
+    await syncWithPartialPersist(() => lc, BASE + W * 2 + 5, () => detachStoreWrite(store, { put: [{ k: 8, records: new Uint8Array(84) }] }));
     await flushSpvStoreWrites();
   } finally { console.warn = realWarn; }
   return tipOf(lc) >= BASE + W * 2 && store.writes.length >= 1 && store.writes.every((w) => w.failed) && warns.some((w) => /header store write failed/.test(w));
@@ -103,8 +103,8 @@ const pEnd = src.indexOf("async blockAt(", pStart);
 const prep = src.slice(pStart, pEnd);
 t.check("prepare() body located", pStart > 0 && pEnd > pStart);
 
-const wired = /serializeSync\(\s*async[\s\S]{0,700}?await syncWithPartialPersist\(LC, want, persist\);[\s\S]{0,300}?await syncAligned\(LC, want\)/;
-t.check("prepare() runs syncWithPartialPersist(LC, want, persist) INSIDE the serialized block, BEFORE the final syncAligned leg", wired.test(prep));
+const wired = /serializeSync\(\s*async[\s\S]{0,700}?await syncWithPartialPersist\(\(\) => LC, want, persist\);[\s\S]{0,300}?await syncAligned\(LC, want\)/;
+t.check("prepare() runs syncWithPartialPersist(() => LC, want, persist) INSIDE the serialized block, BEFORE the final syncAligned leg", wired.test(prep));
 t.check("exactly one syncWithPartialPersist call site (an unwrapped second sync path would escape the serializer)",
   (src.match(/await syncWithPartialPersist\(/g) || []).length === 1);
 // The catch persists the verified tail BEFORE classifying transient-vs-structural.
@@ -125,7 +125,7 @@ const writeFn = src.slice(src.indexOf("const suffixWrite = "), src.indexOf("cons
 t.check("suffixWrite writes nothing when no header was ingested past the persisted tip", /if \(!store \|\| tip <= persistedTip\) return null;/.test(writeFn));
 
 // MUTATION fixtures: the wiring guard must RED when the call is stripped back to persist-only-on-full-success.
-const wiredFixture = "await serializeSync(async () => {\n  try {\n    await syncWithPartialPersist(LC, want, persist);\n    await syncAligned(LC, want);\n  } catch (e) {}\n});";
+const wiredFixture = "await serializeSync(async () => {\n  try {\n    await syncWithPartialPersist(() => LC, want, persist);\n    await syncAligned(LC, want);\n  } catch (e) {}\n});";
 const strippedFixture = "await serializeSync(async () => {\n  try {\n    await syncAligned(LC, want);\n  } catch (e) {}\n});";
 t.check("wiring guard PASSES on the wired shape", wired.test(wiredFixture));
 t.check("MUTATION[persist-only-on-full-success]: wiring guard REDS on the stripped shape", !wired.test(strippedFixture));

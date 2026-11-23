@@ -34,6 +34,21 @@ re-running every check. Changing any stored header breaks
 the chain, and the full checks run; after a browser start there is no pin (Chrome empties
 session storage when the browser closes), so the first restore runs them.
 
+Seals keep that cost flat across browser starts. For every stored 4,096-header chunk above the
+newest built-in hash and at least 4,096 blocks below the tip, the wallet stores a seal: an HMAC-SHA256 over the chunk's last block
+hash, the previous chunk's, the cumulative proof of work and the release's newest built-in hash,
+under a key derived from the vault key (an HMAC of it under a fixed label, computed when needed
+and not stored). A restore with the wallet unlocked starts from the newest sealed chunk whose
+stored headers still hash-link to their seal and checks only the headers above it with every
+rule; a seal whose chunk is missing or holds other headers counts as absent. Locked, the seals
+are ignored and every check runs, and while seals are stored the restore waits for unlock before
+it requests anything. Whoever can write the profile but cannot unlock the vault cannot make a
+seal, so tampering, any stored value in place of the seals included, still costs at worst a
+re-fetch and a rewrite. A reset drops the header source and the session pin with the vault, and a source still
+running from before the reset writes no seal under the next vault's key and no session pin. Whoever holds the unlocked vault (its key is
+in session storage while unlocked) can seal headers of their choice that a later restore trusts;
+that party can already spend.
+
 ## What the wallet trusts the RPC for
 
 Signing is local and the RPC can never alter what you sign, but the wallet does trust the

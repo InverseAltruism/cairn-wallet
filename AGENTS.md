@@ -106,8 +106,9 @@ Signing and funds:
   of the release (an `anchors` prefix in tests narrows the newest anchor, never the checkpoint map,
   test/namespv-anchor-prefix.test.mjs); a served chain that contradicts one fails closed with no fallback to an older
   entry (test/namespv-store-pins.test.mjs). Do not adopt a stored header without its walk to the table, its forward
-  verification, or its walk to the session pin (headers verified earlier in the same browser session): that check is
-  the storage-poisoning defence. When the node tip cannot be read, `prepare` syncs nothing and reports
+  verification, its walk to the session pin (headers verified earlier in the same browser session), or its walk to a
+  seal the unlocked vault's key proves (a seal that does not match is absent, never a refusal): that check is the
+  storage-poisoning defence. When the node tip cannot be read, `prepare` syncs nothing and reports
   `tipKnown: false`, and the fclaim fill lane refuses (test/spv-unknown-tip.test.mjs).
 - Display-only reads never reach a signature: `src/core/market.ts` (the USD line; test/usd-line.test.mjs scans for
   other importers) and `src/core/cairnxview.ts`.

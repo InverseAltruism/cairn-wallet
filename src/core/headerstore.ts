@@ -5,6 +5,7 @@
 // Nothing read from the store is trusted: acquisition verifies every chunk against its two baked
 // hashes before use. Every store failure (open, read, write) degrades to "no cache", not a refusal.
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
+import type { SealRecord } from "./spvseal.js";
 
 export const DB_NAME = "cairn-wallet-spv";
 export const DB_VERSION = 1;
@@ -56,6 +57,8 @@ export interface StoreWrite {
   /** Deletes every chunk key above this one (a suffix truncation). */
   deleteAbove?: number;
   head?: HeadHint;
+  /** The whole seal record (core/spvseal.ts), `meta` key "seals"; read back only through checkSeals. */
+  seals?: SealRecord;
 }
 
 export interface HeaderStore {
@@ -64,6 +67,8 @@ export interface HeaderStore {
   /** The stored bytes, or null when absent or not an ArrayBuffer (a malformed value is overwritten on refetch). */
   getChunk(k: number): Promise<Uint8Array | null>;
   getHead(): Promise<HeadHint | null>;
+  /** The stored seal record as read, unchecked (core/spvseal.ts checkSeals decides what it proves); null when absent. */
+  getSeals(): Promise<unknown>;
   /** Commits whole or not at all; resolves after the transaction completes, rejects on bad input. */
   write(w: StoreWrite): Promise<void>;
   close(): void;
@@ -131,21 +136,27 @@ function wrap(db: IDBDatabase): HeaderStore {
       const v = await reqP(db.transaction(META, "readonly").objectStore(META).get("head"));
       return isHeadHint(v) ? v : null;
     },
+    async getSeals() {
+      return (await reqP(db.transaction(META, "readonly").objectStore(META).get("seals"))) ?? null;
+    },
     async write(w) {
       for (const p of w.put ?? []) checkKey(p.k);
       for (const k of w.del ?? []) checkKey(k);
       if (w.deleteAbove !== undefined) checkKey(w.deleteAbove);
       if (w.head !== undefined && !isHeadHint(w.head)) throw new TypeError("header store head is malformed");
+      for (const e of w.seals?.list ?? []) checkKey(e.k);
       // One transaction, every request issued in this task: once control returns to the event loop with no
       // request pending, IndexedDB auto-commits, so a request after a timer or fetch await lands outside it
       // (test/headerstore-chrome.test.mjs pins both the single transaction and that failure in real Chrome).
       const tx = db.transaction([CHUNKS, META], "readwrite");
       const done = txDone(tx);
       const chunks = tx.objectStore(CHUNKS);
+      // Puts follow the range delete: a merged write (namespv mergeStoreWrites) can put above its own deleteAbove.
       if (w.deleteAbove !== undefined) chunks.delete(IDBKeyRange.lowerBound(w.deleteAbove, true));
       for (const k of w.del ?? []) chunks.delete(k);
       for (const p of w.put ?? []) chunks.put(p.records.slice().buffer, p.k);
       if (w.head) tx.objectStore(META).put(w.head, "head");
+      if (w.seals) tx.objectStore(META).put(w.seals, "seals");
       return done;
     },
     close() { db.close(); },
@@ -199,6 +210,8 @@ export interface AcquireDeps {
   /** The anchor table; SPV_ANCHORS unless the caller narrowed it to a prefix. */
   anchors?: readonly string[];
   lru: ChunkLru;
+  /** The spec of a chunk above the table that a verified seal names (its seal's top and the top below), else null. */
+  sealedSpec?: (k: number) => ChunkSpec | null;
   /** The caller's sync serializer, so concurrent proofs fetch one chunk once. */
   serialize: <T>(op: () => Promise<T>) => Promise<T>;
   /** Throws with a reason unless the records walk from the spec's first hash or prev hash to its last hash. */
@@ -207,10 +220,12 @@ export interface AcquireDeps {
 }
 
 export interface ChunkAcquirer {
-  /** The verified chunk holding `height`; rejects outside the anchored range or for a failing chunk. The bytes are the LRU's own: callers must not mutate them. */
+  /** The verified chunk holding `height`; rejects outside the anchored and sealed range or for a failing chunk. The bytes are the LRU's own: callers must not mutate them. */
   acquire(height: number): Promise<{ spec: ChunkSpec; records: Uint8Array }>;
   /** Settles when the detached store writes issued so far have finished. */
   writes(): Promise<void>;
+  /** Caches records the caller verified against `spec` (the restore's seed chunk, a migrated anchor chunk). */
+  cache(spec: ChunkSpec, records: Uint8Array): void;
 }
 
 export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
@@ -234,14 +249,26 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
       return null;
     }
   };
+  const specOf = (height: number): ChunkSpec => {
+    const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height), anchors) ?? deps.sealedSpec?.(chunkOf(height)) ?? null : null;
+    if (!spec) throw new Error(`height ${height} is outside the release-anchored range ${SPV_FLOOR.height} to ${FIRST_CHUNK * SPV_CHUNK + anchors.length * SPV_CHUNK - 1}`);
+    return spec;
+  };
+  // An LRU entry answers only the spec it was verified against: a sealed chunk's spec changes when an adoption
+  // replaces the remembered tops (test/headerstore-adoption.test.mjs).
+  const verifiedAs = new Map<number, string>();
+  const tagOf = (spec: ChunkSpec) => `${spec.firstHash ?? spec.prevHash}:${spec.lastHash}`;
+  const hitFor = (spec: ChunkSpec) => { const r = lru.get(spec.k); return r && verifiedAs.get(spec.k) === tagOf(spec) ? r : undefined; };
+  const cache = (spec: ChunkSpec, records: Uint8Array) => { lru.set(spec.k, records); verifiedAs.set(spec.k, tagOf(spec)); };
   return {
     async acquire(height) {
-      const spec = height >= SPV_FLOOR.height ? chunkSpec(chunkOf(height), anchors) : null;
-      if (!spec) throw new Error(`height ${height} is outside the release-anchored range ${SPV_FLOOR.height} to ${FIRST_CHUNK * SPV_CHUNK + anchors.length * SPV_CHUNK - 1}`);
-      const hit = lru.get(spec.k);
-      if (hit) return { spec, records: hit };
+      const first = specOf(height);
+      const hit = hitFor(first);
+      if (hit) return { spec: first, records: hit };
       return deps.serialize(async () => {
-        const again = lru.get(spec.k);
+        // The spec in force when the read runs, not when it was queued: an adoption may have run in between.
+        const spec = specOf(height);
+        const again = hitFor(spec);
         if (again) return { spec, records: again };
         let records = await tryStored(spec);
         if (!records) {
@@ -251,10 +278,11 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
           records = fetched;
           detachWrite({ put: [{ k: spec.k, records }] });
         }
-        lru.set(spec.k, records);
+        cache(spec, records);
         return { spec, records };
       });
     },
     writes: () => writeTail,
+    cache,
   };
 }

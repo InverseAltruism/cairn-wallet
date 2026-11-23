@@ -32,12 +32,14 @@
 // keeps a loud caution for high-value sends; the COMPLETENESS cure is a second-source / multi-resolver
 // cross-check (doc 34 §6 follow-on), still unbuilt. Everything here fails CLOSED: any gap, mismatch, or
 // error returns verified:false with a reason; never a false pass against FABRICATION.
-import { LightClient, CsdClient, rpcTxToTx, txid as ctxid, resolve, parseRecord, isNameGive, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, LWMA_WINDOW, type BlockHeader, type CairnXRecord } from "../vendor/cairnx-spv.js";
+import { CsdClient, rpcTxToTx, txid as ctxid, resolve, parseRecord, isNameGive, verifyLinkedRecords, serializeHeader, deserializeHeader, HEADER_BYTES, type BlockHeader, type CairnXRecord } from "../vendor/cairnx-spv.js";
 import { sortHintPairs, type HintPair } from "./namecache.js";
 import { SPV_ANCHORS, SPV_CHUNK, SPV_FLOOR } from "./spvanchors.js";
 import { ChunkLru, chunkAcquirer, chunkOf, chunkSpec, FIRST_CHUNK, type ChunkSpec, type HeaderStore, type StoreWrite } from "./headerstore.js";
 import { heightOf } from "./chainbound.js";
 import { readPin, walkToPin, latestTimeHolds, type PinSlot, type SpvPin } from "./spvpin.js";
+import { checkSeals, sealRecord, type SealedChunk, type SealKey, type SealTable } from "./spvseal.js";
+import { chunkTop, sealableK, sealSeed, seededClient, SEED } from "./spvseed.js";
 import { bindBlock, bindSigner, toChainEvent, type ChainEvent } from "./spvbind.js";
 
 
@@ -483,6 +485,12 @@ export interface LiveSpvOpts {
   floor?: { get(): Promise<number | null>; set(v: number): Promise<void> };
   /** The session pin (chrome.storage.session); without it a restore runs every consensus check. */
   pin?: PinSlot;
+  /** The seal key getter (spvseal.ts sealKeyGetter), called at each use; null while locked. Without it seals are
+   *  neither read nor written. */
+  sealKey?: () => Promise<SealKey | null>;
+  /** Settles when the wallet is unlocked (at once when it is). A store holding a seal list waits for it before
+   *  the restore makes any request. */
+  unlocked?: () => Promise<void>;
 }
 
 // M9 (B5a): the lapse-floor advance rule, ONE pure function so the clamp and its use-site cannot drift.
@@ -516,8 +524,8 @@ export function isTransientSyncError(msg: string): boolean {
 const HB = HEADER_BYTES;
 /** /api/headers page: sync and backfill requests start on a multiple of it, so finalized pages share edge-cached URLs. */
 const PAGE = 512;
-/** Records that seed the light client: the LWMA window below the anchor plus the anchor itself. */
-const SEED = LWMA_WINDOW + 1;
+/** A light client longer than this (16 chunks) is rebased to its tail after a persist: a long first sync's memory. */
+const REBASE_SPAN = 16 * SPV_CHUNK;
 interface AnchorTable { anchors: readonly string[]; newestK: number; newest: number; checkpoints: Readonly<Record<number, string>> }
 /**
  * The anchor table a source runs on: the release table, or a prefix of it (tests and the acceptance harness, whose
@@ -720,7 +728,17 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // await `acquire` (it would wait on itself), which is why the anchor chunk is held below.
   const serializeSync = makeSerializer();
   const lru = new ChunkLru(8);
-  const acq = chunkAcquirer({ store, lru, anchors, serialize: serializeSync, verify: verifyChunk, fetchChunk });
+  const table: SealTable = { newest, newestHash: anchors[anchors.length - 1]! };
+  // The tops of the chunks above the table this source has verified and no longer holds in its light client,
+  // contiguous from newestK + 1: from a verified seal list, a rebase or a pass over walked records. A chunk read below
+  // the client's base walks against them.
+  let tops: SealedChunk[] = [];
+  let adoptions = 0;
+  const sealedSpec = (k: number): ChunkSpec | null => {
+    const e = tops[k - newestK - 1];
+    return e ? { k, firstHeight: k * SPV_CHUNK, lastHeight: chunkTop(k), prevHash: k === newestK + 1 ? table.newestHash : tops[k - newestK - 2]!.top, lastHash: e.top } : null;
+  };
+  const acq = chunkAcquirer({ store, lru, anchors, sealedSpec, serialize: serializeSync, verify: verifyChunk, fetchChunk });
   if (store) acquirers.set(store, acq);
   const acquire = async (height: number) => {
     try { return await acq.acquire(height); }
@@ -745,16 +763,34 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
         let recs: Uint8Array;
         try { recs = legacy.records(spec.firstHeight, spec.lastHeight); verifyChunk(recs, spec); }
         catch (e) { await dropLegacy(opts.legacy!, `failed at chunk ${k}, the wallet seeds from the table`, e); legacy = null; break; }
-        if (k === newestK) lru.set(k, recs);
+        if (k === newestK) acq.cache(spec, recs);
         if (store && !keys.includes(k)) await store.write({ put: [{ k, records: recs }] });
         await yieldTask();
       }
     } catch (e) { migrateError = e; }
   }
   const anchorSpec = chunkSpec(newestK, anchors)!;
+  // Seals (invariant 4): with a list stored and no key, nothing below makes a request before unlock.
+  const rawSeals = store && opts.sealKey ? await store.getSeals().catch((e) => { console.warn("[namespv] stored seals unreadable; verified without them:", e); return null; }) : null;
+  if (rawSeals !== null && opts.unlocked && !(await opts.sealKey!())) await opts.unlocked();
   const anchor = (await acquire(newest)).records;
+  // The key is fetched for this one check; without it (locked, no getter) the seals are ignored and the restore
+  // verifies everything. The session that migrates a pre-store snapshot restores as 0.3.4 does, from the table: a seal
+  // seed there serves the same headers and only saves time, so no test tells the two apart.
+  const proven = !legacy && rawSeals !== null ? await opts.sealKey!().then((key) => (key ? checkSeals(key, rawSeals, table) : null)) : null;
+  // The restore seeds at the highest sealed chunk whose stored bytes walk to its seal, else at the table (invariant 1).
+  const read = async (k: number) => (store && keys.includes(k) ? store.getChunk(k).catch((e) => { console.warn(`[namespv] stored chunk ${k} unreadable:`, e); return null; }) : null);
+  const seal = proven?.length ? await sealSeed(proven, table.newestHash, read) : null;
+  const tableBase = { height: newest, hash: table.newestHash, work: null as bigint | null, tail: anchor.subarray(anchor.length - SEED * HB) };
+  let base = tableBase;
+  if (seal) {
+    tops = proven!.slice(0, seal.i + 1);
+    const e = tops[seal.i]!;
+    base = { height: chunkTop(e.k), hash: e.top, work: e.work, tail: seal.records.subarray(seal.records.length - SEED * HB) };
+    acq.cache(sealedSpec(e.k)!, seal.records);
+  }
   const stored: Uint8Array[] = [];
-  for (let k = newestK + 1; store && keys.includes(k); k++) {
+  for (let k = chunkOf(base.height) + 1; store && keys.includes(k); k++) {
     let r: Uint8Array | null = null;
     try { r = await store.getChunk(k); } catch (e) { console.warn(`[namespv] stored chunk ${k} unreadable; the sync refetches it:`, e); }
     if (!r || !r.length || r.length % HB || r.length > SPV_CHUNK * HB) break;
@@ -762,7 +798,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (r.length < SPV_CHUNK * HB) break;
   }
   const storedSuffix = concatBytes(stored);
-  const storedTip = newest + storedSuffix.length / HB;
+  const storedTip = base.height + storedSuffix.length / HB;
   let fromLegacy: Uint8Array = new Uint8Array(0);
   if (legacy && legacy.base <= storedTip + 1 && legacy.top > storedTip) {
     try { fromLegacy = legacy.records(storedTip + 1, legacy.top); }
@@ -772,26 +808,24 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // re-runs the time rules on the walked record with the latest timestamp against today's clock, and seeds the light
   // client at the pin; anything stored above the pin is ingested with every check.
   const pin = opts.pin && !fromLegacy.length ? await readPin(opts.pin) : null;
-  const latest = pin && pin.tip - newest >= SEED && pin.tip <= storedTip ? await walkToPin(storedSuffix, newest, pin, SPV_CHECKPOINTS, yieldTask) : null;
-  // Heights newest - SEED + 1 to newest + n in one view: the anchor's seed records, then the stored suffix.
+  const latest = pin && pin.tip - base.height >= SEED && pin.tip <= storedTip ? await walkToPin(storedSuffix, newest, pin, SPV_CHECKPOINTS, yieldTask, base) : null;
+  // Heights base - SEED + 1 to base + n in one view: the base's seed records, then the stored suffix.
   const seedAndSuffix = (lo: number, hi: number) => {
-    const tail = anchor.subarray(anchor.length - SEED * HB), from = lo - (newest - SEED + 1), to = hi - (newest - SEED + 1) + 1;
-    return concatBytes([tail.subarray(Math.min(from, SEED) * HB, Math.min(to, SEED) * HB), storedSuffix.subarray(Math.max(0, from - SEED) * HB, Math.max(0, to - SEED) * HB)]);
+    const from = lo - (base.height - SEED + 1), to = hi - (base.height - SEED + 1) + 1;
+    return concatBytes([base.tail.subarray(Math.min(from, SEED) * HB, Math.min(to, SEED) * HB), storedSuffix.subarray(Math.max(0, from - SEED) * HB, Math.max(0, to - SEED) * HB)]);
   };
   const pinned = latest !== null && await latestTimeHolds(seedAndSuffix(latest - SEED, latest), latest - SEED, SPV_CHECKPOINTS); // MUTATE_PIN_TIME
-  const pinBase = pin && pinned ? pin.tip - SEED + 1 : newest - SEED + 1;
+  const pinBase = pin && pinned ? pin.tip - SEED + 1 : base.height - SEED + 1;
   const restored = pin && pinned
-    ? await LightClient.fromRecords(storedSuffix.subarray((pinBase - newest - 1) * HB), { firstHeight: pinBase, anchorHeight: pin.tip },
-      { ...lcOpts, checkpoints: { ...SPV_CHECKPOINTS, [pin.tip]: pin.hash } })
-    : await LightClient.fromRecords(
-      concatBytes([anchor.subarray(anchor.length - SEED * HB), storedSuffix, fromLegacy]),
-      { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts);
+    ? await seededClient(storedSuffix.subarray((pinBase - base.height - 1) * HB), pin.tip, pin.hash, BigInt(pin.work), lcOpts)
+    : await seededClient(concatBytes([base.tail, storedSuffix, fromLegacy]), base.height, base.hash, base.work, lcOpts);
   let LC = restored.client;
-  // The walked records below a pin-seeded client (heights newest + 1 to LC.baseHeight - 1), and the work they and
-  // the anchor seed carry, so heldWork() compares with a client seeded from the anchor. Both empty otherwise.
-  let walked: Uint8Array = pin && pinned ? storedSuffix.subarray(0, (pinBase - newest - 1) * HB) : new Uint8Array(0);
-  let workBase = pin && pinned ? BigInt(pin.work) - LC.chain[pin.tip - LC.baseHeight]!.chainwork : 0n;
+  let workBase = restored.workBase;
   const heldWork = () => ({ chainwork: LC.chainwork + workBase });
+  // The walked records below a pin-seeded client (heights walkFrom to LC.baseHeight - 1). Below walkFrom, heights
+  // above the table are read from sealed chunks (tops).
+  let walkFrom = base.height + 1;
+  let walked: Uint8Array = pin && pinned ? storedSuffix.subarray(0, (pinBase - walkFrom) * HB) : new Uint8Array(0);
   // The pin may run ahead of a detached store write; a store that does not walk to it gets the full restore.
   const writePin = (tip: number) => {
     const vh = LC.chain[tip - LC.baseHeight];
@@ -815,7 +849,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (!store || tip <= persistedTip) return null;
     const lo = Math.max(chunkOf(persistedTip + 1) * SPV_CHUNK, newest + 1);
     const own = LC.toRecords(Math.max(lo, LC.baseHeight));
-    const recs = lo >= LC.baseHeight ? own : concatBytes([walked.subarray((lo - newest - 1) * HB), own]);
+    const recs = lo >= LC.baseHeight ? own : concatBytes([walked.subarray((lo - walkFrom) * HB), own]);
     const put: { k: number; records: Uint8Array }[] = [];
     for (let k = chunkOf(lo); k <= chunkOf(tip); k++) {
       const a = Math.max(k * SPV_CHUNK, lo), b = Math.min(k * SPV_CHUNK + SPV_CHUNK - 1, tip);
@@ -825,7 +859,58 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     writePin(tip);
     return { put, deleteAbove: chunkOf(tip), head: { v: 2, tip, tipHash: String(LC.chain[LC.chain.length - 1]!.hash).toLowerCase() } };
   };
-  const persist = () => { const w = suffixWrite(); if (w) detachStoreWrite(store!, w); };
+
+  // The verified tops of chunks newestK + 1 to maxK, contiguous: the remembered ones, then the light client's own.
+  // A top in the walked run is not known until a pass over it (walkedTops); the list stops before it.
+  const knownTops = (maxK: number): SealedChunk[] => {
+    const out = tops.slice(0, Math.max(0, maxK - newestK));
+    for (let k = newestK + 1 + out.length; k <= maxK; k++) {
+      const vh = chunkTop(k) >= LC.baseHeight ? LC.chain[chunkTop(k) - LC.baseHeight] : undefined;
+      if (!vh) break;
+      out.push({ k, top: String(vh.hash).toLowerCase(), work: vh.chainwork + workBase });
+    }
+    return out;
+  };
+  // One pass with every check over the walked run (a pin restore), for the tops and work of its chunks up to maxK;
+  // none when those are known already.
+  const walkedTops = async (maxK: number): Promise<void> => {
+    if (!walked.length || newestK + tops.length >= maxK || chunkTop(newestK + 1 + tops.length) >= LC.baseHeight) return;
+    const pass = await seededClient(concatBytes([base.tail, walked]), base.height, base.hash, base.work, lcOpts);
+    for (let k = newestK + 1 + tops.length; chunkTop(k) - pass.client.baseHeight < pass.client.chain.length; k++) {
+      const vh = pass.client.chain[chunkTop(k) - pass.client.baseHeight]!;
+      tops.push({ k, top: String(vh.hash).toLowerCase(), work: vh.chainwork + pass.workBase });
+    }
+  };
+  // The key is fetched for this write and dropped after it (invariant 4: no key held across a lock). Without it, or with
+  // nothing sealable yet, the write carries no list and the stored one is left for the restore to judge.
+  const withSeals = async (w: StoreWrite, upTo: number): Promise<StoreWrite> => {
+    const list = opts.sealKey ? knownTops(sealableK(upTo)) : [];
+    if (!list.length) return w;
+    const key = await opts.sealKey!();
+    return key ? { ...w, seals: sealRecord(key, table, list) } : w;
+  };
+  // Moves the light client's base to the highest sealable chunk top it knows, re-ingesting the records above with
+  // every check, so it holds 4,096 to 8,191 headers; the dropped chunks keep their tops (the shared helper's work base).
+  // The base stays at or below the persisted tip: the records it drops must already be in the store.
+  const rebase = async (): Promise<void> => {
+    const maxK = sealableK(Math.min(tipOf(LC), persistedTip));
+    await walkedTops(maxK);
+    const list = knownTops(maxK);
+    const e = list[list.length - 1];
+    if (!e || chunkTop(e.k) - SEED + 1 <= LC.baseHeight) return;
+    const next = await seededClient(LC.toRecords(chunkTop(e.k) - SEED + 1), chunkTop(e.k), e.top, e.work, lcOpts);
+    if (next.failed || tipOf(next.client) !== tipOf(LC)) { console.warn("[namespv] rebase skipped: the held records did not re-verify", next.failed); return; }
+    tops = list;
+    LC = next.client;
+    workBase = next.workBase;
+    walked = new Uint8Array(0);
+    walkFrom = LC.baseHeight;
+  };
+  const persist = async () => {
+    const w = suffixWrite();
+    if (w) detachStoreWrite(store!, await withSeals(w, persistedTip));
+    if (LC.chain.length > REBASE_SPAN) await rebase();
+  };
 
   if (opts.legacy && legacy) {
     const before = persistedTip;
@@ -853,20 +938,51 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
 
   if (!legacy) writePin(persistedTip);
 
-  // Seeds a fresh client from the anchor chunk held in memory: no request, every pin enforced by seedTrusted.
-  const seedFromAnchor = async () => (await LightClient.fromRecords(anchor.subarray(anchor.length - SEED * HB), { firstHeight: newest - SEED + 1, anchorHeight: newest }, lcOpts)).client;
+  // Seal catch-up (once per source, when the key is there): a list for every sealable chunk in the store, written
+  // alone when it differs from the stored one, then the light client rebased to the tail. This is what rewrites a
+  // stale or missing list (invariant 1) and seals a store a locked session or 0.3.4 wrote.
+  if (store && opts.sealKey) {
+    // What the stored record proves (null for anything else, junk included), compared by chunk, so the catch-up
+    // rewrites it unless it already seals exactly these tops.
+    let storedTops: SealedChunk[] | null = proven;
+    const sameTops = (a: readonly SealedChunk[] | null, b: readonly SealedChunk[]) => !!a && a.length === b.length && a.every((e, i) => e.k === b[i]!.k && e.top === b[i]!.top && e.work === b[i]!.work);
+    const catchUp = async () => {
+      await walkedTops(sealableK(persistedTip));
+      const list = knownTops(sealableK(persistedTip));
+      if (list.length && !sameTops(storedTops, list)) {
+        const w = await withSeals({}, persistedTip);
+        if (w.seals) { storedTops = list; detachStoreWrite(store, w); }
+      }
+      await rebase();
+    };
+    const run = () => serializeSync(catchUp).catch((e) => console.warn("[namespv] seal catch-up failed; the next write seals:", e));
+    void (opts.unlocked ? opts.unlocked().then(run) : run());
+  }
 
-  // The verified header at `h`: from a walked chunk at or below the newest anchor, from the light client above it.
-  const headerAt = async (h: number): Promise<{ hash: string; merkle: string } | null> => {
+  // Seeds a fresh client from the anchor chunk held in memory: no request, every pin enforced by seedTrusted.
+  const seedFromAnchor = async () => (await seededClient(tableBase.tail, newest, table.newestHash, null, lcOpts)).client;
+
+  // The verified header at `h`: from a walked chunk at or below the newest anchor, from the light client above it,
+  // from the walked run below a pin-seeded client, or from a sealed chunk below that. A sealed-chunk read that waited
+  // behind an adoption is decided again once: the adopted client holds the height and remembers no tops
+  // (test/namespv-seal-restore.test.mjs 13).
+  const headerAt = async (h: number, again = true): Promise<{ hash: string; merkle: string } | null> => {
     if (!Number.isSafeInteger(h) || h < SPV_FLOOR.height) return null;
     if (h > newest) {
-      if (h < LC.baseHeight) return chunkHeader(walked, { firstHeight: newest + 1, lastHash: String(LC.chain[0]!.header.prev) }, h);
-      const vh = LC.chain[h - LC.baseHeight];
-      return vh ? { hash: String(vh.hash).toLowerCase(), merkle: String(vh.header.merkle) } : null;
+      if (h >= LC.baseHeight) {
+        const vh = LC.chain[h - LC.baseHeight];
+        return vh ? { hash: String(vh.hash).toLowerCase(), merkle: String(vh.header.merkle) } : null;
+      }
+      if (h >= walkFrom) return chunkHeader(walked, { firstHeight: walkFrom, lastHash: String(LC.chain[0]!.header.prev) }, h);
+    } else if (chunkOf(h) === newestK) return chunkHeader(anchor, anchorSpec, h);
+    const seen = adoptions;
+    try {
+      const { spec, records } = await acquire(h);
+      return chunkHeader(records, spec, h);
+    } catch (e) {
+      if (again && adoptions !== seen) return headerAt(h, false);
+      throw e;
     }
-    if (chunkOf(h) === newestK) return chunkHeader(anchor, anchorSpec, h);
-    const { spec, records } = await acquire(h);
-    return chunkHeader(records, spec, h);
   };
   const headerOrNull = async (h: number) => {
     try { return await headerAt(h); }
@@ -897,12 +1013,12 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
         if (want <= cur) return;
         syncing = { from: cur, want };
         try {
-          await syncWithPartialPersist(LC, want, persist);
+          await syncWithPartialPersist(() => LC, want, persist);
           await syncAligned(LC, want);                  // a lying-high header THROWS here (fail-closed)
         } catch (e) {
           // Verified progress is kept before the failure is classified; it never advances the lapse floor,
           // which moves only after this block completes.
-          persist();
+          await persist();
           const msg = String((e as Error)?.message || e);
           if (CLOCK_FAULT.test(msg)) throw clockRefusal(msg);
           if (isTransientSyncError(msg)) throw e;
@@ -929,12 +1045,25 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           // A valid chain with no more work than the one held (a fork decayed to low difficulty with spread
           // timestamps) is not adopted; the held chain and its stored suffix stay.
           if (!reseedAdopts(heldWork(), fresh)) throw lessWorkRefusal(headersBase, newest, tipOf(LC)); // MUTATE_RESEED_WORK
+          // The acquirer's detached writes, decided under the replaced tops, land before this chain's rewrite is queued:
+          // after it, both writers write only this chain's bytes for a chunk.
+          await acq.writes();
+          adoptions++;
           LC = fresh;
+          // The state of the replaced chain goes with it. The LRU drop and the walked run's bounds are also held elsewhere
+          // (an LRU entry answers only its spec's tag; no read uses walkFrom or base while the walked run is empty).
+          for (const k of lru.keys()) if (k > newestK) lru.delete(k);
           walked = new Uint8Array(0);
+          walkFrom = newest + 1;
+          base = tableBase;
+          // Kept, the replaced chain's tops go into the next list under the vault's MAC, below the adopted chain's own; a
+          // restart seeded on a higher entry takes them on the MAC alone, and their chunks answer the replaced chain or
+          // nothing (test/namespv-seal-two-chains.test.mjs).
+          tops = [];
           workBase = 0n;
           persistedTip = newest;
         } finally { syncing = null; }
-        persist();
+        await persist();
       });
       // M9 (B5a): advance + persist the floor ONLY after the sync above succeeded (a throw skips this),
       // and never above verifiedTip + FLOOR_SLACK (floorAdvance). The RETURNED nodeTip still carries the
@@ -991,15 +1120,28 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const storeWriters = new Map<HeaderStore, { tail: Promise<void>; busy: boolean; pending: StoreWrite | null }>();
 const acquirers = new Map<HeaderStore, { writes(): Promise<void> }>();
 
-/** `newer` after `older` as one write: newer's puts and head win, and older's puts above newer's deleteAbove are dropped. */
+/**
+ * `newer` after `older` as one write, with the effect of the two in order: newer's puts and head win, older's puts
+ * above newer's deleteAbove are dropped, and the lower deleteAbove applies (puts land after it). The seal list is
+ * newer's, else older's cut below the lowest chunk newer puts or deletes; either is cut at the first entry for a chunk
+ * the merged write deletes. So the list stays contiguous from below and the merge leaves no entry over a chunk it
+ * deletes, nor an older entry over a chunk newer rewrites; newer's own list is kept over the chunks newer puts, since
+ * a write's list describes the store once that write lands (test/spvseal.test.mjs, the merge property).
+ */
 export function mergeStoreWrites(older: StoreWrite, newer: StoreWrite): StoreWrite {
   if (older.del?.length || newer.del?.length) throw new Error("mergeStoreWrites: suffix writes carry no del");
   const put = new Map<number, Uint8Array>();
   for (const p of older.put ?? []) if (newer.deleteAbove === undefined || p.k <= newer.deleteAbove) put.set(p.k, p.records);
   for (const p of newer.put ?? []) put.set(p.k, p.records);
-  const deleteAbove = newer.deleteAbove ?? older.deleteAbove;
+  const bounds = [older.deleteAbove, newer.deleteAbove].filter((d): d is number => d !== undefined);
+  const deleteAbove = bounds.length ? Math.min(...bounds) : undefined;
   const head = newer.head ?? older.head;
-  return { put: [...put].map(([k, records]) => ({ k, records })), ...(deleteAbove !== undefined ? { deleteAbove } : {}), ...(head ? { head } : {}) };
+  const source = newer.seals ?? older.seals;
+  const newerLow = Math.min(...(newer.put ?? []).map((p) => p.k), newer.deleteAbove === undefined ? Infinity : newer.deleteAbove + 1);
+  const kept = (k: number) => (deleteAbove === undefined || k <= deleteAbove || put.has(k)) && (newer.seals !== undefined || k < newerLow);
+  const cut = source ? source.list.findIndex((e) => !kept(e.k)) : -1;
+  const seals = source && cut >= 0 ? { ...source, list: source.list.slice(0, cut) } : source;
+  return { put: [...put].map(([k, records]) => ({ k, records })), ...(deleteAbove !== undefined ? { deleteAbove } : {}), ...(head ? { head } : {}), ...(seals ? { seals } : {}) };
 }
 
 export function detachStoreWrite(store: HeaderStore, w: StoreWrite): void {
@@ -1056,12 +1198,13 @@ export async function syncAligned(lc: { baseHeight: number; chain: { length: num
 // A daily sync (about 720 headers) never enters the loop. EXPORTED, with a structural lc type, for a direct test.
 export const SYNC_PERSIST_WINDOW = 8192;
 export async function syncWithPartialPersist(
-  lc: { baseHeight: number; chain: { length: number }; sync(to: number): Promise<unknown> },
+  lc: () => { baseHeight: number; chain: { length: number }; sync(to: number): Promise<unknown> },
   want: number,
-  persist: (() => void) | null,
+  persist: (() => void | Promise<void>) | null,
 ): Promise<void> {
-  for (let next = tipOf(lc) + SYNC_PERSIST_WINDOW; next < want; next += SYNC_PERSIST_WINDOW) {
-    await syncAligned(lc, next);       // throws on any verify/transport failure (fail-closed, caller classifies)
-    persist?.();
+  // `lc` is read at each window: a persist may rebase the source onto a new client.
+  for (let next = tipOf(lc()) + SYNC_PERSIST_WINDOW; next < want; next += SYNC_PERSIST_WINDOW) {
+    await syncAligned(lc(), next);     // throws on any verify/transport failure (fail-closed, caller classifies)
+    await persist?.();
   }
 }
