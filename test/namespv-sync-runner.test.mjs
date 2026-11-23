@@ -252,6 +252,26 @@ console.log("7. an endpoint change mid-run: the dropped source requests and writ
     st.head?.tip === SEAL_TOP && b.writes.some((x) => x.seals) && b.writes.at(-1)?.head?.tip === SEAL_TOP);
 }
 
+console.log("7b. an endpoint change during a chunk read: the dropped source's acquirer writes nothing:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const { w, built } = walletOn(storeTo(136000));
+  await w.create("correct horse battery");
+  await w.setApi(API);
+  const src = await w["spvSource"]();
+  resetLog();
+  // Chunk 26 is not stored: its eight pages are fetched; the last one waits until the endpoint has changed.
+  hdr.hold = (from) => from === 110080;
+  const read = src.hashAt(108000);
+  await until(() => hdr.held.length > 0);
+  const a = built[0], before = a.writes.length;
+  await w.setApi(API_B);
+  release(); hdr.hold = () => false;
+  const got = await read;
+  await tick(30); await flushSpvStoreWrites();
+  check(`the read in flight still answers (${got === hashOf(108000)}); the dropped source stores no chunk (${a.writes.length - before} writes)`, got === hashOf(108000) && a.writes.length === before);
+}
+
 console.log("8. a vault change: a source mid-run and a source parked on the unlock stop:");
 {
   clock += 2 * BACKGROUND_GAP_MS;
