@@ -281,8 +281,8 @@ warns and lets you decide:
   it the warning says it is not corroborated. When a source reports the name not provable from its own records,
   or a source's records alone replay and show the name was sold through an offer fill or re-claimed after its lease
   lapsed, there is no such fallback: the name is shown as not chain-verified. Nor is there one when the combined
-  replay stopped for want of a block header the node's tip says exists (the header pages did not load, or the tip
-  could not be read): a source whose records all lie below the headers the wallet holds would replay alone to an
+  replay stopped for want of a block header (the header pages did not load, or the node's tip could not be read): a
+  source whose records all lie below the headers the wallet holds would replay alone to an
   older owner while the records above them go unread, so the name is shown as not chain-verified with the address
   the name service served (test/namespv-union-short.test.mjs). The cost: a hostile main host, which serves the tip,
   the headers and that address, can add a record above the held headers and fail its header pages, and the wallet
