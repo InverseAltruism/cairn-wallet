@@ -150,6 +150,25 @@ console.log("4. a transient failure stops the run; the next lookup resumes:");
   await flushSpvStoreWrites();
 }
 
+console.log("4b. a stopped run's target is not carried into the next: a lookup fetches what it needs:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  resetLog();
+  // The background aims at the node tip and stops on a transient failure above 139,263.
+  let failing = true;
+  net.unserved = (from) => failing && from > 139263;
+  src.background();
+  await until(() => hdr.reqs.length > 0); await quiet();
+  const reached = (await src.prepare(0)).verifiedTip;
+  failing = false; net.unserved = undefined;
+  resetLog();
+  const p = await src.prepare(140032 - 12);
+  check(`stopped at ${reached}; a lookup needing 140,032 makes ${hdr.reqs.length} requests (${hdr.reqs.map((r) => `${r.from}/${r.n}`).join(",")}), the plan to its height, and verifies to ${p.verifiedTip}`,
+    reached === 139263 && hdr.reqs.map((r) => `${r.from}/${r.n}`).join() === plan(139263, 140032).join() && p.verifiedTip === 140032);
+  await quiet(); await flushSpvStoreWrites();
+}
+
 console.log("5. no background run within 60 s of the last, offline or with Save-Data:");
 {
   const src = await liveSpvSource(opts(storeTo(136000)));

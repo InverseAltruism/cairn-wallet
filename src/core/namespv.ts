@@ -1153,6 +1153,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     } finally {
       running = false;
       syncing = null;
+      // A run that stopped short leaves no aim behind: the next run's target is what is asked then (a lookup's height,
+      // or the next background run's node tip).
+      if (tipOf(LC) < target) target = lookupWant(); // MUTATE_TARGET_PER_RUN
       // A waiter that arrived after the run's last check starts the next run.
       if (live() && [...waiters].some((w) => w.want > tipOf(LC))) void run();
       else if (live()) settle();
