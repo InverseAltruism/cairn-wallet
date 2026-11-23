@@ -140,13 +140,15 @@ operation started while the background sync runs, against 0.3.5 on the same link
 |---|---|---|---|---|
 | 50 kB/s, six pages fixed | 0.3.5: 61; six: timed out | | | |
 | 250 kB/s, six pages fixed | 0.3.5: 51; six: 3,985 | 0.3.5: 160; six: 153 | 0.3.5: 6,115; six: 1,783 | 0, 0 |
-| 50 kB/s, adaptive | 0.3.5: 61; head: 65 | 171; 194 | 24,046; 24,469 | 0, 0 |
-| 250 kB/s, adaptive | 51; 46 | 162; 154 | 6,129; 5,501 | 0, 0 |
-| no cap, adaptive | 81; 82 | 253; 277 | 2,703; 1,970 | 0, 0 |
+| 50 kB/s, adaptive from two | 0.3.5: 61; head: 76 | 169; 215 | 24,012; 24,375 | 0, 0 |
+| 250 kB/s, adaptive from two | 51; 47 | 162; 147 | 6,121; 5,510 | 0, 0 |
+| no cap, adaptive from two | 81; 100 | 249; 277 | 2,688; 1,967 | 0, 0 |
 
-With six fixed, the balance waited for a connection the header pages held. Adaptive, a send made while the
-background sync runs is about 20 ms slower at 50 kB/s and with no cap, and a name's Review about 0.4 s slower at
-50 kB/s (the background's window in flight when the lookup arrives); everything else is level or faster.
+With six fixed, the balance waited for a connection the header pages held. Adaptive, an operation made while the
+background sync runs is a few tens of ms slower at 50 kB/s and with no cap (the link or the worker shared with the
+sync's pages), and a name's Review about 0.4 s slower at 50 kB/s; at 250 kB/s everything is level or faster. Starting
+at one page instead cut those to 4 to 23 ms, but made a day's catch-up (two pages) 22 ms slower than 0.3.5 on every
+unlock; from two it is 54 ms faster.
 
 A structural sync failure (an ordinary reorg in the suffix) reseeds (the section above: from the newest seal, else
 the anchor chunk in memory) and syncs again; the stored suffix is replaced only after the new one verifies to the
