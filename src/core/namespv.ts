@@ -1120,9 +1120,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (tipOf(LC) - seed.top > RESEED_BOUND) return false; // MUTATE_BOUNDED_TABLE
     try {
       const fresh = await seedClient(seed);
-      // It yields to a lookup that arrives meanwhile: its pages stop, and the lookup's own reseed runs next.
+      // It yields to a lookup that arrives meanwhile: its pages stop, and the lookup's own reseed runs next. A chain it
+      // stopped short is judged like any other: below the held tip it is not adopted, whatever its work.
       await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE), () => live() && !lookupWant()); // MUTATE_BOUNDED_YIELDS
-      return lookupWant() ? false : await adopt(fresh, seed);
+      return await adopt(fresh, seed);
     } catch (e) { console.warn("[namespv] background reseed stopped; the next lookup syncs:", e); return false; }
   };
 
@@ -1146,7 +1147,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     try {
       while (live() && tipOf(LC) < target) {
         try {
-          await syncPages(() => LC, target, lanePage, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth });
+          // While a lookup waits, each window aims at its height, so its pages are not shared with the background's.
+          await syncPages(() => LC, () => lookupWant() || target, lanePage, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
         } catch (e) {
           // Verified progress is kept before the failure is classified; it never advances the lapse floor, which moves
           // only in prepare once its height is reached.
@@ -1199,6 +1201,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     const nav = globalThis.navigator as { onLine?: boolean; connection?: { saveData?: boolean } } | undefined;
     if (!live() || nav?.onLine === false || nav?.connection?.saveData === true) return;
     const now = Date.now();
+    // As wallet.ts autoLock does: a backward clock jump restarts the gap instead of suppressing runs until the clock
+    // is back where it was.
+    if (now < lastBackground) lastBackground = now; // MUTATE_GAP_CLAMP
     if (now - lastBackground < BACKGROUND_GAP_MS) return;
     lastBackground = now;
     client.tip().then((t) => {
@@ -1406,13 +1411,15 @@ export interface PageRun {
  * height, one page per `run.step`. A failed request fails the sync once the pages below it are ingested, so verified
  * progress is kept. `lc` is read at each page: a persist may rebase the source onto a new client of the same tip.
  */
-export async function syncPages(lc: () => Ingesting, want: number, fetchPage: (from: number, count: number, cancel?: AbortSignal) => Promise<{ header: BlockHeader; hash: string }[]>, run: PageRun): Promise<void> {
+export async function syncPages(lc: () => Ingesting, want: number | (() => number), fetchPage: (from: number, count: number, cancel?: AbortSignal) => Promise<{ header: BlockHeader; hash: string }[]>, run: PageRun): Promise<void> {
   const going = () => run.live?.() ?? true;
-  while (tipOf(lc()) < want && going()) {
+  const aim = () => (typeof want === "number" ? want : want());
+  while (tipOf(lc()) < aim() && going()) {
     const plan: { from: number; count: number }[] = [];
     const width = Math.max(1, Math.min(IN_FLIGHT, run.width?.() ?? IN_FLIGHT)); // MUTATE_WIDTH
-    for (let cur = tipOf(lc()); cur < want && plan.length < width;) {
-      const end = Math.min(want, cur + 1 - ((cur + 1) % PAGE) + PAGE - 1);
+    const to = aim();
+    for (let cur = tipOf(lc()); cur < to && plan.length < width;) {
+      const end = Math.min(to, cur + 1 - ((cur + 1) % PAGE) + PAGE - 1);
       plan.push({ from: cur + 1, count: end - cur });
       cur = end;
     }
@@ -1427,6 +1434,9 @@ export async function syncPages(lc: () => Ingesting, want: number, fetchPage: (f
         const rows = await pages[i]!;
         if (!going()) return; // MUTATE_PAGE_RECHECK
         if (rows.length !== count) throw new Error("/api/headers: non-dense range");
+        // A task boundary before each page's ingest, so the worker answers a balance or a send between pages.
+        await yieldTask();
+        if (!going()) return;
         await run.step(async () => { const c = lc(); for (let j = 0; j < count; j++) c.ingest(from + j, rows[j]!.header, rows[j]!.hash); });
         run.afterPage?.();
       }

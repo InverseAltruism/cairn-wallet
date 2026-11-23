@@ -905,7 +905,10 @@ export class Wallet {
       ...(session ? { pin: { get: () => session.get("spvPin"), set: (p: SpvPin) => (this.vaultIdNow === vault ? session.set("spvPin", p) : Promise.resolve()) } } : {}),
       sealKey: () => (this.vaultIdNow === vault ? this.sealKey() : Promise.resolve(null)),
       // A source dropped while parked here wakes and ends its restore without work.
-      unlocked: () => (this.headersReleased || signal?.aborted ? Promise.resolve() : new Promise<void>((r) => { this.unlockWaiters.push(r); signal?.addEventListener("abort", () => r(), { once: true }); })),
+      unlocked: () => (this.headersReleased || signal?.aborted ? Promise.resolve() : new Promise<void>((r) => {
+        this.unlockWaiters.push(r);
+        signal?.addEventListener("abort", () => { this.unlockWaiters = this.unlockWaiters.filter((x) => x !== r); r(); }, { once: true });
+      })),
       ...(signal ? { signal } : {}),
     };
   }

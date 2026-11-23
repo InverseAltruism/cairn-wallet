@@ -79,7 +79,7 @@ const nspvSrc = readFileSync(new URL("../src/core/namespv.ts", import.meta.url),
 // Comments are stripped so prose mentioning a call cannot count as, or hide, a call site.
 const code = nspvSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
 const norm = (m) => m.replace(/\s+/g, " ");
-const sites = (text) => [...text.matchAll(/syncPages\((\(\) => [^,]+), [^,]+, lanePage, \{ step: ([^,}]+)/g)].map((m) => norm(`${m[1]} step ${m[2].trim()}`));
+const sites = (text) => [...text.matchAll(/syncPages\((\(\) => [^,]+), (?:\(\) => [^,]+|[^,]+), lanePage, \{ step: ([^,}]+)/g)].map((m) => norm(`${m[1]} step ${m[2].trim()}`));
 const SITES = "() => fresh.client step async (op) => op() | () => LC step serializeSync";
 ok("the page syncs in the file are exactly the shared client's, stepped by serializeSync, and the private fresh client's", sites(code).join(" | ") === SITES);
 ok("syncPages is called at those two sites only (an unwrapped new sync of the shared client trips this)", (code.match(/\bsyncPages\(/g) || []).length === 3 && /export async function syncPages\(/.test(code));

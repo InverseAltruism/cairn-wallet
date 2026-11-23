@@ -204,6 +204,25 @@ for (const how of ["lookup", "background"]) {
     (await src.hashAt(145000)) === hashOf(145000) && (await src.prepare(0)).verifiedTip === SEAL_TOP && !out.startsWith("verified"));
 }
 
+console.log("5b. a more-work chain the background reseed stopped short below the held tip is not adopted:");
+{
+  // S carries more work than A at heights below A's tip. The background reseed syncs it from seal 33 until a lookup
+  // arrives at its page 145,920; it stops there with S's tip at 145,919, which the adoption site judges.
+  const st = copyOf(sealedA);
+  serve("A", SEAL_TOP);
+  const src = await C.liveSpvSource(opts(st));
+  let lookup = null;
+  serve("S", SEAL_TOP + 11, { garbageAbove: 146000, hold: (from) => from === 145920 && !lookup });
+  src.background();
+  await until(() => net.held.length > 0);
+  lookup = src.prepare(SEAL_TOP + 11 - 12).then((r) => `verified ${r.verifiedTip}`, (e) => String(e?.message ?? e));
+  release();
+  const out = await lookup;
+  await settled();
+  check(`A is kept at its tip (${(await src.hashAt(146500)) === hashOf(146500)}, tip ${(await src.prepare(0)).verifiedTip}); the lookup ends without a verify (${out.slice(0, 50)})`,
+    (await src.hashAt(146500)) === hashOf(146500) && (await src.prepare(0)).verifiedTip === SEAL_TOP && !out.startsWith("verified"));
+}
+
 console.log("6. the bounded reseed never stands in a lookup's way:");
 {
   // B33 forks below seal 33, so the background's reseed from it cannot link; a lookup that arrives meanwhile gets the

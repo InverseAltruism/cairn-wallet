@@ -125,6 +125,27 @@ console.log("2. reads and lookups run between the run's pages:");
   await flushSpvStoreWrites();
 }
 
+console.log("2b. while a lookup waits, the run asks no page above the lookup's height:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  resetLog();
+  // The background run's first pages wait; a lookup for 137,500 arrives meanwhile.
+  let arrived = false;
+  hdr.hold = (from) => !arrived && from > 135679;
+  src.background();
+  await until(() => hdr.held.length > 0);
+  arrived = true;
+  const mark = hdr.reqs.length;
+  const p = src.prepare(137500 - 12);
+  release();
+  const tip = (await p).verifiedTip;
+  const asked = hdr.reqs.slice(mark);
+  const above = asked.filter((r) => r.from > 137500);
+  check(`the lookup verifies to ${tip}; of the ${asked.length} pages asked until then, ${above.length} start above 137,500`, tip === 137500 && asked.length > 0 && above.length === 0);
+  await quiet(); await flushSpvStoreWrites();
+}
+
 console.log("3. a restart mid-sync resumes from the persisted tail:");
 {
   const st = storeTo(131071);
@@ -218,6 +239,20 @@ console.log("5. no background run within 60 s of the last, offline or with Save-
   const after = (await src.prepare(0)).verifiedTip;
   check(`the first run syncs (${first} requests); within 60 s, offline and with Save-Data nothing more (${inGap}, ${blocked})`, first > 0 && inGap === 0 && blocked === 0);
   check(`  past the gap, online, the next run syncs to the node tip (${after})`, after === SEAL_TOP);
+  // A backward clock jump restarts the gap, as the wallet's idle lock does, instead of holding runs off until the clock
+  // is back.
+  net.tip = SEAL_TOP + 0;
+  const marks = hdr.reqs.length;
+  clock -= 3600_000;
+  src.background(); await tick(60);
+  const inJump = hdr.reqs.length - marks;
+  clock += BACKGROUND_GAP_MS + 1000;
+  let ran = false;
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (u, i) => { if (String(u).endsWith("/tip")) ran = true; return inner(u, i); };
+  src.background(); await tick(60);
+  globalThis.fetch = inner;
+  check(`  after the clock jumps back an hour, a run waits the gap (${inJump} requests at once) and then starts (${ran})`, inJump === 0 && ran);
   await flushSpvStoreWrites();
 }
 
@@ -353,11 +388,13 @@ console.log("8. a vault change: a source mid-run and a source parked on the unlo
   await tick(30);
   await w2.reset();
   const ended = await Promise.race([out, tick(3000).then(() => "hung")]);
+  const waitersAfterReset = w2["unlockWaiters"].length;
   await w2.create("another battery staple");
   await w2.balance().catch(() => null);
   await tick(60); await flushSpvStoreWrites();
   check(`a source parked on the unlock (list stored: ${listed}) ends at the reset (${ended}) with no request (${hdr.reqs.length}) and no write (${parked.writes.length})`,
     listed && ended.startsWith("ended") && hdr.reqs.length === 0 && parked.writes.length === 0);
+  check(`  and leaves no waiter behind it (${waitersAfterReset} after the reset)`, waitersAfterReset === 0);
 }
 
 done("namespv-sync-runner");
