@@ -4,12 +4,12 @@ import type { CairnThemeApi, ThemeChoice } from "../vendor/cairn-ui/theme.js";
 
 const STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
 
-/** Wires every `[data-theme-choice]` button under `root` as one radio group; a page without theme.js keeps the
- *  system theme. */
+/** Wires every `button[data-theme-choice]` under `root` as one radio group; a page without theme.js keeps the
+ *  system theme. The tag is load-bearing: theme-init.js and theme.js set `data-theme-choice` on <html> too. */
 export function mountThemeControl(root: ParentNode, theme: CairnThemeApi | undefined): void {
   if (!theme) return;
   theme.startSync();
-  const buttons = Array.from(root.querySelectorAll<HTMLElement>("[data-theme-choice]"));
+  const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>("button[data-theme-choice]"));
   // One tab stop for the group, on the checked option (the ARIA radio group pattern).
   const paint = () => {
     const choice = theme.current().choice;
