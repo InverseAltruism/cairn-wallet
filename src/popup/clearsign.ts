@@ -988,20 +988,22 @@ export function nameCheck(rr: NameInfo & { name?: string | null; badge?: string;
 // address again ("same"); another address ("moved", [A14], refused); a proven lapse ("lapsed", [A3], refused); or a
 // look-up that did not answer, refused for another reason, gave no address, or could not verify again an address that
 // was verified at review ("unchecked", [A15]: a caution whose second click signs the reviewed address and nothing
-// else). Pure over the re-resolution RESULT; the popup wires the live `confirmName` call. It stops a server that
+// else); or the reviewed address with a lapse the wallet could not settle that the Review did not show
+// ("lapseUnchecked", [A4] with the same second click). Pure over the re-resolution RESULT; the popup wires the live `confirmName` call. It stops a server that
 // re-points the name BETWEEN review and confirm, not one that answers the same hostile address both times (the SPV
 // name check is the defence there).
-export type Recheck = "same" | "moved" | "lapsed" | "unchecked";
-export function recheckOutcome(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean; lapsed?: boolean } | null | undefined, reviewedVerified?: boolean): Recheck {
+export type Recheck = "same" | "moved" | "lapsed" | "unchecked" | "lapseUnchecked";
+export function recheckOutcome(reviewed: string, re: { ok?: boolean; addr?: unknown; verified?: boolean; lapsed?: boolean; lapseUnconfirmed?: boolean } | null | undefined, reviewedVerified?: boolean, reviewedLapse?: boolean): Recheck {
   if (re?.ok === true && typeof re.addr === "string") {
     if (re.addr.toLowerCase() !== reviewed.toLowerCase()) return "moved";
+    if (re.lapseUnconfirmed === true && reviewedLapse !== true) return "lapseUnchecked"; // MUTATE_LAPSE_AT_CONFIRM
     return reviewedVerified === true && re.verified === false ? "unchecked" : "same";
   }
   return re?.ok === false && re.lapsed === true ? "lapsed" : "unchecked";
 }
 /** Whether the re-resolution still gives the reviewed address with no drop from verified (`recheckOutcome` "same"). */
-export const reresolveUnchanged = (reviewed: string, re: Parameters<typeof recheckOutcome>[1], reviewedVerified?: boolean): boolean =>
-  recheckOutcome(reviewed, re, reviewedVerified) === "same";
+export const reresolveUnchanged = (reviewed: string, re: Parameters<typeof recheckOutcome>[1], reviewedVerified?: boolean, reviewedLapse?: boolean): boolean =>
+  recheckOutcome(reviewed, re, reviewedVerified, reviewedLapse) === "same";
 
 // ── nfinalize finalize-window gate (Plan 63 carry-over; the approve-path backstop for the C1 burn class) ──
 // An `nfinalize` pays the registration fee (or recapture premium) for a reservation the signer holds.

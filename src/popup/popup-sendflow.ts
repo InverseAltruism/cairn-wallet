@@ -71,11 +71,13 @@ export function armReview(f: SendFlow, hold = false, buttons: ReviewButtons | nu
 //     the first one's outcome lands.
 let confirmGen = 0;
 let submitting = false;
-// Reviews whose confirm-time re-check could not check the name again ([A15]): their next Confirm signs the reviewed
-// address without a second look-up. A new review is a new snapshot, so it is checked again.
+// Reviews whose confirm-time re-check could not check the name again ([A15]) or brought a lapse the Review did not show
+// ([A4]): their next Confirm signs the reviewed address without a second look-up. A new review is a new snapshot, so it
+// is checked again.
 const recheckWaived = new WeakSet<object>();
 // `check`: the review was armed by "Send without check" on the name service's answer, while this check ran.
-type Snapshot = { to: string; name?: string | null; verified?: boolean; check?: NameCheck | null };
+// `lapseShown`: the Review showed [A4].
+type Snapshot = { to: string; name?: string | null; verified?: boolean; lapseShown?: boolean; check?: NameCheck | null };
 export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read: () => S | null; consume: () => void }, submit: (s: S) => Promise<any>, sentText: (s: S) => string) {
   const snap = review.read();
   const btn = $(f.ids.button) as HTMLButtonElement;
@@ -85,19 +87,19 @@ export async function runConfirm<S extends Snapshot>(f: SendFlow, review: { read
   const writes = statusWrites();
   // a name recipient is re-resolved at sign-time (XREPO-1): another address refuses ([A14]), a proven lapse refuses
   // ([A3]), and a look-up that could not check the reviewed address again, or no longer verifies it (L7), asks for a
-  // second click ([A15]) that signs the reviewed address.
+  // second click ([A15]) that signs the reviewed address; so does a lapse the Review did not show ([A4]).
   const outcome: Recheck = !snap.name || recheckWaived.has(snap) ? "same"
     : snap.check ? (uncheckedStillPoints(snap.check, snap.to) ? "same" : "moved")
-    : await nameRecheck(snap.name, snap.to, snap.verified);
+    : await nameRecheck(snap.name, snap.to, snap.verified, snap.lapseShown);
   if (gen !== confirmGen) return;                    // a later Confirm owns the outcome line; this one sent nothing
   if (review.read() !== snap) { if (statusWrites() === writes) msg(REVIEW_GONE, "err"); return; }
   const name = { name: `${snap.name}.csd` };
-  if (outcome === "unchecked") {
-    // [A15] is the review's last row, beside the buttons it relabels, for as long as the review stands.
+  if (outcome === "unchecked" || outcome === "lapseUnchecked") {
+    // [A15] or [A4] is the review's last row, beside the buttons it relabels, for as long as the review stands.
     recheckWaived.add(snap);
     armReview(f, false, LAPSE_BUTTONS);
     const warn = $(f.ids.warn) as HTMLElement;
-    warn.innerHTML += checkRow({ tier: "caution", html: sentenceHtml(sentenceOf("A15", undefined, name)) });
+    warn.innerHTML += checkRow({ tier: "caution", html: sentenceHtml(sentenceOf(outcome === "lapseUnchecked" ? "A4" : "A15", undefined, name)) });
     warn.hidden = false;
     return;
   }

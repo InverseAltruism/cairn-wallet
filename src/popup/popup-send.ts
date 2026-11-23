@@ -106,7 +106,7 @@ async function reviewSend(check: NameCheck | null) {
   setWarn($("c-warn") as HTMLElement, short ? [{ tier: "danger", html: escapeHtml(balanceShortNote("Go back")) }, ...warn] : warn);
   // freeze the reviewed values; confirm signs THIS, not the live (still-visible) inputs
   // signer snapshot (A1/POPUP-SEND-RACE-2): see the token-review note; same race, same backstop.
-  const snap = { to, amt, name: rr.name ?? null, verified: rr.verified, signer: curAddr, check: rr.unchecked ?? null }; // verified for the L7 confirm-time regression check
+  const snap = { to, amt, name: rr.name ?? null, verified: rr.verified, lapseShown: rr.lapseUnconfirmed === true, signer: curAddr, check: rr.unchecked ?? null }; // verified for the L7 confirm-time regression check
   reviewState.reviewedSend = snap;
   armReview(CSD_FLOW, short, reviewButtons(!!redirectName, rr.lapseUnconfirmed, !!rr.unchecked));
   if (snap.check) watchUncheckedReview(CSD_FLOW, () => reviewState.reviewedSend, snap);

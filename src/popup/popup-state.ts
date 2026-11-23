@@ -14,8 +14,8 @@ export let siteApi = "";   // the Cairn site base (for the /trade deep-link in t
 // boundary), closeAllPanels (any panel switch) and the flow handlers; panels are mutually exclusive
 // via openPanel, so dropping all three is always equivalent to dropping the one that was armed.
 export const reviewState: {
-  reviewed: { to: string; base: string; ticker: string; decimals: number; name?: string | null; verified?: boolean; signer?: string | null; check?: NameCheck | null } | null;
-  reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean; signer?: string | null; check?: NameCheck | null } | null;
+  reviewed: { to: string; base: string; ticker: string; decimals: number; name?: string | null; verified?: boolean; lapseShown?: boolean; signer?: string | null; check?: NameCheck | null } | null;
+  reviewedSend: { to: string; amt: number; name?: string | null; verified?: boolean; lapseShown?: boolean; signer?: string | null; check?: NameCheck | null } | null;
   reviewedNameAct: { kind: "renew" | "primary"; name: string; total: number; fee: number; signer?: string | null; ackOtherOwner?: boolean } | null;
 } = { reviewed: null, reviewedSend: null, reviewedNameAct: null };
 export function dropReviews() { reviewGen++; reviewState.reviewed = null; reviewState.reviewedSend = null; reviewState.reviewedNameAct = null; }

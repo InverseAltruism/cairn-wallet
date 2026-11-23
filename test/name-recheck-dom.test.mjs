@@ -7,6 +7,10 @@
 // (9a) and (9b) fail: every outcome there was the one refusal "changed where it points". Mutations: [A15] treated as a
 // refusal (the "unchecked" branch removed) fails (4a) to (4d), (5a), (6a), (9a); the waiver left out (the second click
 // re-checks) fails (4c); the waiver kept across reviews fails (8a); "lapsed" read as "moved" fails (3a).
+// Sections 10 and 11: a re-check that brings a lapse the Review did not show ([A4], served lapsed and not settled)
+// shows [A4] with "Send anyway" / "Cancel", for an unverified and a verified Review alike, and the second click signs
+// the reviewed address with no second look-up; a Review that showed [A4] confirms on one click. Red on fc8ec07: (10a),
+// (10b), (10d), (11a), (11b); the Review's [A4] ignored at Confirm fails (10c).
 // Run: node --import tsx test/name-recheck-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { sentenceOf, LAPSE_BUTTONS } from "../src/popup/sentences.ts";
@@ -17,6 +21,7 @@ const { check, done } = checker("=== the name re-check at Confirm (real popup.ts
 const ME = "0x" + "ab".repeat(20), ALICE = "0x" + "31".repeat(20), MOVED = "0x" + "42".repeat(20), TXID = "0x" + "7e".repeat(32);
 const verifiedAlice = { ok: true, addr: ALICE, name: "alice", verified: true, sources: 2, depth: 14 };
 let confirmAnswer = () => verifiedAlice;
+let reviewAnswer = () => verifiedAlice;
 const sends = [];
 const { calls } = installBridge({
   status: () => ({ hasVault: true, unlocked: true, addr: ME, accounts: [{ label: "A1", addr: ME }], active: 0, rpc: "https://x", api: "https://x", tradeApi: "https://x/trade/api", explorer: "cairn", hasMnemonic: true }),
@@ -25,7 +30,7 @@ const { calls } = installBridge({
   cairnxAssets: () => ({ ok: true, balances: { CAIRN: { available: "100000000000", locked: "0" } }, names: [], nameDetails: [], primaryName: null, tipHeight: 1 }),
   cairnxTokens: () => ({ ok: true, tokens: [{ ticker: "CAIRN", decimals: 8 }] }),
   prewarmSpv: () => ({ ok: true }), pending: () => [], sealedClaims: () => [], history: () => [],
-  resolveName: () => verifiedAlice,
+  resolveName: () => reviewAnswer(),
   confirmName: () => confirmAnswer(),
   send: (...args) => { sends.push(args); return { ok: true, txid: TXID }; },
   cairnxTransfer: (p) => { sends.push([p]); return { ok: true, txid: TXID }; },
@@ -36,10 +41,12 @@ await flush();
 
 const nm = { name: "alice.csd" };
 const A3 = sentenceOf("A3", undefined, nm).text, A14 = sentenceOf("A14", undefined, nm).text, A15 = sentenceOf("A15", undefined, nm).text;
+const A4 = sentenceOf("A4", undefined, nm).text;
 const count = (m) => calls.filter((x) => x === m).length;
 // [A15] is the review's last row (popup-sendflow.ts); `a15` is whether it is there and last.
 const lastRow = (id) => { const h = byId(id).hidden ? "" : String(byId(id).innerHTML); const i = h.lastIndexOf('<div class="check '); return i < 0 ? "" : h.slice(i); };
 const a15 = (id = "c-warn") => /^<div class="check caution">/.test(lastRow(id)) && lastRow(id).includes(A15);
+const a4Last = (id = "c-warn") => /^<div class="check caution">/.test(lastRow(id)) && lastRow(id).includes(A4) && !String(byId(id).innerHTML).includes(A15);
 const state = () => ({ shown: !byId("send-confirm").hidden, msg: byId("msg").textContent, a15: a15(), cls: byId("msg").className, confirm: byId("btn-send-confirm").textContent, back: byId("btn-send-back").textContent, disabled: byId("btn-send-confirm").disabled });
 async function review() {
   byId("btn-send-back").click(); await flush();
@@ -133,6 +140,46 @@ console.log("8. a new review after [A15] is checked again");
   confirmAnswer = () => verifiedAlice;
 }
 
+console.log("10. a lapse at Confirm that the Review did not show");
+{
+  const unverified = { ok: true, addr: ALICE, name: "alice", verified: false, sources: 2, verifyReason: "on-chain verification unavailable" };
+  const lapseAtConfirm = { ok: true, addr: ALICE, name: "alice", lapsed: false, lapseUnconfirmed: true, addrProven: false, verified: false, verifyReason: "on-chain verification unavailable" };
+  reviewAnswer = () => unverified;
+  await review();
+  confirmAnswer = () => lapseAtConfirm;
+  const s0 = sends.length;
+  await confirm();
+  const r = state();
+  check(`(10a) an unverified Review: [A4] as the last row, nothing sent ("${r.confirm}" / "${r.back}", ${sends.length - s0} sent)`, a4Last() && r.shown && sends.length === s0);
+  check("(10a) its buttons are [A4]'s", r.confirm === LAPSE_BUTTONS.confirm && r.back === LAPSE_BUTTONS.back && !r.disabled);
+  const c0 = count("confirmName"), s0b = sends.length;
+  await confirm();
+  check(`(10b) "Send anyway" signs the reviewed address with no second look-up (${sends.length - s0b} sent, confirmName +${count("confirmName") - c0})`, sends.length === s0b + 1 && s0b === s0 && sends.at(-1)?.[0] === ALICE && count("confirmName") === c0);
+
+  reviewAnswer = () => lapseAtConfirm;
+  await review();
+  const shown = state();
+  const s1 = sends.length, c1 = count("confirmName");
+  await confirm();
+  check(`(10c) a Review that showed [A4] ("${shown.confirm}") confirms on its one click after one re-check (${sends.length - s1} sent, confirmName +${count("confirmName") - c1})`,
+    shown.confirm === LAPSE_BUTTONS.confirm && sends.length === s1 + 1 && sends.at(-1)?.[0] === ALICE && count("confirmName") === c1 + 1);
+
+  reviewAnswer = () => verifiedAlice;
+  await review();
+  const s2 = sends.length;
+  await confirm();
+  check(`(10d) a verified Review whose re-check brings the lapse shows [A4], not [A15] (${sends.length - s2} sent)`, a4Last() && state().shown && sends.length === s2);
+  const s2b = sends.length;
+  await confirm();
+  check("(10d) its second click signs the reviewed address", s2b === s2 && sends.length === s2 + 1 && sends.at(-1)?.[0] === ALICE);
+
+  confirmAnswer = () => verifiedAlice;
+  await review();
+  const s3 = sends.length;
+  await confirm();
+  check("(10e) honest: a verified Review re-checked verified still sends on one click", sends.length === s3 + 1 && sends.at(-1)?.[0] === ALICE);
+}
+
 console.log("9. the token send");
 {
   byId("assets").querySelectorAll("[data-tsend]")[0].click(); await flush();
@@ -144,5 +191,21 @@ console.log("9. the token send");
   check(`(9a) [A15] on the token review, "${byId("btn-tsend-confirm").textContent}" / "${byId("btn-tsend-back").textContent}"`, a15("tc-warn") && !byId("tsend-confirm").hidden && byId("btn-tsend-confirm").textContent === LAPSE_BUTTONS.confirm && sends.length === s0);
   byId("btn-tsend-confirm").click(); await flush(20);
   check("(9b) its second click sends the token to the reviewed address", sends.length === s0 + 1 && sends.at(-1)?.[0]?.to === ALICE);
+}
+
+console.log("11. the token send, a lapse at Confirm that the Review did not show");
+{
+  reviewAnswer = () => ({ ok: true, addr: ALICE, name: "alice", verified: false, sources: 2 });
+  byId("btn-tsend-back").click(); await flush();
+  byId("ts-to").disabled = false; byId("ts-amt").disabled = false;
+  byId("ts-to").value = "alice.csd"; byId("ts-amt").value = "1";
+  byId("btn-tsend").click(); await flush(20);
+  confirmAnswer = () => ({ ok: true, addr: ALICE, name: "alice", lapsed: false, lapseUnconfirmed: true, addrProven: false, verified: false });
+  const s0 = sends.length;
+  byId("btn-tsend-confirm").click(); await flush(20);
+  check(`(11a) [A4] on the token review, "${byId("btn-tsend-confirm").textContent}", nothing sent`, a4Last("tc-warn") && !byId("tsend-confirm").hidden && byId("btn-tsend-confirm").textContent === LAPSE_BUTTONS.confirm && sends.length === s0);
+  const s0b = sends.length;
+  byId("btn-tsend-confirm").click(); await flush(20);
+  check("(11b) its second click sends the token to the reviewed address", s0b === s0 && sends.length === s0 + 1 && sends.at(-1)?.[0]?.to === ALICE);
 }
 done("name-recheck-dom");

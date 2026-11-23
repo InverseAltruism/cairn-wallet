@@ -82,9 +82,9 @@ function uncheckedRecipient(nm: string, served: Served, check: NameCheck): Recip
 
 // XREPO-1 confirm-time guard wrapper: re-ask the name service at sign-time; the outcome is clearsign.recheckOutcome's
 // (pure, unit-tested) over the answer, and a call that failed is a look-up that did not answer. This only wires the call.
-export async function nameRecheck(name: string, reviewed: string, reviewedVerified?: boolean): Promise<Recheck> {
+export async function nameRecheck(name: string, reviewed: string, reviewedVerified?: boolean, reviewedLapse?: boolean): Promise<Recheck> {
   const re = await call("confirmName", name).catch(() => ({ ok: false }));
-  return recheckOutcome(reviewed, re, reviewedVerified);
+  return recheckOutcome(reviewed, re, reviewedVerified, reviewedLapse);
 }
 
 export function setNameRow(rowId: string, valId: string, label: string | null | undefined) {

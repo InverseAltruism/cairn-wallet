@@ -82,9 +82,9 @@ Signing and funds:
   never spent unverified. Nothing is signed on any verify failure (test/ghostcoin.test.mjs).
 - Fee caps refuse, never rebuild.
 - What you see is what you sign: frozen review snapshots; confirm-time name re-resolve (another address or a proven
-  lapse refuses; a look-up that cannot check again or a verified-regression asks a second click that signs the
-  reviewed address, test/name-recheck-dom.test.mjs); account-switch-mid-approval refusal (ACCOUNT_CHANGED); fee-gate
-  crossing refusal (FEE_CHANGED); bidi- and zero-width-hardened escapeHtml. The approval window reads every request
+  lapse refuses; a look-up that cannot check again, a verified-regression or a lapse the review did not show asks a
+  second click that signs the reviewed address, test/name-recheck-dom.test.mjs); account-switch-mid-approval refusal
+  (ACCOUNT_CHANGED); fee-gate crossing refusal (FEE_CHANGED); bidi- and zero-width-hardened escapeHtml. The approval window reads every request
   field it shows or uses from `src/core/signfields.ts`, which the sign path builds from
   (test/sign-display-parity.test.mjs), and it re-fetches the reservation and runs `finalizeWinnerCheck` before
   allowing a fee-burning finalize.

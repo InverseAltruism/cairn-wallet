@@ -39,6 +39,11 @@
   previous owner, and with the headers still failing at Confirm one click paid that previous owner. Such a name is now
   shown as not chain-verified, with the address the name service gives; a record above the node's tip still gets the
   fallback (SECURITY.md, "What happens when the sources disagree").
+- A name the name service first reports as possibly expired at Confirm, on a review that did not show the expiry
+  line, now shows "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
+  owner." with "Send anyway" and "Cancel", and the second click signs the reviewed address; before, an unverified
+  review signed on the first click and a verified one showed "Could not check alice.csd again." A review that showed
+  the expiry line still confirms on one click (test/name-recheck-dom.test.mjs sections 10 and 11).
 
 ## 0.3.5
 

@@ -330,7 +330,10 @@ re-verifies** the name: another address refuses ("alice.csd now points to a diff
 review it again."), and so does a lapse the check proves. A look-up that does not answer, or one that can no longer
 verify an address that was verified at review, shows "Could not check alice.csd again. The address is the one you
 reviewed." with "Send anyway" / "Cancel"; that second click signs the reviewed address without another look-up
-(test/name-recheck-dom.test.mjs). The recipient you confirm is always the **full, untruncated address**.
+(test/name-recheck-dom.test.mjs). A look-up that gives the reviewed address with a lapse it cannot settle, on a
+review that did not show the lapse line, shows that line ("alice.csd may have expired; ...") with the same two
+buttons and the same second click, whether the review was verified or not; a review that showed it confirms on one
+click (test/name-recheck-dom.test.mjs sections 10 and 11). The recipient you confirm is always the **full, untruncated address**.
 
 While the name check runs, the send sheet says "Checking alice.csd..." from 0.3 s and, from 10 s once the name
 service has answered, offers "Send without check". That review shows the name service's address, unverified, with
