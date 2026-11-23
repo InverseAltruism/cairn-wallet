@@ -239,12 +239,14 @@ Beside it:
     holds a record with the final `claimId` and `effectiveHeight`, not pending). The popup shows `[A18]` when it is
     above the release's newest table entry (`spvnewest.ts`), since such a holding rests on headers above the table
     that the answering servers also serve (test/name-completed-at.test.mjs, test/popup-checks-dom.test.mjs 9d).
-  - The sync: one runner per source holds a target (a lookup's height, or the node tip for the background run the
-    popup's `prewarmSpv` starts once the balance has answered), requests six 512-aligned pages at once and ingests
-    them by height, one page per serialized op, persisting the tail after each window of six. A structural break gets
-    one reseed per run: with a lookup waiting from the newest seal, then the table; with none, the bounded reseed (the
-    newest seal, or the table within 8,191 of the held tip, 17 pages at most). One adoption site: a chain verified above
-    the held tip with more work. A source the wallet drops (endpoint, vault, reset) requests and writes nothing more.
+  - The sync: one runner per source holds a target per run (a lookup's height, or the node tip for the background
+    run the popup's `prewarmSpv` starts once the balance has answered), requests up to five 512-aligned pages at once
+    (one at first, more after fast pages, one again after a timeout), aims at a waiting lookup's height first, and
+    ingests by height, one page per serialized op, persisting the tail after each window. A structural break gets one
+    reseed per run: with a lookup waiting from the newest seal, then the table; with none, the bounded reseed (the
+    newest seal, or the table within 8,191 of the held tip, 17 pages at most), which yields to a lookup that arrives.
+    One adoption site: a chain verified above the held tip with more work. A source the wallet drops (endpoint, vault,
+    reset) requests and writes nothing more and refuses its waits above its tip.
   - Store, sync, migration and the union's lapse and badge rules: `docs/DESIGN-namespv-scaling.md`.
 - `spvnewest.ts`: the anchor table's newest height alone, written by the generator beside `spvanchors.ts`.
   `chainbound.ts`: `heightOf` (a served tip or stored floor counts only as a positive safe integer) and
@@ -358,8 +360,8 @@ dir: both files must be byte-identical to the committed ones.
   the second host answered first, the second host is asked first for 60 s (`BACKUP_FIRST_MS`). With both healthy it gets no reads. Every submit goes to both at
   once. A loopback RPC has no second host.
 - Cairn API (user-configurable, https or loopback): auth, /api/content, /api/domains, /api/headers at 15 s with
-  Retry-After-aware 429 and 502/503 backoff, at most six header pages in flight per source (`IN_FLIGHT`), one
-  background header run per 60 s (`BACKGROUND_GAP_MS`), none offline or with Save-Data.
+  Retry-After-aware 429 and 502/503 backoff, at most five header pages in flight per sync of a source (`IN_FLIGHT`,
+  adapting to the link), one background header run per 60 s (`BACKGROUND_GAP_MS`), none offline or with Save-Data.
 - CairnX read API /trade/api (12 s); clarvis /trade/api (name-history union always, resolve fallback, 12 s).
 - Rate limits: the front door rate-limits per IP; the wallet's fan-out is bounded (send-path input verify at 8
   concurrent, the fclaim fill-scan block fetch at 12), so legitimate flows stay under the per-IP budget.

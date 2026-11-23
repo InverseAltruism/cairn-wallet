@@ -74,18 +74,25 @@ copy naming the chunk. Store writes are detached from the proof path and merged;
 
 ## The sync and its runner
 
-One runner per source syncs the light client (`liveSpvSource`, `syncPages`). It holds a target height: a `prepare`
-raises it to its own height and waits until the verified tip gets there, and `background()` raises it to the node
-tip. Code: the runner, `lookupReseed`, `boundedReseed` and `adopt` in `liveSpvSource`; tests:
-`test/namespv-sync-runner.test.mjs`, `test/namespv-reseed-bounded.test.mjs`.
+One runner per source syncs the light client (`liveSpvSource`, `syncPages`). It holds a target height for the run:
+a `prepare` raises it to its own height and waits until the verified tip gets there, and `background()` raises it to
+the node tip. A run that stops short leaves no target behind: the next run's target is what is asked then (runner
+4b). Code: the runner, `lookupReseed`, `boundedReseed` and `adopt` in `liveSpvSource`; tests:
+`test/namespv-sync-runner.test.mjs`, `test/namespv-reseed-bounded.test.mjs`, `test/namespv-dropped-source.test.mjs`,
+`test/fill-dropped-source.test.mjs`.
 
-- Requests: a window of six 512-aligned pages is requested at once (Chrome keeps six HTTP/1.1 connections to one
-  host), each request ending on a page top or at the target, as a sequential sync would make them. Pages may arrive in
-  any order; the rows are ingested strictly by height, one page per serialized op, so a lookup's or a fill's reads
-  (a chunk acquisition, a sealed read) run between pages instead of after the whole sync. Each request keeps its own
-  ladder (15 s, Retry-After on 429, the 502 and 503 retries); a page that fails fails the sync once the pages below it
-  are ingested. After each window the verified tail is persisted, so a worker stopped mid-sync resumes from the last
-  window (3,072 headers) and asks no height again.
+- Requests: a window of up to five 512-aligned pages is requested at once, each request ending on a page top or at
+  the window's aim, as a sequential sync would make them. The width adapts to the link: a source asks one page at
+  first, one more after each page that answered within a quarter of its 15 s timeout, and one again after a timeout
+  (`IN_FLIGHT` 5, `WIDEN_WITHIN_MS`; runner 1 and 1b). Five leaves one of Chrome's six HTTP/1.1 connections to the host
+  free for the balance and a send, which go to the same host. While a lookup waits, each window aims at the lookup's
+  height (runner 2b). Pages may arrive in any order; the rows are ingested strictly by height, one page per serialized
+  op after a task boundary, so a lookup's or a fill's reads (a chunk acquisition, a sealed read) run between pages and
+  the worker answers a balance between them. Each request keeps its own ladder (15 s, Retry-After on 429, the 502 and
+  503 retries); a page that fails fails the sync once the pages below it are ingested, and the other pages of its
+  window are cancelled. After each window the verified tail is persisted (a detached write), so a worker stopped
+  mid-sync resumes from the last window whose write had committed, and asks again only what it had not stored
+  (runner 3).
 - The background run: the popup sends `prewarmSpv` once the balance has answered or failed (`popup-render.ts`), and
   the wallet's `syncSpv` builds the source and starts the run to the node tip, unlocked only (locked, and from the
   install hook, `prewarmSpv` builds the source and syncs nothing). So no header request goes before the balance
@@ -98,24 +105,48 @@ tip. Code: the runner, `lookupReseed`, `boundedReseed` and `adopt` in `liveSpvSo
   function seeds a fresh client at a seed: the newest sealable top this source verified (from the seal list, its own
   chain or a rebase), with the 46 records ending there from memory or from that sealed chunk, or the table's newest
   entry from the anchor chunk in memory. One decision adopts it: the fresh chain verified above the held tip and
-  carries more work counted from the same base (`adopts`, `reseedAdopts`), so the held tip never falls. With a lookup
+  carries more work counted from the same base (`adopts`, `reseedAdopts`), so the held tip never falls
+  (reseed-bounded 4, 5 and 5b, the last a more-work chain stopped below the held tip). With a lookup
   waiting, the reseed runs from the newest seal and, when the served chain does not link there, from the table, to
   the lookup's height and on to the node tip when the work is undecided there, as before; a refused chain gives
   today's refusals. With no lookup waiting it is the bounded reseed: from the newest seal, or from the table while
   the held tip is at most 8,191 above it (`RESEED_BOUND`), to at most 17 pages (`BOUNDED_PAGES`); anything else, and
   any failure of it, stops the run without a refusal and waits for a lookup, so the background never runs the
-  unbounded table reseed and never stands in a send's way (a lookup that arrives meanwhile gets its own reseed when
-  the bounded one stops).
+  unbounded table reseed (reseed-bounded 2). It yields to a lookup that arrives while it runs: its pages stop, the
+  chain it reached goes to the adoption site, which refuses it below the held tip whatever its work (5b), and the
+  lookup's own reseed runs next, so the lookup's wait is its own work (6b).
 - One adoption site, serialized: it waits for the acquirer's pending writes, takes the fresh client, deletes the LRU
   entries above the seed chunk, keeps the remembered tops at and below the seed (none for a table seed) and rewrites
   the store from the chunk above the seed. A seal seed's tops are the adopted chain's own, since it links to the
   seed's top.
 - A dropped source (the wallet aborts its `signal` on an endpoint change, a vault change or a reset) requests no
-  further page and writes nothing: no chunk, list, head, session pin or lapse floor, the acquirer's writes included;
-  its waiting lookups settle at its tip, and a restore or catch-up parked on the unlock signal ends without work. The
-  headers of one run and its reseed therefore come from the one host the source was built on; a host change builds
-  a new source (there is one header host per configured API: the second host of the default RPC serves node reads,
-  not `/api/headers`).
+  further page and writes nothing: no chunk, list, head, session pin, lapse floor or migration step. Each request and
+  each write checks the source at the moment it would go out (after the seal key's await, in the detached writer and
+  the acquirer's queue, in the catch-up and the migration); its requests in flight end with its signal and their
+  retries stop; a page that answers after the drop is not ingested (test/namespv-dropped-source.test.mjs, one case per
+  site and 50 drops at random points). Its waits above its tip are refused at once, as 0.3.5 answered `prepare` only at
+  a height it reached, and the fill's burial scan also refuses verified headers that stop below the node tip it read
+  (`servedTip`; test/fill-dropped-source.test.mjs, on the real `Wallet.fillOffer`). A restore or catch-up parked on the
+  unlock signal ends without work. The headers of one run and its reseed therefore come from the one host the source
+  was built on; a host change builds a new source (there is one header host per configured API: the second host of
+  the default RPC serves node reads, not `/api/headers`).
+
+The width was decided on a modelled link, measured on 2026-11-23 (all hosts sharing one rate, six connections per
+origin, 40 ms each way, the wallet's own timeouts; the 2026-11-21 recording of `/api/headers`, a store holding the
+release table's chunk only; 3 runs each; raw data outside the repository). Each figure is the median in ms of an
+operation started while the background sync runs, against 0.3.5 on the same link, where no background sync runs.
+
+| Link | Balance refresh | Send to an address | A name's Review | Header timeouts |
+|---|---|---|---|---|
+| 50 kB/s, six pages fixed | 0.3.5: 61; six: timed out | | | |
+| 250 kB/s, six pages fixed | 0.3.5: 51; six: 3,985 | 0.3.5: 160; six: 153 | 0.3.5: 6,115; six: 1,783 | 0, 0 |
+| 50 kB/s, adaptive | 0.3.5: 61; head: 65 | 171; 194 | 24,046; 24,469 | 0, 0 |
+| 250 kB/s, adaptive | 51; 46 | 162; 154 | 6,129; 5,501 | 0, 0 |
+| no cap, adaptive | 81; 82 | 253; 277 | 2,703; 1,970 | 0, 0 |
+
+With six fixed, the balance waited for a connection the header pages held. Adaptive, a send made while the
+background sync runs is about 20 ms slower at 50 kB/s and with no cap, and a name's Review about 0.4 s slower at
+50 kB/s (the background's window in flight when the lookup arrives); everything else is level or faster.
 
 A structural sync failure (an ordinary reorg in the suffix) reseeds (the section above: from the newest seal, else
 the anchor chunk in memory) and syncs again; the stored suffix is replaced only after the new one verifies to the
@@ -126,7 +157,8 @@ wallet could not verify the block headers from <headers source> above height N: 
 Try again later."; the light client's own reason is logged. A clock more than 2 hours behind a header stops with a
 reason that names the clock, and the store is kept. A table reseed costs the suffix's pages again (one request per
 512 headers above the anchor) and the fresh client's verification of them, and nothing below the anchor; a seal
-reseed costs the 4,096 to 8,191 headers above the seal; the held chain keeps serving proofs while either runs. The honest cases it covers (test/namespv-store-pins.test.mjs, case 2): a page
+reseed costs the headers above the seal, at most 17 pages for the background's and up to the lookup's height (then
+the node tip, when the work is undecided there) for a lookup's; the held chain keeps serving proofs while either runs. The honest cases it covers (test/namespv-store-pins.test.mjs, case 2): a page
 that breaks once, a stored suffix the served chain has outgrown (the served chain has more work and is adopted), a
 corrupt or short stored suffix (the restore stops below the bad record and the ordinary sync continues from there;
 no reseed is needed). A deep reorg below the stored suffix is the same path with the honest chain carrying more
@@ -457,7 +489,7 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   lease end. A name the replay shows decided by an offer fill or a
   re-claim after a lapse (`viaFill`) is not shown green; the stale-seller residual above is the case the replay
   cannot see.
-- A long sync persists its verified progress after every window of six pages (3,072 headers), so an interrupted sync
+- A long sync persists its verified progress after every window of pages, so an interrupted sync
   resumes (`syncPages`, the runner). The persisted tip floor advances only in `prepare`, once its height is reached
   (`floorAdvance`); test/namespv-partial-persist.test.mjs pins both, test/namespv-sync-runner.test.mjs 3 the resume.
 - The one-time migration of the `spvHeaderChain` snapshot ("What runs when") runs when an install or update fires
@@ -475,7 +507,7 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
 | restore, pins, reorg, clock, corrupt chunks, concurrency, migration | `test/namespv-store-pins.test.mjs`, `test/namespv-store-migrate*.test.mjs`, `test/headerstore*.test.mjs` |
 | the reseed's work rule (`reseedAdopts`) | `test/namespv-reseed-work.test.mjs` (the rule on bigint work and on two light clients over real headers; through `liveSpvSource`, a held branch with more work at the sync target compared at the node tip; the use-site), `test/namespv-reseed-recover.test.mjs` (the reseed order) |
 | an unreadable node tip (SPV-5) | `test/spv-unknown-tip.test.mjs` |
-| the runner (six in flight, order, reads between pages, resume, transient stop, the 60 s gap, the popup's prewarm, a dropped source) | `test/namespv-sync-runner.test.mjs`, `test/popup-prewarm-order-dom.test.mjs`, `test/namespv-partial-persist.test.mjs`, `test/spv-serializer.test.mjs` |
+| the runner (the adaptive width, order, reads between pages, a waiting lookup first, resume, transient stop, the per-run target, the 60 s gap, the popup's prewarm, a dropped source) | `test/namespv-sync-runner.test.mjs`, `test/popup-prewarm-order-dom.test.mjs`, `test/namespv-partial-persist.test.mjs`, `test/spv-serializer.test.mjs`, `test/namespv-dropped-source.test.mjs`, `test/fill-dropped-source.test.mjs` |
 | the reseed's seeds, the bounded background reseed, the adoption site | `test/namespv-reseed-bounded.test.mjs` (generated chains on the cut table), `test/namespv-reseed-recover.test.mjs` |
 | the session pin (`walkToPin`, the pin-seeded restore) | `test/namespv-session-pin.test.mjs`, `test/namespv-store-chrome.test.mjs` |
 | sealed chunks (`checkSeals`, `sealSeed`, sealed reads, seal writes, catch-up, rebase, the locked wait) | `test/namespv-seal-heal.test.mjs` (a seal mismatch never refuses and heals, as a property), `test/namespv-seal-restore.test.mjs`, `test/spvseal.test.mjs`, `test/headerstore-kill-chrome.test.mjs` (a write killed in Chrome) |
