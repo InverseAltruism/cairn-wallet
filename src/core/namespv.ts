@@ -1271,8 +1271,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       }
       await serializeSync(persist);
       settle();
-      // A run that reached its target on the held chain, with no reseed, shows the host serving that chain again.
-      if (!failed && !reseeded && live()) endBackoff(); // MUTATE_BACKOFF_ENDS_ON_SYNC
+      // A run that reached its target with no failure (so no reseed) shows the host serving the held chain again.
+      if (!failed) endBackoff(); // MUTATE_BACKOFF_ENDS_ON_SYNC
     } catch (e) {
       // A failure outside the classified sync (a persist, a rebase): the waiting lookups fail closed, none waits forever.
       console.warn("[namespv] header sync stopped:", e);
