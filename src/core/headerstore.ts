@@ -237,7 +237,8 @@ export function chunkAcquirer(deps: AcquireDeps): ChunkAcquirer {
   // Store writes are detached from the proof path: chained, and a failure is warned.
   const detachWrite = (w: StoreWrite) => {
     if (!store || deps.writable?.() === false) return;
-    writeTail = writeTail.then(() => store.write(w)).catch((e) => console.warn("[headerstore] chunk write failed (refetched next session):", e));
+    // Checked again when the write's turn comes: a write queued before the source was dropped does not land after it.
+    writeTail = writeTail.then(() => (deps.writable?.() === false ? undefined : store.write(w))).catch((e) => console.warn("[headerstore] chunk write failed (refetched next session):", e));
   };
   const tryStored = async (spec: ChunkSpec): Promise<Uint8Array | null> => {
     let rec: Uint8Array | null = null;

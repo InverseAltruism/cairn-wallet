@@ -684,6 +684,10 @@ export async function liveSpvSource(opts: LiveSpvOpts): Promise<SpvSource> {
 
 async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): Promise<SpvSource> {
   const { anchors, newestK, newest } = anchorTable(opts.anchors);
+  // A source the wallet dropped (opts.signal aborted) requests no further header page and writes nothing; each request
+  // and each write checks this at the moment it would go out (test/namespv-dropped-source.test.mjs).
+  const live = () => !opts.signal?.aborted;
+  const dropped = () => new Error("the header source was replaced; its sync stopped");
   const boundFetch = (...a: Parameters<typeof fetch>) => fetch(...a);
   // timeoutMs 12s (> the /api/rpc proxy's 4s+6s failover worst case): the vendored client's 10s
   // default TIED the inner chain exactly; an abort could fire the instant the proxy's fallback
@@ -704,15 +708,19 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // Every retried header is still fully re-verified (PoW/prev-link/LWMA) downstream; retrying
   // transport carries zero trust. After bounded retries we still THROW → verify fails closed.
   // Client timeout 15s sits ABOVE the server's 10s deadline (the server answers first by design).
-  const headersBatch = async (from: number, count: number) => {
+  // `cancel` ends the request and its retries with the window that asked for it; the source's own signal ends them all.
+  const headersBatch = async (from: number, count: number, cancel?: AbortSignal) => {
+    const stops = [opts.signal, cancel].filter((x): x is AbortSignal => !!x);
     for (let attempt = 0; ; attempt++) {
-      const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: AbortSignal.timeout(15_000) });
+      if (!live()) throw dropped();
+      if (cancel?.aborted) throw new Error("/api/headers request aborted with its window");
+      const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: AbortSignal.any([AbortSignal.timeout(15_000), ...stops]) });
       if (r.status === 429 && attempt < 6) {
         const ra = Number(r.headers.get("retry-after")) || 0;
-        await sleep(Math.min(ra > 0 ? ra * 1000 : 1200 * (attempt + 1), 15_000));
+        await pause(Math.min(ra > 0 ? ra * 1000 : 1200 * (attempt + 1), 15_000), stops);
         continue;
       }
-      if ((r.status === 502 || r.status === 503) && attempt < 6) { await sleep(1200 * (attempt + 1)); continue; }
+      if ((r.status === 502 || r.status === 503) && attempt < 6) { await pause(1200 * (attempt + 1), stops); continue; }
       if (!r.ok) throw new Error(`/api/headers ${r.status}`);
       const rows = (await r.json())?.headers;
       if (!Array.isArray(rows) || rows.length !== count) throw new Error("/api/headers: non-dense range");
@@ -722,17 +730,17 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   };
   // A request that ends on a page top fetches the whole page: every row of it is at or below the sync target,
   // so it exists whenever the sync can succeed at all.
-  const pageBatch = async (from: number, count: number) => {
+  const pageBatch = async (from: number, count: number, cancel?: AbortSignal) => {
     const a = from - (from % PAGE);
-    if (a !== from && from + count === a + PAGE) return (await headersBatch(a, PAGE)).slice(from - a);
-    return headersBatch(from, count);
+    if (a !== from && from + count === a + PAGE) return (await headersBatch(a, PAGE, cancel)).slice(from - a);
+    return headersBatch(from, count, cancel);
   };
   const lcOpts = { client, headersBatchProvider: pageBatch, checkpoints: SPV_CHECKPOINTS as Record<number, string> };
 
   const fetchChunk = async (spec: ChunkSpec): Promise<Uint8Array> => {
     const out = new Uint8Array((spec.lastHeight - spec.firstHeight + 1) * HB);
     for (let p = spec.firstHeight - (spec.firstHeight % PAGE); p <= spec.lastHeight; p += PAGE) {
-      const rows = await headersBatch(p, PAGE);
+      const rows = await headersBatch(p, PAGE); // each request checks live() first, so a dropped source asks no next page
       for (let i = Math.max(0, spec.firstHeight - p); i < PAGE; i++) {
         try { out.set(serializeHeader(rows[i]?.header as BlockHeader), (p + i - spec.firstHeight) * HB); }   // a short batch lands in the catch
         catch (e) { throw new Error(`chunk ${spec.k} (heights ${spec.firstHeight} to ${spec.lastHeight}) failed verification: the header served at ${p + i} is malformed (${(e as Error)?.message ?? e})`); }
@@ -745,7 +753,6 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // of this shared source never interleave ingests and never fetch one chunk twice. A serialized op must never
   // await `acquire` (it would wait on itself), which is why the anchor chunk is held below.
   const serializeSync = makeSerializer();
-  const live = () => !opts.signal?.aborted;
   const lru = new ChunkLru(8);
   const table: SealTable = { newest, newestHash: anchors[anchors.length - 1]! };
   // The tops of the chunks above the table this source has verified and no longer holds in its light client,
@@ -788,7 +795,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
         try { recs = legacy.records(spec.firstHeight, spec.lastHeight); verifyChunk(recs, spec); }
         catch (e) { await dropLegacy(opts.legacy!, `failed at chunk ${k}, the wallet seeds from the table`, e); legacy = null; break; }
         if (k === newestK) acq.cache(spec, recs);
-        if (store && !keys.includes(k)) await store.write({ put: [{ k, records: recs }] });
+        if (store && !keys.includes(k) && live()) await store.write({ put: [{ k, records: recs }] });
         await yieldTask();
       }
     } catch (e) { migrateError = e; }
@@ -933,25 +940,28 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   };
   const persist = async () => {
     const w = suffixWrite();
-    if (w) detachStoreWrite(store!, await withSeals(w, persistedTip));
+    if (w) { const sealed = await withSeals(w, persistedTip); if (live()) detachStoreWrite(store!, sealed, live); }
     if (LC.chain.length > REBASE_SPAN) await rebase();
   };
 
-  if (opts.legacy && legacy) {
+  if (opts.legacy && legacy && live()) {
     const before = persistedTip;
     try {
       if (!store) throw new Error("no header store this session");
       if (migrateError) throw migrateError;
       const w = suffixWrite() ?? { head: { v: 2 as const, tip: tipOf(LC), tipHash: String(LC.chain[LC.chain.length - 1]!.hash).toLowerCase() } };
+      if (!live()) throw dropped();
       await store.write(w);
       const back = await store.getHead();
       if (back?.tip !== w.head!.tip || back.tipHash !== w.head!.tipHash) throw new Error("the header store head did not read back");
-      try { await opts.legacy.del(); } catch (d) { console.warn("[namespv] migrated legacy header snapshot not deleted; retried next start:", d); }
+      try { if (live()) await opts.legacy.del(); } catch (d) { console.warn("[namespv] migrated legacy header snapshot not deleted; retried next start:", d); }
       await setAttempts(opts.legacy, 0);
     } catch (e) {
       persistedTip = before;
-      const n = (Number(await opts.legacy.attempts.get().catch(() => 0)) || 0) + 1;
-      if (n >= MIGRATE_MAX) {
+      // A dropped source counts no failed attempt: the next source migrates.
+      const n = live() ? (Number(await opts.legacy.attempts.get().catch(() => 0)) || 0) + 1 : 0;
+      if (!n) console.warn("[namespv] header store migration stopped: the source was dropped");
+      else if (n >= MIGRATE_MAX) {
         await dropLegacy(opts.legacy, `could not be migrated ${n} times, the session runs from memory`, e);
         await setAttempts(opts.legacy, 0);
       } else {
@@ -972,11 +982,12 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     let storedTops: SealedChunk[] | null = proven;
     const sameTops = (a: readonly SealedChunk[] | null, b: readonly SealedChunk[]) => !!a && a.length === b.length && a.every((e, i) => e.k === b[i]!.k && e.top === b[i]!.top && e.work === b[i]!.work);
     const catchUp = async () => {
+      if (!live()) return;
       await walkedTops(sealableK(persistedTip));
       const list = knownTops(sealableK(persistedTip));
       if (list.length && !sameTops(storedTops, list)) {
         const w = await withSeals({}, persistedTip);
-        if (w.seals) { storedTops = list; detachStoreWrite(store, w); }
+        if (w.seals && live()) { storedTops = list; detachStoreWrite(store, w, live); }
       }
       await rebase();
     };
@@ -1022,6 +1033,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const adopt = (fresh: Seeded, seed: Seed) => serializeSync(async () => {
     if (!live() || !adopts(fresh)) return false;
     await acq.writes();
+    if (!live()) return false;
     adoptions++;
     LC = fresh.client;
     workBase = fresh.workBase;
@@ -1153,7 +1165,6 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (!running) void run();
   };
   // A dropped source answers a wait only at a height it verified: 0.3.5 answered prepare only once the tip reached it.
-  const dropped = () => new Error("the header source was replaced; its sync stopped");
   const reach = (want: number): Promise<void> => {
     if (want <= tipOf(LC)) return Promise.resolve();
     if (!live()) return Promise.reject(dropped());
@@ -1268,12 +1279,20 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** A retry's wait, ended early (rejected) by any of `stops`. */
+function pause(ms: number, stops: readonly AbortSignal[]): Promise<void> {
+  return new Promise<void>((done, fail) => {
+    const stop = () => { clearTimeout(t); for (const s of stops) s.removeEventListener("abort", stop); fail(new Error("/api/headers retry aborted")); };
+    const t = setTimeout(() => { for (const s of stops) s.removeEventListener("abort", stop); done(); }, ms);
+    for (const s of stops) { if (s.aborted) return stop(); s.addEventListener("abort", stop, { once: true }); }
+  });
+}
 
 // Store writes leave the serialized sync and the click path: one chained writer per store, and a write that
 // arrives while another is pending is merged into it by chunk key, so a burst of advances costs one transaction
 // and no chunk a pending write carried is lost. A write error is warned, never a refusal: every chunk is
 // verified when it is read, and a missing one is refetched.
-const storeWriters = new Map<HeaderStore, { tail: Promise<void>; busy: boolean; pending: StoreWrite | null }>();
+const storeWriters = new Map<HeaderStore, { tail: Promise<void>; busy: boolean; pending: StoreWrite | null; live: () => boolean }>();
 const acquirers = new Map<HeaderStore, { writes(): Promise<void> }>();
 
 /**
@@ -1300,10 +1319,12 @@ export function mergeStoreWrites(older: StoreWrite, newer: StoreWrite): StoreWri
   return { put: [...put].map(([k, records]) => ({ k, records })), ...(deleteAbove !== undefined ? { deleteAbove } : {}), ...(head ? { head } : {}), ...(seals ? { seals } : {}) };
 }
 
-export function detachStoreWrite(store: HeaderStore, w: StoreWrite): void {
+/** `live` false (the writing source was dropped) ends the writer: what is pending is not written. */
+export function detachStoreWrite(store: HeaderStore, w: StoreWrite, live: () => boolean = () => true): void {
   let s = storeWriters.get(store);
-  if (!s) storeWriters.set(store, s = { tail: Promise.resolve(), busy: false, pending: null });
+  if (!s) storeWriters.set(store, s = { tail: Promise.resolve(), busy: false, pending: null, live });
   const st = s;
+  st.live = live;
   st.pending = st.pending ? mergeStoreWrites(st.pending, w) : w;
   if (st.busy) return;
   st.busy = true;
@@ -1312,6 +1333,7 @@ export function detachStoreWrite(store: HeaderStore, w: StoreWrite): void {
       while (st.pending) {
         const job = st.pending;
         st.pending = null;
+        if (!st.live()) break;
         try { await store.write(job); }
         catch (e) { console.warn("[namespv] header store write failed (the sync refetches next session):", e); }
       }
@@ -1359,7 +1381,7 @@ export interface PageRun {
  * height, one page per `run.step`. A failed request fails the sync once the pages below it are ingested, so verified
  * progress is kept. `lc` is read at each page: a persist may rebase the source onto a new client of the same tip.
  */
-export async function syncPages(lc: () => Ingesting, want: number, fetchPage: (from: number, count: number) => Promise<{ header: BlockHeader; hash: string }[]>, run: PageRun): Promise<void> {
+export async function syncPages(lc: () => Ingesting, want: number, fetchPage: (from: number, count: number, cancel?: AbortSignal) => Promise<{ header: BlockHeader; hash: string }[]>, run: PageRun): Promise<void> {
   const going = () => run.live?.() ?? true;
   while (tipOf(lc()) < want && going()) {
     const plan: { from: number; count: number }[] = [];
@@ -1368,17 +1390,21 @@ export async function syncPages(lc: () => Ingesting, want: number, fetchPage: (f
       plan.push({ from: cur + 1, count: end - cur });
       cur = end;
     }
-    const pages = plan.map((p) => fetchPage(p.from, p.count));
-    // The sync stops at the first failed page, so the pages after it are dropped with their own failures.
+    // The window's pages share one cancel: when the sync stops or a page fails, the others end with their retries.
+    const cancel = new AbortController();
+    const pages = plan.map((p) => fetchPage(p.from, p.count, cancel.signal));
     for (const p of pages) p.catch(() => undefined);
-    for (let i = 0; i < plan.length; i++) {
-      if (!going()) return;
-      const { from, count } = plan[i]!;
-      const rows = await pages[i]!;
-      if (rows.length !== count) throw new Error("/api/headers: non-dense range");
-      await run.step(async () => { const c = lc(); for (let j = 0; j < count; j++) c.ingest(from + j, rows[j]!.header, rows[j]!.hash); });
-      run.afterPage?.();
-    }
+    try {
+      for (let i = 0; i < plan.length; i++) {
+        if (!going()) return;
+        const { from, count } = plan[i]!;
+        const rows = await pages[i]!;
+        if (!going()) return; // MUTATE_PAGE_RECHECK
+        if (rows.length !== count) throw new Error("/api/headers: non-dense range");
+        await run.step(async () => { const c = lc(); for (let j = 0; j < count; j++) c.ingest(from + j, rows[j]!.header, rows[j]!.hash); });
+        run.afterPage?.();
+      }
+    } finally { cancel.abort(); } // MUTATE_WINDOW_CANCEL
     await run.afterWindow?.();
   }
 }
