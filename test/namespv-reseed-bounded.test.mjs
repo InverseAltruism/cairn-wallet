@@ -14,7 +14,7 @@ import { cutTableBundle } from "./helpers/cuttable.mjs";
 import { memStore, records, hashOf, headerOf, has, row, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
 
 const { check, done } = checker("the reseed: seeds, the bounded background reseed, the adoption");
-const C = await cutTableBundle('export { liveSpvSource, flushSpvStoreWrites, BOUNDED_PAGES } from "./src/core/namespv.ts"; export { sealKeyGetter, checkSeals } from "./src/core/spvseal.ts"; export { importKeyRaw } from "./src/core/keystore.ts"; export { LightClient, serializeHeader } from "./src/vendor/cairnx-spv.js";', { powList: true });
+const C = await cutTableBundle('export { liveSpvSource, flushSpvStoreWrites, BOUNDED_PAGES, IN_FLIGHT, RESEED_BACKOFF_MS, RESEED_BACKOFF_MAX_MS, BACKGROUND_GAP_MS } from "./src/core/namespv.ts"; export { sealKeyGetter, checkSeals } from "./src/core/spvseal.ts"; export { importKeyRaw } from "./src/core/keystore.ts"; export { LightClient, serializeHeader } from "./src/vendor/cairnx-spv.js";', { powList: true });
 
 const CH = 4096, SEED = 46, PAGE = 512;
 const API = "https://cairn-substrate.test";
@@ -64,7 +64,7 @@ const hashOn = (name, h) => rowOf(name, h)?.hash ?? null;
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 // The served world: `chain` answers every page (A to 146,829), `tip` is the node tip; `garbageAbove` serves a header
 // that links to nothing above that height; `hold(from)` keeps a page until `release()`. `log` lists the page requests.
-const net = { chain: "A", tip: SEAL_TOP, garbageAbove: Infinity, hold: () => false, held: [], log: [], inflight: 0 };
+const net = { chain: "A", tip: SEAL_TOP, garbageAbove: Infinity, hold: () => false, held: [], log: [], inflight: 0, tips: 0, short: () => false };
 const release = () => { for (const r of net.held.splice(0)) r(); };
 const garbage = (h) => ({ height: h, header: { ...headerOf(SEAL_TOP), prev: hex(createHash("sha256").update(`garbage ${h}`).digest()) }, hash: hex(createHash("sha256").update(`g ${h}`).digest()) });
 globalThis.fetch = async (url) => {
@@ -77,15 +77,16 @@ globalThis.fetch = async (url) => {
     try {
       if (net.hold(from)) await new Promise((r) => net.held.push(r));
       if (from + n - 1 > net.tip) return json({ ok: false, error: "headers unavailable" }, 502);
+      if (net.short(from)) return json({ ok: true, from, count: n, headers: [] });
       const rows = [];
       for (let h = from; h < from + n; h++) { const r = h > net.garbageAbove ? garbage(h) : rowOf(net.chain, h); if (!r) return json({ ok: false }, 404); rows.push(r); }
       return json({ ok: true, from, count: n, headers: rows });
     } finally { net.inflight--; }
   }
-  if (u.endsWith("/tip")) return json({ height: net.tip, hash: hashOn(net.chain, net.tip) });
+  if (u.endsWith("/tip")) { net.tips++; return json({ height: net.tip, hash: hashOn(net.chain, net.tip) }); }
   return json({ ok: false, err: "not found" }, 404);
 };
-const serve = (chain, tip, extra = {}) => Object.assign(net, { chain, tip, garbageAbove: Infinity, hold: () => false, held: [], log: [] }, extra);
+const serve = (chain, tip, extra = {}) => Object.assign(net, { chain, tip, garbageAbove: Infinity, hold: () => false, held: [], log: [], short: () => false }, extra);
 
 const vk = await C.importKeyRaw("0a".repeat(32));
 const sealKey = C.sealKeyGetter(() => vk);
@@ -284,6 +285,73 @@ console.log("7. a refetched sealed chunk that fails its seal: that read only, on
   check("  the held chain still answers from A", (await src.hashAt(SEAL_TOP)) === hashOf(SEAL_TOP) && (await src.hashAt(140000)) === hashOf(140000));
   const p = await src.prepare(148000 - 12).catch((e) => ({ error: String(e?.message ?? e) }));
   check(`  a lookup then reseeds from the table and adopts B32 (${p.verifiedTip ?? p.error}); 134,000 answers B32`, p.verifiedTip === 148000 && (await src.hashAt(134000)) === hashOn("B32", 134000));
+}
+
+console.log("8. after a refused background reseed the background runs back off; a lookup's reseed does not wait; an adoption ends it:");
+{
+  // L34 links at seal 33 with less work: each background run breaks at the held tip and its reseed is refused. A minute
+  // passes between the popup's prewarms for an hour.
+  const st = copyOf(sealedA);
+  serve("A", SEAL_TOP);
+  const src = await C.liveSpvSource(opts(st));
+  serve("L34", 152000);
+  let clock = now;
+  Date.now = () => clock;
+  const at = [];
+  let pages = 0;
+  for (let m = 0; m < 60; m++) {
+    const tips = net.tips, before = net.log.length;
+    src.background();
+    await tick(20);
+    if (net.tips > tips) { at.push(m); await settled(); pages += net.log.length - before; }
+    clock += C.BACKGROUND_GAP_MS;
+  }
+  // Without the back-off every one of the 60 prewarms runs: a broken window and the reseed's 17 pages, about 1,320
+  // requests an hour (docs/DESIGN-namespv-scaling.md).
+  check(`over an hour ${at.length} runs started (minutes ${at.join(",")}), ${pages} page requests (at most ${at.length} x ${C.IN_FLIGHT + C.BOUNDED_PAGES})`,
+    at.join() === "0,2,6,14,30" && pages <= at.length * (C.IN_FLIGHT + C.BOUNDED_PAGES) && C.RESEED_BACKOFF_MS === 2 * C.BACKGROUND_GAP_MS && C.RESEED_BACKOFF_MAX_MS === 32 * C.BACKGROUND_GAP_MS);
+  check("  the held chain stays", (await src.hashAt(SEAL_TOP)) === hashOf(SEAL_TOP) && st.head.tip === SEAL_TOP);
+  // Within the back-off a lookup above the held tip reseeds at once and is refused as today.
+  const before = net.log.length, t = performance.now();
+  const out = await src.prepare(152000 - 12).then((r) => `verified ${r.verifiedTip}`, (e) => String(e?.message ?? e));
+  check(`  a lookup within the back-off reseeds at once (${net.log.length - before} requests, ${(performance.now() - t).toFixed(0)} ms): ${out.slice(0, 50)}`, net.log.length - before > C.BOUNDED_PAGES && /less proof of work/.test(out));
+  await settled();
+  // B34 carries more work: a lookup adopts it, which ends the back-off; the next prewarm runs.
+  serve("B34", 147600);
+  const got = await src.prepare(147600 - 12).then((r) => r.verifiedTip, (e) => String(e?.message ?? e));
+  await settled();
+  clock += C.BACKGROUND_GAP_MS;
+  const tips = net.tips;
+  src.background();
+  await tick(20);
+  check(`  a lookup adopts B34 (${got}) and the next prewarm runs (${net.tips - tips} tip read)`, got === 147600 && net.tips === tips + 1);
+  await settled();
+  Date.now = () => now;
+}
+
+console.log("8b. the honest path: one transient failure, then a good run, costs only the failed page:");
+{
+  const st = memStore();
+  for (let k = 31; k <= Math.floor(140000 / CH); k++) st.chunks.set(k, records(k * CH, Math.min(topOf(k), 140000)));
+  st.head = { v: 2, tip: 140000, tipHash: hashOf(140000) };
+  serve("A", SEAL_TOP);
+  const src = await C.liveSpvSource(opts(st));
+  let clock = now;
+  Date.now = () => clock;
+  let failed = false;
+  serve("A", SEAL_TOP, { short: (from) => from > 142000 && !failed && (failed = true) });
+  src.background();
+  await tick(20); await settled();
+  const first = net.log.length, stopped = (await src.prepare(0)).verifiedTip;
+  clock += C.BACKGROUND_GAP_MS;
+  src.background();
+  await tick(20); await settled();
+  const tip = (await src.prepare(0)).verifiedTip;
+  // A sequential sync from 140,000 asks one request per page: 140,000 to 140,287, then one per 512.
+  const pagesTo = Math.ceil((SEAL_TOP - 140287) / PAGE) + 1;
+  check(`the first run stops at ${stopped} on the short page; the next prewarm a minute later runs to ${tip}; ${net.log.length} requests in all (${pagesTo} pages and the one re-asked)`,
+    failed && stopped < SEAL_TOP && tip === SEAL_TOP && net.log.length === pagesTo + 1 && first > 0);
+  Date.now = () => now;
 }
 
 done("namespv-reseed-bounded");

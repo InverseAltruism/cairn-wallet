@@ -550,6 +550,10 @@ export const BOUNDED_PAGES = Math.ceil((RESEED_BOUND + 1) / PAGE) + 1;
 const INGEST_SLICE = 128;
 /** A background run starts at most once in this window. */
 export const BACKGROUND_GAP_MS = 60_000;
+/** After a background reseed that was refused or failed, the source starts no background run for this long, doubled
+ *  after each further one up to RESEED_BACKOFF_MAX_MS; an adoption ends it. A lookup's run and reseed do not wait. */
+export const RESEED_BACKOFF_MS = 2 * BACKGROUND_GAP_MS;
+export const RESEED_BACKOFF_MAX_MS = 32 * BACKGROUND_GAP_MS;
 interface AnchorTable { anchors: readonly string[]; newestK: number; newest: number; checkpoints: Readonly<Record<number, string>> }
 /**
  * The anchor table a source runs on: the release table, or a prefix of it (tests and the acceptance harness, whose
@@ -1087,6 +1091,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     await acq.writes();
     if (!live()) return false;
     adoptions++;
+    backoff = 0; backoffUntil = -Infinity;
     LC = fresh.client;
     workBase = fresh.workBase;
     const seedK = chunkOf(seed.top);
@@ -1151,6 +1156,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const boundedReseed = async (): Promise<boolean> => {
     const seed = (await sealSeedNow()) ?? tableSeed();
     if (tipOf(LC) - seed.top > RESEED_BOUND) return false; // MUTATE_BOUNDED_TABLE
+    // A transient failure, a yield to a lookup and a dropped source do not back off.
+    const refused = () => { if (live() && !lookupWant()) backOff(); };
     try {
       const fresh = await seedClient(seed);
       // It yields to a lookup that arrives meanwhile: its pages stop, those in flight or waiting are cancelled, and the
@@ -1158,8 +1165,14 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       // adopted, whatever its work.
       const stop = arrival.signal, page = runPage(() => true);
       await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE), (f, n, c) => page(f, n, c ? AbortSignal.any([c, stop]) : stop), () => live() && !lookupWant()); // MUTATE_BOUNDED_YIELDS
-      return await adopt(fresh, seed);
-    } catch (e) { console.warn("[namespv] background reseed stopped; the next lookup syncs:", e); return false; }
+      if (await adopt(fresh, seed)) return true;
+      refused();
+      return false;
+    } catch (e) {
+      console.warn("[namespv] background reseed stopped; the next lookup syncs:", e);
+      if (!isTransientSyncError(messageOf(e))) refused();
+      return false;
+    }
   };
 
   // ── the runner: one per source ──
@@ -1168,6 +1181,11 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   type Waiter = { want: number; done: () => void; fail: (e: unknown) => void };
   const waiters = new Set<Waiter>();
   let target = 0, running = false, lastBackground = -Infinity, nodeTipSeen = 0;
+  let backoff = 0, backoffUntil = -Infinity;
+  function backOff(): void {
+    backoff = backoff ? Math.min(2 * backoff, RESEED_BACKOFF_MAX_MS) : RESEED_BACKOFF_MS; // MUTATE_BACKOFF_DOUBLES
+    backoffUntil = Date.now() + backoff;
+  }
   let syncing: { from: number } | null = null;
   // Aborted when a lookup starts waiting: the background pages waiting on the foreground go ahead as its pages.
   let arrival = new AbortController();
@@ -1276,6 +1294,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     // is back where it was.
     if (now < lastBackground) lastBackground = now; // MUTATE_GAP_CLAMP
     if (now - lastBackground < BACKGROUND_GAP_MS) return;
+    // Every background run of a host whose chain the reseed refused breaks the same way; it waits as the reseed does.
+    if (backoffUntil - now > backoff) backoffUntil = now + backoff;
+    if (now < backoffUntil) return; // MUTATE_BACKOFF
     lastBackground = now;
     backgroundClient.tip().then((t) => {
       const n = Number(t?.height);
