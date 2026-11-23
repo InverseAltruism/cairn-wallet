@@ -34,7 +34,7 @@ export async function runDevPopupMethod(method: string, args: any[]): Promise<an
     case "removeAccount": return w.removeAccount(args[0], args[1]);
     case "balance": return w.balance();
     case "csdMarket": return w.csdMarket();
-    case "prewarmSpv": { w.prewarmSpv(); return { ok: true }; }
+    case "prewarmSpv": { w.syncSpv(); return { ok: true }; }
     case "epoch": return w.epoch();
     case "tip": return w.tip();
     case "tipFloor": return w.tipFloor();

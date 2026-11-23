@@ -7,6 +7,14 @@
 //   switch; drop it in tryConfirmHintSet and (2) confirms green from A's cache with no read against B; drop the
 //   cache clear in endpointChanged and (4) does the same after a change made with nothing in flight.
 //   PAIRED HONEST PATH: (3) no settings change: the cache is written and confirmName uses it (zero block reads).
+//   (5) the source is dropped under a lookup while its headers sync (an endpoint change during a name's Review): the
+//   dropped source refuses its wait, as liveSpvSource does (test/namespv-dropped-source.test.mjs), and the current
+//   source is asked once more, so the Review verifies as on 0.3.5, whose old source went on to verify. (5b) a second
+//   change during that retry: no third source is asked; the Review shows the unverified caution. (5c) a dropped source
+//   that does not report its drop (no `dropped()`), the second server lagging: the union fails, the per-server recovery
+//   answers the previous holding from the lagging server's records below the held tip; an answer recovered while the
+//   generation moved is not kept, and the current source answers (test/name-source-dropped.test.mjs runs the same
+//   sequence on liveSpvSource, which reports its drop).
 // Run: npx tsx test/spv-endpoint-race.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { Wallet } from "../src/core/wallet.ts";
@@ -105,6 +113,76 @@ try {
     check("(3) with zero block reads", reads.A === before && reads.B === 0);
     await w.setApi(API_A);
     check("(3) an unchanged API keeps the cache", w.nameHintCacheForTest().has(NM));
+  }
+  {
+    console.log("(5) a source dropped while a lookup waits for its headers: the current source answers it:");
+    // A and B both serve the chain. A's prepare waits as a sync to the lookup's height does, and refuses when the wallet
+    // drops the source (its signal), as liveSpvSource's runner refuses a dropped source's waits above its tip.
+    const prepared = [];
+    const asked = () => [...new Set(prepared)].join(",");
+    let gate = null, dropB = false;
+    const make = (tag, opts) => {
+      const s = source(blocks, 33800);
+      return { ...s, hashAt: async (h) => hashOf(h), async prepare(h) {
+        prepared.push(tag);
+        const dropped = () => new Error("the header source was replaced; its sync stopped");
+        if (opts.signal?.aborted) throw dropped();
+        if (tag === "A" || (tag === "B" && dropB)) await new Promise((ok, fail) => {
+          gate = ok;
+          opts.signal?.addEventListener("abort", () => fail(dropped()), { once: true });
+        });
+        return s.prepare(h);
+      } };
+    };
+    const w = new Wallet(memoryStore());
+    w.spvBuildForTest = async (opts) => make(opts.headersBase === API_B ? "B" : opts.headersBase === API_A ? "A" : "C", opts);
+    await w.create("pw-spv-race-5");
+    const pending = w.resolveName(NM);
+    for (let i = 0; i < 2000 && !prepared.length; i++) await new Promise((r) => setTimeout(r, 1));
+    await w.setApi(API_B);
+    gate?.();
+    const r = await pending;
+    check(`(5) the Review verifies ${r.addr} through the current source (verified=${r.verified}, sources asked ${asked()})`, r.ok === true && r.verified === true && r.addr === TARGET && asked() === "A,B");
+    console.log("(5b) a second change during the retry: no third source; the unverified caution:");
+    prepared.length = 0; dropB = true;
+    await w.setApi(API_A);
+    const p2 = w.resolveName(NM);
+    for (let i = 0; i < 2000 && !prepared.length; i++) await new Promise((r) => setTimeout(r, 1));
+    await w.setApi(API_B);
+    for (let i = 0; i < 2000 && !prepared.includes("B"); i++) await new Promise((r) => setTimeout(r, 1));
+    await w.setApi("https://api3.cairn-substrate.test");
+    const r2 = await p2;
+    check(`(5b) two sources asked (${asked()}), the answer is the served address unverified (verified=${r2.verified})`, asked() === "A,B" && r2.ok === true && r2.verified === false && r2.addr === TARGET);
+  }
+  {
+    console.log("(5c) a recovered answer from a dropped source that does not report the drop, the second server lagging:");
+    // A holds headers to 33,705: it answers a wait at or below that height after its drop and refuses one above it.
+    const prepared = [];
+    let gate = null;
+    const make = (tag, opts) => {
+      const s = source(blocks, 33800);
+      return { ...s, hashAt: async (h) => hashOf(h), async prepare(h) {
+        prepared.push(`${tag}:${h}`);
+        const dropped = () => new Error("the header source was replaced; its sync stopped");
+        if (tag === "A" && h > 33705) {
+          if (opts.signal?.aborted) throw dropped();
+          await new Promise((ok, fail) => { gate = ok; opts.signal?.addEventListener("abort", () => fail(dropped()), { once: true }); });
+        }
+        return s.prepare(h);
+      } };
+    };
+    const w = new Wallet(memoryStore());
+    w.spvBuildForTest = async (opts) => make(opts.headersBase === API_B ? "B" : "A", opts);
+    await w.create("pw-spv-race-5c");
+    const lagging = { ok: true, resolve: { addr: OWNER, owner: OWNER, via: "owner" }, events: [H(claim, 33700)] };
+    globalThis.fetch = mkFetch({ [`${PRIMARY}/cairnx/resolve/`]: resolved, [PRIMARY]: history, [CLARVIS]: lagging, [RPC]: { height: 33800 } });
+    const pending = w.resolveName(NM);
+    for (let i = 0; i < 2000 && !gate; i++) await new Promise((r) => setTimeout(r, 1));
+    await w.setApi(API_B);
+    gate?.();
+    const r = await pending;
+    globalThis.fetch = serve();
+    check(`(5c) the Review shows ${r.addr === TARGET ? "the owner's address" : r.addr === OWNER ? "the previous holding" : r.addr} (verified=${r.verified}, prepares ${prepared.join(",")})`, r.ok === true && r.verified === true && r.addr === TARGET && prepared.some((p) => p.startsWith("B:")));
   }
 } finally { globalThis.fetch = origFetch; }
 

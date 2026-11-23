@@ -1,0 +1,462 @@
+// The background sync's runner through the production liveSpvSource on real headers to 146,829 (test/helpers/
+// spvfixture.mjs, the table cut at 131,071): six pages in flight, ingested by height whatever order they arrive in;
+// reads and lookups run between pages; a restart mid-sync resumes from the persisted tail; a transient failure stops
+// the run and the next lookup resumes; no background run within 60 s, offline or with Save-Data; and through the
+// Wallet: the popup's prewarm starts it, the install hook's does not, and a dropped source (an endpoint or a vault
+// change) requests and writes nothing more.
+// Run: npx tsx test/namespv-sync-runner.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
+import { checker } from "./helpers/check.mjs";
+import { serveFixture, memStore, records, hashOf, SEAL_ANCHORS, SEAL_TOP } from "./helpers/spvfixture.mjs";
+import { liveSpvSource, flushSpvStoreWrites, IN_FLIGHT, BACKGROUND_GAP_MS } from "../src/core/namespv.ts";
+import { checkSeals } from "../src/core/spvseal.ts";
+import { Wallet } from "../src/core/wallet.ts";
+import { memoryStore } from "../src/core/storage.ts";
+
+const { check, done } = checker("the background sync: six in flight, order, resume, stops");
+const API = "https://cairn-substrate.test", API_B = "https://headers-b.cairn-substrate.test";
+const CH = 4096, PAGE = 512;
+const topOf = (k) => k * CH + CH - 1;
+const net = { tip: SEAL_TOP };
+serveFixture(net);
+const served = globalThis.fetch;
+const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+const until = async (f, n = 400) => { for (let i = 0; i < n && !f(); i++) await tick(); return f(); };
+
+// The header requests as made: each with its host, its range and when it was in flight. `hold(from)` true keeps a page
+// unanswered until `release()`; `delay(i)` delays the i-th request's answer.
+const hdr = { reqs: [], inflight: 0, max: 0, hold: () => false, held: [], delay: () => 0 };
+const release = () => { for (const r of hdr.held.splice(0)) r(); };
+globalThis.fetch = async (url, init) => {
+  const u = String(url);
+  const m = /^(https:\/\/[^/]+)\/api\/headers\/(\d+)\/(\d+)$/.exec(u);
+  if (!m) return served(url, init);
+  const req = { host: m[1], from: Number(m[2]), n: Number(m[3]) };
+  const i = hdr.reqs.push(req) - 1;
+  hdr.inflight++; hdr.max = Math.max(hdr.max, hdr.inflight);
+  try {
+    if (hdr.hold(req.from)) await new Promise((r) => hdr.held.push(r));
+    const d = hdr.delay(i);
+    if (d) await tick(d);
+    return await served(url.replace(m[1], API), init);
+  } finally { hdr.inflight--; }
+};
+// A background run has ended when no header request is in flight and none was made for 400 ms.
+const quiet = async () => { for (let n = -1; n !== hdr.reqs.length || hdr.inflight > 0;) { n = hdr.reqs.length; await tick(400); } };
+const resetLog = () => { hdr.reqs.length = 0; hdr.max = 0; hdr.hold = () => false; hdr.delay = () => 0; net.log.length = 0; };
+
+function storeTo(tip) {
+  const st = memStore();
+  for (let k = 31; k <= Math.floor(tip / CH); k++) st.chunks.set(k, records(k * CH, Math.min(topOf(k), tip)));
+  st.head = { v: 2, tip, tipHash: hashOf(tip) };
+  return st;
+}
+const opts = (st, extra = {}) => ({ rpcBase: `${API}/api/rpc`, headersBase: API, anchors: SEAL_ANCHORS, store: async () => st, ...extra });
+// The requests a sequential sync makes from `tip` to `want`: one per page, a cut first page asked whole (it ends on a
+// page top, so it shares the page's edge-cached URL), the last cut at `want`.
+const plan = (tip, want) => {
+  const out = [];
+  for (let c = tip; c < want;) {
+    const e = Math.min(want, c + 1 - ((c + 1) % PAGE) + PAGE - 1);
+    out.push((c + 1) % PAGE && e % PAGE === PAGE - 1 ? `${c + 1 - ((c + 1) % PAGE)}/${PAGE}` : `${c + 1}/${e - c}`);
+    c = e;
+  }
+  return out;
+};
+const sample = async (src, from, to) => { let bad = 0; for (let h = from; h <= to; h += 97) if ((await src.hashAt(h)) !== hashOf(h)) bad++; return bad; };
+const now0 = Date.now();
+let clock = now0;
+Date.now = () => clock;
+
+console.log("1. up to five pages in flight, answered out of order, ingested by height:");
+{
+  resetLog();
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  resetLog();
+  // The later pages of a window answer first.
+  hdr.delay = (i) => (8 - (i % 8)) * 8;
+  src.background();
+  await until(() => hdr.reqs.length > 0); await quiet();
+  const p = await src.prepare(SEAL_TOP - 12);
+  const asked = hdr.reqs.map((r) => `${r.from}/${r.n}`);
+  check(`the run requests the sequential plan's pages, each once (${asked.length} of ${plan(136000, SEAL_TOP).length})`, asked.join() === plan(136000, SEAL_TOP).join());
+  check(`  five in flight at most, reached on a fast link (${hdr.max})`, hdr.max === 5);
+  check(`  verified to ${p.verifiedTip}, every sampled height the chain's own (${await sample(src, 136001, SEAL_TOP)} differ)`, p.verifiedTip === SEAL_TOP && (await sample(src, 136001, SEAL_TOP)) === 0);
+  await flushSpvStoreWrites();
+}
+
+console.log("1b. the pages in flight start at two, grow after fast pages and fall back to one after a timeout:");
+{
+  const src = await liveSpvSource(opts(storeTo(131071)));
+  resetLog();
+  // The ninth request times out (as AbortSignal.timeout ends a fetch); every other page answers at once.
+  let n = 0;
+  const inner = globalThis.fetch;
+  const seenAtStart = [];
+  globalThis.fetch = async (url, init) => {
+    if (/\/api\/headers\//.test(String(url))) { seenAtStart.push(hdr.inflight); if (++n === 9) throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); }
+    return inner(url, init);
+  };
+  const out = await src.prepare(SEAL_TOP - 12).then((r) => r.verifiedTip, (e) => `refused: ${e.message}`);
+  const afterTimeout = n;
+  const p = await src.prepare(SEAL_TOP - 12);
+  globalThis.fetch = inner;
+  // At width one a request goes out only once the one before it answered: the second request of a sync sees none in
+  // flight; at a wider width it goes out beside the first.
+  check(`the first sync asks two pages at first (its second request saw ${seenAtStart[1]} in flight, its third ${seenAtStart[2]}), the lookup over the timeout is refused as today (${String(out).slice(0, 40)})`, seenAtStart[1] === 1 && seenAtStart[2] === 0 && String(out).startsWith("refused"));
+  check(`  after the timeout the next sync is back to one page (its second request saw ${seenAtStart[afterTimeout + 1]} in flight) and verifies to ${p.verifiedTip}`, seenAtStart[afterTimeout + 1] === 0 && p.verifiedTip === SEAL_TOP);
+  await quiet(); await flushSpvStoreWrites();
+}
+
+console.log("2. reads and lookups run between the run's pages:");
+{
+  const st = storeTo(136000);
+  const src = await liveSpvSource(opts(st));
+  resetLog();
+  // The run's pages from the fourth on wait; an anchored chunk read (chunk 26) is not one of them.
+  hdr.hold = (from) => from > 135679 && hdr.reqs.filter((r) => r.from > 135679).length > 3;
+  src.background();
+  await until(() => hdr.held.length > 0);
+  const read = await Promise.race([src.hashAt(108000), tick(3000).then(() => "waited")]);
+  const lookup = await Promise.race([src.prepare(137000 - 12).then((r) => r.verifiedTip), tick(3000).then(() => "waited")]);
+  const tipThen = (await src.prepare(0)).verifiedTip;
+  check(`a read in chunk 26 answers while the run waits on a page (${read === hashOf(108000)})`, read === hashOf(108000));
+  check(`a lookup whose height the run passed answers while the run still waits (${lookup}, run at ${tipThen} of ${SEAL_TOP})`, lookup >= 137000 - 12 && tipThen < SEAL_TOP);
+  release(); hdr.hold = () => false;
+  check("  the run then reaches the node tip", await until(() => hdr.inflight === 0 && hdr.held.length === 0) && (await src.prepare(SEAL_TOP - 12)).verifiedTip === SEAL_TOP);
+  await flushSpvStoreWrites();
+}
+
+console.log("2b. while a lookup waits, the run asks no page above the lookup's height:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  resetLog();
+  // The background run's first pages wait; a lookup for 137,500 arrives meanwhile.
+  let arrived = false;
+  hdr.hold = (from) => !arrived && from > 135679;
+  src.background();
+  await until(() => hdr.held.length > 0);
+  arrived = true;
+  const mark = hdr.reqs.length;
+  const p = src.prepare(137500 - 12);
+  release();
+  const tip = (await p).verifiedTip;
+  const asked = hdr.reqs.slice(mark);
+  const above = asked.filter((r) => r.from > 137500);
+  check(`the lookup verifies to ${tip}; of the ${asked.length} pages asked until then, ${above.length} start above 137,500`, tip === 137500 && asked.length > 0 && above.length === 0);
+  await quiet(); await flushSpvStoreWrites();
+}
+
+console.log("3. a restart mid-sync resumes from the persisted tail:");
+{
+  const st = storeTo(131071);
+  const ctl = new AbortController();
+  const src = await liveSpvSource(opts(st, { signal: ctl.signal }));
+  resetLog();
+  // Ten pages are answered, then the worker dies: nothing more is answered and its source is gone.
+  hdr.hold = (from) => from > 131071 && hdr.reqs.filter((r) => r.from > 131071).length > 10;
+  src.background();
+  await until(() => hdr.held.length > 0);
+  await tick(50);
+  ctl.abort();
+  await flushSpvStoreWrites();
+  const firstRun = hdr.reqs.length;
+  const kept = st.head?.tip ?? 0;
+  release();
+  resetLog();
+  const src2 = await liveSpvSource(opts(st));
+  resetLog();
+  const p = await src2.prepare(SEAL_TOP - 12);
+  const again = hdr.reqs.filter((r) => r.from <= kept);
+  // Windows of 2, 4 and 5 pages can finish before the hold (the width grows with each fast page): at least 6 pages persist.
+  check(`after ${firstRun} requests the store holds the finished windows (${kept}, ${kept - 131071} headers, ${(kept - 131071) / PAGE} pages)`, kept > 131071 && (kept - 131071) % PAGE === 0 && (kept - 131071) / PAGE >= 6);
+  check(`  the next source resumes at ${hdr.reqs[0]?.from} and asks no height it had (${again.length} repeated), verified to ${p.verifiedTip}`, hdr.reqs[0]?.from === kept + 1 && again.length === 0 && p.verifiedTip === SEAL_TOP);
+  await flushSpvStoreWrites();
+}
+
+console.log("4. a transient failure stops the run; the next lookup resumes:");
+{
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  resetLog();
+  let failing = true;
+  const fail = 136000 + 3 * PAGE;
+  net.unserved = (from) => failing && from > fail;
+  const low = src.prepare(136100 - 12);
+  const high = src.prepare(SEAL_TOP - 12).then((r) => r.verifiedTip, (e) => `refused: ${String(e?.message ?? e).slice(0, 40)}`);
+  const lowTip = (await low).verifiedTip;
+  const highOut = await high;
+  const reached = (await src.prepare(0)).verifiedTip;
+  check(`a lookup below the failure answers (${lowTip}); one above it is refused as today (${highOut})`, lowTip >= 136100 - 12 && String(highOut).startsWith("refused"));
+  failing = false; net.unserved = undefined;
+  resetLog();
+  const p = await src.prepare(SEAL_TOP - 12);
+  check(`  the next lookup resumes at ${hdr.reqs[0]?.from}, above the ${reached} reached, verified to ${p.verifiedTip}`, hdr.reqs[0]?.from === reached + 1 && p.verifiedTip === SEAL_TOP);
+  await flushSpvStoreWrites();
+}
+
+console.log("4b. a stopped run's target is not carried into the next: a lookup fetches what it needs:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  resetLog();
+  // The background aims at the node tip and stops on a transient failure above 139,263.
+  let failing = true;
+  net.unserved = (from) => failing && from > 139263;
+  src.background();
+  await until(() => hdr.reqs.length > 0); await quiet();
+  const reached = (await src.prepare(0)).verifiedTip;
+  failing = false; net.unserved = undefined;
+  resetLog();
+  const p = await src.prepare(140032 - 12);
+  // Nothing more after the lookup: the stopped background's aim is not resumed by the lookup's run.
+  await quiet();
+  check(`stopped at ${reached}; a lookup needing 140,032 makes ${hdr.reqs.length} requests (${hdr.reqs.map((r) => `${r.from}/${r.n}`).join(",")}), the plan to its height, and verifies to ${p.verifiedTip}`,
+    reached === 139263 && hdr.reqs.map((r) => `${r.from}/${r.n}`).join() === plan(139263, 140032).join() && p.verifiedTip === 140032);
+  await quiet(); await flushSpvStoreWrites();
+}
+
+console.log("4c. an aim raised while a lookup's run closes starts the next run (anything left to reach):");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  net.tip = 141000;
+  const src = await liveSpvSource(opts(storeTo(140000)));
+  resetLog();
+  await src.prepare(141000 - 12);
+  // A chunk read queued on the serializer right after the lookup was answered holds the run's closing persist; the
+  // popup's prewarm raises the aim meanwhile, after the run's last check of it.
+  hdr.hold = (from) => from < 131072;
+  const read = src.hashAt(108000);
+  await until(() => hdr.held.length > 0);
+  const forLookup = hdr.reqs.filter((r) => r.from > 131071).length;
+  net.tip = SEAL_TOP;
+  src.background();
+  await tick(100);
+  hdr.hold = () => false;
+  release();
+  await read;
+  await until(() => hdr.reqs.filter((r) => r.from > 141000).length > 0); await quiet();
+  const tip = (await src.prepare(0)).verifiedTip;
+  check(`the background run goes on to the node tip (${tip}) in ${hdr.reqs.filter((r) => r.from > 141000).length} requests after the lookup's ${forLookup}`, tip === SEAL_TOP);
+  net.tip = SEAL_TOP;
+  await flushSpvStoreWrites();
+}
+
+console.log("5. no background run within 60 s of the last, offline or with Save-Data:");
+{
+  const src = await liveSpvSource(opts(storeTo(136000)));
+  resetLog();
+  net.tip = 137000;
+  src.background();
+  await until(() => hdr.reqs.length > 0); await quiet();
+  const first = hdr.reqs.length;
+  net.tip = SEAL_TOP;
+  clock += BACKGROUND_GAP_MS - 1000;
+  src.background();
+  await tick(60);
+  const inGap = hdr.reqs.length - first;
+  clock += 2000;
+  const nav = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  for (const n of [{ onLine: false }, { onLine: true, connection: { saveData: true } }]) {
+    Object.defineProperty(globalThis, "navigator", { value: n, configurable: true });
+    src.background();
+  }
+  await tick(60);
+  const blocked = hdr.reqs.length - first;
+  Object.defineProperty(globalThis, "navigator", nav ?? { value: undefined, configurable: true });
+  src.background();
+  await until(() => hdr.reqs.length > first); await quiet();
+  const after = (await src.prepare(0)).verifiedTip;
+  check(`the first run syncs (${first} requests); within 60 s, offline and with Save-Data nothing more (${inGap}, ${blocked})`, first > 0 && inGap === 0 && blocked === 0);
+  check(`  past the gap, online, the next run syncs to the node tip (${after})`, after === SEAL_TOP);
+  // A backward clock jump restarts the gap, as the wallet's idle lock does, instead of holding runs off until the clock
+  // is back.
+  net.tip = SEAL_TOP + 0;
+  const marks = hdr.reqs.length;
+  clock -= 3600_000;
+  src.background(); await tick(60);
+  const inJump = hdr.reqs.length - marks;
+  clock += BACKGROUND_GAP_MS + 1000;
+  let ran = false;
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (u, i) => { if (String(u).endsWith("/tip")) ran = true; return inner(u, i); };
+  src.background(); await tick(60);
+  globalThis.fetch = inner;
+  check(`  after the clock jumps back an hour, a run waits the gap (${inJump} requests at once) and then starts (${ran})`, inJump === 0 && ran);
+  await flushSpvStoreWrites();
+}
+
+// The Wallet's own singleton and setters; only the builder is the test's, per source a store wrapper counting writes.
+function walletOn(st) {
+  const w = new Wallet(memoryStore(), memoryStore());
+  const built = [];
+  w.spvBuildForTest = (o) => {
+    const id = built.length + 1;
+    const writes = [];
+    const own = { ...st, write: (x) => { writes.push(x); return st.write(x); } };
+    const src = liveSpvSource({ ...o, anchors: SEAL_ANCHORS, store: async () => own, legacy: undefined });
+    built.push({ id, writes, host: o.headersBase, src, opts: o });
+    return src;
+  };
+  return { w, built };
+}
+
+console.log("6. the popup's prewarm starts the background run; the install hook's builds only:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  net.tip = SEAL_TOP;
+  const { w, built } = walletOn(storeTo(136000));
+  await w.create("correct horse battery");
+  await w.setApi(API);
+  resetLog();
+  w.prewarmSpv();
+  await until(() => built.length === 1);
+  await built[0].src;
+  await tick(60);
+  const byInstall = hdr.reqs.length;
+  await w.lock();
+  w.syncSpv();
+  await tick(60);
+  const locked = hdr.reqs.length;
+  await w.unlock("correct horse battery");
+  w.syncSpv();
+  const s = await built[0].src;
+  await until(() => hdr.reqs.length > 0); await quiet();
+  check(`the install hook's prewarm makes no header request (${byInstall}), nor the popup's while locked (${locked})`, byInstall === 0 && locked === 0);
+  check(`  unlocked, the popup's prewarm syncs to the node tip (${(await s.prepare(0)).verifiedTip}) in ${hdr.reqs.length} requests`, (await s.prepare(0)).verifiedTip === SEAL_TOP && hdr.reqs.length === plan(136000, SEAL_TOP).length);
+  await flushSpvStoreWrites();
+}
+
+console.log("7. an endpoint change mid-run: the dropped source requests and writes nothing more; one host per run:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const st = storeTo(136000);
+  const { w, built } = walletOn(st);
+  await w.create("correct horse battery");
+  await w.setApi(API);
+  resetLog();
+  hdr.hold = (from) => from > 136000 && hdr.reqs.filter((r) => r.host === API && r.from > 136000).length > IN_FLIGHT;
+  w.syncSpv();
+  await until(() => hdr.held.length > 0);
+  const a = built[0];
+  const aBefore = a.writes.length;
+  await w.setApi(API_B);
+  const mark = hdr.reqs.length;
+  release(); hdr.hold = () => false;
+  w.syncSpv();
+  await until(() => built.length === 2);
+  const b = built[1];
+  const pB = await (await b.src).prepare(SEAL_TOP - 12);
+  await until(() => hdr.inflight === 0);
+  await flushSpvStoreWrites();
+  const aAfter = hdr.reqs.slice(mark).filter((r) => r.host === API);
+  const kB = await w.sealKey();
+  check(`after the change the dropped source asks no page of ${API} (${aAfter.length}) and makes no write (${a.writes.length - aBefore})`, aAfter.length === 0 && a.writes.length === aBefore);
+  check(`  the new source reads every header page from ${API_B} (${hdr.reqs.slice(mark).filter((r) => r.host === API_B).length} of ${hdr.reqs.length - mark}), verified to ${pB.verifiedTip}`,
+    hdr.reqs.length > mark && hdr.reqs.slice(mark).every((r) => r.host === API_B) && pB.verifiedTip === SEAL_TOP);
+  check(`  the stored list and head are the new source's (head ${st.head?.tip}, list ${checkSeals(kB, st.seals, { newest: 131071, newestHash: hashOf(131071) })?.map((e) => e.k).join(",")})`,
+    st.head?.tip === SEAL_TOP && b.writes.some((x) => x.seals) && b.writes.at(-1)?.head?.tip === SEAL_TOP);
+}
+
+console.log("7b. an endpoint change during a chunk read: the dropped source's acquirer writes nothing:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const { w, built } = walletOn(storeTo(136000));
+  await w.create("correct horse battery");
+  await w.setApi(API);
+  const src = await w["spvSource"]();
+  resetLog();
+  // Chunk 26 is not stored: its eight pages are fetched; the last one waits until the endpoint has changed.
+  hdr.hold = (from) => from === 110080;
+  const read = src.hashAt(108000);
+  await until(() => hdr.held.length > 0);
+  const a = built[0], before = a.writes.length;
+  await w.setApi(API_B);
+  release(); hdr.hold = () => false;
+  const got = await read;
+  await tick(30); await flushSpvStoreWrites();
+  check(`the read in flight still answers (${got === hashOf(108000)}); the dropped source stores no chunk (${a.writes.length - before} writes)`, got === hashOf(108000) && a.writes.length === before);
+}
+
+console.log("8. a vault change: a source mid-run and a source parked on the unlock stop:");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  const st = storeTo(136000);
+  const { w, built } = walletOn(st);
+  await w.create("correct horse battery");
+  await w.setApi(API);
+  resetLog();
+  // From the fourth request on every page waits, so the run soon waits on a held page.
+  hdr.hold = (from) => from > 135679 && hdr.reqs.filter((r) => r.from > 135679).length > 3;
+  w.syncSpv();
+  await until(() => hdr.held.length > 0);
+  const a = built[0], aBefore = a.writes.length;
+  const aSrc = await a.src;
+  const pending = aSrc.prepare(SEAL_TOP - 12).then((r) => r.verifiedTip, (e) => `threw ${e?.message}`);
+  // The reset comes once the lookup waits on the run (not while prepare still reads the node tip).
+  await until(() => aSrc.syncProgress() !== null);
+  await w.reset();
+  const mark = hdr.reqs.length;
+  // Refused at once, with the page still held: the wait does not hang on the request in flight.
+  const settled = await Promise.race([pending, tick(1000).then(() => "hung")]);
+  release(); hdr.hold = () => false;
+  await tick(60); await flushSpvStoreWrites();
+  check(`after the reset the old source asks no page (${hdr.reqs.length - mark}), writes nothing (${a.writes.length - aBefore}) and refuses its lookup above its tip at once, as 0.3.5 did not answer below it (${settled})`,
+    hdr.reqs.length === mark && a.writes.length === aBefore && String(settled).startsWith("threw the header source was replaced"));
+
+  // Parked: a sealed store waits for the unlock; the reset drops it, and the next vault's unlock wakes nothing.
+  const st2 = storeTo(SEAL_TOP);
+  const { w: w2, built: built2 } = walletOn(st2);
+  await w2.create("correct horse battery");
+  const first = await w2.spvSource().catch(() => null);
+  await first?.prepare(0);
+  await flushSpvStoreWrites();
+  const listed = !!st2.seals;
+  await w2.lock();
+  resetLog();
+  await w2.setApi(API);
+  w2.prewarmSpv();
+  await until(() => built2.length === 2);
+  const parked = built2[1];
+  const out = parked.src.then(() => "built", (e) => `ended: ${e?.message}`);
+  await tick(30);
+  await w2.reset();
+  const ended = await Promise.race([out, tick(3000).then(() => "hung")]);
+  const waitersAfterReset = w2["unlockWaiters"].length;
+  await w2.create("another battery staple");
+  await w2.balance().catch(() => null);
+  await tick(60); await flushSpvStoreWrites();
+  check(`a source parked on the unlock (list stored: ${listed}) ends at the reset (${ended}) with no request (${hdr.reqs.length}) and no write (${parked.writes.length})`,
+    listed && ended.startsWith("ended") && hdr.reqs.length === 0 && parked.writes.length === 0);
+  check(`  and leaves no waiter behind it (${waitersAfterReset} after the reset)`, waitersAfterReset === 0);
+}
+
+console.log("8b. a source built under another vault: the next lookup drops it, and it asks and writes nothing more:");
+{
+  // After a reset the popup's prewarm builds a source with no vault; the vault sealed next is another, so the next
+  // lookup's spvSource drops that source (the vault-change branch of headerSource) and builds a new one.
+  clock += 2 * BACKGROUND_GAP_MS;
+  const st = storeTo(136000);
+  const { w, built } = walletOn(st);
+  await w.setApi(API);
+  resetLog();
+  w.prewarmSpv();
+  await until(() => built.length === 1);
+  const a = built[0], aSrc = await a.src;
+  hdr.hold = (from) => from > 135679 && hdr.reqs.filter((r) => r.from > 135679).length > 3;
+  aSrc.background();
+  await until(() => hdr.held.length > 0);
+  await w.create("correct horse battery");
+  await flushSpvStoreWrites();
+  const aBefore = a.writes.length;
+  const next = w["spvSource"]();
+  const mark = hdr.reqs.length;
+  hdr.hold = () => false;
+  release();
+  await next; await tick(100); await flushSpvStoreWrites();
+  const later = hdr.reqs.length - mark;
+  check(`the lookup builds a new source (${built.length} built) and drops the old one (aborted ${a.opts.signal?.aborted === true}): no page after it (${later}), no write (${a.writes.length - aBefore})`,
+    built.length === 2 && a.opts.signal?.aborted === true && later === 0 && a.writes.length === aBefore);
+}
+
+done("namespv-sync-runner");

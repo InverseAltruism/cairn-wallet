@@ -10,6 +10,7 @@ import { selectInputs, strip0x, MAX_TX_INPUTS, MAX_DOMAIN_BYTES, MAX_URI_BYTES, 
 import { byteCapRefusal } from "./signfields.js";
 import { firstAnswer, hostsFor, isBackup, submitEach, type HostAnswer } from "./hosts.js";
 import { classifyAnswer, isSubmitDuplicateErr, type HostVerdict, type RefusalReason, type SubmitAnswer, type SubmitOutcome } from "./submitverdict.js";
+import { foregroundFetch } from "./netgate.js";
 
 // Bounded waits (2026-07-09): a node that ACCEPTS the connection but never answers used to hang
 // these fetches forever; the popup's "sending…" spinner never settled and there was no in-popup
@@ -23,14 +24,14 @@ import { classifyAnswer, isSubmitDuplicateErr, type HostVerdict, type RefusalRea
 const GET_TIMEOUT_MS = 12_000;
 const POST_TIMEOUT_MS = 20_000;
 async function get(rpc: string, path: string): Promise<any> {
-  const r = await fetch(`${rpc}${path}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+  const r = await foregroundFetch(`${rpc}${path}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`); return r.json();
 }
 // One POST, never a throw: a request that failed or timed out is `thrown`, any answer is its status and parsed body
 // (`undefined` when it is not JSON). submitverdict.ts reads a submit's answer; post() below reads sign-in's.
 async function postRaw(base: string, path: string, body: unknown): Promise<SubmitAnswer> {
   let r: Response;
-  try { r = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
+  try { r = await foregroundFetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(POST_TIMEOUT_MS) }); }
   catch { return { thrown: true }; }
   let j: unknown;
   try { j = await r.json(); } catch { j = undefined; }
@@ -56,7 +57,7 @@ export async function tip(rpc: string): Promise<number> { return (await firstAns
 // complete; it has no mempool view). null: nothing knowable this time.
 export async function txInclusion(host: string, txid: string): Promise<TxInclusion | null> {
   try {
-    const r = await fetch(`${host}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    const r = await foregroundFetch(`${host}/tx/${txid}/status`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
     if (r.ok) {
       const j: any = await r.json();
       if (j?.ok !== true || !["mined", "pending", "unknown"].includes(j.state)) return null;
@@ -92,7 +93,7 @@ export async function balance(rpc: string, addr: string): Promise<Balance & { vi
 // when the node's bound cut the list: a coin in it is mined, a coin missing from it proves nothing.
 export async function confirmedUtxos(host: string, addr: string): Promise<{ utxos: { txid: string; vout: number }[]; complete: boolean } | null> {
   try {
-    const r = await fetch(`${host}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+    const r = await foregroundFetch(`${host}/utxos-all/${addr}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
     let j: any;
     if (r.ok) j = await r.json();
     else if (r.status === 404 && new URL(host).pathname.replace(/\/+$/, "") === "") j = await get(host, `/utxos/${addr}`);
@@ -243,7 +244,7 @@ async function verifyInputValues(
     if (hit !== undefined) return hit;
     let body: any;
     try {
-      const r = await fetch(`${host}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
+      const r = await foregroundFetch(`${host}/tx/${i.txid}`, { signal: AbortSignal.timeout(GET_TIMEOUT_MS) });
       if (r.status === 404) return "notfound";
       // BN0w (W9): ONLY the exact 503 + body code SCAN_HORIZON pair classifies "horizon" (the node
       // v0.1.6 scan-outcome wire contract, normative in the compute-substrate README: 503 +
@@ -999,7 +1000,7 @@ export async function fillOffer(
 // server's own text goes to the worker's console only (test/served-text-off-screen.test.mjs).
 export type ContentResult = { ok: true } | { ok: false; error: string; status?: number };
 export function registerContent(apiBase: string, content: any, txid: string, timeoutMs = POST_TIMEOUT_MS): Promise<ContentResult> {
-  return fetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r): Promise<ContentResult> => {
+  return foregroundFetch(`${apiBase}/api/content`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...content, txid }), signal: AbortSignal.timeout(timeoutMs) }).then(async (r): Promise<ContentResult> => {
     let j: any;
     try { j = await r.json(); } catch { j = undefined; }
     if (r.ok && j?.ok === true) return { ok: true };

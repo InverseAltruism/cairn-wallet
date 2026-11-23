@@ -363,7 +363,7 @@ try {
     const nodeSrc = readFileSync(new URL("../src/core/node.ts", import.meta.url), "utf8");
     check("GET timeout raised above the proxy's 10s failover chain", /GET_TIMEOUT_MS = 12_000/.test(nodeSrc));
     const nsv = readFileSync(new URL("../src/core/namespv.ts", import.meta.url), "utf8");
-    check("namespv headers client sits above the server's 10s deadline", /AbortSignal\.timeout\(15_000\)/.test(nsv));
+    check("namespv headers client sits above the server's 10s deadline", /const HEADERS_TIMEOUT_MS = 15_000;/.test(nsv) && /AbortSignal\.timeout\(HEADERS_TIMEOUT_MS\)/.test(nsv));
     check("namespv honours Retry-After on 429", /retry-after/.test(nsv));
     check("namespv retries 502/503 (the server's clean deadline answer)", /r\.status === 502 \|\| r\.status === 503/.test(nsv));
     check("vendored CsdClient gets an explicit 12s bound (was a 10s-vs-10s tie)", /timeoutMs: 12_000/.test(nsv));

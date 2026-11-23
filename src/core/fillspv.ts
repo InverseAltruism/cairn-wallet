@@ -142,10 +142,13 @@ export async function liveFillSpvSource(opts: LiveSpvOpts & { hints: FillSpvHint
 
   // Sync PoW-verified headers to the node tip (prepare caps its sync at the node tip, so a large target forces
   // a full sync); the fill needs burial-to-tip, not just headers up to a record. A lying-high header throws.
-  const { verifiedTip, floorTip: rawFloorTip, tipKnown } = await spv.prepare(Number.MAX_SAFE_INTEGER);
+  const { verifiedTip, floorTip: rawFloorTip, tipKnown, servedTip } = await spv.prepare(Number.MAX_SAFE_INTEGER);
   if (!Number.isFinite(verifiedTip)) throw new Error("fill-SPV: no PoW-verified tip");
   // Without a node tip nothing was synced, and holds would be judged against a verified tip that may be behind.
   if (tipKnown === false) throw new Error("fill-SPV: the node tip could not be read, so the hold cannot be checked against the chain tip");
+  // Burial to the tip: verified headers that stop below the node tip this call read would leave the blocks above them
+  // unscanned (a cancel, a consuming fill, a lapse there), whatever answered short (test/fill-dropped-source.test.mjs 2).
+  if (typeof servedTip === "number" && verifiedTip < servedTip) throw new Error(`fill-SPV: the verified headers stop at ${verifiedTip}, below the node tip ${servedTip}`); // MUTATE_FILLSPV_TO_TIP
   const floorTip = servedHeight(rawFloorTip);
   // FILLSPV-01: the deadline/hold-liveness guards in verifyFillSpv read io.tip(). A DEFLATED served tip
   // under-states verifiedTip (prepare syncs only to the served tip), so a hold that has ACTUALLY lapsed can

@@ -16,9 +16,10 @@ import { checker } from "./helpers/check.mjs";
 const t = checker("background-oninstalled");
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-// prewarmSpv is counted, never run: the real one would build the SPV source over the network.
-let prewarms = 0;
+// prewarmSpv and syncSpv are counted, never run: the real ones would build the SPV source over the network.
+let prewarms = 0, syncs = 0;
 Wallet.prototype.prewarmSpv = function () { prewarms++; };
+Wallet.prototype.syncSpv = function () { syncs++; };
 
 function mockChrome({ onInstalled, holdReads }) {
   const mem = new Map();
@@ -62,6 +63,17 @@ console.log("onInstalled registered:");
   release();
   for (let i = 0; i < 50 && prewarms === 0; i++) await tick();
   t.check("once ready, the listener calls wallet.prewarmSpv exactly once", prewarms === 1);
+}
+
+// ── the popup's prewarm message starts the background run (syncSpv); the install hook builds only ──
+console.log("the popup's prewarmSpv message:");
+{
+  const { chrome } = mockChrome({ onInstalled: null, holdReads: { on: false } });
+  globalThis.chrome = chrome;
+  await import("../src/background.ts?popup-prewarm");
+  const before = { prewarms, syncs };
+  const r = await popup(chrome, "prewarmSpv");
+  t.check(`the message answers ok and calls wallet.syncSpv once (${syncs - before.syncs}), not the build-only prewarmSpv (${prewarms - before.prewarms})`, r?.ok === true && syncs === before.syncs + 1 && prewarms === before.prewarms);
 }
 
 // ── a runtime without onInstalled still loads ──

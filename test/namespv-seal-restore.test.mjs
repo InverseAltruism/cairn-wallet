@@ -296,7 +296,7 @@ console.log("7b. a source superseded by a reset seals only under the vault it wa
     const inner = globalThis.fetch;
     let gated = false;
     globalThis.fetch = async (url, init) => { if (!gated && String(url).includes("/api/headers/")) { gated = true; arrived(); await gate; } return inner(url, init); };
-    const pA = (await w.spvSource()).prepare(SEAL_TOP - 12);
+    const pA = (await w.spvSource()).prepare(SEAL_TOP - 12).catch((e) => ({ refused: String(e?.message ?? e) }));
     await atGate;
     await w.reset();
     await w.create("another battery staple");
@@ -311,8 +311,10 @@ console.log("7b. a source superseded by a reset seals only under the vault it wa
     await tick(); await flushSpvStoreWrites();
     globalThis.fetch = inner;
     const aWrites = writes.slice(mark).filter((e) => e.id === 1);
-    check(`A's source finishes its sync after the reset (${p.verifiedTip}, ${aWrites.length} writes) and none of its writes carries a list under B's key (${sealedUnder(kB, writes, 1)})`,
-      sources.length === 2 && p.verifiedTip === SEAL_TOP && aWrites.length > 0 && sealedUnder(kB, writes, 1) === 0);
+    // The reset drops A's source: its lookup, above the tip it had, is refused, and it writes nothing more, a list
+    // under B's key least of all.
+    check(`A's source, dropped by the reset, refuses its lookup (${p.refused ?? p.verifiedTip}) and writes nothing after it (${aWrites.length} writes, ${sealedUnder(kB, writes, 1)} under B's key)`,
+      sources.length === 2 && /header source was replaced/.test(String(p.refused)) && aWrites.length === 0 && sealedUnder(kB, writes, 1) === 0);
     check(`  B's own source seals under B's key (${bSealed} of ${writes.length - n} writes before A resumed) and the store's list verifies under B`,
       bSealed > 0 && checkSeals(kB, st.seals, TABLE)?.length === 2);
   }
@@ -334,11 +336,11 @@ console.log("7b. a source superseded by a reset seals only under the vault it wa
     const kB = await w.sealKey();
     await w.balance().catch(() => null);
     await (await w.spvSource()).prepare(SEAL_TOP - 12);
-    // A's catch-up runs in its serializer after its restore; a no-op prepare queued behind it settles once it has run.
-    await (await sources[0]).prepare(0);
+    // The reset dropped the parked source: its restore ends without work instead of waking on B's unlock.
+    const ended = await sources[0].then(() => "built", (e) => `ended (${e?.message})`);
     await flushSpvStoreWrites();
-    check(`the parked source (${parked}) woken by B's unlock writes no list under B's key (${sealedUnder(kB, writes, 1)}); B's source does (${sealedUnder(kB, writes, 2)})`,
-      parked && sources.length === 2 && sealedUnder(kB, writes, 1) === 0 && sealedUnder(kB, writes, 2) > 0 && checkSeals(kB, st.seals, TABLE)?.length === 2);
+    check(`the parked source (${parked}) ${ended} and writes nothing (${writes.filter((e) => e.id === 1).length}); B's source seals under B's key (${sealedUnder(kB, writes, 2)})`,
+      parked && sources.length === 2 && ended.startsWith("ended") && writes.filter((e) => e.id === 1).length === 0 && sealedUnder(kB, writes, 2) > 0 && checkSeals(kB, st.seals, TABLE)?.length === 2);
   }
 }
 

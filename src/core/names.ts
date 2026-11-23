@@ -5,6 +5,7 @@ import { EPOCH_LEN } from "../vendor/cairnx-spv.js";
 import { verifyNameUnion, fetchNameUnion, type NameVerification, type SpvSource, type ResolverSource } from "./namespv.js";
 import { evaluateHintSetSkip, sortHintPairs, type HintSetEntry } from "./namecache.js";
 import { CLARVIS_TRADE_API } from "./endpoints.js";
+import { foregroundFetch } from "./netgate.js";
 
 // What resolveName and confirmName answer: a refusal (ok false, with error), or the address to send to and how
 // far it was verified.
@@ -53,7 +54,7 @@ export async function resolveName(wallet: NameIo, name: string): Promise<NameRes
     if (!r || !r.ok) {
       try {
         // 12s like the primary: clarvis fronts the same cairn proxy shape (10s upstream wait).
-        const c = await fetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(12000) });
+        const c = await foregroundFetch(`${CLARVIS_TRADE_API}/cairnx/resolve/${encodeURIComponent(nm)}`, { signal: AbortSignal.timeout(12000) });
         // Only accept a POSITIVE answer from the fallback; a 404 from a degraded/withholding second
         // source is NOT trustworthy enough to definitively claim "not registered" (fail-closed to the
         // retryable "name lookup failed" below instead; the primary being down is transient).
@@ -117,18 +118,34 @@ function unconfirmedLapse(nm: string, j: { addr?: unknown; via?: string; owner?:
 export async function verifyName(wallet: NameIo, name: string): Promise<NameVerification & { name: string }> {
   const nm = normName(name);
   if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
+  const first = await verifyOn(wallet, nm);
+  // An endpoint or vault change dropped the source under this lookup, so its answer is not the current source's: the
+  // current source is asked once more, as 0.3.5's old source went on to verify. A dropped source's failed union replay
+  // runs no per-server recovery (verifyNameUnion); here, an answer given while the generation moved is kept only when it
+  // is a clean union success (all the unioned records verified, nothing recovered). A buy keeps the refusal
+  // (liveFillSpvSource; test/fill-dropped-source.test.mjs). test/name-source-dropped.test.mjs,
+  // test/spv-endpoint-race.test.mjs (5), (5b), (5c).
+  if (first.gen === wallet.spvGen() || (first.res.verified && !first.res.recovered)) return first.res; // MUTATE_NAME_KEEP
+  return (await verifyOn(wallet, nm)).res; // MUTATE_NAME_RETRY
+}
+
+async function verifyOn(wallet: NameIo, nm: string): Promise<{ gen: number; res: NameVerification & { name: string } }> {
+  let gen = wallet.spvGen();
   try {
     // Cross-check the user's configured primary resolver against the clarvis second source (same operator as
     // the default primary, so not independent of it; NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion
     // fetches name-history from each, unions the SPV-verified events, and resolves to the chain-proven winner:
     // defeating a withholding resolver.
-    const gen = wallet.spvGen();
-    const src = await wallet.spvSource();
+    // The generation is read once the source is asked for: asking drops a source built under another vault, and that
+    // drop is not one made under this lookup.
+    const building = wallet.spvSource();
+    gen = wallet.spvGen(); // MUTATE_GEN_AFTER_SOURCE
+    const src = await building;
     const res = await verifyNameUnion(nm, nameSources(wallet), src);
     try { await rememberHintSet(wallet, nm, res, src, gen); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
-    return { ...res, name: nm };
+    return { gen, res: { ...res, name: nm } };
   } catch (e) {
-    return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm };
+    return { gen, res: { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm } };
   }
 }
 

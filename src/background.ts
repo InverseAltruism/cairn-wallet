@@ -215,7 +215,7 @@ async function runPopupMethod(method: string, args: any[]): Promise<any> {
     // verify skips the O(chain) snapshot restore. Popup-only (never in DAPP_METHODS): it spends no funds and
     // reveals nothing, and a dApp has no business driving the wallet's header sync. Fire-and-forget, self-healing.
     // It is ALSO in READ_ONLY_METHODS so merely opening the popup does not extend the idle auto-lock (WL-1/R19).
-    case "prewarmSpv": { wallet.prewarmSpv(); return { ok: true }; }
+    case "prewarmSpv": { wallet.syncSpv(); return { ok: true }; }
     case "epoch": return wallet.epoch();
     case "tip": return wallet.tip();
     case "tipFloor": return wallet.tipFloor(); // M11/B5b: PoW-backed floor for review-side fee clamping (popup-only; READ_ONLY so it never extends the idle lock)
