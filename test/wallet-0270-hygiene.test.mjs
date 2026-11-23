@@ -48,7 +48,7 @@ const inLock = (i) => namespv.startsWith("serializeSync(persist)", i - "serializ
 const rebaseFn = namespv.slice(namespv.indexOf("const rebase = "), namespv.indexOf("const persist = "));
 ok("LC.toRecords is read in suffixWrite(), which persist() calls and detaches, and in the rebase's re-ingest only",
   (namespv.match(/LC\.toRecords\(/g) || []).length === 2 && /LC\.toRecords\(/.test(suffixFn.slice(0, suffixFn.indexOf("const knownTops"))) && /LC\.toRecords\(/.test(rebaseFn)
-  && /const persist = async \(\) => \{\s*const w = suffixWrite\(\);\s*if \(w\) detachStoreWrite\(store!, await withSeals\(w, persistedTip\)\);\s*if \(LC\.chain\.length > REBASE_SPAN\) await rebase\(\);\s*\};/.test(namespv));
+  && /const persist = async \(\) => \{\s*const w = suffixWrite\(\);\s*if \(w\) \{ const sealed = await withSeals\(w, persistedTip\); if \(live\(\)\) detachStoreWrite\(store!, sealed, live\); \}\s*if \(LC\.chain\.length > REBASE_SPAN\) await rebase\(\);\s*\};/.test(namespv));
 ok("persist() is used only inside serialized ops: the runner's three and the adoption (the write is built under the lock)",
   adoptOp[0] > 0 && adoptOp[1] > adoptOp[0] && persistUses.length === 4 && persistUses.every(inLock));
 ok("the detached write is never awaited on the proof path (no await on detachStoreWrite or a store write in prepare)",

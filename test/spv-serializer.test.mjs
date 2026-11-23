@@ -83,10 +83,10 @@ const sites = (text) => [...text.matchAll(/syncPages\((\(\) => [^,]+), (?:\(\) =
 const SITES = "() => fresh.client step async (op) => op() | () => LC step serializeSync";
 ok("the page syncs in the file are exactly the shared client's, stepped by serializeSync, and the private fresh client's", sites(code).join(" | ") === SITES);
 ok("syncPages is called at those two sites only (an unwrapped new sync of the shared client trips this)", (code.match(/\bsyncPages\(/g) || []).length === 3 && /export async function syncPages\(/.test(code));
-ok("no light-client ingest or sync outside syncPages (only c.ingest inside it)",
-  (code.match(/\.ingest\(/g) || []).join() === ".ingest(" && /c\.ingest\(from \+ j/.test(code) && !/\b(?:LC|fresh|lc|next|pass|client)\.(?:client\.)?sync\(/.test(code));
+ok("no light-client ingest or sync outside syncPages (only lc().ingest inside it)",
+  (code.match(/\.ingest\(/g) || []).join() === ".ingest(" && /lc\(\)\.ingest\(from \+ j/.test(code) && !/\b(?:LC|fresh|lc|next|pass|client)\.(?:client\.)?sync\(/.test(code));
 const sync = code.slice(code.indexOf("export async function syncPages("));
-ok("syncPages ingests each page only inside run.step", /await run\.step\(async \(\) => \{ const c = lc\(\); for \(let j = 0; j < count; j\+\+\) c\.ingest\(/.test(sync));
+ok("syncPages ingests each page only inside run.step", /await run\.step\(async \(\) => \{\s*for \(let j = 0; j < count; j\+\+\) \{[^}]*lc\(\)\.ingest\(from \+ j/.test(sync));
 const adoptSite = code.slice(code.indexOf("const adopt = "), code.indexOf("\n  });", code.indexOf("const adopt = ")));
 ok("the fresh client becomes the shared one only inside a serialized op (the adoption site)", /^const adopt = \(fresh: Seeded, seed: Seed\) => serializeSync\(async \(\) => \{/.test(adoptSite) && /LC = fresh\.client;/.test(adoptSite));
 ok("the other serialized ops: the adoption, the run's three persists and the seal catch-up, whose rebase replaces the client; none syncs",
