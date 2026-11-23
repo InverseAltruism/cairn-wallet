@@ -177,6 +177,8 @@ export interface SpvSource {
   /** The forward header sync in progress, as headers verified of those it needs, or null when none runs. A read of
    *  memory only, for the send review's status line ([A16]). */
   syncProgress?(): { done: number; total: number } | null;
+  /** True once the wallet dropped this source (an endpoint change, a vault change or a reset aborted its signal). */
+  dropped?(): boolean;
   /** Starts a background sync to the node tip, off every click path (the popup's prewarm, after the balance). */
   background?(): void;
 }
@@ -375,6 +377,10 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
     const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     if (!rep.ok) {
+      // A source the wallet dropped answers only at heights it had verified, so a server's subset that fits below its
+      // tip would replay to an older holding while the union's records above it go unread: no per-server recovery
+      // runs on it, and the caller asks the current source (names.ts verifyName).
+      if (src.dropped?.()) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_UNION_DROP
       // A lapse refuses only when both hold: the lease is over at a height the wallet verified (its header tip or the
       // kept floor), so a served tip cannot make it; and 0.3.4's corroboration (two usable sources or the floor), since
       // one source can withhold a renewal or a recapture (test/name-lapse-tip.test.mjs [2v], [W1]). With the floor past
@@ -413,6 +419,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
           if (solo.viaFill) return { ...fail(viaFillReason(name)), sources: usable.length, disagree: false, viaFill: true };
           recovered.push({ label: r.label, rep: solo, claim: r.claim });
         }
+        if (src.dropped?.()) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_RECOVERY_DROP
         const addrs = new Set(recovered.map((p) => p.rep.addr));
         const first = recovered[0];
         if (first && addrs.size === 1) {
@@ -1376,6 +1383,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     },
     bodySource: opts.rpcBase.replace(/\/$/, ""),
     headerSource: headersBase,
+    dropped: () => !live(),
     // The run's progress toward the highest height a lookup waits for; none while no lookup waits (a background run).
     syncProgress() { const want = lookupWant(); return syncing && want ? { done: Math.max(0, tipOf(LC) - syncing.from), total: Math.max(0, want - syncing.from) } : null; },
     background,
