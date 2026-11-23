@@ -357,4 +357,27 @@ console.log("8b. the honest path: one transient failure, then a good run, costs 
   Date.now = () => now;
 }
 
+console.log("8c. a transient failure inside the background reseed does not back off: the next prewarm reseeds and adopts:");
+{
+  const st = copyOf(sealedA);
+  serve("A", SEAL_TOP);
+  const src = await C.liveSpvSource(opts(st));
+  let clock = now;
+  Date.now = () => clock;
+  let failed = false;
+  // B1 replaces A's tip block; the reseed's first page from seal 33 answers short once.
+  serve("B1", SEAL_TOP + 11, { short: (from) => from === topOf(33) + 1 && !failed && (failed = true) });
+  src.background();
+  await tick(20); await settled();
+  const first = (await src.prepare(0)).verifiedTip;
+  clock += C.BACKGROUND_GAP_MS;
+  const tips = net.tips;
+  src.background();
+  await tick(20); await settled();
+  const ran = net.tips - tips, after = (await src.prepare(0)).verifiedTip;
+  check(`the first run's reseed stops on the short page (held ${first}); a minute later the prewarm runs (${ran} tip read) and adopts B1 (${after})`,
+    failed && first === SEAL_TOP && ran === 1 && after === SEAL_TOP + 11);
+  Date.now = () => now;
+}
+
 done("namespv-reseed-bounded");
