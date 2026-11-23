@@ -221,6 +221,30 @@ console.log("6. the bounded reseed never stands in a lookup's way:");
   check(`the lookup made during the background reseed verifies B33 (${got}) from the table (${below(SEAL_NEWEST + PAGE + 1) > 0})`, got === 148000 && below(SEAL_NEWEST + PAGE + 1) > 0 && (await src.hashAt(140000)) === hashOn("B33", 140000));
 }
 
+console.log("6b. a lookup that arrives during the background reseed does not wait for its 17 pages:");
+{
+  // L34 links at seal 33 and carries less work, so the background reseed would fetch all 17 pages before refusing it.
+  const st = copyOf(sealedA);
+  serve("A", SEAL_TOP);
+  const src = await C.liveSpvSource(opts(st));
+  let arrived = false;
+  serve("L34", 152000, { hold: (from) => from > topOf(33) && from < 146432 && !arrived });
+  src.background();
+  await until(() => net.held.length > 0);
+  const atArrival = net.log.length;
+  arrived = true;
+  const lookup = src.prepare(146900 - 12).then((r) => `verified ${r.verifiedTip}`, (e) => String(e?.message ?? e));
+  release();
+  const out = await lookup;
+  // The run that answers the lookup starts again at the held tip (its first request at 146,830, to the lookup's height;
+  // every reseed page starts on a page boundary); the requests between the lookup's arrival and it are the background's.
+  const after = net.log.slice(atArrival);
+  const backgroundAfter = after.indexOf(SEAL_TOP + 1);
+  check(`the background reseed asked ${backgroundAfter} more pages after the lookup arrived; the lookup is answered by its own reseed (${out.slice(0, 60)})`,
+    backgroundAfter === 0 && /less proof of work/.test(out));
+  await settled();
+}
+
 console.log("7. a refetched sealed chunk that fails its seal: that read only, one background run, no table reseed:");
 {
   // Restored at seal 33, chunk 32 lies below the client and is read from the store, which holds other bytes; its

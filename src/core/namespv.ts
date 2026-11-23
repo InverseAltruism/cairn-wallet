@@ -1022,7 +1022,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // Invariant 5: a chain replaces the held one only when it verified above the held tip and carries more work, so the
   // held tip never falls (test/namespv-reseed-bounded.test.mjs 4 and 5, through each seed).
   const adopts = (fresh: Seeded) => tipOf(fresh.client) > tipOf(LC) && reseedAdopts(heldWork(), { chainwork: fresh.client.chainwork + fresh.workBase }); // MUTATE_ABOVE_HELD
-  const syncFresh = (fresh: Seeded, to: number) => syncPages(() => fresh.client, to, pageBatch, { step: async (op) => op(), live });
+  const syncFresh = (fresh: Seeded, to: number, going: () => boolean = live) => syncPages(() => fresh.client, to, pageBatch, { step: async (op) => op(), live: going });
   // The one adoption site. The acquirer's detached writes, decided under the replaced tops, land before this chain's
   // rewrite is queued, so both writers then write only this chain's bytes for a chunk. Nothing of the replaced chain
   // above the seed stays: the LRU entries and tops above the seed chunk go (an LRU entry also answers only its spec's
@@ -1101,8 +1101,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     if (tipOf(LC) - seed.top > RESEED_BOUND) return false; // MUTATE_BOUNDED_TABLE
     try {
       const fresh = await seedClient(seed);
-      await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE));
-      return await adopt(fresh, seed);
+      // It yields to a lookup that arrives meanwhile: its pages stop, and the lookup's own reseed runs next.
+      await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE), () => live() && !lookupWant()); // MUTATE_BOUNDED_YIELDS
+      return lookupWant() ? false : await adopt(fresh, seed);
     } catch (e) { console.warn("[namespv] background reseed stopped; the next lookup syncs:", e); return false; }
   };
 
