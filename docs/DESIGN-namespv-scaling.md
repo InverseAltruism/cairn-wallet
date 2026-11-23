@@ -99,8 +99,9 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   send's coins, their source transactions and the submit, the node tip, the name service, a lookup's or a fill's
   block and transaction reads (all through `foregroundFetch`), and a lookup's own header pages and chunk reads. A
   background page starts only once none has been in flight for 250 ms (`QUIET_MS`), and a background page in flight
-  when one starts is cancelled and asked again later; once a lookup waits, the run's pages are its pages and wait for
-  nothing. The background run's own node tip read is not counted. A counted request stops counting after 30 s
+  when one starts is cancelled and asked again later; once a lookup waits, the run's pages at or below its height are
+  its pages and wait for nothing, and those above it (a window planned for the background aim before it arrived) stay
+  background, so they do not share the link with the lookup's (netgate 5c). The background run's own node tip read is not counted. A counted request stops counting after 30 s
   (`HOLD_MAX_MS`), above the longest timeout a wallet request carries, so one that does not settle does not hold the
   background sync. The popup's and the approval window's own reads (the USD line, the domain list, a name record)
   run in their own contexts and are not counted (netgate 3 to 6).

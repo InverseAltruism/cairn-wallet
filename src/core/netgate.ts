@@ -22,7 +22,6 @@ const wakeAll = () => { for (const w of [...wakers]) w(); };
 /** Runs `op` counted as foreground until it settles (or HOLD_MAX_MS). */
 export async function foreground<T>(op: () => Promise<T>): Promise<T> {
   inFlight++;
-  for (const f of [...starts]) f();
   let held = true;
   const release = () => {
     if (!held) return;
@@ -33,8 +32,12 @@ export async function foreground<T>(op: () => Promise<T>): Promise<T> {
   };
   const cap = setTimeout(release, HOLD_MAX_MS);
   (cap as { unref?: () => void }).unref?.();
-  try { return await op(); }
-  finally { clearTimeout(cap); release(); }
+  try {
+    // The request goes out first; the background pages it cancels end after it.
+    const p = op();
+    for (const f of [...starts]) f();
+    return await p;
+  } finally { clearTimeout(cap); release(); }
 }
 
 /** Calls `f` whenever a foreground request starts, until the returned function is called. */

@@ -184,6 +184,25 @@ console.log("5b. background pages waiting on the foreground go ahead as a lookup
   await quiet(); await flushSpvStoreWrites();
 }
 
+console.log("5c. a lookup that needs only the first page of a background window: the pages above its height wait for it:");
+{
+  const src = await liveSpvSource(opts(storeTo(140000)));
+  await tick(QUIET_MS * 2);
+  reset();
+  hdr.hold = () => true;
+  src.background();
+  await until(() => hdr.held.size >= 2);
+  const window = hdr.reqs.map((r) => r.from);
+  hdr.hold = () => false;
+  const mark = hdr.reqs.length;
+  const tip = await src.prepare(140200 - 12).then((x) => x.verifiedTip);
+  const asked = hdr.reqs.slice(mark).map((r) => r.from);
+  check(`the window asked ${window.join(",")}; until the lookup verified to ${tip} it asked ${asked.join(",")}, none above 140,200`, window.some((f) => f > 140200) && tip >= 140200 && asked.length > 0 && asked.every((f) => f <= 140200));
+  await quiet();
+  check(`  the pages above it follow once the foreground is quiet: the run reaches ${(await src.prepare(0)).verifiedTip}`, (await src.prepare(0)).verifiedTip === SEAL_TOP);
+  await flushSpvStoreWrites();
+}
+
 console.log("6. every wallet request in src/core and the worker goes through the gate:");
 {
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");

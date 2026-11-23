@@ -1189,13 +1189,14 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   let syncing: { from: number } | null = null;
   // Aborted when a lookup starts waiting: the background pages waiting on the foreground go ahead as its pages.
   let arrival = new AbortController();
-  // A page of a run: a lookup's while one waits (foreground), else a background page, which starts only once the
-  // foreground has been quiet for QUIET_MS and is cancelled and asked again when a foreground request starts while it
-  // is in flight (netgate.ts), so a balance, a send or a name's reads do not share the link or the host's connections
-  // with it.
-  const runPage = (background: () => boolean): Page => async (from, count, cancel) => {
+  // A page of a run: a waiting lookup's when it starts at or below the lookup's height (foreground), else a background
+  // page, which starts only once the foreground has been quiet for QUIET_MS and is cancelled and asked again when a
+  // foreground request starts while it is in flight (netgate.ts), so a balance, a send, a name's reads or the lookup's
+  // own pages do not share the link or the host's connections with it. A window planned for the background aim before
+  // a lookup arrived can hold pages above the lookup's height: those stay background.
+  const runPage = (background: (from: number) => boolean): Page => async (from, count, cancel) => {
     const stops = [opts.signal, cancel].filter((x): x is AbortSignal => !!x);
-    while (background()) {
+    while (background(from)) {
       const lookup = arrival.signal;
       try { await foregroundQuiet(AbortSignal.any([lookup, ...stops])); } // MUTATE_QUIET_GATE
       catch (e) {
@@ -1203,10 +1204,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
         if (!lookup.aborted || cancel?.aborted) throw e;
         continue;
       }
-      if (!background()) break;
+      if (!background(from)) break;
       const giveWay = new AbortController();
-      // Once a lookup waits, a page in flight is the lookup's: its own reads do not cancel it.
-      const off = onForeground(() => { if (background()) giveWay.abort(); }); // MUTATE_GIVE_WAY
+      // Once a lookup waits for it, a page in flight is the lookup's: the lookup's own reads do not cancel it.
+      const off = onForeground(() => { if (background(from)) giveWay.abort(); }); // MUTATE_GIVE_WAY
       try { return await lanePage(from, count, AbortSignal.any([giveWay.signal, ...stops])); }
       catch (e) {
         if (!live()) throw dropped();
@@ -1230,7 +1231,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       while (live() && tipOf(LC) < target) {
         try {
           // While a lookup waits, each window aims at its height, so its pages are not shared with the background's.
-          await syncPages(() => LC, () => lookupWant() || target, runPage(() => !lookupWant()), { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
+          await syncPages(() => LC, () => lookupWant() || target, runPage((from) => from > lookupWant()), { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
         } catch (e) {
           failed = true;
           // Verified progress is kept before the failure is classified; it never advances the lapse floor, which moves
