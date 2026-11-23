@@ -34,6 +34,9 @@
   drops the header source, and a source still running from before it seals nothing under the next vault. The header
   database keeps its version, so 0.3.4 and 0.3.5 still open a store this build wrote. Sends are unchanged
   (docs/DESIGN-namespv-scaling.md, "Sealed chunks"; SECURITY.md).
+- In the popup, the arrow keys in a text field moved no caret and changed and stored the theme instead, and a
+  click anywhere stored the theme again (0.3.0 to 0.3.5): the Settings theme control took the page itself as one of
+  its options. It now takes only its three buttons; the arrow keys on those still move between them and choose.
 
 ## 0.3.5
 
