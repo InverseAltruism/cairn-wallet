@@ -118,18 +118,27 @@ function unconfirmedLapse(nm: string, j: { addr?: unknown; via?: string; owner?:
 export async function verifyName(wallet: NameIo, name: string): Promise<NameVerification & { name: string }> {
   const nm = normName(name);
   if (!isPlainName(nm)) return { verified: false, reason: `${nm} is not a valid .csd name`, name: nm };
+  const first = await verifyOn(wallet, nm);
+  // An endpoint or vault change dropped the source under this lookup, so its answer is not the current source's: the
+  // current source is asked once more, as 0.3.5's old source went on to verify. A buy keeps the refusal
+  // (liveFillSpvSource; test/fill-dropped-source.test.mjs). test/spv-endpoint-race.test.mjs (5), (5b).
+  if (first.res.verified || first.gen === wallet.spvGen()) return first.res;
+  return (await verifyOn(wallet, nm)).res; // MUTATE_NAME_RETRY
+}
+
+async function verifyOn(wallet: NameIo, nm: string): Promise<{ gen: number; res: NameVerification & { name: string } }> {
+  const gen = wallet.spvGen();
   try {
     // Cross-check the user's configured primary resolver against the clarvis second source (same operator as
     // the default primary, so not independent of it; NSPV-COMPLETE-1 cure, doc 36 Part B). verifyNameUnion
     // fetches name-history from each, unions the SPV-verified events, and resolves to the chain-proven winner:
     // defeating a withholding resolver.
-    const gen = wallet.spvGen();
     const src = await wallet.spvSource();
     const res = await verifyNameUnion(nm, nameSources(wallet), src);
     try { await rememberHintSet(wallet, nm, res, src, gen); } catch { /* cache write is fail-soft: never downgrade a green verify */ }
-    return { ...res, name: nm };
+    return { gen, res: { ...res, name: nm } };
   } catch (e) {
-    return { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm };
+    return { gen, res: { verified: false, reason: `on-chain verification unavailable (${(e as Error)?.message ?? e})`, name: nm } };
   }
 }
 
