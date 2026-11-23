@@ -360,7 +360,8 @@ console.log("8. a vault change: a source mid-run and a source parked on the unlo
   await w.create("correct horse battery");
   await w.setApi(API);
   resetLog();
-  hdr.hold = (from) => from > 136000 && hdr.reqs.filter((r) => r.from > 136000).length > IN_FLIGHT;
+  // Windows of 1, 2, then 3 pages: from the fourth request on, every page waits, so the run waits on a held page.
+  hdr.hold = (from) => from > 135679 && hdr.reqs.filter((r) => r.from > 135679).length > 3;
   w.syncSpv();
   await until(() => hdr.held.length > 0);
   const a = built[0], aBefore = a.writes.length;
