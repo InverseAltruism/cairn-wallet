@@ -34,6 +34,11 @@
   drops the header source, and a source still running from before it seals nothing under the next vault. The header
   database keeps its version, so 0.3.4 and 0.3.5 still open a store this build wrote. Sends are unchanged
   (docs/DESIGN-namespv-scaling.md, "Sealed chunks"; SECURITY.md).
+- A name check whose block headers did not load (or whose node tip could not be read) no longer falls back to
+  replaying each name server's records alone. A server that had not seen a recent transfer could then prove the
+  previous owner, and with the headers still failing at Confirm one click paid that previous owner. Such a name is now
+  shown as not chain-verified, with the address the name service gives; a record above the node's tip still gets the
+  fallback (SECURITY.md, "What happens when the sources disagree").
 
 ## 0.3.5
 

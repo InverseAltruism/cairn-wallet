@@ -196,7 +196,9 @@ type Replay =
   // A lease-lapse failure carries `lapsed`, whether it holds at a verified height (`verifiedCorroborated`: the
   // verified header tip; `floorCorroborated`: the persisted floor), the last holding's address and whether that
   // holding came through a fill (`viaFill`, then no address). Other failures leave them unset.
-  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string; viaFill?: boolean };
+  // `short`: the replay stopped for want of a header the node's tip says exists (the sync threw, a record lies above the
+  // verified tip at or below the served tip, or the tip was unknown), not on anything a source served.
+  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string; viaFill?: boolean; short?: boolean };
 // Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
 // unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
 // is far above any honest history. The cap is per replay: verifyNameUnion's per-source recovery replays each source's
@@ -259,8 +261,15 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     (byHeight.get(height) ?? byHeight.set(height, []).get(height)!).push(h);
     if (height > maxHeight) maxHeight = height;
   }
-  const { verifiedTip, nodeTip, floorTip } = await src.prepare(maxHeight);
-  if (maxHeight > verifiedTip) return { ok: false, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
+  let prepared: Awaited<ReturnType<SpvSource["prepare"]>>;
+  try { prepared = await src.prepare(maxHeight); }
+  catch (e) { return { ok: false, short: true, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }; }
+  const { verifiedTip, nodeTip, floorTip, tipKnown, servedTip } = prepared;
+  if (maxHeight > verifiedTip) {
+    // A record above the node's tip is a hint no header can back yet, so the per-server recovery still answers it.
+    const short = tipKnown === false || (servedTip !== undefined && maxHeight <= servedTip);
+    return { ok: false, short, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
+  }
   const lapseTip = Math.max(verifiedTip, heightOf(nodeTip));
 
   const events: ChainEvent[] = [];
@@ -381,6 +390,10 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
       // tip would replay to an older holding while the union's records above it go unread: no per-server recovery
       // runs on it, and the caller asks the current source (names.ts verifyName).
       if (src.dropped?.()) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_UNION_DROP
+      // A replay stopped for want of a header runs no per-server recovery either: a server's subset that fits below the
+      // held tip would prove an older holding while the records above it go unread. The caller shows the served address
+      // unverified (test/namespv-union-short.test.mjs).
+      if (rep.short) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_UNION_SHORT
       // A lapse refuses only when both hold: the lease is over at a height the wallet verified (its header tip or the
       // kept floor), so a served tip cannot make it; and 0.3.4's corroboration (two usable sources or the floor), since
       // one source can withhold a renewal or a recapture (test/name-lapse-tip.test.mjs [2v], [W1]). With the floor past

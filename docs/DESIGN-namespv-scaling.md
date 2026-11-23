@@ -544,7 +544,11 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   `scopedReplaySufficient: false` refuses it, on the union replay and before the per-source recovery alike, and a
   source whose own replay is `viaFill` refuses the recovery as a `viaFill` union replay does, so a source that pads
   the union past `MAX_HINTS` cannot have the recovery drop an honest source whose own records replay and verify alone
-  (test/namespv-union-scope.test.mjs cases 3 and 4). The recovery skips a source whose own replay fails for any
+  (test/namespv-union-scope.test.mjs cases 3 and 4). A union replay that stopped for want of a header (`prepare`
+  threw, a record lies above the verified tip at or below the served tip, or the tip was unknown) runs no recovery:
+  a server's records that fit below the held tip would replay to an earlier holding while the union's records above
+  it go unread, so the served address comes back unverified; a record above the node's tip keeps the recovery
+  (test/namespv-union-short.test.mjs). The recovery skips a source whose own replay fails for any
   reason, so when the honest source's records cannot be replayed a lone source still decides, with `soleSource` and
   `disagree` set (the residual in `docs/DESIGN-viafill.md`). The confirm-time skip also refuses on a fresh
   `scopedReplaySufficient: false` (case 5).
