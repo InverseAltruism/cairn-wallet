@@ -241,7 +241,7 @@ Beside it:
     that the answering servers also serve (test/name-completed-at.test.mjs, test/popup-checks-dom.test.mjs 9d).
   - The sync: one runner per source holds a target per run (a lookup's height, or the node tip for the background
     run the popup's `prewarmSpv` starts once the balance has answered), requests up to five 512-aligned pages at once
-    (one at first, more after fast pages, one again after a timeout), aims at a waiting lookup's height first, and
+    (two at first, more after fast pages, one after a timeout), aims at a waiting lookup's height first, and
     ingests by height, one page per serialized op, persisting the tail after each window. A structural break gets one
     reseed per run: with a lookup waiting from the newest seal, then the table; with none, the bounded reseed (the
     newest seal, or the table within 8,191 of the held tip, 17 pages at most), which yields to a lookup that arrives.

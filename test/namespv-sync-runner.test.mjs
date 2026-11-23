@@ -85,7 +85,7 @@ console.log("1. up to five pages in flight, answered out of order, ingested by h
   await flushSpvStoreWrites();
 }
 
-console.log("1b. the pages in flight start at one, grow after fast pages and fall back to one after a timeout:");
+console.log("1b. the pages in flight start at two, grow after fast pages and fall back to one after a timeout:");
 {
   const src = await liveSpvSource(opts(storeTo(131071)));
   resetLog();
@@ -103,7 +103,7 @@ console.log("1b. the pages in flight start at one, grow after fast pages and fal
   globalThis.fetch = inner;
   // At width one a request goes out only once the one before it answered: the second request of a sync sees none in
   // flight; at a wider width it goes out beside the first.
-  check(`the first sync asks one page at a time at first (its second request saw ${seenAtStart[1]} in flight), the lookup over the timeout is refused as today (${String(out).slice(0, 40)})`, seenAtStart[1] === 0 && seenAtStart.slice(2, 8).some((x) => x > 0) && String(out).startsWith("refused"));
+  check(`the first sync asks two pages at first (its second request saw ${seenAtStart[1]} in flight, its third ${seenAtStart[2]}), the lookup over the timeout is refused as today (${String(out).slice(0, 40)})`, seenAtStart[1] === 1 && seenAtStart[2] === 0 && String(out).startsWith("refused"));
   check(`  after the timeout the next sync is back to one page (its second request saw ${seenAtStart[afterTimeout + 1]} in flight) and verifies to ${p.verifiedTip}`, seenAtStart[afterTimeout + 1] === 0 && p.verifiedTip === SEAL_TOP);
   await quiet(); await flushSpvStoreWrites();
 }
@@ -169,8 +169,8 @@ console.log("3. a restart mid-sync resumes from the persisted tail:");
   resetLog();
   const p = await src2.prepare(SEAL_TOP - 12);
   const again = hdr.reqs.filter((r) => r.from <= kept);
-  // Windows of 1, 2, 4 pages finish (the width grows with each fast page), so the tail persisted is at least 7 pages.
-  check(`after ${firstRun} requests the store holds the finished windows (${kept}, ${kept - 131071} headers, ${(kept - 131071) / PAGE} pages)`, kept > 131071 && (kept - 131071) % PAGE === 0 && (kept - 131071) / PAGE >= 7);
+  // Windows of 2, 4 and 5 pages can finish before the hold (the width grows with each fast page): at least 6 pages persist.
+  check(`after ${firstRun} requests the store holds the finished windows (${kept}, ${kept - 131071} headers, ${(kept - 131071) / PAGE} pages)`, kept > 131071 && (kept - 131071) % PAGE === 0 && (kept - 131071) / PAGE >= 6);
   check(`  the next source resumes at ${hdr.reqs[0]?.from} and asks no height it had (${again.length} repeated), verified to ${p.verifiedTip}`, hdr.reqs[0]?.from === kept + 1 && again.length === 0 && p.verifiedTip === SEAL_TOP);
   await flushSpvStoreWrites();
 }
@@ -360,7 +360,7 @@ console.log("8. a vault change: a source mid-run and a source parked on the unlo
   await w.create("correct horse battery");
   await w.setApi(API);
   resetLog();
-  // Windows of 1, 2, then 3 pages: from the fourth request on, every page waits, so the run waits on a held page.
+  // From the fourth request on every page waits, so the run soon waits on a held page.
   hdr.hold = (from) => from > 135679 && hdr.reqs.filter((r) => r.from > 135679).length > 3;
   w.syncSpv();
   await until(() => hdr.held.length > 0);

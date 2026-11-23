@@ -82,8 +82,8 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
 `test/fill-dropped-source.test.mjs`.
 
 - Requests: a window of up to five 512-aligned pages is requested at once, each request ending on a page top or at
-  the window's aim, as a sequential sync would make them. The width adapts to the link: a source asks one page at
-  first, one more after each page that answered within a quarter of its 15 s timeout, and one again after a timeout
+  the window's aim, as a sequential sync would make them. The width adapts to the link: a source asks two pages at
+  first, one more after each page that answered within a quarter of its 15 s timeout, and one after a timeout
   (`IN_FLIGHT` 5, `WIDEN_WITHIN_MS`; runner 1 and 1b). Five leaves one of Chrome's six HTTP/1.1 connections to the host
   free for the balance and a send, which go to the same host. While a lookup waits, each window aims at the lookup's
   height (runner 2b). Pages may arrive in any order; the rows are ingested strictly by height, one page per serialized

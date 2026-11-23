@@ -3,8 +3,8 @@
 ## Unreleased
 
 - The block headers sync in the background once the balance has answered, so a name check after it finds them
-  there: up to five header pages at a time (one at first, more while pages come back fast, one again after a page
-  times out, so a slow connection is not split past its time limit and one connection stays free for the balance and
+  there: up to five header pages at a time (two at first, more while pages come back fast, one after a page times
+  out, so a slow connection is not split past its time limit and one connection stays free for the balance and
   a send), checked in height order, with name checks and fills reading between pages and a waiting name check's pages
   first, and the progress kept after each set of pages, so a sync cut short resumes where it stopped. Not more than
   once a minute, and not offline or with Save-Data on. When the served chain stops linking, the background sync
