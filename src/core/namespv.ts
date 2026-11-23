@@ -545,6 +545,8 @@ export const WIDEN_WITHIN_MS = HEADERS_TIMEOUT_MS / 4;
  *  it, and requests at most BOUNDED_PAGES pages: the held tip sits at most 8,191 above the newest sealable top. */
 export const RESEED_BOUND = 2 * SPV_CHUNK - 1;
 export const BOUNDED_PAGES = Math.ceil((RESEED_BOUND + 1) / PAGE) + 1;
+/** Headers ingested between two yields to the event loop. */
+const INGEST_SLICE = 128;
 /** A background run starts at most once in this window. */
 export const BACKGROUND_GAP_MS = 60_000;
 interface AnchorTable { anchors: readonly string[]; newestK: number; newest: number; checkpoints: Readonly<Record<number, string>> }
@@ -1145,13 +1147,14 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const run = async (): Promise<void> => {
     running = true;
     syncing = { from: tipOf(LC) };
-    let reseeded = false;
+    let reseeded = false, failed = false;
     try {
       while (live() && tipOf(LC) < target) {
         try {
           // While a lookup waits, each window aims at its height, so its pages are not shared with the background's.
           await syncPages(() => LC, () => lookupWant() || target, lanePage, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
         } catch (e) {
+          failed = true;
           // Verified progress is kept before the failure is classified; it never advances the lapse floor, which moves
           // only in prepare once its height is reached.
           await serializeSync(persist);
@@ -1173,15 +1176,16 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     } catch (e) {
       // A failure outside the classified sync (a persist, a rebase): the waiting lookups fail closed, none waits forever.
       console.warn("[namespv] header sync stopped:", e);
+      failed = true;
       failAbove(e);
     } finally {
       running = false;
       syncing = null;
-      // A run that stopped short leaves no aim behind: the next run's target is what is asked then (a lookup's height,
-      // or the next background run's node tip).
-      if (tipOf(LC) < target) target = lookupWant(); // MUTATE_TARGET_PER_RUN
-      // A waiter that arrived after the run's last check starts the next run.
-      if (live() && [...waiters].some((w) => w.want > tipOf(LC))) void run();
+      // One rule for what comes next: a run that stopped short on a failure leaves no aim behind (the next run's target
+      // is what is asked then), and anything still to reach (a waiter, or an aim raised while this run was closing)
+      // starts the next run.
+      if (failed && tipOf(LC) < target) target = lookupWant(); // MUTATE_TARGET_PER_RUN
+      if (live() && tipOf(LC) < Math.max(target, lookupWant())) { target = Math.max(target, lookupWant()); void run(); } // MUTATE_RESTART_RULE
       else if (live()) settle();
       else failAbove(dropped());
     }
@@ -1439,7 +1443,14 @@ export async function syncPages(lc: () => Ingesting, want: number | (() => numbe
         // A task boundary before each page's ingest, so the worker answers a balance or a send between pages.
         await yieldTask();
         if (!going()) return;
-        await run.step(async () => { const c = lc(); for (let j = 0; j < count; j++) c.ingest(from + j, rows[j]!.header, rows[j]!.hash); });
+        // One page's ingest (about 11 ms for 512 headers, measured) yields every INGEST_SLICE headers, so no task of
+        // the sync holds the worker for a page; the serializer still runs the page as one op.
+        await run.step(async () => {
+          for (let j = 0; j < count; j++) {
+            if (j && j % INGEST_SLICE === 0) await yieldTask(); // MUTATE_INGEST_SLICE
+            lc().ingest(from + j, rows[j]!.header, rows[j]!.hash);
+          }
+        });
         run.afterPage?.();
       }
     } finally { cancel.abort(); } // MUTATE_WINDOW_CANCEL
