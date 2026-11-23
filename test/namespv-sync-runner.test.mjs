@@ -216,6 +216,24 @@ console.log("4b. a stopped run's target is not carried into the next: a lookup f
   await quiet(); await flushSpvStoreWrites();
 }
 
+console.log("4c. an aim raised while a lookup's run closes starts the next run (anything left to reach):");
+{
+  clock += 2 * BACKGROUND_GAP_MS;
+  net.tip = 141000;
+  const src = await liveSpvSource(opts(storeTo(140000)));
+  resetLog();
+  await src.prepare(141000 - 12);
+  const forLookup = hdr.reqs.length;
+  // The popup's prewarm as the balance answers, while the lookup's run is in its closing persist.
+  net.tip = SEAL_TOP;
+  src.background();
+  await until(() => hdr.reqs.length > forLookup); await quiet();
+  const tip = (await src.prepare(0)).verifiedTip;
+  check(`the background run goes on to the node tip (${tip}) in ${hdr.reqs.length - forLookup} requests after the lookup's ${forLookup}`, tip === SEAL_TOP && hdr.reqs.length > forLookup);
+  net.tip = SEAL_TOP;
+  await flushSpvStoreWrites();
+}
+
 console.log("5. no background run within 60 s of the last, offline or with Save-Data:");
 {
   const src = await liveSpvSource(opts(storeTo(136000)));
