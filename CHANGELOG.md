@@ -48,6 +48,9 @@
   reason with its code again, as 0.3.4 did, in place of "Could not load your coins, so nothing was sent. Try again in
   a moment."; a fill whose coins could not be read says that in its own words. A page's send and a renew keep that
   line (test/approve-outcome-dom.test.mjs 10).
+- In the popup, the arrow keys in a text field moved no caret and changed and stored the theme instead, and a
+  click anywhere stored the theme again (0.3.0 to 0.3.5): the Settings theme control took the page itself as one of
+  its options. It now takes only its three buttons; the arrow keys on those still move between them and choose.
 
 ## 0.3.5
 
