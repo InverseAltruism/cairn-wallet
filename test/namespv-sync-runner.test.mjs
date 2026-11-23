@@ -405,4 +405,32 @@ console.log("8. a vault change: a source mid-run and a source parked on the unlo
   check(`  and leaves no waiter behind it (${waitersAfterReset} after the reset)`, waitersAfterReset === 0);
 }
 
+console.log("8b. a source built under another vault: the next lookup drops it, and it asks and writes nothing more:");
+{
+  // After a reset the popup's prewarm builds a source with no vault; the vault sealed next is another, so the next
+  // lookup's spvSource drops that source (the vault-change branch of headerSource) and builds a new one.
+  clock += 2 * BACKGROUND_GAP_MS;
+  const st = storeTo(136000);
+  const { w, built } = walletOn(st);
+  await w.setApi(API);
+  resetLog();
+  w.prewarmSpv();
+  await until(() => built.length === 1);
+  const a = built[0], aSrc = await a.src;
+  hdr.hold = (from) => from > 135679 && hdr.reqs.filter((r) => r.from > 135679).length > 3;
+  aSrc.background();
+  await until(() => hdr.held.length > 0);
+  await w.create("correct horse battery");
+  await flushSpvStoreWrites();
+  const aBefore = a.writes.length;
+  const next = w["spvSource"]();
+  const mark = hdr.reqs.length;
+  hdr.hold = () => false;
+  release();
+  await next; await tick(100); await flushSpvStoreWrites();
+  const later = hdr.reqs.length - mark;
+  check(`the lookup builds a new source (${built.length} built) and drops the old one (aborted ${a.opts.signal?.aborted === true}): no page after it (${later}), no write (${a.writes.length - aBefore})`,
+    built.length === 2 && a.opts.signal?.aborted === true && later === 0 && a.writes.length === aBefore);
+}
+
 done("namespv-sync-runner");

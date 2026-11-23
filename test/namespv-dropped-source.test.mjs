@@ -264,6 +264,37 @@ console.log("10. 50 drops at random points of a run: the store is as it was at e
   check(`over 50 drops: the store changed after the drop in ${differ}, a page was asked after it in ${after}, a write landed after it in ${lands}`, differ === 0 && after === 0 && lands === 0);
 }
 
+console.log("10b. the lapse floor and the session pin: a dropped source writes neither:");
+{
+  // The floor: a lookup at a height the dropped source holds still answers (0.3.5 did), and moves no stored floor.
+  reset();
+  const ctl = new AbortController();
+  const floorSets = [];
+  const floor = { get: async () => 0, set: async (v) => { floorSets.push(v); } };
+  const src = await liveSpvSource(opts(storeTo(SEAL_TOP), ctl, { floor }));
+  ctl.abort();
+  const p = await src.prepare(140000);
+  check(`the dropped source answers a lookup it holds (${p.verifiedTip}) and writes no floor (${floorSets.length} writes)`, p.verifiedTip === SEAL_TOP && floorSets.length === 0);
+  // The pin: dropped while its restore reads the stored suffix, the restore that ends writes no session pin.
+  reset();
+  const ctl2 = new AbortController();
+  const pinSets = [];
+  const pin = { get: async () => null, set: async (x) => { pinSets.push(x); } };
+  const st = storeTo(140000);
+  const getChunk = st.getChunk.bind(st);
+  st.getChunk = async (k) => { if (k === 34) ctl2.abort(); return getChunk(k); };
+  const src2 = await liveSpvSource(opts(st, ctl2, { pin }));
+  await settle();
+  check(`  dropped mid-restore, the source still restores (${(await src2.prepare(0)).verifiedTip}) and writes no session pin (${pinSets.length} writes)`, (await src2.prepare(0)).verifiedTip === 140000 && pinSets.length === 0);
+  // The honest path for both: the same store and slots, not dropped.
+  reset();
+  const ctl3 = new AbortController();
+  const live = await liveSpvSource(opts(storeTo(140000), ctl3, { floor, pin }));
+  await live.prepare(140000);
+  await settle();
+  check(`  not dropped, the same source writes the pin (${pinSets.length}) and the floor (${floorSets.length})`, pinSets.length > 0 && floorSets.length > 0);
+}
+
 console.log("11. the honest path: the same source not dropped syncs and writes:");
 {
   reset();

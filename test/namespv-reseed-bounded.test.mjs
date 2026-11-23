@@ -14,7 +14,7 @@ import { cutTableBundle } from "./helpers/cuttable.mjs";
 import { memStore, records, hashOf, headerOf, has, row, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
 
 const { check, done } = checker("the reseed: seeds, the bounded background reseed, the adoption");
-const C = await cutTableBundle('export { liveSpvSource, flushSpvStoreWrites, BOUNDED_PAGES, IN_FLIGHT, RESEED_BACKOFF_MS, RESEED_BACKOFF_MAX_MS, BACKGROUND_GAP_MS } from "./src/core/namespv.ts"; export { sealKeyGetter, checkSeals } from "./src/core/spvseal.ts"; export { importKeyRaw } from "./src/core/keystore.ts"; export { LightClient, serializeHeader } from "./src/vendor/cairnx-spv.js";', { powList: true });
+const C = await cutTableBundle('export { liveSpvSource, flushSpvStoreWrites, BOUNDED_PAGES, RESEED_BOUND, IN_FLIGHT, RESEED_BACKOFF_MS, RESEED_BACKOFF_MAX_MS, BACKGROUND_GAP_MS } from "./src/core/namespv.ts"; export { sealKeyGetter, checkSeals } from "./src/core/spvseal.ts"; export { importKeyRaw } from "./src/core/keystore.ts"; export { LightClient, serializeHeader } from "./src/vendor/cairnx-spv.js";', { powList: true });
 
 const CH = 4096, SEED = 46, PAGE = 512;
 const API = "https://cairn-substrate.test";
@@ -191,8 +191,11 @@ for (const [how, chain] of [["table (a lookup, the seal does not link)", "L33"],
   const stays = (await src.hashAt(SEAL_TOP)) === hashOf(SEAL_TOP) && (await src.prepare(0)).verifiedTip === SEAL_TOP && st.head.tip === SEAL_TOP;
   const seeded = how.startsWith("table") ? calls.includes(SEAL_NEWEST) : calls.includes(topOf(33)) && !calls.includes(SEAL_NEWEST);
   check(`${how}: seeded at ${calls.join(",")}; ${out.slice(0, 60)}; A kept in memory and store (${stays})`,
-    seeded && stays && (how.startsWith("the bounded") ? Number(/(\d+) reseed requests/.exec(out)?.[1]) === C.BOUNDED_PAGES : /less proof of work/.test(out)));
+    seeded && stays && (how.startsWith("the bounded") ? Number(/(\d+) reseed requests/.exec(out)?.[1]) === 17 : /less proof of work/.test(out)));
 }
+
+// The numbers the docs state (DESIGN-namespv-scaling.md, SECURITY.md): the bound and the pages, by value.
+check(`the bound is 8,191 headers above the seed (${C.RESEED_BOUND}) and the bounded reseed asks at most 17 pages (${C.BOUNDED_PAGES})`, C.RESEED_BOUND === 8191 && C.BOUNDED_PAGES === 17);
 
 console.log("5. a chain with more work that ends below the held tip is never adopted, through any seed:");
 for (const how of ["lookup", "background"]) {
