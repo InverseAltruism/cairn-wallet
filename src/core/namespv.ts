@@ -1243,15 +1243,19 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
           await syncPages(() => LC, () => lookupWant() || target, runPage((from) => from > lookupWant(), () => lookupWant() || Infinity), { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
         } catch (e) {
           failed = true;
+          // This failure refuses the waits it was caught under. A lookup that arrives while the progress is persisted
+          // waits for a run of its own (the restart rule below), not this run's failure (test/name-source-dropped.test.mjs 4).
+          const caught = [...waiters];
+          const refuse = (err: unknown) => { settle(); for (const w of caught) if (waiters.delete(w)) w.fail(err); }; // MUTATE_REFUSE_CAUGHT
           // Verified progress is kept before the failure is classified; it never advances the lapse floor, which moves
           // only in prepare once its height is reached.
           await serializeSync(persist);
           const msg = messageOf(e);
-          if (CLOCK_FAULT.test(msg)) { failAbove(clockRefusal(msg)); break; }
-          if (isTransientSyncError(msg)) { failAbove(e); break; }
+          if (CLOCK_FAULT.test(msg)) { refuse(clockRefusal(msg)); break; }
+          if (isTransientSyncError(msg)) { refuse(e); break; }
           // A structural break (a reorg orphaned the held tip): one reseed per run.
           const want = lookupWant();
-          if (reseeded) { failAbove(headersRefusal(headersBase, tipOf(LC))); break; }
+          if (reseeded) { refuse(headersRefusal(headersBase, tipOf(LC))); break; }
           reseeded = true;
           if (want) {
             try { await lookupReseed(want); } catch (r) { failAbove(r); break; }

@@ -10,6 +10,13 @@
 //   (2) the burial scan's own guard: a verified tip below the node tip the source read refuses (liveFillSpvSource),
 //       and a verified tip equal to it builds the scan.
 //   (3) the honest path on the same chain: a live hold, no endpoint change: the fill is signed.
+//   (4) a background run stopped at T2 (a page above it failed), then the endpoint changes while the buy's own node tip
+//       read is in flight: the dropped source refuses the buy's wait for the node tip (it does not answer at T2 with
+//       the node tip it read), nothing is signed; the current source syncs to the node tip and reports that tip as
+//       `servedTip`, and the burial scan refuses a verified tip one below it. On 0.3.5 the old source went on to the
+//       node tip and refused the lapsed hold (VERIFY_UNAVAILABLE, as the buy on the current source here).
+//   (5) a buy that arrives while a failed background run waits on its persist runs its own sync and is signed, as on
+//       0.3.5 (which runs no background); it is not refused with the background's failure.
 import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
@@ -90,7 +97,7 @@ function storeToH() { // the held store, to H
 }
 
 const json = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body), clone() { return this; } });
-const net = { hold: () => false, held: [], headerPages: [], submits: [], prepared: [] };
+const net = { hold: () => false, held: [], headerPages: [], submits: [], prepared: [], fail500: () => false, holdTip: () => false, inPrepare: false, tips: 0 };
 const release = () => { for (const r of net.held.splice(0)) r(); };
 function serve(buyer) {
   const coin = mkCoin(100_000_002);
@@ -102,12 +109,15 @@ function serve(buyer) {
       const from = Number(m[1]), n = Number(m[2]);
       net.headerPages.push({ host: new URL(u).origin, from });
       if (net.hold(from)) await new Promise((r) => net.held.push(r));
+      if (net.fail500(from)) return new Response(JSON.stringify({ ok: false }), { status: 500 });
       if (from + n - 1 > TOP) return new Response(JSON.stringify({ ok: false }), { status: 502 });
       const rows = []; for (let h = from; h < from + n; h++) rows.push(rowAt(h));
       return new Response(JSON.stringify({ ok: true, from, count: n, headers: rows }), { status: 200, headers: { "content-type": "application/json" } });
     }
     const blk = /\/block\/(0x[0-9a-f]{64})$/.exec(u);
     if (blk && bodyByHash.has(blk[1])) { const b = bodyByHash.get(blk[1]); return new Response(nodeBlockBody(b.txs), { status: 200 }); }
+    if (u.endsWith("/tip")) net.tips++;
+    if (u.endsWith("/tip") && net.holdTip()) await new Promise((r) => net.held.push(r));
     if (u.endsWith("/tip")) return new Response(JSON.stringify({ height: TOP, hash: G.get(TOP).hash }), { status: 200, headers: { "content-type": "application/json" } });
     if (u.includes("/tx/submit")) { net.submits.push(JSON.parse(init?.body || "{}")); return json({ ok: true, txid: "0x" + "aa".repeat(32) }); }
     if (u.includes("clarvis")) return json({ ok: false }, 404);
@@ -119,12 +129,12 @@ function serve(buyer) {
   };
   return C.requiredFillOutputs(servedOffer, BigInt(V)).map(({ to, value }) => ({ to, value: Number(value) }));
 }
-async function walletFor(buyer) {
+async function walletFor(buyer, st = storeToH(), built = []) {
   const w = new C.Wallet(C.memoryStore(), C.memoryStore());
-  const st = storeToH();
   w.spvBuildForTest = async (o) => {
     const s = await C.liveSpvSource({ ...o, store: async () => st, legacy: undefined });
-    const prepare = (h) => s.prepare(h).then((r) => { net.prepared.push(r); return r; }, (e) => { net.prepared.push({ error: String(e?.message ?? e) }); throw e; });
+    built.push(s);
+    const prepare = (h) => { net.inPrepare = true; return s.prepare(h).then((r) => { net.prepared.push(r); return r; }, (e) => { net.prepared.push({ error: String(e?.message ?? e) }); throw e; }); };
     return { ...s, prepare, prevoutScriptPubkey: async (p) => prevoutFor(p) };
   };
   await w.importKey(buyer.key, "pw-dropped-source-1");
@@ -176,6 +186,77 @@ console.log("3. the honest path: a live hold, no endpoint change, the real sourc
   const r = await w.fillOffer({ proposalId: live.fid, outputs });
   await tick(50); await C.flushSpvStoreWrites();
   check(`the fill is signed (${r?.ok ? "signed" : `${r?.code}: ${String(r?.error).slice(0, 100)}`}, ${net.submits.length} submit), after a sync to the node tip (${net.prepared.at(-1)?.verifiedTip})`, r?.ok === true && net.submits.length >= 1 && net.prepared.at(-1)?.verifiedTip === TOP);
+}
+
+// The popup's prewarm after the balance; its run's pages go once the foreground has been quiet for QUIET_MS.
+async function backgroundRun(w) {
+  const asked = net.headerPages.length;
+  await w.balance().catch(() => undefined);
+  w.syncSpv();
+  await until(() => net.headerPages.length > asked, 4000);
+  for (let n = -1; n !== net.headerPages.length;) { n = net.headerPages.length; await tick(300); }
+}
+
+console.log("4. a background run stopped at T2, then the endpoint changes during the buy's own node tip read:");
+{
+  const w = await walletFor(lapsing);
+  const outputs = serve(lapsing);
+  Object.assign(net, { headerPages: [], submits: [], held: [], prepared: [], hold: () => false, fail500: (from) => from > T2 });
+  await backgroundRun(w);
+  net.fail500 = () => false;
+  check(`  setup: the run stopped at ${T2}, above the reservation (${lapsing.grantH}) and below the hold's end (${lapsing.holdEnd}): pages ${net.headerPages.map((p) => p.from).join(",")}`, net.headerPages.some((p) => p.from === 145920) && net.headerPages.every((p) => p.from <= T2 + 1));
+  net.inPrepare = false;
+  net.holdTip = () => net.inPrepare;
+  const pending = w.fillOffer({ proposalId: lapsing.fid, outputs });
+  check("  setup: the buy's node tip read is in flight", await until(() => net.held.length > 0));
+  await w.setApi(API_B);
+  net.holdTip = () => false;
+  release();
+  const r = await pending;
+  await tick(50); await C.flushSpvStoreWrites();
+  check(`(4) nothing is signed or sent (${net.submits.length} submits, ${r?.ok ? "signed" : r?.code})`, r?.ok !== true && net.submits.length === 0 && r?.code === "VERIFY_UNAVAILABLE");
+  check(`(4) the dropped source refused the buy's wait for the node tip (${JSON.stringify(net.prepared[0]).slice(0, 110)})`, net.prepared.length === 1 && /replaced/.test(String(net.prepared[0]?.error)));
+  // The buy again, on the current source: as on 0.3.5, the lapsed hold is refused after a sync to the node tip.
+  const again = await w.fillOffer({ proposalId: lapsing.fid, outputs });
+  const last = net.prepared.at(-1);
+  check(`(4) the current source syncs to the node tip and reports the tip it read (verified ${last?.verifiedTip}, servedTip ${last?.servedTip})`, last?.verifiedTip === TOP && last?.servedTip === TOP);
+  check(`(4) and the lapsed hold is refused there, with 0.3.5's answer to this buy (${again?.ok ? "signed" : `${again?.code}: ${String(again?.error).slice(0, 80)}`})`, again?.ok !== true && again?.code === "VERIFY_UNAVAILABLE" && net.submits.length === 0);
+  const hints = { offerId: lapsing.offerId, fclaimTxid: lapsing.fid, me: lapsing.me, offerHeight: lapsing.offerAt };
+  const real = { ...(await C.liveSpvSource({ rpcBase: `${API_A}/api/rpc`, headersBase: API_A, store: async () => storeToH(), legacy: undefined })), prevoutScriptPubkey: async (p) => prevoutFor(p) };
+  const oneShort = { ...real, prepare: async () => ({ verifiedTip: TOP - 1, nodeTip: TOP, tipKnown: true, servedTip: TOP }) };
+  const out = await C.liveFillSpvSource({ rpcBase: `${API_A}/api/rpc`, headersBase: API_A, spvSource: oneShort, hints }).then(() => "built", (e) => `refused: ${e?.message}`);
+  check(`(4) a verified tip one below the node tip the source read refuses the scan (${out.slice(0, 90)})`, out.startsWith("refused") && /below the node tip/.test(out));
+}
+
+console.log("5. a buy arriving while a failed background run waits on its persist:");
+{
+  const st = storeToH();
+  // A chunk read below the table holds the serializer (an IndexedDB read, which the foreground gate does not count).
+  const getChunk = st.getChunk.bind(st);
+  let holdChunk = false;
+  const heldChunk = [];
+  st.getChunk = async (k) => { if (k === 27 && holdChunk) await new Promise((r) => heldChunk.push(r)); return getChunk(k); };
+  const built = [];
+  const w = await walletFor(live, st, built);
+  const outputs = serve(live);
+  Object.assign(net, { headerPages: [], submits: [], held: [], prepared: [], hold: () => false, fail500: () => true });
+  w.prewarmSpv();
+  await until(() => built.length > 0);
+  holdChunk = true;
+  const occupy = built[0].hashAt(112000);
+  await until(() => heldChunk.length > 0);
+  await backgroundRun(w);
+  net.fail500 = () => false;
+  const pages = net.headerPages.length, tips = net.tips, prepares = net.prepared.length;
+  net.inPrepare = false;
+  const pending = w.fillOffer({ proposalId: live.fid, outputs });
+  // The buy has read the node tip and waits on the run; then the chunk read is let go.
+  await until(() => net.inPrepare && net.tips > tips); await tick(30);
+  holdChunk = false; for (const r of heldChunk.splice(0)) r();
+  const r = await pending;
+  await occupy;
+  await tick(50); await C.flushSpvStoreWrites();
+  check(`(5) the buy is signed after its own sync (${r?.ok ? "signed" : `${r?.code}: ${String(r?.error).slice(0, 80)}`}, ${net.headerPages.length - pages} header pages of its own)`, r?.ok === true && net.submits.length >= 1 && net.headerPages.length > pages && net.prepared.length > prepares);
 }
 
 done("fill-dropped-source");

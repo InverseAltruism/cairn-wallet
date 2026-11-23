@@ -35,8 +35,8 @@ check("the runner wraps the shared client's page sync in a try/catch (M8 self-he
 // isTransientSyncError (imported above), called at the throw site.
 const catchIdx = run.indexOf("} catch (e) {");
 const persistIdx = run.indexOf("await serializeSync(persist);", catchIdx);
-const clockIdx = run.indexOf("if (CLOCK_FAULT.test(msg)) { failAbove(clockRefusal(msg)); break; }", catchIdx);
-const transientIdx = run.indexOf("if (isTransientSyncError(msg)) { failAbove(e); break; }", catchIdx);
+const clockIdx = run.indexOf("if (CLOCK_FAULT.test(msg)) { refuse(clockRefusal(msg)); break; }", catchIdx);
+const transientIdx = run.indexOf("if (isTransientSyncError(msg)) { refuse(e); break; }", catchIdx);
 const reseedIdx = Math.min(...["await lookupReseed(want)", "await boundedReseed()"].map((x) => run.indexOf(x, catchIdx)));
 check("the verified progress is persisted before the failure is classified", persistIdx > catchIdx && persistIdx < clockIdx);
 check("a transient class stops the run with its own error (KEEP the store, DOS-HDR-3)", transientIdx > catchIdx);
