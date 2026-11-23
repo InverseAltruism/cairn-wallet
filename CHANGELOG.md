@@ -21,7 +21,8 @@
   re-checks the headers it holds. After a background re-sync was refused (a timeout or a server error in it does not
   count), the background sync of that header source waits 2 minutes, then twice as long each time up to 32, so a
   header server whose chain the re-sync refuses gets 5 background runs in an hour of an open popup instead of 60; a
-  sync that extends the held chain to the height it was asked ends the wait. A name check whose header source was
+  sync that extends the held chain to the height it was asked ends the wait, and a later refusal waits twice as long
+  as the one before it. A name check whose header source was
   dropped under it (another API or RPC, another vault) does not use that source's answer and asks the current source
   once more, so it verifies as 0.3.5 did; if the source is replaced again during that second look, the address is
   shown as not chain-verified.

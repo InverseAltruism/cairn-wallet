@@ -417,4 +417,53 @@ console.log("8d. the back-off ends once a lookup's sync of the held chain reache
   Date.now = () => now;
 }
 
+// A run of the background each minute the gap and the back-off allow, against a host that answers `modeAt(m)`: "refuse"
+// (L34: the chain breaks at the held tip and the reseed is refused) or "clean" (X, extended by 50 headers each time).
+async function hourOf(src, modes, minutes = 60) {
+  let clock = now, served = 0;
+  Date.now = () => clock;
+  const runs = [];
+  for (let m = 0; m < minutes; m++) {
+    const mode = modes(runs);
+    if (mode === "refuse") serve("L34", 152000); else serve("X", SEAL_TOP + 50 * (++served));
+    const tips = net.tips;
+    src.background();
+    await tick(20);
+    if (net.tips > tips) { await settled(); runs.push({ m, mode, pages: net.log.length }); } else served -= mode === "clean" ? 1 : 0;
+    clock += C.BACKGROUND_GAP_MS;
+  }
+  Date.now = () => now;
+  const refused = runs.filter((r) => r.mode === "refuse");
+  return { runs, refused: refused.length, clean: runs.length - refused.length, pages: runs.reduce((n, r) => n + r.pages, 0), at: runs.map((r) => `${r.m}${r.mode[0]}`).join(",") };
+}
+
+console.log("8e. a host that alternates a refused reseed and a clean run does not reset the doubling:");
+{
+  // The host refuses after every clean run and serves a clean run after every refusal.
+  const src = await C.liveSpvSource(opts(copyOf(sealedA)));
+  const alt = await hourOf(src, (runs) => (runs.at(-1)?.mode === "refuse" ? "clean" : "refuse"));
+  const steady = await hourOf(await C.liveSpvSource(opts(copyOf(sealedA))), () => "refuse");
+  check(`over an hour ${alt.refused} refused reseeds and ${alt.clean} clean runs (minutes ${alt.at}), ${alt.pages} page requests; a host that always refuses: ${steady.refused} runs, ${steady.pages} page requests`,
+    steady.refused === 5 && alt.refused <= steady.refused && alt.refused + alt.clean <= steady.refused + alt.clean && alt.at.startsWith("0r,2c,3r,7c,8r,16c,17r,33c,34r"));
+  check("  the held chain carries every clean run's headers", (await src.prepare(0)).verifiedTip === SEAL_TOP + 50 * alt.clean);
+}
+
+console.log("8f. after a clean run, a later refused reseed waits at the kept level; a lookup does not wait on it:");
+{
+  const src = await C.liveSpvSource(opts(copyOf(sealedA)));
+  // Refused at minute 0 (2 minutes), clean at 2, refused at 3: the wait is the doubled level, 4 minutes.
+  const h = await hourOf(src, (runs) => (runs.length === 1 ? "clean" : "refuse"), 12);
+  check(`  runs at minutes ${h.at}: the refusal at minute 3 waits 4 minutes, the next at 7 waits 8`, h.at === "0r,2c,3r,7r");
+  // Within that wait a lookup above the held tip reseeds at once (and is refused as today).
+  const s2 = await C.liveSpvSource(opts(copyOf(sealedA)));
+  await hourOf(s2, (runs) => (runs.length === 1 ? "clean" : "refuse"), 4);
+  serve("L34", 152000);
+  Date.now = () => now + 4 * C.BACKGROUND_GAP_MS;
+  const before = net.log.length;
+  const out = await s2.prepare(152000 - 12).then((r) => `verified ${r.verifiedTip}`, (e) => String(e?.message ?? e));
+  check(`  a lookup at minute 4, inside the 4-minute wait, runs at once (${net.log.length - before} requests): ${out.slice(0, 50)}`, net.log.length - before > C.BOUNDED_PAGES && /less proof of work/.test(out));
+  await settled();
+  Date.now = () => now;
+}
+
 done("namespv-reseed-bounded");

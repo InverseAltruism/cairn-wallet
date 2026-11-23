@@ -207,8 +207,10 @@ broke (at most 5 pages), the re-sync (at most 17 pages) and, only after a chain 
 of the way to the node tip it claims: 22 requests, about 3.6 MB (a page is about 166 kB), before an adoption. Runs
 are at least 60 s apart while the popup is open, and after a re-sync it refused the source's background runs wait 2
 minutes, then twice as long each time up to 32: against such a server an hour of an open popup starts 5 runs (107
-page requests in test/namespv-reseed-bounded.test.mjs 8) where it would start 60 (1,317 page requests). An adoption,
-or a sync that extends the held chain to the height it was asked (8d), ends the wait. Two cases are
+page requests in test/namespv-reseed-bounded.test.mjs 8) where it would start 60 (1,317 page requests). An adoption
+ends the back-off. A sync that extends the held chain to the height it was asked ends only the wait (8d): a later
+refusal doubles on from the level reached, so a server that alternates a refused re-sync and a clean run gets 5
+refused re-syncs and 4 clean runs in such an hour, 112 page requests (8e). Two cases are
   compared with nothing: the first sync of a fresh install (also a wiped store, or a store that cannot open), and
   any chain that extends the stored tip, at any tip age. There a header source (the front door's operator, or
   whoever compromises the front door) can serve a fork whose difficulty it lowered with spread timestamps: above

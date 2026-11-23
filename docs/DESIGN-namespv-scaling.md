@@ -141,9 +141,13 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   adoption (166 kB a page: 36,982,177 bytes over 223 pages measured), at most one run a minute while the popup is open.
   After a background reseed that was refused or failed (not on a transient failure, a drop or a yield to a lookup),
   the source starts no background run for 2 minutes (`RESEED_BACKOFF_MS`), doubled after each further one up to 32
-  minutes (`RESEED_BACKOFF_MAX_MS`); an adoption ends it, and so does a run that reaches its target on the held chain
-  with no reseed, such as a lookup's once the hostile host is gone (reseed-bounded 8d); a lookup's run and reseed do
-  not wait for it. Against a
+  minutes (`RESEED_BACKOFF_MAX_MS`). An adoption ends the back-off, its level and its wait (`endBackoff`). A run that
+  reaches its target on the held chain with no reseed, such as a lookup's once the hostile host is gone, ends only
+  the wait (`endBackoffWait`): the background resumes at once (reseed-bounded 8d), and a later refusal doubles on
+  from the level reached, so a host that alternates a refused reseed and a clean run gets 5 refused reseeds and 4
+  clean runs in an hour, 112 page requests, where a level reset by each clean run gave it 20 and 20, 375 (8e). The
+  wait after such a refusal is the kept level doubled, at most the 32-minute cap (4 minutes after one earlier
+  refusal, 8f), and a lookup's run and reseed never wait on it (8, 8f). Against a
   host whose chain the reseed refuses, an hour of an open popup then starts 5 runs (minutes 0, 2, 6, 14 and 30) with
   107 page requests (reseed-bounded 8); without it each of the 60 prewarms runs, with 1,317 page requests (the same test with the back-off removed). A transient failure in a run
   or in its reseed backs nothing off (8b, 8c). The back-off lives with the source, so a new worker starts without it.

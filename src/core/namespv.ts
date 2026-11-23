@@ -1197,7 +1197,10 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     backoff = backoff ? Math.min(2 * backoff, RESEED_BACKOFF_MAX_MS) : RESEED_BACKOFF_MS; // MUTATE_BACKOFF_DOUBLES
     backoffUntil = Date.now() + backoff;
   }
+  // An adoption ends the back-off, its level and its wait.
   function endBackoff(): void { backoff = 0; backoffUntil = -Infinity; }
+  // A clean run ends the wait and keeps the level: a host that refuses again after one doubles on from where it was.
+  function endBackoffWait(): void { backoffUntil = -Infinity; }
   let syncing: { from: number } | null = null;
   // Aborted when a lookup starts waiting: the background pages waiting on the foreground go ahead as its pages.
   let arrival = new AbortController();
@@ -1271,8 +1274,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       }
       await serializeSync(persist);
       settle();
-      // A run that reached its target with no failure (so no reseed) shows the host serving the held chain again.
-      if (!failed) endBackoff(); // MUTATE_BACKOFF_ENDS_ON_SYNC
+      // A run that reached its target with no failure (so no reseed) shows the host serving the held chain again: the
+      // background need not wait, but the level stays (test/namespv-reseed-bounded.test.mjs 8d, 8e, 8f).
+      if (!failed) endBackoffWait(); // MUTATE_BACKOFF_WAIT_ENDS_ON_SYNC
     } catch (e) {
       // A failure outside the classified sync (a persist, a rebase): the waiting lookups fail closed, none waits forever.
       console.warn("[namespv] header sync stopped:", e);
