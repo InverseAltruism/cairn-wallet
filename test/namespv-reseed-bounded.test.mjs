@@ -3,7 +3,7 @@
 // reseed. Chain A is the real headers to 146,829, sealed at chunks 32 and 33. The other chains are generated from a
 // fork point with the bits the vendored light client computes (LWMA): B1 replaces A's tip block (a 1-block orphan),
 // B34 forks inside chunk 34 above seal 33, B33 and B32 fork inside chunks 33 and 32 below it, L34 (to 152,000, past
-// what the bounded reseed may fetch) and L33 fork the same places with less work, and S forks inside chunk 34 with more work but ends below the held tip. The production liveSpvSource runs
+// what the bounded reseed may fetch) and L33 fork the same places with less work, and S forks inside chunk 34 with more work but ends below the held tip; X extends A. The production liveSpvSource runs
 // from test/helpers/cuttable.mjs (the table cut at 131,071; proof of work accepted for the generated hashes, in that
 // test bundle only).
 // Run: npx tsx test/namespv-reseed-bounded.test.mjs   (offline)
@@ -57,6 +57,7 @@ await makeChain("B32", 133000, 148000, 119);
 await makeChain("L34", 141000, 152000, 1440);
 await makeChain("L33", 137000, 147500, 1440);
 await makeChain("S", 141000, 146000, 60);
+await makeChain("X", SEAL_TOP, SEAL_TOP + 1200, 119);
 if (lastTime * 1000 > now) throw new Error("a generated chain ends after the fixed clock");
 
 const rowOf = (name, h) => { const c = chains[name]; return h <= c.fork ? (has(h) ? row(h) : null) : c.rows[h - c.fork - 1] ?? null; };
@@ -380,6 +381,39 @@ console.log("8c. a transient failure inside the background reseed does not back 
   const ran = net.tips - tips, after = (await src.prepare(0)).verifiedTip;
   check(`the first run's reseed stops on the short page (held ${first}); a minute later the prewarm runs (${ran} tip read) and adopts B1 (${after})`,
     failed && first === SEAL_TOP && ran === 1 && after === SEAL_TOP + 11);
+  Date.now = () => now;
+}
+
+console.log("8d. the back-off ends once a lookup's sync of the held chain reaches its height (the hostile host gone):");
+{
+  // The hour of 8 to minute 30, whose refused reseed backs the background off for 32 minutes; then the header host
+  // serves the held chain going forward (X extends A).
+  const st = copyOf(sealedA);
+  serve("A", SEAL_TOP);
+  const src = await C.liveSpvSource(opts(st));
+  serve("L34", 152000);
+  let clock = now;
+  Date.now = () => clock;
+  const at = [];
+  for (let m = 0; m <= 30; m++) {
+    const tips = net.tips;
+    src.background();
+    await tick(20);
+    if (net.tips > tips) { at.push(m); await settled(); }
+    clock += C.BACKGROUND_GAP_MS;
+  }
+  check(`  setup: the runs of the hour to minute 30 (${at.join(",")})`, at.join() === "0,2,6,14,30");
+  serve("X", SEAL_TOP + 1200);
+  const want = SEAL_TOP + 400;
+  const got = await src.prepare(want).then((r) => r.verifiedTip, (e) => String(e?.message ?? e));
+  await settled();
+  clock += C.BACKGROUND_GAP_MS;
+  const tips = net.tips, before = net.log.length;
+  src.background();
+  await tick(20); await settled();
+  const ran = net.tips - tips, pages = net.log.length - before, after = (await src.prepare(0)).verifiedTip;
+  check(`  a lookup at minute 31 syncs the held chain to ${got}; the prewarm at minute 32 runs (${ran} tip read, ${pages} pages) to the node tip (${after})`,
+    got === want + 12 && ran === 1 && pages > 0 && after === SEAL_TOP + 1200);
   Date.now = () => now;
 }
 

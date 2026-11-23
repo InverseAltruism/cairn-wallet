@@ -1101,7 +1101,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     await acq.writes();
     if (!live()) return false;
     adoptions++;
-    backoff = 0; backoffUntil = -Infinity;
+    endBackoff();
     LC = fresh.client;
     workBase = fresh.workBase;
     const seedK = chunkOf(seed.top);
@@ -1197,6 +1197,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     backoff = backoff ? Math.min(2 * backoff, RESEED_BACKOFF_MAX_MS) : RESEED_BACKOFF_MS; // MUTATE_BACKOFF_DOUBLES
     backoffUntil = Date.now() + backoff;
   }
+  function endBackoff(): void { backoff = 0; backoffUntil = -Infinity; }
   let syncing: { from: number } | null = null;
   // Aborted when a lookup starts waiting: the background pages waiting on the foreground go ahead as its pages.
   let arrival = new AbortController();
@@ -1270,6 +1271,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       }
       await serializeSync(persist);
       settle();
+      // A run that reached its target on the held chain, with no reseed, shows the host serving that chain again.
+      if (!failed && !reseeded && live()) endBackoff(); // MUTATE_BACKOFF_ENDS_ON_SYNC
     } catch (e) {
       // A failure outside the classified sync (a persist, a rebase): the waiting lookups fail closed, none waits forever.
       console.warn("[namespv] header sync stopped:", e);
