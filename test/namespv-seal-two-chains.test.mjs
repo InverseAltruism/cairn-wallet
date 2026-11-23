@@ -4,6 +4,7 @@
 // cut to 131,071 (no release checkpoint under any seal top) and proof of work accepted for B's listed hashes, in that
 // test bundle only. A source restored at seal 33 on A adopts B; the list it writes and a restart over it must be B's.
 // Run: npx tsx test/namespv-seal-two-chains.test.mjs   (offline)
+import "./helpers/backup-host.mjs";
 import { createHash } from "node:crypto";
 import { checker } from "./helpers/check.mjs";
 import { cutTableBundle } from "./helpers/cuttable.mjs";
