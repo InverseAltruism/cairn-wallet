@@ -752,18 +752,21 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     for (let attempt = 0; ; attempt++) {
       if (!live()) throw dropped();
       if (cancel?.aborted) throw new Error("/api/headers request aborted with its window");
-      const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: AbortSignal.any([AbortSignal.timeout(HEADERS_TIMEOUT_MS), ...stops]) });
-      if (r.status === 429 && attempt < 6) {
-        const ra = Number(r.headers.get("retry-after")) || 0;
-        await pause(Math.min(ra > 0 ? ra * 1000 : 1200 * (attempt + 1), 15_000), stops);
-        continue;
-      }
-      if ((r.status === 502 || r.status === 503) && attempt < 6) { await pause(1200 * (attempt + 1), stops); continue; }
-      if (!r.ok) throw new Error(`/api/headers ${r.status}`);
-      const rows = (await r.json())?.headers;
-      if (!Array.isArray(rows) || rows.length !== count) throw new Error("/api/headers: non-dense range");
-      // Served JSON: the light client checks every header (links, PoW, LWMA) before it is used.
-      return rows.map((row: { header: BlockHeader; hash: string }) => ({ header: row.header, hash: row.hash }));
+      const call = following([AbortSignal.timeout(HEADERS_TIMEOUT_MS), ...stops]);
+      try {
+        const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: call.signal });
+        if (r.status === 429 && attempt < 6) {
+          const ra = Number(r.headers.get("retry-after")) || 0;
+          await pause(Math.min(ra > 0 ? ra * 1000 : 1200 * (attempt + 1), 15_000), stops);
+          continue;
+        }
+        if ((r.status === 502 || r.status === 503) && attempt < 6) { await pause(1200 * (attempt + 1), stops); continue; }
+        if (!r.ok) throw new Error(`/api/headers ${r.status}`);
+        const rows = (await r.json())?.headers;
+        if (!Array.isArray(rows) || rows.length !== count) throw new Error("/api/headers: non-dense range");
+        // Served JSON: the light client checks every header (links, PoW, LWMA) before it is used.
+        return rows.map((row: { header: BlockHeader; hash: string }) => ({ header: row.header, hash: row.hash }));
+      } finally { call.done(); }
     }
   };
   // A request that ends on a page top fetches the whole page: every row of it is at or below the sync target,
@@ -1171,7 +1174,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       // lookup's own reseed runs next. A chain it stopped short is judged like any other: below the held tip it is not
       // adopted, whatever its work.
       const stop = arrival.signal, page = runPage(() => true);
-      await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE), (f, n, c) => page(f, n, c ? AbortSignal.any([c, stop]) : stop), () => live() && !lookupWant()); // MUTATE_BOUNDED_YIELDS
+      const yielding: Page = (f, n, c) => { if (!c) return page(f, n, stop); const both = following([c, stop]); return page(f, n, both.signal).finally(both.done); };
+      await syncFresh(fresh, Math.min(target, seed.top + BOUNDED_PAGES * PAGE), yielding, () => live() && !lookupWant()); // MUTATE_BOUNDED_YIELDS
       if (await adopt(fresh, seed)) return true;
       refused();
       return false;
@@ -1205,22 +1209,23 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const runPage = (background: (from: number) => boolean, cutAt: () => number = () => Infinity): Page => async (from, count, cancel) => {
     const stops = [opts.signal, cancel].filter((x): x is AbortSignal => !!x);
     while (background(from)) {
-      const lookup = arrival.signal;
-      try { await foregroundQuiet(AbortSignal.any([lookup, ...stops])); } // MUTATE_QUIET_GATE
+      const lookup = arrival.signal, quiet = following([lookup, ...stops]);
+      try { await foregroundQuiet(quiet.signal); } // MUTATE_QUIET_GATE
       catch (e) {
         if (!live()) throw dropped();
         if (!lookup.aborted || cancel?.aborted) throw e;
         continue;
-      }
+      } finally { quiet.done(); }
       if (!background(from)) break;
       const giveWay = new AbortController();
       // Once a lookup waits for it, a page in flight is the lookup's: the lookup's own reads do not cancel it.
       const off = onForeground(() => { if (background(from)) giveWay.abort(); }); // MUTATE_GIVE_WAY
-      try { return await lanePage(from, count, AbortSignal.any([giveWay.signal, ...stops])); }
+      const call = following([giveWay.signal, ...stops]);
+      try { return await lanePage(from, count, call.signal); }
       catch (e) {
         if (!live()) throw dropped();
         if (!giveWay.signal.aborted || cancel?.aborted) throw e;
-      } finally { off(); }
+      } finally { off(); call.done(); }
     }
     const n = Math.min(count, Math.max(1, cutAt() - from + 1)); // MUTATE_PAGE_CUT
     return foreground(() => lanePage(from, n, cancel));
@@ -1414,6 +1419,22 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** A signal that aborts with the first of `signals` to abort, and its reason: AbortSignal.any, which not every engine
+ *  the manifest admits has. `done()` removes the listeners it added, so a long-lived signal (the source's) holds none
+ *  for a request that has settled (test/namespv-no-signal-any.test.mjs). */
+function following(signals: readonly AbortSignal[]): { signal: AbortSignal; done(): void } {
+  const ctl = new AbortController();
+  const added: [AbortSignal, () => void][] = [];
+  const done = () => { for (const [s, f] of added.splice(0)) s.removeEventListener("abort", f); };
+  for (const s of signals) {
+    if (s.aborted) { ctl.abort(s.reason); break; }
+    const f = () => { ctl.abort(s.reason); done(); };
+    s.addEventListener("abort", f, { once: true });
+    added.push([s, f]);
+  }
+  if (ctl.signal.aborted) done();
+  return { signal: ctl.signal, done };
+}
 /** A retry's wait, ended early (rejected) by any of `stops`. */
 function pause(ms: number, stops: readonly AbortSignal[]): Promise<void> {
   return new Promise<void>((done, fail) => {
