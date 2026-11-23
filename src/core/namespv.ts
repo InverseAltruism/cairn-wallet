@@ -742,15 +742,16 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const lcOpts = { client, headersBatchProvider: pageBatch, checkpoints: SPV_CHECKPOINTS as Record<number, string> };
   // How many pages a sync of this source asks at once: one at first, one more after each page that answered well inside
   // its timeout, back to one after a timeout, so a slow link is not split six ways past the timeout.
-  const lane = { width: 1 };
+  // A page asked before the last fallback does not widen the lane again (`epoch`).
+  const lane = { width: 1, epoch: 0 };
   const lanePage = async (from: number, count: number, cancel?: AbortSignal) => {
-    const t0 = performance.now();
+    const t0 = performance.now(), epoch = lane.epoch;
     try {
       const rows = await pageBatch(from, count, cancel);
-      if (performance.now() - t0 < WIDEN_WITHIN_MS) lane.width = Math.min(IN_FLIGHT, lane.width + 1);
+      if (performance.now() - t0 < WIDEN_WITHIN_MS && epoch === lane.epoch) lane.width = Math.min(IN_FLIGHT, lane.width + 1);
       return rows;
     } catch (e) {
-      if ((e as Error)?.name === "TimeoutError") lane.width = 1; // MUTATE_WIDTH_FALLBACK
+      if ((e as Error)?.name === "TimeoutError") { lane.width = 1; lane.epoch++; } // MUTATE_WIDTH_FALLBACK
       throw e;
     }
   };

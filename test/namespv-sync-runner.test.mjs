@@ -101,8 +101,10 @@ console.log("1b. the pages in flight start at one, grow after fast pages and fal
   const afterTimeout = n;
   const p = await src.prepare(SEAL_TOP - 12);
   globalThis.fetch = inner;
-  check(`the first request goes alone (${seenAtStart[0]} in flight before it), the lookup over the timeout is refused as today (${String(out).slice(0, 40)})`, seenAtStart[0] === 0 && String(out).startsWith("refused"));
-  check(`  the next sync starts at one page again (request ${afterTimeout + 1} saw ${seenAtStart[afterTimeout]} in flight) and verifies to ${p.verifiedTip}`, seenAtStart[afterTimeout] === 0 && p.verifiedTip === SEAL_TOP);
+  // At width one a request goes out only once the one before it answered: the second request of a sync sees none in
+  // flight; at a wider width it goes out beside the first.
+  check(`the first sync asks one page at a time at first (its second request saw ${seenAtStart[1]} in flight), the lookup over the timeout is refused as today (${String(out).slice(0, 40)})`, seenAtStart[1] === 0 && seenAtStart.slice(2, 8).some((x) => x > 0) && String(out).startsWith("refused"));
+  check(`  after the timeout the next sync is back to one page (its second request saw ${seenAtStart[afterTimeout + 1]} in flight) and verifies to ${p.verifiedTip}`, seenAtStart[afterTimeout + 1] === 0 && p.verifiedTip === SEAL_TOP);
   await quiet(); await flushSpvStoreWrites();
 }
 
@@ -207,6 +209,8 @@ console.log("4b. a stopped run's target is not carried into the next: a lookup f
   failing = false; net.unserved = undefined;
   resetLog();
   const p = await src.prepare(140032 - 12);
+  // Nothing more after the lookup: the stopped background's aim is not resumed by the lookup's run.
+  await quiet();
   check(`stopped at ${reached}; a lookup needing 140,032 makes ${hdr.reqs.length} requests (${hdr.reqs.map((r) => `${r.from}/${r.n}`).join(",")}), the plan to its height, and verifies to ${p.verifiedTip}`,
     reached === 139263 && hdr.reqs.map((r) => `${r.from}/${r.n}`).join() === plan(139263, 140032).join() && p.verifiedTip === 140032);
   await quiet(); await flushSpvStoreWrites();
@@ -360,7 +364,10 @@ console.log("8. a vault change: a source mid-run and a source parked on the unlo
   w.syncSpv();
   await until(() => hdr.held.length > 0);
   const a = built[0], aBefore = a.writes.length;
-  const pending = (await a.src).prepare(SEAL_TOP - 12).then((r) => r.verifiedTip, (e) => `threw ${e?.message}`);
+  const aSrc = await a.src;
+  const pending = aSrc.prepare(SEAL_TOP - 12).then((r) => r.verifiedTip, (e) => `threw ${e?.message}`);
+  // The reset comes once the lookup waits on the run (not while prepare still reads the node tip).
+  await until(() => aSrc.syncProgress() !== null);
   await w.reset();
   const mark = hdr.reqs.length;
   // Refused at once, with the page still held: the wait does not hang on the request in flight.
