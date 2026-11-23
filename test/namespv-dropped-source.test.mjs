@@ -5,9 +5,9 @@
 // Run: npx tsx test/namespv-dropped-source.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
-import { serveFixture, memStore, records, hashOf, legacyOf, v1Snapshot, SEAL_ANCHORS, SEAL_NEWEST, SEAL_TOP } from "./helpers/spvfixture.mjs";
+import { serveFixture, memStore, records, hashOf, legacyOf, v1Snapshot, SEAL_ANCHORS, SEAL_TOP } from "./helpers/spvfixture.mjs";
 import { liveSpvSource, flushSpvStoreWrites } from "../src/core/namespv.ts";
-import { sealKeyGetter, sealRecord } from "../src/core/spvseal.ts";
+import { sealKeyGetter } from "../src/core/spvseal.ts";
 import { importKeyRaw } from "../src/core/keystore.ts";
 
 const { check, done } = checker("a dropped header source requests and writes nothing more");
