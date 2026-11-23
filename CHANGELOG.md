@@ -12,16 +12,19 @@
   stops for a name check that arrives meanwhile; anything larger waits for a name check, which re-syncs from the
   newest sealed chunk and, when the chain does not link there, from the built-in hash. A replacement chain is
   adopted only above the verified tip and with more work, and the sealed chunks it shares stay. A header source the
-  wallet drops (another API or RPC, another vault, a reset) requests and writes nothing more and answers a wait only
-  at a height it verified, and a fill's check refuses headers that stop below the node tip. Sends to an address are
+  wallet drops (another API or RPC, another vault, a reset) requests no further header page, writes nothing and
+  answers a wait only at a height it verified, and a fill's check refuses headers that stop below the node tip. Sends to an address are
   unchanged (docs/DESIGN-namespv-scaling.md, "The sync and its runner").
 - A balance, a send or a name check made while the headers sync in the background does not wait on it: no header
   page of the background sync starts while one of them is in flight or within 250 ms of it, a page in flight when
   one starts is cancelled and asked again later, and the sync lets the wallet answer every 128 headers, also when it
-  re-checks the headers it holds. After a background re-sync was refused, the background sync of that header source
-  waits 2 minutes, then twice as long each time up to 32, so a hostile header server gets 5 background runs in an
-  hour of an open popup instead of 60. A name check whose header source was dropped under it (another API or RPC,
-  another vault) asks the current source once more, so it verifies as 0.3.5 did.
+  re-checks the headers it holds. After a background re-sync was refused (a timeout or a server error in it does not
+  count), the background sync of that header source waits 2 minutes, then twice as long each time up to 32, so a
+  header server whose chain the re-sync refuses gets 5 background runs in an hour of an open popup instead of 60; a
+  sync that extends the held chain to the height it was asked ends the wait. A name check whose header source was
+  dropped under it (another API or RPC, another vault) does not use that source's answer and asks the current source
+  once more, so it verifies as 0.3.5 did; if the source is replaced again during that second look, the address is
+  shown as not chain-verified.
 - After a browser start, the restore of the stored block headers starts from the newest stored 4,096-header chunk
   that the wallet verified earlier and sealed under a key derived from the unlocked vault, and checks only the headers
   above it with every rule. Before, it checked every stored header above the newest built-in hash, a cost that grew

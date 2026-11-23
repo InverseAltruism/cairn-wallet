@@ -92,7 +92,9 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   headers (`ingestSliced`), through a MessageChannel task (a nested `setTimeout(0)` waits 4 ms in Chrome; in Node, the
   tests' runtime, through `setImmediate`), so a balance or a send is answered between slices (netgate 1 and 2). Each request keeps its own ladder (15 s, Retry-After on 429, the 502 and
   503 retries); a page that fails fails the sync once the pages below it are ingested, and the other pages of its
-  window are cancelled. After each window the verified tail is persisted (a detached write), so a worker stopped
+  window are cancelled. A request's signal follows the source's, its window's and its own timeout through one helper
+  (`following`), not `AbortSignal.any`, which not every engine the manifest admits has; the listeners it adds go when
+  the request settles (test/namespv-no-signal-any.test.mjs). After each window the verified tail is persisted (a detached write), so a worker stopped
   mid-sync resumes from the last window whose write had committed, and asks again only what it had not stored
   (runner 3).
 - The foreground first (`netgate.ts`): the requests a user waits on are counted while in flight: the balance, a
@@ -103,17 +105,23 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   its pages and wait for nothing, and those above it (a window planned for the background aim before it arrived) stay
   background, so they do not share the link with the lookup's (netgate 5c), and the page that holds its height is
   asked only up to it, as a sync to that height asks it; a page answered short ends its window (netgate 5d). The background run's own node tip read is not counted. A counted request stops counting after 30 s
-  (`HOLD_MAX_MS`), above the longest timeout a wallet request carries, so one that does not settle does not hold the
-  background sync. The popup's and the approval window's own reads (the USD line, the domain list, a name record)
-  run in their own contexts and are not counted (netgate 3 to 6).
+  (`HOLD_MAX_MS`), above the longest timeout one wallet request carries (a submit's 20 s), so one that does not settle
+  does not hold the background sync. A compound foreground read can run longer (a chunk acquisition's 8 pages, one
+  after another; a lookup's page with its retry ladder): it too stops counting at 30 s, and the background may then
+  start a page while it is still in flight. The USD line is read in the worker (`market.ts`) and is not counted (it
+  is display only); the popup's and the approval window's own reads (the domain list, a name record) run in their own
+  contexts and are not counted either (netgate 3 to 6). A listener or a waker of the gate that throws is logged and
+  the request's own answer or error is what its caller gets (netgate 7).
 - The background run: the popup sends `prewarmSpv` once the balance has answered or failed (`popup-render.ts`), and
   the wallet's `syncSpv` builds the source and starts the run to the node tip, unlocked only (locked, and from the
   install hook, `prewarmSpv` builds the source and syncs nothing). So no header request goes before the balance
   request at unlock. No run starts within 60 s of the previous one (`BACKGROUND_GAP_MS`), with `navigator.onLine`
   false or with Save-Data on; a lookup then syncs on demand.
 - A transient failure (a timeout, a 429 or 50x after the ladder, a non-dense page) persists the verified tail,
-  refuses the waiting lookups above the reached tip with today's error and stops the run; the next lookup or
-  background run resumes from the tip. A clock fault refuses with the clock named.
+  refuses the lookups that were waiting above the reached tip when it was caught, with today's error, and stops the
+  run; a lookup that arrives while the tail is persisted waits for a run of its own (test/name-source-dropped.test.mjs
+  4, test/fill-dropped-source.test.mjs 5), and the next lookup or background run resumes from the tip. A clock fault
+  refuses with the clock named.
 - A structural break (a page that does not link to the held tip or fails a check) gets one reseed per run. One
   function seeds a fresh client at a seed: the newest sealable top this source verified (from the seal list, its own
   chain or a rebase), with the 46 records ending there from memory or from that sealed chunk, or the table's newest
@@ -133,10 +141,14 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   adoption (166 kB a page: 36,982,177 bytes over 223 pages measured), at most one run a minute while the popup is open.
   After a background reseed that was refused or failed (not on a transient failure, a drop or a yield to a lookup),
   the source starts no background run for 2 minutes (`RESEED_BACKOFF_MS`), doubled after each further one up to 32
-  minutes (`RESEED_BACKOFF_MAX_MS`); an adoption ends it, and a lookup's run and reseed do not wait for it. Against a
+  minutes (`RESEED_BACKOFF_MAX_MS`); an adoption ends it, and so does a run that reaches its target on the held chain
+  with no reseed, such as a lookup's once the hostile host is gone (reseed-bounded 8d); a lookup's run and reseed do
+  not wait for it. Against a
   host whose chain the reseed refuses, an hour of an open popup then starts 5 runs (minutes 0, 2, 6, 14 and 30) with
   107 page requests (reseed-bounded 8); without it each of the 60 prewarms runs, with 1,317 page requests (the same test with the back-off removed). A transient failure in a run
   or in its reseed backs nothing off (8b, 8c). The back-off lives with the source, so a new worker starts without it.
+  It reads the wall clock (`Date.now()`): after a backward jump the wait left is capped at the back-off itself, so no
+  background run waits more than about 33 minutes with the 60 s gap, and nothing of it is stored.
 - One adoption site, serialized: it waits for the acquirer's pending writes, takes the fresh client, deletes the LRU
   entries above the seed chunk, keeps the remembered tops at and below the seed (none for a table seed) and rewrites
   the store from the chunk above the seed. A seal seed's tops are the adopted chain's own, since it links to the
@@ -148,9 +160,15 @@ the node tip. A run that stops short leaves no target behind: the next run's tar
   retries stop; a page that answers after the drop is not ingested (test/namespv-dropped-source.test.mjs, one case per
   site and 50 drops at random points). Its waits above its tip are refused at once, as 0.3.5 answered `prepare` only at
   a height it reached, and the fill's burial scan also refuses verified headers that stop below the node tip it read
-  (`servedTip`; test/fill-dropped-source.test.mjs, on the real `Wallet.fillOffer`). A name lookup whose source was
-  dropped under it asks the current source once more (`names.ts` `verifyName`, one retry), as 0.3.5's old source
-  went on to verify; a buy keeps the refusal (test/spv-endpoint-race.test.mjs 5 and 5b). A restore or catch-up parked on the
+  (`servedTip`; test/fill-dropped-source.test.mjs, on the real `Wallet.fillOffer`, 4 with the drop during the buy's
+  own node tip read). A dropped source reports it (`dropped()`), and a union replay that failed on it runs no
+  per-server recovery there: it answers only at heights it verified, where a lagging name server's records can replay
+  to an earlier holding while the union's records above its tip go unread. A name lookup whose source was dropped
+  under it asks the current source once more (`names.ts` `verifyName`, one retry), as 0.3.5's old source went on to
+  verify; an answer given while the generation moved is kept only when it is a clean union success (all records
+  verified, none recovered). A second drop during that retry leaves the address unverified with the caution, where
+  0.3.5 verified it (test/name-source-dropped.test.mjs 1 to 2b, test/spv-endpoint-race.test.mjs 5 to 5c). A buy
+  keeps the refusal. A restore or catch-up parked on the
   unlock signal ends without work. The headers of one run and its reseed therefore come from the one host the source
   was built on; a host change builds a new source (there is one header host per configured API: the second host of
   the default RPC serves node reads, not `/api/headers`).
@@ -188,9 +206,15 @@ figure is the median in ms, 0.3.5 first.
 A name's Review is level or faster in every cell: its pages come first and the background's give way. A balance
 refresh and a send are within 5 ms of 0.3.5 in every cell. 0.3.5's own 20 runs of one operation on one link and
 store spread over 0 to 8 ms (all at 61 ms for a balance a day behind at 50 kB/s; 160 to 168 ms for a send a day
-behind at 250 kB/s); the medians of 4 of the 48 balance and send cells lie above that spread, by 1 ms (the balance a
-day behind at 50 kB/s, at 1, 3 and 10 s) and 2 ms (a send of a new install at 250 kB/s, at 3 s). Those remain: the
-worker runs the background's ingest in slices of about 3 ms (inferred, not traced). No header page timed out. The longest stall of the worker's
+behind at 250 kB/s). Over the 240 paired balance and send runs the background build is higher in 128, equal in 62
+and lower in 50, by +0.68 ms on average (balance +0.59, send +0.78), at most +10; its median is above 0.3.5's in 29
+of the 48 cells, by 1 to 5 ms. The difference is there 10 s into a day's catch-up too, when the background has
+nothing left to sync (13 of 15 balance pairs higher), so the ingest's slices are not its cause; the cause is not
+traced. No header page timed out. A send during the cold background run of 114,062 headers (unthrottled, 80 ms a
+request, five alternating pairs per start, against 0.3.5 idle at the same moment), whose ingest shares the worker
+for the 8.4 to 9.1 s the run lasts, takes 259 ms against 250 started 0.5 s into it (paired median +9 ms), and 252
+against 249 and 254 against 250 at 3 s and 6 s (+4 each); higher in 13 of the 15 pairs, by at most 21 ms (the
+2026-11-23 rig `sendbg-idle.sh`, outside the repository). The longest stall of the worker's
 event loop during a cold background run of 114,062 headers (unthrottled, 80 ms a request, 7 pairs) is 27 to 36 ms,
 against 52 to 58 ms on 0.3.5 (it was 177 to 261 ms before the rebase's re-ingest was sliced, 726a29b: the rebase
 rebuilt its client through the vendored `fromRecords`, whose yields let no timer run in Node). What the gate and the
