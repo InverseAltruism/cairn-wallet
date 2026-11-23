@@ -3,7 +3,8 @@
 // and asked again once the foreground has been quiet; no background page starts while a request a user waits on is in
 // flight; a lookup's own pages never wait; a request that never settles stops counting; and the sync does not hold
 // the worker: a page's ingest and the rebase's re-ingest yield (ingestSliced), through a yield that a nested timer's
-// clamp does not slow. Every wallet request in src/core and the worker goes through the gate (source scan).
+// clamp does not slow. Every wallet request in src/core and the worker goes through the gate (source scan). A listener
+// or a waker that throws leaves a submit's own answer and the count as they would be (7).
 // Run: npx tsx test/netgate.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { readFileSync, readdirSync } from "node:fs";
@@ -264,6 +265,39 @@ console.log("6. every wallet request in src/core and the worker goes through the
   const allowed = [/^src\/core\/netgate\.ts: fetch\(input, init\)/, /^src\/core\/namespv\.ts: fetch\(`\$\{headersBase\}\/api\/headers\//, /^src\/core\/namespv\.ts: fetch\(\.\.\.a\) \}\);/, /^src\/core\/market\.ts: fetch\(`\$\{apiBase/];
   const stray = bare.filter((b) => !allowed.some((a) => a.test(b)));
   check(`no request bypasses the gate (${stray.length ? stray.join(" | ") : "none"}; ${bare.length} bare fetch calls, each allowed)`, stray.length === 0 && bare.length === allowed.length);
+}
+
+console.log("7. a listener or a waker that throws does not change a submit's outcome:");
+{
+  const { foregroundFetch, onForeground } = await import("../src/core/netgate.ts");
+  const warn = console.warn;
+  const warned = [];
+  console.warn = (...a) => warned.push(a.map(String).join(" "));
+  const sent = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { sent.push(String(url)); await tick(20); return new Response(JSON.stringify({ ok: true, txid: "0x" + "ab".repeat(32) }), { status: 200, headers: { "content-type": "application/json" } }); };
+  const submit = () => foregroundFetch(`${API}/api/rpc/tx/submit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tx: {} }), signal: AbortSignal.timeout(20_000) });
+  try {
+    // Before the request's result: a listener the request's start calls.
+    const off = onForeground(() => { throw new Error("listener broke"); });
+    const r1 = await submit().then((r) => r.json(), (e) => ({ thrown: String(e?.message ?? e) }));
+    off();
+    check(`(7) a throwing listener: the submit's own answer (${JSON.stringify(r1).slice(0, 60)}), sent once (${sent.length})`, r1.ok === true && sent.length === 1 && warned.some((w) => /listener broke/.test(w)));
+    await tick(QUIET_MS + 30);
+    check("(7) and the count is back at zero: the foreground is quiet", !foregroundBusy());
+    // After it: a waiter on the gate whose wake-up throws (its timer cannot be set) when the submit's count ends.
+    const p = submit().then((r) => r.json(), (e) => ({ thrown: String(e?.message ?? e) }));
+    await tick(5);
+    void foregroundQuiet();
+    const realSetTimeout = globalThis.setTimeout;
+    let broke = 0;
+    globalThis.setTimeout = (f, ms, ...a) => { if (ms > 0 && ms <= QUIET_MS) { broke++; throw new Error("waker broke"); } return realSetTimeout(f, ms, ...a); };
+    let r2;
+    try { r2 = await p; } finally { globalThis.setTimeout = realSetTimeout; }
+    check(`(7) a throwing waker after the answer: the submit's own answer (${JSON.stringify(r2).slice(0, 60)}), sent once more (${sent.length}), the waker threw (${broke})`, r2.ok === true && sent.length === 2 && broke > 0 && warned.some((w) => /waker broke/.test(w)));
+    await tick(QUIET_MS + 30);
+    check("(7) and the count is back at zero", !foregroundBusy());
+  } finally { globalThis.fetch = prevFetch; console.warn = warn; }
 }
 
 await done();

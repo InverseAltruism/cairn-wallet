@@ -17,7 +17,14 @@ let lastEnd = -Infinity;
 const wakers = new Set<() => void>();
 const starts = new Set<() => void>();
 
-const wakeAll = () => { for (const w of [...wakers]) w(); };
+// The gate's bookkeeping never changes a request's outcome: a listener or a waker that throws is logged, and the caller
+// gets the request's own result or error (test/netgate.test.mjs 7).
+const callEach = (fs: Set<() => void>) => {
+  for (const f of [...fs]) {
+    try { f(); } catch (e) { console.warn("[netgate] a foreground listener threw:", e); } // MUTATE_GATE_CATCH
+  }
+};
+const wakeAll = () => callEach(wakers);
 
 /** Runs `op` counted as foreground until it settles (or HOLD_MAX_MS). */
 export async function foreground<T>(op: () => Promise<T>): Promise<T> {
@@ -35,7 +42,7 @@ export async function foreground<T>(op: () => Promise<T>): Promise<T> {
   try {
     // The request goes out first; the background pages it cancels end after it.
     const p = op();
-    for (const f of [...starts]) f();
+    callEach(starts);
     return await p;
   } finally { clearTimeout(cap); release(); }
 }
