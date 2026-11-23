@@ -1193,8 +1193,9 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // page, which starts only once the foreground has been quiet for QUIET_MS and is cancelled and asked again when a
   // foreground request starts while it is in flight (netgate.ts), so a balance, a send, a name's reads or the lookup's
   // own pages do not share the link or the host's connections with it. A window planned for the background aim before
-  // a lookup arrived can hold pages above the lookup's height: those stay background.
-  const runPage = (background: (from: number) => boolean): Page => async (from, count, cancel) => {
+  // a lookup arrived can hold pages above the lookup's height: those stay background, and the page that holds it is
+  // asked only up to it (`cutAt`), as a sync to the lookup's height asks it; syncPages then plans the next window.
+  const runPage = (background: (from: number) => boolean, cutAt: () => number = () => Infinity): Page => async (from, count, cancel) => {
     const stops = [opts.signal, cancel].filter((x): x is AbortSignal => !!x);
     while (background(from)) {
       const lookup = arrival.signal;
@@ -1214,7 +1215,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
         if (!giveWay.signal.aborted || cancel?.aborted) throw e;
       } finally { off(); }
     }
-    return foreground(() => lanePage(from, count, cancel));
+    const n = Math.min(count, Math.max(1, cutAt() - from + 1)); // MUTATE_PAGE_CUT
+    return foreground(() => lanePage(from, n, cancel));
   };
   const lookupPage = runPage(() => false);
   const settle = () => { for (const w of waiters) if (w.want <= tipOf(LC)) { waiters.delete(w); w.done(); } };
@@ -1231,7 +1233,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       while (live() && tipOf(LC) < target) {
         try {
           // While a lookup waits, each window aims at its height, so its pages are not shared with the background's.
-          await syncPages(() => LC, () => lookupWant() || target, runPage((from) => from > lookupWant()), { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
+          await syncPages(() => LC, () => lookupWant() || target, runPage((from) => from > lookupWant(), () => lookupWant() || Infinity), { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth }); // MUTATE_LOOKUP_FIRST
         } catch (e) {
           failed = true;
           // Verified progress is kept before the failure is classified; it never advances the lapse floor, which moves
@@ -1515,7 +1517,8 @@ export interface PageRun {
  * Syncs `lc()` to `want` in windows of up to IN_FLIGHT pages requested together (`run.width`), each request ending on a page top or at
  * `want`, so finalized pages share edge-cached URLs. Pages may arrive in any order; rows are ingested strictly by
  * height, one page per `run.step`. A failed request fails the sync once the pages below it are ingested, so verified
- * progress is kept. `lc` is read at each page: a persist may rebase the source onto a new client of the same tip.
+ * progress is kept; a page answered with fewer rows than planned (a prefix the fetcher cut) ends its window. `lc` is
+ * read at each page: a persist may rebase the source onto a new client of the same tip.
  */
 export async function syncPages(lc: () => Ingesting, want: number | (() => number), fetchPage: (from: number, count: number, cancel?: AbortSignal) => Promise<{ header: BlockHeader; hash: string }[]>, run: PageRun): Promise<void> {
   const going = () => run.live?.() ?? true;
@@ -1539,13 +1542,17 @@ export async function syncPages(lc: () => Ingesting, want: number | (() => numbe
         const { from, count } = plan[i]!;
         const rows = await pages[i]!;
         if (!going()) return; // MUTATE_PAGE_RECHECK
-        if (rows.length !== count) throw new Error("/api/headers: non-dense range");
+        // A request answers exactly the rows it asked (headersBatch), so fewer rows than planned is a page the runner cut
+        // at a waiting lookup's height.
+        if (!rows.length || rows.length > count) throw new Error("/api/headers: non-dense range");
         // A task boundary before each page's ingest, so the worker answers a balance or a send between pages.
         await yieldTask();
         if (!going()) return;
         // The serializer runs the page as one op; its ingest is sliced, so no task of the sync holds the worker for a page.
-        await run.step(() => ingestSliced(lc(), from, count, (h) => rows[h - from]!));
+        await run.step(() => ingestSliced(lc(), from, rows.length, (h) => rows[h - from]!));
         run.afterPage?.();
+        // A cut page ends the window: the next is planned from the new tip.
+        if (rows.length < count) break;
       }
     } finally { cancel.abort(); } // MUTATE_WINDOW_CANCEL
     await run.afterWindow?.();

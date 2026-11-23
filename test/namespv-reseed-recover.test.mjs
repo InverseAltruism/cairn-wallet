@@ -28,7 +28,7 @@ check("liveSpvSource holds LC in a reassignable binding (reseed target)", /\blet
 const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
 const run = code.slice(code.indexOf("const run = async (): Promise<void> => {"), code.indexOf("const raise = "));
 check("the runner wraps the shared client's page sync in a try/catch (M8 self-heal)",
-  /try \{\s*await syncPages\(\(\) => LC, \(\) => lookupWant\(\) \|\| target, runPage\(\(from\) => from > lookupWant\(\)\),[^;]*;\s*\} catch \(e\) \{/.test(run));
+  /try \{\s*await syncPages\(\(\) => LC, \(\) => lookupWant\(\) \|\| target, runPage\(\(from\) => from > lookupWant\(\), \(\) => lookupWant\(\) \|\| Infinity\),[^;]*;\s*\} catch \(e\) \{/.test(run));
 
 // (3) The verified progress is persisted first; a clock fault and a TRANSIENT failure stop the run with their own error
 // (the store is kept, DOS-HDR-3); only a STRUCTURAL break reseeds. The classifier is the ONE exported

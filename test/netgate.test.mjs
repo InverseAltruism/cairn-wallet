@@ -35,7 +35,8 @@ globalThis.fetch = async (url, init) => {
   }
   if (u.endsWith("/tip")) hdr.tips.push(performance.now());
   if (!/\/api\/headers\//.test(u)) return served(url, init);
-  const req = { from: Number(/\/api\/headers\/(\d+)\//.exec(u)[1]), at: performance.now(), aborted: false };
+  const hm = /\/api\/headers\/(\d+)\/(\d+)/.exec(u);
+  const req = { from: Number(hm[1]), n: Number(hm[2]), at: performance.now(), aborted: false };
   hdr.reqs.push(req);
   hdr.inflight++;
   try {
@@ -200,6 +201,26 @@ console.log("5c. a lookup that needs only the first page of a background window:
   check(`the window asked ${window.join(",")}; until the lookup verified to ${tip} it asked ${asked.join(",")}, none above 140,200`, window.some((f) => f > 140200) && tip >= 140200 && asked.length > 0 && asked.every((f) => f <= 140200));
   await quiet();
   check(`  the pages above it follow once the foreground is quiet: the run reaches ${(await src.prepare(0)).verifiedTip}`, (await src.prepare(0)).verifiedTip === SEAL_TOP);
+  await flushSpvStoreWrites();
+}
+
+console.log("5d. the page that holds the lookup's height, planned for the background, is asked only up to it:");
+{
+  // From 140,000 the background window asks 139,776 (a page) and 140,288 to 140,799; a lookup for 140,500 needs the
+  // second only to 140,500, which a sync to the lookup's height asks.
+  const src = await liveSpvSource(opts(storeTo(140000)));
+  await tick(QUIET_MS * 2);
+  reset();
+  hdr.hold = () => true;
+  src.background();
+  await until(() => hdr.held.size >= 2);
+  hdr.hold = () => false;
+  const mark = hdr.reqs.length;
+  const tip = await src.prepare(140500 - 12).then((x) => x.verifiedTip);
+  const asked = hdr.reqs.slice(mark).map((r) => `${r.from}/${r.n}`);
+  check(`the lookup verified to ${tip}, asking ${asked.join(", ")}: the page holding 140,500 cut there`, tip === 140500 && asked.includes("140288/213") && !asked.some((a) => a.startsWith("140288/") && a !== "140288/213"));
+  await quiet();
+  check(`  the run then reaches ${(await src.prepare(0)).verifiedTip} with the honest headers (${await sample(src, 140001, SEAL_TOP)} wrong)`, (await src.prepare(0)).verifiedTip === SEAL_TOP && (await sample(src, 140001, SEAL_TOP)) === 0);
   await flushSpvStoreWrites();
 }
 
