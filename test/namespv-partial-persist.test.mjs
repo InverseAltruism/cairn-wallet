@@ -49,7 +49,7 @@ const pagesOf = (net) => async (from, count) => {
 const direct = (extra = {}) => ({ step: async (op) => op(), ...extra });
 
 console.log("syncPages - behavioral:");
-const W = IN_FLIGHT * PAGE;                          // one window: 3,072 headers
+const W = IN_FLIGHT * PAGE;                          // one window at the full width: 2,560 headers
 const BASE = 1023;                                   // page-aligned above, so every request is a whole page
 const WANT = BASE + W * 2 + W / 2;                   // two and a half windows: a long cold span
 const SPAN = WANT - BASE;
@@ -104,7 +104,7 @@ const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1
 const run = code.slice(code.indexOf("const run = async (): Promise<void> => {"), code.indexOf("const raise = "));
 const prep = code.slice(code.indexOf("async prepare(maxEventHeight"), code.indexOf("async blockAt("));
 t.check("the runner and prepare() located", run.length > 200 && prep.length > 200);
-const wired = /await syncPages\(\(\) => LC, target, pageBatch, \{[^}]*\bafterWindow: \(\) => serializeSync\(persist\)[^}]*\}\);/;
+const wired = /await syncPages\(\(\) => LC, target, lanePage, \{[^}]*\bafterWindow: \(\) => serializeSync\(persist\)[^}]*\}\);/;
 t.check("the runner's page sync persists after each window, inside the serializer", wired.test(run));
 // The catch persists the verified tail BEFORE classifying transient-vs-structural.
 const catchIdx = run.indexOf("} catch (e) {");
@@ -122,8 +122,8 @@ const writeFn = code.slice(code.indexOf("const suffixWrite = "), code.indexOf("c
 t.check("suffixWrite writes nothing when no header was ingested past the persisted tip (or the source was dropped)", /if \(!store \|\| tip <= persistedTip \|\| !live\(\)\) return null;/.test(writeFn));
 
 // MUTATION fixtures: the wiring guard must RED when the call is stripped back to persist-only-on-full-success.
-const wiredFixture = "await syncPages(() => LC, target, pageBatch, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live });";
-const strippedFixture = "await syncPages(() => LC, target, pageBatch, { step: serializeSync, afterPage: settle, live });";
+const wiredFixture = "await syncPages(() => LC, target, lanePage, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth });";
+const strippedFixture = "await syncPages(() => LC, target, lanePage, { step: serializeSync, afterPage: settle, live, width: laneWidth });";
 t.check("wiring guard PASSES on the wired shape", wired.test(wiredFixture));
 t.check("MUTATION[persist-only-on-full-success]: wiring guard REDS on the stripped shape", !wired.test(strippedFixture));
 

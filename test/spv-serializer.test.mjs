@@ -79,7 +79,7 @@ const nspvSrc = readFileSync(new URL("../src/core/namespv.ts", import.meta.url),
 // Comments are stripped so prose mentioning a call cannot count as, or hide, a call site.
 const code = nspvSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
 const norm = (m) => m.replace(/\s+/g, " ");
-const sites = (text) => [...text.matchAll(/syncPages\((\(\) => [^,]+), [^,]+, pageBatch, \{ step: ([^,}]+)/g)].map((m) => norm(`${m[1]} step ${m[2].trim()}`));
+const sites = (text) => [...text.matchAll(/syncPages\((\(\) => [^,]+), [^,]+, lanePage, \{ step: ([^,}]+)/g)].map((m) => norm(`${m[1]} step ${m[2].trim()}`));
 const SITES = "() => fresh.client step async (op) => op() | () => LC step serializeSync";
 ok("the page syncs in the file are exactly the shared client's, stepped by serializeSync, and the private fresh client's", sites(code).join(" | ") === SITES);
 ok("syncPages is called at those two sites only (an unwrapped new sync of the shared client trips this)", (code.match(/\bsyncPages\(/g) || []).length === 3 && /export async function syncPages\(/.test(code));
@@ -96,8 +96,8 @@ ok("chunk acquisition gets the same serializer: chunkAcquirer({ ..., serialize: 
   (code.match(/\bchunkAcquirer\(/g) || []).length === 1 && /chunkAcquirer\(\{[^}]*\bserialize: serializeSync\b[^}]*\}\)/.test(code));
 
 // MUTATION fixtures (repo idiom): the site pin must RED when the shared client's pages are stepped outside the lock.
-const goodRun = "syncPages(() => fresh.client, to, pageBatch, { step: async (op) => op(), live }); await syncPages(() => LC, target, pageBatch, { step: serializeSync, live });";
-const nakedRun = "syncPages(() => fresh.client, to, pageBatch, { step: async (op) => op(), live }); await syncPages(() => LC, target, pageBatch, { step: async (op) => op(), live });";
+const goodRun = "syncPages(() => fresh.client, to, lanePage, { step: async (op) => op(), live }); await syncPages(() => LC, target, lanePage, { step: serializeSync, live });";
+const nakedRun = "syncPages(() => fresh.client, to, lanePage, { step: async (op) => op(), live }); await syncPages(() => LC, target, lanePage, { step: async (op) => op(), live });";
 ok("site pin PASSES on the wrapped fixture", sites(goodRun).join(" | ") === SITES);
 ok("MUTATION[the shared client's pages stepped outside the serializer]: the site set no longer matches", sites(nakedRun).join(" | ") !== SITES);
 

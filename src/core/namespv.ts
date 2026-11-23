@@ -534,9 +534,13 @@ const HB = HEADER_BYTES;
 const PAGE = 512;
 /** A light client longer than this (16 chunks) is rebased to its tail after a persist: a long first sync's memory. */
 const REBASE_SPAN = 16 * SPV_CHUNK;
-/** Pages a sync requests at once (Chrome keeps six HTTP/1.1 connections to one host); the tail is persisted after each
- *  such window, 3,072 headers. */
-export const IN_FLIGHT = 6;
+/** The most pages a sync requests at once. Chrome keeps six HTTP/1.1 connections to one host, and the balance and a
+ *  send go to the same host, so one is left free (docs/DESIGN-namespv-scaling.md, the throttled-link table). */
+export const IN_FLIGHT = 5;
+/** A header request's timeout, above the server's 10 s deadline. */
+const HEADERS_TIMEOUT_MS = 15_000;
+/** The pages in flight grow by one after a page that answered within this, and fall back to one after a timeout. */
+export const WIDEN_WITHIN_MS = HEADERS_TIMEOUT_MS / 4;
 /** The background's reseed runs from the newest seal, or from the table while the held tip is at most this far above
  *  it, and requests at most BOUNDED_PAGES pages: the held tip sits at most 8,191 above the newest sealable top. */
 export const RESEED_BOUND = 2 * SPV_CHUNK - 1;
@@ -714,7 +718,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     for (let attempt = 0; ; attempt++) {
       if (!live()) throw dropped();
       if (cancel?.aborted) throw new Error("/api/headers request aborted with its window");
-      const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: AbortSignal.any([AbortSignal.timeout(15_000), ...stops]) });
+      const r = await fetch(`${headersBase}/api/headers/${from}/${count}`, { signal: AbortSignal.any([AbortSignal.timeout(HEADERS_TIMEOUT_MS), ...stops]) });
       if (r.status === 429 && attempt < 6) {
         const ra = Number(r.headers.get("retry-after")) || 0;
         await pause(Math.min(ra > 0 ? ra * 1000 : 1200 * (attempt + 1), 15_000), stops);
@@ -736,6 +740,21 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     return headersBatch(from, count, cancel);
   };
   const lcOpts = { client, headersBatchProvider: pageBatch, checkpoints: SPV_CHECKPOINTS as Record<number, string> };
+  // How many pages a sync of this source asks at once: one at first, one more after each page that answered well inside
+  // its timeout, back to one after a timeout, so a slow link is not split six ways past the timeout.
+  const lane = { width: 1 };
+  const lanePage = async (from: number, count: number, cancel?: AbortSignal) => {
+    const t0 = performance.now();
+    try {
+      const rows = await pageBatch(from, count, cancel);
+      if (performance.now() - t0 < WIDEN_WITHIN_MS) lane.width = Math.min(IN_FLIGHT, lane.width + 1);
+      return rows;
+    } catch (e) {
+      if ((e as Error)?.name === "TimeoutError") lane.width = 1; // MUTATE_WIDTH_FALLBACK
+      throw e;
+    }
+  };
+  const laneWidth = () => lane.width;
 
   const fetchChunk = async (spec: ChunkSpec): Promise<Uint8Array> => {
     const out = new Uint8Array((spec.lastHeight - spec.firstHeight + 1) * HB);
@@ -1022,7 +1041,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   // Invariant 5: a chain replaces the held one only when it verified above the held tip and carries more work, so the
   // held tip never falls (test/namespv-reseed-bounded.test.mjs 4 and 5, through each seed).
   const adopts = (fresh: Seeded) => tipOf(fresh.client) > tipOf(LC) && reseedAdopts(heldWork(), { chainwork: fresh.client.chainwork + fresh.workBase }); // MUTATE_ABOVE_HELD
-  const syncFresh = (fresh: Seeded, to: number, going: () => boolean = live) => syncPages(() => fresh.client, to, pageBatch, { step: async (op) => op(), live: going });
+  const syncFresh = (fresh: Seeded, to: number, going: () => boolean = live) => syncPages(() => fresh.client, to, lanePage, { step: async (op) => op(), live: going, width: laneWidth });
   // The one adoption site. The acquirer's detached writes, decided under the replaced tops, land before this chain's
   // rewrite is queued, so both writers then write only this chain's bytes for a chunk. Nothing of the replaced chain
   // above the seed stays: the LRU entries and tops above the seed chunk go (an LRU entry also answers only its spec's
@@ -1108,7 +1127,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   };
 
   // ── the runner: one per source ──
-  // It holds a target and syncs to it six pages at a time, each page's ingest its own serialized op, so a lookup's or
+  // It holds a target and syncs to it up to IN_FLIGHT pages at a time (the lane's width), each page's ingest its own serialized op, so a lookup's or
   // a fill's reads run between pages. `prepare` waits for its height; `background` raises the target to the node tip.
   type Waiter = { want: number; done: () => void; fail: (e: unknown) => void };
   const waiters = new Set<Waiter>();
@@ -1127,7 +1146,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     try {
       while (live() && tipOf(LC) < target) {
         try {
-          await syncPages(() => LC, target, pageBatch, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live });
+          await syncPages(() => LC, target, lanePage, { step: serializeSync, afterPage: settle, afterWindow: () => serializeSync(persist), live, width: laneWidth });
         } catch (e) {
           // Verified progress is kept before the failure is classified; it never advances the lapse floor, which moves
           // only in prepare once its height is reached.
@@ -1373,14 +1392,16 @@ export interface PageRun {
   step(op: () => Promise<void>): Promise<void>;
   /** After each page (the runner settles the waits its height reached). */
   afterPage?(): void;
-  /** After each window of IN_FLIGHT pages: the runner persists the verified tail there. */
+  /** After each window of pages: the runner persists the verified tail there. */
   afterWindow?(): Promise<void>;
   /** False stops the sync before its next page. */
   live?(): boolean;
+  /** The pages to request in the next window; IN_FLIGHT when absent. */
+  width?(): number;
 }
 
 /**
- * Syncs `lc()` to `want` in windows of IN_FLIGHT pages requested together, each request ending on a page top or at
+ * Syncs `lc()` to `want` in windows of up to IN_FLIGHT pages requested together (`run.width`), each request ending on a page top or at
  * `want`, so finalized pages share edge-cached URLs. Pages may arrive in any order; rows are ingested strictly by
  * height, one page per `run.step`. A failed request fails the sync once the pages below it are ingested, so verified
  * progress is kept. `lc` is read at each page: a persist may rebase the source onto a new client of the same tip.
@@ -1389,7 +1410,8 @@ export async function syncPages(lc: () => Ingesting, want: number, fetchPage: (f
   const going = () => run.live?.() ?? true;
   while (tipOf(lc()) < want && going()) {
     const plan: { from: number; count: number }[] = [];
-    for (let cur = tipOf(lc()); cur < want && plan.length < IN_FLIGHT;) {
+    const width = Math.max(1, Math.min(IN_FLIGHT, run.width?.() ?? IN_FLIGHT)); // MUTATE_WIDTH
+    for (let cur = tipOf(lc()); cur < want && plan.length < width;) {
       const end = Math.min(want, cur + 1 - ((cur + 1) % PAGE) + PAGE - 1);
       plan.push({ from: cur + 1, count: end - cur });
       cur = end;

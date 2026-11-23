@@ -159,29 +159,33 @@ console.log("5. the legacy migration: dropped mid-migration, it writes no furthe
   }
 }
 
+// A source whose sync has run seven fast pages asks five at once (the width grows by one per fast page).
+const WARM = 131071 + 7 * 512;
+async function warmed(st, ctl) { const src = await liveSpvSource(opts(st, ctl)); await src.prepare(WARM - 12); hdr.reqs.length = 0; return src; }
+
 console.log("6. a request in flight ends with the drop, and its 429 retries stop:");
 {
   reset();
-  const st = storeTo(136000);
+  const st = storeTo(131071);
   const ctl = new AbortController();
-  const src = await liveSpvSource(opts(st, ctl));
-  hdr.hold = (from) => from >= 135680;
+  const src = await warmed(st, ctl);
+  hdr.hold = (from) => from > WARM;
   const lookup = src.prepare(SEAL_TOP - 12).catch((e) => `refused: ${e.message}`);
-  await until(() => hdr.held.length >= 6);
-  const inFlight = hdr.reqs.filter((r) => r.from >= 135680);
+  await until(() => hdr.held.length >= 5);
+  const inFlight = hdr.reqs.filter((r) => r.from > WARM);
   ctl.abort();
   const out = await Promise.race([lookup, tick(1000).then(() => "hung")]);
   await settle();
   check(`all ${inFlight.length} requests in flight were aborted (${inFlight.filter((r) => r.signal?.aborted).length}) and the lookup refused at once (${String(out).slice(0, 40)})`,
-    inFlight.length === 6 && inFlight.every((r) => r.signal?.aborted) && String(out).startsWith("refused"));
+    inFlight.length === 5 && inFlight.every((r) => r.signal?.aborted) && String(out).startsWith("refused"));
 
   reset();
-  const st2 = storeTo(136000);
+  const st2 = storeTo(131071);
   const ctl2 = new AbortController();
-  const src2 = await liveSpvSource(opts(st2, ctl2));
-  hdr.status = (from) => (from > 136000 ? 429 : 0);
+  const src2 = await warmed(st2, ctl2);
+  hdr.status = (from) => (from > WARM ? 429 : 0);
   const lookup2 = src2.prepare(SEAL_TOP - 12).catch(() => "refused");
-  await until(() => hdr.reqs.length >= 6);
+  await until(() => hdr.reqs.length >= 5);
   ctl2.abort();
   const asked = hdr.reqs.length;
   await lookup2; await tick(1500);
@@ -191,16 +195,16 @@ console.log("6. a request in flight ends with the drop, and its 429 retries stop
 console.log("7. a window whose first page fails cancels its other pages:");
 {
   reset();
-  const st = storeTo(136000);
+  const st = storeTo(131071);
   const ctl = new AbortController();
-  const src = await liveSpvSource(opts(st, ctl));
-  hdr.status = (from) => (from === 135680 ? 404 : 0);
-  hdr.hold = (from) => from >= 136192;
+  const src = await warmed(st, ctl);
+  hdr.status = (from) => (from === WARM + 1 ? 404 : 0);
+  hdr.hold = (from) => from > WARM + 1;
   const out = await src.prepare(SEAL_TOP - 12).then(() => "verified", (e) => `refused: ${e.message}`);
-  const others = hdr.reqs.filter((r) => r.from >= 136192);
+  const others = hdr.reqs.filter((r) => r.from > WARM + 1);
   await tick(50);
   check(`the lookup is refused (${out.slice(0, 40)}); the window's other ${others.length} pages were aborted (${others.filter((r) => r.signal?.aborted).length})`,
-    out.startsWith("refused") && others.length === 5 && others.every((r) => r.signal?.aborted));
+    out.startsWith("refused") && others.length === 4 && others.every((r) => r.signal?.aborted));
   release();
 }
 

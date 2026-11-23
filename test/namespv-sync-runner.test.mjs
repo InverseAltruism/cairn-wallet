@@ -68,21 +68,42 @@ const now0 = Date.now();
 let clock = now0;
 Date.now = () => clock;
 
-console.log("1. six pages in flight, answered out of order, ingested by height:");
+console.log("1. up to five pages in flight, answered out of order, ingested by height:");
 {
   resetLog();
   const src = await liveSpvSource(opts(storeTo(136000)));
   resetLog();
-  // Within each window the later pages answer first.
-  hdr.delay = (i) => (IN_FLIGHT - (i % IN_FLIGHT)) * 8;
+  // The later pages of a window answer first.
+  hdr.delay = (i) => (8 - (i % 8)) * 8;
   src.background();
   await until(() => hdr.reqs.length > 0); await quiet();
   const p = await src.prepare(SEAL_TOP - 12);
   const asked = hdr.reqs.map((r) => `${r.from}/${r.n}`);
   check(`the run requests the sequential plan's pages, each once (${asked.length} of ${plan(136000, SEAL_TOP).length})`, asked.join() === plan(136000, SEAL_TOP).join());
-  check(`  six in flight at most and at once (${hdr.max})`, hdr.max === 6);
+  check(`  five in flight at most, reached on a fast link (${hdr.max})`, hdr.max === 5);
   check(`  verified to ${p.verifiedTip}, every sampled height the chain's own (${await sample(src, 136001, SEAL_TOP)} differ)`, p.verifiedTip === SEAL_TOP && (await sample(src, 136001, SEAL_TOP)) === 0);
   await flushSpvStoreWrites();
+}
+
+console.log("1b. the pages in flight start at one, grow after fast pages and fall back to one after a timeout:");
+{
+  const src = await liveSpvSource(opts(storeTo(131071)));
+  resetLog();
+  // The ninth request times out (as AbortSignal.timeout ends a fetch); every other page answers at once.
+  let n = 0;
+  const inner = globalThis.fetch;
+  const seenAtStart = [];
+  globalThis.fetch = async (url, init) => {
+    if (/\/api\/headers\//.test(String(url))) { seenAtStart.push(hdr.inflight); if (++n === 9) throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); }
+    return inner(url, init);
+  };
+  const out = await src.prepare(SEAL_TOP - 12).then((r) => r.verifiedTip, (e) => `refused: ${e.message}`);
+  const afterTimeout = n;
+  const p = await src.prepare(SEAL_TOP - 12);
+  globalThis.fetch = inner;
+  check(`the first request goes alone (${seenAtStart[0]} in flight before it), the lookup over the timeout is refused as today (${String(out).slice(0, 40)})`, seenAtStart[0] === 0 && String(out).startsWith("refused"));
+  check(`  the next sync starts at one page again (request ${afterTimeout + 1} saw ${seenAtStart[afterTimeout]} in flight) and verifies to ${p.verifiedTip}`, seenAtStart[afterTimeout] === 0 && p.verifiedTip === SEAL_TOP);
+  await quiet(); await flushSpvStoreWrites();
 }
 
 console.log("2. reads and lookups run between the run's pages:");
@@ -90,8 +111,8 @@ console.log("2. reads and lookups run between the run's pages:");
   const st = storeTo(136000);
   const src = await liveSpvSource(opts(st));
   resetLog();
-  // The run's pages from the second window on wait; an anchored chunk read (chunk 26) is not one of them.
-  hdr.hold = (from) => from > 136000 && hdr.reqs.filter((r) => r.from > 136000).length > IN_FLIGHT;
+  // The run's pages from the fourth on wait; an anchored chunk read (chunk 26) is not one of them.
+  hdr.hold = (from) => from > 135679 && hdr.reqs.filter((r) => r.from > 135679).length > 3;
   src.background();
   await until(() => hdr.held.length > 0);
   const read = await Promise.race([src.hashAt(108000), tick(3000).then(() => "waited")]);
@@ -110,8 +131,8 @@ console.log("3. a restart mid-sync resumes from the persisted tail:");
   const ctl = new AbortController();
   const src = await liveSpvSource(opts(st, { signal: ctl.signal }));
   resetLog();
-  // Two windows are answered, then the worker dies: nothing more is answered and its source is gone.
-  hdr.hold = (from) => from > 131071 && hdr.reqs.filter((r) => r.from > 131071).length > 2 * IN_FLIGHT;
+  // Ten pages are answered, then the worker dies: nothing more is answered and its source is gone.
+  hdr.hold = (from) => from > 131071 && hdr.reqs.filter((r) => r.from > 131071).length > 10;
   src.background();
   await until(() => hdr.held.length > 0);
   await tick(50);
@@ -125,7 +146,8 @@ console.log("3. a restart mid-sync resumes from the persisted tail:");
   resetLog();
   const p = await src2.prepare(SEAL_TOP - 12);
   const again = hdr.reqs.filter((r) => r.from <= kept);
-  check(`after ${firstRun} requests the store holds the first two windows (${kept}, ${kept - 131071} headers)`, kept === 131071 + 2 * IN_FLIGHT * PAGE);
+  // Windows of 1, 2, 4 pages finish (the width grows with each fast page), so the tail persisted is at least 7 pages.
+  check(`after ${firstRun} requests the store holds the finished windows (${kept}, ${kept - 131071} headers, ${(kept - 131071) / PAGE} pages)`, kept > 131071 && (kept - 131071) % PAGE === 0 && (kept - 131071) / PAGE >= 7);
   check(`  the next source resumes at ${hdr.reqs[0]?.from} and asks no height it had (${again.length} repeated), verified to ${p.verifiedTip}`, hdr.reqs[0]?.from === kept + 1 && again.length === 0 && p.verifiedTip === SEAL_TOP);
   await flushSpvStoreWrites();
 }
