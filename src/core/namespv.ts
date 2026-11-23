@@ -151,7 +151,10 @@ export interface SpvSource {
   // Used ONLY to CORROBORATE a lease-lapse verdict: a lapse that also holds at floorTip is confident; one
   // that holds only at the current nodeTip degrades to caution. Omitted ⇒ no corroboration available.
   // `tipKnown` false: the node tip could not be read this call, so nothing was synced past the verified tip.
-  prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number; tipKnown?: boolean }>;
+  // `servedTip`: the node tip this call read, unfloored (absent when unknown); a caller that needs burial to the tip
+  // compares the verified tip with it (fillspv.ts).
+  // A source the wallet dropped rejects a call it has not answered whose height lies above its verified tip.
+  prepare(maxEventHeight: number): Promise<{ verifiedTip: number; nodeTip: number; floorTip?: number; tipKnown?: boolean; servedTip?: number }>;
   // The PoW-VERIFIED merkle root for `height` + that block's /block response body as text. THROWS if it cannot verify.
   blockAt(height: number): Promise<{ merkle: string; body: string }>;
   // NSPV-SIGSUB-1 (H3): resolve the scriptPubkey of a record's spent prevout, BOUND to its txid; the
@@ -1098,7 +1101,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
   const waiters = new Set<Waiter>();
   let target = 0, running = false, lastBackground = -Infinity, nodeTipSeen = 0;
   let syncing: { from: number } | null = null;
-  const settle = () => { for (const w of waiters) if (w.want <= tipOf(LC) || !live()) { waiters.delete(w); w.done(); } };
+  const settle = () => { for (const w of waiters) if (w.want <= tipOf(LC)) { waiters.delete(w); w.done(); } };
   const failAbove = (e: unknown) => {
     settle();
     for (const w of waiters) { waiters.delete(w); w.fail(e); }
@@ -1140,7 +1143,8 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       syncing = null;
       // A waiter that arrived after the run's last check starts the next run.
       if (live() && [...waiters].some((w) => w.want > tipOf(LC))) void run();
-      else settle();
+      else if (live()) settle();
+      else failAbove(dropped());
     }
   };
   const raise = (to: number) => {
@@ -1148,7 +1152,14 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
     target = Math.max(target, to);
     if (!running) void run();
   };
-  const reach = (want: number): Promise<void> => (want <= tipOf(LC) || !live() ? Promise.resolve() : new Promise<void>((done, fail) => { waiters.add({ want, done, fail }); raise(want); }));
+  // A dropped source answers a wait only at a height it verified: 0.3.5 answered prepare only once the tip reached it.
+  const dropped = () => new Error("the header source was replaced; its sync stopped");
+  const reach = (want: number): Promise<void> => {
+    if (want <= tipOf(LC)) return Promise.resolve();
+    if (!live()) return Promise.reject(dropped());
+    return new Promise<void>((done, fail) => { waiters.add({ want, done, fail }); raise(want); });
+  };
+  opts.signal?.addEventListener("abort", () => failAbove(dropped()), { once: true }); // MUTATE_DROP_REJECTS
   // No background run offline, with Save-Data on, or within BACKGROUND_GAP_MS of the last one.
   function background(): void {
     const nav = globalThis.navigator as { onLine?: boolean; connection?: { saveData?: boolean } } | undefined;
@@ -1218,7 +1229,7 @@ async function restoreSpvSource(opts: LiveSpvOpts, store: HeaderStore | null): P
       if (cand > seenFloor) { seenFloor = cand; if (opts.floor && live()) { try { await opts.floor.set(seenFloor); } catch { /* persist best-effort */ } } }
       // Report the floored tip so verifyName's lapse epoch (max(verifiedTip, nodeTip)) can only move FORWARD.
       // floorTip is the PRIOR-session high-water (WALLET-LAPSE-TIP-1), for lapse corroboration only.
-      return { verifiedTip, nodeTip: Math.max(seenFloor, tipKnown ? nodeTip : 0), floorTip: persistedFloor, tipKnown };
+      return { verifiedTip, nodeTip: Math.max(seenFloor, tipKnown ? nodeTip : 0), floorTip: persistedFloor, tipKnown, ...(tipKnown ? { servedTip: nodeTip } : {}) };
     },
     async blockAt(height: number) {
       const vh = await headerAt(height);

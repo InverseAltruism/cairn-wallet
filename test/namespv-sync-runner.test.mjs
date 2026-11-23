@@ -287,11 +287,12 @@ console.log("8. a vault change: a source mid-run and a source parked on the unlo
   const pending = (await a.src).prepare(SEAL_TOP - 12).then((r) => r.verifiedTip, (e) => `threw ${e?.message}`);
   await w.reset();
   const mark = hdr.reqs.length;
+  // Refused at once, with the page still held: the wait does not hang on the request in flight.
+  const settled = await Promise.race([pending, tick(1000).then(() => "hung")]);
   release(); hdr.hold = () => false;
-  const settled = await Promise.race([pending, tick(3000).then(() => "hung")]);
   await tick(60); await flushSpvStoreWrites();
-  check(`after the reset the old source asks no page (${hdr.reqs.length - mark}), writes nothing (${a.writes.length - aBefore}) and its lookup settles (${settled})`,
-    hdr.reqs.length === mark && a.writes.length === aBefore && typeof settled === "number");
+  check(`after the reset the old source asks no page (${hdr.reqs.length - mark}), writes nothing (${a.writes.length - aBefore}) and refuses its lookup above its tip at once, as 0.3.5 did not answer below it (${settled})`,
+    hdr.reqs.length === mark && a.writes.length === aBefore && String(settled).startsWith("threw the header source was replaced"));
 
   // Parked: a sealed store waits for the unlock; the reset drops it, and the next vault's unlock wakes nothing.
   const st2 = storeTo(SEAL_TOP);

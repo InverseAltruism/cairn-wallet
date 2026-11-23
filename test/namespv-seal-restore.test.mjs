@@ -296,7 +296,7 @@ console.log("7b. a source superseded by a reset seals only under the vault it wa
     const inner = globalThis.fetch;
     let gated = false;
     globalThis.fetch = async (url, init) => { if (!gated && String(url).includes("/api/headers/")) { gated = true; arrived(); await gate; } return inner(url, init); };
-    const pA = (await w.spvSource()).prepare(SEAL_TOP - 12);
+    const pA = (await w.spvSource()).prepare(SEAL_TOP - 12).catch((e) => ({ refused: String(e?.message ?? e) }));
     await atGate;
     await w.reset();
     await w.create("another battery staple");
@@ -311,10 +311,10 @@ console.log("7b. a source superseded by a reset seals only under the vault it wa
     await tick(); await flushSpvStoreWrites();
     globalThis.fetch = inner;
     const aWrites = writes.slice(mark).filter((e) => e.id === 1);
-    // The reset drops A's source: its lookup settles at the tip it had, and it writes nothing more, a list under B's
-    // key least of all.
-    check(`A's source, dropped by the reset, settles its lookup (${p.verifiedTip}) and writes nothing after it (${aWrites.length} writes, ${sealedUnder(kB, writes, 1)} under B's key)`,
-      sources.length === 2 && Number.isSafeInteger(p.verifiedTip) && p.verifiedTip < SEAL_TOP && aWrites.length === 0 && sealedUnder(kB, writes, 1) === 0);
+    // The reset drops A's source: its lookup, above the tip it had, is refused, and it writes nothing more, a list
+    // under B's key least of all.
+    check(`A's source, dropped by the reset, refuses its lookup (${p.refused ?? p.verifiedTip}) and writes nothing after it (${aWrites.length} writes, ${sealedUnder(kB, writes, 1)} under B's key)`,
+      sources.length === 2 && /header source was replaced/.test(String(p.refused)) && aWrites.length === 0 && sealedUnder(kB, writes, 1) === 0);
     check(`  B's own source seals under B's key (${bSealed} of ${writes.length - n} writes before A resumed) and the store's list verifies under B`,
       bSealed > 0 && checkSeals(kB, st.seals, TABLE)?.length === 2);
   }
