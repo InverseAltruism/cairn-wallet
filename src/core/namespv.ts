@@ -196,8 +196,9 @@ type Replay =
   // A lease-lapse failure carries `lapsed`, whether it holds at a verified height (`verifiedCorroborated`: the
   // verified header tip; `floorCorroborated`: the persisted floor), the last holding's address and whether that
   // holding came through a fill (`viaFill`, then no address). Other failures leave them unset.
-  // `short`: the replay stopped for want of a header the node's tip says exists (the sync threw, a record lies above the
-  // verified tip at or below the served tip, or the tip was unknown), not on anything a source served.
+  // `short`: the replay stopped on a read the wallet could not make (the sync threw, a record lies above the verified tip
+  // at or below the served tip or the tip was unknown, a block read threw, a spent coin could not be read), not on a
+  // record the chain refutes.
   | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string; viaFill?: boolean; short?: boolean };
 // Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
 // unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
@@ -275,7 +276,9 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
   const events: ChainEvent[] = [];
   for (const [height, hs] of byHeight) {
     // FULL-block bind (throws if the header can't be PoW-verified); a body that fails it fails this replay.
-    const bound = await bindBlock(src, height);
+    let bound: Awaited<ReturnType<typeof bindBlock>>;
+    try { bound = await bindBlock(src, height); }
+    catch (e) { return { ok: false, short: true, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }; }
     if (!bound.ok) return { ok: false, reason: bound.reason };
     const { ids, rebuilt } = bound;
     for (const hint of hs) {
@@ -289,7 +292,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
         const why = author.kind === "unsigned" ? "couldn't be authenticated (not a signed cairnx record)"
           : author.kind === "no-input" ? "has no spendable authenticating input"
           : "signer does not own the coin it spends (rejected possible scriptSig substitution)";
-        return { ok: false, reason: `record ${hint.txid} ${why}` };
+        return { ok: false, short: author.kind === "no-prevout", reason: `record ${hint.txid} ${why}` };
       }
       const ev = toChainEvent(tx, id, height, pos, author.signer);
       // A Propose maps to no event only in another application domain: the resolver never sees it, so it is
@@ -382,17 +385,20 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // 404 veto was meant to catch (V17 claim cap / token-balance fills) stay fail-closed via the viaFill /
     // scopedReplaySufficient gates below; those are computed from OUR verified events, not a served flag.
     // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
-    // A throw here (one source's hint naming a block the SPV source cannot serve) is a failed replay like
-    // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
-    const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
+    // A throw here is a failed replay like any other, so the outer catch does not abort the verify.
+    const whole = (): Promise<Replay> => replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
+    // One rule: a read the wallet could not make (`short`) is tried again as a whole, as often as the per-server
+    // recovery would read (once per usable source when more than one is usable), and is never answered by one server's
+    // subset; the recovery below stays for a record the chain refutes (test/namespv-union-short.test.mjs).
+    let rep: Replay = await whole();
+    for (let i = 0; !rep.ok && rep.short && usable.length > 1 && i < usable.length && !src.dropped?.(); i++) rep = await whole(); // MUTATE_SHORT_RETRY
     if (!rep.ok) {
       // A source the wallet dropped answers only at heights it had verified, so a server's subset that fits below its
       // tip would replay to an older holding while the union's records above it go unread: no per-server recovery
       // runs on it, and the caller asks the current source (names.ts verifyName).
       if (src.dropped?.()) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_UNION_DROP
-      // A replay stopped for want of a header runs no per-server recovery either: a server's subset that fits below the
-      // held tip would prove an older holding while the records above it go unread. The caller shows the served address
-      // unverified (test/namespv-union-short.test.mjs).
+      // A replay still short runs no per-server recovery either: a server's subset that lacks the unread record would
+      // prove an older holding. The caller shows the served address unverified.
       if (rep.short) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_UNION_SHORT
       // A lapse refuses only when both hold: the lease is over at a height the wallet verified (its header tip or the
       // kept floor), so a served tip cannot make it; and 0.3.4's corroboration (two usable sources or the floor), since

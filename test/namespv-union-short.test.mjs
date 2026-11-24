@@ -1,5 +1,6 @@
-// A name's union replay that stopped for want of a header runs no per-server recovery: a lagging server's records that
-// fit below the held tip would prove an older holding while the records above it go unread. On the real popup.ts (fake
+// A name's union replay that stopped on a read the wallet could not make (a header page, the node tip, a block body, a
+// spent coin) is tried again as a whole and is never answered by one server's records: a lagging server's records would
+// prove an older holding while the unread record goes unread. On the real popup.ts (fake
 // DOM) over the real Wallet, names.ts, verifyNameUnion and liveSpvSource (the cut-table bundle on a generated chain,
 // test/helpers/genchain.mjs). "dora": A registers it (nfinalize at 146,313) and transfers it to B at 146,600; the store
 // holds headers to 146,400 and the node tip is 147,200. The primary name server serves all four records and answers B;
@@ -14,7 +15,11 @@
 //   (6) the stated cost: a hostile primary host adds a record between the held tip and the node's tip and fails its
 //       header pages: the Review shows the primary's own address unverified, where without the rule the second
 //       server's records prove its answer.
-// Mutation: the early return marked MUTATE_UNION_SHORT removed makes (1a), (1b), (2), (3) and (6) fail.
+//   (7) both servers current, one read fails once (a header page, the node tip): the retry verifies B.
+//   (8) the second server lagging, the transfer's block body (429) or its spent coin cannot be read: the served B
+//       unverified, and one click signs B. (9) honest: a block body failing once with both current verifies B.
+// Mutations: the early return marked MUTATE_UNION_SHORT removed makes (1a), (1b), (2), (3), (6) and (8) fail; the retry
+// marked MUTATE_SHORT_RETRY removed makes (7) fail.
 // Run: npx tsx test/namespv-union-short.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -58,7 +63,8 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
 const history = (claimed, events) => ({ ok: true, resolve: { addr: claimed, owner: claimed, via: "owner" }, events });
 const X = "0x" + "c3".repeat(20);
 const junkBelowTip = { txid: "0x" + "9e".repeat(32), height: 147000, pos: 0, kind: "name" };
-const honestNet = { headersDown: false, tipDown: false, first: full, served: B, second: stale, secondClaims: A };
+const honestNet = { headersDown: false, tipDown: false, first: full, served: B, second: stale, secondClaims: A, pageFails: 0, tipFails: 0, bodyFails: 0, bodyDown: false, prevoutDown: false };
+const xferHash = chain.rows.get(at.xfer).hash, xferPrevout = String(rpcTxToTx(xfer).inputs[0].prevTxid).toLowerCase();
 const net = { ...honestNet };
 globalThis.fetch = async (url) => {
   const u = String(url);
@@ -66,15 +72,16 @@ globalThis.fetch = async (url) => {
   if (m) {
     const from = Number(m[1]), n = Number(m[2]);
     if (from < 126976) { const rows = []; for (let h = from; h < from + n; h++) rows.push(row(h)); return json({ ok: true, from, count: n, headers: rows }); }
-    if (net.headersDown && from + n - 1 > H) return json({ ok: false }, 500);
+    if (from + n - 1 > H && (net.headersDown || (net.pageFails > 0 && net.pageFails--))) return json({ ok: false }, 500);
     if (from + n - 1 > TOP) return json({ ok: false }, 502);
     const rows = []; for (let h = from; h < from + n; h++) rows.push(chain.rowOn(h));
     return json({ ok: true, from, count: n, headers: rows });
   }
   const blk = /\/block\/(0x[0-9a-f]{64})$/.exec(u);
+  if (blk && blk[1] === xferHash && (net.bodyDown || (net.bodyFails > 0 && net.bodyFails--))) return json({ ok: false }, 429);
   if (blk && chain.bodyByHash.has(blk[1])) return new Response(nodeBlockBody(chain.bodyByHash.get(blk[1]).txs), { status: 200 });
   if (blk && fillerHashes.has(blk[1])) return new Response(nodeBlockBody([FILLER]), { status: 200 });
-  if (u.endsWith("/tip")) return net.tipDown ? json({ ok: false }, 502) : json({ height: TOP, hash: chain.rows.get(TOP).hash });
+  if (u.endsWith("/tip")) return net.tipDown || (net.tipFails > 0 && net.tipFails--) ? json({ ok: false }, 502) : json({ height: TOP, hash: chain.rows.get(TOP).hash });
   if (u.startsWith(`${PRIMARY}/cairnx/resolve/`)) return json({ addr: net.served, owner: net.served, via: "owner" });
   if (u.startsWith(`${PRIMARY}/cairnx/name-history/`)) return json(history(net.served, net.first));
   if (u.startsWith(`${CLARVIS}/cairnx/name-history/`)) return json(history(net.secondClaims, net.second));
@@ -87,7 +94,8 @@ async function walletOn() {
   const st = chain.storeTo(H);
   w.spvBuildForTest = async (o) => {
     const s = await C.liveSpvSource({ ...o, store: async () => st, legacy: undefined });
-    return { ...s, prevoutScriptPubkey: async (p) => prevoutFor(p) };
+    // namespv.ts prevoutScriptPubkey answers null for a read of the spent coin's transaction that failed.
+    return { ...s, prevoutScriptPubkey: async (p) => (net.prevoutDown && String(p).toLowerCase() === xferPrevout ? null : prevoutFor(p)) };
   };
   await w.importKey(keyB, "pw-namespv-union-short");
   await w.setApi("https://cairn-substrate.com");
@@ -188,6 +196,30 @@ console.log("6. the stated cost: a hostile primary host adds a record below the 
   const w = await walletOn();
   const r = await w.resolveName(NM);
   check(`(6) the primary's own address, unverified, not the second server's proven answer (${line(r)})`, r.ok === true && r.addr === X && r.verified === false && r.soleSource !== true);
+}
+
+console.log("7. both servers current, one read fails once:");
+for (const [label, set] of [["the first header page above the store", { pageFails: 1 }], ["the node tip", { tipFails: 1 }]]) {
+  Object.assign(net, { ...honestNet, second: full, secondClaims: B, ...set });
+  const w = await walletOn();
+  const r = await w.resolveName(NM);
+  check(`(7) ${label} fails once: the union read again verifies B, both servers agreeing (${line(r)})`, r.ok === true && r.addr === B && r.verified === true && r.soleSource !== true && r.disagree !== true);
+}
+
+console.log("8. the second server lagging, a read of the transfer's records fails:");
+for (const [label, set] of [["its block body answers 429", { bodyDown: true }], ["its spent coin cannot be read", { prevoutDown: true }]]) {
+  Object.assign(net, { ...honestNet, ...set });
+  const r = await review(await walletOn());
+  const sent = await confirmOnce();
+  check(`(8) ${label}: the served B unverified, not the previous owner from one server (${line(r)}), one click signs B (${sent.length} sent${sent.length ? ` to ${who(sent[0][0])}` : ""})`,
+    r.ok === true && r.addr === B && r.verified === false && r.soleSource !== true && unverifiedShown() && sent.length === 1 && sent[0][0] === B);
+}
+
+console.log("9. honest: both servers current, the transfer's block body fails once:");
+{
+  Object.assign(net, { ...honestNet, second: full, secondClaims: B, bodyFails: 1 });
+  const r = await (await walletOn()).resolveName(NM);
+  check(`(9) the union read again verifies B (${line(r)})`, r.ok === true && r.addr === B && r.verified === true && r.soleSource !== true);
 }
 
 await tick(50); await C.flushSpvStoreWrites();

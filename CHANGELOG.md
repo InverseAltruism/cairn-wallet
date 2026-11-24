@@ -34,11 +34,13 @@
   drops the header source, and a source still running from before it seals nothing under the next vault. The header
   database keeps its version, so 0.3.4 and 0.3.5 still open a store this build wrote. Sends are unchanged
   (docs/DESIGN-namespv-scaling.md, "Sealed chunks"; SECURITY.md).
-- A name check whose block headers did not load (or whose node tip could not be read) no longer falls back to
-  replaying each name server's records alone. A server that had not seen a recent transfer could then prove the
-  previous owner, and with the headers still failing at Confirm one click paid that previous owner. Such a name is now
-  shown as not chain-verified, with the address the name service gives; a record above the node's tip still gets the
-  fallback (SECURITY.md, "What happens when the sources disagree").
+- A name check that could not read something it needs (a header page, the node tip, a block, or the coin a record
+  spends) reads the name's records again as a whole, once per name server, instead of replaying each server's records
+  alone. A server that had not seen a recent transfer could prove the previous owner that way, and with the read
+  still failing at Confirm one click paid that previous owner. When the read keeps failing, the name is shown as not
+  chain-verified with the address the name service gives; a read that fails once verifies as before. A record the
+  chain refutes (not in its block, not signed, above the node tip) still gets the per-server fallback (SECURITY.md,
+  "What happens when the sources disagree").
 - A name the name service first reports as possibly expired at Confirm, on a review that did not show the expiry
   line, now shows "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
   owner." with "Send anyway" and "Cancel", and the second click signs the reviewed address; before, an unverified
