@@ -19,7 +19,8 @@
 //   (8) the second server lagging, the transfer's block body (429) or its spent coin cannot be read: the served B
 //       unverified, and one click signs B. (9) honest: a block body failing once with both current verifies B.
 // Mutations: the early return marked MUTATE_UNION_SHORT removed makes (1a), (1b), (2), (3), (6) and (8) fail; the retry
-// marked MUTATE_SHORT_RETRY removed makes (7) fail.
+// marked MUTATE_SHORT_RETRY removed makes (7) and (9) fail; a block read or a spent coin read not marked short makes
+// its (8) fail.
 // Run: npx tsx test/namespv-union-short.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";

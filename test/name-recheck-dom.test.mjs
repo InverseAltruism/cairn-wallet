@@ -10,7 +10,8 @@
 // Sections 10 and 11: a re-check that brings a lapse the Review did not show ([A4], served lapsed and not settled)
 // shows [A4] with "Send anyway" / "Cancel", for an unverified and a verified Review alike, and the second click signs
 // the reviewed address with no second look-up; a Review that showed [A4] confirms on one click. Red on fc8ec07: (10a),
-// (10b), (10d), (11a), (11b); the Review's [A4] ignored at Confirm fails (10c).
+// (10b), (10d), (11a), (11b); the Review's [A4] ignored at Confirm fails (10c) and (11c), and either send's snapshot
+// without `lapseShown` fails its own.
 // Run: node --import tsx test/name-recheck-dom.test.mjs   (offline)
 import { installFakeDom, installBridge, flush } from "./_fakedom.mjs";
 import { sentenceOf, LAPSE_BUTTONS } from "../src/popup/sentences.ts";
@@ -207,5 +208,17 @@ console.log("11. the token send, a lapse at Confirm that the Review did not show
   const s0b = sends.length;
   byId("btn-tsend-confirm").click(); await flush(20);
   check("(11b) its second click sends the token to the reviewed address", s0b === s0 && sends.length === s0 + 1 && sends.at(-1)?.[0]?.to === ALICE);
+
+  // the token twin of (10c): a token Review that showed [A4] confirms on its one click after one re-check
+  const lapsed = { ok: true, addr: ALICE, name: "alice", lapsed: false, lapseUnconfirmed: true, addrProven: true, verified: false };
+  reviewAnswer = () => lapsed; confirmAnswer = () => lapsed;
+  byId("btn-tsend-back").click(); await flush();
+  byId("ts-to").disabled = false; byId("ts-amt").disabled = false;
+  byId("ts-to").value = "alice.csd"; byId("ts-amt").value = "1";
+  byId("btn-tsend").click(); await flush(20);
+  const shownT = byId("btn-tsend-confirm").textContent, s1 = sends.length, c1 = count("confirmName");
+  byId("btn-tsend-confirm").click(); await flush(20);
+  check(`(11c) a token Review that showed [A4] ("${shownT}") confirms on its one click after one re-check (${sends.length - s1} sent, confirmName +${count("confirmName") - c1})`,
+    shownT === LAPSE_BUTTONS.confirm && sends.length === s1 + 1 && sends.at(-1)?.[0]?.to === ALICE && count("confirmName") === c1 + 1);
 }
 done("name-recheck-dom");

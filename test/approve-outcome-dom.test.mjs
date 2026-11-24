@@ -10,7 +10,8 @@
 //   (8) a refused first-party sign-in is [R11]; (9) a reveal the content server refused is [Q3], SEAL_UNKNOWN [Q4];
 //   (10) a fill refused VERIFY_UNAVAILABLE (its offer or its proofs could not be read yet) keeps the engine's sentence
 //        and code, not [S9]'s "Could not load your coins"; a page's send refused VERIFY_UNAVAILABLE keeps [S9], and so
-//        does a renew, read as popup-nameaction.ts reads it. (10a) and (10d) red on fc8ec07.
+//        does a renew, read as popup-nameaction.ts reads it; (10f) a token fill (an attest signed as a fill) reads as
+//        a fillOffer does. (10a), (10d) and (10f) red on fc8ec07.
 // A "Failed" on an ambiguous submit invites the site's retry, which pays twice when the first transaction lands.
 // Run: npx tsx test/approve-outcome-dom.test.mjs   (offline)
 import { SENTENCES } from "../src/popup/sentences.ts";
@@ -30,6 +31,7 @@ const handlers = {
   history: () => [],
   tokenDisplayMeta: () => ({}), sealedClaims: () => [], tip: () => 116_520, epoch: () => 3_884, tipFloor: () => 0,
   resolve: () => answer(),
+  tokenFillQuote: () => ({ ok: true, ticker: "PAY", amount: "10", fee: "1", total: "11", giveTicker: "AAA", giveAmount: "10" }),
   unlock: () => true,
 };
 const { registry } = mountApproveWindow(handlers);
@@ -53,6 +55,8 @@ async function outcome(ans, opts = {}) {
 const signin = (id) => ({ id, method: "signin", origin: "https://cairn-substrate.com", params: {} });
 const reveal = (id) => ({ id, method: "revealClaim", origin: "https://dapp.example", params: { txid: "0x" + "5e".repeat(32) } });
 const attest = (id) => ({ id, method: "attest", origin: "https://dapp.example", params: { proposalId: "0x" + "77".repeat(32), score: 1, confidence: 1, fee: 1_000_000 } });
+// a token-priced fill is an attest the signer signs as a fill (signfields.ts fillOf); it arms once its quote is shown
+const tokenFill = (id) => ({ id, method: "attest", origin: "https://dapp.example", params: { proposalId: "0x" + "79".repeat(32), score: 100, confidence: 1_000_000 } });
 const fill = (id) => ({ id, method: "fillOffer", origin: "https://cairn-substrate.com", params: { proposalId: "0x" + "78".repeat(32), score: 100, confidence: 100, fee: 5_000_000, outputs: [{ to: "0x" + "aa".repeat(20), value: 100_000_000 }] } });
 
 state.pending = [send("o0")];
@@ -100,6 +104,8 @@ o = await outcome({ done: true, ok: false, code: "VERIFY_UNAVAILABLE", error: CO
 check(`(10d) a fill whose coins could not be read keeps the engine's own sentence about the coins (${o.text})`, o.text === `Failed: ${COINS_UNREAD} (VERIFY_UNAVAILABLE)`);
 o = await outcome({ done: true, ok: false, code: "VERIFY_TAMPER", error: "a coin's source transaction does not match" }, { req: fill });
 check(`(10c) honest: a fill's other worded codes keep their line ([S10]: ${o.text})`, o.text === SENTENCES.S10.text);
+o = await outcome({ done: true, ok: false, code: "VERIFY_UNAVAILABLE", error: OFFER_UNPROVEN, sighashMatch: false }, { req: tokenFill });
+check(`(10f) a token fill refused VERIFY_UNAVAILABLE keeps the engine's sentence too (${o.text})`, o.text === `Failed: ${OFFER_UNPROVEN} (VERIFY_UNAVAILABLE)`);
 const renew = refusedCopy({ ok: false, code: "VERIFY_UNAVAILABLE", error: COINS_UNREAD }, "renewal");
 check(`(10e) honest: a renew refused VERIFY_UNAVAILABLE is [S9] (${renew.text})`, renew.key === "S9" && renew.text === SENTENCES.S9.text);
 handlers.resolve = () => { state.pending = []; throw new Error("wallet locked"); };
