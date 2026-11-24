@@ -78,7 +78,7 @@ async function reviewTokenSend(check: NameCheck | null) {
   // account switch; expectSigner makes the background refuse at the sign tick instead of signing from
   // the switched-to account (the recipient stays correct but the WRONG account would pay).
   // The token and its decimals ride in the snapshot: the sheet's live `tsend` can be another token by the time Confirm signs.
-  const snap = { to, base, ticker: sheet.ticker, decimals: sheet.decimals, name: rr.name ?? null, verified: rr.verified, signer: curAddr, check: rr.unchecked ?? null }; // verified for the L7 confirm-time regression check
+  const snap = { to, base, ticker: sheet.ticker, decimals: sheet.decimals, name: rr.name ?? null, verified: rr.verified, lapseShown: rr.lapseUnconfirmed === true, signer: curAddr, check: rr.unchecked ?? null }; // verified for the L7 confirm-time regression check
   reviewState.reviewed = snap;
   armReview(TOKEN_FLOW, false, reviewButtons(!!redirectName, rr.lapseUnconfirmed, !!rr.unchecked));
   if (snap.check) watchUncheckedReview(TOKEN_FLOW, () => reviewState.reviewed, snap);

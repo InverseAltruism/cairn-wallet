@@ -1,7 +1,8 @@
 // Name proofs over the header store (cairn docs/Plans/86 sections 3.5 and 6), on real mainnet headers and the real
 // cairn.csd record at 30,224 (chunk 7, below the newest anchor):
 //  - case 10: a hint below the names floor is dropped and its source flagged, never refused, and costs no request;
-//    a hint at 29,961 costs one chunk;
+//    a hint at 29,961 costs one chunk; a hint naming a txid a block the node serves does not hold is refuted and the
+//    union still verifies;
 //  - case 19: a Local node RPC serving another chain's block refuses with the configured RPC in the reason;
 //  - the confirm-time hint-set skip re-acquires a chunk that is not in memory and refuses on a hash mismatch.
 // Every refusal is paired with the honest path on the same call shape. Offline. Run: npx tsx test/namespv-hints-floor.test.mjs
@@ -73,14 +74,26 @@ await test("two sources, one serving only a hint below the floor: the honest sou
   assert.deepEqual(below(), []);
 });
 
-await test("a hint at 29,961 (a txid not in that block) costs one chunk-7 acquisition and the union still verifies", async () => {
+// The fixture node has no transactions for block 29,961 and serves it as an empty block, which does not bind to the
+// block's header: a block the wallet asked for and did not get, so the union is read again and ends unverified
+// (namespv.ts MUTATE_BIND_SHORT), at the same one chunk of header pages. A real node serves the block, and the hint
+// is then refuted as the next case shows on a block the fixture holds.
+await test("a hint at 29,961 costs one chunk-7 acquisition; the fixture node's empty body for it does not bind: not verified", async () => {
   reset();
   const src = await liveSpvSource(opts());
   net.log.length = 0;
   const v = await verifyNameUnion("cairn", [PRIMARY, SECOND], src, historyFetch({ [SECOND.base]: [junk(29961)] }));
-  assert.equal(v.verified, true, v.reason);
-  assert.equal(v.disagree, true);
+  assert.equal(v.verified, false);
+  assert.match(String(v.reason), /block 29961 .*does not match its verified merkle root/);
   assert.deepEqual(net.log, ["29696/512", "30208/512", "30720/512", "31232/512", "31744/512", "32256/512"]);
+});
+
+await test("a hint at 30,332 (a txid not in that block, which the node serves whole) is refuted: the union still verifies", async () => {
+  reset();
+  const v = await verifyNameUnion("cairn", [PRIMARY, SECOND], await liveSpvSource(opts()), historyFetch({ [SECOND.base]: [junk(OFFER.block.height)] }));
+  assert.equal(v.verified, true, v.reason);
+  assert.equal(v.addr, NAME.history.resolve.addr);
+  assert.equal(v.disagree, true);
 });
 
 console.log("section 6 case 19: a Local node RPC on another chain:");

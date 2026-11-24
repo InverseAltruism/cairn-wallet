@@ -165,10 +165,11 @@ const srcWithFloor = (nodeTip, floorTip) => source(blocks, nodeTip, { verifiedTi
   // (T5) the persisted floor past the lease: the refusal as today.
   r = await run({ served: { addr: TARGET, owner: A, via: "nset", lapsed: true }, spv: srcWithFloor(REAL_TIP, REAL_TIP) });
   check("[T5] the floor past the lease: refused", r.ok === false && r.lapsed === true);
-  // (T6) the confirm-time re-check of (T3) returns the same address, so the caution's Confirm signs what was reviewed.
+  // (T6) the confirm-time re-check of (T3) returns the same address, so the caution's Confirm signs what was reviewed. The
+  //      review showed the caution, so the snapshot carries it (popup-send.ts `lapseShown`).
   const { reresolveUnchanged } = await import("../src/popup/clearsign.ts");
   r = await run({ served: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, spv: srcNoFloor(REAL_TIP) });
-  check("[T6] the confirm-time re-check of the caution passes on the reviewed address and refuses another", reresolveUnchanged(TARGET, r, false) === true && reresolveUnchanged(ATTACKER, r, false) === false);
+  check("[T6] the confirm-time re-check of the caution passes on the reviewed address and refuses another", reresolveUnchanged(TARGET, r, false, r.lapseUnconfirmed === true) === true && reresolveUnchanged(ATTACKER, r, false, r.lapseUnconfirmed === true) === false);
   // (T8) the served `lapsed` flag with an address the wallet did not prove: the served address stays (the replay may be
   //      stale where a source says so), and `addrProven` is false, so the review shows [A9] with [A4], not [A4] alone.
   const insufficient = { ok: true, events: hints, resolve: { addr: ATTACKER, owner: A, via: "nset", lapsed: true }, scopedReplaySufficient: false };

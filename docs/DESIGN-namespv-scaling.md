@@ -544,8 +544,15 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   `scopedReplaySufficient: false` refuses it, on the union replay and before the per-source recovery alike, and a
   source whose own replay is `viaFill` refuses the recovery as a `viaFill` union replay does, so a source that pads
   the union past `MAX_HINTS` cannot have the recovery drop an honest source whose own records replay and verify alone
-  (test/namespv-union-scope.test.mjs cases 3 and 4). The recovery skips a source whose own replay fails for any
-  reason, so when the honest source's records cannot be replayed a lone source still decides, with `soleSource` and
+  (test/namespv-union-scope.test.mjs cases 3 and 4). A union replay that stopped on a read the wallet could not make
+  (`short`: `prepare` threw, a record lies above the verified tip at or below the served tip or the tip was unknown,
+  `bindBlock` threw or returned a body that does not bind to the verified header, a spent coin could not be read) is
+  replayed again as a whole, once per usable source when more
+  than one is usable, and runs no recovery: a server's records that lack the unread record would replay to an earlier
+  holding, so a read that keeps failing gives the served address unverified. A record the chain refutes, or one above
+  the node's tip, keeps the recovery, and a server's own replay that is short inside it ends it unverified
+  (test/namespv-union-short.test.mjs, test/namespv-union-throw.test.mjs). The recovery skips a source whose own replay fails for any
+  other reason, so when the honest source's records cannot be replayed a lone source still decides, with `soleSource` and
   `disagree` set (the residual in `docs/DESIGN-viafill.md`). The confirm-time skip also refuses on a fresh
   `scopedReplaySufficient: false` (case 5).
 - `MAX_HINTS` (256) bounds one replay: a union over it is refused before any block read, but the per-source recovery

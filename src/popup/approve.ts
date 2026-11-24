@@ -37,12 +37,12 @@ function msg(t: string, cls = "info", details?: string) {
 const msgOutcome = (o: Outcome): void => msg(o.text, o.cls, o.details);
 // A refusal of a request: a page's send is worded in full (R1 for a code without its own line); a sign-in the check
 // refused is R11 and a reveal the content server did not take is Q3 (neither carries a code); any other request keeps
-// "Failed: <engine text> (<code>)" for a code its slice has not worded yet.
-function refusalOutcome(method: string, r: any): Outcome | null {
+// "Failed: <engine text> (<code>)" for a code its slice has not worded yet, a fill also for VERIFY_UNAVAILABLE.
+function refusalOutcome(method: string, r: any, isFill: boolean): Outcome | null {
   if (method === "send") return refusedCopy(r, "transaction", "send");
   if (!r.code && method === "signin") return sentenceOutcome("R11");
   if (!r.code && method === "revealClaim") return sentenceOutcome("Q3", undefined, Number.isSafeInteger(r.status) ? `(HTTP ${r.status})` : undefined);
-  const o = refusedCopy(r, "transaction");
+  const o = refusedCopy(r, "transaction", isFill ? "fill" : "other");
   return o.key ? o : null;
 }
 const NEW_SITE = "New site";
@@ -642,6 +642,7 @@ async function resolve(approve: boolean) {
   if (!current) return;
   const id = current.id;
   const method = String(current.method ?? "");
+  const isFill = fillOf(method, current.params) !== null;
   const signer = renderedSigner; // M5: the account this request was DISPLAYED as signing with
   // The click belongs to the paint it was made on: its generation and its signer. Every await below is followed by
   // `moved()`, and a click whose paint moved (a repaint, which may show another signer, or another request) is
@@ -697,7 +698,7 @@ async function resolve(approve: boolean) {
     rs(id).unconfirmed = { fclaimTxid: String(r.unconfirmed.fclaimTxid), fclaimHeight: Number(r.unconfirmed.fclaimHeight), tipHeight: Number(r.unconfirmed.tipHeight) };
     msg("");
   } else if (r && r.ok === false) {
-    const o = refusalOutcome(method, r);
+    const o = refusalOutcome(method, r, isFill);
     if (o) msgOutcome(o); else msg("Failed: " + (r.error || "?") + (r.code ? ` (${r.code})` : ""), "err");
     hold();
   }

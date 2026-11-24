@@ -34,6 +34,23 @@
   drops the header source, and a source still running from before it seals nothing under the next vault. The header
   database keeps its version, so 0.3.4 and 0.3.5 still open a store this build wrote. Sends are unchanged
   (docs/DESIGN-namespv-scaling.md, "Sealed chunks"; SECURITY.md).
+- A name check that could not read something it needs (a header page, the node tip, a block or a block body that
+  does not match its header, or the coin a record spends) reads the name's records again as a whole, once per name
+  server when both answered, instead of replaying each server's records alone. A server that had not seen a recent
+  transfer could prove the previous owner that way, and with the read still failing at Confirm one click paid that
+  previous owner. When the read keeps failing, the name is shown as not chain-verified with the address the name
+  service gives; a read that fails once verifies as before. A record the chain refutes (not in its block, not signed, above the node tip) still gets the per-server
+  fallback, and inside it a server's own replay that could not make a read ends it the same way (SECURITY.md, "What
+  happens when the sources disagree").
+- A name the name service first reports as possibly expired at Confirm, on a review that did not show the expiry
+  line, now shows "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
+  owner." with "Send anyway" and "Cancel", and the second click signs the reviewed address; before, an unverified
+  review signed on the first click and a verified one showed "Could not check alice.csd again." A review that showed
+  the expiry line still confirms on one click (test/name-recheck-dom.test.mjs sections 10 and 11).
+- A buy (an offer fill) refused because the offer or its proofs could not be checked yet shows the wallet's own
+  reason with its code again, as 0.3.4 did, in place of "Could not load your coins, so nothing was sent. Try again in
+  a moment."; a fill whose coins could not be read says that in its own words. A page's send and a renew keep that
+  line (test/approve-outcome-dom.test.mjs 10).
 - In the popup, the arrow keys in a text field moved no caret and changed and stored the theme instead, and a
   click anywhere stored the theme again (0.3.0 to 0.3.5): the Settings theme control took the page itself as one of
   its options. It now takes only its three buttons; the arrow keys on those still move between them and choose.

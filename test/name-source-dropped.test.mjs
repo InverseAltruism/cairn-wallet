@@ -9,7 +9,10 @@
 //       (1b) the same with both servers current; (1c) no change (the honest path); (1d) a second change during the
 //       retry: no third source, the served address unverified (0.3.5, whose old sources go on, shows B verified).
 //   (2) verifyNameUnion on a dropped source: no per-server recovery runs on it (one prepare), whether the drop comes
-//       before the union's replay answers or during the recovery after a failed one.
+//       before the union's replay answers or during the recovery after a failed one. (2b) a union replay that failed on
+//       a header page is read again as a whole and runs no recovery (test/namespv-union-short.test.mjs); (2c) one that
+//       failed on a record
+//       above the node's tip recovers, and a drop during that recovery leaves no answer.
 //   (3) the first lookup after an install (the install hook's prewarm, then create): one replay, as 0.3.5 (asking for
 //       the source drops the one built before the vault, and that is not a drop under the lookup); verified, it is
 //       cached and the Confirm reads no block.
@@ -55,7 +58,7 @@ const stale = full.slice(0, 3);
 const fillerHashes = new Set([...chain.rows.values()].map((r) => r.hash));
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const blank = () => ({ second: "lag", flagPrimary: false, hold: () => false, held: [], fail500: () => false, pages: [], histories: 0, blocks: 0, tips: 0, prepares: 0 });
+const blank = () => ({ second: "lag", flagPrimary: false, primaryExtra: [], hold: () => false, held: [], fail500: () => false, pages: [], histories: 0, blocks: 0, tips: 0, prepares: 0 });
 const net = blank();
 const fresh = (extra) => Object.assign(net, blank(), extra);
 const release = () => { for (const r of net.held.splice(0)) r(); };
@@ -78,7 +81,7 @@ globalThis.fetch = async (url, init) => {
   if (blk && fillerHashes.has(blk[1])) return new Response(nodeBlockBody([FILLER]), { status: 200 });
   if (u.endsWith("/tip")) { net.tips++; return json({ height: TOP, hash: chain.rows.get(TOP).hash }); }
   if (u.startsWith(`${PRIMARY}/cairnx/resolve/`)) return json({ addr: B, owner: B, via: "owner" });
-  if (u.startsWith(`${PRIMARY}/cairnx/name-history/`)) { net.histories++; return json({ ...history(B, full), ...(net.flagPrimary ? { scopedReplaySufficient: false } : {}) }); }
+  if (u.startsWith(`${PRIMARY}/cairnx/name-history/`)) { net.histories++; return json({ ...history(B, [...full, ...net.primaryExtra]), ...(net.flagPrimary ? { scopedReplaySufficient: false } : {}) }); }
   if (u.startsWith(`${CLARVIS}/cairnx/name-history/`)) {
     net.histories++;
     return net.second === "down" ? json({ ok: false }, 502) : net.second === "lag" ? json(history(A, stale)) : json(history(B, full));
@@ -174,16 +177,28 @@ console.log("2. verifyNameUnion on a dropped source runs no per-server recovery 
   check(`(2) one prepare, the union's: no per-server replay on the dropped source (${prepared.join(",")})`, prepared.length === 1);
 }
 {
-  console.log("(2b) the union replay fails on a header page (no drop), and the source is dropped during the recovery:");
+  console.log("(2b) the union replay fails on a header page, and the source is dropped as the union is read again:");
   fresh({ second: "lag", fail500: (from) => from >= 146432 });
   const st = chain.storeTo(H);
   const stop = new AbortController();
   const s = await C.liveSpvSource({ rpcBase: `${API_A}/api/rpc`, headersBase: API_A, store: async () => st, legacy: undefined, signal: stop.signal });
   const prepared = [];
-  // The second prepare is the first server's own replay: the drop comes as it starts.
+  // A union replay short of a header is read again as a whole: the second prepare is that retry (the union's height,
+  // 146,600), and the drop as it starts ends the retries. A server's own replay would ask 146,313 (the lagging subset).
   const src = { ...s, prepare: (h) => { prepared.push(h); if (prepared.length === 2) stop.abort(); return s.prepare(h); }, prevoutScriptPubkey: async (p) => prevoutFor(p) };
   const v = await C.verifyNameUnion(NM, sources, src);
-  check(`(2b) the lagging server's replay below the held tip is not an answer (verified ${v.verified}, ${who(v.addr)}, prepares ${prepared.join(",")})`, v.verified === false && v.addr === undefined && prepared.length === 3);
+  check(`(2b) the lagging server's replay below the held tip is not an answer: one union retry, no server's replay (verified ${v.verified}, ${who(v.addr)}, prepares ${prepared.join(",")})`, v.verified === false && v.addr === undefined && prepared.length === 2 && prepared.every((h) => h === at.xfer));
+}
+{
+  console.log("(2c) the union replay fails on a record above the node's tip, and the source is dropped during the recovery:");
+  fresh({ second: "lag", primaryExtra: [{ txid: "0x" + "9d".repeat(32), height: TOP + 50, pos: 0, kind: "name" }] });
+  const st = chain.storeTo(H);
+  const stop = new AbortController();
+  const s = await C.liveSpvSource({ rpcBase: `${API_A}/api/rpc`, headersBase: API_A, store: async () => st, legacy: undefined, signal: stop.signal });
+  const prepared = [];
+  const src = { ...s, prepare: (h) => { prepared.push(h); if (prepared.length === 2) stop.abort(); return s.prepare(h); }, prevoutScriptPubkey: async (p) => prevoutFor(p) };
+  const v = await C.verifyNameUnion(NM, sources, src);
+  check(`(2c) the lagging server's replay on the dropped source is not an answer (verified ${v.verified}, ${who(v.addr)}, prepares ${prepared.join(",")})`, v.verified === false && v.addr === undefined && prepared.length === 3);
 }
 
 console.log("3. the first lookup after an install: the install hook's prewarm, create, then the Review:");

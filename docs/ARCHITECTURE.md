@@ -300,7 +300,9 @@ SPV header storage (the design as built is `docs/DESIGN-namespv-scaling.md`):
   a change of wording is a change of one entry; `test/sentences-copy.test.mjs` holds every entry to the copy rule (at
   most 160 characters and two sentences, no technical word, three levels). In a send (the popup's CSD and token
   sends, a page's send in the approval window) every refusal has a line, `R1` for a code without its own, with the
-  engine's text under Details; any other flow keeps the engine's text for a code its lines do not cover yet. A
+  engine's text under Details; any other flow keeps the engine's text for a code its lines do not cover yet. An
+  offer fill (a `fillOffer`, or an `attest` the signer signs as a fill) keeps it for `VERIFY_UNAVAILABLE` too, which
+  there also means the offer or its proofs could not be read yet (test/approve-outcome-dom.test.mjs 10). A
   server's free text reaches neither a line nor Details: a submit's `error` is the wallet's sentence (`node.ts`
   `submitResult`), and the other places a served string was shown map it onto a fixed list of words or leave it out
   (`src/core/servedtext.ts`; test/served-text-off-screen.test.mjs).

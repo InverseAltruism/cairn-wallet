@@ -196,7 +196,10 @@ type Replay =
   // A lease-lapse failure carries `lapsed`, whether it holds at a verified height (`verifiedCorroborated`: the
   // verified header tip; `floorCorroborated`: the persisted floor), the last holding's address and whether that
   // holding came through a fill (`viaFill`, then no address). Other failures leave them unset.
-  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string; viaFill?: boolean };
+  // `short`: the replay stopped on a read the wallet could not make (the sync threw, a record lies above the verified tip
+  // at or below the served tip or the tip was unknown, a block read threw or its body did not bind to the verified
+  // header, a spent coin could not be read), not on a record the chain refutes.
+  | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string; viaFill?: boolean; short?: boolean };
 // Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
 // unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
 // is far above any honest history. The cap is per replay: verifyNameUnion's per-source recovery replays each source's
@@ -259,15 +262,26 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
     (byHeight.get(height) ?? byHeight.set(height, []).get(height)!).push(h);
     if (height > maxHeight) maxHeight = height;
   }
-  const { verifiedTip, nodeTip, floorTip } = await src.prepare(maxHeight);
-  if (maxHeight > verifiedTip) return { ok: false, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
+  let prepared: Awaited<ReturnType<SpvSource["prepare"]>>;
+  try { prepared = await src.prepare(maxHeight); }
+  catch (e) { return { ok: false, short: true, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }; }
+  const { verifiedTip, nodeTip, floorTip, tipKnown, servedTip } = prepared;
+  if (maxHeight > verifiedTip) {
+    // A record above the node's tip is a hint no header can back yet, so the per-server recovery still answers it.
+    const short = tipKnown === false || (servedTip !== undefined && maxHeight <= servedTip);
+    return { ok: false, short, reason: `a record at height ${maxHeight} is above the verified tip (${verifiedTip})` };
+  }
   const lapseTip = Math.max(verifiedTip, heightOf(nodeTip));
 
   const events: ChainEvent[] = [];
   for (const [height, hs] of byHeight) {
-    // FULL-block bind (throws if the header can't be PoW-verified); a body that fails it fails this replay.
-    const bound = await bindBlock(src, height);
-    if (!bound.ok) return { ok: false, reason: bound.reason };
+    // FULL-block bind of the body the node serves for the verified header's hash; the hint names only the height. A body
+    // that does not bind (another root, a field not as the node writes it, a repeated txid) is a block the wallet asked
+    // for and did not get, so it is short like a failed read (test/namespv-union-short.test.mjs 10).
+    let bound: Awaited<ReturnType<typeof bindBlock>>;
+    try { bound = await bindBlock(src, height); }
+    catch (e) { return { ok: false, short: true, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }; }
+    if (!bound.ok) return { ok: false, short: true, reason: bound.reason }; // MUTATE_BIND_SHORT
     const { ids, rebuilt } = bound;
     for (const hint of hs) {
       const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());
@@ -280,7 +294,7 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
         const why = author.kind === "unsigned" ? "couldn't be authenticated (not a signed cairnx record)"
           : author.kind === "no-input" ? "has no spendable authenticating input"
           : "signer does not own the coin it spends (rejected possible scriptSig substitution)";
-        return { ok: false, reason: `record ${hint.txid} ${why}` };
+        return { ok: false, short: author.kind === "no-prevout", reason: `record ${hint.txid} ${why}` };
       }
       const ev = toChainEvent(tx, id, height, pos, author.signer);
       // A Propose maps to no event only in another application domain: the resolver never sees it, so it is
@@ -373,14 +387,22 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // 404 veto was meant to catch (V17 claim cap / token-balance fills) stay fail-closed via the viaFill /
     // scopedReplaySufficient gates below; those are computed from OUR verified events, not a served flag.
     // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
-    // A throw here (one source's hint naming a block the SPV source cannot serve) is a failed replay like
-    // any other, so per-source recovery below still runs instead of the outer catch aborting the verify.
-    const rep: Replay = await replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
+    // A throw here is a failed replay like any other, so the outer catch does not abort the verify.
+    const whole = (): Promise<Replay> => replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
+    // One rule: a read the wallet could not make (`short`) is never answered by one server's subset. The union replay
+    // is tried again as a whole, once per usable source when more than one is usable; the per-server recovery below
+    // runs only after a failure that is not short, and a server's own replay that is short ends it unverified
+    // (test/namespv-union-short.test.mjs, test/namespv-union-throw.test.mjs).
+    let rep: Replay = await whole();
+    for (let i = 0; !rep.ok && rep.short && usable.length > 1 && i < usable.length && !src.dropped?.(); i++) rep = await whole(); // MUTATE_SHORT_RETRY
     if (!rep.ok) {
       // A source the wallet dropped answers only at heights it had verified, so a server's subset that fits below its
       // tip would replay to an older holding while the union's records above it go unread: no per-server recovery
       // runs on it, and the caller asks the current source (names.ts verifyName).
       if (src.dropped?.()) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_UNION_DROP
+      // A replay still short runs no per-server recovery either: a server's subset that lacks the unread record would
+      // prove an older holding. The caller shows the served address unverified.
+      if (rep.short) return { ...fail(rep.reason), sources: usable.length, disagree: false }; // MUTATE_UNION_SHORT
       // A lapse refuses only when both hold: the lease is over at a height the wallet verified (its header tip or the
       // kept floor), so a served tip cannot make it; and 0.3.4's corroboration (two usable sources or the floor), since
       // one source can withhold a renewal or a recapture (test/name-lapse-tip.test.mjs [2v], [W1]). With the floor past
@@ -414,7 +436,8 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
         type OkReplay = Extract<Replay, { ok: true }>;
         const recovered: { label: string; rep: OkReplay; claim?: NameClaim }[] = [];
         for (const r of usable) {
-          const solo = await replayName(name, r.hints, src).catch(() => ({ ok: false as const, reason: "solo replay threw" }));
+          const solo: Replay = await replayName(name, r.hints, src).catch(() => ({ ok: false as const, reason: "solo replay threw" }));
+          if (!solo.ok && solo.short) return { ...fail(solo.reason), sources: usable.length, disagree: false }; // MUTATE_SOLO_SHORT
           if (!solo.ok) continue;
           if (solo.viaFill) return { ...fail(viaFillReason(name)), sources: usable.length, disagree: false, viaFill: true };
           recovered.push({ label: r.label, rep: solo, claim: r.claim });

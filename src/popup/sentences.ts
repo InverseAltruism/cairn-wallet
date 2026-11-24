@@ -73,8 +73,10 @@ const BY_CODE: Record<string, SentenceKey> = {
 // A send's refusals (the popup's CSD and token sends, a page's send): its own lines, then R1 for every other refusal.
 // INSUFFICIENT is a send's here only: a merge's INSUFFICIENT means the coins are smaller than the fee.
 const SEND_CODES: Record<string, SentenceKey> = { INSUFFICIENT: "S4", TOO_MANY_INPUTS: "S8", ZERO_ADDR_REFUSED: "S2", FEE_CAP: "S12" };
-/** "send" for a send's result, where every refusal is worded (R1 at the end); "other" for any other flow. */
-export type Flow = "send" | "other";
+/** "send" for a send's result, where every refusal is worded (R1 at the end); "fill" for an offer fill's, where
+ *  VERIFY_UNAVAILABLE is also the offer or its proofs not read yet, which [S9]'s coins do not cover, so it keeps the
+ *  engine's text until the fills' lines are built; "other" for any other flow. */
+export type Flow = "send" | "fill" | "other";
 /** The sentence for a result's code and reason (core/submitverdict.ts RefusalReason); null in an "other" flow for a code
  *  not worded yet, and in a "send" flow only for a result that is not a refusal. */
 // A code is read only as a string and only as an own key of a table, so a code named like an Object.prototype member
@@ -84,7 +86,7 @@ export function sentenceKeyOf(r: { ok?: unknown; code?: unknown; reason?: unknow
   const code = typeof r?.code === "string" ? r.code : "", reason = typeof r?.reason === "string" ? r.reason : "";
   if (code === "SUBMIT_REJECTED") return reason === "FEE" ? "R4" : reason === "BUSY" ? "R5" : "R6";
   if (code === "SUBMIT_MAYBE_INFLIGHT") return !reason ? "R2" : reason === "FEE" ? "MR_FEE" : reason === "BUSY" ? "MR_BUSY" : "MR_OTHER";
-  const key = own(BY_CODE, code);
+  const key = flow === "fill" && code === "VERIFY_UNAVAILABLE" ? null : own(BY_CODE, code); // MUTATE_FILL_UNWORDED
   if (key || flow !== "send" || r?.ok === true) return key;
   // S12 names the cap, so a FEE_CAP without one (none reaches a send) reads as R1
   if (code === "FEE_CAP" && !Number.isSafeInteger(r?.feeCap)) return "R1";
