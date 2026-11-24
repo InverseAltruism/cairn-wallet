@@ -551,7 +551,7 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   holding, so a read that keeps failing gives the served address unverified. A record the chain refutes, or one above
   the node's tip, keeps the recovery, and a server's own replay that is short inside it ends it unverified
   (test/namespv-union-short.test.mjs, test/namespv-union-throw.test.mjs). The recovery skips a source whose own replay fails for any
-  reason, so when the honest source's records cannot be replayed a lone source still decides, with `soleSource` and
+  other reason, so when the honest source's records cannot be replayed a lone source still decides, with `soleSource` and
   `disagree` set (the residual in `docs/DESIGN-viafill.md`). The confirm-time skip also refuses on a fresh
   `scopedReplaySufficient: false` (case 5).
 - `MAX_HINTS` (256) bounds one replay: a union over it is refused before any block read, but the per-source recovery

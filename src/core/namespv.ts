@@ -389,7 +389,7 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     const whole = (): Promise<Replay> => replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
     // One rule: a read the wallet could not make (`short`) is never answered by one server's subset. The union replay
     // is tried again as a whole, once per usable source when more than one is usable; the per-server recovery below
-    // runs only after a record the chain refutes, and a server's own replay that is short ends it unverified
+    // runs only after a failure that is not short, and a server's own replay that is short ends it unverified
     // (test/namespv-union-short.test.mjs, test/namespv-union-throw.test.mjs).
     let rep: Replay = await whole();
     for (let i = 0; !rep.ok && rep.short && usable.length > 1 && i < usable.length && !src.dropped?.(); i++) rep = await whole(); // MUTATE_SHORT_RETRY
