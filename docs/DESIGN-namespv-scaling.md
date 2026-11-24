@@ -549,7 +549,8 @@ Moved from AGENTS.md on 2026-10-22; `SECURITY.md`, "Sending to a `.csd` name", h
   `bindBlock` threw, a spent coin could not be read) is replayed again as a whole, once per usable source when more
   than one is usable, and runs no recovery: a server's records that lack the unread record would replay to an earlier
   holding, so a read that keeps failing gives the served address unverified. A record the chain refutes, or one above
-  the node's tip, keeps the recovery (test/namespv-union-short.test.mjs, test/namespv-union-throw.test.mjs). The recovery skips a source whose own replay fails for any
+  the node's tip, keeps the recovery, and a server's own replay that is short inside it ends it unverified
+  (test/namespv-union-short.test.mjs, test/namespv-union-throw.test.mjs). The recovery skips a source whose own replay fails for any
   reason, so when the honest source's records cannot be replayed a lone source still decides, with `soleSource` and
   `disagree` set (the residual in `docs/DESIGN-viafill.md`). The confirm-time skip also refuses on a fresh
   `scopedReplaySufficient: false` (case 5).

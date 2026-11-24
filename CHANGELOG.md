@@ -35,12 +35,13 @@
   database keeps its version, so 0.3.4 and 0.3.5 still open a store this build wrote. Sends are unchanged
   (docs/DESIGN-namespv-scaling.md, "Sealed chunks"; SECURITY.md).
 - A name check that could not read something it needs (a header page, the node tip, a block, or the coin a record
-  spends) reads the name's records again as a whole, once per name server, instead of replaying each server's records
-  alone. A server that had not seen a recent transfer could prove the previous owner that way, and with the read
-  still failing at Confirm one click paid that previous owner. When the read keeps failing, the name is shown as not
-  chain-verified with the address the name service gives; a read that fails once verifies as before. A record the
-  chain refutes (not in its block, not signed, above the node tip) still gets the per-server fallback (SECURITY.md,
-  "What happens when the sources disagree").
+  spends) reads the name's records again as a whole, once per name server when both answered, instead of replaying
+  each server's records alone. A server that had not seen a recent transfer could prove the previous owner that way,
+  and with the read still failing at Confirm one click paid that previous owner. When the read keeps failing, the
+  name is shown as not chain-verified with the address the name service gives; a read that fails once verifies as
+  before. A record the chain refutes (not in its block, not signed, above the node tip) still gets the per-server
+  fallback, and inside it a server's own replay that could not make a read ends it the same way (SECURITY.md, "What
+  happens when the sources disagree").
 - A name the name service first reports as possibly expired at Confirm, on a review that did not show the expiry
   line, now shows "alice.csd may have expired; the wallet could not check. If it has, this address belongs to its last
   owner." with "Send anyway" and "Cancel", and the second click signs the reviewed address; before, an unverified

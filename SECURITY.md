@@ -282,20 +282,24 @@ warns and lets you decide:
   or a source's records alone replay and show the name was sold through an offer fill or re-claimed after its lease
   lapsed, there is no such fallback: the name is shown as not chain-verified. One rule covers a combined replay that
   stopped on a read the wallet could not make (a header page, the node's tip, a block, the coin a record spends): the
-  combined replay is read again as a whole, once per name source, and never replaced by one source's records alone,
+  combined replay is read again as a whole, once per name source when two answered, and never replaced by one
+  source's records alone,
   since a source that had not seen a recent transfer would prove the older owner while the unread record stays
   unread. When the read keeps failing, the name is shown as not chain-verified with the address the name service
   served (test/namespv-union-short.test.mjs). The fallback stays for a record the chain refutes: one not in its
-  block, not a signed record, or above the node's tip. The costs: a hostile main host, which serves the tip, the
-  headers and that address, can add a record above the held headers and fail its reads, and the wallet then shows
-  that host's address as not chain-verified where the second source's records would have proven its answer; that
-  host can already do the same for every name with a record above the held headers, and for every name on a new
-  install. And a node tip served below a fresh transfer, with the second source not yet past it, still shows the
-  previous owner verified by one source. A source whose own replay fails for any
-  reason (more than 256 records, a block the wallet's node does not serve, a record that does not bind) drops out of
-  the fallback. That leaves a stale-seller residual: a hostile source that withholds a later sale and makes the
-  combined replay fail, while the honest source's records cannot be replayed, has the seller proven from its records
-  alone, shown with the "not corroborated" warning and not cached for the confirm step.
+  block, not a signed record, or above the node's tip. Inside the fallback, a source whose own replay could not make
+  a read ends it the same way, with the name not chain-verified (test/namespv-union-throw.test.mjs 4). The costs:
+  one name server alone can take "verified" away, by serving a record of a real transaction whose spent coin the
+  node does not serve; the wallet then shows the address the main name server serves as not chain-verified, the
+  same screen and the same payment a name server already gets by reporting the name not provable from its own
+  records (`scopedReplaySufficient: false`), and nothing is refused. A hostile main host, which serves the tip, the
+  headers and that address, can do the same by failing its reads, as it can for every name with a record above the
+  held headers and for every name on a new install. And a node tip served below a fresh transfer, with the second
+  source not yet past it, still shows the previous owner verified by one source. A source whose own replay fails on
+  a record that does not bind, or on more than 256 records, drops out of the fallback. That leaves a stale-seller
+  residual: a hostile source that withholds a later sale and makes the combined replay fail, while the honest
+  source's own records cannot be replayed for such a reason, has the seller proven from its records alone, shown
+  with the "not corroborated" warning and not cached for the confirm step.
 * Nothing can be proven, or the sources prove different addresses: the name is shown as **not
   chain-verified**, the address the name service served is the one shown, and the warning asks you to
   confirm it out-of-band. The send is not blocked.

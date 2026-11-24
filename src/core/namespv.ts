@@ -387,9 +387,10 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
     // So: replay, serve ONLY the proven winner, and carry the 404 as a `disagree` flag for the UI badge.
     // A throw here is a failed replay like any other, so the outer catch does not abort the verify.
     const whole = (): Promise<Replay> => replayName(name, hints, src).catch((e) => ({ ok: false as const, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }));
-    // One rule: a read the wallet could not make (`short`) is tried again as a whole, as often as the per-server
-    // recovery would read (once per usable source when more than one is usable), and is never answered by one server's
-    // subset; the recovery below stays for a record the chain refutes (test/namespv-union-short.test.mjs).
+    // One rule: a read the wallet could not make (`short`) is never answered by one server's subset. The union replay
+    // is tried again as a whole, once per usable source when more than one is usable; the per-server recovery below
+    // runs only after a record the chain refutes, and a server's own replay that is short ends it unverified
+    // (test/namespv-union-short.test.mjs, test/namespv-union-throw.test.mjs).
     let rep: Replay = await whole();
     for (let i = 0; !rep.ok && rep.short && usable.length > 1 && i < usable.length && !src.dropped?.(); i++) rep = await whole(); // MUTATE_SHORT_RETRY
     if (!rep.ok) {
@@ -433,7 +434,8 @@ export async function verifyNameUnion(name: string, sources: ResolverSource[], s
         type OkReplay = Extract<Replay, { ok: true }>;
         const recovered: { label: string; rep: OkReplay; claim?: NameClaim }[] = [];
         for (const r of usable) {
-          const solo = await replayName(name, r.hints, src).catch(() => ({ ok: false as const, reason: "solo replay threw" }));
+          const solo: Replay = await replayName(name, r.hints, src).catch(() => ({ ok: false as const, reason: "solo replay threw" }));
+          if (!solo.ok && solo.short) return { ...fail(solo.reason), sources: usable.length, disagree: false }; // MUTATE_SOLO_SHORT
           if (!solo.ok) continue;
           if (solo.viaFill) return { ...fail(viaFillReason(name)), sources: usable.length, disagree: false, viaFill: true };
           recovered.push({ label: r.label, rep: solo, claim: r.claim });

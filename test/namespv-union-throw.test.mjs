@@ -4,12 +4,17 @@
 // from the store or the header host, a body by its verified hash from the node, and fetchNameUnion drops a hint below
 // the names floor), so a throw is a read the wallet could not make: (2) a read that keeps failing is fail-closed,
 // with no server's subset in its place. (3) a record above the verified tip at or below the served tip is such a read
-// too: no recovery to the lagging server's holding. Paired honest paths: two agreeing clean sources verify as a
-// strong two-source result; headers covering the record prove the current address.
+// too: no recovery to the lagging server's holding. (4) a server's own replay that is short inside the recovery ends
+// it unverified: a server that withholds a transfer and pads past the hint cap does not verify the seller because the
+// honest server's read failed. (5) a second server's hint naming an unsigned transaction, or (6) one whose signer
+// does not own the coin it spends, is a record the chain refutes: the recovery still proves the honest winner.
+// Paired honest paths: two agreeing clean sources verify as a strong two-source result; headers covering the record
+// prove the current address. Mutations: MUTATE_SOLO_SHORT removed fails (4); every signer-bind refusal made short
+// fails (5) and (6).
 // Run: npx tsx test/namespv-union-throw.test.mjs
 import assert from "node:assert/strict";
 import { verifyNameUnion } from "../src/core/namespv.ts";
-import { buildNameClaim, buildNameSet, addrFromPriv, proposeTx, world, source, feeOut, pick, mkFetch } from "./_spvrig.ts";
+import { buildNameClaim, buildNameSet, buildNameXfer, addrFromPriv, proposeTx, nodeTx, world, source, feeOut, pick, mkFetch } from "./_spvrig.ts";
 
 const key = "0x" + "5a".repeat(32);
 const OWNER = addrFromPriv(key).toLowerCase();
@@ -78,5 +83,44 @@ await test("honest: headers covering the record prove the current address, the l
   assert.equal(r.disagree, true);
   assert.ok(!r.soleSource);
 });
+
+// (4) The padding world of namespv-union-scope cases 3 and 4: the seller claims "pad" and transfers it; one server
+// withholds the transfer and pads its list to 256 hints with real records about other names, so the union (257) is
+// refused at the cap, a failure that is not short, and the recovery runs while the transfer's block cannot be read.
+{
+  const keyS = "0x" + "5b".repeat(32), keyF = "0x" + "6b".repeat(32), SELLER = addrFromPriv(keyS).toLowerCase(), BUYER = "0x" + "c4".repeat(20);
+  const pClaim = proposeTx({ ...pick(buildNameClaim({ name: "pad" })), priv: keyS, outputs: feeOut() });
+  const pXfer = proposeTx({ ...pick(buildNameXfer({ name: "pad", to: BUYER })), priv: keyS });
+  const filler = [];
+  for (let k = 0; k < 255; k++) filler.push({ height: 33720, tx: proposeTx({ ...pick(buildNameClaim({ name: "zzpad" + k })), priv: keyF, outputs: feeOut() }) });
+  const pw = world([{ height: 33700, tx: pClaim }, { height: 33710, tx: pXfer }, ...filler]);
+  const honest = { ok: true, events: pw.hints.slice(0, 2), resolve: { addr: BUYER, owner: BUYER, via: "owner" }, scopedReplaySufficient: true };
+  const padded = { ok: true, events: [pw.hints[0], ...pw.hints.slice(2)], resolve: { addr: SELLER, owner: SELLER, via: "owner" }, scopedReplaySufficient: true };
+  const fine = source(pw.blocks, 33800);
+  const unread = { ...fine, blockAt: async (h) => { if (h === 33710) throw new Error("GET /block -> HTTP 429"); return fine.blockAt(h); } };
+  await test("a server's own replay that is short ends the recovery: the padding server does not verify the seller", async () => {
+    const r = await verifyNameUnion("pad", sources, unread, mkFetch({ [PRIM]: honest, [CLAR]: padded }));
+    assert.equal(r.verified, false, `got ${r.addr === SELLER ? "the seller" : r.addr} verified`);
+    assert.equal(r.addr, undefined);
+  });
+}
+
+// (5), (6) A second server's hint at a real transaction the chain refutes as a name record.
+{
+  const signed = proposeTx({ ...pick(buildNameClaim({ name: "zzother" })), priv: key, outputs: feeOut() });
+  const { txid: _t, ...body } = signed;
+  const unsigned = nodeTx({ ...body, inputs: [{ ...body.inputs[0], script_sig: "0x" }] });
+  const notOwner = proposeTx({ ...pick(buildNameClaim({ name: "zzother2" })), priv: key, outputs: feeOut(), prevScriptPubkey: "0x" + "d1".repeat(20) });
+  const rw = world([{ height: 33700, tx: claim }, { height: 33710, tx: nset }, { height: 33720, tx: unsigned }, { height: 33730, tx: notOwner }]);
+  const good = { ...history, events: rw.hints.slice(0, 2) };
+  for (const [label, bad] of [["an unsigned transaction", rw.hints[2]], ["a transaction whose signer does not own the coin", rw.hints[3]]]) {
+    await test(`a second server's hint naming ${label}: the recovery still proves the honest winner`, async () => {
+      const r = await verifyNameUnion(NAME, sources, source(rw.blocks, 33800), mkFetch({ [PRIM]: good, [CLAR]: { ...good, events: [...good.events, bad] } }));
+      assert.equal(r.verified, true, `expected recovery, got: ${r.reason}`);
+      assert.equal(r.addr, TARGET);
+      assert.equal(r.soleSource, true);
+    });
+  }
+}
 
 console.log(`namespv-union-throw: ${n} passed, 0 failed`);
