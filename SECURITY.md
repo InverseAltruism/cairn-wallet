@@ -281,7 +281,8 @@ warns and lets you decide:
   it the warning says it is not corroborated. When a source reports the name not provable from its own records,
   or a source's records alone replay and show the name was sold through an offer fill or re-claimed after its lease
   lapsed, there is no such fallback: the name is shown as not chain-verified. One rule covers a combined replay that
-  stopped on a read the wallet could not make (a header page, the node's tip, a block, the coin a record spends): the
+  stopped on a read the wallet could not make (a header page, the node's tip, a block or a block body that does not
+  match its header, the coin a record spends): the
   combined replay is read again as a whole, once per name source when two answered, and never replaced by one
   source's records alone,
   since a source that had not seen a recent transfer would prove the older owner while the unread record stays

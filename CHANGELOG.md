@@ -34,8 +34,8 @@
   drops the header source, and a source still running from before it seals nothing under the next vault. The header
   database keeps its version, so 0.3.4 and 0.3.5 still open a store this build wrote. Sends are unchanged
   (docs/DESIGN-namespv-scaling.md, "Sealed chunks"; SECURITY.md).
-- A name check that could not read something it needs (a header page, the node tip, a block, or the coin a record
-  spends) reads the name's records again as a whole, once per name server when both answered, instead of replaying
+- A name check that could not read something it needs (a header page, the node tip, a block or a block body that
+  does not match its header, or the coin a record spends) reads the name's records again as a whole, once per name server when both answered, instead of replaying
   each server's records alone. A server that had not seen a recent transfer could prove the previous owner that way,
   and with the read still failing at Confirm one click paid that previous owner. When the read keeps failing, the
   name is shown as not chain-verified with the address the name service gives; a read that fails once verifies as

@@ -18,9 +18,13 @@
 //   (7) both servers current, one read fails once (a header page, the node tip): the retry verifies B.
 //   (8) the second server lagging, the transfer's block body (429) or its spent coin cannot be read: the served B
 //       unverified, and one click signs B. (9) honest: a block body failing once with both current verifies B.
-// Mutations: the early return marked MUTATE_UNION_SHORT removed makes (1a), (1b), (2), (3), (6) and (8) fail; the retry
-// marked MUTATE_SHORT_RETRY removed makes (7) and (9) fail; a block read or a spent coin read not marked short makes
-// its (8) fail.
+//   (10) the second server lagging, the node serves a body for the transfer's block that does not bind to its header
+//       (another root, a repeated txid): the served B unverified, one click signs B. (11) honest: such a body once,
+//       both current: the retry verifies B.
+// Mutations: the early return marked MUTATE_UNION_SHORT removed makes (1a)'s request count fail (a server's own
+// replay runs after the short union; the solo guard then ends it unverified, so the outcomes stay); the retry
+// marked MUTATE_SHORT_RETRY removed makes (7), (9) and (11) fail; a block read or a spent coin read not marked short
+// makes its (8) fail; a body that does not bind not marked short (MUTATE_BIND_SHORT) makes (10) fail.
 // Run: npx tsx test/namespv-union-short.test.mjs   (offline)
 import "./helpers/backup-host.mjs";
 import { checker } from "./helpers/check.mjs";
@@ -64,7 +68,7 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
 const history = (claimed, events) => ({ ok: true, resolve: { addr: claimed, owner: claimed, via: "owner" }, events });
 const X = "0x" + "c3".repeat(20);
 const junkBelowTip = { txid: "0x" + "9e".repeat(32), height: 147000, pos: 0, kind: "name" };
-const honestNet = { headersDown: false, tipDown: false, first: full, served: B, second: stale, secondClaims: A, pageFails: 0, tipFails: 0, bodyFails: 0, bodyDown: false, prevoutDown: false };
+const honestNet = { headersDown: false, tipDown: false, first: full, served: B, second: stale, secondClaims: A, pageFails: 0, tipFails: 0, bodyFails: 0, bodyDown: false, prevoutDown: false, badBody: null, badBodyOnce: false, prepares: [] };
 const xferHash = chain.rows.get(at.xfer).hash, xferPrevout = String(rpcTxToTx(xfer).inputs[0].prevTxid).toLowerCase();
 const net = { ...honestNet };
 globalThis.fetch = async (url) => {
@@ -80,6 +84,11 @@ globalThis.fetch = async (url) => {
   }
   const blk = /\/block\/(0x[0-9a-f]{64})$/.exec(u);
   if (blk && blk[1] === xferHash && (net.bodyDown || (net.bodyFails > 0 && net.bodyFails--))) return json({ ok: false }, 429);
+  if (blk && blk[1] === xferHash && net.badBody) {
+    const txs = chain.bodyByHash.get(blk[1]).txs, kind = net.badBody;
+    if (net.badBodyOnce) net.badBody = null;
+    return new Response(nodeBlockBody(kind === "empty" ? [] : [...txs, txs.at(-1)]), { status: 200 });
+  }
   if (blk && chain.bodyByHash.has(blk[1])) return new Response(nodeBlockBody(chain.bodyByHash.get(blk[1]).txs), { status: 200 });
   if (blk && fillerHashes.has(blk[1])) return new Response(nodeBlockBody([FILLER]), { status: 200 });
   if (u.endsWith("/tip")) return net.tipDown || (net.tipFails > 0 && net.tipFails--) ? json({ ok: false }, 502) : json({ height: TOP, hash: chain.rows.get(TOP).hash });
@@ -93,10 +102,11 @@ globalThis.fetch = async (url) => {
 async function walletOn() {
   const w = new C.Wallet(C.memoryStore(), C.memoryStore());
   const st = chain.storeTo(H);
+  net.prepares = [];
   w.spvBuildForTest = async (o) => {
     const s = await C.liveSpvSource({ ...o, store: async () => st, legacy: undefined });
     // namespv.ts prevoutScriptPubkey answers null for a read of the spent coin's transaction that failed.
-    return { ...s, prevoutScriptPubkey: async (p) => (net.prevoutDown && String(p).toLowerCase() === xferPrevout ? null : prevoutFor(p)) };
+    return { ...s, prepare: (h) => { net.prepares.push(h); return s.prepare(h); }, prevoutScriptPubkey: async (p) => (net.prevoutDown && String(p).toLowerCase() === xferPrevout ? null : prevoutFor(p)) };
   };
   await w.importKey(keyB, "pw-namespv-union-short");
   await w.setApi("https://cairn-substrate.com");
@@ -151,6 +161,9 @@ console.log("1. the header route fails at Review and at Confirm, the second serv
   const r = await review(await walletOn());
   check(`(1a) the Review shows the served B unverified, with no recovery (${line(r)}; ${String(r.verifyReason).slice(0, 70)})`,
     r.ok === true && r.addr === B && r.verified === false && r.soleSource !== true && unverifiedShown());
+  // The union replay and its two retries ask the union's height; a server's own replay after them would be a fourth.
+  check(`(1a) the Review asks only the union's headers, three times, and no server's own replay (prepares ${net.prepares.join(",")})`,
+    net.prepares.length === 3 && net.prepares.every((h) => h === at.xfer));
   const sent = await confirmOnce();
   check(`(1b) one Confirm click signs B, not the previous owner (${sent.length} sent${sent.length ? ` to ${who(sent[0][0])}` : ""}; Confirm's look-up ${line(seen.confirm)})`,
     sent.length === 1 && sent[0][0] === B && seen.confirm?.verified === false);
@@ -221,6 +234,22 @@ console.log("9. honest: both servers current, the transfer's block body fails on
   Object.assign(net, { ...honestNet, second: full, secondClaims: B, bodyFails: 1 });
   const r = await (await walletOn()).resolveName(NM);
   check(`(9) the union read again verifies B (${line(r)})`, r.ok === true && r.addr === B && r.verified === true && r.soleSource !== true);
+}
+
+console.log("10. the second server lagging, the node serves a body for the transfer's block that does not bind:");
+for (const [label, kind] of [["another root (an empty block)", "empty"], ["a repeated txid", "dup"]]) {
+  Object.assign(net, { ...honestNet, badBody: kind });
+  const r = await review(await walletOn());
+  const sent = await confirmOnce();
+  check(`(10) ${label}: the served B unverified, not the previous owner from one server (${line(r)}; ${String(r.verifyReason).slice(0, 60)}), one click signs B (${sent.length} sent${sent.length ? ` to ${who(sent[0][0])}` : ""})`,
+    r.ok === true && r.addr === B && r.verified === false && r.soleSource !== true && unverifiedShown() && sent.length === 1 && sent[0][0] === B);
+}
+
+console.log("11. honest: both servers current, such a body once, then the block:");
+{
+  Object.assign(net, { ...honestNet, second: full, secondClaims: B, badBody: "empty", badBodyOnce: true });
+  const r = await (await walletOn()).resolveName(NM);
+  check(`(11) the union read again verifies B (${line(r)})`, r.ok === true && r.addr === B && r.verified === true && r.soleSource !== true);
 }
 
 await tick(50); await C.flushSpvStoreWrites();

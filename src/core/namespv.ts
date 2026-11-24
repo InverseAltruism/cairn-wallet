@@ -197,8 +197,8 @@ type Replay =
   // verified header tip; `floorCorroborated`: the persisted floor), the last holding's address and whether that
   // holding came through a fill (`viaFill`, then no address). Other failures leave them unset.
   // `short`: the replay stopped on a read the wallet could not make (the sync threw, a record lies above the verified tip
-  // at or below the served tip or the tip was unknown, a block read threw, a spent coin could not be read), not on a
-  // record the chain refutes.
+  // at or below the served tip or the tip was unknown, a block read threw or its body did not bind to the verified
+  // header, a spent coin could not be read), not on a record the chain refutes.
   | { ok: false; reason: string; lapsed?: boolean; floorCorroborated?: boolean; verifiedCorroborated?: boolean; lastAddr?: string; viaFill?: boolean; short?: boolean };
 // Cap the hinted records one replay will SPV-prove (L8 / HINTDOS): each hint also costs a prevout fetch (H3), so an
 // unbounded attacker-chosen hint list could fan out into many round-trips. A real name has a handful of records; 256
@@ -275,11 +275,13 @@ async function replayName(name: string, hints: NameHint[], src: SpvSource): Prom
 
   const events: ChainEvent[] = [];
   for (const [height, hs] of byHeight) {
-    // FULL-block bind (throws if the header can't be PoW-verified); a body that fails it fails this replay.
+    // FULL-block bind of the body the node serves for the verified header's hash; the hint names only the height. A body
+    // that does not bind (another root, a field not as the node writes it, a repeated txid) is a block the wallet asked
+    // for and did not get, so it is short like a failed read (test/namespv-union-short.test.mjs 10).
     let bound: Awaited<ReturnType<typeof bindBlock>>;
     try { bound = await bindBlock(src, height); }
     catch (e) { return { ok: false, short: true, reason: `couldn't verify on-chain (fail-closed): ${(e as Error)?.message ?? e}` }; }
-    if (!bound.ok) return { ok: false, reason: bound.reason };
+    if (!bound.ok) return { ok: false, short: true, reason: bound.reason }; // MUTATE_BIND_SHORT
     const { ids, rebuilt } = bound;
     for (const hint of hs) {
       const pos = ids.findIndex((x) => x.toLowerCase() === String(hint.txid).toLowerCase());

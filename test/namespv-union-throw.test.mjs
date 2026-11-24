@@ -9,8 +9,8 @@
 // honest server's read failed. (5) a second server's hint naming an unsigned transaction, or (6) one whose signer
 // does not own the coin it spends, is a record the chain refutes: the recovery still proves the honest winner.
 // Paired honest paths: two agreeing clean sources verify as a strong two-source result; headers covering the record
-// prove the current address. Mutations: MUTATE_SOLO_SHORT removed fails (4); every signer-bind refusal made short
-// fails (5) and (6).
+// prove the current address. Mutations: MUTATE_SOLO_SHORT removed fails (4); MUTATE_BIND_SHORT removed fails (4)'s
+// body case; every signer-bind refusal made short fails (5) and (6).
 // Run: npx tsx test/namespv-union-throw.test.mjs
 import assert from "node:assert/strict";
 import { verifyNameUnion } from "../src/core/namespv.ts";
@@ -100,6 +100,11 @@ await test("honest: headers covering the record prove the current address, the l
   const unread = { ...fine, blockAt: async (h) => { if (h === 33710) throw new Error("GET /block -> HTTP 429"); return fine.blockAt(h); } };
   await test("a server's own replay that is short ends the recovery: the padding server does not verify the seller", async () => {
     const r = await verifyNameUnion("pad", sources, unread, mkFetch({ [PRIM]: honest, [CLAR]: padded }));
+    assert.equal(r.verified, false, `got ${r.addr === SELLER ? "the seller" : r.addr} verified`);
+    assert.equal(r.addr, undefined);
+  });
+  await test("the same when the transfer's block body does not bind to its header: the seller is not verified", async () => {
+    const r = await verifyNameUnion("pad", sources, source(pw.blocks, 33800, { tamperMerkle: 33710 }), mkFetch({ [PRIM]: honest, [CLAR]: padded }));
     assert.equal(r.verified, false, `got ${r.addr === SELLER ? "the seller" : r.addr} verified`);
     assert.equal(r.addr, undefined);
   });
